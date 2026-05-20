@@ -1064,16 +1064,22 @@ export function DashboardDropZone() {
     try {
       // 1. Reserve a fresh case number from the modern endpoint so we
       //    don't collide with cases created elsewhere on the same lab.
+      //    Skip this for remake cases — the server assigns the suffix
+      //    automatically (e.g. "26-15B") and ignores any client-provided
+      //    number, so fetching next-case-number would just waste a
+      //    sequence slot.
       let caseNumber = requestedCaseNumber;
-      try {
-        const next = await apiFetch<{ caseNumber: string }>(
-          `/cases/next-case-number?labOrganizationId=${encodeURIComponent(
-            rxLabOrgId,
-          )}`,
-        );
-        if (next?.caseNumber) caseNumber = next.caseNumber;
-      } catch {
-        /* fall back to client-computed number */
+      if (!remake) {
+        try {
+          const next = await apiFetch<{ caseNumber: string }>(
+            `/cases/next-case-number?labOrganizationId=${encodeURIComponent(
+              rxLabOrgId,
+            )}`,
+          );
+          if (next?.caseNumber) caseNumber = next.caseNumber;
+        } catch {
+          /* fall back to client-computed number */
+        }
       }
 
       // 2. Split AI-detected patient name into first/last (the modern
@@ -1178,11 +1184,18 @@ export function DashboardDropZone() {
       qc.invalidateQueries({ queryKey: ["legacy-cases-for-dropzone"] });
       qc.invalidateQueries({ queryKey: ["cases"] });
       qc.invalidateQueries({ queryKey: ["invoices"] });
+      // When a remake is created, the original case's detail cache must also
+      // be invalidated so its History tab immediately shows the new
+      // "Remade By" event and its remake-children banner appears without
+      // the user needing to navigate away and back.
+      if (remake?.remakeOfCaseId) {
+        qc.invalidateQueries({ queryKey: ["case", remake.remakeOfCaseId] });
+      }
       setPhase({
         kind: "done",
         message: rxAttached
-          ? `Case ${created.caseNumber} created · Rx attached · draft invoice ready.`
-          : `Case ${created.caseNumber} created · draft invoice ready. (Rx file could not be attached — please add it manually in the Files tab.)`,
+          ? `Case ${created.caseNumber} created${remake ? " (remake)" : ""} · Rx attached · draft invoice ready.`
+          : `Case ${created.caseNumber} created${remake ? " (remake)" : ""} · draft invoice ready. (Rx file could not be attached — please add it manually in the Files tab.)`,
       });
       window.setTimeout(() => setPhase({ kind: "idle" }), 5000);
     } catch (e: any) {
