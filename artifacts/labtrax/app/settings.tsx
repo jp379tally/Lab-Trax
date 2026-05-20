@@ -209,6 +209,17 @@ export default function SettingsScreen() {
   });
   const [emailPrefsSaving, setEmailPrefsSaving] = useState<Partial<Record<keyof EmailPrefs, boolean>>>({});
 
+  type BuildCounterWarning = {
+    runUrl: string | null;
+    runId: string | null;
+    workflowName: string | null;
+    ref: string | null;
+    attemptedBuildNumber: number | null;
+    reportedAt: string;
+  };
+  const [buildCounterWarning, setBuildCounterWarning] = useState<BuildCounterWarning | null>(null);
+  const [buildCounterRepoUrl, setBuildCounterRepoUrl] = useState<string | null>(null);
+
   useEffect(() => {
     AsyncStorage.getItem("@drivesync_company_logo").then((uri) => {
       if (uri) setCompanyLogoUri(uri);
@@ -240,6 +251,26 @@ export default function SettingsScreen() {
     void fetchEmailPrefs();
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    if (userType !== "master_admin") return;
+    let cancelled = false;
+    async function fetchBuildCounterWarning() {
+      try {
+        const res = await resilientFetch("/api/admin/settings/desktop-installer");
+        if (!res.ok || cancelled) return;
+        const data = await res.json() as { buildCounterWarning?: BuildCounterWarning | null; repoUrl?: string | null };
+        if (!cancelled) {
+          setBuildCounterWarning(data.buildCounterWarning ?? null);
+          setBuildCounterRepoUrl(data.repoUrl ?? null);
+        }
+      } catch {
+        // silently ignore — not critical
+      }
+    }
+    void fetchBuildCounterWarning();
+    return () => { cancelled = true; };
+  }, [userType]);
 
   async function updateEmailPref(key: keyof EmailPrefs, value: boolean) {
     setEmailPrefs((prev) => ({ ...prev, [key]: value }));
@@ -1718,6 +1749,74 @@ export default function SettingsScreen() {
                 })
               )}
             </View>
+          </View>
+        )}
+
+        {userType === "master_admin" && buildCounterWarning && (
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>PLATFORM ADMIN</Text>
+            <Pressable
+              style={({ pressed }) => [{
+                borderRadius: 14,
+                borderWidth: 1,
+                borderColor: "#F59E0B",
+                backgroundColor: pressed ? "#FFFBEB" : "#FFFDE7",
+                padding: 14,
+                gap: 10,
+              }]}
+              onPress={async () => {
+                const url = buildCounterWarning.runUrl
+                  ?? (buildCounterRepoUrl
+                    ? `${buildCounterRepoUrl.replace(/\/$/, "")}/blob/main/docs/build-counter-recovery.md`
+                    : null);
+                if (url) {
+                  await WebBrowser.openBrowserAsync(url);
+                }
+              }}
+            >
+              <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
+                <Ionicons name="warning" size={18} color="#D97706" style={{ marginTop: 1 }} />
+                <View style={{ flex: 1, gap: 4 }}>
+                  <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: "#92400E" }}>
+                    Build counter may be out of sync
+                  </Text>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#B45309", lineHeight: 18 }}>
+                    {"A recent CI build"}
+                    {buildCounterWarning.attemptedBuildNumber !== null
+                      ? ` (build #${buildCounterWarning.attemptedBuildNumber})`
+                      : ""}
+                    {buildCounterWarning.workflowName
+                      ? ` from "${buildCounterWarning.workflowName}"`
+                      : ""}
+                    {" failed to push the updated build-number.json to the repo. The next build may reuse the same number. Apply the fallback artifact to fix this."}
+                  </Text>
+                  <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 4 }}>
+                    {buildCounterWarning.runUrl && (
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "#FEF3C7", borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 }}>
+                        <Ionicons name="open-outline" size={12} color="#D97706" />
+                        <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#D97706" }}>
+                          {"View failed run"}
+                          {buildCounterWarning.runId ? ` #${buildCounterWarning.runId}` : ""}
+                        </Text>
+                      </View>
+                    )}
+                    {!buildCounterWarning.runUrl && buildCounterRepoUrl && (
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "#FEF3C7", borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 }}>
+                        <Ionicons name="book-outline" size={12} color="#D97706" />
+                        <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#D97706" }}>Recovery guide</Text>
+                      </View>
+                    )}
+                    {buildCounterWarning.ref && (
+                      <View style={{ backgroundColor: "#FEF3C7", borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 }}>
+                        <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#92400E" }}>
+                          branch: {buildCounterWarning.ref}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                </View>
+              </View>
+            </Pressable>
           </View>
         )}
 
