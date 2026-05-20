@@ -16,6 +16,7 @@ import { startBillingJobs } from "./lib/billing-jobs";
 import { handleStripeWebhook } from "./routes/billing";
 import {
   getDesktopInstallerHandle,
+  getSignedDownloadUrl,
   openDesktopInstallerStream,
   type DesktopInstallerKind,
   DesktopInstallerNotConfiguredError,
@@ -114,9 +115,23 @@ function serveInstaller(
         res.setHeader("Content-Length", String(contentLength));
       }
 
-      // HEAD requests get headers only.
+      // HEAD requests get headers only — answer from the handle, no redirect.
       if (req.method === "HEAD") {
         res.end();
+        return;
+      }
+
+      // For GET requests, try to redirect to a short-lived signed GCS URL so
+      // the browser downloads directly from GCS rather than streaming through
+      // the Node.js server / Replit proxy (which can drop large transfers).
+      // Signed URL redirects are intentionally skipped for conditional requests
+      // that already resolved above (304) and for Range requests only when no
+      // signed URL is available — GCS handles Range natively on signed URLs, so
+      // a redirect is fine even when the client sends a Range header.
+      const signedUrl = await getSignedDownloadUrl(kind);
+      if (signedUrl) {
+        res.setHeader("Cache-Control", "no-store");
+        res.redirect(302, signedUrl);
         return;
       }
 

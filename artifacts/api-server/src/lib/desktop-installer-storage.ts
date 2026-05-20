@@ -232,6 +232,32 @@ export async function uploadDesktopInstaller(
 }
 
 /**
+ * Returns a short-lived GCS signed download URL for the installer of the given
+ * kind, valid for 15 minutes.  Returns `null` when signing is unavailable
+ * (Object Storage not configured, credentials don't support signing, or any
+ * other signing error) so the caller can fall back to the streaming path.
+ */
+export async function getSignedDownloadUrl(
+  kind: DesktopInstallerKind = "zip",
+): Promise<string | null> {
+  if (!process.env.PRIVATE_OBJECT_DIR) {
+    return null;
+  }
+  try {
+    const file = getInstallerFile(kind);
+    const [exists] = await file.exists();
+    if (!exists) return null;
+    const [urls] = await file.getSignedUrl({
+      action: "read",
+      expires: Date.now() + 15 * 60 * 1000,
+    });
+    return urls ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Deletes the stored installer of the given kind from App Storage.
  * Returns true if the object was deleted, false if it did not exist.
  *

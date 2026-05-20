@@ -50,6 +50,7 @@ vi.mock("pino-http", () => ({
 vi.mock("./lib/desktop-installer-storage.js", () => ({
   getDesktopInstallerHandle: vi.fn(),
   openDesktopInstallerStream: vi.fn(),
+  getSignedDownloadUrl: vi.fn().mockResolvedValue(null),
   installerKindFromUrl: vi.fn(),
   getDesktopInstallerMetadata: vi.fn(),
   uploadDesktopInstaller: vi.fn(),
@@ -62,6 +63,7 @@ vi.mock("./lib/desktop-installer-storage.js", () => ({
 import app from "./app.js";
 import {
   getDesktopInstallerHandle,
+  getSignedDownloadUrl,
   openDesktopInstallerStream,
 } from "./lib/desktop-installer-storage.js";
 
@@ -449,5 +451,82 @@ describe.each(OTHER_INSTALLERS)("GET $url", ({ url, fixture }) => {
 
     expect(res.status).toBe(404);
     expect(res.body).toMatchObject({ ok: false });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Signed URL redirect tests
+// ---------------------------------------------------------------------------
+
+const FAKE_SIGNED_URL = "https://storage.googleapis.com/bucket/object?X-Goog-Signature=fake";
+
+describe("GET /downloads/LabTrax-Windows-Portable.zip — signed URL redirect", () => {
+  let server: Server;
+
+  beforeAll(() => {
+    setupInstallerMocks();
+    vi.mocked(getSignedDownloadUrl).mockResolvedValue(FAKE_SIGNED_URL);
+    server = app.listen(0);
+  });
+
+  afterAll(() => {
+    server.close();
+    vi.mocked(getSignedDownloadUrl).mockResolvedValue(null);
+  });
+
+  it("redirects GET with 302 to the signed URL when signing is available", async () => {
+    const res = await request(server)
+      .get("/downloads/LabTrax-Windows-Portable.zip")
+      .redirects(0);
+
+    expect(res.status).toBe(302);
+    expect(res.headers["location"]).toBe(FAKE_SIGNED_URL);
+    expect(res.headers["cache-control"]).toBe("no-store");
+  });
+
+  it("still returns 302 even when a Range header is sent (GCS handles Range natively)", async () => {
+    const res = await request(server)
+      .get("/downloads/LabTrax-Windows-Portable.zip")
+      .set("Range", "bytes=0-9")
+      .redirects(0);
+
+    expect(res.status).toBe(302);
+    expect(res.headers["location"]).toBe(FAKE_SIGNED_URL);
+  });
+
+  it("returns 304 for a conditional GET matching the ETag — no redirect", async () => {
+    const res = await request(server)
+      .get("/downloads/LabTrax-Windows-Portable.zip")
+      .set("If-None-Match", FAKE_ETAG)
+      .redirects(0);
+
+    expect(res.status).toBe(304);
+  });
+
+  it("HEAD request returns 200 with headers, no redirect", async () => {
+    const res = await request(server)
+      .head("/downloads/LabTrax-Windows-Portable.zip")
+      .redirects(0);
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-length"]).toBe(String(FAKE_CONTENT.length));
+    expect(res.headers["etag"]).toBe(FAKE_ETAG);
+    expect(res.headers["location"]).toBeUndefined();
+  });
+
+  it("falls back to streaming (200) when getSignedDownloadUrl returns null", async () => {
+    vi.mocked(getSignedDownloadUrl).mockResolvedValueOnce(null);
+
+    const res = await request(server)
+      .get("/downloads/LabTrax-Windows-Portable.zip")
+      .buffer(true)
+      .parse((res, cb) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (d: Buffer) => chunks.push(d));
+        res.on("end", () => cb(null, Buffer.concat(chunks)));
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body as Buffer).toEqual(FAKE_CONTENT);
   });
 });
