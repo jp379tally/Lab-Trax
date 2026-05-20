@@ -40,7 +40,8 @@
         "ascAppId": "6760672646",
         "ascApiKeyPath": "/tmp/AuthKey_RV23AJ8V62.p8",
         "ascApiKeyId": "RV23AJ8V62",
-        "ascApiKeyIssuerId": "1d2faabc-3d66-4e64-b514-c234043e143a"
+        "ascApiKeyIssuerId": "1d2faabc-3d66-4e64-b514-c234043e143a",
+        "autoIncrement": true
       }
     }
   }
