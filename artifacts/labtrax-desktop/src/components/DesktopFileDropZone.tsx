@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Box, CheckCircle, CheckCircle2, FileText, Film, Image, Loader2, PackageOpen, RotateCw, Upload, X, XCircle } from "lucide-react";
+import { AlertTriangle, Box, CheckCircle, CheckCircle2, FileText, Film, Image, Link2, Loader2, PackageOpen, RotateCw, Search, Upload, X, XCircle } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useUploads, type FileWithHandle, type UploadRejection } from "@/lib/uploads-context";
@@ -61,13 +61,23 @@ interface OrgLite {
   type?: string;
 }
 
+interface CaseSearchResult {
+  id: string;
+  caseNumber: string;
+  patientFirstName: string;
+  patientLastName: string;
+  doctorName: string;
+  status: string;
+}
+
 interface ZipBatchEntry {
   id: string;
   filename: string;
-  status: "pending" | "processing" | "created" | "deduped" | "error";
+  status: "pending" | "processing" | "created" | "deduped" | "error" | "needs_case_selection" | "attached";
   caseId?: string;
   caseNumber?: string;
   extraFilesAttached?: number;
+  attachedCount?: number;
   error?: string;
 }
 
@@ -105,6 +115,14 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
   const [zipBatchEntries, setZipBatchEntries] = useState<ZipBatchEntry[]>([]);
   const [batchRunning, setBatchRunning] = useState(false);
 
+  // Generic bundle case picker state (for ZIPs that have no iTero Rx)
+  const genericZipFilesRef = useRef<Map<string, File>>(new Map());
+  const [genericQuery, setGenericQuery] = useState("");
+  const [genericResults, setGenericResults] = useState<CaseSearchResult[]>([]);
+  const [selectedGenericCase, setSelectedGenericCase] = useState<CaseSearchResult | null>(null);
+  const [genericSearchLoading, setGenericSearchLoading] = useState(false);
+  const [genericBundleRunning, setGenericBundleRunning] = useState(false);
+
   useEffect(() => {
     if (!organizationId) return;
     apiFetch<OrgLite[]>("/organizations")
@@ -119,6 +137,30 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
       })
       .catch(() => {});
   }, [organizationId]);
+
+  // Debounced case search for generic bundle picker
+  useEffect(() => {
+    const q = genericQuery.trim();
+    if (!organizationId || q.length < 2) {
+      setGenericResults([]);
+      return;
+    }
+    setGenericSearchLoading(true);
+    const timer = setTimeout(() => {
+      apiFetch<{ cases: CaseSearchResult[] }>(
+        `/cases/quick-search?labOrganizationId=${encodeURIComponent(organizationId)}&q=${encodeURIComponent(q)}`,
+      )
+        .then((data) => {
+          if (Array.isArray(data?.cases)) setGenericResults(data.cases);
+        })
+        .catch(() => {})
+        .finally(() => setGenericSearchLoading(false));
+    }, 350);
+    return () => {
+      clearTimeout(timer);
+      setGenericSearchLoading(false);
+    };
+  }, [organizationId, genericQuery]);
 
   const processItems = useCallback(
     (items: FileWithHandle[]) => {
@@ -260,12 +302,18 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
   function clearBatch() {
     setPendingZips([]);
     setZipBatchEntries([]);
+    genericZipFilesRef.current.clear();
+    setGenericQuery("");
+    setGenericResults([]);
+    setSelectedGenericCase(null);
   }
 
   async function runBatchImport() {
     if (!organizationId || pendingZips.length === 0 || batchRunning) return;
 
-    const initialEntries: ZipBatchEntry[] = pendingZips.map((f) => ({
+    const capturedZips = [...pendingZips];
+
+    const initialEntries: ZipBatchEntry[] = capturedZips.map((f) => ({
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       filename: f.name,
       status: "pending",
@@ -276,7 +324,7 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
 
     for (let i = 0; i < initialEntries.length; i++) {
       const entry = initialEntries[i]!;
-      const file = pendingZips[i]!;
+      const file = capturedZips[i]!;
 
       setZipBatchEntries((prev) =>
         prev.map((e) => (e.id === entry.id ? { ...e, status: "processing" } : e))
@@ -306,20 +354,35 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
         const fileResult = result?.results?.[0];
         if (!fileResult) throw new Error("No result returned from server.");
 
-        setZipBatchEntries((prev) =>
-          prev.map((e) =>
-            e.id === entry.id
-              ? {
-                  ...e,
-                  status: fileResult.status,
-                  caseId: fileResult.caseId ?? undefined,
-                  caseNumber: fileResult.caseNumber ?? undefined,
-                  extraFilesAttached: fileResult.extraFilesAttached,
-                  error: fileResult.error,
-                }
-              : e
-          )
-        );
+        const isNoRxError =
+          fileResult.status === "error" &&
+          fileResult.error?.includes("No iTero Rx file found");
+
+        if (isNoRxError) {
+          genericZipFilesRef.current.set(entry.id, file);
+          setZipBatchEntries((prev) =>
+            prev.map((e) =>
+              e.id === entry.id
+                ? { ...e, status: "needs_case_selection", error: undefined }
+                : e
+            )
+          );
+        } else {
+          setZipBatchEntries((prev) =>
+            prev.map((e) =>
+              e.id === entry.id
+                ? {
+                    ...e,
+                    status: fileResult.status,
+                    caseId: fileResult.caseId ?? undefined,
+                    caseNumber: fileResult.caseNumber ?? undefined,
+                    extraFilesAttached: fileResult.extraFilesAttached,
+                    error: fileResult.error,
+                  }
+                : e
+            )
+          );
+        }
       } catch (err: any) {
         setZipBatchEntries((prev) =>
           prev.map((e) =>
@@ -334,9 +397,102 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
     setBatchRunning(false);
   }
 
+  async function runGenericBundleAttach() {
+    if (!organizationId || !selectedGenericCase || genericBundleRunning) return;
+
+    const pendingEntries = zipBatchEntries.filter(
+      (e) => e.status === "needs_case_selection",
+    );
+    if (pendingEntries.length === 0) return;
+
+    setGenericBundleRunning(true);
+
+    for (const entry of pendingEntries) {
+      const file = genericZipFilesRef.current.get(entry.id);
+      if (!file) {
+        setZipBatchEntries((prev) =>
+          prev.map((e) =>
+            e.id === entry.id
+              ? { ...e, status: "error", error: "File reference lost — please re-drop the ZIP." }
+              : e
+          )
+        );
+        continue;
+      }
+
+      setZipBatchEntries((prev) =>
+        prev.map((e) => (e.id === entry.id ? { ...e, status: "processing" } : e))
+      );
+
+      try {
+        const fd = new FormData();
+        fd.append("files[]", file);
+        fd.append("labOrganizationId", organizationId);
+        fd.append("caseId", selectedGenericCase.id);
+
+        const result = await apiFetch<{
+          results: Array<{
+            filename: string;
+            status: "attached" | "error";
+            attachedCount?: number;
+            failedCount?: number;
+            error?: string;
+          }>;
+        }>("/cases/import-generic-zip-bundle", {
+          method: "POST",
+          body: fd,
+          headers: {},
+        });
+
+        const fileResult = result?.results?.[0];
+        if (!fileResult) throw new Error("No result returned from server.");
+
+        setZipBatchEntries((prev) =>
+          prev.map((e) =>
+            e.id === entry.id
+              ? {
+                  ...e,
+                  status: fileResult.status === "attached" ? "attached" : "error",
+                  caseId: fileResult.status === "attached" ? selectedGenericCase.id : undefined,
+                  caseNumber:
+                    fileResult.status === "attached" ? selectedGenericCase.caseNumber : undefined,
+                  attachedCount: fileResult.attachedCount,
+                  error: fileResult.error,
+                }
+              : e
+          )
+        );
+
+        if (fileResult.status === "attached") {
+          genericZipFilesRef.current.delete(entry.id);
+        }
+      } catch (err: any) {
+        setZipBatchEntries((prev) =>
+          prev.map((e) =>
+            e.id === entry.id
+              ? { ...e, status: "needs_case_selection", error: err?.message || "Attach failed." }
+              : e
+          )
+        );
+      }
+    }
+
+    setGenericBundleRunning(false);
+  }
+
   const disabled = !organizationId;
   const hasBatchResults = zipBatchEntries.length > 0;
-  const batchDone = hasBatchResults && !batchRunning && zipBatchEntries.every((e) => e.status !== "processing" && e.status !== "pending");
+  const hasNeedsCaseSelection = zipBatchEntries.some((e) => e.status === "needs_case_selection");
+  const batchDone =
+    hasBatchResults &&
+    !batchRunning &&
+    !genericBundleRunning &&
+    zipBatchEntries.every(
+      (e) =>
+        e.status !== "processing" &&
+        e.status !== "pending" &&
+        e.status !== "needs_case_selection",
+    );
 
   return (
     <div className="bg-card border border-border rounded-xl overflow-hidden">
@@ -418,9 +574,12 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
             <div className="flex items-center gap-2">
               <PackageOpen size={15} className="text-primary shrink-0" />
               <p className="text-sm font-medium">
-                {pendingZips.length} iTero ZIP{pendingZips.length === 1 ? "" : "s"} ready to import
+                {pendingZips.length} ZIP{pendingZips.length === 1 ? "" : "s"} ready to import
               </p>
             </div>
+            <p className="text-xs text-muted-foreground">
+              iTero ZIPs will create new cases automatically. Non-iTero ZIPs (3Shape, Dental Wings, etc.) will ask you to pick an existing case to attach their files to.
+            </p>
 
             <ul className="space-y-1">
               {pendingZips.map((f, i) => (
@@ -443,7 +602,7 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
             {providerOrgs.length > 0 && (
               <div className="space-y-1">
                 <label className="text-xs font-medium text-foreground">
-                  Link to practice
+                  Link to practice (for iTero ZIPs)
                 </label>
                 <select
                   value={selectedProviderId}
@@ -465,7 +624,7 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
                 disabled={batchRunning}
                 className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
               >
-                Import {pendingZips.length} case{pendingZips.length === 1 ? "" : "s"}
+                Import {pendingZips.length} ZIP{pendingZips.length === 1 ? "" : "s"}
               </button>
               <button
                 type="button"
@@ -485,7 +644,11 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
               <div className="flex items-center gap-2">
                 <PackageOpen size={15} className="text-primary shrink-0" />
                 <p className="text-sm font-medium">
-                  Batch iTero import {batchRunning ? "in progress…" : "complete"}
+                  {batchRunning
+                    ? "Batch import in progress…"
+                    : hasNeedsCaseSelection
+                      ? "Batch import complete — action needed"
+                      : "Batch import complete"}
                 </p>
               </div>
               {batchDone && (
@@ -507,18 +670,20 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
                     "flex items-start gap-2.5 rounded-md px-3 py-2 text-xs",
                     entry.status === "error"
                       ? "bg-destructive/10 border border-destructive/20"
-                      : entry.status === "created"
+                      : entry.status === "created" || entry.status === "attached"
                         ? "bg-success/10 border border-success/20"
                         : entry.status === "deduped"
                           ? "bg-muted/50 border border-border"
-                          : "bg-background border border-border",
+                          : entry.status === "needs_case_selection"
+                            ? "bg-amber-500/10 border border-amber-500/30"
+                            : "bg-background border border-border",
                   ].join(" ")}
                 >
                   <div className="mt-0.5 shrink-0">
                     {(entry.status === "pending" || entry.status === "processing") && (
                       <Loader2 size={13} className="animate-spin text-muted-foreground" />
                     )}
-                    {entry.status === "created" && (
+                    {(entry.status === "created" || entry.status === "attached") && (
                       <CheckCircle2 size={13} className="text-success" />
                     )}
                     {entry.status === "deduped" && (
@@ -526,6 +691,9 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
                     )}
                     {entry.status === "error" && (
                       <XCircle size={13} className="text-destructive" />
+                    )}
+                    {entry.status === "needs_case_selection" && (
+                      <AlertTriangle size={13} className="text-amber-500" />
                     )}
                   </div>
 
@@ -541,8 +709,25 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
                       <p className="text-success">
                         Case #{entry.caseNumber} created
                         {typeof entry.extraFilesAttached === "number" && entry.extraFilesAttached > 0
-                          ? ` · ${entry.extraFilesAttached} .ply file${entry.extraFilesAttached === 1 ? "" : "s"} attached`
+                          ? ` · ${entry.extraFilesAttached} scan${entry.extraFilesAttached === 1 ? "" : "s"} attached`
                           : ""}
+                        {entry.caseId && onOpenCase && (
+                          <>
+                            {" · "}
+                            <button
+                              type="button"
+                              onClick={() => onOpenCase(entry.caseId!)}
+                              className="underline underline-offset-2 hover:no-underline"
+                            >
+                              Open
+                            </button>
+                          </>
+                        )}
+                      </p>
+                    )}
+                    {entry.status === "attached" && (
+                      <p className="text-success">
+                        {entry.attachedCount ?? 0} file{(entry.attachedCount ?? 0) === 1 ? "" : "s"} attached to Case #{entry.caseNumber}
                         {entry.caseId && onOpenCase && (
                           <>
                             {" · "}
@@ -574,6 +759,11 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
                         )}
                       </p>
                     )}
+                    {entry.status === "needs_case_selection" && (
+                      <p className="text-amber-600 dark:text-amber-400">
+                        No iTero Rx found — select a case below to attach its files
+                      </p>
+                    )}
                     {entry.status === "error" && (
                       <p className="text-destructive">{entry.error || "Import failed."}</p>
                     )}
@@ -581,6 +771,95 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
                 </li>
               ))}
             </ul>
+          </div>
+        )}
+
+        {/* ── Generic bundle case picker ────────────────────────────────── */}
+        {hasBatchResults && hasNeedsCaseSelection && !batchRunning && (
+          <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <Link2 size={15} className="text-amber-500 shrink-0" />
+              <p className="text-sm font-medium">Attach scan bundle to an existing case</p>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              The ZIP{zipBatchEntries.filter((e) => e.status === "needs_case_selection").length === 1 ? "" : "s"} above
+              {" "}don't contain an iTero prescription. Search for the case you'd like to attach their files to.
+            </p>
+
+            {selectedGenericCase ? (
+              <div className="flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-xs">
+                <CheckCircle2 size={13} className="text-success shrink-0" />
+                <span className="flex-1 truncate font-medium">
+                  Case #{selectedGenericCase.caseNumber} — {selectedGenericCase.patientFirstName} {selectedGenericCase.patientLastName}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => { setSelectedGenericCase(null); setGenericQuery(""); }}
+                  className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                  aria-label="Change selected case"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                <div className="relative">
+                  <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+                  <input
+                    type="text"
+                    value={genericQuery}
+                    onChange={(e) => setGenericQuery(e.target.value)}
+                    placeholder="Search by case # or patient name…"
+                    className="w-full text-xs rounded-md border border-border bg-background pl-7 pr-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                  {genericSearchLoading && (
+                    <Loader2 size={12} className="absolute right-2.5 top-1/2 -translate-y-1/2 animate-spin text-muted-foreground" />
+                  )}
+                </div>
+                {genericResults.length > 0 && (
+                  <ul className="rounded-md border border-border bg-background divide-y divide-border max-h-44 overflow-y-auto">
+                    {genericResults.map((c) => (
+                      <li key={c.id}>
+                        <button
+                          type="button"
+                          onClick={() => { setSelectedGenericCase(c); setGenericQuery(""); setGenericResults([]); }}
+                          className="w-full text-left px-3 py-2 text-xs hover:bg-secondary/50 transition-colors"
+                        >
+                          <span className="font-medium">Case #{c.caseNumber}</span>
+                          {" — "}
+                          <span>{c.patientFirstName} {c.patientLastName}</span>
+                          {c.doctorName && (
+                            <span className="text-muted-foreground"> · {c.doctorName}</span>
+                          )}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {genericQuery.trim().length >= 2 && !genericSearchLoading && genericResults.length === 0 && (
+                  <p className="text-xs text-muted-foreground px-1">No cases found.</p>
+                )}
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={() => void runGenericBundleAttach()}
+              disabled={!selectedGenericCase || genericBundleRunning}
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+            >
+              {genericBundleRunning ? (
+                <>
+                  <Loader2 size={12} className="animate-spin" />
+                  Attaching…
+                </>
+              ) : (
+                <>
+                  <Link2 size={12} />
+                  Attach {zipBatchEntries.filter((e) => e.status === "needs_case_selection").length} file bundle{zipBatchEntries.filter((e) => e.status === "needs_case_selection").length === 1 ? "" : "s"} to case
+                </>
+              )}
+            </button>
           </div>
         )}
 

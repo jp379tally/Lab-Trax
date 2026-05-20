@@ -1396,6 +1396,52 @@ router.get(
   })
 );
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /cases/quick-search
+//
+// Lightweight case search for the desktop file-drop zone case picker.
+// Returns at most 20 cases matching the query (case number prefix, patient
+// first/last name prefix) for a given lab. Requires lab membership.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get(
+  "/quick-search",
+  asyncHandler(async (req, res) => {
+    const labOrganizationId = String(req.query.labOrganizationId ?? "").trim();
+    const q = String(req.query.q ?? "").trim();
+    if (!labOrganizationId) throw new HttpError(400, "labOrganizationId is required.");
+    await requireMembership((req as any).auth.userId, labOrganizationId);
+
+    if (q.length < 2) return ok(res, { cases: [] });
+
+    const ql = q.toLowerCase();
+    const results = await db
+      .select({
+        id: cases.id,
+        caseNumber: cases.caseNumber,
+        patientFirstName: cases.patientFirstName,
+        patientLastName: cases.patientLastName,
+        doctorName: cases.doctorName,
+        status: cases.status,
+      })
+      .from(cases)
+      .where(
+        and(
+          eq(cases.labOrganizationId, labOrganizationId),
+          notDeleted(cases),
+          or(
+            sql`lower(${cases.caseNumber}) like ${`${ql}%`}`,
+            sql`lower(${cases.patientLastName}) like ${`${ql}%`}`,
+            sql`lower(${cases.patientFirstName}) like ${`${ql}%`}`,
+          ),
+        ),
+      )
+      .orderBy(desc(cases.createdAt))
+      .limit(20);
+
+    return ok(res, { cases: results });
+  }),
+);
+
 router.get(
   "/:caseId",
   asyncHandler(async (req, res) => {
@@ -5473,6 +5519,218 @@ router.get(
         revenue: totalRevenue.toFixed(2),
       },
     });
+  }),
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /cases/import-generic-zip-bundle
+//
+// Accepts up to 20 ZIP files (field name `files[]`) and attaches all supported
+// file types found inside each ZIP to an existing case specified by `caseId`.
+// Unlike the iTero ZIP import this path does NOT create a new case — it only
+// adds attachments to a case that already exists.
+//
+// Supported types extracted from each ZIP:
+//   images: .png .jpg .jpeg .gif .webp .tif .tiff .bmp
+//   scans:  .ply .stl .obj .dcm .3ds .dae
+//   docs:   .pdf .txt .xml
+//
+// Returns 207 with a per-file result array.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const GENERIC_BUNDLE_EXTENSIONS = new Set([
+  ".pdf", ".txt", ".xml",
+  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".tif", ".tiff", ".bmp",
+  ".ply", ".stl", ".obj", ".dcm", ".3ds", ".dae",
+]);
+
+const GENERIC_BUNDLE_EXT_TO_MIME: Record<string, string> = {
+  ".pdf": "application/pdf",
+  ".txt": "text/plain",
+  ".xml": "application/xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".tif": "image/tiff",
+  ".tiff": "image/tiff",
+  ".bmp": "image/bmp",
+  ".ply": "application/octet-stream",
+  ".stl": "application/octet-stream",
+  ".obj": "application/octet-stream",
+  ".dcm": "application/dicom",
+  ".3ds": "application/octet-stream",
+  ".dae": "model/vnd.collada+xml",
+};
+
+const genericBundleUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      const tmpDir = path.join(os.tmpdir(), "labtrax-generic-zip");
+      try { fs.mkdirSync(tmpDir, { recursive: true }); } catch { /* ignore */ }
+      cb(null, tmpDir);
+    },
+    filename: (_req, _file, cb) => {
+      cb(null, `${Date.now()}-${randomBytes(4).toString("hex")}.zip`);
+    },
+  }),
+  limits: { fileSize: 300 * 1024 * 1024, files: 20 },
+});
+
+const genericBundleBodySchema = z.object({
+  labOrganizationId: z.string().min(1, "labOrganizationId is required"),
+  caseId: z.string().min(1, "caseId is required"),
+});
+
+router.post(
+  "/import-generic-zip-bundle",
+  genericBundleUpload.array("files[]", 20),
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = (req as any).auth.userId as string;
+    const body = genericBundleBodySchema.parse(req.body ?? {});
+    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+
+    if (files.length === 0) {
+      throw new HttpError(400, "At least one ZIP file is required (field name 'files[]').");
+    }
+
+    await requireMembership(userId, body.labOrganizationId);
+
+    const targetCase = await db.query.cases.findFirst({
+      where: and(eq(cases.id, body.caseId), notDeleted(cases)),
+    });
+    if (!targetCase) throw new HttpError(404, "Case not found.");
+    if (targetCase.labOrganizationId !== body.labOrganizationId) {
+      throw new HttpError(403, "Case does not belong to the specified lab organization.");
+    }
+
+    const user = (req as any).user;
+    const ZIP_MAX_ENTRIES = 100;
+    const ZIP_MAX_TOTAL_BYTES = 200 * 1024 * 1024;
+    const ZIP_MAX_ENTRY_BYTES = 50 * 1024 * 1024;
+
+    const results: Array<{
+      filename: string;
+      status: "attached" | "error";
+      attachedCount: number;
+      failedCount: number;
+      error?: string;
+    }> = [];
+
+    for (const file of files) {
+      let extractedEntries: Array<{ name: string; data: Buffer; mimeType: string }> = [];
+      let attachedCount = 0;
+      let failedCount = 0;
+
+      try {
+        try {
+          const zip = new AdmZip(file.path);
+          const zipEntries = zip.getEntries().filter((e) => !e.isDirectory && e.header.size > 0);
+
+          if (zipEntries.length > ZIP_MAX_ENTRIES) {
+            throw new HttpError(400, `ZIP contains too many files (${zipEntries.length}). Maximum is ${ZIP_MAX_ENTRIES}.`);
+          }
+          const totalUncompressed = zipEntries.reduce((sum, e) => sum + (e.header.size ?? 0), 0);
+          if (totalUncompressed > ZIP_MAX_TOTAL_BYTES) {
+            throw new HttpError(400, `ZIP uncompressed size (${Math.round(totalUncompressed / 1024 / 1024)} MB) exceeds the ${ZIP_MAX_TOTAL_BYTES / 1024 / 1024} MB limit.`);
+          }
+
+          for (const entry of zipEntries) {
+            const entryName = path.basename(entry.entryName);
+            if (!entryName) continue;
+            const ext = path.extname(entryName).toLowerCase();
+            if (!GENERIC_BUNDLE_EXTENSIONS.has(ext)) continue;
+            const entrySize = entry.header.size ?? 0;
+            if (entrySize > ZIP_MAX_ENTRY_BYTES) {
+              req.log?.warn({ name: entryName, size: entrySize }, "Generic ZIP bundle: skipping oversized entry");
+              failedCount++;
+              continue;
+            }
+            const mimeType = GENERIC_BUNDLE_EXT_TO_MIME[ext] ?? "application/octet-stream";
+            extractedEntries.push({ name: entryName, data: entry.getData(), mimeType });
+          }
+        } catch (err) {
+          if (err instanceof HttpError) throw err;
+          throw new HttpError(400, `Could not read ZIP file: ${(err as Error).message}`);
+        } finally {
+          try { fs.unlinkSync(file.path); } catch { /* ignore */ }
+        }
+
+        if (extractedEntries.length === 0 && failedCount === 0) {
+          results.push({
+            filename: file.originalname,
+            status: "error",
+            attachedCount: 0,
+            failedCount: 0,
+            error: "No supported files found in ZIP (.pdf, images, .ply, .stl, .obj, etc.).",
+          });
+          continue;
+        }
+
+        try { fs.mkdirSync(caseMediaDir, { recursive: true }); } catch { /* ignore */ }
+
+        for (const entry of extractedEntries) {
+          try {
+            const ext = path.extname(entry.name) || "";
+            const safe = path.basename(entry.name, ext).replace(/[^a-zA-Z0-9\-_]+/g, "-").slice(0, 60) || "file";
+            const diskName = `${Date.now()}-${randomBytes(4).toString("hex")}-${safe}${ext}`;
+            const diskPath = path.join(caseMediaDir, diskName);
+            await fs.promises.writeFile(diskPath, entry.data);
+            writeCaseMediaToObjectStorage(diskName, entry.data, entry.mimeType).catch((err: unknown) => {
+              req.log?.warn({ err, name: entry.name }, "Generic ZIP bundle: failed to mirror to object storage");
+            });
+            const storageKey = buildIteroAttachmentUrl(req, diskName);
+            await db.insert(caseAttachments).values({
+              caseId: body.caseId,
+              uploadedByUserId: userId,
+              uploadedByOrganizationId: body.labOrganizationId,
+              fileName: entry.name,
+              storageKey,
+              fileType: entry.mimeType,
+              visibility: "shared_with_provider",
+            });
+            attachedCount++;
+          } catch (attachErr) {
+            failedCount++;
+            req.log?.warn({ err: attachErr, name: entry.name, caseId: body.caseId }, "Generic ZIP bundle: failed to save attachment");
+          }
+        }
+
+        if (attachedCount > 0) {
+          await db.insert(caseEvents).values({
+            caseId: body.caseId,
+            eventType: "files_attached_from_zip",
+            actorUserId: userId,
+            actorOrganizationId: body.labOrganizationId,
+            actorInitials: user?.initials || "SYS",
+            metadataJson: { zipFilename: file.originalname, attachedCount, failedCount, source: "generic_bundle" },
+          });
+
+          await writeAuditLog({
+            req,
+            organizationId: body.labOrganizationId,
+            action: "generic_zip_bundle_attached",
+            entityType: "case",
+            entityId: body.caseId,
+            afterJson: { caseId: body.caseId, zipFilename: file.originalname, attachedCount, failedCount },
+          });
+        }
+
+        results.push({ filename: file.originalname, status: "attached", attachedCount, failedCount });
+      } catch (err) {
+        try { fs.unlinkSync(file.path); } catch { /* ignore */ }
+        results.push({
+          filename: file.originalname,
+          status: "error",
+          attachedCount: 0,
+          failedCount: 0,
+          error: err instanceof HttpError ? err.message : (err as Error)?.message ?? "Unknown error",
+        });
+      }
+    }
+
+    return ok(res, { results }, 207);
   }),
 );
 
