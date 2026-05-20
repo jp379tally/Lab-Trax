@@ -37,6 +37,10 @@ import {
 } from "../lib/patient-similarity";
 import { notDeleted, softDeleteById } from "../lib/soft-delete";
 import { caseMediaDir, extractMediaFileName } from "../lib/case-media";
+import {
+  openCaseMediaObjectStream,
+  writeCaseMediaToObjectStorage,
+} from "../lib/case-media-object-storage";
 import { deleteFromOneDrive } from "../lib/onedrive";
 import { HttpError, ok } from "../lib/http";
 import {
@@ -325,7 +329,17 @@ router.get(
     }
 
     if (!fs.existsSync(resolvedPath)) {
-      throw new HttpError(404, "File not found.");
+      const objStream = await openCaseMediaObjectStream(filename, attachment.fileType ?? undefined);
+      if (!objStream) {
+        throw new HttpError(404, "File not found.");
+      }
+      res.setHeader("Content-Type", objStream.contentType);
+      res.setHeader(
+        "Content-Disposition",
+        `inline; filename="${encodeURIComponent(attachment.fileName ?? filename)}"`,
+      );
+      objStream.stream.pipe(res);
+      return;
     }
 
     return res.sendFile(resolvedPath);
@@ -399,7 +413,17 @@ router.get(
     }
 
     if (!fs.existsSync(resolvedPath)) {
-      throw new HttpError(404, "File not found.");
+      const objStream = await openCaseMediaObjectStream(resolvedFilename, attachment.fileType ?? undefined);
+      if (!objStream) {
+        throw new HttpError(404, "File not found.");
+      }
+      res.setHeader("Content-Type", objStream.contentType);
+      res.setHeader(
+        "Content-Disposition",
+        `inline; filename="${encodeURIComponent(attachment.fileName ?? resolvedFilename)}"`,
+      );
+      objStream.stream.pipe(res);
+      return;
     }
 
     return res.sendFile(resolvedPath);
@@ -4077,6 +4101,13 @@ router.post(
     const rxDiskName = `${Date.now()}-${randomBytes(4).toString("hex")}-${rxSafe}${rxExt}`;
     const rxDiskPath = path.join(caseMediaDir, rxDiskName);
     await fs.promises.writeFile(rxDiskPath, rxBuffer);
+    // Mirror to persistent object storage so the file survives server restarts
+    // and re-deployments (best-effort — a failure here does not abort the import).
+    writeCaseMediaToObjectStorage(rxDiskName, rxBuffer, "application/pdf").catch(
+      (err: unknown) => {
+        req.log?.warn({ err }, "iTero ZIP: failed to mirror Rx PDF to object storage");
+      },
+    );
     const rxStorageKey = buildIteroAttachmentUrl(req, rxDiskName);
 
     // ── AI extraction ────────────────────────────────────────────────────────
@@ -4492,6 +4523,12 @@ router.post(
         const diskName = `${Date.now()}-${randomBytes(4).toString("hex")}-${safe}${ext}`;
         const diskPath = path.join(caseMediaDir, diskName);
         await fs.promises.writeFile(diskPath, entry.data);
+        // Mirror to persistent object storage (best-effort).
+        writeCaseMediaToObjectStorage(diskName, entry.data, entry.mimeType).catch(
+          (err: unknown) => {
+            req.log?.warn({ err, name: entry.name }, "iTero ZIP: failed to mirror attachment to object storage");
+          },
+        );
         const storageKey = buildIteroAttachmentUrl(req, diskName);
         await db.insert(caseAttachments).values({
           caseId: createdCase.id,
