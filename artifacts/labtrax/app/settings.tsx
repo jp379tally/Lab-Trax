@@ -27,6 +27,7 @@ import { resilientFetch } from "@/lib/query-client";
 import { formatPhone } from "@/lib/data";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
+import * as DocumentPicker from "expo-document-picker";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 type LabDirectoryEntry = {
@@ -84,6 +85,89 @@ export default function SettingsScreen() {
   };
   const [backupHistory, setBackupHistory] = useState<BackupRun[]>([]);
   const [backupHistoryLoading, setBackupHistoryLoading] = useState(false);
+
+  type RestorePhase = "idle" | "uploading" | "validating" | "decrypting" | "restoring_db" | "restoring_media" | "done" | "error";
+  const RESTORE_PHASE_LABELS: Record<RestorePhase, string> = {
+    idle: "Idle",
+    uploading: "Uploading…",
+    validating: "Validating…",
+    decrypting: "Decrypting…",
+    restoring_db: "Restoring database…",
+    restoring_media: "Restoring media files…",
+    done: "Complete",
+    error: "Error",
+  };
+  const RESTORE_PHASE_STEP: Record<RestorePhase, number> = { idle: 0, uploading: 1, validating: 2, decrypting: 3, restoring_db: 4, restoring_media: 5, done: 6, error: 0 };
+  const [restorePhase, setRestorePhase] = useState<RestorePhase>("idle");
+  const [restoreMessage, setRestoreMessage] = useState<string | null>(null);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
+  const [restoreSuccess, setRestoreSuccess] = useState(false);
+  const [restorePickedFile, setRestorePickedFile] = useState<{ name: string; uri: string } | null>(null);
+  const [restoreUseOneDrive, setRestoreUseOneDrive] = useState(false);
+  const [showRestoreModal, setShowRestoreModal] = useState(false);
+  const [restoreConfirmStep, setRestoreConfirmStep] = useState<1 | 2>(1);
+  const [hasOneDriveBackup, setHasOneDriveBackup] = useState(false);
+  const restorePollRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopRestorePolling = React.useCallback(() => {
+    if (restorePollRef.current !== null) {
+      clearInterval(restorePollRef.current);
+      restorePollRef.current = null;
+    }
+  }, []);
+
+  React.useEffect(() => () => stopRestorePolling(), [stopRestorePolling]);
+
+  const startRestorePolling = React.useCallback(() => {
+    stopRestorePolling();
+    restorePollRef.current = setInterval(async () => {
+      try {
+        const raw = await resilientFetch("/api/admin/backup/restore/status");
+        const res = (await raw.json()) as { phase: RestorePhase; message: string | null };
+        setRestorePhase(res.phase);
+        setRestoreMessage(res.message);
+        if (res.phase === "done") {
+          stopRestorePolling();
+          setRestoreSuccess(true);
+        } else if (res.phase === "error") {
+          stopRestorePolling();
+          setRestoreError(res.message || "Restore failed.");
+        }
+      } catch {
+        // transient; keep trying
+      }
+    }, 1500);
+  }, [stopRestorePolling]);
+
+  async function pickRestoreFile() {
+    const result = await DocumentPicker.getDocumentAsync({ type: "*/*", copyToCacheDirectory: true });
+    if (result.canceled || !result.assets?.[0]) return;
+    const asset = result.assets[0];
+    setRestorePickedFile({ name: asset.name, uri: asset.uri });
+    setRestoreUseOneDrive(false);
+  }
+
+  async function runMobileRestore() {
+    setShowRestoreModal(false);
+    setRestorePhase("uploading");
+    setRestoreMessage("Uploading backup file…");
+    setRestoreError(null);
+    setRestoreSuccess(false);
+    startRestorePolling();
+    try {
+      if (restoreUseOneDrive) {
+        await resilientFetch("/api/admin/backup/restore/from-onedrive", { method: "POST" });
+      } else if (restorePickedFile) {
+        const fd = new FormData();
+        fd.append("file", { uri: restorePickedFile.uri, name: restorePickedFile.name, type: "application/octet-stream" } as unknown as Blob);
+        await resilientFetch("/api/admin/backup/restore", { method: "POST", body: fd });
+      }
+    } catch (err: unknown) {
+      stopRestorePolling();
+      setRestorePhase("error");
+      setRestoreError(err instanceof Error ? err.message : "Restore failed.");
+    }
+  }
 
   type UserStatus = "active" | "inactive" | "on_lunch" | "out_of_office" | "on_break";
   const [userStatus, setUserStatus] = useState<UserStatus>("active");
@@ -1199,6 +1283,146 @@ export default function SettingsScreen() {
             </View>
           </View>
         )}
+
+        {/* ── Restore from backup (admin only) ── */}
+        {isLabAdmin && (
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>RESTORE FROM BACKUP</Text>
+            <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              {restoreSuccess ? (
+                <View style={{ padding: 14 }}>
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#16a34a", marginBottom: 4 }}>Restore complete</Text>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textSecondary }}>
+                    All data has been restored. Please restart the app to reload.
+                  </Text>
+                </View>
+              ) : restoreError ? (
+                <View style={{ padding: 14 }}>
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.error ?? "#dc2626", marginBottom: 4 }}>Restore failed</Text>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textSecondary }}>{restoreError}</Text>
+                  <Pressable
+                    style={{ marginTop: 10, paddingVertical: 8, paddingHorizontal: 14, borderRadius: 8, backgroundColor: colors.tint, alignSelf: "flex-start" }}
+                    onPress={() => { setRestoreError(null); setRestorePhase("idle"); }}
+                  >
+                    <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#fff" }}>Try again</Text>
+                  </Pressable>
+                </View>
+              ) : restorePhase !== "idle" ? (
+                <View style={{ padding: 14, gap: 10 }}>
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.text }}>
+                    {RESTORE_PHASE_LABELS[restorePhase]}
+                  </Text>
+                  <View style={{ height: 4, borderRadius: 4, backgroundColor: colors.border ?? "#e5e7eb", overflow: "hidden" }}>
+                    <View style={{ height: "100%", borderRadius: 4, backgroundColor: colors.tint, width: `${Math.min(100, (RESTORE_PHASE_STEP[restorePhase] / 5) * 100)}%` }} />
+                  </View>
+                  {restoreMessage ? (
+                    <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textSecondary }}>{restoreMessage}</Text>
+                  ) : null}
+                </View>
+              ) : (
+                <View style={{ padding: 14, gap: 12 }}>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textSecondary, lineHeight: 18 }}>
+                    Restore all lab data from a LabTrax <Text style={{ fontFamily: "Inter_600SemiBold" }}>.zip.enc</Text> backup file.{" "}
+                    <Text style={{ color: colors.error ?? "#dc2626", fontFamily: "Inter_600SemiBold" }}>All current data will be replaced.</Text>
+                  </Text>
+
+                  {/* Picked file name */}
+                  {restorePickedFile && !restoreUseOneDrive ? (
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.border ?? "#f3f4f6", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6 }}>
+                      <Ionicons name="document-outline" size={14} color={colors.textSecondary} />
+                      <Text style={{ flex: 1, fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textSecondary }} numberOfLines={1}>{restorePickedFile.name}</Text>
+                    </View>
+                  ) : null}
+
+                  {restoreUseOneDrive ? (
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.border ?? "#f3f4f6", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6 }}>
+                      <Ionicons name="cloud-outline" size={14} color={colors.textSecondary} />
+                      <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: colors.textSecondary }}>Latest file in OneDrive (LabTrax Backups)</Text>
+                    </View>
+                  ) : null}
+
+                  {/* Buttons row */}
+                  <View style={{ gap: 8 }}>
+                    <Pressable
+                      style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 9, paddingHorizontal: 14, borderRadius: 8, borderWidth: 1, borderColor: colors.border ?? "#e5e7eb", backgroundColor: colors.surface }}
+                      onPress={() => void pickRestoreFile()}
+                    >
+                      <Ionicons name="cloud-upload-outline" size={15} color={colors.tint} />
+                      <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.tint }}>Choose backup file…</Text>
+                    </Pressable>
+
+                    {rollingBackupStatus?.rollingBackupEnabled ? (
+                      <Pressable
+                        style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 9, paddingHorizontal: 14, borderRadius: 8, borderWidth: 1, borderColor: restoreUseOneDrive ? colors.tint : (colors.border ?? "#e5e7eb"), backgroundColor: restoreUseOneDrive ? (colors.tintLight ?? "#f0f0ff") : colors.surface }}
+                        onPress={() => { setRestoreUseOneDrive(true); setRestorePickedFile(null); }}
+                      >
+                        <Ionicons name="refresh-outline" size={15} color={colors.tint} />
+                        <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.tint }}>Restore from OneDrive (latest)</Text>
+                      </Pressable>
+                    ) : null}
+
+                    <Pressable
+                      disabled={!restorePickedFile && !restoreUseOneDrive}
+                      style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 8, backgroundColor: (!restorePickedFile && !restoreUseOneDrive) ? (colors.border ?? "#e5e7eb") : "#dc2626", opacity: pressed ? 0.8 : 1 })}
+                      onPress={() => {
+                        if (!restorePickedFile && !restoreUseOneDrive) return;
+                        setRestoreConfirmStep(1);
+                        setShowRestoreModal(true);
+                      }}
+                    >
+                      <Ionicons name="arrow-undo-outline" size={15} color="#fff" />
+                      <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#fff" }}>Restore</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              )}
+            </View>
+          </View>
+        )}
+
+        {/* ── Restore confirmation modal ── */}
+        <Modal visible={showRestoreModal} transparent animationType="fade" onRequestClose={() => setShowRestoreModal(false)}>
+          <Pressable style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "center", alignItems: "center" }} onPress={() => setShowRestoreModal(false)}>
+            <Pressable style={{ backgroundColor: colors.surface, borderRadius: 16, padding: 22, width: "88%", maxWidth: 400, gap: 14 }} onPress={(e) => e.stopPropagation()}>
+              {restoreConfirmStep === 1 ? (
+                <>
+                  <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#dc2626" }}>Replace all data?</Text>
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: colors.textSecondary, lineHeight: 20 }}>
+                    Restoring this backup will <Text style={{ fontFamily: "Inter_600SemiBold" }}>permanently overwrite</Text> all current lab data — cases, invoices, media, users, and settings.
+                  </Text>
+                  <View style={{ backgroundColor: "#fef3c7", borderRadius: 8, padding: 10 }}>
+                    <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: "#92400e" }}>
+                      Source: {restoreUseOneDrive ? "Latest file in OneDrive" : (restorePickedFile?.name ?? "selected file")}
+                    </Text>
+                  </View>
+                  <View style={{ flexDirection: "row", gap: 10 }}>
+                    <Pressable style={{ flex: 1, paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: colors.border ?? "#e5e7eb", alignItems: "center" }} onPress={() => setShowRestoreModal(false)}>
+                      <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: colors.text }}>Cancel</Text>
+                    </Pressable>
+                    <Pressable style={{ flex: 1, paddingVertical: 10, borderRadius: 8, backgroundColor: "#dc2626", alignItems: "center" }} onPress={() => setRestoreConfirmStep(2)}>
+                      <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: "#fff" }}>Continue</Text>
+                    </Pressable>
+                  </View>
+                </>
+              ) : (
+                <>
+                  <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#dc2626" }}>Final confirmation</Text>
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: colors.textSecondary, lineHeight: 20 }}>
+                    Are you absolutely sure? This action <Text style={{ fontFamily: "Inter_600SemiBold" }}>cannot be undone</Text>. All current data will be replaced.
+                  </Text>
+                  <View style={{ flexDirection: "row", gap: 10 }}>
+                    <Pressable style={{ flex: 1, paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: colors.border ?? "#e5e7eb", alignItems: "center" }} onPress={() => setShowRestoreModal(false)}>
+                      <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: colors.text }}>Cancel</Text>
+                    </Pressable>
+                    <Pressable style={{ flex: 1, paddingVertical: 10, borderRadius: 8, backgroundColor: "#dc2626", alignItems: "center" }} onPress={() => void runMobileRestore()}>
+                      <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: "#fff" }}>Yes, restore now</Text>
+                    </Pressable>
+                  </View>
+                </>
+              )}
+            </Pressable>
+          </Pressable>
+        </Modal>
 
         <View style={styles.section}>
           <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>DATA</Text>

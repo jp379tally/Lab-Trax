@@ -45,6 +45,9 @@ import type {
   OpenInvoiceListResult,
   ReceivePaymentsInput,
   ReceivePaymentsResult,
+  RestoreBackupBody,
+  RestoreStartResult,
+  RestoreStatusResult,
   RxPracticeAliasInput,
   RxPracticeAliasResult,
   SearchDoctorsParams,
@@ -1672,6 +1675,267 @@ export function useListOpenInvoices<
 
   return { ...query, queryKey: queryOptions.queryKey };
 }
+
+/**
+ * Upload a LabTrax `.zip.enc` backup file. The server validates the file,
+decrypts it, and restores the database and media files asynchronously.
+Returns 202 immediately; poll `/admin/backup/restore/status` for progress.
+Requires the `X-Platform-Admin-Secret` header. Only one restore can run
+at a time (returns 409 if another is already in progress).
+
+ * @summary Restore a backup from an uploaded .zip.enc file
+ */
+export const getRestoreBackupUrl = () => {
+  return `/api/admin/backup/restore`;
+};
+
+export const restoreBackup = async (
+  restoreBackupBody: RestoreBackupBody,
+  options?: RequestInit,
+): Promise<RestoreStartResult> => {
+  const formData = new FormData();
+  formData.append(`file`, restoreBackupBody.file);
+
+  return customFetch<RestoreStartResult>(getRestoreBackupUrl(), {
+    ...options,
+    method: "POST",
+    body: formData,
+  });
+};
+
+export const getRestoreBackupMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof restoreBackup>>,
+    TError,
+    { data: BodyType<RestoreBackupBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof restoreBackup>>,
+  TError,
+  { data: BodyType<RestoreBackupBody> },
+  TContext
+> => {
+  const mutationKey = ["restoreBackup"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof restoreBackup>>,
+    { data: BodyType<RestoreBackupBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return restoreBackup(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type RestoreBackupMutationResult = NonNullable<
+  Awaited<ReturnType<typeof restoreBackup>>
+>;
+export type RestoreBackupMutationBody = BodyType<RestoreBackupBody>;
+export type RestoreBackupMutationError = ErrorType<void>;
+
+/**
+ * @summary Restore a backup from an uploaded .zip.enc file
+ */
+export const useRestoreBackup = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof restoreBackup>>,
+    TError,
+    { data: BodyType<RestoreBackupBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof restoreBackup>>,
+  TError,
+  { data: BodyType<RestoreBackupBody> },
+  TContext
+> => {
+  return useMutation(getRestoreBackupMutationOptions(options));
+};
+
+/**
+ * Returns the current restore state for polling. The `phase` field cycles
+through `idle → uploading → validating → decrypting → restoring_db →
+restoring_media → done | error`. Requires the `X-Platform-Admin-Secret`
+header.
+
+ * @summary Get current restore phase and progress
+ */
+export const getGetRestoreStatusUrl = () => {
+  return `/api/admin/backup/restore/status`;
+};
+
+export const getRestoreStatus = async (
+  options?: RequestInit,
+): Promise<RestoreStatusResult> => {
+  return customFetch<RestoreStatusResult>(getGetRestoreStatusUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetRestoreStatusQueryKey = () => {
+  return [`/api/admin/backup/restore/status`] as const;
+};
+
+export const getGetRestoreStatusQueryOptions = <
+  TData = Awaited<ReturnType<typeof getRestoreStatus>>,
+  TError = ErrorType<void>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getRestoreStatus>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetRestoreStatusQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getRestoreStatus>>
+  > = ({ signal }) => getRestoreStatus({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getRestoreStatus>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetRestoreStatusQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getRestoreStatus>>
+>;
+export type GetRestoreStatusQueryError = ErrorType<void>;
+
+/**
+ * @summary Get current restore phase and progress
+ */
+
+export function useGetRestoreStatus<
+  TData = Awaited<ReturnType<typeof getRestoreStatus>>,
+  TError = ErrorType<void>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getRestoreStatus>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetRestoreStatusQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * The server lists the configured OneDrive backup folder, downloads the
+most-recently-modified `.zip.enc` file, and runs the same restore
+pipeline as `POST /admin/backup/restore`. Returns 202 immediately.
+Requires the `X-Platform-Admin-Secret` header. Returns 409 if a
+restore is already in progress.
+
+ * @summary Restore the most-recent backup from OneDrive
+ */
+export const getRestoreBackupFromOneDriveUrl = () => {
+  return `/api/admin/backup/restore/from-onedrive`;
+};
+
+export const restoreBackupFromOneDrive = async (
+  options?: RequestInit,
+): Promise<RestoreStartResult> => {
+  return customFetch<RestoreStartResult>(getRestoreBackupFromOneDriveUrl(), {
+    ...options,
+    method: "POST",
+  });
+};
+
+export const getRestoreBackupFromOneDriveMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof restoreBackupFromOneDrive>>,
+    TError,
+    void,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof restoreBackupFromOneDrive>>,
+  TError,
+  void,
+  TContext
+> => {
+  const mutationKey = ["restoreBackupFromOneDrive"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof restoreBackupFromOneDrive>>,
+    void
+  > = () => {
+    return restoreBackupFromOneDrive(requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type RestoreBackupFromOneDriveMutationResult = NonNullable<
+  Awaited<ReturnType<typeof restoreBackupFromOneDrive>>
+>;
+
+export type RestoreBackupFromOneDriveMutationError = ErrorType<void>;
+
+/**
+ * @summary Restore the most-recent backup from OneDrive
+ */
+export const useRestoreBackupFromOneDrive = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof restoreBackupFromOneDrive>>,
+    TError,
+    void,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof restoreBackupFromOneDrive>>,
+  TError,
+  void,
+  TContext
+> => {
+  return useMutation(getRestoreBackupFromOneDriveMutationOptions(options));
+};
 
 /**
  * Triggers an immediate full backup (all cases, invoices, media, etc.)

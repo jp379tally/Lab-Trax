@@ -1,8 +1,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as os from "node:os";
 import { spawn } from "node:child_process";
-import { createCipheriv, createHash, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import archiver from "archiver";
+import AdmZip from "adm-zip";
 import { db } from "@workspace/db";
 import { systemSettings, users, backupRuns } from "@workspace/db";
 import { eq, lt, sql } from "drizzle-orm";
@@ -132,6 +134,269 @@ function encryptBuffer(plaintext: Buffer): Buffer {
   const authTag = cipher.getAuthTag(); // 16 bytes
   const magic = Buffer.from("LTRX");
   return Buffer.concat([magic, iv, authTag, ciphertext]);
+}
+
+/**
+ * Decrypt a buffer that was produced by encryptBuffer.
+ *
+ * Format: [4 bytes magic "LTRX"] [12 bytes IV] [16 bytes GCM auth-tag] [ciphertext]
+ *
+ * Throws if the magic bytes are wrong, the secret is missing, or decryption
+ * fails (wrong key or corrupted ciphertext).
+ */
+export function decryptBuffer(encrypted: Buffer): Buffer {
+  if (encrypted.length < 32) {
+    throw new Error("File is too short to be a valid LabTrax backup.");
+  }
+  const magic = encrypted.slice(0, 4).toString("ascii");
+  if (magic !== "LTRX") {
+    throw new Error(
+      `Invalid backup file: expected magic bytes 'LTRX', got '${magic}'. ` +
+      "Make sure the file is a LabTrax .zip.enc backup.",
+    );
+  }
+  const secret = process.env.BACKUP_ENCRYPTION_KEY || process.env.JWT_SECRET;
+  if (!secret) {
+    throw new Error(
+      "BACKUP_ENCRYPTION_KEY (or JWT_SECRET) is not set — cannot decrypt backup.",
+    );
+  }
+  const key = createHash("sha256").update(secret).digest();
+  const iv = encrypted.slice(4, 16);
+  const authTag = encrypted.slice(16, 32);
+  const ciphertext = encrypted.slice(32);
+  const decipher = createDecipheriv("aes-256-gcm", key, iv);
+  decipher.setAuthTag(authTag);
+  try {
+    return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  } catch {
+    throw new Error(
+      "Backup decryption failed — the file may be corrupted or was encrypted " +
+      "with a different key (BACKUP_ENCRYPTION_KEY / JWT_SECRET).",
+    );
+  }
+}
+
+export type RestorePhase =
+  | "idle"
+  | "uploading"
+  | "validating"
+  | "decrypting"
+  | "restoring_db"
+  | "restoring_media"
+  | "done"
+  | "error";
+
+export interface RestoreState {
+  phase: RestorePhase;
+  message: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+let _restoreState: RestoreState = {
+  phase: "idle",
+  message: null,
+  startedAt: null,
+  completedAt: null,
+};
+let _restoreInProgress = false;
+
+export function getRestoreState(): RestoreState {
+  return { ..._restoreState };
+}
+
+function setRestorePhase(phase: RestorePhase, message?: string) {
+  _restoreState = {
+    ..._restoreState,
+    phase,
+    message: message ?? null,
+  };
+}
+
+/**
+ * Restore a LabTrax backup from an encrypted buffer.
+ *
+ * Steps:
+ *   1. Validate magic bytes / decrypt → ZIP buffer
+ *   2. Parse manifest.json from ZIP
+ *   3. Extract db/database.pgdump → temp file
+ *   4. Run pg_restore --clean --if-exists
+ *   5. Move current media to .trash/<timestamp>/, copy media/ from ZIP
+ *   6. Record backup_runs row (trigger: restore:admin)
+ *   7. Clean up temp directory
+ *
+ * Throws on any step before the live database is touched (steps 1–2 are
+ * pre-flight; step 3 onwards touches live data). Concurrent restores are
+ * rejected by the caller via _restoreInProgress.
+ */
+export async function executeRestore(
+  encryptedBuffer: Buffer,
+  triggeredBy: string,
+): Promise<{ manifest: Record<string, unknown> }> {
+  if (_restoreInProgress) {
+    throw new Error("A restore is already in progress. Please wait for it to finish.");
+  }
+  _restoreInProgress = true;
+  _restoreState = {
+    phase: "validating",
+    message: "Validating backup file…",
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+  };
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "labtrax-restore-"));
+  try {
+    // ── Step 1: decrypt ──────────────────────────────────────────────────────
+    setRestorePhase("decrypting", "Decrypting backup…");
+    let zipBuffer: Buffer;
+    try {
+      zipBuffer = decryptBuffer(encryptedBuffer);
+    } catch (err: unknown) {
+      throw err;
+    }
+
+    // ── Step 2: parse and validate manifest ──────────────────────────────────
+    setRestorePhase("validating", "Validating manifest…");
+    let zip: AdmZip;
+    let manifest: Record<string, unknown>;
+    try {
+      zip = new AdmZip(zipBuffer);
+      const manifestEntry = zip.getEntry("manifest.json");
+      if (!manifestEntry) {
+        throw new Error("Invalid backup: manifest.json is missing from the archive.");
+      }
+      const raw = manifestEntry.getData().toString("utf8");
+      manifest = JSON.parse(raw) as Record<string, unknown>;
+      if (manifest.appName !== "LabTrax") {
+        throw new Error(
+          `Invalid backup: manifest.json has appName '${manifest.appName}', expected 'LabTrax'.`,
+        );
+      }
+      const dbEntry = zip.getEntry("db/database.pgdump");
+      if (!dbEntry) {
+        throw new Error("Invalid backup: db/database.pgdump is missing from the archive.");
+      }
+    } catch (err: unknown) {
+      throw err;
+    }
+
+    // ── Step 3: extract pg dump to temp file ─────────────────────────────────
+    const pgDumpPath = path.join(tmpDir, "database.pgdump");
+    const dbEntry = zip.getEntry("db/database.pgdump")!;
+    fs.writeFileSync(pgDumpPath, dbEntry.getData());
+
+    // ── Step 4: run pg_restore ────────────────────────────────────────────────
+    setRestorePhase("restoring_db", "Restoring database (this may take a moment)…");
+    const dbUrl = process.env.DATABASE_URL;
+    if (!dbUrl) throw new Error("DATABASE_URL is not set — cannot restore database.");
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn("pg_restore", [
+        "--clean",
+        "--if-exists",
+        `--dbname=${dbUrl}`,
+        pgDumpPath,
+      ]);
+      const stderrChunks: Buffer[] = [];
+      proc.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+      const timer = setTimeout(() => {
+        proc.kill("SIGTERM");
+        reject(new Error("pg_restore timed out after 20 minutes."));
+      }, 20 * 60 * 1000);
+      proc.on("close", (code: number | null) => {
+        clearTimeout(timer);
+        // pg_restore exits non-zero even for warnings; check stderr for real errors.
+        // We accept exit code 1 (warnings) but reject code > 1 (real failures).
+        if (code !== null && code > 1) {
+          const stderr = Buffer.concat(stderrChunks).toString("utf8");
+          reject(new Error(`pg_restore failed (exit ${code}): ${stderr.slice(0, 500)}`));
+          return;
+        }
+        resolve();
+      });
+      proc.on("error", (err: Error) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+    });
+
+    // ── Step 5: restore media files ───────────────────────────────────────────
+    setRestorePhase("restoring_media", "Restoring case media files…");
+    const mediaDir = path.resolve(process.cwd(), "uploads", "case-media");
+
+    // Move existing media to trash (consistent with orphan-cleanup trash pattern).
+    if (fs.existsSync(mediaDir)) {
+      const trashBase = path.join(mediaDir, ".trash");
+      const trashStamp = path.join(trashBase, `restore-${Date.now()}`);
+      fs.mkdirSync(trashStamp, { recursive: true });
+      for (const entry of fs.readdirSync(mediaDir)) {
+        if (entry === ".trash" || entry === ".sessions") continue;
+        try {
+          fs.renameSync(path.join(mediaDir, entry), path.join(trashStamp, entry));
+        } catch {
+          // best-effort
+        }
+      }
+    }
+    fs.mkdirSync(mediaDir, { recursive: true });
+
+    // Extract media/ entries from ZIP into mediaDir.
+    for (const entry of zip.getEntries()) {
+      const entryName = entry.entryName;
+      if (!entryName.startsWith("media/")) continue;
+      const relative = entryName.slice("media/".length);
+      if (!relative) continue; // skip the directory entry itself
+      const destPath = path.join(mediaDir, relative);
+      const destDir = path.dirname(destPath);
+      fs.mkdirSync(destDir, { recursive: true });
+      if (!entry.isDirectory) {
+        fs.writeFileSync(destPath, entry.getData());
+      }
+    }
+
+    // ── Step 6: record restore run ────────────────────────────────────────────
+    try {
+      await db.insert(backupRuns).values({
+        triggeredBy,
+        destination: "local" as const,
+        path: null,
+        fileName: null,
+        sizeBytes: encryptedBuffer.length,
+        status: "success",
+        error: null,
+        completedAt: new Date(),
+      });
+    } catch {
+      // Non-fatal — DB is freshly restored, rows table is available but insert
+      // failures should not block the restore result.
+    }
+
+    _restoreState = {
+      phase: "done",
+      message: "Restore complete.",
+      startedAt: _restoreState.startedAt,
+      completedAt: new Date().toISOString(),
+    };
+
+    return { manifest };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    _restoreState = {
+      phase: "error",
+      message: msg,
+      startedAt: _restoreState.startedAt,
+      completedAt: new Date().toISOString(),
+    };
+    throw err;
+  } finally {
+    _restoreInProgress = false;
+    // Clean up temp directory.
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  }
 }
 
 /**

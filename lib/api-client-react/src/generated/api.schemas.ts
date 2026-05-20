@@ -479,6 +479,34 @@ export interface ReceivePaymentsResult {
   data?: ReceivePaymentsResultData;
 }
 
+export interface RestoreStartResult {
+  ok?: boolean;
+  phase?: string;
+  message?: string | null;
+}
+
+export type RestoreStatusResultPhase =
+  (typeof RestoreStatusResultPhase)[keyof typeof RestoreStatusResultPhase];
+
+export const RestoreStatusResultPhase = {
+  idle: "idle",
+  uploading: "uploading",
+  validating: "validating",
+  decrypting: "decrypting",
+  restoring_db: "restoring_db",
+  restoring_media: "restoring_media",
+  done: "done",
+  error: "error",
+} as const;
+
+export interface RestoreStatusResult {
+  ok?: boolean;
+  phase?: RestoreStatusResultPhase;
+  message?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+}
+
 export type MarkAllNotificationsRead200Data = {
   ok?: boolean;
 };
@@ -593,6 +621,14 @@ export type ListOpenInvoicesParams = {
    * Provider/practice to filter open invoices for.
    */
   providerOrganizationId: string;
+};
+
+export type RestoreBackupBody = {
+  /** The encrypted .zip.enc backup file (max 2 GB). Represented as
+`type: string` (not `format: binary`) so the generated client
+does not depend on the DOM `File` global. Pass a Blob/File at runtime.
+ */
+  file: string;
 };
 
 export type DisableBackupSchedule200 = {

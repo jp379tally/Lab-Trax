@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, Github, History, KeyRound, LayoutList, Loader2, LogOut, Monitor, Package, RotateCcw, ShieldCheck, Sparkles, Trash2, Upload, User as UserIcon, Wrench } from "lucide-react";
+import { Building2, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, Github, History, KeyRound, LayoutList, Loader2, LogOut, Monitor, Package, RotateCcw, RefreshCcw, ShieldCheck, Sparkles, Trash2, Upload, User as UserIcon, Wrench } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -1551,7 +1551,348 @@ function BackupPanel() {
           </div>
         )}
       </div>
+
+      {/* ── Restore from backup ── */}
+      <RestoreSection gate={gate} scheduleData={scheduleQuery.data ?? null} queryClient={queryClient} />
     </PanelShell>
+  );
+}
+
+type RestorePhase = "idle" | "uploading" | "validating" | "decrypting" | "restoring_db" | "restoring_media" | "done" | "error";
+
+const RESTORE_PHASE_LABELS: Record<RestorePhase, string> = {
+  idle: "Idle",
+  uploading: "Uploading…",
+  validating: "Validating…",
+  decrypting: "Decrypting…",
+  restoring_db: "Restoring database…",
+  restoring_media: "Restoring media files…",
+  done: "Done",
+  error: "Error",
+};
+
+const RESTORE_PHASE_STEP: Record<RestorePhase, number> = {
+  idle: 0,
+  uploading: 1,
+  validating: 2,
+  decrypting: 3,
+  restoring_db: 4,
+  restoring_media: 5,
+  done: 6,
+  error: 0,
+};
+
+function RestoreSection({
+  gate,
+  scheduleData,
+  queryClient,
+}: {
+  gate: { blocked: boolean };
+  scheduleData: { destination?: string | null; enabled?: boolean } | null;
+  queryClient: ReturnType<typeof useQueryClient>;
+}) {
+  const electron = typeof window !== "undefined"
+    ? (window as ElectronWindow).electronAPI
+    : null;
+
+  const [open, setOpen] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [confirmStep, setConfirmStep] = useState<1 | 2>(1);
+  const [useOneDrive, setUseOneDrive] = useState(false);
+  const [restorePhase, setRestorePhase] = useState<RestorePhase>("idle");
+  const [restoreMessage, setRestoreMessage] = useState<string | null>(null);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
+  const [restoreSuccess, setRestoreSuccess] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const hasOneDrive = !!scheduleData?.destination;
+
+  const stopPolling = useCallback(() => {
+    if (pollRef.current !== null) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => stopPolling(), [stopPolling]);
+
+  const startPolling = useCallback(() => {
+    stopPolling();
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await apiFetch<{ phase: RestorePhase; message: string | null }>("/admin/backup/restore/status");
+        setRestorePhase(res.phase);
+        setRestoreMessage(res.message);
+        if (res.phase === "done") {
+          stopPolling();
+          setRestoreSuccess(true);
+          queryClient.invalidateQueries({ queryKey: ["admin", "backup-history"] });
+        } else if (res.phase === "error") {
+          stopPolling();
+          setRestoreError(res.message || "Restore failed.");
+        }
+      } catch {
+        // polling errors are transient; keep trying
+      }
+    }, 1500);
+  }, [stopPolling, queryClient]);
+
+  async function pickFileElectron() {
+    if (!electron?.showOpenDialog) return;
+    const filePaths = await electron.showOpenDialog({
+      title: "Choose backup file",
+      filters: [{ name: "LabTrax Backup", extensions: ["zip.enc", "enc"] }],
+      properties: ["openFile"],
+    });
+    if (!filePaths || filePaths.length === 0) return;
+    // Electron gives us a path; build a File-like object using fetch
+    const resp = await fetch(`file://${filePaths[0]}`).catch(() => null);
+    if (resp) {
+      const blob = await resp.blob();
+      const file = new File([blob], filePaths[0].split("/").pop() ?? "backup.zip.enc");
+      setSelectedFile(file);
+      setUseOneDrive(false);
+    }
+  }
+
+  function handleNativeFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0] ?? null;
+    if (f) {
+      setSelectedFile(f);
+      setUseOneDrive(false);
+    }
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  function openConfirm(fromOneDrive: boolean) {
+    setUseOneDrive(fromOneDrive);
+    setConfirmStep(1);
+    setRestoreError(null);
+    setRestoreSuccess(false);
+    setShowConfirm(true);
+  }
+
+  async function runRestore() {
+    setShowConfirm(false);
+    setRestorePhase("uploading");
+    setRestoreMessage("Uploading backup file…");
+    setRestoreError(null);
+    setRestoreSuccess(false);
+    startPolling();
+    try {
+      if (useOneDrive) {
+        await apiFetch("/admin/backup/restore/from-onedrive", { method: "POST" });
+      } else if (selectedFile) {
+        const fd = new FormData();
+        fd.append("file", selectedFile, selectedFile.name);
+        await apiFetch("/admin/backup/restore", { method: "POST", body: fd, headers: {} as any });
+      }
+    } catch (err: unknown) {
+      stopPolling();
+      const msg = err instanceof Error ? err.message : "Restore failed.";
+      setRestorePhase("error");
+      setRestoreError(msg);
+    }
+  }
+
+  const isRunning = restorePhase !== "idle" && restorePhase !== "done" && restorePhase !== "error";
+  const stepCount = 5;
+  const step = RESTORE_PHASE_STEP[restorePhase];
+
+  return (
+    <>
+      <div className="border border-border rounded-lg overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="w-full flex items-center justify-between px-4 py-3 text-sm font-semibold text-foreground hover:bg-muted/30 transition-colors"
+        >
+          <div className="flex items-center gap-2">
+            <RotateCcw size={14} className="text-muted-foreground" />
+            Restore from backup
+          </div>
+          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </button>
+        {open && (
+          <div className="px-4 pb-4 space-y-4 border-t border-border pt-4">
+            <p className="text-xs text-muted-foreground">
+              Restore all lab data from a LabTrax <code className="font-mono">.zip.enc</code> backup file.{" "}
+              <strong className="text-destructive">All current data and media will be replaced.</strong>
+            </p>
+
+            {restoreSuccess && (
+              <div className="rounded-md bg-success/10 border border-success/30 px-3 py-2 text-xs text-success font-medium">
+                Restore complete — restart the app to finish loading the restored data.
+                {typeof electron?.relaunch === "function" && (
+                  <span className="ml-1">(Relaunching in 3 seconds…)</span>
+                )}
+              </div>
+            )}
+            {restoreError && (
+              <Alert tone="danger">{restoreError}</Alert>
+            )}
+
+            {isRunning && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-muted-foreground font-medium">{RESTORE_PHASE_LABELS[restorePhase]}</span>
+                  <span className="text-muted-foreground">{step}/{stepCount}</span>
+                </div>
+                <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                  <div
+                    className="h-full bg-primary transition-all duration-500 rounded-full"
+                    style={{ width: `${Math.min(100, (step / stepCount) * 100)}%` }}
+                  />
+                </div>
+                {restoreMessage && (
+                  <p className="text-[11px] text-muted-foreground">{restoreMessage}</p>
+                )}
+              </div>
+            )}
+
+            {!isRunning && !restoreSuccess && (
+              <div className="space-y-3">
+                {/* File source */}
+                <div className="space-y-2">
+                  {/* Local file */}
+                  <div className="flex items-center gap-2">
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".enc,.zip.enc"
+                      className="hidden"
+                      onChange={handleNativeFileChange}
+                    />
+                    <button
+                      type="button"
+                      disabled={gate.blocked}
+                      onClick={() => {
+                        if (electron?.showOpenDialog) {
+                          void pickFileElectron();
+                        } else {
+                          fileInputRef.current?.click();
+                        }
+                      }}
+                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-border bg-background text-xs font-medium hover:bg-secondary disabled:opacity-60"
+                    >
+                      <Upload size={12} />
+                      Choose backup file…
+                    </button>
+                    {selectedFile && !useOneDrive && (
+                      <span className="text-xs text-muted-foreground font-mono truncate max-w-[180px]" title={selectedFile.name}>
+                        {selectedFile.name}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* OneDrive option */}
+                  {hasOneDrive && (
+                    <button
+                      type="button"
+                      disabled={gate.blocked}
+                      onClick={() => {
+                        setSelectedFile(null);
+                        setUseOneDrive(true);
+                      }}
+                      className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-md border text-xs font-medium transition-colors disabled:opacity-60 ${useOneDrive ? "border-primary bg-primary/10 text-primary" : "border-border bg-background hover:bg-secondary"}`}
+                    >
+                      <RefreshCcw size={12} />
+                      Restore from OneDrive (latest)
+                    </button>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  disabled={gate.blocked || (!selectedFile && !useOneDrive)}
+                  onClick={() => openConfirm(useOneDrive)}
+                  className="h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 disabled:opacity-60 inline-flex items-center gap-2"
+                >
+                  <RotateCcw size={13} />
+                  Restore
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── Confirmation modal ── */}
+      {showConfirm && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+          onClick={() => setShowConfirm(false)}
+        >
+          <div
+            className="bg-card border border-border rounded-xl shadow-2xl w-full max-w-md mx-4 p-6 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {confirmStep === 1 ? (
+              <>
+                <div className="space-y-1">
+                  <h3 className="text-base font-semibold text-destructive">⚠ Replace all data?</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Restoring this backup will <strong>permanently overwrite</strong> all current lab data, including:
+                  </p>
+                </div>
+                <ul className="text-sm text-muted-foreground list-disc list-inside space-y-0.5">
+                  <li>All cases, patients, and doctors</li>
+                  <li>All invoices and financial records</li>
+                  <li>All media file attachments</li>
+                  <li>All users and organization settings</li>
+                </ul>
+                <p className="text-xs text-muted-foreground border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 rounded px-2 py-1.5">
+                  Source: <strong>{useOneDrive ? "Latest file in OneDrive (LabTrax Backups folder)" : (selectedFile?.name ?? "selected file")}</strong>
+                </p>
+                <div className="flex justify-end gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirm(false)}
+                    className="h-9 px-4 rounded-md border border-border text-sm hover:bg-secondary"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmStep(2)}
+                    className="h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-semibold hover:bg-destructive/90"
+                  >
+                    I understand — continue
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="space-y-1">
+                  <h3 className="text-base font-semibold text-destructive">Final confirmation</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Are you absolutely sure? This action cannot be undone. All current data will be replaced.
+                  </p>
+                </div>
+                <div className="flex justify-end gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirm(false)}
+                    className="h-9 px-4 rounded-md border border-border text-sm hover:bg-secondary"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void runRestore()}
+                    className="h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-semibold hover:bg-destructive/90"
+                  >
+                    Yes, restore now
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -2792,7 +3133,7 @@ type PlatformAdminAPI = {
   testSecret: (payload: string | { apiBaseUrl: string }) => Promise<PlatformAdminTestResult>;
   onChanged: (cb: (s: PlatformAdminStatus) => void) => () => void;
 };
-type ElectronWindow = Window & { electronAPI?: { showFolderDialog?: () => Promise<string | null>; itero?: IteroAPI; platformAdmin?: PlatformAdminAPI } };
+type ElectronWindow = Window & { electronAPI?: { showFolderDialog?: () => Promise<string | null>; showOpenDialog?: (opts: { title?: string; filters?: Array<{ name: string; extensions: string[] }>; properties?: string[] }) => Promise<string[] | null>; relaunch?: () => void; itero?: IteroAPI; platformAdmin?: PlatformAdminAPI } };
 
 function PlatformAdminPanel() {
   const electron = typeof window !== "undefined" ? (window as ElectronWindow).electronAPI : null;

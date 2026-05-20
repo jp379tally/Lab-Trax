@@ -534,6 +534,85 @@ paths:
                 $ref: "#/components/schemas/OpenInvoiceListResult"
         "403":
           description: Caller lacks a billing role on the lab.
+  /admin/backup/restore:
+    post:
+      operationId: restoreBackup
+      tags: [backup]
+      summary: Restore a backup from an uploaded .zip.enc file
+      description: |
+        Upload a LabTrax `.zip.enc` backup file. The server validates the file,
+        decrypts it, and restores the database and media files asynchronously.
+        Returns 202 immediately; poll `/admin/backup/restore/status` for progress.
+        Requires the `X-Platform-Admin-Secret` header. Only one restore can run
+        at a time (returns 409 if another is already in progress).
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  description: |
+                    The encrypted .zip.enc backup file (max 2 GB). Represented as
+                    `type: string` (not `format: binary`) so the generated client
+                    does not depend on the DOM `File` global. Pass a Blob/File at runtime.
+      responses:
+        "202":
+          description: Restore started — poll /admin/backup/restore/status for progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RestoreStartResult"
+        "400":
+          description: No file uploaded or invalid file
+        "403":
+          description: Admin access required
+        "409":
+          description: Another restore is already in progress
+  /admin/backup/restore/status:
+    get:
+      operationId: getRestoreStatus
+      tags: [backup]
+      summary: Get current restore phase and progress
+      description: |
+        Returns the current restore state for polling. The `phase` field cycles
+        through `idle → uploading → validating → decrypting → restoring_db →
+        restoring_media → done | error`. Requires the `X-Platform-Admin-Secret`
+        header.
+      responses:
+        "200":
+          description: Current restore state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RestoreStatusResult"
+        "403":
+          description: Admin access required
+  /admin/backup/restore/from-onedrive:
+    post:
+      operationId: restoreBackupFromOneDrive
+      tags: [backup]
+      summary: Restore the most-recent backup from OneDrive
+      description: |
+        The server lists the configured OneDrive backup folder, downloads the
+        most-recently-modified `.zip.enc` file, and runs the same restore
+        pipeline as `POST /admin/backup/restore`. Returns 202 immediately.
+        Requires the `X-Platform-Admin-Secret` header. Returns 409 if a
+        restore is already in progress.
+      responses:
+        "202":
+          description: Restore from OneDrive started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RestoreStartResult"
+        "403":
+          description: Admin access required
+        "409":
+          description: Another restore is already in progress
   /admin/backup/run:
     post:
       operationId: runBackupNow
@@ -1257,4 +1336,20 @@ components:
                   balanceDue: { type: string }
             depositTransactionId: { type: string }
             totalApplied: { type: string }
+    RestoreStartResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        phase: { type: string }
+        message: { type: string, nullable: true }
+    RestoreStatusResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        phase:
+          type: string
+          enum: [idle, uploading, validating, decrypting, restoring_db, restoring_media, done, error]
+        message: { type: string, nullable: true }
+        startedAt: { type: string, format: date-time, nullable: true }
+        completedAt: { type: string, format: date-time, nullable: true }
 

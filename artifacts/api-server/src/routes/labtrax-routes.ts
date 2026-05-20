@@ -14,7 +14,7 @@ import {
   DesktopInstallerNotConfiguredError,
   type DesktopInstallerKind,
 } from "../lib/desktop-installer-storage";
-import { runOneDriveBackup, runBackup, getBackupHourUtc, getBackupScheduleConfig, getLastSuccessfulBackupAt, getBackupStaleAlertSettings, getBackupHistoryRetentionDays, restartScheduledBackupJob, SETTING_BACKUP_HOUR_UTC, SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, SETTING_BACKUP_SCHEDULE_DESTINATION, SETTING_BACKUP_SCHEDULE_PATH, SETTING_BACKUP_SCHEDULE_ENABLED, SETTING_BACKUP_LAST_SUCCESSFUL_AT, SETTING_BACKUP_HISTORY_RETENTION_DAYS, SETTING_BACKUP_HISTORY_MAX_ROWS, SETTING_ROLLING_BACKUP_ENABLED, SETTING_ROLLING_BACKUP_LAST_RUN_AT, SETTING_ROLLING_BACKUP_LAST_ERROR, ALL_SCHEDULE_SETTINGS, SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS, SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS, SETTING_BACKUP_STALE_DAYS, DEFAULT_BACKUP_STALE_DAYS, type BackupDestination } from "../lib/backup";
+import { runOneDriveBackup, runBackup, getBackupHourUtc, getBackupScheduleConfig, getLastSuccessfulBackupAt, getBackupStaleAlertSettings, getBackupHistoryRetentionDays, restartScheduledBackupJob, executeRestore, getRestoreState, SETTING_BACKUP_HOUR_UTC, SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, SETTING_BACKUP_SCHEDULE_DESTINATION, SETTING_BACKUP_SCHEDULE_PATH, SETTING_BACKUP_SCHEDULE_ENABLED, SETTING_BACKUP_LAST_SUCCESSFUL_AT, SETTING_BACKUP_HISTORY_RETENTION_DAYS, SETTING_BACKUP_HISTORY_MAX_ROWS, SETTING_ROLLING_BACKUP_ENABLED, SETTING_ROLLING_BACKUP_LAST_RUN_AT, SETTING_ROLLING_BACKUP_LAST_ERROR, ALL_SCHEDULE_SETTINGS, SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS, SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS, SETTING_BACKUP_STALE_DAYS, DEFAULT_BACKUP_STALE_DAYS, type BackupDestination } from "../lib/backup";
 import { sendInstallerPublishFailureAlertEmail } from "../lib/mail";
 import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, getCleanupProgress, getCleanupStuckTimeoutMinutes, cancelCleanup, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC, SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES } from "../lib/case-media";
 import multer from "multer";
@@ -4908,6 +4908,144 @@ Important rules:
       });
 
     return res.json({ ok: true, data: { found: true, providerOrganizationId: providerOrganizationId.trim() } });
+  });
+
+  // ── Admin Backup: restore — status poll ──────────────────────────────────
+  router.get("/admin/backup/restore/status", platformAdminUserOrSecret, (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    return res.json({ ok: true, ...getRestoreState() });
+  });
+
+  // ── Admin Backup: restore — upload file ──────────────────────────────────
+  // Security: platformAdminUserOrSecret guard runs BEFORE multer so that
+  // unauthenticated requests are rejected before any bytes are read.
+  const restoreTmpDir = path.join(os.tmpdir(), "labtrax-restore-uploads");
+  const restoreUpload = multer({
+    storage: multer.diskStorage({
+      destination: (_req, _file, cb) => {
+        fs.mkdirSync(restoreTmpDir, { recursive: true });
+        cb(null, restoreTmpDir);
+      },
+      filename: (_req, _file, cb) => {
+        cb(null, `restore-${Date.now()}-${randomBytes(4).toString("hex")}.zip.enc`);
+      },
+    }),
+    limits: { fileSize: 2 * 1024 * 1024 * 1024 },
+    fileFilter: (_req, file, cb) => {
+      const name = file.originalname ?? "";
+      if (!name.endsWith(".zip.enc") && !name.endsWith(".zip") && file.mimetype !== "application/octet-stream") {
+        return cb(new Error("Only .zip.enc backup files are accepted."));
+      }
+      cb(null, true);
+    },
+  });
+
+  router.post(
+    "/admin/backup/restore",
+    platformAdminUserOrSecret,
+    (req: any, res: any, next: any) => {
+      if (!isPlatformAdmin(req)) {
+        return res.status(403).json({ error: "Admin access required." });
+      }
+      // Reject concurrent restores before reading any bytes.
+      const currentState = getRestoreState();
+      if (currentState.phase !== "idle" && currentState.phase !== "done" && currentState.phase !== "error") {
+        return res.status(409).json({ error: "A restore is already in progress.", phase: currentState.phase });
+      }
+      next();
+    },
+    restoreUpload.single("file"),
+    async (req: any, res: any) => {
+      const uploadedFile = req.file as Express.Multer.File | undefined;
+      if (!uploadedFile) {
+        return res.status(400).json({ error: "No backup file uploaded. Send the .zip.enc file as the 'file' field." });
+      }
+      const reqUser = req.user;
+      const triggeredBy = `restore:${reqUser?.username || "admin"}`;
+      // Respond immediately with 202, restore runs async.
+      res.status(202).json({ ok: true, phase: "decrypting", message: "Restore started." });
+      // Run the restore pipeline in background.
+      (async () => {
+        let filePath: string | undefined = uploadedFile.path;
+        try {
+          const encryptedBuffer = fs.readFileSync(filePath);
+          // Delete temp upload file once in memory.
+          try { fs.unlinkSync(filePath); filePath = undefined; } catch { /* ignore */ }
+          await executeRestore(encryptedBuffer, triggeredBy);
+        } catch (err: unknown) {
+          req.log?.error(
+            { err: err instanceof Error ? err.message : String(err) },
+            "[restore] Restore pipeline failed",
+          );
+        } finally {
+          if (filePath) {
+            try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+          }
+        }
+      })().catch(() => { /* handled above */ });
+    },
+  );
+
+  // ── Admin Backup: restore — from OneDrive (latest backup) ────────────────
+  router.post("/admin/backup/restore/from-onedrive", platformAdminUserOrSecret, async (req: any, res: any) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    const currentState = getRestoreState();
+    if (currentState.phase !== "idle" && currentState.phase !== "done" && currentState.phase !== "error") {
+      return res.status(409).json({ error: "A restore is already in progress.", phase: currentState.phase });
+    }
+    const reqUser = req.user;
+    const triggeredBy = `restore-onedrive:${reqUser?.username || "admin"}`;
+    // Respond 202, fetch + restore runs async.
+    res.status(202).json({ ok: true, phase: "uploading", message: "Fetching latest backup from OneDrive…" });
+    (async () => {
+      try {
+        // List LabTrax Backups folder, find the most-recently-modified .zip.enc
+        const folderPath = "LabTrax Backups";
+        const { getOneDriveAccessToken: _getToken } = await import("../lib/onedrive") as any;
+        const token = await _getToken();
+        const listResp = await fetch(
+          `https://graph.microsoft.com/v1.0/me/drive/root:/${encodeURIComponent(folderPath)}:/children?$top=500`,
+          { headers: { Authorization: `Bearer ${token}` } },
+        );
+        if (!listResp.ok) {
+          const errText = await listResp.text();
+          throw new Error(`Failed to list OneDrive backups: ${listResp.status} ${errText.slice(0, 200)}`);
+        }
+        const listData = await listResp.json() as any;
+        const items: Array<{ name: string; id: string; lastModifiedDateTime: string; size: number }> =
+          (listData.value ?? []).filter((item: any) =>
+            typeof item.name === "string" && item.name.endsWith(".zip.enc"),
+          );
+        if (items.length === 0) {
+          throw new Error("No .zip.enc backup files found in the LabTrax Backups folder on OneDrive.");
+        }
+        items.sort((a, b) =>
+          new Date(b.lastModifiedDateTime).getTime() - new Date(a.lastModifiedDateTime).getTime(),
+        );
+        const latest = items[0]!;
+        // Download the file content.
+        const downloadResp = await fetch(
+          `https://graph.microsoft.com/v1.0/me/drive/items/${encodeURIComponent(latest.id)}/content`,
+          { headers: { Authorization: `Bearer ${token}` } },
+        );
+        if (!downloadResp.ok) {
+          const errText = await downloadResp.text();
+          throw new Error(`Failed to download backup from OneDrive: ${downloadResp.status} ${errText.slice(0, 200)}`);
+        }
+        const arrayBuffer = await downloadResp.arrayBuffer();
+        const encryptedBuffer = Buffer.from(arrayBuffer);
+        await executeRestore(encryptedBuffer, triggeredBy);
+      } catch (err: unknown) {
+        req.log?.error(
+          { err: err instanceof Error ? err.message : String(err) },
+          "[restore] OneDrive restore pipeline failed",
+        );
+      }
+    })().catch(() => { /* handled above */ });
   });
 
   // ── Admin Backup: history retention settings (PUT) ────────────────────────

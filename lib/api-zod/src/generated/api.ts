@@ -693,6 +693,50 @@ export const ListOpenInvoicesResponse = zod.object({
 });
 
 /**
+ * Upload a LabTrax `.zip.enc` backup file. The server validates the file,
+decrypts it, and restores the database and media files asynchronously.
+Returns 202 immediately; poll `/admin/backup/restore/status` for progress.
+Requires the `X-Platform-Admin-Secret` header. Only one restore can run
+at a time (returns 409 if another is already in progress).
+
+ * @summary Restore a backup from an uploaded .zip.enc file
+ */
+export const RestoreBackupBody = zod.object({
+  file: zod
+    .string()
+    .describe(
+      "The encrypted .zip.enc backup file (max 2 GB). Represented as\n`type: string` (not `format: binary`) so the generated client\ndoes not depend on the DOM `File` global. Pass a Blob\/File at runtime.\n",
+    ),
+});
+
+/**
+ * Returns the current restore state for polling. The `phase` field cycles
+through `idle → uploading → validating → decrypting → restoring_db →
+restoring_media → done | error`. Requires the `X-Platform-Admin-Secret`
+header.
+
+ * @summary Get current restore phase and progress
+ */
+export const GetRestoreStatusResponse = zod.object({
+  ok: zod.boolean().optional(),
+  phase: zod
+    .enum([
+      "idle",
+      "uploading",
+      "validating",
+      "decrypting",
+      "restoring_db",
+      "restoring_media",
+      "done",
+      "error",
+    ])
+    .optional(),
+  message: zod.string().nullish(),
+  startedAt: zod.coerce.date().nullish(),
+  completedAt: zod.coerce.date().nullish(),
+});
+
+/**
  * Triggers an immediate full backup (all cases, invoices, media, etc.)
 to the chosen destination. Requires the X-Platform-Admin-Secret header.
 
