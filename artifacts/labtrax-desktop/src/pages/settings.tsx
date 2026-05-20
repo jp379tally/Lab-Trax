@@ -3133,6 +3133,79 @@ function BuildRunStatusBadge({ run, hasTrigger }: { run: MobileBuildInfo["latest
   );
 }
 
+interface MobileBuildRun {
+  id: number;
+  name: string;
+  status: string;
+  conclusion: string | null;
+  htmlUrl: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface MobileBuildStatus {
+  run: MobileBuildRun | null;
+}
+
+function isTerminalState(run: MobileBuildRun | null | undefined): boolean {
+  return run?.status === "completed";
+}
+
+function BuildStatusBadge({ run }: { run: MobileBuildRun | null }) {
+  if (!run) return null;
+
+  const { status, conclusion } = run;
+
+  let label: string;
+  let cls: string;
+  let dotCls: string;
+
+  if (status === "queued") {
+    label = "Queued";
+    cls = "bg-yellow-50 text-yellow-700 border-yellow-200";
+    dotCls = "bg-yellow-400";
+  } else if (status === "in_progress") {
+    label = "In progress";
+    cls = "bg-blue-50 text-blue-700 border-blue-200";
+    dotCls = "bg-blue-500 animate-pulse";
+  } else if (status === "completed") {
+    if (conclusion === "success") {
+      label = "Success";
+      cls = "bg-green-50 text-green-700 border-green-200";
+      dotCls = "bg-green-500";
+    } else if (conclusion === "failure") {
+      label = "Failed";
+      cls = "bg-red-50 text-red-700 border-red-200";
+      dotCls = "bg-red-500";
+    } else if (conclusion === "cancelled") {
+      label = "Cancelled";
+      cls = "bg-gray-50 text-gray-600 border-gray-200";
+      dotCls = "bg-gray-400";
+    } else {
+      label = conclusion ?? "Completed";
+      cls = "bg-gray-50 text-gray-600 border-gray-200";
+      dotCls = "bg-gray-400";
+    }
+  } else {
+    label = status;
+    cls = "bg-gray-50 text-gray-600 border-gray-200";
+    dotCls = "bg-gray-400";
+  }
+
+  return (
+    <a
+      href={run.htmlUrl}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={`inline-flex items-center gap-1.5 text-xs font-medium px-2 py-0.5 rounded-full border ${cls} hover:opacity-80 transition-opacity`}
+    >
+      <span className={`w-1.5 h-1.5 rounded-full ${dotCls}`} />
+      {label}
+      <ExternalLink size={9} className="opacity-60" />
+    </a>
+  );
+}
+
 function MobileBuildPanel() {
   const queryClient = useQueryClient();
   const [platform, setPlatform] = useState<"all" | "ios" | "android">("all");
@@ -3143,6 +3216,11 @@ function MobileBuildPanel() {
   const [versionDraft, setVersionDraft] = useState<string | null>(null);
   const [versionError, setVersionError] = useState<string | null>(null);
   const [versionSuccess, setVersionSuccess] = useState(false);
+  // ISO timestamp set when the user triggers a build; null when not polling.
+  // Polling stays active until we observe a run whose createdAt is >= this
+  // timestamp AND that run has reached a terminal state, so a pre-existing
+  // completed run never prematurely stops the poll.
+  const [triggerTimestamp, setTriggerTimestamp] = useState<string | null>(null);
 
   const query = useQuery({
     queryKey: ["admin", "mobile-build", "info"],
@@ -3179,6 +3257,27 @@ function MobileBuildPanel() {
     },
   });
 
+  const isPolling = triggerTimestamp !== null;
+
+  // Returns true when the run is for the current trigger and is in a terminal state.
+  function isNewRunTerminal(run: MobileBuildRun | null | undefined, ts: string | null): boolean {
+    if (!run || !ts) return false;
+    return new Date(run.createdAt) >= new Date(ts) && isTerminalState(run);
+  }
+
+  const statusQuery = useQuery({
+    queryKey: ["admin", "mobile-build", "status"],
+    queryFn: () => apiFetch<MobileBuildStatus>("/admin/mobile-build/status"),
+    enabled: !!(query.data?.tokenConfigured && query.data?.repoOwner && query.data?.repoName),
+    refetchInterval: (q) => {
+      if (!isPolling) return false;
+      const run = q.state.data?.run;
+      // Keep polling while the new run hasn't appeared yet or isn't terminal.
+      if (!isNewRunTerminal(run, triggerTimestamp)) return 30_000;
+      return false;
+    },
+  });
+
   const triggerMutation = useMutation({
     mutationFn: () =>
       apiFetch<{ ok: boolean; trigger: MobileBuildInfo["lastTrigger"] }>("/admin/mobile-build/trigger", {
@@ -3187,9 +3286,15 @@ function MobileBuildPanel() {
         body: JSON.stringify({ platform, profile }),
       }),
     onSuccess: () => {
+      const ts = new Date().toISOString();
       setTriggerError(null);
       setTriggerSuccess(true);
+      setTriggerTimestamp(ts);
       queryClient.invalidateQueries({ queryKey: ["admin", "mobile-build", "info"] });
+      // Small delay so GitHub has time to register the new run.
+      setTimeout(() => {
+        queryClient.invalidateQueries({ queryKey: ["admin", "mobile-build", "status"] });
+      }, 5_000);
       setTimeout(() => setTriggerSuccess(false), 4000);
     },
     onError: (err: Error) => {
@@ -3197,6 +3302,13 @@ function MobileBuildPanel() {
       setTriggerError(err.message || "Failed to trigger build.");
     },
   });
+
+  // Stop polling only once we've confirmed a run created after our trigger is terminal.
+  useEffect(() => {
+    if (isPolling && isNewRunTerminal(statusQuery.data?.run, triggerTimestamp)) {
+      setTriggerTimestamp(null);
+    }
+  }, [isPolling, statusQuery.data, triggerTimestamp]);
 
   const info = query.data;
   const repoBase = info?.repoUrl ? info.repoUrl.replace(/\/$/, "") : null;
@@ -3382,6 +3494,56 @@ function MobileBuildPanel() {
               )}
             </div>
           </div>
+
+          {/* Latest GitHub Actions run status */}
+          {info.tokenConfigured && info.repoOwner && info.repoName && (
+            <div className="rounded-lg border border-border px-5 py-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-semibold">Latest run status</div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    queryClient.invalidateQueries({ queryKey: ["admin", "mobile-build", "status"] });
+                  }}
+                  disabled={statusQuery.isFetching}
+                  className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+                >
+                  <RefreshCcw size={12} className={statusQuery.isFetching ? "animate-spin" : ""} />
+                  Refresh
+                </button>
+              </div>
+              {statusQuery.isLoading && (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 size={12} className="animate-spin" />
+                  Loading…
+                </div>
+              )}
+              {statusQuery.error && (
+                <p className="text-xs text-muted-foreground">Could not load run status.</p>
+              )}
+              {statusQuery.data && !statusQuery.isLoading && (
+                statusQuery.data.run ? (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-3">
+                      <BuildStatusBadge run={statusQuery.data.run} />
+                      {isPolling && !isTerminalState(statusQuery.data.run) && (
+                        <span className="text-[11px] text-muted-foreground">Auto-refreshing every 30 s…</span>
+                      )}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      <Clock size={11} className="inline mr-1 -mt-px" />
+                      Started {formatTriggerTime(statusQuery.data.run.createdAt)}
+                      {statusQuery.data.run.status === "completed" && (
+                        <> · Updated {formatTriggerTime(statusQuery.data.run.updatedAt)}</>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">No runs found for <code className="font-mono">eas-build.yml</code>.</p>
+                )
+              )}
+            </div>
+          )}
 
           {/* Last triggered build */}
           {info.lastTrigger && (

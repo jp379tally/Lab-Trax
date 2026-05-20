@@ -5408,5 +5408,79 @@ Important rules:
     return res.json({ ok: true, trigger: triggerRecord });
   });
 
+  // Returns the status of the most recent eas-build.yml GitHub Actions run.
+  router.get("/admin/mobile-build/status", requireAuth, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+
+    const token = process.env.GITHUB_ACTIONS_TOKEN;
+    if (!token) {
+      return res.status(503).json({
+        error: "GITHUB_ACTIONS_TOKEN is not configured.",
+      });
+    }
+
+    const repoUrl = process.env.GITHUB_REPO_URL ?? null;
+    const githubRepoPattern = /^https:\/\/github\.com\/([^/]+)\/([^/]+?)(\/)?$/;
+    const repoMatch = repoUrl ? githubRepoPattern.exec(repoUrl) : null;
+    const repoOwner = repoMatch?.[1] ?? null;
+    const repoName = repoMatch?.[2] ?? null;
+    if (!repoOwner || !repoName) {
+      return res.status(503).json({
+        error: "GITHUB_REPO_URL is not set or not a valid https://github.com/<owner>/<repo> URL.",
+      });
+    }
+
+    const runsUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/actions/workflows/eas-build.yml/runs?per_page=1`;
+    let ghRes: Response;
+    try {
+      ghRes = await fetch(runsUrl, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      });
+    } catch (err) {
+      req.log.error({ err }, "GitHub API request failed for mobile build status");
+      return res.status(502).json({ error: "Could not reach the GitHub API." });
+    }
+
+    if (!ghRes.ok) {
+      req.log.error({ status: ghRes.status, url: runsUrl }, "GitHub workflow runs returned a non-2xx response");
+      return res.status(502).json({ error: `GitHub API returned HTTP ${ghRes.status}.` });
+    }
+
+    const body = await ghRes.json() as {
+      workflow_runs: Array<{
+        id: number;
+        name: string;
+        status: string;
+        conclusion: string | null;
+        html_url: string;
+        created_at: string;
+        updated_at: string;
+      }>;
+    };
+
+    const run = body.workflow_runs?.[0] ?? null;
+    if (!run) {
+      return res.json({ run: null });
+    }
+
+    return res.json({
+      run: {
+        id: run.id,
+        name: run.name,
+        status: run.status,
+        conclusion: run.conclusion,
+        htmlUrl: run.html_url,
+        createdAt: run.created_at,
+        updatedAt: run.updated_at,
+      },
+    });
+  });
+
   return router;
 }
