@@ -1,5 +1,7 @@
 const { app, BrowserWindow, protocol, net, dialog, ipcMain, Notification } = require("electron");
 const path = require("path");
+const fs = require("fs");
+const os = require("os");
 const { pathToFileURL } = require("url");
 const iteroPoller = require("./itero-poller.cjs");
 const platformAdmin = require("./platform-admin.cjs");
@@ -235,6 +237,42 @@ function createWindow() {
 }
 
 ipcMain.handle("get-app-version", () => app.getVersion());
+
+// Map from file path → BrowserWindow so we can focus instead of stacking duplicates.
+const previewWindows = new Map();
+
+ipcMain.handle("preview:open-file", async (_event, buffer, mimeType, fileKey) => {
+  const key = fileKey || `preview-${Date.now()}`;
+
+  const existing = previewWindows.get(key);
+  if (existing && !existing.isDestroyed()) {
+    if (existing.isMinimized()) existing.restore();
+    existing.focus();
+    return;
+  }
+
+  const ext = mimeType === "application/pdf" ? ".pdf"
+    : mimeType.startsWith("image/") ? "." + mimeType.split("/")[1].split("+")[0]
+    : ".bin";
+  const tmpPath = path.join(os.tmpdir(), `labtrax-preview-${Date.now()}${ext}`);
+  fs.writeFileSync(tmpPath, Buffer.from(buffer));
+
+  const win = new BrowserWindow({
+    width: 750,
+    height: 950,
+    autoHideMenuBar: true,
+    title: "Document Preview",
+  });
+
+  previewWindows.set(key, win);
+
+  win.on("closed", () => {
+    previewWindows.delete(key);
+    fs.unlink(tmpPath, () => {});
+  });
+
+  win.loadURL(pathToFileURL(tmpPath).toString());
+});
 
 ipcMain.handle("dialog:show-folder", async () => {
   const win = BrowserWindow.getAllWindows()[0];

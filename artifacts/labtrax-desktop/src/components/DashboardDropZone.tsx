@@ -1641,15 +1641,16 @@ export function DashboardDropZone() {
         </label>
         <button
           type="button"
-          onClick={() => {
-            const url = URL.createObjectURL(phase.file);
-            const w = window.open(url, "_blank", "noopener,noreferrer");
-            // Revoke after a delay so the new tab has time to load it.
-            setTimeout(() => URL.revokeObjectURL(url), 60_000);
-            if (!w) {
-              window.alert(
-                "Couldn't open a preview window — check your pop-up blocker.",
-              );
+          onClick={async () => {
+            const electronAPI = (window as any).electronAPI;
+            if (electronAPI?.previewFile) {
+              const buffer = await phase.file.arrayBuffer();
+              const fileKey = `${phase.file.name}:${phase.file.size}`;
+              await electronAPI.previewFile(buffer, phase.file.type, fileKey);
+            } else {
+              const url = URL.createObjectURL(phase.file);
+              window.open(url, "_blank", "noopener,noreferrer");
+              setTimeout(() => URL.revokeObjectURL(url), 60_000);
             }
           }}
           className="w-full h-8 px-3 rounded-md border border-border bg-secondary/60 text-xs font-medium text-foreground hover:bg-secondary inline-flex items-center justify-center gap-1.5 transition-colors"

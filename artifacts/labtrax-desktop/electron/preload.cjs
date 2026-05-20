@@ -32,6 +32,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     clearTokens: () => ipcRenderer.invoke("auth:clear-tokens"),
     isAvailable: () => ipcRenderer.invoke("auth:is-available"),
   },
+  previewFile: (buffer, mimeType, fileKey) =>
+    ipcRenderer.invoke("preview:open-file", buffer, mimeType, fileKey),
   relaunch: () => ipcRenderer.send("app:relaunch"),
   showFolderDialog: () => ipcRenderer.invoke("dialog:show-folder"),
   showOpenDialog: (opts) => ipcRenderer.invoke("dialog:showOpenDialog", opts),
