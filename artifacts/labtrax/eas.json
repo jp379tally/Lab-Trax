@@ -26,6 +26,7 @@
       "env": {
         "EXPO_DEBUG": "1"
       },
+      "prebuildCommand": "pnpm --filter @workspace/scripts run bump-build-number",
       "ios": {
         "distribution": "store"
       },
