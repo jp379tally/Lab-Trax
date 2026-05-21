@@ -16,7 +16,6 @@ import { startBillingJobs } from "./lib/billing-jobs";
 import { handleStripeWebhook } from "./routes/billing";
 import {
   getDesktopInstallerHandle,
-  getSignedDownloadUrl,
   openDesktopInstallerStream,
   type DesktopInstallerKind,
   DesktopInstallerNotConfiguredError,
@@ -121,19 +120,16 @@ function serveInstaller(
         return;
       }
 
-      // For GET requests, try to redirect to a short-lived signed GCS URL so
-      // the browser downloads directly from GCS rather than streaming through
-      // the Node.js server / Replit proxy (which can drop large transfers).
-      // Signed URL redirects are intentionally skipped for conditional requests
-      // that already resolved above (304) and for Range requests only when no
-      // signed URL is available — GCS handles Range natively on signed URLs, so
-      // a redirect is fine even when the client sends a Range header.
-      const signedUrl = await getSignedDownloadUrl(kind);
-      if (signedUrl) {
-        res.setHeader("Cache-Control", "no-store");
-        res.redirect(302, signedUrl);
-        return;
-      }
+      // Note: a previous version tried to 302 to a short-lived GCS signed URL
+      // here to offload the transfer from the Node.js server / Replit proxy.
+      // It never worked in this environment — the Replit sidecar credentials
+      // (external_account workload identity) have no `client_email`, so
+      // `file.getSignedUrl()` always throws `Cannot sign data without
+      // 'client_email'` and we silently fell back to streaming on every call.
+      // The redundant exists()+getSignedUrl() round-trip to GCS just added
+      // latency to every download. The streaming path below works reliably
+      // for the typical case; the bottleneck for ~150 MB downloads on slow
+      // connections is the connection itself, not this server.
 
       const obj = await openDesktopInstallerStream(
         kind,
