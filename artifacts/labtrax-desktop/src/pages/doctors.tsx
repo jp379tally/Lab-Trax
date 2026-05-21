@@ -270,6 +270,7 @@ export default function DoctorsPage() {
     () => loadDismissedDupClusters(DOCTOR_DUP_DISMISS_KEY),
   );
   const [showAllSuggestedMerges, setShowAllSuggestedMerges] = useState(false);
+  const [showDismissedDupClusters, setShowDismissedDupClusters] = useState(false);
   const queryClientPage = useQueryClient();
 
   useEffect(() => {
@@ -463,6 +464,21 @@ export default function DoctorsPage() {
     [suggestedDuplicateClusters, dismissedDupClusters],
   );
 
+  // Dismissed clusters that still match a current cluster, so we can render
+  // their names in the "Show dismissed" panel and let admins restore them.
+  const dismissedClustersForDisplay = useMemo(
+    () => suggestedDuplicateClusters.filter((c) => dismissedDupClusters.has(c.key)),
+    [suggestedDuplicateClusters, dismissedDupClusters],
+  );
+  const restoreDismissedCluster = (key: string) => {
+    setDismissedDupClusters((prev) => {
+      if (!prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
+  };
+
   const isLoading = casesQuery.isLoading || invoicesQuery.isLoading;
   const error = (casesQuery.error || invoicesQuery.error) as Error | null;
 
@@ -507,18 +523,21 @@ export default function DoctorsPage() {
         </div>
       )}
 
-      {visibleDuplicateClusters.length > 0 && (
+      {(visibleDuplicateClusters.length > 0 || dismissedDupClusters.size > 0) && (
         <div className="mb-5 rounded-lg border border-sky-300 bg-sky-50 dark:bg-sky-950/30 dark:border-sky-700 px-4 py-3.5">
           <div className="flex items-center gap-2 mb-2">
             <GitMerge size={14} className="text-sky-700 dark:text-sky-300" />
             <p className="text-sm font-medium text-sky-900 dark:text-sky-200">
               Suggested merges
               <span className="font-normal text-sky-700 dark:text-sky-400 ml-1.5">
-                ({visibleDuplicateClusters.length} likely-duplicate{" "}
-                {visibleDuplicateClusters.length === 1 ? "cluster" : "clusters"})
+                {visibleDuplicateClusters.length > 0
+                  ? `(${visibleDuplicateClusters.length} likely-duplicate ${visibleDuplicateClusters.length === 1 ? "cluster" : "clusters"})`
+                  : "(none — all current suggestions are dismissed)"}
               </span>
             </p>
           </div>
+          {visibleDuplicateClusters.length > 0 && (
+          <>
           <ul className="space-y-1.5">
             {(showAllSuggestedMerges
               ? visibleDuplicateClusters
@@ -591,6 +610,79 @@ export default function DoctorsPage() {
                 ? "Show fewer"
                 : `Show ${visibleDuplicateClusters.length - 5} more`}
             </button>
+          )}
+          </>
+          )}
+          {dismissedDupClusters.size > 0 && (
+            <div className={visibleDuplicateClusters.length > 0 ? "mt-3 pt-3 border-t border-sky-200/60 dark:border-sky-800/50" : ""}>
+              <button
+                type="button"
+                onClick={() => setShowDismissedDupClusters((v) => !v)}
+                className="text-xs font-medium text-sky-800 dark:text-sky-300 hover:underline"
+              >
+                {showDismissedDupClusters
+                  ? "Hide dismissed"
+                  : `Show dismissed (${dismissedDupClusters.size})`}
+              </button>
+              {showDismissedDupClusters && (
+                <ul className="mt-2 space-y-1.5">
+                  {dismissedClustersForDisplay.map((cluster) => (
+                    <li
+                      key={cluster.key}
+                      className="flex items-center gap-3 rounded-md bg-card/70 dark:bg-card/40 border border-sky-200/60 dark:border-sky-800/50 px-3 py-2"
+                    >
+                      <div className="flex-1 min-w-0 text-sm">
+                        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                          {cluster.rows.map((r, i) => (
+                            <span key={r.key} className="inline-flex items-center gap-1">
+                              <span className="font-medium">{r.doctorName}</span>
+                              <span className="text-xs text-muted-foreground">
+                                ({r.practiceName})
+                              </span>
+                              {i < cluster.rows.length - 1 && (
+                                <span className="text-muted-foreground">·</span>
+                              )}
+                            </span>
+                          ))}
+                        </div>
+                        <div className="text-[11px] text-muted-foreground mt-0.5">
+                          {Math.round(cluster.topScore * 100)}% name match
+                          {cluster.rows.length > 2 && ` · ${cluster.rows.length} doctors`}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => restoreDismissedCluster(cluster.key)}
+                        className="shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-secondary text-secondary-foreground text-xs font-semibold hover:bg-secondary/80"
+                      >
+                        Restore
+                      </button>
+                    </li>
+                  ))}
+                  {dismissedDupClusters.size > dismissedClustersForDisplay.length && (
+                    <li className="text-[11px] text-muted-foreground px-1 flex items-center justify-between gap-3">
+                      <span>
+                        {dismissedDupClusters.size - dismissedClustersForDisplay.length} dismissed{" "}
+                        {dismissedDupClusters.size - dismissedClustersForDisplay.length === 1
+                          ? "cluster no longer matches"
+                          : "clusters no longer match"}{" "}
+                        any current rows.
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const stillValid = new Set(dismissedClustersForDisplay.map((c) => c.key));
+                          setDismissedDupClusters(stillValid);
+                        }}
+                        className="text-xs font-medium text-sky-800 dark:text-sky-300 hover:underline"
+                      >
+                        Clear stale
+                      </button>
+                    </li>
+                  )}
+                </ul>
+              )}
+            </div>
           )}
         </div>
       )}
