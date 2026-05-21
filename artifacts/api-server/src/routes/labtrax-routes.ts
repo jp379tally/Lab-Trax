@@ -56,6 +56,7 @@ import authRoutes from "./auth";
 import organizationRoutes from "./organizations";
 import caseRoutes from "./cases";
 import doctorRoutes from "./doctors";
+import practiceRoutes from "./practices";
 import invoiceRoutes from "./invoices";
 import accountLinksRoutes, { smsInboundRouter } from "./account-links";
 import financeRoutes, { generateForOrganization } from "./finance";
@@ -842,6 +843,7 @@ export async function registerRoutes(): Promise<IRouter> {
   router.use("/organizations", organizationRoutes);
   router.use("/cases", caseRoutes);
   router.use("/doctors", doctorRoutes);
+  router.use("/practices", practiceRoutes);
   router.use("/invoices", invoiceRoutes);
   router.use("/account-links", accountLinksRoutes);
   // Twilio inbound webhook — must be reachable without auth/CSRF since

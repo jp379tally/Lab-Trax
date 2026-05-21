@@ -1043,7 +1043,11 @@ export const pricingOverrides = pgTable(
     pricingOverridesLabDoctorUnique: uniqueIndex(
       "pricing_overrides_lab_doctor_unique"
     )
-      .on(table.labOrganizationId, table.doctorName)
+      .on(
+        table.labOrganizationId,
+        table.doctorName,
+        table.providerOrganizationId
+      )
       .where(sql`deleted_at IS NULL`),
     pricingOverridesDeletedAtIdx: index(
       "pricing_overrides_deleted_at_idx"

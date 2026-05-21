@@ -226,6 +226,41 @@ export default function PracticesPage() {
   const [missingEmailOnly, setMissingEmailOnly] = useState(false);
   const [editing, setEditing] = useState<Organization | null>(null);
   const [adding, setAdding] = useState(false);
+  const [mergeDialog, setMergeDialog] = useState<{
+    labOrganizationId: string;
+    practices: Organization[];
+  } | null>(null);
+  const [undoToast, setUndoToast] = useState<{
+    auditLogId: string;
+    expiresAt: number;
+    message: string;
+    labOrganizationId: string;
+  } | null>(null);
+  const queryClientPage = useQueryClient();
+
+  const undoMergeMutation = useMutation({
+    mutationFn: async (vars: { auditLogId: string }) =>
+      apiFetch(`/practices/merge/${vars.auditLogId}/undo`, {
+        method: "POST",
+      }),
+    onSuccess: () => {
+      queryClientPage.invalidateQueries({ queryKey: ["organizations"] });
+      queryClientPage.invalidateQueries({ queryKey: ["cases"] });
+      queryClientPage.invalidateQueries({ queryKey: ["invoices"] });
+      setUndoToast(null);
+    },
+  });
+
+  useEffect(() => {
+    if (!undoToast) return;
+    const remaining = undoToast.expiresAt - Date.now();
+    if (remaining <= 0) {
+      setUndoToast(null);
+      return;
+    }
+    const t = window.setTimeout(() => setUndoToast(null), remaining);
+    return () => window.clearTimeout(t);
+  }, [undoToast]);
   const [dismissedDupClusters, setDismissedDupClusters] = useState<Set<string>>(
     () => loadDismissedPracticeDupClusters(),
   );
@@ -460,7 +495,12 @@ export default function PracticesPage() {
                 </div>
                 <button
                   type="button"
-                  onClick={() => setEditing(cluster.practices[0])}
+                  onClick={() =>
+                    setMergeDialog({
+                      labOrganizationId: cluster.labId,
+                      practices: cluster.practices,
+                    })
+                  }
                   className="shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90"
                 >
                   Review
@@ -719,12 +759,80 @@ export default function PracticesPage() {
         </div>
       </div>
 
-      {editing && <PracticeEditor org={editing} onClose={() => setEditing(null)} />}
+      {editing && (
+        <PracticeEditor
+          org={editing}
+          canMerge={
+            !!editing.parentLabOrganizationId &&
+            adminLabOrgIdsSet.has(editing.parentLabOrganizationId) &&
+            !editing.deletedAt
+          }
+          onMergeRequest={() => {
+            if (!editing.parentLabOrganizationId) return;
+            setMergeDialog({
+              labOrganizationId: editing.parentLabOrganizationId,
+              practices: [editing],
+            });
+            setEditing(null);
+          }}
+          onClose={() => setEditing(null)}
+        />
+      )}
       {adding && (
         <AddPracticeDialog
           adminLabOrgIds={adminLabOrgIds}
           onClose={() => setAdding(false)}
         />
+      )}
+      {mergeDialog && (
+        <PracticeMergeDialog
+          labOrganizationId={mergeDialog.labOrganizationId}
+          initialPractices={mergeDialog.practices}
+          allPractices={orgs.filter(
+            (o) =>
+              o.type === "provider" &&
+              !o.deletedAt &&
+              o.parentLabOrganizationId === mergeDialog.labOrganizationId,
+          )}
+          onClose={() => setMergeDialog(null)}
+          onMerged={(r) => {
+            setMergeDialog(null);
+            queryClientPage.invalidateQueries({ queryKey: ["organizations"] });
+            queryClientPage.invalidateQueries({ queryKey: ["cases"] });
+            queryClientPage.invalidateQueries({ queryKey: ["invoices"] });
+            if (r.auditLogId) {
+              setUndoToast({
+                auditLogId: r.auditLogId,
+                expiresAt: Date.now() + r.undoWindowMs,
+                message: r.message,
+                labOrganizationId: mergeDialog.labOrganizationId,
+              });
+            }
+          }}
+        />
+      )}
+      {undoToast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] bg-foreground text-background rounded-md shadow-lg px-4 py-3 flex items-center gap-4 text-sm">
+          <span>{undoToast.message}</span>
+          <button
+            type="button"
+            disabled={undoMergeMutation.isPending}
+            onClick={() =>
+              undoMergeMutation.mutate({ auditLogId: undoToast.auditLogId })
+            }
+            className="font-semibold underline-offset-2 hover:underline disabled:opacity-60"
+          >
+            {undoMergeMutation.isPending ? "Undoing…" : "Undo"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setUndoToast(null)}
+            aria-label="Dismiss"
+            className="opacity-70 hover:opacity-100"
+          >
+            <X size={14} />
+          </button>
+        </div>
       )}
     </div>
   );
@@ -1184,7 +1292,17 @@ interface PracticeFields {
   statementEmailOptOut: boolean;
 }
 
-export function PracticeEditor({ org, onClose }: { org: Organization; onClose: () => void }) {
+export function PracticeEditor({
+  org,
+  onClose,
+  canMerge,
+  onMergeRequest,
+}: {
+  org: Organization;
+  onClose: () => void;
+  canMerge?: boolean;
+  onMergeRequest?: () => void;
+}) {
   const queryClient = useQueryClient();
   const { user: currentUser } = useAuth();
   const [error, setError] = useState<string | null>(null);
@@ -1340,6 +1458,17 @@ export function PracticeEditor({ org, onClose }: { org: Organization; onClose: (
                   <ArchiveRestore size={14} />
                 )}
                 Restore
+              </button>
+            )}
+            {canMerge && canArchive && !isArchived && onMergeRequest && (
+              <button
+                type="button"
+                onClick={onMergeRequest}
+                className="h-9 px-3 rounded-md text-sm font-medium border border-border hover:bg-secondary inline-flex items-center gap-1.5"
+                title="Merge another practice into this one (or this one into another)"
+              >
+                <GitMerge size={14} />
+                Merge…
               </button>
             )}
             {canArchive && !isArchived && (
@@ -2944,6 +3073,363 @@ function DoctorPricingRow({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PracticeMergeDialog — mirrors the doctor MergeDialog flow for practices.
+// Calls /practices/merge/preview, /practices/merge, and (from page-level
+// undoToast) /practices/merge/:auditLogId/undo. Same-lab only.
+// ---------------------------------------------------------------------------
+
+interface PracticeMergePreview {
+  target: { id: string; name: string; displayName?: string | null };
+  sources: Array<{
+    id: string;
+    name: string;
+    displayName?: string | null;
+    cases: number;
+    invoices: number;
+    pricingOverrides: number;
+    members: number;
+  }>;
+  totalCases: number;
+  totalInvoices: number;
+  totalOverrides: number;
+  totalMembers: number;
+}
+
+interface PracticeMergeDialogResult {
+  auditLogId: string | null;
+  message: string;
+  undoWindowMs: number;
+}
+
+export function PracticeMergeDialog({
+  labOrganizationId,
+  initialPractices,
+  allPractices,
+  onClose,
+  onMerged,
+}: {
+  labOrganizationId: string;
+  initialPractices: Organization[];
+  allPractices: Organization[];
+  onClose: () => void;
+  onMerged: (r: PracticeMergeDialogResult) => void;
+}) {
+  // Pick the initial target as the practice with the most populated profile
+  // (members, address, etc.) — falling back to the first one. The user can
+  // change it.
+  const initialTarget = useMemo(() => {
+    if (initialPractices.length === 0) return null;
+    const ranked = [...initialPractices].sort((a, b) => {
+      const score = (o: Organization) =>
+        (o.displayName ? 1 : 0) +
+        (o.billingEmail ? 1 : 0) +
+        (o.phone ? 1 : 0) +
+        (o.addressLine1 ? 1 : 0);
+      return score(b) - score(a);
+    });
+    return ranked[0];
+  }, [initialPractices]);
+
+  const [targetId, setTargetId] = useState<string>(initialTarget?.id ?? "");
+  const [sourceIds, setSourceIds] = useState<string[]>(
+    initialPractices
+      .filter((p) => p.id !== initialTarget?.id)
+      .map((p) => p.id),
+  );
+  const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+
+  const candidatePractices = useMemo(
+    () =>
+      allPractices.filter(
+        (p) =>
+          p.parentLabOrganizationId === labOrganizationId &&
+          !p.deletedAt &&
+          p.id !== targetId,
+      ),
+    [allPractices, labOrganizationId, targetId],
+  );
+
+  const filteredCandidates = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return candidatePractices;
+    return candidatePractices.filter((p) =>
+      (p.displayName || p.name || "").toLowerCase().includes(q),
+    );
+  }, [candidatePractices, search]);
+
+  const previewQuery = useQuery<PracticeMergePreview>({
+    queryKey: [
+      "practices",
+      "merge",
+      "preview",
+      labOrganizationId,
+      targetId,
+      [...sourceIds].sort().join(","),
+    ],
+    enabled: !!targetId && sourceIds.length > 0,
+    queryFn: async () =>
+      apiFetch<PracticeMergePreview>("/practices/merge/preview", {
+        method: "POST",
+        body: JSON.stringify({
+          labOrganizationId,
+          targetOrganizationId: targetId,
+          sourceOrganizationIds: sourceIds,
+        }),
+      }),
+  });
+
+  const mergeMutation = useMutation({
+    mutationFn: async () =>
+      apiFetch<{
+        auditLogId?: string;
+        entries?: Array<{ auditLogId: string }>;
+        casesMoved: number;
+        invoicesMoved: number;
+        overridesMoved: number;
+        membersMoved: number;
+        undoWindowMinutes: number;
+      }>("/practices/merge", {
+        method: "POST",
+        body: JSON.stringify({
+          labOrganizationId,
+          targetOrganizationId: targetId,
+          sourceOrganizationIds: sourceIds,
+        }),
+      }),
+    onSuccess: (data) => {
+      const auditLogId =
+        data.auditLogId ?? data.entries?.[0]?.auditLogId ?? null;
+      const undoMs = (data.undoWindowMinutes ?? 10) * 60_000;
+      const sourceCount = sourceIds.length;
+      onMerged({
+        auditLogId,
+        message: `Merged ${sourceCount} practice${sourceCount === 1 ? "" : "s"} · ${data.casesMoved} cases, ${data.invoicesMoved} invoices moved`,
+        undoWindowMs: undoMs,
+      });
+    },
+    onError: (e: unknown) =>
+      setError(e instanceof Error ? e.message : "Merge failed"),
+  });
+
+  function toggleSource(id: string) {
+    setSourceIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  }
+
+  const targetPractice = allPractices.find((p) => p.id === targetId) ?? null;
+  const canMerge =
+    !!targetId &&
+    sourceIds.length > 0 &&
+    !sourceIds.includes(targetId) &&
+    !mergeMutation.isPending;
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-card rounded-lg shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between p-4 border-b border-border">
+          <div className="flex items-center gap-2">
+            <GitMerge size={18} />
+            <h2 className="text-lg font-semibold">Merge practices</h2>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-muted-foreground hover:text-foreground"
+            aria-label="Close"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-5">
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1.5">
+              Target practice (kept)
+            </label>
+            <select
+              value={targetId}
+              onChange={(e) => {
+                const id = e.target.value;
+                setTargetId(id);
+                setSourceIds((prev) => prev.filter((x) => x !== id));
+              }}
+              className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm"
+            >
+              <option value="">— Choose target —</option>
+              {allPractices
+                .filter(
+                  (p) =>
+                    p.parentLabOrganizationId === labOrganizationId &&
+                    !p.deletedAt,
+                )
+                .map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.displayName || p.name}
+                  </option>
+                ))}
+            </select>
+            {targetPractice && (
+              <p className="text-xs text-muted-foreground mt-1.5">
+                All cases, invoices, doctors, members, and pricing overrides
+                from the practices below will be reassigned to{" "}
+                <span className="font-medium text-foreground">
+                  {targetPractice.displayName || targetPractice.name}
+                </span>
+                .
+              </p>
+            )}
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Source practices (merged & archived)
+              </label>
+              <span className="text-xs text-muted-foreground">
+                {sourceIds.length} selected
+              </span>
+            </div>
+            <div className="relative mb-2">
+              <Search
+                size={14}
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+              />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search practices…"
+                className="w-full h-9 pl-9 pr-3 rounded-md border border-input bg-background text-sm"
+              />
+            </div>
+            <div className="border border-border rounded-md divide-y divide-border max-h-60 overflow-y-auto">
+              {filteredCandidates.length === 0 ? (
+                <div className="p-3 text-sm text-muted-foreground text-center">
+                  No other practices in this lab.
+                </div>
+              ) : (
+                filteredCandidates.map((p) => (
+                  <label
+                    key={p.id}
+                    className="flex items-center gap-2 px-3 py-2 hover:bg-secondary/40 cursor-pointer text-sm"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={sourceIds.includes(p.id)}
+                      onChange={() => toggleSource(p.id)}
+                    />
+                    <span className="flex-1 truncate">
+                      {p.displayName || p.name}
+                    </span>
+                    {p.billingEmail && (
+                      <span className="text-xs text-muted-foreground truncate">
+                        {p.billingEmail}
+                      </span>
+                    )}
+                  </label>
+                ))
+              )}
+            </div>
+          </div>
+
+          {targetId && sourceIds.length > 0 && (
+            <div className="rounded-md border border-border bg-secondary/30 p-3 text-sm">
+              <div className="font-semibold mb-2">Preview</div>
+              {previewQuery.isLoading ? (
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <Loader2 size={14} className="animate-spin" />
+                  Computing impact…
+                </div>
+              ) : previewQuery.error ? (
+                <div className="text-destructive">
+                  {(previewQuery.error as Error).message}
+                </div>
+              ) : previewQuery.data ? (
+                <div className="space-y-1">
+                  <div>
+                    <span className="font-medium">
+                      {previewQuery.data.totalCases}
+                    </span>{" "}
+                    case{previewQuery.data.totalCases === 1 ? "" : "s"},{" "}
+                    <span className="font-medium">
+                      {previewQuery.data.totalInvoices}
+                    </span>{" "}
+                    invoice{previewQuery.data.totalInvoices === 1 ? "" : "s"},{" "}
+                    <span className="font-medium">
+                      {previewQuery.data.totalOverrides}
+                    </span>{" "}
+                    pricing override
+                    {previewQuery.data.totalOverrides === 1 ? "" : "s"}, and{" "}
+                    <span className="font-medium">
+                      {previewQuery.data.totalMembers}
+                    </span>{" "}
+                    member{previewQuery.data.totalMembers === 1 ? "" : "s"}{" "}
+                    will be moved.
+                  </div>
+                  <ul className="text-xs text-muted-foreground space-y-0.5 pt-1">
+                    {previewQuery.data.sources.map((s) => (
+                      <li key={s.id} className="flex gap-2">
+                        <span className="truncate flex-1">
+                          {s.displayName || s.name}
+                        </span>
+                        <span>
+                          {s.cases}c · {s.invoices}i · {s.pricingOverrides}o ·{" "}
+                          {s.members}m
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
+          )}
+
+          {error && (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+              {error}
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 p-4 border-t border-border">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-9 px-3 rounded-md text-sm font-medium border border-border hover:bg-secondary"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={!canMerge}
+            onClick={() => {
+              setError(null);
+              mergeMutation.mutate();
+            }}
+            className="h-9 px-4 rounded-md text-sm font-semibold bg-primary text-primary-foreground hover:bg-primary/90 inline-flex items-center gap-1.5 disabled:opacity-60"
+          >
+            {mergeMutation.isPending ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <GitMerge size={14} />
+            )}
+            Merge
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
