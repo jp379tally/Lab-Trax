@@ -15,12 +15,22 @@ const CROWN_MATERIALS = [
   "Other",
 ] as const;
 
+const VITA_SHADES = [
+  "A1", "A2", "A3", "A3.5", "A4",
+  "B1", "B2", "B3", "B4",
+  "C1", "C2", "C3", "C4",
+  "D2", "D3", "D4",
+  "OM1", "OM2", "OM3",
+  "1M1", "1M2", "1M3",
+] as const;
+
 export type ToothActionPayload =
   | {
       kind: "add_crown";
       toothId: string;
       material: string;
       restorationType: string;
+      shade?: string;
     }
   | { kind: "add_pontic"; toothId: string }
   | { kind: "mark_missing"; toothId: string }
@@ -30,15 +40,18 @@ export type ToothActionPayload =
       oldToothId: string;
       newToothNumber: string;
       material?: string;
+      shade?: string;
     };
 
 type Step =
   | "choose_action"
   | "choose_kind"
   | "choose_material"
+  | "choose_shade"
   | "choose_replace_tooth"
   | "ask_update_material"
-  | "replace_material";
+  | "replace_material"
+  | "replace_shade";
 
 interface ToothActionDialogProps {
   toothId: string;
@@ -73,12 +86,20 @@ export function ToothActionDialog({
     "crown" | "pontic" | "missing" | ""
   >("");
   const [selectedMaterial, setSelectedMaterial] = useState("");
+  const [selectedShade, setSelectedShade] = useState("");
+  const [isCustomShade, setIsCustomShade] = useState(false);
+  const [customShade, setCustomShade] = useState("");
   const [newToothNumber, setNewToothNumber] = useState("");
   const [newToothError, setNewToothError] = useState<string | null>(null);
 
   const selectedRestoration = restorations.find(
     (r) => r.id === selectedRestorationId,
   );
+
+  function resolvedShade() {
+    if (isCustomShade) return customShade.trim();
+    return selectedShade;
+  }
 
   function handleChooseAdd() {
     setStep("choose_kind");
@@ -103,11 +124,20 @@ export function ToothActionDialog({
 
   function handleMaterialConfirm() {
     if (!selectedMaterial) return;
+    setSelectedShade("");
+    setIsCustomShade(false);
+    setCustomShade("");
+    setStep("choose_shade");
+  }
+
+  function handleShadeConfirm() {
+    const shade = resolvedShade() || undefined;
     onConfirm({
       kind: "add_crown",
       toothId,
       material: selectedMaterial,
       restorationType: "Crown",
+      shade,
     });
   }
 
@@ -140,13 +170,105 @@ export function ToothActionDialog({
   }
 
   function handleReplaceMaterialConfirm() {
+    if (!selectedMaterial) return;
+    setSelectedShade("");
+    setIsCustomShade(false);
+    setCustomShade("");
+    setStep("replace_shade");
+  }
+
+  function handleReplaceShadeConfirm() {
+    const shade = resolvedShade() || undefined;
     onConfirm({
       kind: "replace_tooth",
       restorationId: selectedRestorationId,
       oldToothId: toothId,
       newToothNumber: newToothNumber.trim(),
       material: selectedMaterial || undefined,
+      shade,
     });
+  }
+
+  function renderShadeStep(onSkip: () => void, onConfirmShade: () => void) {
+    return (
+      <>
+        <p className="text-sm text-muted-foreground">
+          Select a shade{" "}
+          <span className="text-muted-foreground/70">(optional)</span>:
+        </p>
+        <div className="grid grid-cols-4 gap-1.5">
+          {VITA_SHADES.map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => {
+                setSelectedShade(s);
+                setIsCustomShade(false);
+                setCustomShade("");
+              }}
+              className={`h-9 rounded-lg border text-xs font-medium transition-colors ${
+                !isCustomShade && selectedShade === s
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-border bg-secondary/50 hover:bg-secondary"
+              }`}
+            >
+              {s}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => {
+              setIsCustomShade(true);
+              setSelectedShade("");
+            }}
+            className={`h-9 rounded-lg border text-xs font-medium transition-colors col-span-1 ${
+              isCustomShade
+                ? "border-primary bg-primary/10 text-primary"
+                : "border-border bg-secondary/50 hover:bg-secondary"
+            }`}
+          >
+            Other
+          </button>
+        </div>
+        {isCustomShade && (
+          <input
+            autoFocus
+            placeholder="Type custom shade…"
+            value={customShade}
+            onChange={(e) => setCustomShade(e.target.value)}
+            className="w-full h-9 px-3 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary"
+          />
+        )}
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={onSkip}
+            disabled={isPending}
+            className="h-9 rounded-lg border border-border bg-secondary/50 hover:bg-secondary text-sm font-medium transition-colors disabled:opacity-50 inline-flex items-center justify-center gap-1.5"
+          >
+            {isPending && <Loader2 size={13} className="animate-spin" />}
+            Skip
+          </button>
+          <button
+            type="button"
+            onClick={onConfirmShade}
+            disabled={
+              isPending ||
+              (isCustomShade ? !customShade.trim() : !selectedShade)
+            }
+            className="h-9 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 inline-flex items-center justify-center gap-1.5"
+          >
+            {isPending && <Loader2 size={13} className="animate-spin" />}
+            Confirm
+          </button>
+        </div>
+      </>
+    );
+  }
+
+  function materialShadeLabel(material?: string | null, shade?: string | null) {
+    const parts = [material, shade].filter(Boolean);
+    return parts.length > 0 ? parts.join(" · ") : "";
   }
 
   return (
@@ -178,7 +300,7 @@ export function ToothActionDialog({
                 Tooth <span className="font-medium text-foreground">{toothId}</span> already has{" "}
                 {billedRestorations.length > 1
                   ? `${billedRestorations.length} restoration(s)`
-                  : `a restoration (${billedRestorations[0]?.restorationType}${billedRestorations[0]?.material ? ` / ${billedRestorations[0].material}` : ""})`}
+                  : `a restoration (${billedRestorations[0]?.restorationType}${materialShadeLabel(billedRestorations[0]?.material, billedRestorations[0]?.shade) ? ` / ${materialShadeLabel(billedRestorations[0]?.material, billedRestorations[0]?.shade)}` : ""})`}
                 .
               </p>
 
@@ -195,7 +317,7 @@ export function ToothActionDialog({
                     {billedRestorations.map((r) => (
                       <option key={r.id} value={r.id}>
                         {r.restorationType}
-                        {r.material ? ` / ${r.material}` : ""} — Tooth{" "}
+                        {materialShadeLabel(r.material, r.shade) ? ` / ${materialShadeLabel(r.material, r.shade)}` : ""} — Tooth{" "}
                         {r.toothNumber}
                       </option>
                     ))}
@@ -307,10 +429,23 @@ export function ToothActionDialog({
                 className="w-full h-9 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 inline-flex items-center justify-center gap-1.5"
               >
                 {isPending && <Loader2 size={13} className="animate-spin" />}
-                Add Crown
+                Next — Pick Shade
               </button>
             </>
           )}
+
+          {/* Step: choose_shade (add crown path) */}
+          {step === "choose_shade" &&
+            renderShadeStep(
+              () =>
+                onConfirm({
+                  kind: "add_crown",
+                  toothId,
+                  material: selectedMaterial,
+                  restorationType: "Crown",
+                }),
+              handleShadeConfirm,
+            )}
 
           {/* Step: choose_replace_tooth */}
           {step === "choose_replace_tooth" && (
@@ -406,10 +541,24 @@ export function ToothActionDialog({
                 className="w-full h-9 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 inline-flex items-center justify-center gap-1.5"
               >
                 {isPending && <Loader2 size={13} className="animate-spin" />}
-                Save Changes
+                Next — Pick Shade
               </button>
             </>
           )}
+
+          {/* Step: replace_shade (replace tooth path) */}
+          {step === "replace_shade" &&
+            renderShadeStep(
+              () =>
+                onConfirm({
+                  kind: "replace_tooth",
+                  restorationId: selectedRestorationId,
+                  oldToothId: toothId,
+                  newToothNumber: newToothNumber.trim(),
+                  material: selectedMaterial || undefined,
+                }),
+              handleReplaceShadeConfirm,
+            )}
 
           {error && (
             <p className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md">

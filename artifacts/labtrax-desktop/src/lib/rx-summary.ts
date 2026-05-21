@@ -12,6 +12,7 @@ export type FullArch = "upper" | "lower" | "both" | null;
 export interface RxSummary {
   restorativeType: RestorativeBucket | null;
   materials: string[];
+  shades: string[];
   teeth: ToothId[];
   isFullArch: FullArch;
 }
@@ -103,6 +104,7 @@ export function deriveRxSummary(
   const empty: RxSummary = {
     restorativeType: null,
     materials: [],
+    shades: [],
     teeth: [],
     isFullArch: null,
   };
@@ -110,6 +112,7 @@ export function deriveRxSummary(
 
   const buckets = new Set<RestorativeBucket>();
   const materials = new Set<string>();
+  const shades = new Set<string>();
   const teethSet = new Set<ToothId>();
   let arch: FullArch = null;
 
@@ -117,6 +120,7 @@ export function deriveRxSummary(
     const bucket = bucketRestorativeType(r.restorationType);
     buckets.add(bucket);
     if (r.material && r.material.trim()) materials.add(r.material.trim());
+    if (r.shade && r.shade.trim()) shades.add(r.shade.trim());
     const detected = detectArch(r.toothNumber, bucket);
     arch = mergeArch(arch, detected);
     if (!detected) {
@@ -161,6 +165,7 @@ export function deriveRxSummary(
   return {
     restorativeType,
     materials: Array.from(materials),
+    shades: Array.from(shades),
     teeth,
     isFullArch: arch,
   };

@@ -1652,7 +1652,8 @@ export function CaseDrawer({
   const billedTeethTypes = useMemo(() => {
     const map = new Map<string, string[]>();
     for (const r of data?.restorations ?? []) {
-      const label = [r.restorationType, r.material].filter(Boolean).join(" / ");
+      const materialShade = [r.material, r.shade].filter(Boolean).join(" · ");
+      const label = [r.restorationType, materialShade].filter(Boolean).join(" / ");
       for (const id of parseToothField(r.toothNumber)) {
         const list = map.get(id) ?? [];
         if (label) list.push(label);
@@ -1924,6 +1925,7 @@ export function CaseDrawer({
             toothNumber: payload.toothId,
             restorationType: payload.restorationType,
             material: payload.material,
+            ...(payload.shade ? { shade: payload.shade } : {}),
             quantity: 1,
           }),
         });
@@ -1985,6 +1987,7 @@ export function CaseDrawer({
             body: JSON.stringify({
               toothNumber: payload.newToothNumber,
               ...(payload.material ? { material: payload.material } : {}),
+              ...(payload.shade ? { shade: payload.shade } : {}),
             }),
           },
         );
@@ -2748,6 +2751,7 @@ export function CaseDrawer({
                 const hasAny =
                   summary.restorativeType ||
                   summary.materials.length > 0 ||
+                  summary.shades.length > 0 ||
                   summary.teeth.length > 0 ||
                   summary.isFullArch !== null;
                 const highlightValue = buildHighlightedToothValue(summary);
@@ -2780,6 +2784,14 @@ export function CaseDrawer({
                                 : "—"
                             }
                           />
+                          {summary.shades.length > 0 && (
+                            <Field
+                              label={
+                                summary.shades.length > 1 ? "Shades" : "Shade"
+                              }
+                              value={summary.shades.join(", ")}
+                            />
+                          )}
                           <div className="col-span-2">
                             <Field
                               label={
@@ -3869,10 +3881,11 @@ function RestorationRow({
           <div className="font-medium">
             {r.restorationType}
             <span className="text-muted-foreground"> · Tooth {r.toothNumber}</span>
-            {r.shade && <span className="text-muted-foreground"> · {r.shade}</span>}
           </div>
-          {r.material && (
-            <div className="text-xs text-muted-foreground">{r.material}</div>
+          {(r.material || r.shade) && (
+            <div className="text-xs text-muted-foreground">
+              {[r.material, r.shade].filter(Boolean).join(" · ")}
+            </div>
           )}
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
             {style && (
