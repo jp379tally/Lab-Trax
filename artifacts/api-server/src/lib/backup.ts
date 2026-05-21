@@ -8,9 +8,14 @@ import AdmZip from "adm-zip";
 import { db } from "@workspace/db";
 import { systemSettings, users, backupRuns } from "@workspace/db";
 import { eq, lt, sql } from "drizzle-orm";
-import { uploadToOneDrive, checkOneDriveToken } from "./onedrive";
+import { uploadToOneDrive, checkOneDriveToken, getOneDriveStatus } from "./onedrive";
 import { logger } from "./logger";
-import { sendBackupNotificationEmail, sendBackupStaleAlertEmail } from "./mail";
+import {
+  sendBackupNotificationEmail,
+  sendBackupStaleAlertEmail,
+  sendOneDriveDisconnectedAlertEmail,
+  sendOneDriveReconnectedAlertEmail,
+} from "./mail";
 
 export interface BackupCounts {
   users: number;
@@ -57,6 +62,16 @@ export const SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS = "backup_stale_alert_thr
 export const SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS = "backup_stale_alert_rate_limit_days";
 export const SETTING_BACKUP_STALE_DAYS = "backup_stale_days";
 export const DEFAULT_BACKUP_STALE_DAYS = 7;
+/**
+ * Records the last known OneDrive connection state ("connected" or
+ * "disconnected") seen by the scheduled checker. Used to detect state
+ * transitions so the disconnect/reconnect alert email is sent exactly once
+ * per transition rather than on every poll.
+ */
+export const SETTING_ONEDRIVE_CONNECTION_LAST_STATE = "onedrive_connection_last_state";
+/** ISO timestamp of the last sent OneDrive disconnect alert (for debugging). */
+export const SETTING_ONEDRIVE_DISCONNECT_ALERT_LAST_SENT_AT =
+  "onedrive_disconnect_alert_last_sent_at";
 
 export const ALL_SCHEDULE_SETTINGS = [
   SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES,
@@ -763,10 +778,36 @@ export async function runBackup(
     const failedAt = await recordBackupError(triggeredBy, destination, destPath, errMsg);
     const outErr = err instanceof Error ? err : new Error(errMsg);
     (outErr as Error & { backupRunFailedAt?: string }).backupRunFailedAt = failedAt;
+    // If a OneDrive backup just failed, the most likely cause is a disconnected
+    // connector — run the state check now so admins get the alert immediately
+    // rather than waiting for the next daily cron tick.
+    if (destination === "onedrive") {
+      try {
+        await checkAndAlertOneDriveConnectionStatus();
+      } catch (checkErr: unknown) {
+        logger.warn(
+          { err: checkErr instanceof Error ? checkErr.message : String(checkErr) },
+          "[backup] Post-failure OneDrive connection check failed",
+        );
+      }
+    }
     throw outErr;
   }
   await recordSuccessfulBackup();
   await recordBackupRun({ ...result, triggeredBy });
+  // After a successful OneDrive backup, run the state check so the
+  // "reconnected" follow-up email fires as soon as OneDrive starts working
+  // again — without waiting for the next daily cron tick.
+  if (destination === "onedrive") {
+    try {
+      await checkAndAlertOneDriveConnectionStatus();
+    } catch (checkErr: unknown) {
+      logger.warn(
+        { err: checkErr instanceof Error ? checkErr.message : String(checkErr) },
+        "[backup] Post-success OneDrive connection check failed",
+      );
+    }
+  }
   return result;
 }
 
@@ -1327,4 +1368,160 @@ export function start15MinRollingBackup(): void {
       );
     });
   }, ROLLING_BACKUP_INTERVAL_MS);
+}
+
+/**
+ * Check the OneDrive connection state and notify admins on state transitions.
+ *
+ * - Reads the persisted last-known state from system_settings.
+ * - Calls getOneDriveStatus (force-refreshed) to get the current state.
+ * - On connected → disconnected: atomically updates state via CAS and sends
+ *   `sendOneDriveDisconnectedAlertEmail` exactly once. The CAS guard ensures
+ *   only one server instance / poller tick sends the alert if multiple run
+ *   concurrently.
+ * - On disconnected → connected: atomically updates state via CAS and sends
+ *   `sendOneDriveReconnectedAlertEmail` exactly once.
+ * - On no transition: silently records the current state if no state has
+ *   ever been persisted (so the very first observation doesn't trigger a
+ *   spurious "disconnected" alert on an installation that never had OneDrive
+ *   configured).
+ *
+ * Designed to be called from the daily billing/maintenance cron and from
+ * the scheduled OneDrive backup runner.
+ */
+export async function checkAndAlertOneDriveConnectionStatus(): Promise<void> {
+  try {
+    // Skip entirely if OneDrive isn't configured for this installation —
+    // we don't want to alert admins about an integration they never set up.
+    if (!process.env.REPLIT_CONNECTORS_HOSTNAME) {
+      return;
+    }
+
+    const status = await getOneDriveStatus({ forceRefresh: true });
+    const newState: "connected" | "disconnected" = status.connected
+      ? "connected"
+      : "disconnected";
+
+    const rows = await db
+      .select()
+      .from(systemSettings)
+      .where(eq(systemSettings.key, SETTING_ONEDRIVE_CONNECTION_LAST_STATE));
+    const previousStateRaw = rows[0]?.value ?? null;
+    const previousState: "connected" | "disconnected" | null =
+      previousStateRaw === "connected" || previousStateRaw === "disconnected"
+        ? previousStateRaw
+        : null;
+
+    if (previousState === newState) {
+      return;
+    }
+
+    // First observation ever: just record state without alerting. We can't
+    // know whether OneDrive was "ever" connected before this code shipped,
+    // so the safe default is to seed the baseline silently.
+    if (previousState === null) {
+      try {
+        await db
+          .insert(systemSettings)
+          .values({ key: SETTING_ONEDRIVE_CONNECTION_LAST_STATE, value: newState })
+          .onConflictDoNothing();
+      } catch (err: unknown) {
+        logger.warn(
+          { err: err instanceof Error ? err.message : String(err) },
+          "[onedrive] Failed to seed initial connection state",
+        );
+      }
+      return;
+    }
+
+    // Transition: try to claim the state update via compare-and-swap so only
+    // one instance sends the email.
+    const now = new Date();
+    const updateResult = await db
+      .update(systemSettings)
+      .set({ value: newState, updatedAt: now })
+      .where(
+        sql`${systemSettings.key} = ${SETTING_ONEDRIVE_CONNECTION_LAST_STATE} AND ${systemSettings.value} = ${previousState}`,
+      );
+    const claimed = (updateResult.rowCount ?? 0) > 0;
+    if (!claimed) {
+      logger.info(
+        { previousState, newState },
+        "[onedrive] Connection state transition claim lost to a concurrent instance; skipping duplicate alert",
+      );
+      return;
+    }
+
+    const adminEmails = await getAdminEmails();
+    if (adminEmails.length === 0) {
+      logger.warn(
+        { newState },
+        "[onedrive] Connection state changed but no admin emails found; skipping alert",
+      );
+      return;
+    }
+
+    try {
+      if (newState === "disconnected") {
+        await sendOneDriveDisconnectedAlertEmail({
+          adminEmails,
+          errorMessage: status.error ?? null,
+          detectedAt: status.lastCheckedAt,
+        });
+        // Best-effort: record the sent-at for ops visibility.
+        try {
+          await db
+            .insert(systemSettings)
+            .values({
+              key: SETTING_ONEDRIVE_DISCONNECT_ALERT_LAST_SENT_AT,
+              value: now.toISOString(),
+            })
+            .onConflictDoUpdate({
+              target: systemSettings.key,
+              set: { value: now.toISOString(), updatedAt: now },
+            });
+        } catch {
+          // Non-fatal: alert was sent; this is only a debug breadcrumb.
+        }
+        logger.warn(
+          { recipients: adminEmails.length, error: status.error },
+          "[onedrive] Sent disconnect alert email to admins",
+        );
+      } else {
+        await sendOneDriveReconnectedAlertEmail({
+          adminEmails,
+          reconnectedAt: status.lastCheckedAt,
+        });
+        logger.info(
+          { recipients: adminEmails.length },
+          "[onedrive] Sent reconnect alert email to admins",
+        );
+      }
+    } catch (sendErr: unknown) {
+      // Roll back the state change so the next invocation retries instead of
+      // staying silent for the rest of the outage.
+      logger.error(
+        { err: sendErr instanceof Error ? sendErr.message : String(sendErr), newState },
+        "[onedrive] Failed to send connection-state alert email; rolling back state",
+      );
+      try {
+        await db
+          .update(systemSettings)
+          .set({ value: previousState, updatedAt: new Date() })
+          .where(
+            sql`${systemSettings.key} = ${SETTING_ONEDRIVE_CONNECTION_LAST_STATE} AND ${systemSettings.value} = ${newState}`,
+          );
+      } catch (rollbackErr: unknown) {
+        logger.warn(
+          { err: rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr) },
+          "[onedrive] Connection-state rollback failed; alert may be suppressed until state flips again",
+        );
+      }
+    }
+  } catch (err: unknown) {
+    logger.error(
+      { err: err instanceof Error ? err.message : String(err) },
+      "[onedrive] checkAndAlertOneDriveConnectionStatus failed",
+    );
+  }
 }

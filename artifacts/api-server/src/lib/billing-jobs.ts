@@ -4,7 +4,10 @@ import { subscriptions, organizations, users } from "@workspace/db";
 import { transitionSubscription, appendSubscriptionEvent } from "./entitlement";
 import { sendMail } from "./mail";
 import { logger } from "./logger";
-import { checkAndAlertBackupStaleness } from "./backup";
+import {
+  checkAndAlertBackupStaleness,
+  checkAndAlertOneDriveConnectionStatus,
+} from "./backup";
 import { checkEmailPref } from "./email-prefs";
 
 const GRACE_DAYS = () =>
@@ -261,6 +264,14 @@ async function runBillingJobOnce() {
     await checkAndAlertBackupStaleness();
   } catch (err: any) {
     logger.error({ err: err?.message }, "[billing] Backup staleness check failed");
+  }
+  try {
+    await checkAndAlertOneDriveConnectionStatus();
+  } catch (err: any) {
+    logger.error(
+      { err: err?.message },
+      "[billing] OneDrive connection state check failed",
+    );
   }
 }
 
