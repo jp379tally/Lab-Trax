@@ -276,7 +276,16 @@ export async function resolveServerPriceWithSource(
     if (v !== null) return v;
   }
 
-  // Legacy fallback: first tier on the lab.
+  // Default fallback: when no override / connection / context tier is set
+  // for this doctor or practice, charge them at the lab's "Standard"
+  // pricing tier (case-insensitive name match). If the lab hasn't created
+  // a tier called "Standard", fall back to the oldest tier on the lab so
+  // pricing still resolves to *something* instead of $0.
+  const standardTier = findByName("Standard");
+  if (standardTier) {
+    const v = tryTier(standardTier, "default");
+    if (v !== null) return v;
+  }
   return tryTier(sortedTiers[0], "default");
 }
 
@@ -352,7 +361,15 @@ export async function resolveAllPricesForContext(
     const t = findTierByName(name);
     if (t) candidateTiers.push({ tier: t, source: "tier" });
   }
-  if (sortedTiers[0]) {
+  // Default fallback: prefer a tier literally named "Standard" if one
+  // exists on the lab; otherwise fall back to the oldest tier so pricing
+  // still resolves to *something* instead of $0. Mirrors the same
+  // priority chain used in resolveServerPriceWithSource above.
+  const standardTier = findTierByName("Standard");
+  if (standardTier) {
+    candidateTiers.push({ tier: standardTier, source: "default" });
+  }
+  if (sortedTiers[0] && sortedTiers[0].id !== standardTier?.id) {
     candidateTiers.push({ tier: sortedTiers[0], source: "default" });
   }
 
