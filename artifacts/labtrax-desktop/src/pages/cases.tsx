@@ -62,6 +62,8 @@ import {
   ToothActionDialog,
   type ToothActionPayload,
 } from "@/components/ToothActionDialog";
+import ScanViewerModal from "@/components/ScanViewerModal";
+import type { ScanFormat } from "@workspace/scan-viewer";
 
 const STATUS_FILTERS: Array<{ value: string; label: string }> = [
   { value: "all", label: "All" },
@@ -4077,6 +4079,7 @@ function AttachmentRow({
   canManage: boolean;
 }) {
   const [isPreviewing, setIsPreviewing] = useState(false);
+  const [scanViewerOpen, setScanViewerOpen] = useState(false);
   const queryClient = useQueryClient();
   const deleteMutation = useMutation({
     mutationFn: () =>
@@ -4122,6 +4125,16 @@ function AttachmentRow({
     return false;
   }
   const isScan = is3dScan(attachment.fileType || "", attachment.fileName);
+  // The desktop has an in-app three.js viewer for STL/OBJ/PLY; other 3D
+  // formats (.dcm, .3ds, .dae) fall through to the existing preview/open
+  // behaviour.
+  function inAppScanFormat(fileName?: string): ScanFormat | null {
+    if (!fileName) return null;
+    const ext = fileName.slice(fileName.lastIndexOf(".") + 1).toLowerCase();
+    if (ext === "stl" || ext === "obj" || ext === "ply") return ext;
+    return null;
+  }
+  const inAppFormat = inAppScanFormat(attachment.fileName);
   // Always use the canonical authenticated file endpoint rather than the raw
   // storageKey URL, which is a host-specific URL saved at upload time and may
   // be stale after a domain change or redeployment.
@@ -4144,6 +4157,10 @@ function AttachmentRow({
   const canElectronPreview = !!(electronAPI?.previewFile && attachment.id);
 
   async function handleElectronPreview() {
+    if (inAppFormat) {
+      setScanViewerOpen(true);
+      return;
+    }
     if (isPreviewing) return;
     setIsPreviewing(true);
     try {
@@ -4152,6 +4169,22 @@ function AttachmentRow({
       if (href) window.open(href, "_blank", "noopener,noreferrer");
     } finally {
       setIsPreviewing(false);
+    }
+  }
+
+  function handleScanFallback() {
+    // If the in-app viewer can't render the scan, fall back to the existing
+    // Electron preview window or external open.
+    if (canElectronPreview) {
+      void (async () => {
+        try {
+          await previewAttachmentInElectron(caseId, attachment);
+        } catch {
+          if (href) window.open(href, "_blank", "noopener,noreferrer");
+        }
+      })();
+    } else if (href) {
+      window.open(href, "_blank", "noopener,noreferrer");
     }
   }
 
@@ -4192,7 +4225,16 @@ function AttachmentRow({
   return (
     <div className="border border-border rounded-md px-3 py-2 text-sm flex items-start gap-3">
       {href ? (
-        canElectronPreview ? (
+        inAppFormat ? (
+          <button
+            type="button"
+            onClick={() => setScanViewerOpen(true)}
+            className="flex items-start gap-3 flex-1 min-w-0 -mx-1 -my-0.5 px-1 py-0.5 rounded hover:bg-secondary/60 transition-colors cursor-pointer text-left"
+            title={`View "${attachment.fileName}"`}
+          >
+            {rowBody}
+          </button>
+        ) : canElectronPreview ? (
           <button
             type="button"
             onClick={handleElectronPreview}
@@ -4239,7 +4281,16 @@ function AttachmentRow({
           </button>
         )}
         {href && (
-          canElectronPreview ? (
+          inAppFormat ? (
+            <button
+              type="button"
+              onClick={() => setScanViewerOpen(true)}
+              className="h-7 w-7 rounded hover:bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground"
+              title="Open in 3D viewer"
+            >
+              <ExternalLink size={13} />
+            </button>
+          ) : canElectronPreview ? (
             <button
               type="button"
               onClick={handleElectronPreview}
@@ -4279,6 +4330,17 @@ function AttachmentRow({
           )}
         </button>
       </div>
+      {inAppFormat && href && (
+        <ScanViewerModal
+          open={scanViewerOpen}
+          fileUrl={href}
+          fileName={attachment.fileName}
+          format={inAppFormat}
+          authToken={getAccessToken()}
+          onClose={() => setScanViewerOpen(false)}
+          onFallback={handleScanFallback}
+        />
+      )}
     </div>
   );
 }
