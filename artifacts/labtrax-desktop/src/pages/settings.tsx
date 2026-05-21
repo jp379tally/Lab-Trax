@@ -12,6 +12,17 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { apiFetch, ApiError, notifySessionCleared } from "@/lib/api";
+import {
+  DEFAULT_DUP_SIMILARITY_THRESHOLD,
+  buildDuplicateClusters,
+  resolveLabDupThreshold,
+  type DoctorRow,
+} from "@/pages/doctors";
+import {
+  DEFAULT_PRACTICE_DUP_SIMILARITY_THRESHOLD,
+  buildPracticeDuplicateClusters,
+} from "@/pages/practices";
+import type { LabCase, Invoice } from "@/lib/types";
 import { usePlatformAdminGate, PlatformAdminSetupNotice } from "@/lib/platform-admin-gate";
 import { getSessionSecret, clearSessionSecret, useSessionSecretVersion } from "@/lib/platform-admin-session";
 import { formatPhone } from "@/lib/format";
@@ -726,6 +737,11 @@ function OrganizationsPanel() {
                   labName={org?.displayName || org?.name || "this lab"}
                 />
               )}
+              {canBackfill && org && (
+                <DuplicateThresholdRow
+                  lab={org}
+                />
+              )}
             </div>
           );
         })}
@@ -836,6 +852,335 @@ function BackfillInvoicesRow({ labOrganizationId, labName }: { labOrganizationId
       </AlertDialog>
     </div>
   );
+}
+
+const THRESHOLD_PREVIEW_STEPS = [0.5, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9];
+
+function DuplicateThresholdRow({ lab }: { lab: Organization }) {
+  const queryClient = useQueryClient();
+  const labOrgId = lab.id;
+
+  const savedThreshold = useMemo(
+    () => resolveLabDupThreshold(lab.duplicateSuggestionThreshold),
+    [lab.duplicateSuggestionThreshold],
+  );
+  const hasOverride =
+    lab.duplicateSuggestionThreshold !== null &&
+    lab.duplicateSuggestionThreshold !== undefined &&
+    lab.duplicateSuggestionThreshold !== "";
+
+  const [threshold, setThreshold] = useState<number>(savedThreshold);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [savedFlag, setSavedFlag] = useState(false);
+
+  useEffect(() => {
+    setThreshold(savedThreshold);
+  }, [savedThreshold]);
+
+  const casesQuery = useQuery({
+    queryKey: ["cases"],
+    queryFn: () => apiFetch<LabCase[]>("/cases"),
+  });
+  const invoicesQuery = useQuery({
+    queryKey: ["invoices"],
+    queryFn: () => apiFetch<Invoice[]>("/invoices"),
+  });
+  const orgsQuery = useQuery({
+    queryKey: ["organizations", { includeArchived: true }],
+    queryFn: () =>
+      apiFetch<Organization[]>("/organizations?includeArchived=true"),
+  });
+
+  // Build the same DoctorRow shape doctors.tsx uses, scoped to this lab only,
+  // so the preview counts match what admins will see on the Doctors page.
+  const labDoctorRows = useMemo<DoctorRow[]>(() => {
+    const cases = (casesQuery.data ?? []).filter(
+      (c) => c.labOrganizationId === labOrgId,
+    );
+    const invoices = invoicesQuery.data ?? [];
+    const billedByCase = new Map<string, number>();
+    for (const inv of invoices) {
+      if (!inv.caseId) continue;
+      billedByCase.set(
+        inv.caseId,
+        (billedByCase.get(inv.caseId) ?? 0) + Number(inv.total ?? 0),
+      );
+    }
+    const map = new Map<string, DoctorRow>();
+    for (const c of cases) {
+      const doc = (c.doctorName || "—").trim();
+      const practiceId = c.providerOrganizationId || "";
+      const key = `${doc.toLowerCase()}|${practiceId}`;
+      const billed = billedByCase.get(c.id) ?? Number(c.totalPrice ?? 0);
+      const existing = map.get(key);
+      if (existing) {
+        existing.totalCases += 1;
+        existing.totalBilled += billed;
+      } else {
+        map.set(key, {
+          key,
+          doctorName: doc,
+          practiceName: "",
+          practiceId,
+          labOrganizationId: c.labOrganizationId || "",
+          totalCases: 1,
+          openCases: 0,
+          rushCases: 0,
+          totalBilled: billed,
+          lastCaseAt: c.createdAt || null,
+          hasAiImportedCase: false,
+        });
+      }
+    }
+    return Array.from(map.values());
+  }, [casesQuery.data, invoicesQuery.data, labOrgId]);
+
+  const adminLabSet = useMemo(() => new Set([labOrgId]), [labOrgId]);
+  const orgs = orgsQuery.data ?? [];
+
+  // Cluster counts at the currently selected threshold + at each preview step.
+  const doctorClusterCount = useMemo(() => {
+    const byLab = new Map<string, DoctorRow[]>();
+    byLab.set(labOrgId, labDoctorRows);
+    return buildDuplicateClusters<DoctorRow>(
+      byLab,
+      (r) => r.doctorName,
+      (r) => r.key,
+      bigramSimilarityForPreview,
+      threshold,
+    ).length;
+  }, [labDoctorRows, labOrgId, threshold]);
+
+  const practiceClusterCount = useMemo(() => {
+    return buildPracticeDuplicateClusters(orgs, adminLabSet, threshold).length;
+  }, [orgs, adminLabSet, threshold]);
+
+  const previewByStep = useMemo(() => {
+    return THRESHOLD_PREVIEW_STEPS.map((t) => {
+      const byLab = new Map<string, DoctorRow[]>();
+      byLab.set(labOrgId, labDoctorRows);
+      const docCount = buildDuplicateClusters<DoctorRow>(
+        byLab,
+        (r) => r.doctorName,
+        (r) => r.key,
+        bigramSimilarityForPreview,
+        t,
+      ).length;
+      const pracCount = buildPracticeDuplicateClusters(orgs, adminLabSet, t).length;
+      return { threshold: t, docCount, pracCount };
+    });
+  }, [labOrgId, labDoctorRows, orgs, adminLabSet]);
+
+  const saveMutation = useMutation({
+    mutationFn: (next: number | null) =>
+      apiFetch<Organization>(
+        `/organizations/${labOrgId}/duplicate-suggestion-threshold`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ threshold: next }),
+        },
+      ),
+    onSuccess: () => {
+      setSaveError(null);
+      setSavedFlag(true);
+      window.setTimeout(() => setSavedFlag(false), 2000);
+      queryClient.invalidateQueries({ queryKey: ["organizations"] });
+    },
+    onError: (err: Error) => {
+      setSaveError(err.message || "Failed to save threshold.");
+    },
+  });
+
+  const dirty = Math.abs(threshold - savedThreshold) > 1e-6;
+  const isLoading = casesQuery.isLoading || orgsQuery.isLoading;
+
+  return (
+    <div className="mt-3 pt-3 border-t border-border/60">
+      <div className="flex flex-col gap-2">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-xs font-medium text-foreground">
+              Duplicate detection sensitivity
+            </div>
+            <div className="text-[11px] text-muted-foreground max-w-md">
+              Controls how similar two doctor or practice names must be before the "Suggested merges" and "Suggested duplicates" banners flag them. Lower = more candidates (catches messy data), higher = fewer false positives.
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5">
+            {hasOverride && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-secondary-foreground">
+                Custom
+              </span>
+            )}
+            {!hasOverride && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+                Default {DEFAULT_DUP_SIMILARITY_THRESHOLD.toFixed(2)}
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 mt-1">
+          <input
+            type="range"
+            min={0.5}
+            max={0.95}
+            step={0.05}
+            value={threshold}
+            onChange={(e) => setThreshold(parseFloat(e.target.value))}
+            className="flex-1 max-w-xs accent-primary"
+            aria-label="Duplicate similarity threshold"
+          />
+          <span className="text-xs font-mono w-10 text-right">
+            {threshold.toFixed(2)}
+          </span>
+          <button
+            type="button"
+            onClick={() => saveMutation.mutate(threshold)}
+            disabled={!dirty || saveMutation.isPending}
+            className="h-7 px-2.5 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-50 inline-flex items-center gap-1.5"
+          >
+            {saveMutation.isPending ? (
+              <Loader2 size={11} className="animate-spin" />
+            ) : null}
+            Save
+          </button>
+          {hasOverride && (
+            <button
+              type="button"
+              onClick={() => {
+                setThreshold(DEFAULT_DUP_SIMILARITY_THRESHOLD);
+                saveMutation.mutate(null);
+              }}
+              disabled={saveMutation.isPending}
+              className="h-7 px-2 rounded-md border border-border text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+              title="Revert to application default"
+            >
+              Reset
+            </button>
+          )}
+          {savedFlag && (
+            <span className="text-[11px] text-success inline-flex items-center gap-1">
+              <Check size={11} />
+              Saved
+            </span>
+          )}
+        </div>
+
+        <div className="mt-1 rounded-md border border-border/60 bg-muted/30 px-2.5 py-2">
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium mb-1">
+            Preview (clusters that would be flagged)
+          </div>
+          {isLoading ? (
+            <div className="text-[11px] text-muted-foreground inline-flex items-center gap-1.5">
+              <Loader2 size={10} className="animate-spin" />
+              Loading…
+            </div>
+          ) : (
+            <>
+              <div className="text-[11px] text-foreground">
+                At <span className="font-mono">{threshold.toFixed(2)}</span>:{" "}
+                <span className="font-medium">{doctorClusterCount}</span> doctor
+                {doctorClusterCount === 1 ? "" : "s"} cluster
+                {doctorClusterCount === 1 ? "" : "s"},{" "}
+                <span className="font-medium">{practiceClusterCount}</span> practice
+                {practiceClusterCount === 1 ? "" : "s"} cluster
+                {practiceClusterCount === 1 ? "" : "s"}.
+              </div>
+              <div className="mt-1.5 overflow-x-auto">
+                <table className="text-[10px] text-muted-foreground">
+                  <thead>
+                    <tr>
+                      <th className="pr-3 text-left font-medium">Threshold</th>
+                      {previewByStep.map((s) => (
+                        <th
+                          key={s.threshold}
+                          className={`px-1.5 text-center font-mono ${
+                            Math.abs(s.threshold - threshold) < 1e-6
+                              ? "text-foreground font-semibold"
+                              : ""
+                          }`}
+                        >
+                          {s.threshold.toFixed(2)}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td className="pr-3">Doctors</td>
+                      {previewByStep.map((s) => (
+                        <td
+                          key={s.threshold}
+                          className={`px-1.5 text-center ${
+                            Math.abs(s.threshold - threshold) < 1e-6
+                              ? "text-foreground font-semibold"
+                              : ""
+                          }`}
+                        >
+                          {s.docCount}
+                        </td>
+                      ))}
+                    </tr>
+                    <tr>
+                      <td className="pr-3">Practices</td>
+                      {previewByStep.map((s) => (
+                        <td
+                          key={s.threshold}
+                          className={`px-1.5 text-center ${
+                            Math.abs(s.threshold - threshold) < 1e-6
+                              ? "text-foreground font-semibold"
+                              : ""
+                          }`}
+                        >
+                          {s.pracCount}
+                        </td>
+                      ))}
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
+
+        {saveError && (
+          <div className="mt-1">
+            <Alert tone="danger">{saveError}</Alert>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Local copy of the doctors-page bigram similarity (the doctors page keeps
+// its own non-exported function). Mirroring it here avoids cross-page
+// internals leaking through the public API of doctors.tsx.
+function bigramSimilarityForPreview(a: string, b: string): number {
+  const norm = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/\bdr\.?\b/g, "")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+  const an = norm(a);
+  const bn = norm(b);
+  if (!an || !bn) return 0;
+  if (an === bn) return 1;
+  const grams = (s: string) => {
+    const set = new Set<string>();
+    const padded = ` ${s} `;
+    for (let i = 0; i < padded.length - 1; i++) set.add(padded.slice(i, i + 2));
+    return set;
+  };
+  const A = grams(an);
+  const B = grams(bn);
+  let inter = 0;
+  for (const g of A) if (B.has(g)) inter++;
+  const union = A.size + B.size - inter;
+  return union === 0 ? 0 : inter / union;
 }
 
 function UsersPanel() {

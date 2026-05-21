@@ -2306,6 +2306,71 @@ router.patch(
   })
 );
 
+// ─── Per-lab duplicate-suggestion threshold ──────────────────────────────────
+//
+// The "Suggested merges" (Doctors) and "Suggested duplicates" (Practices)
+// banners cluster rows whose normalized-name bigram similarity is ≥ a
+// threshold. The application default is 0.7, but labs with messy data may
+// want 0.6 (more aggressive) or with very clean data 0.8 (less noisy).
+// Stored per-lab on `organizations.duplicate_suggestion_threshold` and
+// editable only by lab admins. Only valid on type="lab" rows.
+const DUPLICATE_THRESHOLD_MIN = 0.5;
+const DUPLICATE_THRESHOLD_MAX = 0.95;
+const duplicateThresholdBodySchema = z.object({
+  threshold: z
+    .number()
+    .min(DUPLICATE_THRESHOLD_MIN)
+    .max(DUPLICATE_THRESHOLD_MAX)
+    .nullable(),
+});
+
+router.patch(
+  "/:organizationId/duplicate-suggestion-threshold",
+  asyncHandler(async (req, res) => {
+    const { organizationId } = req.params;
+    await resolveOrgAdminAccess((req as any).auth.userId, organizationId);
+
+    const { threshold } = duplicateThresholdBodySchema.parse(req.body);
+
+    const existing = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organizationId),
+    });
+    if (!existing) throw new HttpError(404, "Organization not found.");
+    if (existing.type !== "lab") {
+      throw new HttpError(
+        400,
+        "Duplicate-suggestion threshold can only be set on lab organizations."
+      );
+    }
+
+    const dbValue =
+      threshold === null ? null : (Math.round(threshold * 1000) / 1000).toFixed(3);
+
+    const [updated] = await db
+      .update(organizations)
+      .set({
+        duplicateSuggestionThreshold: dbValue,
+        updatedAt: new Date(),
+      } as any)
+      .where(eq(organizations.id, organizationId))
+      .returning();
+
+    await writeAuditLog({
+      req,
+      labId: organizationId,
+      action: "organization_duplicate_threshold_updated",
+      entityType: "organization",
+      entityId: organizationId,
+      beforeJson: {
+        duplicateSuggestionThreshold: (existing as any).duplicateSuggestionThreshold,
+      },
+      afterJson: { duplicateSuggestionThreshold: dbValue },
+    });
+
+    return ok(res, updated);
+  })
+);
+
 // ─── Lab logo (used on invoices, statements, the desktop header) ────────────
 //
 // Stored in App Storage under `<PRIVATE_OBJECT_DIR>/lab-logos/<orgId>.<ext>`

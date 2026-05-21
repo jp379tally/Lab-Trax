@@ -101,10 +101,23 @@ const OPEN_STATUSES = new Set([
 
 const ADMIN_ROLES = new Set(["owner", "admin"]);
 
-// Rows ≥ this bigram similarity (on normalized doctor name) are flagged as
-// likely duplicates in the "Suggested merges" banner.
-const DUP_SIMILARITY_THRESHOLD = 0.7;
+// Default bigram-similarity threshold (on normalized doctor name) used to
+// flag likely duplicates in the "Suggested merges" banner. Each lab can
+// override this from Settings → Organizations → "Duplicate detection".
+export const DEFAULT_DUP_SIMILARITY_THRESHOLD = 0.7;
 const DOCTOR_DUP_DISMISS_KEY = "labtrax_doctor_dup_dismissed_v1";
+
+// Clamp + parse a per-lab override from Organization.duplicateSuggestionThreshold.
+export function resolveLabDupThreshold(
+  raw: string | number | null | undefined,
+): number {
+  if (raw === null || raw === undefined || raw === "") {
+    return DEFAULT_DUP_SIMILARITY_THRESHOLD;
+  }
+  const n = typeof raw === "number" ? raw : parseFloat(raw);
+  if (!Number.isFinite(n)) return DEFAULT_DUP_SIMILARITY_THRESHOLD;
+  return Math.min(0.95, Math.max(0.5, n));
+}
 
 function loadDismissedDupClusters(storageKey: string): Set<string> {
   if (typeof window === "undefined") return new Set();
@@ -134,16 +147,18 @@ interface DuplicateCluster<T> {
 // Group items into transitively-connected clusters using union-find over
 // pairs whose `similarity(a, b) >= threshold`. Per-lab to keep cross-tenant
 // duplicates separate (we'd never merge across labs anyway).
-function buildDuplicateClusters<T>(
+export function buildDuplicateClusters<T>(
   itemsByLab: Map<string, T[]>,
   getCompareName: (t: T) => string,
   getRowId: (t: T) => string,
   similarity: (a: string, b: string) => number,
-  threshold: number,
+  threshold: number | ((labId: string) => number),
 ): DuplicateCluster<T>[] {
   const clusters: DuplicateCluster<T>[] = [];
   for (const [labId, list] of itemsByLab) {
     if (list.length < 2) continue;
+    const labThreshold =
+      typeof threshold === "function" ? threshold(labId) : threshold;
     const parent = list.map((_, i) => i);
     const find = (i: number): number => {
       let cur = i;
@@ -166,7 +181,7 @@ function buildDuplicateClusters<T>(
         const nj = getCompareName(list[j]);
         if (!nj) continue;
         const s = similarity(ni, nj);
-        if (s >= threshold) {
+        if (s >= labThreshold) {
           union(i, j);
           pairScores.set(`${i}|${j}`, s);
         }
@@ -416,6 +431,16 @@ export default function DoctorsPage() {
   // Likely-duplicate doctor clusters within each lab the current user can
   // administer. We surface every cluster (not just one) so admins can rip
   // through them without merge→reload cycles.
+  const labThresholdById = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const o of orgsQuery.data ?? []) {
+      if (o.type === "lab") {
+        map.set(o.id, resolveLabDupThreshold(o.duplicateSuggestionThreshold));
+      }
+    }
+    return map;
+  }, [orgsQuery.data]);
+
   const suggestedDuplicateClusters = useMemo(() => {
     const byLab = new Map<string, DoctorRow[]>();
     for (const r of rows) {
@@ -429,9 +454,9 @@ export default function DoctorsPage() {
       (r) => r.doctorName,
       (r) => r.key,
       bigramSimilarity,
-      DUP_SIMILARITY_THRESHOLD,
+      (labId) => labThresholdById.get(labId) ?? DEFAULT_DUP_SIMILARITY_THRESHOLD,
     );
-  }, [rows, adminLabIds]);
+  }, [rows, adminLabIds, labThresholdById]);
 
   const visibleDuplicateClusters = useMemo(
     () => suggestedDuplicateClusters.filter((c) => !dismissedDupClusters.has(c.key)),

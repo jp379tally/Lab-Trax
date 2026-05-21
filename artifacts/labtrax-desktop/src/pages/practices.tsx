@@ -35,10 +35,23 @@ interface PracticeInvite {
 const ASSIGNABLE_ROLES = ["admin", "user", "billing", "read_only"] as const;
 const ADMIN_ROLES = new Set(["owner", "admin"]);
 
-// Practices ≥ this bigram similarity (on normalized name) are flagged as
-// likely duplicates in the "Suggested duplicates" banner.
-const PRACTICE_DUP_SIMILARITY_THRESHOLD = 0.7;
+// Default bigram-similarity threshold (on normalized practice name) used to
+// flag likely duplicates in the "Suggested duplicates" banner. Each lab can
+// override this from Settings → Organizations → "Duplicate detection".
+export const DEFAULT_PRACTICE_DUP_SIMILARITY_THRESHOLD = 0.7;
 const PRACTICE_DUP_DISMISS_KEY = "labtrax_practice_dup_dismissed_v1";
+
+// Clamp + parse a per-lab override from Organization.duplicateSuggestionThreshold.
+export function resolvePracticeLabDupThreshold(
+  raw: string | number | null | undefined,
+): number {
+  if (raw === null || raw === undefined || raw === "") {
+    return DEFAULT_PRACTICE_DUP_SIMILARITY_THRESHOLD;
+  }
+  const n = typeof raw === "number" ? raw : parseFloat(raw);
+  if (!Number.isFinite(n)) return DEFAULT_PRACTICE_DUP_SIMILARITY_THRESHOLD;
+  return Math.min(0.95, Math.max(0.5, n));
+}
 
 function normalizePracticeNameForCompare(name: string): string {
   return name
@@ -93,10 +106,10 @@ interface PracticeCluster {
 // Per-lab union-find clustering of practices with name similarity ≥ threshold.
 // "Lab id" here is the practice's `parentLabOrganizationId` (a provider's
 // owning lab), so cross-tenant duplicates stay separate.
-function buildPracticeDuplicateClusters(
+export function buildPracticeDuplicateClusters(
   practices: Organization[],
   adminLabOrgIds: Set<string>,
-  threshold: number,
+  threshold: number | ((labId: string) => number),
 ): PracticeCluster[] {
   const byLab = new Map<string, Organization[]>();
   for (const p of practices) {
@@ -111,6 +124,8 @@ function buildPracticeDuplicateClusters(
   const clusters: PracticeCluster[] = [];
   for (const [labId, list] of byLab) {
     if (list.length < 2) continue;
+    const labThreshold =
+      typeof threshold === "function" ? threshold(labId) : threshold;
     const parent = list.map((_, i) => i);
     const find = (i: number): number => {
       let cur = i;
@@ -133,7 +148,7 @@ function buildPracticeDuplicateClusters(
         const nj = list[j].displayName || list[j].name;
         if (!nj) continue;
         const s = practiceBigramSimilarity(ni, nj);
-        if (s >= threshold) {
+        if (s >= labThreshold) {
           union(i, j);
           pairScores.set(`${i}|${j}`, s);
         }
@@ -308,14 +323,25 @@ export default function PracticesPage() {
   // Likely-duplicate practice clusters within each lab the user administers.
   // We show every cluster (not just one) so admins can step through them
   // without reload→merge→reload cycles.
+  const labThresholdById = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const o of orgs) {
+      if (o.type === "lab") {
+        map.set(o.id, resolvePracticeLabDupThreshold(o.duplicateSuggestionThreshold));
+      }
+    }
+    return map;
+  }, [orgs]);
+
   const suggestedDupClusters = useMemo(
     () =>
       buildPracticeDuplicateClusters(
         orgs,
         adminLabOrgIdsSet,
-        PRACTICE_DUP_SIMILARITY_THRESHOLD,
+        (labId) =>
+          labThresholdById.get(labId) ?? DEFAULT_PRACTICE_DUP_SIMILARITY_THRESHOLD,
       ),
-    [orgs, adminLabOrgIdsSet],
+    [orgs, adminLabOrgIdsSet, labThresholdById],
   );
 
   const visibleDupClusters = useMemo(

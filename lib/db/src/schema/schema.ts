@@ -185,6 +185,14 @@ export const organizations = pgTable(
     statementEmailOptOut: boolean("statement_email_opt_out")
       .default(false)
       .notNull(),
+    // Per-lab bigram-similarity threshold (0.5–0.95) used to flag "Suggested
+    // merges" / "Suggested duplicates" clusters in the Doctors and Practices
+    // pages. Null = use the application default (0.7). Only meaningful on
+    // type="lab" rows; ignored on provider organizations.
+    duplicateSuggestionThreshold: decimal("duplicate_suggestion_threshold", {
+      precision: 4,
+      scale: 3,
+    }),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     deletedByUserId: varchar("deleted_by_user_id"),
   },

@@ -352,6 +352,7 @@ export interface Organization {
   deletedAt?: string | null;
   logoUrl?: string | null;
   logoplacements?: string[] | null;
+  duplicateSuggestionThreshold?: string | number | null;
 }
 
 export interface BankAccount {
