@@ -803,15 +803,27 @@ export function InvoiceEditor({
   const [moreOpen, setMoreOpen] = useState(false);
   const [voidDialog, setVoidDialog] = useState<null | "void" | "writeoff">(null);
 
+  // Local optimistic flag so the banner + button disappear the instant the
+  // user clicks "Mark reviewed" — without waiting for the server round-trip
+  // or the invoice query to refetch. The server still records the ack; if it
+  // fails we roll back so the banner reappears.
+  const [aiReviewedLocal, setAiReviewedLocal] = useState(false);
   const ackAiMutation = useMutation({
     mutationFn: () =>
       apiFetch<Invoice>(`/invoices/${invoice.id}/ai-review`, {
         method: "PATCH",
         body: JSON.stringify({ acknowledged: true }),
       }),
+    onMutate: () => {
+      setAiReviewedLocal(true);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["invoice", invoice.id] });
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
+    },
+    onError: (err: Error) => {
+      setAiReviewedLocal(false);
+      setError(err.message || "Could not mark reviewed.");
     },
   });
 
@@ -1068,7 +1080,7 @@ export function InvoiceEditor({
             </div>
           )}
 
-          {invoice.aiGenerated && !invoice.aiReviewedAt && (
+          {invoice.aiGenerated && !invoice.aiReviewedAt && !aiReviewedLocal && (
             <div className="flex items-start gap-3 px-3 py-2.5 rounded-md border border-amber-300/60 bg-amber-50 dark:bg-amber-950/30">
               <Sparkles size={16} className="text-amber-500 mt-0.5 shrink-0" />
               <div className="flex-1 text-sm">
