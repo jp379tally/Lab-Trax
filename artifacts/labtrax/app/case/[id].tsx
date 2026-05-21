@@ -49,6 +49,7 @@ import { resolveCaseInvoice } from "@/lib/case-detail/draft-invoice";
 import { LabSlipModal } from "@/components/case/LabSlipModal";
 import { EditCaseModal } from "@/components/case/EditCaseModal";
 import ScanViewerModal, { type ScanFormat } from "@/components/ScanViewerModal";
+import ScanThumbnail from "@/components/ScanThumbnail";
 import { QuickEditModal } from "@/components/case/QuickEditModal";
 import { CaseBarcodeScannerModal } from "@/components/case/CaseBarcodeScannerModal";
 import { AddItemModal } from "@/components/case/AddItemModal";
@@ -2076,13 +2077,29 @@ export default function CaseDetailScreen() {
                     const isPaused = pausedAttachments.has(att.id);
                     const pausedEntry = pausedAttachments.get(att.id);
                     const shownProgress = isDownloading ? downloadProgress : (pausedEntry?.progress ?? 0);
+                    const thumbFormat: ScanFormat | null =
+                      ext === "stl" || ext === "obj" || ext === "ply" ? (ext as ScanFormat) : null;
+                    const thumbUrl = fileUrl
+                      ? (fileUrl.startsWith("http") ? fileUrl : new URL(fileUrl, getApiUrl()).toString())
+                      : "";
                     return (
                       <>
-                        <Ionicons
-                          name={iconName}
-                          size={22}
-                          color={isDownloading || isPaused ? Colors.light.textSecondary : Colors.light.tint}
-                        />
+                        {thumbFormat && thumbUrl ? (
+                          <ScanThumbnail
+                            cacheKey={`att:${att.id}`}
+                            fileUrl={thumbUrl}
+                            format={thumbFormat}
+                            fileName={att.fileName}
+                            authToken={getAccessToken()}
+                            size={40}
+                          />
+                        ) : (
+                          <Ionicons
+                            name={iconName}
+                            size={22}
+                            color={isDownloading || isPaused ? Colors.light.textSecondary : Colors.light.tint}
+                          />
+                        )}
                         <View style={{ flex: 1 }}>
                           <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.text }} numberOfLines={1}>
                             {att.fileName}

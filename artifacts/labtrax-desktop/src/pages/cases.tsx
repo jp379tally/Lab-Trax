@@ -63,6 +63,7 @@ import {
   type ToothActionPayload,
 } from "@/components/ToothActionDialog";
 import ScanViewerModal from "@/components/ScanViewerModal";
+import ScanThumbnail from "@/components/ScanThumbnail";
 import type { ScanFormat } from "@workspace/scan-viewer";
 
 const STATUS_FILTERS: Array<{ value: string; label: string }> = [
@@ -4190,9 +4191,19 @@ function AttachmentRow({
 
   const rowBody = (
     <>
-      <div className="mt-0.5 text-muted-foreground">
-        {isScan ? <Box size={14} /> : <Paperclip size={14} />}
-      </div>
+      {inAppFormat && href ? (
+        <ScanThumbnail
+          cacheKey={`att:${attachment.id}`}
+          fileUrl={href}
+          format={inAppFormat}
+          authToken={getAccessToken()}
+          size={44}
+        />
+      ) : (
+        <div className="mt-0.5 text-muted-foreground">
+          {isScan ? <Box size={14} /> : <Paperclip size={14} />}
+        </div>
+      )}
       <div className="min-w-0 flex-1 text-left">
         <div className="font-medium truncate flex items-center gap-2" title={attachment.fileName}>
           <span className="truncate">{attachment.fileName}</span>

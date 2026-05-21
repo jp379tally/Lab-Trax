@@ -23,49 +23,17 @@ export function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return g.btoa(binary);
 }
 
-/**
- * Build a self-contained HTML document that renders an STL/OBJ/PLY model
- * with three.js. The page exposes two globals that hosts can call:
- *   window.setDisplayMode("solid" | "wireframe" | "shaded")
- *   window.resetView()
- *
- * Touch (1-finger drag = orbit, pinch = zoom) and mouse (drag = orbit,
- * wheel = zoom) controls both work, so the same HTML drives the mobile
- * React Native WebView and the desktop Electron renderer iframe.
- *
- * On parse failure the page posts {type:'error',message:'parse_failed'}
- * to both window.ReactNativeWebView and window.parent (for desktop iframes).
- */
-export function buildViewerHtml(
-  fileBase64: string,
-  format: ScanFormat,
-): string {
-  return `<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-html,body{width:100%;height:100%;background:#18181b;overflow:hidden}
-canvas{display:block;width:100%!important;height:100%!important;touch-action:none}
-#overlay{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#a1a1aa;font-family:-apple-system,sans-serif;font-size:15px;pointer-events:none}
-#hint{position:fixed;bottom:16px;left:0;right:0;text-align:center;color:rgba(161,161,170,0.7);font-family:-apple-system,sans-serif;font-size:12px;pointer-events:none;transition:opacity 1s}
-</style>
-</head>
-<body>
-<div id="overlay">Rendering\u2026</div>
-<div id="hint">Drag to rotate \u00b7 Scroll / pinch to zoom</div>
-<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
-<script>
-(function(){
-'use strict';
-
-function postError(msg){
-  var payload=JSON.stringify({type:'error',message:msg||'parse_failed'});
+// ── Shared in-page helpers + STL/OBJ/PLY parsers ──────────────────────────────
+// Inlined into the viewer and thumbnail HTML docs so they have no external
+// runtime dependency aside from three.js (loaded from CDN). Exposed as a single
+// constant so the viewer and thumbnail builders stay in sync.
+const PARSERS_AND_HELPERS_JS = `
+function postMsg(o){
+  var payload=JSON.stringify(o);
   try{ if(window.ReactNativeWebView) window.ReactNativeWebView.postMessage(payload); }catch(_){}
   try{ if(window.parent&&window.parent!==window) window.parent.postMessage(payload,'*'); }catch(_){}
 }
+function postError(msg){ postMsg({type:'error',message:msg||'parse_failed'}); }
 
 function b64toAB(b64){
   var bin=atob(b64),len=bin.length,buf=new ArrayBuffer(len),view=new Uint8Array(buf);
@@ -362,6 +330,53 @@ function parsePLYBinary(buf,dataOffset,vertexCount,faceCount,vertexProps,xIdx,yI
   return {vertices:verts,normals:computeFlatNormals(verts)};
 }
 
+function parseScanBuffer(buf,format){
+  if(format==='stl') return parseSTL(buf);
+  if(format==='obj') return parseOBJ(buf);
+  if(format==='ply') return parsePLY(buf);
+  return null;
+}
+`;
+
+/**
+ * Build a self-contained HTML document that renders an STL/OBJ/PLY model
+ * with three.js. The page exposes two globals that hosts can call:
+ *   window.setDisplayMode("solid" | "wireframe" | "shaded")
+ *   window.resetView()
+ *
+ * Touch (1-finger drag = orbit, pinch = zoom) and mouse (drag = orbit,
+ * wheel = zoom) controls both work, so the same HTML drives the mobile
+ * React Native WebView and the desktop Electron renderer iframe.
+ *
+ * On parse failure the page posts {type:'error',message:'parse_failed'}
+ * to both window.ReactNativeWebView and window.parent (for desktop iframes).
+ */
+export function buildViewerHtml(
+  fileBase64: string,
+  format: ScanFormat,
+): string {
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;background:#18181b;overflow:hidden}
+canvas{display:block;width:100%!important;height:100%!important;touch-action:none}
+#overlay{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#a1a1aa;font-family:-apple-system,sans-serif;font-size:15px;pointer-events:none}
+#hint{position:fixed;bottom:16px;left:0;right:0;text-align:center;color:rgba(161,161,170,0.7);font-family:-apple-system,sans-serif;font-size:12px;pointer-events:none;transition:opacity 1s}
+</style>
+</head>
+<body>
+<div id="overlay">Rendering\u2026</div>
+<div id="hint">Drag to rotate \u00b7 Scroll / pinch to zoom</div>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script>
+(function(){
+'use strict';
+${PARSERS_AND_HELPERS_JS}
+
 // ── Three.js scene setup ──────────────────────────────────────────────────────
 var renderer=new THREE.WebGLRenderer({antialias:true,alpha:false});
 renderer.setPixelRatio(window.devicePixelRatio);
@@ -387,11 +402,7 @@ var FILE_B64=${JSON.stringify(fileBase64)};
 var FILE_FORMAT=${JSON.stringify(format)};
 var buf=b64toAB(FILE_B64);
 var parsed=null;
-try{
-  if(FILE_FORMAT==='stl') parsed=parseSTL(buf);
-  else if(FILE_FORMAT==='obj') parsed=parseOBJ(buf);
-  else if(FILE_FORMAT==='ply') parsed=parsePLY(buf);
-}catch(e){}
+try{ parsed=parseScanBuffer(buf,FILE_FORMAT); }catch(e){}
 
 if(!parsed){
   document.getElementById('overlay').textContent='Could not parse scan file.';
@@ -587,6 +598,121 @@ if(!parsed){
     requestAnimationFrame(animate);
     renderer.render(scene,camera);
   })();
+}
+
+})();
+</script>
+</body>
+</html>`;
+}
+
+export interface ThumbnailOptions {
+  /** Output pixel size (square). Default 192. */
+  size?: number;
+  /** Background color hex (e.g. "#f8fafc"). Default transparent. */
+  background?: string;
+}
+
+/**
+ * Build a self-contained HTML document that parses an STL/OBJ/PLY model,
+ * renders a single frame at a fixed size, and posts the resulting PNG data
+ * URL back to the host:
+ *
+ *   { type: "thumb", dataUrl: "data:image/png;base64,..." }
+ *
+ * On parse or render failure the page posts
+ *   { type: "error", message: "parse_failed" }
+ *
+ * Works in both browser iframes (`window.parent.postMessage`) and React
+ * Native WebViews (`window.ReactNativeWebView.postMessage`).
+ */
+export function buildThumbnailHtml(
+  fileBase64: string,
+  format: ScanFormat,
+  opts: ThumbnailOptions = {},
+): string {
+  const size = Math.max(32, Math.min(1024, Math.floor(opts.size ?? 192)));
+  const bg = opts.background ?? null;
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;background:transparent;overflow:hidden}
+canvas{display:block}
+</style>
+</head>
+<body>
+<canvas id="c" width="${size}" height="${size}"></canvas>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script>
+(function(){
+'use strict';
+${PARSERS_AND_HELPERS_JS}
+
+var SIZE=${size};
+var BG=${bg === null ? "null" : JSON.stringify(bg)};
+var FILE_B64=${JSON.stringify(fileBase64)};
+var FILE_FORMAT=${JSON.stringify(format)};
+
+var parsed=null;
+try{
+  var buf=b64toAB(FILE_B64);
+  parsed=parseScanBuffer(buf,FILE_FORMAT);
+}catch(e){}
+
+if(!parsed){ postError('parse_failed'); return; }
+
+try {
+  var canvas=document.getElementById('c');
+  var renderer=new THREE.WebGLRenderer({canvas:canvas,antialias:true,alpha:BG===null,preserveDrawingBuffer:true});
+  renderer.setPixelRatio(1);
+  renderer.setSize(SIZE,SIZE,false);
+
+  var scene=new THREE.Scene();
+  if(BG!==null) scene.background=new THREE.Color(BG);
+
+  scene.add(new THREE.AmbientLight(0xffffff,0.55));
+  var d1=new THREE.DirectionalLight(0xffffff,0.85); d1.position.set(1,2,3); scene.add(d1);
+  var d2=new THREE.DirectionalLight(0x88aaff,0.4); d2.position.set(-2,-1,-1); scene.add(d2);
+
+  var geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.BufferAttribute(parsed.vertices,3));
+  geo.setAttribute('normal',new THREE.BufferAttribute(parsed.normals,3));
+  geo.computeBoundingBox();
+  var box=geo.boundingBox;
+  var center=new THREE.Vector3(); box.getCenter(center);
+  var size3=new THREE.Vector3(); box.getSize(size3);
+  var maxDim=Math.max(size3.x,size3.y,size3.z)||1;
+
+  var mat=new THREE.MeshPhongMaterial({color:0xe2e8f0,specular:0x444444,shininess:40,side:THREE.DoubleSide});
+  var mesh=new THREE.Mesh(geo,mat);
+  mesh.position.sub(center);
+  scene.add(mesh);
+
+  var camera=new THREE.PerspectiveCamera(35,1,maxDim*0.01,maxDim*100);
+  var fov=camera.fov*(Math.PI/180);
+  var dist=Math.abs(maxDim/Math.sin(fov/2))*0.55;
+  // Slight 3/4 angle so jaws read clearly
+  var theta=Math.PI*0.18, phi=Math.PI*0.38;
+  camera.position.set(
+    dist*Math.sin(phi)*Math.sin(theta),
+    dist*Math.cos(phi),
+    dist*Math.sin(phi)*Math.cos(theta)
+  );
+  camera.lookAt(0,0,0);
+
+  renderer.render(scene,camera);
+
+  var dataUrl=canvas.toDataURL('image/png');
+  postMsg({type:'thumb',dataUrl:dataUrl});
+
+  // Free GPU memory promptly — host already has the PNG.
+  try { geo.dispose(); mat.dispose(); renderer.dispose(); } catch(_){}
+} catch(e) {
+  postError('render_failed');
 }
 
 })();
