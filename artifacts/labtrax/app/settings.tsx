@@ -72,6 +72,20 @@ export default function SettingsScreen() {
   } | null>(null);
   const [rollingBackupLoading, setRollingBackupLoading] = useState(false);
 
+  type OneDriveStatus = {
+    connected: boolean;
+    accountName?: string;
+    accountEmail?: string;
+    lastCheckedAt?: string;
+    error?: string;
+  };
+  const [oneDriveStatus, setOneDriveStatus] = useState<OneDriveStatus | null>(null);
+  const [oneDriveStatusLoading, setOneDriveStatusLoading] = useState(false);
+  const [oneDriveReconnecting, setOneDriveReconnecting] = useState(false);
+  const [oneDriveReconnectPending, setOneDriveReconnectPending] = useState(false);
+  const [oneDriveReconnectError, setOneDriveReconnectError] = useState<string | null>(null);
+  const oneDriveReconnectPollRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
   type BackupRun = {
     id: number;
     triggeredBy: string;
@@ -341,6 +355,90 @@ export default function SettingsScreen() {
     void fetchRollingBackup();
     return () => { cancelled = true; };
   }, [isLabAdminForEffect]);
+
+  const fetchOneDriveStatus = React.useCallback(async (refresh: boolean = false): Promise<OneDriveStatus | null> => {
+    try {
+      const res = await resilientFetch(`/api/admin/backup/onedrive-status${refresh ? "?refresh=1" : ""}`);
+      if (!res.ok) return null;
+      const data = await res.json();
+      const next: OneDriveStatus = {
+        connected: data.connected === true,
+        accountName: data.accountName,
+        accountEmail: data.accountEmail,
+        lastCheckedAt: data.lastCheckedAt,
+        error: data.error,
+      };
+      setOneDriveStatus(next);
+      return next;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isLabAdminForEffect) return;
+    let cancelled = false;
+    setOneDriveStatusLoading(true);
+    void fetchOneDriveStatus().finally(() => {
+      if (!cancelled) setOneDriveStatusLoading(false);
+    });
+    const intervalId = setInterval(() => {
+      void fetchOneDriveStatus();
+    }, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, [isLabAdminForEffect, fetchOneDriveStatus]);
+
+  React.useEffect(() => () => {
+    if (oneDriveReconnectPollRef.current) {
+      clearTimeout(oneDriveReconnectPollRef.current);
+      oneDriveReconnectPollRef.current = null;
+    }
+  }, []);
+
+  const handleOneDriveReconnect = React.useCallback(async () => {
+    setOneDriveReconnectError(null);
+    setOneDriveReconnecting(true);
+    try {
+      const res = await resilientFetch("/api/admin/backup/onedrive-reconnect", { method: "POST" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error || body?.message || "Failed to start OneDrive reconnect.");
+      }
+      const data = await res.json();
+      const url: string | undefined = data?.reconnectUrl;
+      if (!url) throw new Error("Server did not return a reconnect URL.");
+      try {
+        await WebBrowser.openBrowserAsync(url);
+      } catch {
+        const { Linking } = await import("react-native");
+        await Linking.openURL(url).catch(() => {});
+      }
+      setOneDriveReconnectPending(true);
+      const start = Date.now();
+      const TIMEOUT_MS = 5 * 60_000;
+      const POLL_MS = 5_000;
+      const tick = async () => {
+        const status = await fetchOneDriveStatus(true);
+        if (status?.connected) {
+          setOneDriveReconnectPending(false);
+          return;
+        }
+        if (Date.now() - start < TIMEOUT_MS) {
+          oneDriveReconnectPollRef.current = setTimeout(tick, POLL_MS);
+        } else {
+          setOneDriveReconnectPending(false);
+        }
+      };
+      oneDriveReconnectPollRef.current = setTimeout(tick, POLL_MS);
+    } catch (err) {
+      setOneDriveReconnectError(err instanceof Error ? err.message : "Failed to start OneDrive reconnect.");
+    } finally {
+      setOneDriveReconnecting(false);
+    }
+  }, [fetchOneDriveStatus]);
 
   useEffect(() => {
     if (!isLabAdminForEffect) return;
@@ -1291,6 +1389,101 @@ export default function SettingsScreen() {
                   );
                 })
               )}
+            </View>
+          </View>
+        )}
+
+        {isLabAdmin && oneDriveStatus && !oneDriveStatus.connected && (
+          <View style={styles.section}>
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "flex-start",
+                gap: 10,
+                padding: 14,
+                borderRadius: 10,
+                borderWidth: 1,
+                borderColor: "#FCA5A5",
+                backgroundColor: isDark ? "#450A0A" : "#FEF2F2",
+              }}
+            >
+              <Ionicons name="alert-circle" size={20} color="#DC2626" style={{ marginTop: 1 }} />
+              <View style={{ flex: 1, gap: 4 }}>
+                <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: isDark ? "#FCA5A5" : "#991B1B" }}>
+                  OneDrive disconnected — backups are paused
+                </Text>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: isDark ? "#FCA5A5" : "#B91C1C" }}>
+                  {oneDriveStatus.error
+                    ? `Last check: ${oneDriveStatus.error}`
+                    : "Reconnect to resume OneDrive backups."}
+                </Text>
+                {oneDriveReconnectError && (
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: isDark ? "#FCA5A5" : "#B91C1C" }}>
+                    {oneDriveReconnectError}
+                  </Text>
+                )}
+                {oneDriveReconnectPending && (
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 2 }}>
+                    <ActivityIndicator size="small" color="#DC2626" />
+                    <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: isDark ? "#FCA5A5" : "#B91C1C" }}>
+                      Waiting for sign-in to complete…
+                    </Text>
+                  </View>
+                )}
+                <Pressable
+                  onPress={() => { void handleOneDriveReconnect(); }}
+                  disabled={oneDriveReconnecting}
+                  style={({ pressed }) => [
+                    {
+                      alignSelf: "flex-start",
+                      marginTop: 8,
+                      paddingHorizontal: 12,
+                      paddingVertical: 7,
+                      borderRadius: 6,
+                      backgroundColor: isDark ? "#7F1D1D" : "#FECACA",
+                      opacity: oneDriveReconnecting ? 0.6 : pressed ? 0.8 : 1,
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 6,
+                    },
+                  ]}
+                >
+                  {oneDriveReconnecting && <ActivityIndicator size="small" color={isDark ? "#FCA5A5" : "#991B1B"} />}
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: isDark ? "#FCA5A5" : "#991B1B" }}>
+                    Reconnect OneDrive
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        )}
+
+        {isLabAdmin && oneDriveStatus?.connected && (
+          <View style={[styles.section, { paddingTop: 4 }]}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 4 }}>
+              <Ionicons name="checkmark-circle" size={14} color="#16A34A" />
+              <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textSecondary, flex: 1 }} numberOfLines={2}>
+                OneDrive connected
+                {oneDriveStatus.accountName || oneDriveStatus.accountEmail
+                  ? ` as ${oneDriveStatus.accountName ?? ""}${
+                      oneDriveStatus.accountEmail ? ` (${oneDriveStatus.accountEmail})` : ""
+                    }`
+                  : ""}
+                {oneDriveStatus.lastCheckedAt
+                  ? ` · checked ${new Date(oneDriveStatus.lastCheckedAt).toLocaleTimeString()}`
+                  : ""}
+              </Text>
+            </View>
+          </View>
+        )}
+
+        {isLabAdmin && oneDriveStatusLoading && !oneDriveStatus && (
+          <View style={[styles.section, { paddingTop: 4 }]}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 4 }}>
+              <ActivityIndicator size="small" color={colors.textTertiary} />
+              <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textTertiary }}>
+                Checking OneDrive connection…
+              </Text>
             </View>
           </View>
         )}
