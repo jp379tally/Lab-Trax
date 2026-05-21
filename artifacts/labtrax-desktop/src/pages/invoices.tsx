@@ -1314,11 +1314,11 @@ export function InvoiceEditor({
                 <thead>
                   <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
                     <th className="text-left font-medium px-3 py-2 w-44">Item</th>
-                    <th className="text-right font-medium px-3 py-2 w-16">Tooth #</th>
+                    <th className="text-right font-medium px-3 py-2 w-20">Tooth #</th>
                     <th className="text-left font-medium px-3 py-2">Description</th>
-                    <th className="text-right font-medium px-3 py-2 w-28">Qty</th>
+                    <th className="text-right font-medium px-3 py-2 w-20">Qty</th>
                     <th className="text-right font-medium px-3 py-2 w-28">Unit price</th>
-                    <th className="text-right font-medium px-3 py-2 w-28">Total</th>
+                    <th className="text-right font-medium px-3 py-2 w-20">Total</th>
                     <th className="px-2 py-2 w-20" />
                   </tr>
                 </thead>
