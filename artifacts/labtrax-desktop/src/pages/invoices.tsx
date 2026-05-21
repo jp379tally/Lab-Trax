@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useLocation } from "wouter";
 import { useAuth } from "@/lib/auth-context";
 import {
   AlertCircle,
@@ -10,6 +11,7 @@ import {
   Copy,
   CreditCard,
   Download,
+  ExternalLink,
   Eye,
   FileText,
   Loader2,
@@ -95,6 +97,7 @@ type SortDir = "asc" | "desc";
 
 export default function InvoicesPage() {
   const queryClient = useQueryClient();
+  const [, setLocation] = useLocation();
 
   const [search, setSearch] = useState(() => getUrlParam("q"));
   const [status, setStatus] = useState(() => getUrlParam("status") || "all");
@@ -500,7 +503,17 @@ export default function InvoicesPage() {
       </div>
 
       {editing && (
-        <InvoiceEditor invoice={editing} onClose={() => setEditing(null)} />
+        <InvoiceEditor
+          invoice={editing}
+          onClose={() => setEditing(null)}
+          onGoToCase={() => {
+            const caseId = editing.caseId;
+            setEditing(null);
+            if (caseId) {
+              setLocation(`/cases?caseId=${encodeURIComponent(caseId)}`);
+            }
+          }}
+        />
       )}
       {createOpen && (
         <CreateInvoiceDialog
@@ -526,11 +539,14 @@ export default function InvoicesPage() {
 export function InvoiceEditor({
   invoice,
   onClose,
+  onGoToCase,
 }: {
   invoice: Invoice;
   onClose: () => void;
+  onGoToCase?: () => void;
 }) {
   const queryClient = useQueryClient();
+  const [, setLocation] = useLocation();
   const { user } = useAuth();
   const isAdmin =
     user?.role === "owner" ||
@@ -990,6 +1006,22 @@ export function InvoiceEditor({
               className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             >
               <CreditCard size={14} /> Record Payment
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (onGoToCase) {
+                  onGoToCase();
+                } else if (invoice.caseId) {
+                  onClose();
+                  setLocation(`/cases?caseId=${encodeURIComponent(invoice.caseId)}`);
+                }
+              }}
+              disabled={!invoice.caseId}
+              title={invoice.caseId ? "Open the linked case" : "This invoice has no linked case"}
+              className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary disabled:opacity-50"
+            >
+              <ExternalLink size={14} /> Go to case
             </button>
             <div className="relative">
               <button

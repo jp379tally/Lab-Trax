@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from "react";
+import { useLocation } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
@@ -97,6 +98,7 @@ const LEFT_DEFAULT = 300;
 
 export default function CustomerCenterPage() {
   const queryClient = useQueryClient();
+  const [, setLocation] = useLocation();
   const { user } = useAuth();
 
   const isAdmin =
@@ -750,6 +752,15 @@ export default function CustomerCenterPage() {
             setEditingInvoice(null);
             queryClient.invalidateQueries({ queryKey: ["invoices"] });
           }}
+          onGoToCase={
+            editingInvoice.caseId
+              ? () => {
+                  const caseId = editingInvoice.caseId!;
+                  setEditingInvoice(null);
+                  setLocation(`/cases?caseId=${encodeURIComponent(caseId)}`);
+                }
+              : () => setEditingInvoice(null)
+          }
         />
       )}
 

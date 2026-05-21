@@ -1,4 +1,5 @@
 import { useMemo, useState, useEffect } from "react";
+import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, CalendarClock, ChevronDown, ChevronUp, Download, Eye, History, Loader2, Mail, MessageSquare, Printer, Receipt, Search, Send, X } from "lucide-react";
 import { ApiError, apiFetch } from "@/lib/api";
@@ -79,6 +80,7 @@ function isOverdue(inv: Invoice): boolean {
 }
 
 export default function StatementsPage() {
+  const [, setLocation] = useLocation();
   const invoicesQuery = useQuery({
     queryKey: ["invoices"],
     queryFn: () => apiFetch<Invoice[]>("/invoices"),
@@ -1490,6 +1492,7 @@ function StatementDrawer({
   filtersDescription?: string;
   onClose: () => void;
 }) {
+  const [, setLocation] = useLocation();
   const [orgId] = useSelectedOrg();
   const labOrgsQuery = useLabOrganizations();
   const labOrg = labOrgsQuery.data?.find((o) => o.id === orgId);
@@ -1843,6 +1846,15 @@ function StatementDrawer({
         <InvoiceEditor
           invoice={editingInvoice}
           onClose={() => setEditingInvoice(null)}
+          onGoToCase={
+            editingInvoice.caseId
+              ? () => {
+                  const caseId = editingInvoice.caseId!;
+                  setEditingInvoice(null);
+                  setLocation(`/cases?caseId=${encodeURIComponent(caseId)}`);
+                }
+              : () => setEditingInvoice(null)
+          }
         />
       )}
       {emailingInvoice && (

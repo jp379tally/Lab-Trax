@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useLocation } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -905,6 +906,8 @@ function readIteroActiveBatch(): { batchId: string; caseIds: string[]; importedA
 }
 
 export default function CasesPage() {
+  const [, setLocation] = useLocation();
+
   const { data, isLoading, error } = useQuery({
     queryKey: ["cases"],
     queryFn: () => apiFetch<LabCase[]>("/cases"),
@@ -927,6 +930,24 @@ export default function CasesPage() {
   const [iteroActiveBatch, setIteroActiveBatch] = useState<{ batchId: string; caseIds: string[]; importedAt: string; label: string } | null>(null);
   const pageRef = useRef<HTMLDivElement>(null);
   const scrollRestoredRef = useRef(false);
+  const deepLinkOpenedRef = useRef(false);
+
+  // Deep-link: if the URL contains ?caseId=<id>, auto-open that case in the drawer.
+  useEffect(() => {
+    if (deepLinkOpenedRef.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const targetId = params.get("caseId");
+    if (!targetId || isLoading) return;
+    deepLinkOpenedRef.current = true;
+    const found = data?.find((c) => c.id === targetId);
+    if (found) {
+      setSelected(found);
+    } else {
+      apiFetch<LabCase>(`/cases/${targetId}`)
+        .then((fresh) => setSelected(fresh))
+        .catch(() => {/* case not found or inaccessible */});
+    }
+  }, [data, isLoading]);
 
   useEffect(() => {
     const batch = readIteroActiveBatch();
@@ -1295,7 +1316,15 @@ export default function CasesPage() {
       {selected && (
         <CaseDrawer
           labCase={selected}
-          onClose={() => setSelected(null)}
+          onClose={() => {
+            setSelected(null);
+            const params = new URLSearchParams(window.location.search);
+            if (params.has("caseId")) {
+              params.delete("caseId");
+              const newSearch = params.toString();
+              setLocation(`/cases${newSearch ? `?${newSearch}` : ""}`);
+            }
+          }}
           doctorNames={distinctDoctorNames}
           patientLastNames={distinctPatientLastNames}
           onOpenCaseId={async (id) => {
