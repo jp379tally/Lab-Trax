@@ -122,6 +122,10 @@ export default function CaseDetailScreen() {
     aiImportSource?: string | null;
     remakeOriginal?: RemakeRef | null;
     remakeChildren?: RemakeRef[];
+    providerOrganizationId?: string | null;
+    suggestedProviderOrgId?: string | null;
+    suggestedPracticeName?: string | null;
+    suggestedDoctorName?: string | null;
     [key: string]: unknown;
   };
   type CaseAttachment = {
@@ -135,6 +139,9 @@ export default function CaseDetailScreen() {
     uploaderName?: string | null;
   };
   const [fullCaseData, setFullCaseData] = useState<FullCaseData | null>(null);
+  // Latches to prevent the AI-suggested-practice auto-fill from looping
+  // when the PATCH response refreshes fullCaseData on the next poll.
+  const aiAutoLinkAttemptedRef = useRef(false);
   const [originalActivityLog, setOriginalActivityLog] = useState<ActivityEntry[]>([]);
   const [originalCaseNumber, setOriginalCaseNumber] = useState<string | null>(null);
   const [serverAttachments, setServerAttachments] = useState<CaseAttachment[]>([]);
@@ -1402,6 +1409,75 @@ export default function CaseDetailScreen() {
                   </Text>
                 </Pressable>
               ))}
+            </View>
+          );
+        })()}
+        {(() => {
+          const suggestedOrgId = fullCaseData?.suggestedProviderOrgId ?? null;
+          const currentOrgId = fullCaseData?.providerOrganizationId ?? null;
+          if (!suggestedOrgId) return null;
+          if (suggestedOrgId === currentOrgId) return null;
+          const suggestedName = fullCaseData?.suggestedPracticeName || "AI-suggested practice";
+          const hasCurrent = !!currentOrgId;
+          const acceptSuggestion = async () => {
+            try {
+              await resilientFetch(`/api/cases/${encodeURIComponent(String(id))}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  providerOrganizationId: suggestedOrgId,
+                  providerLinkSource: "ai_suggestion",
+                  clearSuggestion: true,
+                }),
+              });
+              setFullCaseData((prev) =>
+                prev
+                  ? {
+                      ...prev,
+                      providerOrganizationId: suggestedOrgId,
+                      suggestedProviderOrgId: null,
+                      suggestedPracticeName: null,
+                    }
+                  : prev
+              );
+            } catch (err: any) {
+              Alert.alert("Could not link practice", err?.message || "Try again later.");
+            }
+          };
+          // Auto-fill once when no practice is linked yet — fire and forget.
+          if (!hasCurrent && !aiAutoLinkAttemptedRef.current) {
+            aiAutoLinkAttemptedRef.current = true;
+            acceptSuggestion();
+            return null;
+          }
+          return (
+            <View style={{
+              marginHorizontal: 16,
+              marginTop: 12,
+              padding: 12,
+              borderRadius: 10,
+              backgroundColor: "#EEF2FF",
+              borderLeftWidth: 4,
+              borderLeftColor: "#4F46E5",
+              flexDirection: "row",
+              alignItems: "flex-start",
+              gap: 10,
+            }}>
+              <MaterialCommunityIcons name="lightbulb-on-outline" size={18} color="#3730A3" style={{ marginTop: 1 }} />
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#3730A3" }}>
+                  AI-suggested practice
+                </Text>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#3730A3", marginTop: 2 }}>
+                  {suggestedName}
+                </Text>
+              </View>
+              <Pressable
+                onPress={acceptSuggestion}
+                style={{ paddingHorizontal: 10, paddingVertical: 6, backgroundColor: "#4F46E5", borderRadius: 6 }}
+              >
+                <Text style={{ color: "white", fontSize: 11, fontFamily: "Inter_600SemiBold" }}>Use suggestion</Text>
+              </Pressable>
             </View>
           );
         })()}

@@ -4749,6 +4749,46 @@ interface IteroImportSession {
   caseIds: string[];
 }
 
+function IteroAutoLinkToggle({ labOrgId }: { labOrgId: string }) {
+  const qc = useQueryClient();
+  const settingQuery = useQuery({
+    queryKey: ["itero-auto-link-setting", labOrgId],
+    queryFn: () => apiFetch<{ labOrganizationId: string; autoLinkSuggestedPractice: boolean }>(
+      `/cases/itero-settings/${encodeURIComponent(labOrgId)}`,
+    ),
+    enabled: !!labOrgId,
+  });
+  const mutation = useMutation({
+    mutationFn: (next: boolean) =>
+      apiFetch(`/cases/itero-settings/${encodeURIComponent(labOrgId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autoLinkSuggestedPractice: next }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["itero-auto-link-setting", labOrgId] });
+    },
+  });
+
+  if (!labOrgId) return null;
+  const enabled = !!settingQuery.data?.autoLinkSuggestedPractice;
+
+  return (
+    <label className="mt-1 flex items-start gap-2 text-sm">
+      <input
+        type="checkbox"
+        className="mt-0.5"
+        checked={enabled}
+        disabled={settingQuery.isLoading || mutation.isPending}
+        onChange={(e) => mutation.mutate(e.target.checked)}
+      />
+      <span className="text-muted-foreground">
+        Auto-link AI-suggested practice when the suggestion differs from the default above. Manual review is still possible — the case will show the link source as &ldquo;AI suggestion&rdquo; in the audit log.
+      </span>
+    </label>
+  );
+}
+
 function IteroPanel() {
   const electron = (typeof window !== "undefined" ? (window as ElectronWindow).electronAPI : null);
   const itero = electron?.itero;
@@ -4963,6 +5003,7 @@ function IteroPanel() {
           <p className="text-xs text-muted-foreground">
             Imported cases are created under this lab and assigned to the chosen provider. You can re-route any case after it&rsquo;s reviewed.
           </p>
+          <IteroAutoLinkToggle labOrgId={labOrgId} />
         </section>
 
         <section className="space-y-3">

@@ -363,6 +363,7 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
         body: JSON.stringify({
           providerOrganizationId: newProviderId || null,
           clearSuggestion: true,
+          ...(opts.aiAuto ? { providerLinkSource: "ai_suggestion" } : {}),
         }),
         headers: { "Content-Type": "application/json" },
       });

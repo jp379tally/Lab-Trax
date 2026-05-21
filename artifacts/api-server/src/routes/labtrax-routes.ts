@@ -2057,6 +2057,17 @@ export async function registerRoutes(): Promise<IRouter> {
       // Sort chronologically
       activityLog.sort((a, b) => a.timestamp - b.timestamp);
 
+      // Resolve the suggested practice name so the mobile banner can render it
+      // without a second round-trip — mirrors the canonical /api/cases/:id shape.
+      let suggestedPracticeName: string | null = null;
+      const suggestedProviderOrgId = (dc as any).suggestedProviderOrgId ?? null;
+      if (suggestedProviderOrgId) {
+        const suggestedOrg = await db.query.organizations.findFirst({
+          where: eq(organizations.id, suggestedProviderOrgId),
+        });
+        suggestedPracticeName = suggestedOrg?.name ?? null;
+      }
+
       const synthesized: any = {
         id: dc.id,
         caseNumber: dc.caseNumber ?? "",
@@ -2079,6 +2090,10 @@ export async function registerRoutes(): Promise<IRouter> {
         remakeOfCaseId: dc.remakeOfCaseId ?? null,
         remakeReason: dc.remakeReason ?? null,
         remakeCharged: dc.remakeCharged ?? null,
+        providerOrganizationId: dc.providerOrganizationId ?? null,
+        suggestedProviderOrgId,
+        suggestedPracticeName,
+        suggestedDoctorName: (dc as any).suggestedDoctorName ?? null,
         photos: [],
         activityLog,
         _sourceTable: "cases",

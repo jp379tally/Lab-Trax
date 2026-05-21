@@ -22,6 +22,7 @@ import {
   organizationConnections,
   organizationMemberships,
   organizations,
+  systemSettings,
   users,
 } from "@workspace/db";
 import multer from "multer";
@@ -2039,6 +2040,14 @@ const updateCaseSchema = z.object({
   providerOrganizationId: z.union([z.string(), z.null()]).optional(),
   /** When true, clears suggestedDoctorName + suggestedProviderOrgId on the case. */
   clearSuggestion: z.boolean().optional(),
+  /**
+   * Marks the source of a providerOrganizationId change so the audit log can
+   * distinguish AI-suggestion accepts from manual edits. Used by the desktop
+   * batch importer, the desktop case drawer "Use this doctor" button, and
+   * the mobile case detail "Use suggestion" / auto-fill flow. Defaults to
+   * "manual" when omitted.
+   */
+  providerLinkSource: z.enum(["ai_suggestion", "manual"]).optional(),
   bridgeConnectors: z.string().optional(),
 });
 
@@ -2189,14 +2198,50 @@ router.patch(
       });
     }
 
+    // When a provider org change is marked as originating from an AI
+    // suggestion (mobile auto-fill, mobile "Use suggestion", desktop "Use
+    // this doctor", or desktop batch importer accept), emit a distinct
+    // case event + audit-log action so reverts are easy to find later.
+    const aiAutoLinkedProvider =
+      input.providerLinkSource === "ai_suggestion" &&
+      input.providerOrganizationId !== undefined &&
+      input.providerOrganizationId !== null &&
+      input.providerOrganizationId !== "" &&
+      input.providerOrganizationId !== found.providerOrganizationId;
+    if (aiAutoLinkedProvider) {
+      const user = (req as any).user;
+      await db.insert(caseEvents).values({
+        caseId: found.id,
+        eventType: "provider_auto_linked_from_ai",
+        actorUserId: (req as any).auth.userId,
+        actorOrganizationId: found.labOrganizationId,
+        actorInitials: user?.initials || "SYS",
+        metadataJson: {
+          fromProviderOrgId: found.providerOrganizationId,
+          toProviderOrgId: input.providerOrganizationId,
+          suggestedProviderOrgId: found.suggestedProviderOrgId,
+          suggestedPracticeName: (found as any).suggestedPracticeName ?? null,
+        },
+      });
+    }
+
     await writeAuditLog({
       req,
       organizationId: found.labOrganizationId,
-      action: "case_updated",
+      action: aiAutoLinkedProvider
+        ? "case_provider_auto_linked_from_ai"
+        : "case_updated",
       entityType: "case",
       entityId: found.id,
       beforeJson: found,
       afterJson: updated,
+      metadataJson: aiAutoLinkedProvider
+        ? {
+            providerLinkSource: "ai_suggestion",
+            fromProviderOrgId: found.providerOrganizationId,
+            toProviderOrgId: input.providerOrganizationId,
+          }
+        : undefined,
     });
 
     // ── Bridge-connector change: re-price affected pontics ──
@@ -3447,6 +3492,44 @@ async function extractRxFieldsFromBuffer(
   }
 }
 
+// ── Per-lab iTero auto-link-suggested-practice setting ───────────────────────
+//
+// Stored in the global `system_settings` key/value table, keyed per lab so
+// each lab can independently opt in/out of letting the iTero auto-poller
+// override the desktop poller's default provider with the AI-suggested one.
+// Default = OFF (caller must explicitly enable it per-lab in Settings →
+// iTero auto-import).
+const ITERO_AUTO_LINK_SETTING_PREFIX = "itero_auto_link_practice:";
+function iteroAutoLinkSettingKey(labOrgId: string): string {
+  return `${ITERO_AUTO_LINK_SETTING_PREFIX}${labOrgId}`;
+}
+async function getIteroAutoLinkSuggestedPractice(
+  labOrgId: string,
+): Promise<boolean> {
+  if (!labOrgId) return false;
+  const row = await db.query.systemSettings.findFirst({
+    where: eq(systemSettings.key, iteroAutoLinkSettingKey(labOrgId)),
+  });
+  return row?.value === "true";
+}
+async function setIteroAutoLinkSuggestedPractice(
+  labOrgId: string,
+  enabled: boolean,
+  _updatedByUserId: string | null,
+): Promise<void> {
+  const key = iteroAutoLinkSettingKey(labOrgId);
+  const value = enabled ? "true" : "false";
+  // systemSettings only persists key/value/updatedAt — the actor identity is
+  // captured in the audit log entry written by the PUT handler instead.
+  await db
+    .insert(systemSettings)
+    .values({ key, value })
+    .onConflictDoUpdate({
+      target: systemSettings.key,
+      set: { value, updatedAt: new Date() },
+    });
+}
+
 const iteroImportBodySchema = z.object({
   iteroOrderId: z.string().min(1, "iteroOrderId is required"),
   labOrganizationId: z.string().min(1, "labOrganizationId is required"),
@@ -3612,6 +3695,23 @@ router.post(
       }
     }
 
+    // ── Per-lab opt-in: auto-link the AI-suggested practice on creation ──
+    // When the lab has enabled the "auto-link AI-suggested practice" toggle
+    // AND the similarity match returned a non-empty suggestion that differs
+    // from the poller's default provider, prefer the AI's choice. The
+    // suggestion field is cleared because it has now been applied; a
+    // dedicated case event records the auto-link so reverts are easy.
+    let effectiveProviderOrgId: string = body.providerOrganizationId;
+    let autoLinkedFromAi = false;
+    if (
+      suggestedProviderOrgId &&
+      suggestedProviderOrgId !== body.providerOrganizationId &&
+      (await getIteroAutoLinkSuggestedPractice(body.labOrganizationId))
+    ) {
+      effectiveProviderOrgId = suggestedProviderOrgId;
+      autoLinkedFromAi = true;
+    }
+
     let dueDate: Date | null = null;
     if (extracted.dueDate) {
       const parsed = new Date(extracted.dueDate);
@@ -3721,7 +3821,7 @@ router.post(
         .values({
           caseNumber,
           labOrganizationId: body.labOrganizationId,
-          providerOrganizationId: body.providerOrganizationId,
+          providerOrganizationId: effectiveProviderOrgId,
           patientFirstName,
           patientLastName,
           doctorName,
@@ -3733,7 +3833,10 @@ router.post(
           aiImportSource: "itero",
           externalPatientId: body.iteroOrderId,
           suggestedDoctorName,
-          suggestedProviderOrgId,
+          // When the per-lab "auto-link suggested practice" setting fired,
+          // the suggestion has been applied — null it out so the review
+          // banner doesn't re-prompt the reviewer with a now-stale choice.
+          suggestedProviderOrgId: autoLinkedFromAi ? null : suggestedProviderOrgId,
         })
         .returning();
 
@@ -3796,6 +3899,22 @@ router.post(
           attachmentId: attachment?.id,
         },
       });
+
+      if (autoLinkedFromAi) {
+        await tx.insert(caseEvents).values({
+          caseId: createdCase.id,
+          eventType: "provider_auto_linked_from_ai",
+          actorUserId: userId,
+          actorOrganizationId: body.labOrganizationId,
+          actorInitials: user?.initials || "SYS",
+          metadataJson: {
+            source: "itero_auto_poller",
+            fromProviderOrgId: body.providerOrganizationId,
+            toProviderOrgId: effectiveProviderOrgId,
+            suggestedDoctorName,
+          },
+        });
+      }
 
       // ── Auto-create draft invoice from the AI-extracted restorations ──
       // Marked aiGenerated=true so the desktop UI shows a sparkle badge and
@@ -5141,6 +5260,20 @@ async function processOneIteroZipFile(
     if (bestMatch) { suggestedDoctorName = bestMatch.doctorName; suggestedProviderOrgId = bestMatch.providerOrganizationId; }
   }
 
+  // Per-lab opt-in: prefer AI-suggested practice over the poller's default
+  // when the per-lab "auto-link suggested practice" setting is enabled.
+  // Mirrors the same gating used in processOneIteroRxPdf above.
+  let effectiveProviderOrgId: string | null = body.providerOrganizationId || null;
+  let autoLinkedFromAi = false;
+  if (
+    suggestedProviderOrgId &&
+    suggestedProviderOrgId !== effectiveProviderOrgId &&
+    (await getIteroAutoLinkSuggestedPractice(body.labOrganizationId))
+  ) {
+    effectiveProviderOrgId = suggestedProviderOrgId;
+    autoLinkedFromAi = true;
+  }
+
   let dueDate: Date | null = null;
   if (extracted.dueDate) {
     const parsed = new Date(extracted.dueDate);
@@ -5188,13 +5321,18 @@ async function processOneIteroZipFile(
     const [createdCase] = await tx.insert(cases).values({
       caseNumber,
       labOrganizationId: body.labOrganizationId,
-      providerOrganizationId: body.providerOrganizationId || null,
+      providerOrganizationId: effectiveProviderOrgId,
       patientFirstName, patientLastName, doctorName,
       status: "received",
       priority: extracted.isRush ? "rush" : "normal",
       dueDate, createdByUserId: userId, needsAiReview: true, aiImportSource: "itero",
       externalPatientId: iteroOrderId,
-      ...({ suggestedDoctorName, suggestedProviderOrgId } as any),
+      ...({
+        suggestedDoctorName,
+        // Clear the suggestion field once it's been auto-applied so the
+        // review banner doesn't keep re-prompting for a now-stale choice.
+        suggestedProviderOrgId: autoLinkedFromAi ? null : suggestedProviderOrgId,
+      } as any),
     }).returning();
 
     if (prebuiltRestorations.length > 0) {
@@ -5226,6 +5364,22 @@ async function processOneIteroZipFile(
       actorInitials: user?.initials || "SYS",
       metadataJson: { iteroOrderId, source: "zip_batch", aiExtracted: Object.keys(extracted ?? {}), attachmentId: attachment?.id, extraFileCount: otherEntries.length },
     });
+
+    if (autoLinkedFromAi) {
+      await tx.insert(caseEvents).values({
+        caseId: createdCase.id,
+        eventType: "provider_auto_linked_from_ai",
+        actorUserId: userId,
+        actorOrganizationId: body.labOrganizationId,
+        actorInitials: user?.initials || "SYS",
+        metadataJson: {
+          source: "itero_zip_batch",
+          fromProviderOrgId: body.providerOrganizationId || null,
+          toProviderOrgId: effectiveProviderOrgId,
+          suggestedDoctorName,
+        },
+      });
+    }
 
     // Auto-create draft invoice
     let autoInvoiceId: string | null = null;
@@ -5945,6 +6099,56 @@ router.post(
 
     return ok(res, { results }, 207);
   }),
+);
+
+// ── iTero per-lab auto-link setting endpoints ────────────────────────────────
+//
+// Read/write the per-lab toggle that gates whether the iTero auto-poller
+// (`/cases/import-from-itero-rx`) and the desktop ZIP batch importer
+// (`/cases/import-itero-zip-batch`) override the poller's default
+// providerOrganizationId with the AI-suggested one when the similarity
+// match returns a different practice. Lab membership required for GET,
+// admin role for PUT.
+
+router.get(
+  "/itero-settings/:labOrganizationId",
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId as string;
+    const labOrganizationId = req.params.labOrganizationId as string;
+    await requireMembership(userId, labOrganizationId);
+    const autoLinkSuggestedPractice =
+      await getIteroAutoLinkSuggestedPractice(labOrganizationId);
+    return ok(res, { labOrganizationId, autoLinkSuggestedPractice });
+  })
+);
+
+router.put(
+  "/itero-settings/:labOrganizationId",
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId as string;
+    const labOrganizationId = req.params.labOrganizationId as string;
+    await requireAnyRole(userId, labOrganizationId, ADMIN_ROLES);
+    const input = z
+      .object({ autoLinkSuggestedPractice: z.boolean() })
+      .parse(req.body ?? {});
+    await setIteroAutoLinkSuggestedPractice(
+      labOrganizationId,
+      input.autoLinkSuggestedPractice,
+      userId,
+    );
+    await writeAuditLog({
+      req,
+      organizationId: labOrganizationId,
+      action: "itero_auto_link_setting_updated",
+      entityType: "organization",
+      entityId: labOrganizationId,
+      afterJson: { autoLinkSuggestedPractice: input.autoLinkSuggestedPractice },
+    });
+    return ok(res, {
+      labOrganizationId,
+      autoLinkSuggestedPractice: input.autoLinkSuggestedPractice,
+    });
+  })
 );
 
 export default router;

@@ -1699,7 +1699,10 @@ export function CaseDrawer({
         body: JSON.stringify({
           doctorName: data?.suggestedDoctorName,
           ...(data?.suggestedProviderOrgId
-            ? { providerOrganizationId: data.suggestedProviderOrgId }
+            ? {
+                providerOrganizationId: data.suggestedProviderOrgId,
+                providerLinkSource: "ai_suggestion",
+              }
             : {}),
           clearSuggestion: true,
         }),
