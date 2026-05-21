@@ -1407,6 +1407,12 @@ type DetailedCase = LabCase & {
 
 function formatEventType(eventType: string | undefined | null): string {
   if (!eventType) return "Event";
+  // The "Locate Case" UI changes the case's workflow stage via
+  // PATCH /cases/:id { status }, which the server records as a
+  // "status_changed" event. To users that action is "locating" the
+  // case at a station, so surface it as "Location Changed" in the
+  // history feed (and in the printed history below).
+  if (eventType === "status_changed") return "Location Changed";
   return eventType
     .replace(/_/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());

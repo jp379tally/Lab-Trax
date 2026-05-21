@@ -58,6 +58,10 @@ function openPrintWindow(opts: {
 
 function formatEventTitle(eventType: string | null | undefined): string {
   if (!eventType) return "Event";
+  // Mirror the in-app label: the desktop "Locate Case" action records
+  // a status_changed event, but users think of it as locating the case
+  // at a station — show it as "Location Changed" in the printed history.
+  if (eventType === "status_changed") return "Location Changed";
   return eventType
     .replace(/_/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
