@@ -12,6 +12,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Document, Page, pdfjs } from "react-pdf";
 import pdfWorkerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import {
+  Box,
   CheckCircle,
   ChevronLeft,
   ChevronRight,
@@ -19,6 +20,7 @@ import {
   ExternalLink,
   FileText,
   Film,
+  Grid3x3,
   History,
   Image as ImageIcon,
   Inbox,
@@ -26,6 +28,7 @@ import {
   Loader2,
   Maximize2,
   Minus,
+  Palette,
   Pencil,
   Plus,
   RefreshCw,
@@ -35,10 +38,211 @@ import {
 } from "lucide-react";
 
 pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerSrc;
-import { apiFetch, ApiError } from "@/lib/api";
+import {
+  arrayBufferToBase64,
+  buildViewerHtml,
+  SCAN_DISPLAY_MODES,
+  type ScanDisplayMode,
+  type ScanFormat,
+} from "@workspace/scan-viewer";
+import { apiFetch, ApiError, getAccessToken } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { formatDate, relativeTime } from "@/lib/format";
 import type { LabCase } from "@/lib/types";
+
+const SCAN_EXT_TO_FORMAT: Record<string, ScanFormat> = {
+  ".ply": "ply",
+  ".stl": "stl",
+  ".obj": "obj",
+};
+
+function detectScanFormat(file: PendingFile): ScanFormat | null {
+  const lower = file.fileName.toLowerCase();
+  for (const [ext, fmt] of Object.entries(SCAN_EXT_TO_FORMAT)) {
+    if (lower.endsWith(ext)) return fmt;
+  }
+  const mt = (file.mimeType ?? "").toLowerCase();
+  if (mt === "model/ply") return "ply";
+  if (mt === "model/stl" || mt === "application/sla") return "stl";
+  if (mt === "model/obj") return "obj";
+  return null;
+}
+
+const SCAN_MODE_LABELS: Record<ScanDisplayMode, string> = {
+  solid: "Solid",
+  wireframe: "Wireframe",
+  shaded: "Shaded",
+};
+
+function ScanModeIcon({ mode, size = 14 }: { mode: ScanDisplayMode; size?: number }) {
+  if (mode === "wireframe") return <Grid3x3 size={size} />;
+  if (mode === "shaded") return <Palette size={size} />;
+  return <Box size={size} />;
+}
+
+function ScanPreview({
+  fileUrl,
+  fileName,
+  format,
+}: {
+  fileUrl: string;
+  fileName: string;
+  format: ScanFormat;
+}) {
+  const [loadState, setLoadState] = useState<
+    "downloading" | "rendering" | "error"
+  >("downloading");
+  const [htmlSource, setHtmlSource] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string>("");
+  const [displayMode, setDisplayMode] = useState<ScanDisplayMode>("solid");
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const hasFailed = useRef(false);
+
+  const srcDoc = useMemo(() => htmlSource ?? "", [htmlSource]);
+
+  useEffect(() => {
+    hasFailed.current = false;
+    setLoadState("downloading");
+    setHtmlSource(null);
+    setErrorMsg("");
+    setDisplayMode("solid");
+
+    const controller = new AbortController();
+    (async () => {
+      try {
+        const headers: Record<string, string> = {};
+        const token = getAccessToken();
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+        const res = await fetch(fileUrl, {
+          headers,
+          signal: controller.signal,
+        });
+        if (!res.ok) {
+          setLoadState("error");
+          setErrorMsg(`Download failed (status ${res.status}).`);
+          return;
+        }
+        const buffer = await res.arrayBuffer();
+        if (controller.signal.aborted) return;
+        const base64 = arrayBufferToBase64(buffer);
+        setHtmlSource(buildViewerHtml(base64, format));
+        setLoadState("rendering");
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        setLoadState("error");
+        setErrorMsg(
+          err instanceof Error ? err.message : "Could not load the scan file.",
+        );
+      }
+    })();
+
+    return () => {
+      controller.abort();
+    };
+  }, [fileUrl, format]);
+
+  useEffect(() => {
+    function onMessage(e: MessageEvent) {
+      // Only react to messages from this component's own iframe — otherwise a
+      // sibling viewer (e.g. ScanViewerModal on the case-detail page) emitting
+      // a parse-error could flip this preview into the error state too.
+      const ownWindow = iframeRef.current?.contentWindow;
+      if (!ownWindow || e.source !== ownWindow) return;
+      if (!e.data || typeof e.data !== "string") return;
+      try {
+        const msg = JSON.parse(e.data) as { type?: string; message?: string };
+        if (msg.type === "error" && !hasFailed.current) {
+          hasFailed.current = true;
+          setLoadState("error");
+          setErrorMsg(
+            msg.message === "parse_failed"
+              ? "Could not parse this scan file."
+              : msg.message || "Could not render the scan file.",
+          );
+        }
+      } catch {
+        // ignore non-JSON messages
+      }
+    }
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+
+  function cycleDisplayMode() {
+    const i = SCAN_DISPLAY_MODES.indexOf(displayMode);
+    const next = SCAN_DISPLAY_MODES[(i + 1) % SCAN_DISPLAY_MODES.length]!;
+    setDisplayMode(next);
+    iframeRef.current?.contentWindow?.postMessage(
+      { type: "setDisplayMode", mode: next },
+      "*",
+    );
+  }
+
+  if (loadState === "error") {
+    return (
+      <div className="flex flex-col items-center justify-center text-center gap-3 py-16 px-6 bg-secondary/30 min-h-[20rem]">
+        <FileTypeIcon
+          mimeType="model/ply"
+          className="text-muted-foreground"
+        />
+        <div>
+          <p className="text-sm font-medium">Couldn't render 3D scan</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            {errorMsg || "An unknown error occurred."}
+          </p>
+        </div>
+        <a
+          href={fileUrl}
+          download={fileName}
+          target="_blank"
+          rel="noreferrer"
+          className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium"
+        >
+          <Download size={13} />
+          Download file
+        </a>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col bg-zinc-900 min-h-[20rem]">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-white/10">
+        <button
+          type="button"
+          onClick={cycleDisplayMode}
+          disabled={loadState !== "rendering"}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-white/10 hover:bg-white/15 disabled:opacity-50 text-zinc-100 text-xs font-medium"
+          title="Cycle display mode"
+          aria-label={`Display mode: ${SCAN_MODE_LABELS[displayMode]}. Click to cycle.`}
+        >
+          <ScanModeIcon mode={displayMode} />
+          {SCAN_MODE_LABELS[displayMode]}
+        </button>
+        <span className="text-[11px] text-zinc-500 hidden sm:inline">
+          Drag to rotate · Shift+drag to pan · Scroll to zoom
+        </span>
+      </div>
+      <div className="relative h-[60vh] max-h-[70vh] bg-zinc-900">
+        {loadState === "downloading" && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-zinc-400">
+            <Loader2 size={28} className="animate-spin" />
+            <div className="text-sm">Loading 3D scan…</div>
+          </div>
+        )}
+        {loadState === "rendering" && htmlSource && (
+          <iframe
+            ref={iframeRef}
+            title={`3D viewer: ${fileName}`}
+            srcDoc={srcDoc}
+            sandbox="allow-scripts"
+            className="absolute inset-0 w-full h-full border-0 bg-zinc-900"
+          />
+        )}
+      </div>
+    </div>
+  );
+}
 
 export interface PendingFile {
   id: string;
@@ -589,6 +793,13 @@ function PdfPreview({ fileUrl, fileName }: { fileUrl: string; fileName: string }
 
 function PreviewBody({ file }: { file: PendingFile }) {
   const { mimeType, fileUrl, fileName } = file;
+
+  const scanFormat = detectScanFormat(file);
+  if (scanFormat) {
+    return (
+      <ScanPreview fileUrl={fileUrl} fileName={fileName} format={scanFormat} />
+    );
+  }
 
   if (mimeType.startsWith("image/")) {
     return <ImagePreview fileUrl={fileUrl} fileName={fileName} />;
