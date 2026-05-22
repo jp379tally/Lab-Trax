@@ -2792,14 +2792,17 @@ export function CaseDrawer({
                                 : "—"
                             }
                           />
-                          {summary.shades.length > 0 && (
-                            <Field
-                              label={
-                                summary.shades.length > 1 ? "Shades" : "Shade"
-                              }
-                              value={summary.shades.join(", ")}
-                            />
-                          )}
+                          <Field
+                            label={
+                              summary.shades.length > 1 ? "Shades" : "Shade"
+                            }
+                            value={
+                              summary.shades.length > 0
+                                ? summary.shades.join(", ")
+                                : "—"
+                            }
+                          />
+
                           <div className="col-span-2">
                             <Field
                               label={

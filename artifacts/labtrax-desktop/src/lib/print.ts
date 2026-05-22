@@ -545,13 +545,16 @@ export function printCaseCard(
 </div>`;
 
   const teethKey = summary.isFullArch ? "Tooth Coverage" : "Tooth Number(s)";
+  // Always render all four Rx slots so it's obvious at a glance whether a
+  // field is set or missing on the label — print "—" for empty values
+  // instead of hiding the row.
   const rxGrid = `
 <div class="lt-card-section">RX Summary</div>
 <div class="lt-card-grid">
-  ${restorativeType ? `<div class="lt-card-field"><span class="lt-card-key">Restorative Type</span><span class="lt-card-val">${escapeHtml(restorativeType)}</span></div>` : ""}
-  ${teethLabel ? `<div class="lt-card-field"><span class="lt-card-key">${escapeHtml(teethKey)}</span><span class="lt-card-val">${escapeHtml(teethLabel)}</span></div>` : ""}
-  ${materialLabel ? `<div class="lt-card-field"><span class="lt-card-key">Material</span><span class="lt-card-val">${escapeHtml(materialLabel)}</span></div>` : ""}
-  ${shadeLabel ? `<div class="lt-card-field"><span class="lt-card-key">${escapeHtml(summary.shades.length > 1 ? "Shades" : "Shade")}</span><span class="lt-card-val">${escapeHtml(shadeLabel)}</span></div>` : ""}
+  <div class="lt-card-field"><span class="lt-card-key">Restorative Type</span><span class="lt-card-val">${escapeHtml(restorativeType || "—")}</span></div>
+  <div class="lt-card-field"><span class="lt-card-key">${escapeHtml(teethKey)}</span><span class="lt-card-val">${escapeHtml(teethLabel || "—")}</span></div>
+  <div class="lt-card-field"><span class="lt-card-key">Material</span><span class="lt-card-val">${escapeHtml(materialLabel || "—")}</span></div>
+  <div class="lt-card-field"><span class="lt-card-key">${escapeHtml(summary.shades.length > 1 ? "Shades" : "Shade")}</span><span class="lt-card-val">${escapeHtml(shadeLabel || "—")}</span></div>
 </div>`;
 
   const toothChartSection = `
@@ -788,7 +791,7 @@ export function printCaseOverview(
 <div class="lt-ov-grid">
   <div class="lt-ov-field"><span class="lt-ov-key">Restorative type</span><span class="lt-ov-val">${escapeHtml(summary.restorativeType ?? "Other")}</span></div>
   <div class="lt-ov-field"><span class="lt-ov-key">${escapeHtml(summary.materials.length > 1 ? "Materials" : "Material")}</span><span class="lt-ov-val">${escapeHtml(summary.materials.length > 0 ? summary.materials.join(", ") : "—")}</span></div>
-  ${summary.shades.length > 0 ? `<div class="lt-ov-field"><span class="lt-ov-key">${escapeHtml(summary.shades.length > 1 ? "Shades" : "Shade")}</span><span class="lt-ov-val">${escapeHtml(summary.shades.join(", "))}</span></div>` : ""}
+  <div class="lt-ov-field"><span class="lt-ov-key">${escapeHtml(summary.shades.length > 1 ? "Shades" : "Shade")}</span><span class="lt-ov-val">${escapeHtml(summary.shades.length > 0 ? summary.shades.join(", ") : "—")}</span></div>
   <div class="lt-ov-field" style="grid-column:1/-1"><span class="lt-ov-key">${escapeHtml(teethKey)}</span><span class="lt-ov-val">${escapeHtml(teethLabel)}</span></div>
 </div>`;
   }
