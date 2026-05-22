@@ -1,5 +1,11 @@
 import printCss from "@/styles/print.css?raw";
 import { formatDate, formatDateTime, formatMoney, statusLabel } from "./format";
+import {
+  buildHighlightedToothValue,
+  deriveRxSummary,
+  formatRxTeethLabel,
+  formatRxTeethWithShades,
+} from "./rx-summary";
 import type {
   CaseAttachment,
   CaseEvent,
@@ -560,6 +566,245 @@ ${buildToothChart(selected)}`;
     title: `Case ${labCase.caseNumber} — Label`,
     bodyClass: "lt-card-page",
     extraCss: CARD_CSS,
+    body,
+  });
+}
+
+// ── Full Overview (letter-size, mirrors the on-screen Overview tab) ─────────
+
+const OVERVIEW_CSS = `
+@page { size: letter; margin: 0.55in; }
+
+.lt-ov-page {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #111;
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0;
+  padding: 0;
+}
+
+.lt-ov-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  border-bottom: 2px solid #111;
+  padding-bottom: 6px;
+  margin-bottom: 10px;
+}
+
+.lt-ov-case-num {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.lt-ov-header-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+
+.lt-ov-date { font-size: 10px; color: #555; }
+
+.lt-ov-badge {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border: 1px solid #333;
+  border-radius: 3px;
+  padding: 1px 6px;
+  color: #333;
+}
+.lt-ov-badge.rush { background: #b91c1c; border-color: #b91c1c; color: #fff; }
+
+.lt-ov-section {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: #555;
+  border-bottom: 1px solid #ddd;
+  padding-bottom: 2px;
+  margin: 14px 0 6px;
+}
+
+.lt-ov-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 18px;
+}
+
+.lt-ov-field { display: flex; flex-direction: column; gap: 1px; }
+.lt-ov-key {
+  font-size: 9px;
+  color: #777;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.lt-ov-val { font-size: 12px; font-weight: 500; color: #111; }
+
+.lt-ov-notes-empty {
+  font-size: 11px;
+  color: #777;
+  border: 1px dashed #ccc;
+  border-radius: 4px;
+  padding: 6px 10px;
+}
+.lt-ov-note {
+  border: 1px solid #e2e2e2;
+  border-radius: 4px;
+  padding: 6px 10px;
+  margin-bottom: 6px;
+  font-size: 11px;
+}
+.lt-ov-note-meta {
+  font-size: 9px;
+  color: #777;
+  margin-bottom: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.lt-ov-note-text { white-space: pre-wrap; }
+
+.lt-tooth-chart { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
+.lt-tooth-row { display: flex; gap: 3px; }
+.lt-tooth {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  border: 1px solid #bbb;
+  border-radius: 3px;
+  color: #555;
+  background: #fff;
+  box-sizing: border-box;
+}
+.lt-tooth.sel { background: #1e3a5f; border-color: #1e3a5f; color: #fff; font-weight: 700; }
+.lt-tooth-divider { height: 4px; border-top: 1px dashed #ccc; margin: 2px 0; }
+
+.lt-ov-footer {
+  font-size: 9px;
+  color: #888;
+  margin-top: 14px;
+  border-top: 1px solid #eee;
+  padding-top: 4px;
+}
+`;
+
+export function printCaseOverview(
+  labCase: LabCase,
+  extras: {
+    restorations?: CaseRestoration[];
+    notes?: Array<{
+      noteText?: string | null;
+      visibility?: string | null;
+      createdAt?: string | null;
+      authorName?: string | null;
+    }>;
+  } = {},
+): void {
+  const patient = `${labCase.patientFirstName ?? ""} ${
+    labCase.patientLastName ?? ""
+  }`.trim();
+  const isRush = labCase.priority === "rush";
+  const restorations = extras.restorations ?? [];
+  const summary = deriveRxSummary(restorations);
+  const teethLabel = formatRxTeethWithShades(
+    restorations,
+    formatRxTeethLabel(summary),
+  );
+  const highlighted = parseAdultTeeth(buildHighlightedToothValue(summary));
+
+  const badgeHtml = isRush
+    ? `<span class="lt-ov-badge rush">Rush</span>`
+    : `<span class="lt-ov-badge">${escapeHtml(statusLabel(labCase.status))}</span>`;
+
+  const header = `
+<div class="lt-ov-header">
+  <div class="lt-ov-case-num">Case ${escapeHtml(labCase.caseNumber)}</div>
+  <div class="lt-ov-header-right">
+    <span class="lt-ov-date">Printed ${escapeHtml(formatDate(new Date().toISOString()))}</span>
+    ${badgeHtml}
+  </div>
+</div>`;
+
+  const detailsGrid = `
+<div class="lt-ov-section">Case Details</div>
+<div class="lt-ov-grid">
+  <div class="lt-ov-field"><span class="lt-ov-key">Patient</span><span class="lt-ov-val">${escapeHtml(patient || "—")}</span></div>
+  <div class="lt-ov-field"><span class="lt-ov-key">Doctor</span><span class="lt-ov-val">${escapeHtml(labCase.doctorName || "—")}</span></div>
+  <div class="lt-ov-field"><span class="lt-ov-key">Status</span><span class="lt-ov-val">${escapeHtml(statusLabel(labCase.status))}</span></div>
+  <div class="lt-ov-field"><span class="lt-ov-key">Priority</span><span class="lt-ov-val">${escapeHtml(isRush ? "Rush" : "Normal")}</span></div>
+  <div class="lt-ov-field"><span class="lt-ov-key">Due Date</span><span class="lt-ov-val">${escapeHtml(formatDate(labCase.dueDate))}</span></div>
+  <div class="lt-ov-field"><span class="lt-ov-key">Created</span><span class="lt-ov-val">${escapeHtml(formatDate(labCase.createdAt))}</span></div>
+  ${labCase.casePanBarcode ? `<div class="lt-ov-field" style="grid-column:1/-1"><span class="lt-ov-key">Case pan barcode</span><span class="lt-ov-val">${escapeHtml(labCase.casePanBarcode)}</span></div>` : ""}
+</div>`;
+
+  const hasRx =
+    summary.restorativeType ||
+    summary.materials.length > 0 ||
+    summary.shades.length > 0 ||
+    summary.teeth.length > 0 ||
+    summary.isFullArch !== null;
+
+  let rxSection = `<div class="lt-ov-section">Rx Summary</div>`;
+  if (!hasRx) {
+    rxSection += `<div class="lt-ov-notes-empty">No restorations on this case yet.</div>`;
+  } else {
+    const teethKey = summary.isFullArch ? "Tooth coverage" : "Tooth number(s)";
+    rxSection += `
+<div class="lt-ov-grid">
+  <div class="lt-ov-field"><span class="lt-ov-key">Restorative type</span><span class="lt-ov-val">${escapeHtml(summary.restorativeType ?? "Other")}</span></div>
+  <div class="lt-ov-field"><span class="lt-ov-key">${escapeHtml(summary.materials.length > 1 ? "Materials" : "Material")}</span><span class="lt-ov-val">${escapeHtml(summary.materials.length > 0 ? summary.materials.join(", ") : "—")}</span></div>
+  ${summary.shades.length > 0 ? `<div class="lt-ov-field"><span class="lt-ov-key">${escapeHtml(summary.shades.length > 1 ? "Shades" : "Shade")}</span><span class="lt-ov-val">${escapeHtml(summary.shades.join(", "))}</span></div>` : ""}
+  <div class="lt-ov-field" style="grid-column:1/-1"><span class="lt-ov-key">${escapeHtml(teethKey)}</span><span class="lt-ov-val">${escapeHtml(teethLabel)}</span></div>
+</div>`;
+  }
+
+  // Notes
+  const notesArr = extras.notes ?? [];
+  let notesSection = `<div class="lt-ov-section">Notes</div>`;
+  if (notesArr.length === 0) {
+    notesSection += `<div class="lt-ov-notes-empty">No notes yet.</div>`;
+  } else {
+    const sorted = [...notesArr].sort((a, b) => {
+      const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return tb - ta;
+    });
+    notesSection += sorted
+      .map((n) => {
+        const when = n.createdAt ? formatDateTime(n.createdAt) : "";
+        const vis =
+          n.visibility === "internal_lab_only" ? "Lab only" : "Shared";
+        const author = n.authorName ? ` · ${escapeHtml(n.authorName)}` : "";
+        return `<div class="lt-ov-note">
+  <div class="lt-ov-note-meta">${escapeHtml(vis)}${author}${when ? ` · ${escapeHtml(when)}` : ""}</div>
+  <div class="lt-ov-note-text">${escapeHtml(n.noteText || "—")}</div>
+</div>`;
+      })
+      .join("");
+  }
+
+  const chartSection = hasRx
+    ? `<div class="lt-ov-section">Tooth Chart</div>${buildToothChart(highlighted)}`
+    : "";
+
+  const footer = `<div class="lt-ov-footer">LabTrax · Case ${escapeHtml(labCase.caseNumber)} · Printed ${escapeHtml(formatDateTime(new Date().toISOString()))}</div>`;
+
+  const body = `${header}${detailsGrid}${rxSection}${chartSection}${notesSection}${footer}`;
+
+  openPrintWindow({
+    title: `Case ${labCase.caseNumber} — Overview`,
+    bodyClass: "lt-ov-page",
+    extraCss: OVERVIEW_CSS,
     body,
   });
 }

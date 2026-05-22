@@ -43,6 +43,7 @@ import { formatDate, formatDateTime, formatMoney, formatPhone, relativeTime, sta
 import {
   printCaseCard,
   printCaseHistory,
+  printCaseOverview,
   printInvoice,
   printTabContent,
 } from "@/lib/print";
@@ -56,6 +57,7 @@ import {
   buildHighlightedToothValue,
   deriveRxSummary,
   formatRxTeethLabel,
+  formatRxTeethWithShades,
 } from "@/lib/rx-summary";
 import { StatusBadge } from "@/components/StatusBadge";
 import { InvoiceEditor } from "./invoices";
@@ -2588,9 +2590,14 @@ export function CaseDrawer({
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
-                      onClick={() => printCaseCard(data ?? labCase)}
+                      onClick={() =>
+                        printCaseOverview(data ?? labCase, {
+                          restorations: data?.restorations ?? [],
+                          notes: data?.notes ?? [],
+                        })
+                      }
                       className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                      title="Print case card"
+                      title="Print overview"
                     >
                       <Printer size={11} />
                       Print
@@ -2799,7 +2806,10 @@ export function CaseDrawer({
                                   ? "Tooth coverage"
                                   : "Tooth number(s)"
                               }
-                              value={formatRxTeethLabel(summary)}
+                              value={formatRxTeethWithShades(
+                                data?.restorations,
+                                formatRxTeethLabel(summary),
+                              )}
                             />
                           </div>
                         </div>

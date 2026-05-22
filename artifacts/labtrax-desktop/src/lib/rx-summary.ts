@@ -183,6 +183,30 @@ export function formatRxTeethLabel(summary: RxSummary): string {
 }
 
 /**
+ * Per-restoration "tooth — shade" label, e.g. "3 — A2, 14-16 — B1".
+ * Falls back to the plain teeth label when no restoration has a shade.
+ */
+export function formatRxTeethWithShades(
+  restorations: ReadonlyArray<CaseRestoration> | undefined | null,
+  fallback: string,
+): string {
+  if (!restorations || restorations.length === 0) return fallback;
+  const anyShade = restorations.some((r) => r.shade && r.shade.trim());
+  if (!anyShade) return fallback;
+  const parts: string[] = [];
+  const seen = new Set<string>();
+  for (const r of restorations) {
+    const tooth = (r.toothNumber || "").trim() || "—";
+    const shade = (r.shade || "").trim();
+    const label = shade ? `${tooth} — ${shade}` : tooth;
+    if (seen.has(label)) continue;
+    seen.add(label);
+    parts.push(label);
+  }
+  return parts.join(", ");
+}
+
+/**
  * Build a ToothChart `value` string that highlights every tooth covered by
  * the Rx summary — both individual teeth and any full arches.
  */
