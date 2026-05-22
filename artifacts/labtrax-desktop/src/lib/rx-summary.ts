@@ -193,10 +193,27 @@ export function formatRxTeethWithShades(
   if (!restorations || restorations.length === 0) return fallback;
   const anyShade = restorations.some((r) => r.shade && r.shade.trim());
   if (!anyShade) return fallback;
+  // If every shaded restoration is full-arch / blank tooth, we can't form a
+  // useful per-tooth label — fall back to the arch label and append the
+  // unique shades so the user still sees them inline.
+  const concreteShadedCount = restorations.filter(
+    (r) => (r.toothNumber || "").trim() && (r.shade || "").trim(),
+  ).length;
+  if (concreteShadedCount === 0) {
+    const shades = Array.from(
+      new Set(
+        restorations
+          .map((r) => (r.shade || "").trim())
+          .filter((s) => s.length > 0),
+      ),
+    );
+    return shades.length > 0 ? `${fallback} — ${shades.join(", ")}` : fallback;
+  }
   const parts: string[] = [];
   const seen = new Set<string>();
   for (const r of restorations) {
-    const tooth = (r.toothNumber || "").trim() || "—";
+    const tooth = (r.toothNumber || "").trim();
+    if (!tooth) continue; // arch-level / blank: skip — covered by fallback
     const shade = (r.shade || "").trim();
     const label = shade ? `${tooth} — ${shade}` : tooth;
     if (seen.has(label)) continue;
