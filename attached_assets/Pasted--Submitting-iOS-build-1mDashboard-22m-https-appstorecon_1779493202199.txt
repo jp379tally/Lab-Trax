@@ -1,0 +1,68 @@
+⌛️ Submitting iOS build...
+- [1mDashboard[22m:    https://appstoreconnect.apple.com/apps/6760672646/distribution
+- [1mApp[22m:          LabTrax (app.replit.labtrax)
+- [1mBuild number[22m: 114
+- [1mBinary path[22m:  ./ios/build/LabTrax.ipa
+[32m-------------------[0m
+[32m--- Step: pilot ---[0m
+[32m-------------------[0m
+Creating authorization token for App Store Connect API
+[32mReady to upload new build to TestFlight (App: 6760672646)...[0m
+Going to upload updated app to App Store Connect
+[32mThis might take a few minutes. Please don't interrupt the script.[0m
+[33m[altool] Running altool at path '/Applications/Xcode.app/Contents/SharedFrameworks/ContentDeliveryServices.framework/Frameworks/AppStoreService.framework/Support/altool'...
+[0m
+[33m[altool] 
+[0m
+[33m[altool] 2026-05-22 16:38:06.493 [1m[31mERROR: [altool.600002018140] [ContentDelivery.Uploader.600002018140] The provided entity includes an attribute with a value that has already been used (-19232) The bundle version must be higher than the previously uploaded version: ‘120’. (ID: d1e0cabd-fbd2-40ac-9e9c-65c848dc402d)
+[0m
+[33m[altool]    NSUnderlyingError : The provided entity includes an attribute with a value that has already been used (-19241) The bundle version must be higher than the previously uploaded version.
+[0m
+[33m[altool]       status : 409
+[0m
+[33m[altool]       detail : The bundle version must be higher than the previously uploaded version.
+[0m
+[33m[altool]       source : 
+[0m
+[33m[altool]          pointer : /data/attributes/cfBundleVersion
+[0m
+[33m[altool]       id : d1e0cabd-fbd2-40ac-9e9c-65c848dc402d
+[0m
+[33m[altool]       code : ENTITY_ERROR.ATTRIBUTE.INVALID.DUPLICATE
+[0m
+[33m[altool]       title : The provided entity includes an attribute with a value that has already been used
+[0m
+[33m[altool]       meta : 
+[0m
+[33m[altool]          previousBundleVersion : 120
+[0m
+[33m[altool]    previousBundleVersion : 120
+[0m
+[33m[altool]    iris-code : ENTITY_ERROR.ATTRIBUTE.INVALID.DUPLICATE[0m
+[0m
+[33m[altool] 2026-05-22 16:38:06.496 [1m[31mERROR: [altool.600002018140] Error uploading '/var/folders/5_/4knlryn57n39p2c_jw8567z00000gn/T/08b4e41e-de42-493e-bfe0-587c9a4fc02f.ipa'.[0m
+[0m
+[33m[altool] 2026-05-22 16:38:06.496 [1m[31mERROR: [altool.600002018140] The provided entity includes an attribute with a value that has already been used The bundle version must be higher than the previously uploaded version: ‘120’. (ID: d1e0cabd-fbd2-40ac-9e9c-65c848dc402d) (-19232)
+[0m
+[33m[altool]  {
+[0m
+[33m[altool]     NSLocalizedDescription = "The provided entity includes an attribute with a value that has already been used";
+[0m
+[33m[altool]     NSLocalizedFailureReason = "The bundle version must be higher than the previously uploaded version: \U2018120\U2019. (ID: d1e0cabd-fbd2-40ac-9e9c-65c848dc402d)";
+[0m
+[33m[altool]     NSUnderlyingError = "Error Domain=IrisAPI Code=-19241 \"The provided entity includes an attribute with a value that has already been used\" UserInfo={status=409, detail=The bundle version must be higher than the previously uploaded version., source={\n    pointer = \"/data/attributes/cfBundleVersion\";\n}, id=d1e0cabd-fbd2-40ac-9e9c-65c848dc402d, code=ENTITY_ERROR.ATTRIBUTE.INVALID.DUPLICATE, title=The provided entity includes an attribute with a value that has already been used, meta={\n    previousBundleVersion = 120;\n}, NSLocalizedDescription=The provided entity includes an attribute with a value that has already been used, NSLocalizedFailureReason=The bundle version must be higher than the previously uploaded version.}";
+[0m
+[33m[altool]     "iris-code" = "ENTITY_ERROR.ATTRIBUTE.INVALID.DUPLICATE";
+[0m
+[33m[altool]     previousBundleVersion = 120;
+[0m
+[33m[altool] }[0m
+[0m
+Application Loader output above ^
+[31mThe call to the altool completed with a non-zero exit status: 1. This indicates a failure.[0m
+[31mCould not download/upload from App Store Connect![0m
+[31m
+[!] Error uploading ipa file: 
+ [Application Loader Error Output]: The call to the altool completed with a non-zero exit status: 1. This indicates a failure.[0m
+[31mError: fastlane run pilot ipa:../../app-fdc3134e-b6fe-4abd-918e-ef809fedf816.ipa apple_id:6760672646 skip_waiting_for_build_processing:true api_key_path:asc_api_key-c98293fa-7b6d-4430-ae74-4e6e07ac58bd.json exited with non-zero code: 1[39m
+/bin/bash -eo pipefail /var/folders/5_/4knlryn57n39p2c_jw8567z00000gn/T/eas-build/073c808f-6479-4820-b3ab-56165afee495/steps/step-017/scripts/f672251b-155c-4dd6-ab6d-732aedf9c28b.sh exited with non-zero code: 1
