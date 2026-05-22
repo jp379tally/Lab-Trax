@@ -2786,21 +2786,17 @@ export function CaseDrawer({
                                 ? "Materials"
                                 : "Material"
                             }
-                            value={
-                              summary.materials.length > 0
-                                ? summary.materials.join(", ")
-                                : "—"
-                            }
-                          />
-                          <Field
-                            label={
-                              summary.shades.length > 1 ? "Shades" : "Shade"
-                            }
-                            value={
-                              summary.shades.length > 0
-                                ? summary.shades.join(", ")
-                                : "—"
-                            }
+                            value={(() => {
+                              const mat =
+                                summary.materials.length > 0
+                                  ? summary.materials.join(", ")
+                                  : "—";
+                              const shade =
+                                summary.shades.length > 0
+                                  ? summary.shades.join(", ")
+                                  : "";
+                              return shade ? `${mat} · ${shade}` : mat;
+                            })()}
                           />
 
                           <div className="col-span-2">
