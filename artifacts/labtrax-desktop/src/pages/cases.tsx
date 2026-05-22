@@ -2188,6 +2188,7 @@ export function CaseDrawer({
               type="button"
               onClick={() =>
                 printCaseCard(data ?? labCase, {
+                  restorations: data?.restorations ?? [],
                   notes: data?.notes ?? [],
                 })
               }

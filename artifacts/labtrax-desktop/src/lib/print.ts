@@ -483,6 +483,7 @@ const CARD_CSS = `
 export function printCaseCard(
   labCase: LabCase,
   extras: {
+    restorations?: CaseRestoration[];
     notes?: Array<{
       noteText?: string | null;
       visibility?: string | null;
@@ -494,7 +495,29 @@ export function printCaseCard(
     labCase.patientLastName ?? ""
   }`.trim();
 
-  const selected = parseAdultTeeth(labCase.teeth);
+  // Prefer derived summary when restorations are supplied so we can show
+  // restorative-type bucket + per-tooth shade inline. Falls back to the
+  // denormalized labCase.* strings when no restorations are passed.
+  const restorations = extras.restorations ?? [];
+  const summary = deriveRxSummary(restorations);
+  const restorativeType =
+    summary.restorativeType ?? labCase.restorationTypes ?? "";
+  const materialLabel =
+    summary.materials.length > 0
+      ? summary.materials.join(", ")
+      : labCase.restorationMaterials ?? "";
+  const shadeLabel = summary.shades.join(", ");
+  const teethBase =
+    summary.teeth.length > 0 || summary.isFullArch
+      ? formatRxTeethLabel(summary)
+      : labCase.teeth ?? "";
+  const teethLabel = formatRxTeethWithShades(restorations, teethBase);
+
+  const selected = parseAdultTeeth(
+    summary.teeth.length > 0 || summary.isFullArch
+      ? buildHighlightedToothValue(summary)
+      : labCase.teeth,
+  );
   const isRush = labCase.priority === "rush";
 
   const badgeHtml = isRush
@@ -521,12 +544,14 @@ export function printCaseCard(
   <div class="lt-card-field"><span class="lt-card-key">Created</span><span class="lt-card-val">${escapeHtml(formatDate(labCase.createdAt))}</span></div>
 </div>`;
 
+  const teethKey = summary.isFullArch ? "Tooth Coverage" : "Tooth Number(s)";
   const rxGrid = `
 <div class="lt-card-section">RX Summary</div>
 <div class="lt-card-grid">
-  ${labCase.restorationTypes ? `<div class="lt-card-field"><span class="lt-card-key">Restorative Type</span><span class="lt-card-val">${escapeHtml(labCase.restorationTypes)}</span></div>` : ""}
-  ${labCase.restorationMaterials ? `<div class="lt-card-field"><span class="lt-card-key">Material</span><span class="lt-card-val">${escapeHtml(labCase.restorationMaterials)}</span></div>` : ""}
-  ${labCase.teeth ? `<div class="lt-card-field" style="grid-column:1/-1"><span class="lt-card-key">Tooth Number(s)</span><span class="lt-card-val">${escapeHtml(labCase.teeth)}</span></div>` : ""}
+  ${restorativeType ? `<div class="lt-card-field"><span class="lt-card-key">Restorative Type</span><span class="lt-card-val">${escapeHtml(restorativeType)}</span></div>` : ""}
+  ${teethLabel ? `<div class="lt-card-field"><span class="lt-card-key">${escapeHtml(teethKey)}</span><span class="lt-card-val">${escapeHtml(teethLabel)}</span></div>` : ""}
+  ${materialLabel ? `<div class="lt-card-field"><span class="lt-card-key">Material</span><span class="lt-card-val">${escapeHtml(materialLabel)}</span></div>` : ""}
+  ${shadeLabel ? `<div class="lt-card-field"><span class="lt-card-key">${escapeHtml(summary.shades.length > 1 ? "Shades" : "Shade")}</span><span class="lt-card-val">${escapeHtml(shadeLabel)}</span></div>` : ""}
 </div>`;
 
   const toothChartSection = `
