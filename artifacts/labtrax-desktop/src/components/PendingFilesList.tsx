@@ -45,6 +45,7 @@ import {
   type ScanDisplayMode,
   type ScanFormat,
 } from "@workspace/scan-viewer";
+import ScanThumbnail from "@/components/ScanThumbnail";
 import { apiFetch, ApiError, getAccessToken } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { formatDate, relativeTime } from "@/lib/format";
@@ -931,9 +932,25 @@ function PreviewDialog({
         onClick={(e) => e.stopPropagation()}
       >
         <header className="px-5 py-3.5 border-b border-border flex items-start gap-3">
-          <div className="mt-0.5 shrink-0 text-muted-foreground">
-            <FileTypeIcon mimeType={file.mimeType} />
-          </div>
+          {(() => {
+            const fmt = detectScanFormat(file);
+            if (fmt) {
+              return (
+                <ScanThumbnail
+                  cacheKey={`inbox:${file.id}`}
+                  fileUrl={file.fileUrl}
+                  format={fmt}
+                  authToken={getAccessToken()}
+                  size={28}
+                />
+              );
+            }
+            return (
+              <div className="mt-0.5 shrink-0 text-muted-foreground">
+                <FileTypeIcon mimeType={file.mimeType} />
+              </div>
+            );
+          })()}
           <div className="min-w-0 flex-1">
             <h3
               className="text-sm font-semibold truncate"
@@ -1482,9 +1499,25 @@ export function PendingFilesList() {
                     className="flex items-start gap-3 w-full text-left"
                     title={`Preview ${f.fileName}`}
                   >
-                    <span className="mt-0.5 shrink-0 text-muted-foreground">
-                      <FileTypeIcon mimeType={f.mimeType} />
-                    </span>
+                    {(() => {
+                      const fmt = detectScanFormat(f);
+                      if (fmt) {
+                        return (
+                          <ScanThumbnail
+                            cacheKey={`inbox:${f.id}`}
+                            fileUrl={f.fileUrl}
+                            format={fmt}
+                            authToken={getAccessToken()}
+                            size={28}
+                          />
+                        );
+                      }
+                      return (
+                        <span className="mt-0.5 shrink-0 text-muted-foreground">
+                          <FileTypeIcon mimeType={f.mimeType} />
+                        </span>
+                      );
+                    })()}
                     <span className="min-w-0 flex-1 block">
                       <span className="flex flex-wrap items-baseline gap-x-2">
                         <span
