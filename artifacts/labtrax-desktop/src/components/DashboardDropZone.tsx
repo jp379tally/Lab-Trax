@@ -17,9 +17,76 @@ import {
   X,
 } from "lucide-react";
 import JSZip from "jszip";
-import { apiFetch } from "@/lib/api";
+import {
+  apiFetch,
+  createUploadSession,
+  sendUploadChunk,
+  ApiError,
+} from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { formatPhone } from "@/lib/format";
+
+// Single-shot /media/upload is capped by the Replit reverse proxy well below
+// multer's 200 MB limit, so anything over ~20 MB is routed through the
+// resumable /media/upload-session pipeline instead (1 MB chunks).
+const SINGLE_SHOT_UPLOAD_LIMIT = 20 * 1024 * 1024;
+const CHUNK_BYTES = 1 * 1024 * 1024;
+
+interface MediaUploadResult {
+  url: string;
+  filename?: string;
+  size?: number;
+}
+
+async function uploadMediaFile(file: File): Promise<MediaUploadResult> {
+  if (file.size <= SINGLE_SHOT_UPLOAD_LIMIT) {
+    const fd = new FormData();
+    fd.append("file", file);
+    return apiFetch<MediaUploadResult>("/media/upload", {
+      method: "POST",
+      body: fd,
+      headers: {},
+    });
+  }
+
+  // Resumable path for large files.
+  const session = await createUploadSession({
+    fileName: file.name,
+    fileSize: file.size,
+    mimeType: file.type || "application/octet-stream",
+  });
+  let offset = session.uploadedBytes ?? 0;
+  while (offset < file.size) {
+    const end = Math.min(offset + CHUNK_BYTES, file.size);
+    const blob = file.slice(offset, end);
+    try {
+      const result = await sendUploadChunk(session.sessionId, blob, offset);
+      offset = result.uploadedBytes;
+      if (result.complete) {
+        if (!result.url) {
+          throw new Error("Upload completed but server did not return a URL.");
+        }
+        return {
+          url: result.url,
+          filename: result.filename,
+          size: result.size,
+        };
+      }
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        // Server's offset drifted from ours — re-sync and retry the chunk.
+        const reported = (err as ApiError & { uploadedBytes?: number })
+          .uploadedBytes;
+        if (typeof reported === "number" && reported !== offset) {
+          offset = reported;
+          continue;
+        }
+      }
+      throw err;
+    }
+  }
+  throw new Error("Upload finished without a server confirmation.");
+}
 
 interface LegacyCaseLite {
   id: string;
@@ -509,6 +576,48 @@ export function DashboardDropZone() {
   const labOrg = labOrgs[0] ?? null;
 
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
+  // Multi-file AI ingestion queue. When 2+ AI-readable files are dropped at
+  // once, we walk through each one's Rx-confirm UI in order. `queueRef`
+  // holds the files yet to process AFTER the current one; `queueProgress`
+  // mirrors {index,total} for the UI badge. `queueActiveRef` mirrors
+  // whether a batch is in flight so legacy per-file `setTimeout → idle`
+  // resets (scattered across the success/error paths) can be suppressed
+  // without changing every call site — the auto-advance effect owns the
+  // phase transition during batch mode.
+  const queueRef = useRef<File[]>([]);
+  const queueActiveRef = useRef(false);
+  const [queueProgress, setQueueProgress] = useState<{
+    index: number;
+    total: number;
+  } | null>(null);
+
+  // Tracks the pending "auto-reset to idle" timer scheduled at the end of
+  // each per-file flow. We track and clear it so that a stale timer from
+  // a previous file (or a just-finished batch) can never fire later and
+  // overwrite the phase of whatever the user is doing next.
+  const idleResetTimerRef = useRef<number | null>(null);
+  const clearIdleResetTimer = useCallback(() => {
+    if (idleResetTimerRef.current !== null) {
+      window.clearTimeout(idleResetTimerRef.current);
+      idleResetTimerRef.current = null;
+    }
+  }, []);
+
+  // Replacement for `setTimeout(() => setPhase({kind:"idle"}), N)`. While a
+  // batch is active, suppress the per-file idle reset so it can't fire
+  // after the queue has already advanced to the next file. Always clears
+  // any previously-scheduled idle timer first.
+  const scheduleIdleReset = useCallback(
+    (ms: number) => {
+      clearIdleResetTimer();
+      idleResetTimerRef.current = window.setTimeout(() => {
+        idleResetTimerRef.current = null;
+        if (queueActiveRef.current) return;
+        setPhase({ kind: "idle" });
+      }, ms);
+    },
+    [clearIdleResetTimer],
+  );
   const [caseSearch, setCaseSearch] = useState("");
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
   const [rxDraft, setRxDraft] = useState<ExtractedRx>({});
@@ -764,7 +873,7 @@ export function DashboardDropZone() {
           kind: "error",
           message: e?.message || "AI analysis failed.",
         });
-        window.setTimeout(() => setPhase({ kind: "idle" }), 6000);
+        scheduleIdleReset(6000);
       }
     },
     [
@@ -819,33 +928,131 @@ export function DashboardDropZone() {
           kind: "error",
           message: e?.message || "Could not process the ZIP file.",
         });
-        window.setTimeout(() => setPhase({ kind: "idle" }), 6000);
+        scheduleIdleReset(6000);
       }
     },
     [runRxAnalyze],
   );
 
+  // Kick off AI analysis for one file in the queue. Clears any pending
+  // idle-reset timer from the previous file so it can't overwrite the
+  // new phase mid-flow.
+  const dispatchAiFile = useCallback(
+    (file: File) => {
+      clearIdleResetTimer();
+      setZipSource(null);
+      if (isZip(file)) {
+        void runZipAnalyze(file);
+      } else {
+        void runRxAnalyze(file);
+      }
+    },
+    [clearIdleResetTimer, runRxAnalyze, runZipAnalyze],
+  );
+
+  // Advance to the next file in the queue (if any). Called after each
+  // case is successfully created, after an error, or when the user
+  // chooses to skip the current file mid-flow.
+  const advanceQueue = useCallback(() => {
+    const next = queueRef.current.shift();
+    if (!next) {
+      clearIdleResetTimer();
+      queueRef.current = [];
+      queueActiveRef.current = false;
+      setQueueProgress(null);
+      setPhase({ kind: "idle" });
+      return;
+    }
+    // queueProgress index is 1-based "currently working on N of total".
+    setQueueProgress((prev) =>
+      prev ? { index: prev.index + 1, total: prev.total } : null,
+    );
+    dispatchAiFile(next);
+  }, [dispatchAiFile]);
+
+  // Cancel the whole queue and reset the drop zone.
+  const cancelQueue = useCallback(() => {
+    clearIdleResetTimer();
+    queueRef.current = [];
+    queueActiveRef.current = false;
+    setQueueProgress(null);
+    setZipSource(null);
+    setPhase({ kind: "idle" });
+  }, [clearIdleResetTimer]);
+
+  // Defensive: clear any pending idle-reset timer on unmount so a stale
+  // callback can't fire against a torn-down component.
+  useEffect(() => () => clearIdleResetTimer(), [clearIdleResetTimer]);
+
+  // Auto-advance the queue after a "done" or "error" toast. The existing
+  // single-file flow always sets phase to "done"/"error" then a 4–5 s
+  // setTimeout back to "idle"; we hook that same transition window so any
+  // future code path that finishes a case automatically advances the
+  // queue without each call site having to know about it.
+  useEffect(() => {
+    if (!queueProgress) return;
+    if (phase.kind !== "done" && phase.kind !== "error") return;
+    const t = window.setTimeout(() => {
+      advanceQueue();
+    }, phase.kind === "done" ? 1500 : 3000);
+    return () => window.clearTimeout(t);
+  }, [phase.kind, queueProgress, advanceQueue]);
+
+  // Skip the current file mid-flow (Rx confirm or duplicate prompt) and
+  // jump straight to the next queued file.
+  const skipCurrentInQueue = useCallback(() => {
+    if (!queueProgress) return;
+    setZipSource(null);
+    advanceQueue();
+  }, [queueProgress, advanceQueue]);
+
   const handleFiles = useCallback(
     (rawFiles: FileList | File[]) => {
       const files = Array.from(rawFiles);
       if (files.length === 0) return;
+      // Any new user-initiated drop/select supersedes any stale idle
+      // timer left over from a previous file's done/error toast.
+      clearIdleResetTimer();
       setCaseSearch("");
       setSelectedCaseId(null);
       // Single ZIP → check if it's an iTero export and auto-launch ZIP flow.
       if (files.length === 1 && isZip(files[0])) {
+        queueRef.current = [];
+        queueActiveRef.current = false;
+        setQueueProgress(null);
         void runZipAnalyze(files[0]);
         return;
       }
       // Single Rx-readable file → auto-launch the AI flow (matches mobile).
       if (files.length === 1 && canReadAsRx(files[0])) {
+        queueRef.current = [];
+        queueActiveRef.current = false;
+        setQueueProgress(null);
         setZipSource(null);
         void runRxAnalyze(files[0]);
         return;
       }
+      // Multi-file drop. If every file is AI-readable (a mix of zips, PDFs,
+      // and images is fine), enqueue them and walk through each one's
+      // Rx-confirm screen in order. Otherwise fall back to the legacy
+      // "attach all to one case" picker.
+      const allAiReadable =
+        files.length > 1 && files.every((f) => isZip(f) || canReadAsRx(f));
+      if (allAiReadable) {
+        const [first, ...rest] = files;
+        queueRef.current = rest;
+        queueActiveRef.current = true;
+        setQueueProgress({ index: 1, total: files.length });
+        dispatchAiFile(first);
+        return;
+      }
+      queueRef.current = [];
+      queueActiveRef.current = false;
+      setQueueProgress(null);
       setZipSource(null);
       setPhase({ kind: "picking", files });
     },
-    [runRxAnalyze, runZipAnalyze],
+    [clearIdleResetTimer, dispatchAiFile, runRxAnalyze, runZipAnalyze],
   );
 
   const handleDrop = useCallback(
@@ -871,12 +1078,7 @@ export function DashboardDropZone() {
   );
 
   async function uploadFileGetUrl(file: File): Promise<string> {
-    const fd = new FormData();
-    fd.append("file", file);
-    const resp = await apiFetch<{ url: string }>("/media/upload", {
-      method: "POST",
-      body: fd,
-    });
+    const resp = await uploadMediaFile(file);
     return resp.url;
   }
 
@@ -917,13 +1119,13 @@ export function DashboardDropZone() {
         kind: "done",
         message: `${count} file${count === 1 ? "" : "s"} uploaded${caseId ? " and attached to case." : "."}`,
       });
-      window.setTimeout(() => setPhase({ kind: "idle" }), 4000);
+      scheduleIdleReset(4000);
     } catch (e: any) {
       setPhase({
         kind: "error",
         message: e?.message || "Upload failed.",
       });
-      window.setTimeout(() => setPhase({ kind: "idle" }), 5000);
+      scheduleIdleReset(5000);
     }
   }
 
@@ -1049,13 +1251,13 @@ export function DashboardDropZone() {
             message: `Case ${result.caseNumber} created · Rx + ${extra} file${extra === 1 ? "" : "s"} attached · draft invoice ready.`,
           });
         }
-        window.setTimeout(() => setPhase({ kind: "idle" }), 5000);
+        scheduleIdleReset(5000);
       } catch (e: any) {
         setPhase({
           kind: "error",
           message: e?.message || "Could not import iTero ZIP.",
         });
-        window.setTimeout(() => setPhase({ kind: "idle" }), 5000);
+        scheduleIdleReset(5000);
       }
       return;
     }
@@ -1147,18 +1349,7 @@ export function DashboardDropZone() {
       //    it shows up in the Files tab and writes a case_event.
       let rxAttached = false;
       try {
-        const fd = new FormData();
-        fd.append("file", file);
-        const upload = await apiFetch<{
-          url: string;
-          filename: string;
-          size: number;
-        }>("/media/upload", {
-          method: "POST",
-          body: fd,
-          // Let the browser set the multipart boundary.
-          headers: {},
-        });
+        const upload = await uploadMediaFile(file);
         if (upload?.url) {
           await apiFetch(`/cases/${created.id}/attachments`, {
             method: "POST",
@@ -1197,13 +1388,13 @@ export function DashboardDropZone() {
           ? `Case ${created.caseNumber} created${remake ? " (remake)" : ""} · Rx attached · draft invoice ready.`
           : `Case ${created.caseNumber} created${remake ? " (remake)" : ""} · draft invoice ready. (Rx file could not be attached — please add it manually in the Files tab.)`,
       });
-      window.setTimeout(() => setPhase({ kind: "idle" }), 5000);
+      scheduleIdleReset(5000);
     } catch (e: any) {
       setPhase({
         kind: "error",
         message: e?.message || "Could not create case.",
       });
-      window.setTimeout(() => setPhase({ kind: "idle" }), 5000);
+      scheduleIdleReset(5000);
     }
   }
 
@@ -1215,7 +1406,7 @@ export function DashboardDropZone() {
         onBack={() =>
           setPhase({ kind: "rxConfirm", file: phase.file, caseNumber: phase.caseNumber })
         }
-        onCancel={() => setPhase({ kind: "idle" })}
+        onCancel={() => cancelQueue()}
         onCreateAsNew={() => proceedCreateCase(phase.file, phase.caseNumber)}
         onCreateAsRemake={(remake) =>
           proceedCreateCase(phase.file, phase.caseNumber, remake)
@@ -1233,12 +1424,18 @@ export function DashboardDropZone() {
           <div className="flex items-center gap-2">
             <Sparkles size={14} className="text-primary" />
             <p className="text-sm font-medium">AI read this prescription</p>
+            {queueProgress && (
+              <span className="text-[10px] font-semibold uppercase tracking-wide bg-primary/10 text-primary px-1.5 py-0.5 rounded-full">
+                File {queueProgress.index} of {queueProgress.total}
+              </span>
+            )}
           </div>
           <button
             type="button"
-            onClick={() => { setPhase({ kind: "idle" }); setZipSource(null); }}
+            onClick={() => cancelQueue()}
             className="text-muted-foreground hover:text-foreground"
-            aria-label="Cancel"
+            aria-label={queueProgress ? "Cancel remaining files" : "Cancel"}
+            title={queueProgress ? "Cancel remaining files in this batch" : "Cancel"}
           >
             <X size={15} />
           </button>
@@ -1662,12 +1859,22 @@ export function DashboardDropZone() {
         <div className="flex flex-wrap gap-2 pt-1">
           <button
             type="button"
-            onClick={() => { setPhase({ kind: "idle" }); setZipSource(null); }}
+            onClick={() => cancelQueue()}
             className="h-8 px-3 rounded-md bg-secondary text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
           >
-            Cancel
+            {queueProgress ? "Cancel batch" : "Cancel"}
           </button>
-          {!zipSource && (
+          {queueProgress && (
+            <button
+              type="button"
+              onClick={() => skipCurrentInQueue()}
+              className="h-8 px-3 rounded-md bg-secondary text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+              title="Skip this file and move to the next one in the batch"
+            >
+              Skip this file
+            </button>
+          )}
+          {!zipSource && !queueProgress && (
             <button
               type="button"
               onClick={() =>
@@ -1835,6 +2042,11 @@ export function DashboardDropZone() {
           <p className="text-xs text-muted-foreground truncate max-w-full">
             {phase.fileName}
           </p>
+          {queueProgress && (
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-primary/80">
+              File {queueProgress.index} of {queueProgress.total}
+            </p>
+          )}
         </>
       )}
 
