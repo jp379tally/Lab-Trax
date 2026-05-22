@@ -14,6 +14,8 @@ import {
   DesktopInstallerNotConfiguredError,
   type DesktopInstallerKind,
 } from "../lib/desktop-installer-storage";
+import { dispatchInstallerAlert } from "../lib/desktop-installer-alerts";
+import { runDesktopInstallerHealthCheck } from "../lib/desktop-installer-health";
 import { runOneDriveBackup, runBackup, getBackupHourUtc, getBackupScheduleConfig, getLastSuccessfulBackupAt, getBackupStaleAlertSettings, getBackupHistoryRetentionDays, restartScheduledBackupJob, executeRestore, getRestoreState, SETTING_BACKUP_HOUR_UTC, SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, SETTING_BACKUP_SCHEDULE_DESTINATION, SETTING_BACKUP_SCHEDULE_PATH, SETTING_BACKUP_SCHEDULE_ENABLED, SETTING_BACKUP_LAST_SUCCESSFUL_AT, SETTING_BACKUP_HISTORY_RETENTION_DAYS, SETTING_BACKUP_HISTORY_MAX_ROWS, SETTING_ROLLING_BACKUP_ENABLED, SETTING_ROLLING_BACKUP_LAST_RUN_AT, SETTING_ROLLING_BACKUP_LAST_ERROR, ALL_SCHEDULE_SETTINGS, SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS, SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS, SETTING_BACKUP_STALE_DAYS, DEFAULT_BACKUP_STALE_DAYS, type BackupDestination } from "../lib/backup";
 import { sendInstallerPublishFailureAlertEmail } from "../lib/mail";
 import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, getCleanupProgress, getCleanupStuckTimeoutMinutes, cancelCleanup, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC, SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES } from "../lib/case-media";
@@ -4222,12 +4224,36 @@ Important rules:
     },
   );
 
+  // Shared helper: load active platform-admin email recipients for any
+  // installer-pipeline alert path (publish-failure, /publish atomic failure,
+  // scheduled health check). Returns [] (not an error) when the query fails
+  // so a transient DB blip doesn't itself trigger a 500 on the alert path.
+  async function loadAdminAlertRecipients(reqLog?: {
+    error?: (obj: unknown, msg?: string) => void;
+  }): Promise<string[]> {
+    try {
+      const admins = await db
+        .select({ email: users.email })
+        .from(users)
+        .where(eq(users.role, "admin"));
+      return admins.map((u) => u.email).filter((e): e is string => Boolean(e));
+    } catch (e: any) {
+      reqLog?.error?.({ err: e }, "loadAdminAlertRecipients: query failed");
+      return [];
+    }
+  }
+
   // CI calls this when the auto-publish step in build-windows.yml / release.yml
   // fails (upload or settings PUT returned non-2xx). We email the platform
   // admin recipient list (same recipients as the cleanup alert) with the
   // workflow run URL, version, stage, and error so the lab can re-run or
   // fall back to a manual upload quickly. Gated by the standard
   // X-Platform-Admin-Secret header — disable by unsetting PLATFORM_ADMIN_SECRET.
+  //
+  // Identical payloads within a 6 h window are deduplicated by
+  // dispatchInstallerAlert() to avoid the email storms that previously
+  // followed a flaky release run (see lib/desktop-installer-alerts.ts and
+  // docs/desktop-publish-pipeline.md).
   router.post(
     "/admin/desktop-installer/publish-failure",
     platformAdminUserOrSecret,
@@ -4244,8 +4270,16 @@ Important rules:
       const stageRaw = asStr(body.stage);
       const stage =
         stageRaw &&
-        ["upload", "settings", "unknown", "build-number-commit"].includes(stageRaw.toLowerCase())
-          ? stageRaw.toLowerCase()
+        ["upload", "settings", "publish", "unknown", "build-number-commit", "health-check"].includes(
+          stageRaw.toLowerCase(),
+        )
+          ? (stageRaw.toLowerCase() as
+              | "upload"
+              | "settings"
+              | "publish"
+              | "unknown"
+              | "build-number-commit"
+              | "health-check")
           : "unknown";
       const httpStatusRaw = body.httpStatus;
       const httpStatus =
@@ -4289,52 +4323,342 @@ Important rules:
         }
       }
 
-      let adminEmails: string[] = [];
-      try {
-        const admins = await db
-          .select({ email: users.email })
-          .from(users)
-          .where(eq(users.role, "admin"));
-        adminEmails = admins
-          .map((u) => u.email)
-          .filter((e): e is string => Boolean(e));
-      } catch (e: any) {
-        req.log?.error?.({ err: e }, "publish-failure: failed to load admin emails");
-        return res
-          .status(500)
-          .json({ error: "Failed to load admin recipient list." });
-      }
+      const adminEmails = await loadAdminAlertRecipients(req.log);
 
+      let outcome: Awaited<ReturnType<typeof dispatchInstallerAlert>>;
       try {
-        await sendInstallerPublishFailureAlertEmail({
-          adminEmails,
-          workflowName,
-          runUrl,
-          runId,
-          commitSha,
-          ref,
-          version,
-          stage,
-          httpStatus,
-          errorMessage,
-        });
+        outcome = await dispatchInstallerAlert(
+          {
+            stage,
+            adminEmails,
+            workflowName,
+            runUrl,
+            runId,
+            commitSha,
+            ref,
+            version,
+            httpStatus,
+            errorMessage,
+          },
+          req.log ?? undefined,
+        );
       } catch (e: any) {
-        req.log?.error?.({ err: e }, "publish-failure: send alert email failed");
-        return res
-          .status(500)
-          .json({ error: e?.message || "Failed to send alert email." });
+        req.log?.error?.({ err: e }, "publish-failure: dispatchInstallerAlert failed");
+        return res.status(500).json({ error: e?.message || "Failed to send alert email." });
       }
 
       req.log?.warn?.(
-        { runUrl, runId, version, stage, httpStatus, recipients: adminEmails.length },
-        "Desktop installer auto-publish failure reported by CI; admin alert dispatched.",
+        {
+          runUrl,
+          runId,
+          version,
+          stage,
+          httpStatus,
+          recipients: adminEmails.length,
+          alertSent: outcome.sent,
+          alertSuppressed: outcome.suppressed,
+        },
+        "Desktop installer publish-failure received from CI.",
       );
       return res.json({
         success: true,
         recipients: adminEmails.length,
+        alertSent: outcome.sent,
+        alertSuppressed: outcome.suppressed,
       });
     },
   );
+
+  // ── Atomic publish (Task #749, root-cause fix RC1) ─────────────────────────
+  //
+  // Single multipart endpoint that does upload + settings-PUT + changelog
+  // record in one call so a partial success can never leave App Storage with
+  // a fresh binary while system_settings still points at the old version.
+  //
+  // Multipart fields:
+  //   file          (required) the .exe / .dmg / .zip installer binary
+  //   version       (required) X.Y.Z
+  //   downloadUrl   (optional) defaults to /downloads/<inferred filename>
+  //   releaseNotes  (optional) markdown
+  //   workflowName  (optional, CI) — included in failure alerts
+  //   runUrl/runId/commitSha/ref (optional, CI) — included in failure alerts
+  //
+  // On non-2xx, the response body includes a {stage, errorMessage, httpStatus}
+  // shape consistent with the publish-failure alert payload, and the alert is
+  // ALSO dispatched server-side (deduped) so CI no longer needs a follow-up
+  // notify step.
+  router.post(
+    "/admin/desktop-installer/publish",
+    platformAdminUserOrSecret,
+    (req, res, next) => {
+      if (!isPlatformAdmin(req)) {
+        res.status(403).json({ error: "Admin access required." });
+        return;
+      }
+      installerUpload.single("file")(req, res, (err: any) => {
+        if (err) {
+          const status = err?.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+          res.status(status).json({
+            error: err?.message || "Upload failed.",
+            stage: "upload",
+          });
+          return;
+        }
+        next();
+      });
+    },
+    async (req, res) => {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const asStr = (v: unknown): string | null => {
+        if (typeof v !== "string") return null;
+        const t = v.trim();
+        return t.length > 0 ? t : null;
+      };
+      const ciMeta = {
+        workflowName: asStr(body.workflowName),
+        runUrl: asStr(body.runUrl),
+        runId: asStr(body.runId),
+        commitSha: asStr(body.commitSha),
+        ref: asStr(body.ref),
+      };
+
+      // Helper: dispatch a single consolidated failure alert and return the
+      // response shape CI parses. Swallows alert-dispatch errors so a broken
+      // mail transport never masks the underlying publish failure.
+      const fail = async (
+        status: number,
+        stage: "upload" | "settings" | "publish",
+        message: string,
+      ) => {
+        try {
+          const adminEmails = await loadAdminAlertRecipients(req.log);
+          await dispatchInstallerAlert(
+            {
+              stage,
+              adminEmails,
+              ...ciMeta,
+              version: asStr(body.version),
+              httpStatus: status,
+              errorMessage: message,
+            },
+            req.log ?? undefined,
+          );
+        } catch (e: any) {
+          req.log?.warn?.({ err: e }, "publish: dispatchInstallerAlert failed");
+        }
+        return res
+          .status(status)
+          .json({ error: message, stage, httpStatus: status });
+      };
+
+      const file = (req as any).file as
+        | { originalname: string; mimetype: string; buffer: Buffer; size: number }
+        | undefined;
+      if (!file || !file.buffer || file.size === 0) {
+        return fail(400, "upload", "Missing 'file' field — attach a .zip / .exe / .dmg installer.");
+      }
+
+      const version = asStr(body.version);
+      if (!version) return fail(400, "publish", "Missing 'version' field.");
+      if (validateInstallerVersion(version)) {
+        return fail(400, "publish", validateInstallerVersion(version)!);
+      }
+
+      const name = file.originalname || "";
+      const isZipName = /\.zip$/i.test(name);
+      const isExeName = /\.exe$/i.test(name);
+      const isDmgName = /\.dmg$/i.test(name);
+      let kind: DesktopInstallerKind;
+      let defaultUrl: string;
+      if (isExeName) {
+        kind = "exe";
+        defaultUrl = "/downloads/LabTrax-Setup.exe";
+        const isExeMagic =
+          file.buffer.length >= 2 && file.buffer[0] === 0x4d && file.buffer[1] === 0x5a;
+        if (!isExeMagic) return fail(400, "upload", "File is not a valid Windows .exe (MZ magic bytes missing).");
+      } else if (isDmgName) {
+        kind = "dmg";
+        defaultUrl = "/downloads/LabTrax.dmg";
+        const isDmgMagic =
+          file.buffer.length >= 512 &&
+          file.buffer[file.buffer.length - 512] === 0x6b &&
+          file.buffer[file.buffer.length - 511] === 0x6f &&
+          file.buffer[file.buffer.length - 510] === 0x6c &&
+          file.buffer[file.buffer.length - 509] === 0x79;
+        if (!isDmgMagic) return fail(400, "upload", "File is not a valid macOS .dmg (koly trailer missing).");
+      } else if (isZipName) {
+        kind = "zip";
+        defaultUrl = "/downloads/LabTrax-Windows-Portable.zip";
+        const isZipMagic =
+          file.buffer.length >= 4 &&
+          file.buffer[0] === 0x50 &&
+          file.buffer[1] === 0x4b &&
+          (file.buffer[2] === 0x03 || file.buffer[2] === 0x05 || file.buffer[2] === 0x07);
+        if (!isZipMagic) return fail(400, "upload", "File is not a valid .zip (PK magic bytes missing).");
+      } else {
+        return fail(400, "upload", "File must be one of LabTrax-Windows-Portable.zip, LabTrax-Setup.exe, or LabTrax.dmg.");
+      }
+
+      const downloadUrl = asStr(body.downloadUrl) ?? defaultUrl;
+      const urlErr = validateInstallerUrl(downloadUrl);
+      if (urlErr) return fail(400, "publish", urlErr);
+
+      const releaseNotes = asStr(body.releaseNotes);
+      const checksumSha256 = createHash("sha256").update(file.buffer).digest("hex");
+
+      // ── Stage: upload ──
+      let uploadMeta: Awaited<ReturnType<typeof uploadDesktopInstaller>>;
+      try {
+        uploadMeta = await uploadDesktopInstaller(file.buffer, kind);
+      } catch (e: any) {
+        if (e instanceof DesktopInstallerNotConfiguredError) {
+          return fail(503, "upload", e.message);
+        }
+        req.log?.error?.({ err: e }, "publish: upload to App Storage failed");
+        return fail(500, "upload", e?.message || "Failed to upload installer to App Storage.");
+      }
+
+      // Best-effort installer_uploads row (failure here is non-fatal — the
+      // bytes are already in storage and downloads will work; we just lose
+      // the audit row).
+      try {
+        const reqUser = (req as any).user as { id?: string; username?: string } | undefined;
+        await db.insert(installerUploads).values({
+          sizeBytes: uploadMeta.size,
+          version,
+          checksumSha256,
+          uploadedByUserId: reqUser?.id ?? null,
+          uploadedByUsername: reqUser?.username ?? "ci:platform-admin-secret",
+        });
+      } catch (logErr) {
+        req.log?.warn?.({ err: logErr }, "publish: failed to record installer_uploads row");
+      }
+
+      // ── Stage: settings ──
+      try {
+        const now = new Date();
+        const ops: Promise<unknown>[] = [
+          db
+            .insert(systemSettings)
+            .values({ key: SETTING_DESKTOP_INSTALLER_URL, value: downloadUrl })
+            .onConflictDoUpdate({
+              target: systemSettings.key,
+              set: { value: downloadUrl, updatedAt: now },
+            }),
+          db
+            .insert(systemSettings)
+            .values({ key: SETTING_DESKTOP_INSTALLER_VERSION, value: version })
+            .onConflictDoUpdate({
+              target: systemSettings.key,
+              set: { value: version, updatedAt: now },
+            }),
+        ];
+        if (releaseNotes !== null) {
+          ops.push(
+            db
+              .insert(systemSettings)
+              .values({ key: SETTING_DESKTOP_INSTALLER_RELEASE_NOTES, value: releaseNotes })
+              .onConflictDoUpdate({
+                target: systemSettings.key,
+                set: { value: releaseNotes, updatedAt: now },
+              }),
+          );
+        }
+        await Promise.all(ops);
+      } catch (e: any) {
+        req.log?.error?.({ err: e }, "publish: settings write failed after successful upload");
+        // Storage has the new bytes but settings still point at the old
+        // version → RC1 case. Caller gets one consolidated error so they
+        // know the upload succeeded but the metadata didn't.
+        return fail(
+          500,
+          "settings",
+          `Installer was uploaded to App Storage (${uploadMeta.size} bytes) but the system settings write failed: ${e?.message || e}. Re-run the publish or apply the URL/version manually in Settings → Desktop App.`,
+        );
+      }
+
+      // Best-effort changelog row.
+      try {
+        const reqUser = (req as any).user as { id?: string; username?: string } | undefined;
+        await db.insert(installerChangelog).values({
+          downloadUrl,
+          version,
+          releaseNotes,
+          savedByUserId: reqUser?.id ?? null,
+          savedByUsername: reqUser?.username ?? "ci:platform-admin-secret",
+        });
+      } catch (logErr) {
+        req.log?.warn?.({ err: logErr }, "publish: failed to record installer_changelog row");
+      }
+
+      req.log?.info?.(
+        {
+          kind,
+          version,
+          downloadUrl,
+          size: uploadMeta.size,
+          runId: ciMeta.runId,
+          runUrl: ciMeta.runUrl,
+        },
+        "Desktop installer published atomically (upload + settings).",
+      );
+
+      return res.json({
+        success: true,
+        kind,
+        version,
+        downloadUrl,
+        installerObject: uploadMeta,
+      });
+    },
+  );
+
+  // ── Scheduled / on-demand health check (Task #749) ─────────────────────────
+  //
+  // Reports on the three independent pieces of the pipeline (storage,
+  // download URL, GitHub Release manifest) in one JSON document. Safe to
+  // poll on demand; the optional `?alert=1` query parameter additionally
+  // dispatches the deduped admin alert if the report comes back unhealthy.
+  router.get("/admin/desktop-installer/health", requireAuth, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    try {
+      // Build an absolute base URL for the HEAD probe. Falls back to the
+      // INSTALLER_HEALTH_BASE_URL env var inside runDesktopInstallerHealthCheck
+      // when the request URL can't yield one.
+      const proto = (req.headers["x-forwarded-proto"] as string)?.split(",")[0]?.trim() || req.protocol;
+      const host = (req.headers["x-forwarded-host"] as string)?.split(",")[0]?.trim() || req.get("host");
+      const baseUrl = host ? `${proto}://${host}` : null;
+
+      const report = await runDesktopInstallerHealthCheck({ baseUrl });
+
+      const alertRequested =
+        (req.query as any)?.alert === "1" || (req.query as any)?.alert === "true";
+      if (alertRequested && !report.ok) {
+        const adminEmails = await loadAdminAlertRecipients(req.log);
+        try {
+          await dispatchInstallerAlert(
+            {
+              stage: "health-check",
+              adminEmails,
+              workflowName: "scheduled-health-check",
+              version: report.settings.version,
+              httpStatus: report.download.status,
+              errorMessage: report.issues.join("\n") || "Health check reported unhealthy.",
+            },
+            req.log ?? undefined,
+          );
+        } catch (e: any) {
+          req.log?.warn?.({ err: e }, "health: alert dispatch failed");
+        }
+      }
+      return res.json(report);
+    } catch (e: any) {
+      req.log?.error?.({ err: e }, "health: unhandled error");
+      return res.status(500).json({ error: e?.message || "Health check failed." });
+    }
+  });
 
   router.put("/admin/settings/desktop-installer", platformAdminUserOrSecret, async (req, res) => {
     if (!isPlatformAdmin(req)) {

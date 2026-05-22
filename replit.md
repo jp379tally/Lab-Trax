@@ -187,7 +187,40 @@ After running a fresh electron build, refresh the hosted installer in one of two
 
 1. **In-app (preferred):** Settings → Desktop App → "Choose installer and upload". Hits `POST /api/admin/desktop-installer/upload` (admin-only, 300 MB max, accepts `.zip`, `.exe`, or `.dmg`).
 2. **CLI fallback / first-time bootstrap:** `pnpm --filter @workspace/scripts run upload-desktop-installer` — uploads `artifacts/labtrax-desktop/electron-dist/LabTrax-Windows-Portable.zip` to App Storage. Pass a custom path as the first arg if needed.
-3. **CI auto-publish (preferred for tagged releases):** the GitHub Actions Windows build jobs (`.github/workflows/build-windows.yml`, `.github/workflows/release.yml`) include a "Publish installer to live download page" step that POSTs the freshly built `LabTrax-Setup.exe` to `/api/admin/desktop-installer/upload` and PUTs the matching URL/version to `/api/admin/settings/desktop-installer`. The macOS build job in `.github/workflows/release.yml` mirrors this with a "Publish DMG to live download page" step that uploads the freshly built DMG (preferring a universal build if present, then x64 — which runs natively on Intel and via Rosetta 2 on Apple Silicon — then arm64 as a last-resort fallback) and points the live download URL at `/downloads/LabTrax.dmg`. The steps are gated by two GitHub Actions secrets — `PLATFORM_ADMIN_SECRET` (must equal the API server's env var of the same name) and `PUBLISH_API_BASE_URL` (e.g. `https://your.replit.app`). If either secret is unset, the step logs a notice and exits 0, so it's safe to disable. The two endpoints accept the `X-Platform-Admin-Secret` header alone (no JWT required) so CI doesn't need a user account.
+3. **CI auto-publish (preferred for tagged releases):** the GitHub Actions Windows build jobs (`.github/workflows/build-windows.yml`, `.github/workflows/release.yml`) include a "Publish installer to live download page" step that POSTs the freshly built `LabTrax-Setup.exe` to the **atomic** `/api/admin/desktop-installer/publish` endpoint (Task #749). The macOS build job in `.github/workflows/release.yml` mirrors this with a "Publish DMG to live download page" step that uploads the freshly built DMG (preferring a universal build if present, then x64 — which runs natively on Intel and via Rosetta 2 on Apple Silicon — then arm64 as a last-resort fallback) and points the live download URL at `/downloads/LabTrax.dmg`. The steps are gated by two GitHub Actions secrets — `PLATFORM_ADMIN_SECRET` (must equal the API server's env var of the same name) and `PUBLISH_API_BASE_URL` (e.g. `https://your.replit.app`). If either secret is unset, the step logs a notice and exits 0, so it's safe to disable. The `/publish` endpoint accepts the `X-Platform-Admin-Secret` header alone (no JWT required) so CI doesn't need a user account.
+
+## Desktop installer publish pipeline (Task #749)
+
+The desktop installer publish pipeline has a dedicated audit + runbook at
+[`docs/desktop-publish-pipeline.md`](docs/desktop-publish-pipeline.md). Key
+points worth knowing without reading the full doc:
+
+- **Two independent channels, kept in sync.** `/downloads/...` on the API
+  server serves new installs from App Storage; existing installs auto-update
+  via the **GitHub Releases** `latest.yml` / `latest-mac.yml` manifests
+  (electron-updater's GitHub provider). The CI pipeline always publishes
+  both for every tagged release; a skew is the most common failure mode.
+- **Atomic publish endpoint** — `POST /api/admin/desktop-installer/publish`
+  (multipart: `file`, `version`, optional `downloadUrl`, `releaseNotes`,
+  CI metadata) does upload + settings + changelog in one call. Replaces
+  the old 3-call dance (upload + settings PUT + on-failure notify) that
+  could leave App Storage with new bytes while settings still pointed at
+  the old version. The legacy `POST /api/admin/desktop-installer/upload`
+  + `PUT /api/admin/settings/desktop-installer` endpoints are retained for
+  the manual Settings → Desktop App upload UX only.
+- **Health check** — `GET /api/admin/desktop-installer/health` returns a
+  single JSON report with four probes: settings, App Storage object,
+  `/downloads/...` HEAD, and the latest GitHub Release manifest. The
+  Settings → Desktop App panel exposes a "Run health check" button that
+  shows the same report inline. Pass `?alert=1` to additionally dispatch a
+  deduped admin email when the report is unhealthy.
+- **Single deduped alert** — `lib/desktop-installer-alerts.ts` exposes
+  `dispatchInstallerAlert(...)`, which hashes the alert's identity fields
+  (stage + workflow + version + httpStatus + first 200 chars of error) and
+  suppresses identical alerts within a 6 h window via
+  `system_settings.installer_publish_alert_last`. Both `/publish` and
+  `/publish-failure` route through this helper, so a flaky release run no
+  longer emails admins 4-6 times.
 
 The Settings → Desktop App panel shows the current installer's size and uploaded-at timestamp so admins can verify freshness. If no zip has been uploaded yet, `/downloads/LabTrax-Windows-Portable.zip` returns a 404 JSON body explaining that an admin must upload one.
 

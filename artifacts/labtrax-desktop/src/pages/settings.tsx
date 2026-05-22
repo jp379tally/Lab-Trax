@@ -3259,11 +3259,173 @@ function DesktopInstallerPanel() {
           </div>
 
           <DesktopBuildCounterRecovery repoUrl={info.repoUrl} />
+          <DesktopInstallerPipelineHealthPanel />
           <DesktopInstallerUploadsPanel />
           <DesktopInstallerHistoryPanel repoUrl={info.repoUrl} />
         </div>
       )}
     </PanelShell>
+  );
+}
+
+// ── Pipeline Health card (Task #749) ─────────────────────────────────────────
+//
+// One-click end-to-end audit of the publish pipeline. Calls
+// GET /admin/desktop-installer/health which folds the four independent
+// probes (settings, storage, /downloads HEAD, GitHub Releases manifest)
+// into a single JSON report. Surfacing this in-app means admins no longer
+// have to grep server logs to figure out why "Download for Windows"
+// returns a stale or broken file.
+
+interface InstallerHealthReport {
+  ok: boolean;
+  checkedAt: string;
+  settings: { version: string | null; downloadUrl: string | null; activeKind: string | null; error: string | null };
+  storage: { ok: boolean; size: number | null; uploadedAt: string | null; etag: string | null; error: string | null };
+  download: {
+    ok: boolean;
+    checked: boolean;
+    url: string | null;
+    status: number | null;
+    contentLength: number | null;
+    etag: string | null;
+    etagMatchesStorage: boolean | null;
+    error: string | null;
+  };
+  githubRelease: {
+    ok: boolean;
+    configured: boolean;
+    tagName: string | null;
+    publishedAt: string | null;
+    manifestUrl: string | null;
+    hasManifest: boolean;
+    issue: string | null;
+  };
+  issues: string[];
+}
+
+function DesktopInstallerPipelineHealthPanel() {
+  const [report, setReport] = useState<InstallerHealthReport | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function runHealthCheck() {
+    setLoading(true);
+    setError(null);
+    try {
+      const r = await apiFetch<InstallerHealthReport>("/admin/desktop-installer/health");
+      setReport(r);
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to run health check.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const StatusDot = ({ ok, label }: { ok: boolean | null; label: string }) => (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        marginRight: 12,
+        fontSize: 13,
+      }}
+    >
+      <span
+        style={{
+          display: "inline-block",
+          width: 10,
+          height: 10,
+          borderRadius: 5,
+          backgroundColor: ok === true ? "#16a34a" : ok === false ? "#dc2626" : "#9ca3af",
+        }}
+      />
+      {label}
+    </span>
+  );
+
+  return (
+    <div style={{ border: "1px solid var(--border, #e5e7eb)", borderRadius: 8, padding: 16, marginTop: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <div>
+          <h3 style={{ margin: 0, fontSize: 16 }}>Pipeline health</h3>
+          <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--muted, #6b7280)" }}>
+            End-to-end audit: settings → App Storage → /downloads → GitHub Release manifest.
+          </p>
+        </div>
+        <button onClick={runHealthCheck} disabled={loading} style={{ minWidth: 120 }}>
+          {loading ? "Checking…" : report ? "Re-run" : "Run health check"}
+        </button>
+      </div>
+
+      {error && (
+        <div style={{ color: "#dc2626", fontSize: 13, marginTop: 8 }}>Error: {error}</div>
+      )}
+
+      {report && (
+        <>
+          <div style={{ marginTop: 12 }}>
+            <StatusDot ok={!report.settings.error} label="Settings" />
+            <StatusDot ok={report.storage.ok} label="App Storage" />
+            <StatusDot ok={report.download.checked ? report.download.ok : null} label="Live /downloads HEAD" />
+            <StatusDot
+              ok={report.githubRelease.configured ? report.githubRelease.ok : null}
+              label="GitHub Release"
+            />
+          </div>
+          <div style={{ marginTop: 12, fontSize: 13, lineHeight: 1.5 }}>
+            <div>
+              <strong>Configured:</strong> {report.settings.version ?? "—"} →{" "}
+              <code>{report.settings.downloadUrl ?? "—"}</code>
+            </div>
+            {report.storage.uploadedAt && (
+              <div>
+                <strong>Storage:</strong>{" "}
+                {report.storage.size != null
+                  ? `${(report.storage.size / 1_048_576).toFixed(1)} MB`
+                  : "?"}
+                , uploaded {new Date(report.storage.uploadedAt).toLocaleString()}
+              </div>
+            )}
+            {report.download.checked && (
+              <div>
+                <strong>Download HEAD:</strong> HTTP {report.download.status ?? "?"}
+                {report.download.etagMatchesStorage === false && (
+                  <span style={{ color: "#dc2626" }}> — ETag mismatch (stale copy?)</span>
+                )}
+              </div>
+            )}
+            {report.githubRelease.configured && (
+              <div>
+                <strong>Latest Release:</strong> {report.githubRelease.tagName ?? "—"}
+                {report.githubRelease.publishedAt && (
+                  <> ({new Date(report.githubRelease.publishedAt).toLocaleDateString()})</>
+                )}
+                {!report.githubRelease.hasManifest && (
+                  <span style={{ color: "#dc2626" }}> — no latest.yml/latest-mac.yml asset</span>
+                )}
+              </div>
+            )}
+            <div style={{ marginTop: 4, color: "var(--muted, #6b7280)", fontSize: 12 }}>
+              Checked {new Date(report.checkedAt).toLocaleString()}
+            </div>
+          </div>
+          {report.issues.length > 0 && (
+            <ul style={{ marginTop: 12, paddingLeft: 20, color: "#b45309", fontSize: 13 }}>
+              {report.issues.map((issue, i) => (
+                <li key={i}>{issue}</li>
+              ))}
+            </ul>
+          )}
+          {report.ok && (
+            <div style={{ marginTop: 8, color: "#16a34a", fontSize: 13 }}>
+              All probes healthy — pipeline is in sync.
+            </div>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 

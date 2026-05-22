@@ -209,31 +209,9 @@ jobs:
           fi
           VERSION=$(node -p "require('./artifacts/labtrax-desktop/package.json').version")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "stage=upload" >> "$GITHUB_OUTPUT"
-          echo "Uploading $INSTALLER_PATH to $BASE_URL/api/admin/desktop-installer/upload"
-          UPLOAD_BODY=$(mktemp)
-          # Capture only the HTTP status; on transport failure curl emits no
-          # status, so default to 000. Use a single assignment (no `|| echo`
-          # fallback chain) to avoid ambiguous multi-line output.
-          UPLOAD_STATUS=$(curl --silent --show-error --output "$UPLOAD_BODY" --write-out '%{http_code}' \
-            -H "X-Platform-Admin-Secret: $PLATFORM_ADMIN_SECRET" \
-            -F "file=@${INSTALLER_PATH};type=application/vnd.microsoft.portable-executable" \
-            "$BASE_URL/api/admin/desktop-installer/upload") || true
-          UPLOAD_STATUS="${UPLOAD_STATUS:-000}"
-          cat "$UPLOAD_BODY"; echo
-          if [[ ! "$UPLOAD_STATUS" =~ ^2[0-9][0-9]$ ]]; then
-            BODY_TRUNC=$(head -c 1500 "$UPLOAD_BODY")
-            {
-              echo "http_status=$UPLOAD_STATUS"
-              echo 'error_message<<__EOF__'
-              printf '%s\n' "$BODY_TRUNC"
-              echo "__EOF__"
-            } >> "$GITHUB_OUTPUT"
-            echo "::error::Installer upload failed (HTTP $UPLOAD_STATUS): $BODY_TRUNC"
-            exit 1
-          fi
-          echo "stage=settings" >> "$GITHUB_OUTPUT"
-          echo "Updating live download URL → /downloads/LabTrax-Setup.exe (version $VERSION)"
+          # Pull release notes for this version out of RELEASE_NOTES.md if
+          # present, falling back to a generic CI message. Same logic as
+          # before — just now sent inline to /publish.
           NOTES=$(node -e "
 const fs = require('fs');
 const ver = 'v${VERSION}';
@@ -257,72 +235,35 @@ process.stdout.write(out.join('\n').trim());
           else
             echo "::notice::Using release notes for v${VERSION} from RELEASE_NOTES.md."
           fi
-          SETTINGS_BODY=$(mktemp)
-          SETTINGS_STATUS=$(curl --silent --show-error --output "$SETTINGS_BODY" --write-out '%{http_code}' \
-            -X PUT \
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          # Atomic publish (Task #749): single multipart call to /publish
+          # uploads the installer AND updates system_settings + changelog in
+          # one DB write. Previously this was three separate curls (upload,
+          # settings PUT, on-failure notify); see
+          # docs/desktop-publish-pipeline.md ("Why /publish exists") for the
+          # rationale. The server dispatches a deduped admin alert if either
+          # stage fails, so no follow-up notify step is needed.
+          echo "Publishing $INSTALLER_PATH (v$VERSION) to $BASE_URL/api/admin/desktop-installer/publish"
+          PUBLISH_BODY=$(mktemp)
+          PUBLISH_STATUS=$(curl --silent --show-error --output "$PUBLISH_BODY" --write-out '%{http_code}' \
             -H "X-Platform-Admin-Secret: $PLATFORM_ADMIN_SECRET" \
-            -H "Content-Type: application/json" \
-            --data "$(jq -n --arg url "/downloads/LabTrax-Setup.exe" --arg ver "$VERSION" --arg notes "$NOTES" '{downloadUrl:$url, version:$ver, releaseNotes:$notes}')" \
-            "$BASE_URL/api/admin/settings/desktop-installer") || true
-          SETTINGS_STATUS="${SETTINGS_STATUS:-000}"
-          cat "$SETTINGS_BODY"; echo
-          if [[ ! "$SETTINGS_STATUS" =~ ^2[0-9][0-9]$ ]]; then
-            BODY_TRUNC=$(head -c 1500 "$SETTINGS_BODY")
-            {
-              echo "http_status=$SETTINGS_STATUS"
-              echo 'error_message<<__EOF__'
-              printf '%s\n' "$BODY_TRUNC"
-              echo "__EOF__"
-            } >> "$GITHUB_OUTPUT"
-            echo "::error::Installer settings update failed (HTTP $SETTINGS_STATUS): $BODY_TRUNC"
+            -F "file=@${INSTALLER_PATH};type=application/vnd.microsoft.portable-executable" \
+            -F "version=${VERSION}" \
+            -F "downloadUrl=/downloads/LabTrax-Setup.exe" \
+            -F "releaseNotes=${NOTES}" \
+            -F "workflowName=${GITHUB_WORKFLOW}" \
+            -F "runUrl=${RUN_URL}" \
+            -F "runId=${GITHUB_RUN_ID}" \
+            -F "commitSha=${GITHUB_SHA}" \
+            -F "ref=${GITHUB_REF_NAME}" \
+            "$BASE_URL/api/admin/desktop-installer/publish") || true
+          PUBLISH_STATUS="${PUBLISH_STATUS:-000}"
+          cat "$PUBLISH_BODY"; echo
+          if [[ ! "$PUBLISH_STATUS" =~ ^2[0-9][0-9]$ ]]; then
+            BODY_TRUNC=$(head -c 1500 "$PUBLISH_BODY")
+            STAGE_PARSED=$(jq -r '.stage // "unknown"' "$PUBLISH_BODY" 2>/dev/null || echo "unknown")
+            echo "::error::Atomic publish failed (HTTP $PUBLISH_STATUS, stage=$STAGE_PARSED): $BODY_TRUNC"
+            echo "::notice::Server-side dedup'd admin alert was dispatched by /publish — no follow-up notify needed."
             exit 1
           fi
-          echo "::notice::Published LabTrax-Setup.exe v$VERSION to $BASE_URL"
-
-      # Email the platform admin recipient list when the auto-publish step
-      # above fails so the lab finds out within minutes instead of waiting for
-      # a customer to complain. Inherits the same opt-in gating: if either
-      # PLATFORM_ADMIN_SECRET or PUBLISH_API_BASE_URL is unset, we skip
-      # silently (the publish step also skipped).
-      - name: Notify admins on publish failure
-        if: always() && steps.publish.outcome == 'failure'
-        shell: bash
-        env:
-          PLATFORM_ADMIN_SECRET: ${{ secrets.PLATFORM_ADMIN_SECRET }}
-          PUBLISH_API_BASE_URL: ${{ secrets.PUBLISH_API_BASE_URL }}
-          STAGE: ${{ steps.publish.outputs.stage }}
-          HTTP_STATUS: ${{ steps.publish.outputs.http_status }}
-          ERROR_MESSAGE: ${{ steps.publish.outputs.error_message }}
-          VERSION: ${{ steps.publish.outputs.version }}
-        run: |
-          if [[ -z "$PLATFORM_ADMIN_SECRET" || -z "$PUBLISH_API_BASE_URL" ]]; then
-            echo "::notice::Skipping publish-failure alert — PLATFORM_ADMIN_SECRET or PUBLISH_API_BASE_URL not set."
-            exit 0
-          fi
-          BASE_URL="${PUBLISH_API_BASE_URL%/}"
-          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          PAYLOAD=$(jq -n \
-            --arg workflowName "${GITHUB_WORKFLOW}" \
-            --arg runUrl "$RUN_URL" \
-            --arg runId "${GITHUB_RUN_ID}" \
-            --arg commitSha "${GITHUB_SHA}" \
-            --arg ref "${GITHUB_REF_NAME}" \
-            --arg version "${VERSION:-}" \
-            --arg stage "${STAGE:-unknown}" \
-            --arg httpStatus "${HTTP_STATUS:-}" \
-            --arg errorMessage "${ERROR_MESSAGE:-}" \
-            '{workflowName:$workflowName, runUrl:$runUrl, runId:$runId, commitSha:$commitSha, ref:$ref, version:$version, stage:$stage, errorMessage:$errorMessage} + (if $httpStatus == "" then {} else {httpStatus: ($httpStatus | tonumber)} end)')
-          echo "Reporting publish failure to $BASE_URL/api/admin/desktop-installer/publish-failure"
-          NOTIFY_BODY=$(mktemp)
-          NOTIFY_STATUS=$(curl --silent --show-error --output "$NOTIFY_BODY" --write-out '%{http_code}' \
-            -X POST \
-            -H "X-Platform-Admin-Secret: $PLATFORM_ADMIN_SECRET" \
-            -H "Content-Type: application/json" \
-            --data "$PAYLOAD" \
-            "$BASE_URL/api/admin/desktop-installer/publish-failure") || true
-          NOTIFY_STATUS="${NOTIFY_STATUS:-000}"
-          cat "$NOTIFY_BODY"; echo
-          if [[ ! "$NOTIFY_STATUS" =~ ^2[0-9][0-9]$ ]]; then
-            BODY_TRUNC=$(head -c 500 "$NOTIFY_BODY")
-            echo "::warning::Failed to deliver publish-failure alert (HTTP $NOTIFY_STATUS): $BODY_TRUNC — admins will not receive an email for this run."
-          fi
+          echo "::notice::Published LabTrax-Setup.exe v$VERSION to $BASE_URL (atomic /publish call)."
