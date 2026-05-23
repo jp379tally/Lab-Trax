@@ -41,6 +41,9 @@ export type SessionUser = {
   practiceLogoplacements?: string[] | null;
   // PDF logo size preference. null = default "medium".
   practiceLogoSize?: string | null;
+  // Per-lab visual invoice-layout template (Task #751). Null = use
+  // built-in default; otherwise an InvoiceTemplate JSON blob.
+  practiceInvoiceTemplate?: unknown;
   // Current work-status presence indicator. One of "available" (at
   // work), "break", "lunch", or "out_of_office". Defaults to
   // "available" server-side when unset.

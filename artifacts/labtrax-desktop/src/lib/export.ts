@@ -1,5 +1,10 @@
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import {
+  coerceInvoiceTemplate,
+  DEFAULT_INVOICE_TEMPLATE,
+  type InvoiceTemplate,
+} from "./invoice-template";
 
 export function downloadCsv(filename: string, rows: Array<Record<string, string | number | null | undefined>>) {
   if (rows.length === 0) {
@@ -136,8 +141,21 @@ export interface InvoicePdfOptions {
   generatedAt: Date;
   /** Full URL of the lab logo; shown in the top-right header when provided. */
   logoUrl?: string | null;
-  /** Logo size for this PDF. null/undefined treated as "medium". */
+  /** Logo size for this PDF. null/undefined treated as "medium". (Legacy preset; ignored when `template` is supplied.) */
   logoPdfSize?: "small" | "medium" | "large" | null;
+  /**
+   * Per-lab visual invoice template (Task #751). Drives layout of every
+   * section + watermark/extra images. Null/undefined uses the built-in
+   * default, which matches the historical hard-coded layout.
+   */
+  template?: InvoiceTemplate | null;
+  /**
+   * Map of `extraImage.url` → data-URL bytes (PNG/JPEG/etc.). When
+   * present, those bytes are embedded onto the page. URLs without a
+   * pre-loaded data URL are silently skipped so PDF rendering never
+   * fails on a missing image.
+   */
+  extraImageDataUrls?: Record<string, string>;
 }
 
 export interface BuiltInvoicePdf {
@@ -339,150 +357,172 @@ export function printInvoicePdf(opts: InvoicePdfOptions) {
 
 function buildInvoiceDoc(opts: InvoicePdfOptions) {
   const doc = new jsPDF({ unit: "pt", format: "letter" });
-  const pageWidth = doc.internal.pageSize.getWidth();
-  const margin = 40;
+  const template = coerceInvoiceTemplate(opts.template ?? DEFAULT_INVOICE_TEMPLATE);
+  const { boxes, logo, extraImages } = template;
+  const extraDataUrls = opts.extraImageDataUrls ?? {};
 
+  const setOpacity = (a: number) => {
+    const gs = doc as unknown as {
+      GState?: (o: { opacity: number }) => unknown;
+      setGState?: (s: unknown) => void;
+    };
+    if (gs.GState && gs.setGState) gs.setGState(gs.GState({ opacity: a }));
+  };
+
+  // ── Watermark logo (drawn first, behind content) ─────────────────────
+  if (opts.logoUrl && logo.mode === "watermark") {
+    try {
+      setOpacity(logo.opacity);
+      doc.addImage(opts.logoUrl, logo.x, logo.y, logo.w, logo.h);
+      setOpacity(1);
+    } catch {
+      /* watermark is decorative */
+    }
+  }
+
+  // ── Extra images (signatures, stamps, etc.) ──────────────────────────
+  for (const img of extraImages) {
+    const dataUrl = extraDataUrls[img.url];
+    if (!dataUrl) continue;
+    try {
+      if (img.opacity < 1) setOpacity(img.opacity);
+      doc.addImage(dataUrl, img.x, img.y, img.w, img.h);
+      if (img.opacity < 1) setOpacity(1);
+    } catch {
+      /* skip broken image */
+    }
+  }
+
+  // ── Header box ───────────────────────────────────────────────────────
+  const hdr = boxes.header;
   doc.setFontSize(20);
   doc.setFont("helvetica", "bold");
-  doc.text("Invoice", margin, 50);
-
+  doc.text("Invoice", hdr.x, hdr.y + 20);
   doc.setFontSize(10);
   doc.setFont("helvetica", "normal");
   doc.setTextColor(120);
-  doc.text(`#${opts.invoiceNumber}`, margin, 66);
+  doc.text(`#${opts.invoiceNumber}`, hdr.x, hdr.y + 36);
   doc.setTextColor(0);
 
-  // Logo height per size setting
-  const LOGO_HEIGHTS: Record<string, number> = { small: 28, medium: 40, large: 56 };
-  const LOGO_MAX_WIDTHS: Record<string, number> = { small: 90, medium: 130, large: 180 };
-  const logoSizeKey = opts.logoPdfSize ?? "medium";
-  const logoH = LOGO_HEIGHTS[logoSizeKey] ?? 40;
-  const logoMaxW = LOGO_MAX_WIDTHS[logoSizeKey] ?? 130;
-
-  // Lab logo (top-right) or lab name text
-  if (opts.logoUrl) {
+  // ── Header-mode logo (or lab-name text fallback) ─────────────────────
+  if (opts.logoUrl && logo.mode === "header") {
     try {
-      // Place logo flush with the right margin, auto-width from height
-      const logoX = pageWidth - margin - logoMaxW;
-      doc.addImage(opts.logoUrl, logoX, 30, 0, logoH);
+      doc.addImage(opts.logoUrl, logo.x, logo.y, logo.w, logo.h);
     } catch {
-      // fall back to text if image fails
       doc.setFontSize(11);
       doc.setFont("helvetica", "bold");
-      doc.text(opts.labName, pageWidth - margin, 50, { align: "right" });
+      doc.text(opts.labName, logo.x + logo.w, logo.y + 20, { align: "right" });
       doc.setFont("helvetica", "normal");
     }
-  } else {
-    // Lab (right-aligned)
+  } else if (logo.mode === "header") {
     doc.setFontSize(11);
     doc.setFont("helvetica", "bold");
-    doc.text(opts.labName, pageWidth - margin, 50, { align: "right" });
+    doc.text(opts.labName, logo.x + logo.w, logo.y + 20, { align: "right" });
     doc.setFont("helvetica", "normal");
   }
   doc.setFontSize(9);
   doc.setTextColor(120);
   doc.text(
     `Generated ${opts.generatedAt.toLocaleDateString("en-US")}`,
-    pageWidth - margin,
-    66,
+    logo.x + logo.w,
+    logo.y + logo.h + 8,
     { align: "right" },
   );
   doc.setTextColor(0);
 
-  // Bill-to / patient block
-  let y = 100;
+  // ── Bill-to / Patient ────────────────────────────────────────────────
+  const bt = boxes.billTo;
+  const billToValue = (opts.billTo && opts.billTo.trim()) || opts.practiceName;
+  const halfW = Math.min(220, bt.w / 2);
   doc.setFontSize(8);
   doc.setTextColor(120);
-  doc.text("BILL TO", margin, y);
-  doc.text("PATIENT", margin + 220, y);
+  doc.text("BILL TO", bt.x, bt.y);
+  doc.text("PATIENT", bt.x + halfW, bt.y);
   doc.setTextColor(0);
   doc.setFontSize(11);
   doc.setFont("helvetica", "bold");
-  const billToValue = (opts.billTo && opts.billTo.trim()) || opts.practiceName;
-  doc.text(billToValue, margin, y + 14);
+  doc.text(billToValue, bt.x, bt.y + 14);
   doc.text(
     (opts.patientName && opts.patientName.trim()) || "—",
-    margin + 220,
-    y + 14,
+    bt.x + halfW,
+    bt.y + 14,
   );
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(9);
-  doc.setTextColor(120);
   if (billToValue !== opts.practiceName) {
-    doc.text(opts.practiceName, margin, y + 28);
+    doc.setFontSize(9);
+    doc.setTextColor(120);
+    doc.text(opts.practiceName, bt.x, bt.y + 28);
+    doc.setTextColor(0);
   }
-  doc.setTextColor(0);
-  y += 50;
 
-  // Meta row: Issued / Due / Status / Teeth / Shade
+  // ── Meta row ─────────────────────────────────────────────────────────
+  const m = boxes.meta;
   const metaPairs: Array<[string, string]> = [
     ["Issued", fmtDate(opts.issuedAt) || "—"],
     ["Due", fmtDate(opts.dueAt) || "—"],
     ["Status", opts.status],
   ];
-  if (opts.teeth && opts.teeth.trim()) {
-    metaPairs.push(["Teeth", opts.teeth.trim()]);
-  }
-  if (opts.shade && opts.shade.trim()) {
-    metaPairs.push(["Shade", opts.shade.trim()]);
-  }
-  const colW = (pageWidth - margin * 2) / metaPairs.length;
+  if (opts.teeth && opts.teeth.trim()) metaPairs.push(["Teeth", opts.teeth.trim()]);
+  if (opts.shade && opts.shade.trim()) metaPairs.push(["Shade", opts.shade.trim()]);
+  const colW = m.w / metaPairs.length;
   metaPairs.forEach(([label, value], i) => {
-    const x = margin + colW * i;
+    const x = m.x + colW * i;
     doc.setFontSize(8);
     doc.setTextColor(120);
-    doc.text(label.toUpperCase(), x, y);
+    doc.text(label.toUpperCase(), x, m.y);
     doc.setFontSize(10);
     doc.setTextColor(0);
-    doc.text(value, x, y + 14);
+    doc.text(value, x, m.y + 14);
   });
-  y += 28;
 
+  // ── Case notes (above items) ─────────────────────────────────────────
+  let postNotesY = boxes.items.y;
   if (opts.caseNotes && opts.caseNotes.trim()) {
+    const notesY = m.y + m.h + 6;
     doc.setFontSize(8);
     doc.setTextColor(120);
-    doc.text("CASE NOTES", margin, y);
+    doc.text("CASE NOTES", m.x, notesY);
     doc.setFontSize(9);
     doc.setTextColor(0);
-    const wrapped = doc.splitTextToSize(
-      opts.caseNotes.trim(),
-      pageWidth - margin * 2,
-    );
-    doc.text(wrapped, margin, y + 12);
-    y += 12 + wrapped.length * 11 + 4;
+    const wrapped = doc.splitTextToSize(opts.caseNotes.trim(), m.w);
+    doc.text(wrapped, m.x, notesY + 12);
+    postNotesY = Math.max(postNotesY, notesY + 12 + wrapped.length * 11 + 4);
   }
 
-  // Line items
+  // ── Line-items table ─────────────────────────────────────────────────
+  const it = boxes.items;
+  const itemsStartY = Math.max(it.y, postNotesY);
+  const pageWidth = doc.internal.pageSize.getWidth();
   autoTable(doc, {
-    startY: y + 8,
+    startY: itemsStartY,
     head: [["Item", "Tooth #", "Description", "Qty", "Unit price", "Total"]],
-    body: opts.items.map((it) => [
-      (it.item && String(it.item).trim()) || "—",
-      it.toothNumber != null ? String(it.toothNumber) : "—",
-      it.description,
-      String(it.quantity),
-      fmtMoney(it.unitPrice as number | string),
-      fmtMoney(it.lineTotal as number | string),
+    body: opts.items.map((row) => [
+      (row.item && String(row.item).trim()) || "—",
+      row.toothNumber != null ? String(row.toothNumber) : "—",
+      row.description,
+      String(row.quantity),
+      fmtMoney(row.unitPrice as number | string),
+      fmtMoney(row.lineTotal as number | string),
     ]),
     styles: { fontSize: 9, cellPadding: 6 },
     headStyles: { fillColor: [40, 44, 52], textColor: 255 },
     columnStyles: {
-      0: { cellWidth: 100 },
+      0: { cellWidth: Math.max(60, it.w * 0.18) },
       1: { halign: "right", cellWidth: 44 },
       3: { halign: "right", cellWidth: 36 },
       4: { halign: "right", cellWidth: 76 },
       5: { halign: "right", cellWidth: 76 },
     },
-    margin: { left: margin, right: margin },
+    margin: { left: it.x, right: pageWidth - (it.x + it.w) },
   });
 
+  // ── Totals block ─────────────────────────────────────────────────────
+  const t = boxes.totals;
   const afterTable = (doc as unknown as { lastAutoTable?: { finalY: number } })
     .lastAutoTable;
-  let totalsY = (afterTable?.finalY ?? y + 8) + 16;
-
-  // Totals block (right column)
-  const totalsX = pageWidth - margin - 200;
-  const valueX = pageWidth - margin;
+  let totalsY = Math.max(t.y, (afterTable?.finalY ?? itemsStartY) + 16);
+  const totalsX = t.x;
+  const valueX = t.x + t.w;
   const writeRow = (label: string, value: string, bold = false) => {
     doc.setFont("helvetica", bold ? "bold" : "normal");
     doc.setFontSize(bold ? 11 : 10);
@@ -507,17 +547,17 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
     writeRow("Balance due", fmtMoney(bal.toFixed(2)));
   }
 
+  // ── Notes ────────────────────────────────────────────────────────────
   if (opts.notes && opts.notes.trim()) {
+    const notesX = boxes.items.x;
+    const notesW = boxes.items.w;
     doc.setFontSize(8);
     doc.setTextColor(120);
-    doc.text("NOTES", margin, totalsY + 12);
+    doc.text("NOTES", notesX, totalsY + 12);
     doc.setFontSize(9);
     doc.setTextColor(0);
-    const wrapped = doc.splitTextToSize(
-      opts.notes.trim(),
-      pageWidth - margin * 2,
-    );
-    doc.text(wrapped, margin, totalsY + 26);
+    const wrapped = doc.splitTextToSize(opts.notes.trim(), notesW);
+    doc.text(wrapped, notesX, totalsY + 26);
   }
 
   return doc;

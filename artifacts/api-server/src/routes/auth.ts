@@ -192,6 +192,12 @@ async function hydrateUsersWithActiveMemberships(rawUsers: any[]) {
       // empty otherwise). See organizations PATCH /logo-placements.
       practiceLogoplacements: (primaryOrganization as any)?.logoplacements ?? null,
       practiceLogoSize: (primaryOrganization as any)?.logoPdfSize ?? null,
+      // Per-lab visual invoice-layout template (Task #751). Null = use the
+      // built-in default. Surfaced here so the desktop client can render
+      // every invoice PDF using the lab's saved layout without an extra
+      // round-trip on each PDF build.
+      practiceInvoiceTemplate:
+        (primaryOrganization as any)?.invoiceTemplate ?? null,
       // Surface the lab-scoped account number from the user's primary
       // practice organization so providers can see it in their profile.
       // Falls back to the legacy per-user accountNumber field.

@@ -1,0 +1,96 @@
+import { z } from "zod/v4";
+
+/**
+ * Visual invoice-layout template (Task #751).
+ *
+ * All coordinates are expressed in PDF points on a US Letter page
+ * (612 × 792 pt). The same shape is shared with the desktop client
+ * (`artifacts/labtrax-desktop/src/lib/invoice-template.ts`); keep the
+ * two files in sync.
+ *
+ * `null` on `organizations.invoice_template` means "use DEFAULT_INVOICE_TEMPLATE"
+ * — that preserves the historical hard-coded layout for labs that have
+ * never opened the editor.
+ */
+
+export const PAGE_W = 612;
+export const PAGE_H = 792;
+
+const boxSchema = z.object({
+  x: z.number().min(0).max(PAGE_W),
+  y: z.number().min(0).max(PAGE_H),
+  w: z.number().min(20).max(PAGE_W),
+  h: z.number().min(10).max(PAGE_H),
+});
+
+export const extraImageSchema = z.object({
+  id: z.string().min(1).max(64),
+  storageKey: z.string().min(1).max(256),
+  url: z.string().min(1).max(1024),
+  x: z.number().min(0).max(PAGE_W),
+  y: z.number().min(0).max(PAGE_H),
+  w: z.number().min(10).max(PAGE_W),
+  h: z.number().min(10).max(PAGE_H),
+  opacity: z.number().min(0).max(1).default(1),
+});
+
+export const invoiceTemplateSchema = z.object({
+  version: z.literal(1),
+  logo: z.object({
+    mode: z.enum(["header", "watermark"]),
+    x: z.number().min(0).max(PAGE_W),
+    y: z.number().min(0).max(PAGE_H),
+    w: z.number().min(20).max(PAGE_W),
+    h: z.number().min(10).max(PAGE_H),
+    opacity: z.number().min(0).max(1).default(1),
+  }),
+  boxes: z.object({
+    header: boxSchema,
+    billTo: boxSchema,
+    meta: boxSchema,
+    items: boxSchema,
+    totals: boxSchema,
+  }),
+  extraImages: z.array(extraImageSchema).max(12).default([]),
+});
+
+export type InvoiceTemplate = z.infer<typeof invoiceTemplateSchema>;
+export type InvoiceTemplateBox = z.infer<typeof boxSchema>;
+export type InvoiceTemplateExtraImage = z.infer<typeof extraImageSchema>;
+
+/**
+ * Default template — coordinates match the original hard-coded jsPDF
+ * layout (Letter, 40 pt margin) so existing labs see no visual change
+ * until they actively edit the template.
+ */
+export const DEFAULT_INVOICE_TEMPLATE: InvoiceTemplate = {
+  version: 1,
+  logo: {
+    mode: "header",
+    x: 402,
+    y: 30,
+    w: 170,
+    h: 50,
+    opacity: 1,
+  },
+  boxes: {
+    header: { x: 40, y: 30, w: 300, h: 50 },
+    billTo: { x: 40, y: 100, w: 440, h: 50 },
+    meta: { x: 40, y: 160, w: 532, h: 40 },
+    items: { x: 40, y: 210, w: 532, h: 280 },
+    totals: { x: 372, y: 500, w: 200, h: 120 },
+  },
+  extraImages: [],
+};
+
+/**
+ * Coerce a JSON value loaded from `organizations.invoice_template` into
+ * a valid template. Returns DEFAULT_INVOICE_TEMPLATE when the value is
+ * null/undefined or fails to parse — never throws.
+ */
+export function coerceInvoiceTemplate(value: unknown): InvoiceTemplate {
+  if (value == null) return DEFAULT_INVOICE_TEMPLATE;
+  const parsed = invoiceTemplateSchema.safeParse(value);
+  if (!parsed.success) return DEFAULT_INVOICE_TEMPLATE;
+  return parsed.data;
+}

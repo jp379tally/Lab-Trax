@@ -161,6 +161,12 @@ export const organizations = pgTable(
     // Size of the logo in generated PDFs. null = default ("medium").
     // Valid values: "small" | "medium" | "large"
     logoPdfSize: text("logo_pdf_size"),
+    // Per-lab visual invoice-layout template (Task #751). JSON shape is
+    // defined by `InvoiceTemplate` in lib/invoice-template. Null = use
+    // the built-in default layout (preserves existing behavior for labs
+    // that have not opened the layout editor). Edited via Settings →
+    // Invoice Layout in the desktop app.
+    invoiceTemplate: jsonb("invoice_template"),
     // Provider organizations are created by a specific lab. We persist the
     // creating lab's id here (nullable for non-provider orgs / legacy rows)
     // so account-number uniqueness can be scoped per lab.

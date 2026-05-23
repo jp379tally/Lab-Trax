@@ -9,6 +9,8 @@ import { formatDate, formatMoney, statusLabel } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
 import { TriggeredByBadge } from "@/components/TriggeredByBadge";
 import { buildInvoicePdf, buildStatementPdf, downloadCsv, downloadStatementPdf, printInvoicePdf, safeFilename, type InvoicePdfOptions } from "@/lib/export";
+import { useAuth } from "@/lib/auth-context";
+import { useInvoiceTemplate } from "@/lib/use-invoice-template";
 import { InvoiceEditor } from "@/pages/invoices";
 
 interface StatementSchedule {
@@ -2192,6 +2194,11 @@ function SendInvoiceFromStatementDialog({
     queryFn: () => apiFetch<any>(`/invoices/${invoice.id}`),
   });
 
+  const { user } = useAuth();
+  const { template: invoiceTemplate, extraImageDataUrls } = useInvoiceTemplate(
+    user?.practiceInvoiceTemplate,
+  );
+
   const defaultEmail = ((practice as any)?.billingEmail ?? "").trim();
   const [to, setTo] = useState(defaultEmail);
   const [subject, setSubject] = useState(`Invoice ${invoice.invoiceNumber}`);
@@ -2238,6 +2245,8 @@ function SendInvoiceFromStatementDialog({
       balanceDue: detail.balanceDue ?? null,
       notes: detail.notes ?? null,
       generatedAt: new Date(),
+      template: invoiceTemplate,
+      extraImageDataUrls,
     };
   }
 

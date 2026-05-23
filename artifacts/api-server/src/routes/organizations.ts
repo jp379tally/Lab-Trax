@@ -2,10 +2,18 @@ import crypto from "node:crypto";
 import { Router } from "express";
 import multer from "multer";
 import {
+  deleteInvoiceTemplateImage,
   isAllowedLogoMime,
+  openInvoiceTemplateImageStream,
   openLabLogoStream,
+  uploadInvoiceTemplateImage,
   uploadLabLogo,
 } from "../lib/lab-logo-storage";
+import {
+  coerceInvoiceTemplate,
+  DEFAULT_INVOICE_TEMPLATE,
+  invoiceTemplateSchema,
+} from "../lib/invoice-template";
 import { and, eq, inArray, isNotNull, ne } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
@@ -2471,6 +2479,160 @@ router.post(
         uploadedAt: meta.uploadedAt,
       },
     });
+  })
+);
+
+// ─── Invoice layout template (Task #751) ─────────────────────────────────────
+//
+// Per-lab visual invoice template that drives all generated invoice PDFs.
+// Stored on `organizations.invoice_template` (jsonb). Null = use the
+// built-in DEFAULT_INVOICE_TEMPLATE, so labs that never open the editor
+// see the original hard-coded layout.
+
+router.get(
+  "/:organizationId/invoice-template",
+  asyncHandler(async (req, res) => {
+    const { organizationId } = req.params;
+    await resolveOrgReadAccess((req as any).auth.userId, organizationId);
+    const org = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organizationId),
+    });
+    if (!org) throw new HttpError(404, "Organization not found.");
+    const template = coerceInvoiceTemplate((org as any).invoiceTemplate);
+    return ok(res, {
+      template,
+      isCustom: (org as any).invoiceTemplate != null,
+      defaultTemplate: DEFAULT_INVOICE_TEMPLATE,
+    });
+  })
+);
+
+router.put(
+  "/:organizationId/invoice-template",
+  asyncHandler(async (req, res) => {
+    const { organizationId } = req.params;
+    await resolveOrgAdminAccess((req as any).auth.userId, organizationId);
+
+    // Accept `null` to reset to default.
+    const body = req.body as { template?: unknown };
+    let toStore: unknown = null;
+    if (body && body.template !== null && body.template !== undefined) {
+      const parsed = invoiceTemplateSchema.safeParse(body.template);
+      if (!parsed.success) {
+        throw new HttpError(
+          400,
+          `Invalid invoice template: ${parsed.error.message}`,
+        );
+      }
+      toStore = parsed.data;
+    }
+
+    const existing = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organizationId),
+    });
+    if (!existing) throw new HttpError(404, "Organization not found.");
+
+    const [updated] = await db
+      .update(organizations)
+      .set({ invoiceTemplate: toStore as any, updatedAt: new Date() } as any)
+      .where(eq(organizations.id, organizationId))
+      .returning();
+
+    await writeAuditLog({
+      req,
+      labId: organizationId,
+      action: "organization_invoice_template_updated",
+      entityType: "organization",
+      entityId: organizationId,
+      beforeJson: { invoiceTemplate: (existing as any).invoiceTemplate ?? null },
+      afterJson: { invoiceTemplate: toStore },
+    });
+
+    return ok(res, {
+      template: coerceInvoiceTemplate((updated as any).invoiceTemplate),
+      isCustom: (updated as any).invoiceTemplate != null,
+      defaultTemplate: DEFAULT_INVOICE_TEMPLATE,
+    });
+  })
+);
+
+const invoiceImageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
+
+router.post(
+  "/:organizationId/invoice-template/images",
+  (req, res, next) => {
+    invoiceImageUpload.single("file")(req, res, (err: any) => {
+      if (err) {
+        const status = err?.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+        res.status(status).json({ error: err?.message || "Upload failed." });
+        return;
+      }
+      next();
+    });
+  },
+  asyncHandler(async (req, res) => {
+    const { organizationId } = req.params;
+    await resolveOrgAdminAccess((req as any).auth.userId, organizationId);
+
+    const file = (req as any).file as
+      | { mimetype: string; buffer: Buffer; size: number }
+      | undefined;
+    if (!file || !file.buffer || file.size === 0) {
+      throw new HttpError(400, "Missing 'file' field.");
+    }
+    if (!isAllowedLogoMime(file.mimetype)) {
+      throw new HttpError(
+        400,
+        `Unsupported image type: ${file.mimetype}. Use PNG, JPG, GIF, SVG, or WebP.`,
+      );
+    }
+    const meta = await uploadInvoiceTemplateImage(
+      organizationId,
+      file.buffer,
+      file.mimetype,
+    );
+    const url = `/api/organizations/${organizationId}/invoice-template/images/${meta.id}`;
+    return ok(res, {
+      id: meta.id,
+      storageKey: meta.storageKey,
+      url,
+      contentType: meta.contentType,
+      size: meta.size,
+    });
+  })
+);
+
+router.get(
+  "/:organizationId/invoice-template/images/:imageId",
+  asyncHandler(async (req, res) => {
+    const { organizationId, imageId } = req.params;
+    await resolveOrgReadAccess((req as any).auth.userId, organizationId);
+    const stream = await openInvoiceTemplateImageStream(organizationId, imageId);
+    if (!stream) {
+      res.status(404).json({ error: "Image not found." });
+      return;
+    }
+    res.setHeader("Content-Type", stream.contentType);
+    res.setHeader("Cache-Control", "private, max-age=60");
+    stream.stream.on("error", (err) => {
+      req.log?.error?.({ err }, "invoice template image stream error");
+      if (!res.headersSent) res.status(500).end();
+      else res.end();
+    });
+    stream.stream.pipe(res);
+  })
+);
+
+router.delete(
+  "/:organizationId/invoice-template/images/:imageId",
+  asyncHandler(async (req, res) => {
+    const { organizationId, imageId } = req.params;
+    await resolveOrgAdminAccess((req as any).auth.userId, organizationId);
+    await deleteInvoiceTemplateImage(organizationId, imageId);
+    return ok(res, { deleted: true });
   })
 );
 

@@ -42,6 +42,7 @@ import {
   printInvoicePdf,
   type InvoicePdfOptions,
 } from "@/lib/export";
+import { useInvoiceTemplate } from "@/lib/use-invoice-template";
 import { parseToothField } from "@/components/ToothChart";
 
 const STATUS_FILTERS = [
@@ -553,6 +554,11 @@ export function InvoiceEditor({
     user?.role === "admin" ||
     user?.role === "billing";
 
+  // Per-lab visual invoice template + preloaded extra-image data URLs.
+  const { template: invoiceTemplate, extraImageDataUrls } = useInvoiceTemplate(
+    user?.practiceInvoiceTemplate,
+  );
+
   // Pre-fetch lab logo as a data-URL for invoice PDFs (only when placement is active)
   const [logoDataUrl, setLogoDataUrl] = useState<string | null>(null);
   const invoicePlacementActive = !!(user?.practiceLogoplacements?.includes("invoices"));
@@ -941,6 +947,8 @@ export function InvoiceEditor({
       generatedAt: new Date(),
       logoUrl: logoDataUrl,
       logoPdfSize: (user?.practiceLogoSize as "small" | "medium" | "large" | null) ?? null,
+      template: invoiceTemplate,
+      extraImageDataUrls,
     };
   }
 

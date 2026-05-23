@@ -153,6 +153,100 @@ export interface LabLogoStream {
  * The caller is responsible for setting cache + content-type headers
  * (we provide the content type here from the stored object's metadata).
  */
+// ─── Invoice-template extra images (signatures, stamps, etc.) ───────────────
+// Stored under <PRIVATE_OBJECT_DIR>/invoice-template-images/<orgId>/<id>.<ext>
+// Each org may upload multiple supplementary images that the invoice editor
+// places on the page.
+
+function getInvoiceImageFile(orgId: string, id: string, ext: string): File {
+  const fullPath = `${getPrivateObjectDir()}/invoice-template-images/${orgId}/${id}.${ext}`;
+  const { bucketName, objectName } = parseObjectPath(fullPath);
+  return storageClient.bucket(bucketName).file(objectName);
+}
+
+export interface UploadedInvoiceImage {
+  id: string;
+  storageKey: string;
+  ext: string;
+  contentType: string;
+  size: number;
+}
+
+/** Upload an extra invoice-template image. Returns the storage key + id. */
+export async function uploadInvoiceTemplateImage(
+  orgId: string,
+  buffer: Buffer,
+  mimeType: string,
+): Promise<UploadedInvoiceImage> {
+  if (!isAllowedLogoMime(mimeType)) {
+    throw new Error(`Unsupported image type: ${mimeType}`);
+  }
+  const ext = logoExtForMime(mimeType);
+  const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const file = getInvoiceImageFile(orgId, id, ext);
+  await file.save(buffer, {
+    contentType: mimeType,
+    resumable: false,
+    metadata: { cacheControl: "public, max-age=300" },
+  });
+  return {
+    id,
+    storageKey: `invoice-template-images/${orgId}/${id}.${ext}`,
+    ext,
+    contentType: mimeType,
+    size: buffer.length,
+  };
+}
+
+/** Stream a previously uploaded invoice-template image back to the client. */
+export async function openInvoiceTemplateImageStream(
+  orgId: string,
+  id: string,
+): Promise<LabLogoStream | null> {
+  if (!process.env.PRIVATE_OBJECT_DIR) return null;
+  if (!/^[A-Za-z0-9_-]+$/.test(id)) return null;
+  for (const ext of Object.values(ALLOWED_MIME)) {
+    const f = getInvoiceImageFile(orgId, id, ext);
+    const [exists] = await f.exists();
+    if (!exists) continue;
+    const [meta] = await f.getMetadata();
+    const sizeRaw = meta.size;
+    const size =
+      typeof sizeRaw === "string"
+        ? Number.parseInt(sizeRaw, 10)
+        : Number(sizeRaw ?? 0);
+    return {
+      size: Number.isFinite(size) ? size : 0,
+      stream: f.createReadStream(),
+      contentType:
+        (meta.contentType as string) ||
+        Object.entries(ALLOWED_MIME).find(([, e]) => e === ext)?.[0] ||
+        "application/octet-stream",
+    };
+  }
+  return null;
+}
+
+/** Delete an extra invoice-template image. Best-effort; ignores missing. */
+export async function deleteInvoiceTemplateImage(
+  orgId: string,
+  id: string,
+): Promise<void> {
+  if (!process.env.PRIVATE_OBJECT_DIR) return;
+  if (!/^[A-Za-z0-9_-]+$/.test(id)) return;
+  await Promise.all(
+    Object.values(ALLOWED_MIME).map(async (ext) => {
+      try {
+        const f = getInvoiceImageFile(orgId, id, ext);
+        const [exists] = await f.exists();
+        if (exists) await f.delete();
+      } catch {
+        /* best effort */
+      }
+    }),
+  );
+}
+
 export async function openLabLogoStream(
   orgId: string,
 ): Promise<LabLogoStream | null> {
