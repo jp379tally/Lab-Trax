@@ -89,15 +89,15 @@ export function PlatformAdminUnlockModal({
   onUnlock,
 }: {
   onClose: () => void;
-  onUnlock: (secret: string) => Promise<void>;
+  onUnlock: (pin: string) => Promise<void>;
 }) {
-  const [secret, setSecret] = useState("");
+  const [pin, setPin] = useState("");
   const [isPending, setIsPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const trimmed = secret.trim();
+    const trimmed = pin.trim();
     if (!trimmed) return;
     setIsPending(true);
     setError(null);
@@ -105,7 +105,7 @@ export function PlatformAdminUnlockModal({
       await onUnlock(trimmed);
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : "Invalid secret — please check and try again.",
+        err instanceof Error ? err.message : "Invalid PIN — please try again.",
       );
     } finally {
       setIsPending(false);
@@ -123,21 +123,23 @@ export function PlatformAdminUnlockModal({
       >
         <div className="flex items-center gap-2">
           <Lock size={16} className="text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Unlock admin tools</h2>
+          <h2 className="text-sm font-semibold">Enter admin PIN</h2>
         </div>
         <p className="text-xs text-muted-foreground leading-relaxed">
-          Enter the deployment&rsquo;s{" "}
-          <code className="font-mono">PLATFORM_ADMIN_SECRET</code> to access
-          platform admin tools for this session. The secret is only held in
-          memory and is forgotten when you refresh the page.
+          Enter your admin PIN to unlock platform admin tools for this
+          session. The PIN is only held in memory and is forgotten when you
+          refresh the page.
         </p>
         <form onSubmit={handleSubmit} className="space-y-3">
           <input
             type="password"
-            value={secret}
-            onChange={(e) => setSecret(e.target.value)}
-            placeholder="Platform admin secret"
-            className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+            inputMode="numeric"
+            pattern="[0-9]*"
+            autoComplete="one-time-code"
+            value={pin}
+            onChange={(e) => setPin(e.target.value.replace(/[^0-9]/g, "").slice(0, 12))}
+            placeholder="Admin PIN"
+            className="w-full h-10 px-3 rounded-md border border-input bg-background text-center text-lg tracking-[0.4em] placeholder:text-muted-foreground placeholder:tracking-normal placeholder:text-sm focus:outline-none focus:ring-1 focus:ring-ring"
             autoFocus
             disabled={isPending}
           />
@@ -152,7 +154,7 @@ export function PlatformAdminUnlockModal({
             </button>
             <button
               type="submit"
-              disabled={isPending || !secret.trim()}
+              disabled={isPending || !pin.trim()}
               className="h-8 px-3 text-sm rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5 transition-colors"
             >
               {isPending && <Loader2 size={12} className="animate-spin" />}
@@ -188,12 +190,12 @@ export function PlatformAdminSetupNotice({
   const [showModal, setShowModal] = useState(false);
   const qc = useQueryClient();
 
-  async function handleUnlock(secret: string): Promise<void> {
+  async function handleUnlock(pin: string): Promise<void> {
     const token = getAccessToken();
     const apiOrigin = getApiOrigin();
     const headers: Record<string, string> = {
       Accept: "application/json",
-      "X-Platform-Admin-Secret": secret,
+      "X-Platform-Admin-Pin": pin,
     };
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
@@ -205,15 +207,15 @@ export function PlatformAdminSetupNotice({
     }
 
     if (r.status === 403) {
-      throw new Error("Invalid secret — please check and try again.");
+      throw new Error("Invalid PIN — please try again.");
     }
     if (!r.ok) {
-      // Non-403 errors (500, etc.) likely mean the secret is correct but
+      // Non-403 errors (500, etc.) likely mean the PIN is correct but
       // something else is wrong. Accept it and let the page surface the
       // downstream error rather than blocking the admin entirely.
     }
 
-    setSessionSecret(secret);
+    setSessionSecret(pin);
     setShowModal(false);
     // Retry all admin queries so the blocked sections load immediately.
     void qc.invalidateQueries({ queryKey: ["admin"] });
@@ -246,10 +248,9 @@ export function PlatformAdminSetupNotice({
                 </>
               ) : (
                 <>
-                  Platform admin tools require the deployment&rsquo;s{" "}
-                  <code className="font-mono">PLATFORM_ADMIN_SECRET</code> to be
-                  unlocked for this session. The secret is only held in memory
-                  and is forgotten when you refresh the page.
+                  Enter your admin PIN to unlock platform admin tools for this
+                  session. The PIN is only held in memory and is forgotten when
+                  you refresh the page.
                 </>
               )}
             </p>
@@ -267,7 +268,7 @@ export function PlatformAdminSetupNotice({
                 className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
               >
                 <Lock size={11} />
-                Unlock admin tools
+                Enter admin PIN
               </button>
             )}
           </div>

@@ -100,9 +100,18 @@ function generateCode(): string {
 function isPlatformAdmin(req: any): boolean {
   const reqUser = req.user;
   if (!reqUser || reqUser.role !== "admin") return false;
+  // Two accepted credentials:
+  //   - X-Platform-Admin-Secret matches PLATFORM_ADMIN_SECRET — long random
+  //     string used by CI/automation (e.g. GitHub Actions installer publish).
+  //   - X-Platform-Admin-Pin    matches PLATFORM_ADMIN_PIN    — short PIN
+  //     entered by humans through the web/desktop unlock modal. Safe because
+  //     this check also requires reqUser.role === "admin", so a PIN by itself
+  //     can't authenticate — the admin must already be signed in.
   const secret = process.env.PLATFORM_ADMIN_SECRET;
-  if (!secret) return false;
-  return req.headers["x-platform-admin-secret"] === secret;
+  if (secret && req.headers["x-platform-admin-secret"] === secret) return true;
+  const pin = process.env.PLATFORM_ADMIN_PIN;
+  if (pin && req.headers["x-platform-admin-pin"] === pin) return true;
+  return false;
 }
 
 // Service-to-service auth for a tiny, explicit set of admin endpoints that are

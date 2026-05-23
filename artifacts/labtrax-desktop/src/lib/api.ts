@@ -110,7 +110,18 @@ export class ApiError extends Error {
 // we don't need the lt_csrf cookie either.
 // ---------------------------------------------------------------------------
 
-const PLATFORM_ADMIN_HEADER = "X-Platform-Admin-Secret";
+// Two header names are accepted by the API server's isPlatformAdmin():
+//   - "X-Platform-Admin-Secret" → matches PLATFORM_ADMIN_SECRET (long
+//     random string from the OS keychain, used by the Electron desktop
+//     bridge and by CI/automation).
+//   - "X-Platform-Admin-Pin"    → matches PLATFORM_ADMIN_PIN    (short
+//     numeric PIN entered by humans through the web unlock modal).
+// Both paths still require a signed-in admin user — the credential alone
+// is never sufficient.
+const PLATFORM_ADMIN_HEADER_SECRET = "X-Platform-Admin-Secret";
+const PLATFORM_ADMIN_HEADER_PIN = "X-Platform-Admin-Pin";
+
+type PlatformAdminCred = { header: string; value: string };
 
 type PlatformAdminBridge = {
   getSecret: () => Promise<string | null>;
@@ -155,14 +166,17 @@ async function loadPlatformAdminSecret(): Promise<string | null> {
   return platformAdminInflight;
 }
 
-async function getPlatformAdminSecretForRequest(): Promise<string | null> {
+async function getPlatformAdminSecretForRequest(): Promise<PlatformAdminCred | null> {
   if (!getPlatformAdminBridge()) {
     // No Electron bridge (web view / Replit preview): fall back to the
-    // in-memory session secret that the admin entered via the unlock modal.
-    return getSessionSecret();
+    // in-memory session PIN that the admin entered via the unlock modal.
+    // Sent under X-Platform-Admin-Pin so the server matches it against
+    // PLATFORM_ADMIN_PIN.
+    const pin = getSessionSecret();
+    return pin ? { header: PLATFORM_ADMIN_HEADER_PIN, value: pin } : null;
   }
-  if (platformAdminCacheLoaded) return platformAdminSecretCache;
-  return loadPlatformAdminSecret();
+  const value = platformAdminCacheLoaded ? platformAdminSecretCache : await loadPlatformAdminSecret();
+  return value ? { header: PLATFORM_ADMIN_HEADER_SECRET, value } : null;
 }
 
 export function clearPlatformAdminSecretCache(): void {
@@ -421,9 +435,13 @@ export async function apiFetch<T = unknown>(
   if (options.body && !(options.body instanceof FormData) && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
   }
-  if (isAdminApiPath(path) && !headers[PLATFORM_ADMIN_HEADER]) {
-    const secret = await getPlatformAdminSecretForRequest();
-    if (secret) headers[PLATFORM_ADMIN_HEADER] = secret;
+  if (
+    isAdminApiPath(path) &&
+    !headers[PLATFORM_ADMIN_HEADER_SECRET] &&
+    !headers[PLATFORM_ADMIN_HEADER_PIN]
+  ) {
+    const cred = await getPlatformAdminSecretForRequest();
+    if (cred) headers[cred.header] = cred.value;
   }
   const url = apiUrl(path);
   const res = await fetch(url, { ...options, headers });
@@ -482,7 +500,7 @@ async function performXhrUpload<T>(
   url: string,
   formData: FormData,
   opts: UploadWithProgressOptions,
-  platformAdminSecret: string | null = null,
+  platformAdminCred: PlatformAdminCred | null = null,
 ): Promise<{ ok: true; data: T } | { ok: false; status: number; message: string }> {
   return new Promise((resolve) => {
     const xhr = new XMLHttpRequest();
@@ -490,7 +508,7 @@ async function performXhrUpload<T>(
     xhr.setRequestHeader("Accept", "application/json");
     const token = _tokens?.accessToken;
     if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
-    if (platformAdminSecret) xhr.setRequestHeader(PLATFORM_ADMIN_HEADER, platformAdminSecret);
+    if (platformAdminCred) xhr.setRequestHeader(platformAdminCred.header, platformAdminCred.value);
 
     if (xhr.upload) {
       xhr.upload.onprogress = (event) => {
@@ -565,15 +583,15 @@ export async function apiUploadWithProgress<T = unknown>(
 ): Promise<T> {
   const url = apiUrl(path);
 
-  const platformAdminSecret = isAdminApiPath(path)
+  const platformAdminCred = isAdminApiPath(path)
     ? await getPlatformAdminSecretForRequest()
     : null;
 
-  let result = await performXhrUpload<T>(url, formData, opts, platformAdminSecret);
+  let result = await performXhrUpload<T>(url, formData, opts, platformAdminCred);
   if (!result.ok && result.status === 401 && _tokens?.refreshToken) {
     const refreshed = await refreshAccessToken();
     if (refreshed) {
-      result = await performXhrUpload<T>(url, formData, opts, platformAdminSecret);
+      result = await performXhrUpload<T>(url, formData, opts, platformAdminCred);
     } else {
       throw new ApiError("Your session has expired. Please sign in again.", 401);
     }
@@ -606,7 +624,7 @@ function sendChunkXhr(
   blob: Blob,
   offset: number,
   opts: SendChunkOptions,
-  platformAdminSecret: string | null = null,
+  platformAdminCred: PlatformAdminCred | null = null,
 ): Promise<{ ok: true; data: ChunkUploadResult } | { ok: false; status: number; message: string; uploadedBytes?: number }> {
   return new Promise((resolve) => {
     const xhr = new XMLHttpRequest();
@@ -616,7 +634,7 @@ function sendChunkXhr(
     xhr.setRequestHeader("Upload-Offset", String(offset));
     const token = _tokens?.accessToken;
     if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
-    if (platformAdminSecret) xhr.setRequestHeader(PLATFORM_ADMIN_HEADER, platformAdminSecret);
+    if (platformAdminCred) xhr.setRequestHeader(platformAdminCred.header, platformAdminCred.value);
 
     if (xhr.upload && opts.onChunkProgress) {
       xhr.upload.onprogress = (event) => {
@@ -703,15 +721,15 @@ export async function sendUploadChunk(
 
   // Today this path is non-admin (/media/...), but parity with the other
   // upload helpers keeps us safe if a future admin chunked endpoint reuses it.
-  const platformAdminSecret = isAdminApiPath(path)
+  const platformAdminCred = isAdminApiPath(path)
     ? await getPlatformAdminSecretForRequest()
     : null;
 
-  let result = await sendChunkXhr(url, blob, offset, opts, platformAdminSecret);
+  let result = await sendChunkXhr(url, blob, offset, opts, platformAdminCred);
   if (!result.ok && result.status === 401 && _tokens?.refreshToken) {
     const refreshed = await refreshAccessToken();
     if (refreshed) {
-      result = await sendChunkXhr(url, blob, offset, opts, platformAdminSecret);
+      result = await sendChunkXhr(url, blob, offset, opts, platformAdminCred);
     } else {
       throw new ApiError("Your session has expired. Please sign in again.", 401);
     }
