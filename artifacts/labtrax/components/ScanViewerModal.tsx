@@ -57,37 +57,33 @@ export default function ScanViewerModal({
     let cancelled = false;
     (async () => {
       try {
-        const cacheDir = FileSystem.Paths.cache.uri;
         const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
-        const localUri = cacheDir.endsWith("/")
-          ? cacheDir + safeName
-          : cacheDir + "/" + safeName;
+        const dest = new FileSystem.File(FileSystem.Paths.cache, safeName);
+        try {
+          if (dest.exists) dest.delete();
+        } catch {
+          // best-effort
+        }
 
         const headers: Record<string, string> = {};
         if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
 
-        const downloadRes = await FileSystem.downloadAsync(fileUrl, localUri, { headers });
+        const downloaded = await FileSystem.File.downloadFileAsync(fileUrl, dest, { headers });
 
         if (cancelled) return;
 
-        if (downloadRes.status !== 200) {
-          setLoadState("error");
-          setErrorMsg("Download failed (status " + downloadRes.status + ").");
-          return;
-        }
-
-        const fileRef = new FileSystem.File(downloadRes.uri);
-        const arrayBuffer = await fileRef.arrayBuffer();
-        const base64 = arrayBufferToBase64(arrayBuffer);
+        const bytes = await downloaded.bytes();
+        const base64 = arrayBufferToBase64(bytes);
 
         if (cancelled) return;
 
         setHtmlSource(buildViewerHtml(base64, format));
         setLoadState("rendering");
-      } catch {
+      } catch (err: unknown) {
         if (cancelled) return;
+        const detail = err instanceof Error ? err.message : String(err);
         setLoadState("error");
-        setErrorMsg("Could not load the scan file.");
+        setErrorMsg("Could not load the scan file. " + detail);
       }
     })();
 

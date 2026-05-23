@@ -31,6 +31,7 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import { useApp } from "@/lib/app-context";
 import { resilientFetch, getAccessToken, getApiUrl } from "@/lib/query-client";
 import * as FileSystem from "expo-file-system";
+import * as LegacyFileSystem from "expo-file-system/legacy";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 import { getStationInfo, STATIONS, CaseStatus, ToothType, MATERIAL_PRICES, CaseTypeValue, Invoice, SHADE_OPTIONS, cleanDoctorDisplay, formatInvNum, ActivityEntry } from "@/lib/data";
@@ -149,7 +150,7 @@ export default function CaseDetailScreen() {
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [downloadingAttachmentId, setDownloadingAttachmentId] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
-  type DownloadResumable = ReturnType<typeof FileSystem.createDownloadResumable>;
+  type DownloadResumable = ReturnType<typeof LegacyFileSystem.createDownloadResumable>;
   const [pausedAttachments, setPausedAttachments] = useState<Map<string, { resumable: DownloadResumable; progress: number }>>(new Map());
   const activeDownloadResumableRef = useRef<Map<string, DownloadResumable>>(new Map());
   const [attachmentsFetchError, setAttachmentsFetchError] = useState(false);
@@ -1968,7 +1969,7 @@ export default function CaseDetailScreen() {
                       setDownloadProgress(0);
                       try {
                         const token = getAccessToken();
-                        const downloadResumable = FileSystem.createDownloadResumable(
+                        const downloadResumable = LegacyFileSystem.createDownloadResumable(
                           fullUrl,
                           localUri,
                           token ? { headers: { Authorization: `Bearer ${token}` } } : {},
@@ -2018,7 +2019,7 @@ export default function CaseDetailScreen() {
                     setDownloadProgress(0);
                     try {
                       const token = getAccessToken();
-                      const downloadResumable = FileSystem.createDownloadResumable(
+                      const downloadResumable = LegacyFileSystem.createDownloadResumable(
                         fullUrl,
                         localUri,
                         token ? { headers: { Authorization: `Bearer ${token}` } } : {},
@@ -3605,23 +3606,23 @@ export default function CaseDetailScreen() {
           setStlViewerState(null);
           const mimeByFormat: Record<string, string> = { stl: "model/stl", obj: "model/obj", ply: "model/ply" };
           const mimeType = mimeByFormat[fmt] ?? "application/octet-stream";
-          const cacheDir = FileSystem.Paths.cache.uri;
           const safeName = fn.replace(/[^a-zA-Z0-9._-]/g, "_");
-          const localUri = cacheDir.endsWith("/") ? cacheDir + safeName : cacheDir + "/" + safeName;
+          const dest = new FileSystem.File(FileSystem.Paths.cache, safeName);
           try {
+            try {
+              if (dest.exists) dest.delete();
+            } catch {
+              // best-effort
+            }
             const token = getAccessToken();
-            const downloadRes = await FileSystem.downloadAsync(
+            const downloaded = await FileSystem.File.downloadFileAsync(
               url,
-              localUri,
+              dest,
               token ? { headers: { Authorization: `Bearer ${token}` } } : {},
             );
-            if (downloadRes.status !== 200) {
-              Alert.alert("Download failed", "Could not download the scan file.");
-              return;
-            }
             const canShare = await Sharing.isAvailableAsync();
             if (canShare) {
-              await Sharing.shareAsync(downloadRes.uri, {
+              await Sharing.shareAsync(downloaded.uri, {
                 mimeType,
                 dialogTitle: fn,
               });

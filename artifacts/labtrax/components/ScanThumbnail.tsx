@@ -54,24 +54,23 @@ async function downloadAndEncode(
   fileName: string,
   authToken: string | null | undefined,
 ): Promise<string> {
-  const cacheDir = FileSystem.Paths.cache.uri;
   const safeName =
     "thumb_" + fileName.replace(/[^a-zA-Z0-9._-]/g, "_") + "_" + Date.now();
-  const localUri = cacheDir.endsWith("/")
-    ? cacheDir + safeName
-    : cacheDir + "/" + safeName;
+  const dest = new FileSystem.File(FileSystem.Paths.cache, safeName);
+  try {
+    if (dest.exists) dest.delete();
+  } catch {
+    // best-effort
+  }
   const headers: Record<string, string> = {};
   if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
-  const res = await FileSystem.downloadAsync(fileUrl, localUri, { headers });
-  if (res.status !== 200) throw new Error(`status ${res.status}`);
+  const downloaded = await FileSystem.File.downloadFileAsync(fileUrl, dest, { headers });
   try {
-    const fileRef = new FileSystem.File(res.uri);
-    const buf = await fileRef.arrayBuffer();
-    return arrayBufferToBase64(buf);
+    const bytes = await downloaded.bytes();
+    return arrayBufferToBase64(bytes);
   } finally {
     try {
-      const fileRef = new FileSystem.File(res.uri);
-      fileRef.delete();
+      downloaded.delete();
     } catch {
       // best-effort
     }

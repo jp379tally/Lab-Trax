@@ -8374,23 +8374,30 @@ function AdminDashboard() {
         } else {
           const FileSystem = await import("expo-file-system");
           const dateStr = new Date().toISOString().split("T")[0];
-          const destPath = `${(FileSystem as any).documentDirectory}labtrax-backup-${dateStr}.zip`;
+          const destFile = new FileSystem.File(
+            FileSystem.Paths.document,
+            `labtrax-backup-${dateStr}.zip`,
+          );
+          try {
+            if (destFile.exists) destFile.delete();
+          } catch {
+            // best-effort
+          }
 
-          const dlRes = await FileSystem.downloadAsync(backupUrl, destPath, {
+          const downloaded = await FileSystem.File.downloadFileAsync(backupUrl, destFile, {
             headers: token ? { Authorization: `Bearer ${token}` } : {},
           });
-          if (dlRes.status !== 200) throw new Error(`Server returned ${dlRes.status}`);
 
           const isAvail = await Sharing.isAvailableAsync();
           if (isAvail) {
-            await Sharing.shareAsync(dlRes.uri, {
+            await Sharing.shareAsync(downloaded.uri, {
               mimeType: "application/zip",
               dialogTitle: "Save LabTrax Backup",
               UTI: "public.zip-archive",
             });
             setLastBackupTime(new Date().toLocaleString());
           } else {
-            Alert.alert("Backup Saved", `Backup saved to:\n${dlRes.uri}`);
+            Alert.alert("Backup Saved", `Backup saved to:\n${downloaded.uri}`);
             setLastBackupTime(new Date().toLocaleString());
           }
         }

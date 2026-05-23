@@ -8,8 +8,15 @@ export const SCAN_DISPLAY_MODES: ScanDisplayMode[] = [
   "shaded",
 ];
 
-export function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
+export function arrayBufferToBase64(
+  source: ArrayBuffer | ArrayBufferView,
+): string {
+  const bytes =
+    source instanceof Uint8Array
+      ? source
+      : ArrayBuffer.isView(source)
+        ? new Uint8Array(source.buffer, source.byteOffset, source.byteLength)
+        : new Uint8Array(source);
   let binary = "";
   const chunk = 0x8000;
   for (let i = 0; i < bytes.length; i += chunk) {
