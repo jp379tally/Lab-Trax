@@ -514,13 +514,14 @@ export default function ScanScreen() {
         }
         await new Promise(r => setTimeout(r, 400));
         if (cancelled) return;
+        // If the capture handler already kicked off AI auto-analysis,
+        // skip the Review screen — handleFinishedReview will move to
+        // phase="form" when done (or on watchdog timeout).
+        if (autoAnalyzedRef.current) return;
         setPhase("review");
         if ((Platform.OS as string) !== "web") {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         }
-        // Auto-fire is disabled: the new ReviewAndEditScreen lets the user
-        // crop / rotate / annotate before the AI runs. handleFinishedReview
-        // is invoked from the screen's "Finish" button instead.
       };
       waitAndTransition();
       return () => { cancelled = true; };
@@ -552,6 +553,12 @@ export default function ScanScreen() {
   }
 
   async function handleTakePhoto() {
+    // Auto-fire AI only on the first/single page of a fresh capture session.
+    // If there are already pages (user came back via "Add more" in the
+    // Review screen), let the existing scanning -> review flow run so the
+    // user can keep iterating and trigger AI from Finish with ALL pages.
+    const isFreshCapture = casePhotos.length === 0;
+
     let rawUri: string | null = null;
 
     let cameraUri: string | null = null;
@@ -646,6 +653,20 @@ export default function ScanScreen() {
     setCapturedUri(finalUri);
     setCasePhotos((prev) => (prev.includes(finalUri) ? prev : [...prev, finalUri]));
     cropDoneRef.current = true;
+
+    // Auto-fire AI immediately so the shutter → fields-populated flow
+    // doesn't dead-end on the Review screen. handleFinishedReview will
+    // transition to phase="form" when done (or on watchdog timeout).
+    // Only do this on a fresh single-page capture; if the user is adding
+    // more pages from Review, the scanning -> review transition stays
+    // intact so they can keep iterating before Finish triggers AI with
+    // the full page set.
+    if (isFreshCapture) {
+      autoAnalyzedRef.current = true;
+      handleFinishedReview([finalUri]).catch((err) => {
+        console.log("AI auto-analyze after capture failed:", err?.message || err);
+      });
+    }
   }
 
   function handleManualCrop() {
