@@ -1593,19 +1593,22 @@ export function PracticeEditor({
                 providerOrg={org}
                 currentUserId={currentUser?.id}
               />
-              <PracticePricingSection
+              <PracticeDoctorsSection
                 providerOrg={org}
                 currentUserId={currentUser?.id}
+                isArchived={isArchived}
               />
             </>
           )}
 
-          <MembershipSection
-            org={org}
-            members={membersQuery.data ?? []}
-            membersLoading={membersQuery.isLoading}
-            currentUserId={currentUser?.id}
-          />
+          {org.type !== "provider" && (
+            <MembershipSection
+              org={org}
+              members={membersQuery.data ?? []}
+              membersLoading={membersQuery.isLoading}
+              currentUserId={currentUser?.id}
+            />
+          )}
 
           <section className="text-xs text-muted-foreground">
             Created {relativeTime(org.createdAt)} · Updated {relativeTime(org.updatedAt)}
@@ -1668,6 +1671,7 @@ function AddDoctorToPracticeDialog({
     queryClient.invalidateQueries({ queryKey: ["organization", org.id, "members"] });
     queryClient.invalidateQueries({ queryKey: ["organization", org.id, "eligible-doctors"] });
     queryClient.invalidateQueries({ queryKey: ["organizations"] });
+    queryClient.invalidateQueries({ queryKey: ["cases"] });
   }
 
   const createMutation = useMutation({
@@ -2687,11 +2691,13 @@ function ConnectPracticeToLab({
   );
 }
 
-// ── Per-doctor pricing for a practice ──
+// ── Doctors section for a practice ──
 //
-// Lists every doctor known at this practice (sourced from the lab's case
-// history) and lets a lab admin assign a tier override and/or per-item
-// custom prices to each doctor inline. Backed by /api/pricing/overrides.
+// Unified section that replaces the old "Per-doctor pricing" + "Members"
+// split. Shows every doctor at this practice (from registered accounts,
+// case history, and existing pricing overrides) in one list. Each row
+// lets the lab admin assign a pricing tier and set per-item price overrides.
+
 interface PracticePricingTier {
   id: string;
   labOrganizationId: string;
@@ -2722,12 +2728,19 @@ interface PracticeTiersResponse {
   tiers: PracticePricingTier[];
 }
 
-function PracticePricingSection({
+interface MergedDoctor {
+  displayName: string;
+  accountNumber: string | null;
+}
+
+function PracticeDoctorsSection({
   providerOrg,
   currentUserId,
+  isArchived,
 }: {
   providerOrg: Organization;
   currentUserId?: string;
+  isArchived: boolean;
 }) {
   const queryClient = useQueryClient();
 
@@ -2741,12 +2754,6 @@ function PracticePricingSection({
   });
   const labOrganizationId =
     connectionsQuery.data?.[0]?.labOrganizationId ?? null;
-  // The practice's "default tier" (set in the section above) lives on the
-  // organization_connections row. Surface it here so the per-doctor dropdown
-  // can show "— Use practice default (Standard) —" instead of a bare label —
-  // otherwise admins see two seemingly-conflicting selections (the practice
-  // default tier picker AND a per-doctor "Use practice default") with no
-  // hint that the second one resolves to the first.
   const practiceDefaultTierName: string | null =
     (connectionsQuery.data?.[0]?.tierName as string | null | undefined) ?? null;
 
@@ -2776,80 +2783,111 @@ function PracticePricingSection({
   });
   const allOverrides = overridesQuery.data?.overrides ?? [];
 
-  // Distinct doctors at this practice (from cases).
-  const doctorsAtPractice = useMemo(() => {
-    const set = new Map<string, string>(); // lower → display
+  // Registered doctor accounts at this practice (gives platform account numbers).
+  const eligibleQuery = useQuery({
+    queryKey: ["organization", providerOrg.id, "eligible-doctors"],
+    queryFn: () =>
+      apiFetch<EligibleDoctor[]>(
+        `/organizations/${providerOrg.id}/eligible-doctors`,
+      ),
+    enabled: !!currentUserId,
+  });
+  const registeredDoctors = (eligibleQuery.data ?? []).filter((d) => !d.virtual);
+
+  // Merge all sources: registered accounts → case history → existing overrides.
+  // Priority: registered name wins over case-string; account number shown when available.
+  const doctorsList = useMemo<MergedDoctor[]>(() => {
+    const map = new Map<string, MergedDoctor>(); // lower → entry
+
+    // 1. Registered doctor accounts (have platform account numbers)
+    for (const d of registeredDoctors) {
+      const name = [d.firstName, d.lastName].filter(Boolean).join(" ").trim() ||
+        (d.doctorName || "").trim() ||
+        d.username;
+      if (!name) continue;
+      const k = name.toLowerCase();
+      if (!map.has(k)) {
+        map.set(k, { displayName: name, accountNumber: d.platformAccountNumber ?? null });
+      }
+    }
+
+    // 2. Case history doctor names
     for (const c of casesQuery.data ?? []) {
       if (c.providerOrganizationId !== providerOrg.id) continue;
       const name = (c.doctorName || "").trim();
       if (!name) continue;
       const k = name.toLowerCase();
-      if (!set.has(k)) set.set(k, name);
+      if (!map.has(k)) map.set(k, { displayName: name, accountNumber: null });
     }
-    // Also merge in any existing overrides linked by providerOrganizationId
-    // even if they have no cases yet, so admins can edit them here.
+
+    // 3. Existing pricing overrides linked to this practice
     for (const o of allOverrides) {
       if (o.providerOrganizationId !== providerOrg.id) continue;
       const name = (o.doctorName || "").trim();
       if (!name) continue;
       const k = name.toLowerCase();
-      if (!set.has(k)) set.set(k, name);
+      if (!map.has(k)) map.set(k, { displayName: name, accountNumber: null });
     }
-    return Array.from(set.values()).sort((a, b) => a.localeCompare(b));
-  }, [casesQuery.data, allOverrides, providerOrg.id]);
+
+    return Array.from(map.values()).sort((a, b) =>
+      a.displayName.localeCompare(b.displayName),
+    );
+  }, [registeredDoctors, casesQuery.data, allOverrides, providerOrg.id]);
 
   if (!currentUserId) return null;
+
+  const isLoading =
+    connectionsQuery.isLoading ||
+    overridesQuery.isLoading ||
+    casesQuery.isLoading ||
+    eligibleQuery.isLoading;
 
   return (
     <section className="space-y-3">
       <h3 className="text-sm font-semibold flex items-center gap-2">
-        <Stethoscope size={14} /> Per-doctor pricing
+        <Stethoscope size={14} />
+        Doctors{doctorsList.length > 0 ? ` (${doctorsList.length})` : ""}
       </h3>
       <p className="text-xs text-muted-foreground">
-        Override the practice's default tier for a specific doctor, or set
-        custom item prices that beat any tier. Leave a price blank to fall
-        back to the doctor's tier (or the practice's default tier).
+        Each doctor can have their own pricing tier or individual item prices
+        that override the practice default. Click a doctor to expand and edit.
       </p>
 
       {!labOrganizationId && (
         <div className="text-xs text-muted-foreground border border-border rounded-md px-3 py-3">
-          Connect this practice to one of your labs above to start
-          assigning per-doctor pricing.
+          Connect this practice to one of your labs above to manage doctor pricing.
         </div>
       )}
 
-      {labOrganizationId && (overridesQuery.isLoading || casesQuery.isLoading) && (
+      {labOrganizationId && isLoading && (
         <div className="text-sm text-muted-foreground">Loading doctors…</div>
       )}
 
-      {labOrganizationId &&
-        !overridesQuery.isLoading &&
-        !casesQuery.isLoading &&
-        doctorsAtPractice.length === 0 && (
-          <div className="text-xs text-muted-foreground border border-border rounded-md px-3 py-3">
-            No doctors on file for this practice yet. They'll appear here
-            after their first case is created.
-          </div>
-        )}
+      {labOrganizationId && !isLoading && doctorsList.length === 0 && (
+        <div className="text-xs text-muted-foreground border border-border rounded-md px-3 py-3">
+          No doctors yet. Click "Add doctor to practice" to add one.
+        </div>
+      )}
 
-      {labOrganizationId && doctorsAtPractice.length > 0 && (
+      {labOrganizationId && !isLoading && doctorsList.length > 0 && (
         <div className="border border-border rounded-md divide-y divide-border">
-          {doctorsAtPractice.map((doctorName) => {
+          {doctorsList.map(({ displayName, accountNumber }) => {
             const existing =
               allOverrides.find(
                 (o) =>
-                  o.doctorName.trim().toLowerCase() ===
-                  doctorName.toLowerCase(),
+                  o.doctorName.trim().toLowerCase() === displayName.toLowerCase(),
               ) ?? null;
             return (
               <DoctorPricingRow
-                key={doctorName}
-                doctorName={doctorName}
+                key={displayName}
+                doctorName={displayName}
+                accountNumber={accountNumber}
                 providerOrg={providerOrg}
                 labOrganizationId={labOrganizationId}
                 tiers={tiers}
                 existing={existing}
                 practiceDefaultTierName={practiceDefaultTierName}
+                readOnly={isArchived}
                 onSaved={() => {
                   queryClient.invalidateQueries({
                     queryKey: ["pricing-overrides", labOrganizationId],
@@ -2866,19 +2904,23 @@ function PracticePricingSection({
 
 function DoctorPricingRow({
   doctorName,
+  accountNumber,
   providerOrg,
   labOrganizationId,
   tiers,
   existing,
   practiceDefaultTierName,
+  readOnly,
   onSaved,
 }: {
   doctorName: string;
+  accountNumber?: string | null;
   providerOrg: Organization;
   labOrganizationId: string;
   tiers: PracticePricingTier[];
   existing: PracticePricingOverride | null;
   practiceDefaultTierName: string | null;
+  readOnly?: boolean;
   onSaved: () => void;
 }) {
   // The "use practice default" option in the per-doctor dropdown resolves to
@@ -2976,6 +3018,7 @@ function DoctorPricingRow({
         <div className="min-w-0 flex-1">
           <div className="font-medium truncate">{doctorName}</div>
           <div className="text-[11px] text-muted-foreground truncate">
+            {accountNumber && <span className="mr-1">#{accountNumber} ·</span>}
             {subtitleTier}
             {customPriceCount > 0
               ? ` · ${customPriceCount} custom price${customPriceCount === 1 ? "" : "s"}`
@@ -2986,7 +3029,7 @@ function DoctorPricingRow({
           value={tierName}
           onChange={(e) => setTierName(e.target.value)}
           className="h-8 px-2 rounded-md bg-background border border-input text-xs min-w-[160px]"
-          disabled={saveMutation.isPending}
+          disabled={saveMutation.isPending || readOnly}
         >
           <option value="">{practiceDefaultLabel}</option>
           {tiers.map((t) => (
@@ -3046,7 +3089,7 @@ function DoctorPricingRow({
                         setPrices((p) => ({ ...p, [k]: e.target.value }))
                       }
                       className="h-7 pl-5 pr-2 w-24 rounded-md bg-background border border-input text-xs text-right"
-                      disabled={saveMutation.isPending}
+                      disabled={saveMutation.isPending || readOnly}
                     />
                   </div>
                 </label>
@@ -3058,19 +3101,21 @@ function DoctorPricingRow({
               {error}
             </div>
           )}
-          <div className="flex justify-end">
-            <button
-              type="button"
-              onClick={() => saveMutation.mutate()}
-              disabled={saveMutation.isPending}
-              className="h-7 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
-            >
-              {saveMutation.isPending && (
-                <Loader2 size={12} className="animate-spin" />
-              )}
-              Save pricing
-            </button>
-          </div>
+          {!readOnly && (
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => saveMutation.mutate()}
+                disabled={saveMutation.isPending}
+                className="h-7 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
+              >
+                {saveMutation.isPending && (
+                  <Loader2 size={12} className="animate-spin" />
+                )}
+                Save pricing
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
