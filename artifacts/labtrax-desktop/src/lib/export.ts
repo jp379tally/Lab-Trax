@@ -160,20 +160,143 @@ export function downloadInvoicePdf(opts: InvoicePdfOptions) {
   triggerDownload(built.blob, built.filename);
 }
 
-// Open the PDF in a new browser tab/window so the user can review
-// what the invoice will look like without saving or downloading
-// anything. The blob URL is revoked a few seconds later so we don't
-// leak memory; by then the new tab has already loaded the bytes.
-export function previewInvoicePdf(opts: InvoicePdfOptions) {
+// Open the PDF in a dedicated popup window (separate from the main
+// LabTrax window/tab) with a LabTrax-branded header bar and a clear
+// Close button, so the user always has an obvious way back. Returns
+// `true` if the popup opened, or `false` if the browser blocked it —
+// the caller is responsible for telling the user how to allow popups.
+export function previewInvoicePdf(opts: InvoicePdfOptions): boolean {
   const built = buildInvoicePdf(opts);
-  const url = URL.createObjectURL(built.blob);
-  const win = window.open(url, "_blank", "noopener,noreferrer");
-  // Pop-up blocked → fall back to a same-tab navigation so the user
-  // still sees the preview.
+  const pdfUrl = URL.createObjectURL(built.blob);
+
+  // Sized roughly like a US-Letter page; both Electron's child
+  // BrowserWindow and a regular browser honour `width`/`height` /
+  // `popup=yes`, which is what forces a separate window rather than
+  // a sibling tab.
+  const width = 900;
+  const height = 1100;
+  const left =
+    typeof window !== "undefined" && typeof window.screenX === "number"
+      ? Math.max(0, window.screenX + Math.round((window.outerWidth - width) / 2))
+      : 0;
+  const top =
+    typeof window !== "undefined" && typeof window.screenY === "number"
+      ? Math.max(0, window.screenY + Math.round((window.outerHeight - height) / 2))
+      : 0;
+  const features = `popup=yes,width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`;
+
+  const win = window.open("about:blank", "labtrax-invoice-preview", features);
   if (!win) {
-    window.location.href = url;
+    URL.revokeObjectURL(pdfUrl);
+    return false;
   }
-  setTimeout(() => URL.revokeObjectURL(url), 30_000);
+
+  const title = `Invoice ${built.filename.replace(/\.pdf$/i, "").replace(/^invoice-/, "")}`;
+  const invoiceLabel = opts.invoiceNumber ? `Invoice ${opts.invoiceNumber}` : "Invoice preview";
+
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>${escapeHtmlAttr(title)}</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #0f172a; color: #f8fafc;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  .lt-preview-bar { display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 16px; background: #0b1220; border-bottom: 1px solid #1e293b; height: 48px;
+    box-sizing: border-box; }
+  .lt-preview-title { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; }
+  .lt-preview-brand { font-weight: 700; letter-spacing: 0.02em; color: #60a5fa; }
+  .lt-preview-sep { color: #475569; }
+  .lt-preview-close { display: inline-flex; align-items: center; gap: 6px;
+    background: #ef4444; color: #fff; border: 0; border-radius: 6px;
+    padding: 6px 12px; font-size: 13px; font-weight: 600; cursor: pointer;
+    font-family: inherit; }
+  .lt-preview-close:hover { background: #dc2626; }
+  .lt-preview-close:focus { outline: 2px solid #fca5a5; outline-offset: 2px; }
+  .lt-preview-frame { display: block; width: 100%; height: calc(100% - 48px); border: 0; background: #1e293b; }
+</style>
+</head>
+<body>
+  <div class="lt-preview-bar">
+    <div class="lt-preview-title">
+      <span class="lt-preview-brand">LabTrax</span>
+      <span class="lt-preview-sep">·</span>
+      <span>${escapeHtmlAttr(invoiceLabel)}</span>
+    </div>
+    <button type="button" class="lt-preview-close" id="lt-close" aria-label="Close preview window">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+      Close
+    </button>
+  </div>
+  <iframe class="lt-preview-frame" src="${escapeHtmlAttr(pdfUrl)}" title="${escapeHtmlAttr(invoiceLabel)}"></iframe>
+  <script>
+    (function() {
+      var btn = document.getElementById('lt-close');
+      if (btn) btn.addEventListener('click', function() { window.close(); });
+      window.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') window.close();
+      });
+      window.addEventListener('unload', function() {
+        try { if (window.opener && !window.opener.closed) window.opener.focus(); } catch (_) {}
+      });
+    })();
+  </script>
+</body>
+</html>`;
+
+  try {
+    win.document.open();
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+  } catch {
+    // If we can't write into the popup for any reason, fall back to
+    // loading the raw PDF inside it — the popup itself is still a
+    // separate window with the browser's native close affordance.
+    try {
+      win.location.href = pdfUrl;
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // Revoke the PDF blob URL once the popup closes (or after a generous
+  // safety-net timeout if we can't observe the close). We also try to
+  // hook the popup's `unload` from the opener side as a backup.
+  const revoke = () => URL.revokeObjectURL(pdfUrl);
+  let revoked = false;
+  const safeRevoke = () => {
+    if (revoked) return;
+    revoked = true;
+    revoke();
+  };
+  try {
+    win.addEventListener("unload", safeRevoke);
+  } catch {
+    /* cross-origin or detached — fall through to timer */
+  }
+  const poll = window.setInterval(() => {
+    if (win.closed) {
+      window.clearInterval(poll);
+      safeRevoke();
+    }
+  }, 1000);
+  window.setTimeout(() => {
+    window.clearInterval(poll);
+    safeRevoke();
+  }, 5 * 60_000);
+
+  return true;
+}
+
+function escapeHtmlAttr(value: string): string {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 // Open the PDF in a hidden iframe and immediately trigger the

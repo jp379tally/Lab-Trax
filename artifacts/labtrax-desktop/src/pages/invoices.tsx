@@ -949,7 +949,12 @@ export function InvoiceEditor({
   }
 
   function handlePreviewPdf() {
-    previewInvoicePdf(buildPdfOptions());
+    const opened = previewInvoicePdf(buildPdfOptions());
+    if (!opened) {
+      setError(
+        "Your browser blocked the preview popup. Allow popups for LabTrax in your browser's address bar, then click Preview again.",
+      );
+    }
   }
 
   function handlePrintPdf() {
