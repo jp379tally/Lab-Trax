@@ -3780,8 +3780,9 @@ export default function ScanScreen() {
                       const dy = my - cy;
                       const dist = Math.sqrt(dx * dx + dy * dy) || 1;
                       const outOffset = 22;
-                      const ox = mx + (dx / dist) * outOffset;
-                      const oy = my + (dy / dist) * outOffset;
+                      const margin = 8;
+                      const ox = Math.max(margin, Math.min(IMG_W - margin, mx + (dx / dist) * outOffset));
+                      const oy = Math.max(margin, Math.min(IMG_H - margin, my + (dy / dist) * outOffset));
                       const cKey = `${Math.min(a,b)}-${Math.max(a,b)}`;
                       connectorDots.push({ key: cKey, x: ox, y: oy, a, b });
                     });
