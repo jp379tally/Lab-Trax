@@ -97,20 +97,78 @@ function generateCode(): string {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
+// ─── Admin PIN cache ─────────────────────────────────────────────────────────
+// The admin PIN is stored in system_settings (key "admin_pin"). When absent,
+// the effective PIN defaults to "0000". This module-level cache lets the sync
+// isPlatformAdmin() check use the DB value without blocking.
+const SETTING_ADMIN_PIN = "admin_pin";
+const SETTING_ADMIN_PIN_RESET_CODE = "admin_pin_reset_code";
+const SETTING_ADMIN_PIN_RESET_EXPIRES = "admin_pin_reset_expires";
+
+let _dbAdminPin: string | null = null; // null = no custom PIN → use env/default
+let _dbAdminPinLoaded = false;
+
+async function loadAdminPinCache(): Promise<void> {
+  const rows = await db
+    .select()
+    .from(systemSettings)
+    .where(eq(systemSettings.key, SETTING_ADMIN_PIN))
+    .limit(1);
+  _dbAdminPin = rows[0]?.value ?? null;
+  _dbAdminPinLoaded = true;
+}
+
+function getEffectiveAdminPin(): string {
+  if (_dbAdminPin) return _dbAdminPin;
+  const envPin = process.env.PLATFORM_ADMIN_PIN;
+  if (envPin) return envPin;
+  return "0000";
+}
+
+function isAdminPinDefault(): boolean {
+  if (_dbAdminPin) return false;
+  const envPin = process.env.PLATFORM_ADMIN_PIN;
+  if (envPin && envPin !== "0000") return false;
+  return true;
+}
+
+async function sendAdminPinResetSms(phone: string, code: string): Promise<void> {
+  const sid = process.env.TWILIO_ACCOUNT_SID;
+  const token = process.env.TWILIO_AUTH_TOKEN;
+  const from = process.env.TWILIO_PHONE_NUMBER;
+  if (!sid || !token || !from) throw new Error("SMS not configured on this server.");
+  const url = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`;
+  const body = new URLSearchParams({
+    From: from,
+    To: phone,
+    Body: `Your LabTrax admin PIN reset code is: ${code}. It expires in 10 minutes.`,
+  });
+  const r = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${Buffer.from(`${sid}:${token}`).toString("base64")}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body,
+  });
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    throw new Error(`SMS failed: ${(data as any).message ?? r.status}`);
+  }
+}
+
 function isPlatformAdmin(req: any): boolean {
   const reqUser = req.user;
   if (!reqUser || reqUser.role !== "admin") return false;
   // Two accepted credentials:
   //   - X-Platform-Admin-Secret matches PLATFORM_ADMIN_SECRET — long random
   //     string used by CI/automation (e.g. GitHub Actions installer publish).
-  //   - X-Platform-Admin-Pin    matches PLATFORM_ADMIN_PIN    — short PIN
-  //     entered by humans through the web/desktop unlock modal. Safe because
-  //     this check also requires reqUser.role === "admin", so a PIN by itself
-  //     can't authenticate — the admin must already be signed in.
+  //   - X-Platform-Admin-Pin    matches effective PIN (DB → env → "0000").
+  //     Safe because this check also requires reqUser.role === "admin".
   const secret = process.env.PLATFORM_ADMIN_SECRET;
   if (secret && req.headers["x-platform-admin-secret"] === secret) return true;
-  const pin = process.env.PLATFORM_ADMIN_PIN;
-  if (pin && req.headers["x-platform-admin-pin"] === pin) return true;
+  const effectivePin = getEffectiveAdminPin();
+  if (req.headers["x-platform-admin-pin"] === effectivePin) return true;
   return false;
 }
 
@@ -398,6 +456,100 @@ function pruneStaleUploadSessions(): void {
 export async function registerRoutes(): Promise<IRouter> {
   const router: IRouter = Router();
   await seedDefaultUsers();
+  // Warm the PIN cache so isPlatformAdmin() has a value on first request.
+  loadAdminPinCache().catch(() => {});
+
+  // ── Admin PIN management (requires signed-in admin user, NOT isPlatformAdmin)
+  router.get("/admin/pin/status", requireAuth, async (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser || reqUser.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    if (!_dbAdminPinLoaded) await loadAdminPinCache();
+    return res.json({ isDefault: isAdminPinDefault() });
+  });
+
+  router.post("/admin/pin/set", requireAuth, async (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser || reqUser.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const { currentPin, newPin } = req.body as Record<string, unknown>;
+    if (typeof currentPin !== "string" || typeof newPin !== "string") {
+      return res.status(400).json({ error: "currentPin and newPin are required" });
+    }
+    if (!/^\d{4}$/.test(newPin)) {
+      return res.status(400).json({ error: "New PIN must be exactly 4 digits" });
+    }
+    if (!_dbAdminPinLoaded) await loadAdminPinCache();
+    if (currentPin !== getEffectiveAdminPin()) {
+      return res.status(403).json({ error: "Current PIN is incorrect" });
+    }
+    if (newPin === "0000") {
+      return res.status(400).json({ error: "Choose a PIN other than 0000" });
+    }
+    await db
+      .insert(systemSettings)
+      .values({ key: SETTING_ADMIN_PIN, value: newPin, updatedAt: new Date() })
+      .onConflictDoUpdate({ target: systemSettings.key, set: { value: newPin, updatedAt: new Date() } });
+    _dbAdminPin = newPin;
+    return res.json({ ok: true });
+  });
+
+  router.post("/admin/pin/forgot", requireAuth, async (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser || reqUser.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const userRows = await db
+      .select({ phone: users.phone })
+      .from(users)
+      .where(eq(users.id, reqUser.id))
+      .limit(1);
+    const phone = userRows[0]?.phone;
+    if (!phone) {
+      return res.status(400).json({ error: "No phone number on your account. Ask another admin to reset your PIN." });
+    }
+    const code = generateCode();
+    const expires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    await db
+      .insert(systemSettings)
+      .values({ key: SETTING_ADMIN_PIN_RESET_CODE, value: code, updatedAt: new Date() })
+      .onConflictDoUpdate({ target: systemSettings.key, set: { value: code, updatedAt: new Date() } });
+    await db
+      .insert(systemSettings)
+      .values({ key: SETTING_ADMIN_PIN_RESET_EXPIRES, value: expires, updatedAt: new Date() })
+      .onConflictDoUpdate({ target: systemSettings.key, set: { value: expires, updatedAt: new Date() } });
+    try {
+      await sendAdminPinResetSms(phone, code);
+    } catch (err) {
+      return res.status(502).json({ error: err instanceof Error ? err.message : "Failed to send SMS" });
+    }
+    const masked = phone.replace(/\d(?=\d{4})/g, "*");
+    return res.json({ ok: true, maskedPhone: masked });
+  });
+
+  router.post("/admin/pin/verify-reset", requireAuth, async (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser || reqUser.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+    const { code } = req.body as Record<string, unknown>;
+    if (typeof code !== "string" || !/^\d{6}$/.test(code)) {
+      return res.status(400).json({ error: "A 6-digit verification code is required" });
+    }
+    const rows = await db
+      .select()
+      .from(systemSettings)
+      .where(inArray(systemSettings.key, [SETTING_ADMIN_PIN_RESET_CODE, SETTING_ADMIN_PIN_RESET_EXPIRES]));
+    const storedCode = rows.find((r) => r.key === SETTING_ADMIN_PIN_RESET_CODE)?.value;
+    const expiresStr = rows.find((r) => r.key === SETTING_ADMIN_PIN_RESET_EXPIRES)?.value;
+    if (!storedCode || !expiresStr) {
+      return res.status(400).json({ error: "No reset in progress. Request a new code." });
+    }
+    if (new Date(expiresStr) < new Date()) {
+      return res.status(400).json({ error: "Code expired. Request a new code." });
+    }
+    if (code !== storedCode) {
+      return res.status(400).json({ error: "Incorrect code — please try again." });
+    }
+    // Reset PIN to default (null = 0000) and clear reset tokens.
+    await db.delete(systemSettings).where(inArray(systemSettings.key, [SETTING_ADMIN_PIN, SETTING_ADMIN_PIN_RESET_CODE, SETTING_ADMIN_PIN_RESET_EXPIRES]));
+    _dbAdminPin = null;
+    return res.json({ ok: true });
+  });
 
   fs.mkdirSync(casMediaDir, { recursive: true });
   fs.mkdirSync(uploadSessionsDir, { recursive: true });
