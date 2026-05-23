@@ -24,7 +24,7 @@ import OpenAI, { toFile } from "openai";
 import nodemailer from "nodemailer";
 import sharp from "sharp";
 import { db } from "@workspace/db";
-import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, caseEvents, mediaCleanupRuns, systemSettings, installerChangelog, installerUploads, subscriptions, backupRuns, rxPracticeNameAliases } from "@workspace/db";
+import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, caseEvents, caseRestorations, mediaCleanupRuns, systemSettings, installerChangelog, installerUploads, subscriptions, backupRuns, rxPracticeNameAliases } from "@workspace/db";
 import { notDeleted } from "../lib/soft-delete";
 import { eq, and, inArray, or, isNull, sql, desc, count, type SQL } from "drizzle-orm";
 import { hashPassword } from "../lib/crypto";
@@ -2011,6 +2011,13 @@ export async function registerRoutes(): Promise<IRouter> {
         .from(caseAttachments)
         .where(and(eq(caseAttachments.caseId, caseId), isNull(caseAttachments.deletedAt)));
 
+      // Fetch restorations so the mobile Rx Summary can render for cases
+      // created on the desktop (including AI-imported iTero cases).
+      const restorationRows = await db
+        .select()
+        .from(caseRestorations)
+        .where(eq(caseRestorations.caseId, caseId));
+
       const DESKTOP_TO_MOBILE_STATUS: Record<string, string> = {
         received: "INTAKE", in_design: "DESIGN", in_milling: "MILLING",
         in_porcelain: "PORCELAIN", qc: "QC_CHECK", shipped: "DELIVERY",
@@ -2100,6 +2107,16 @@ export async function registerRoutes(): Promise<IRouter> {
         suggestedDoctorName: (dc as any).suggestedDoctorName ?? null,
         photos: [],
         activityLog,
+        restorations: restorationRows.map((r) => ({
+          id: r.id,
+          toothNumber: r.toothNumber,
+          restorationType: r.restorationType,
+          restorationSubtype: r.restorationSubtype ?? null,
+          material: r.material ?? null,
+          shade: r.shade ?? null,
+          notes: r.notes ?? null,
+          quantity: r.quantity ?? 1,
+        })),
         _sourceTable: "cases",
       };
 

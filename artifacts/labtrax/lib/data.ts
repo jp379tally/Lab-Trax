@@ -123,6 +123,16 @@ export interface LabCase {
   remakeOfCaseId?: string;
   assignedBarcode?: string;
   exocadWebviewUrl?: string;
+  restorations?: Array<{
+    id?: string;
+    toothNumber?: string | null;
+    restorationType?: string | null;
+    restorationSubtype?: string | null;
+    material?: string | null;
+    shade?: string | null;
+    notes?: string | null;
+    quantity?: number;
+  }>;
 }
 
 export interface Notification {

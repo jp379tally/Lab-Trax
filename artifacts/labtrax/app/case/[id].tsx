@@ -34,7 +34,7 @@ import * as FileSystem from "expo-file-system";
 import * as LegacyFileSystem from "expo-file-system/legacy";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
-import { getStationInfo, STATIONS, CaseStatus, ToothType, MATERIAL_PRICES, CaseTypeValue, Invoice, SHADE_OPTIONS, cleanDoctorDisplay, formatInvNum, ActivityEntry } from "@/lib/data";
+import { getStationInfo, STATIONS, CaseStatus, ToothType, MATERIAL_PRICES, CaseTypeValue, Invoice, LabCase, SHADE_OPTIONS, cleanDoctorDisplay, formatInvNum, ActivityEntry } from "@/lib/data";
 import { resolvePriceForCase } from "@/lib/pricing";
 import { ChatButton } from "@/components/ChatButton";
 import InvoicePDFViewer from "@/components/InvoicePDFViewer";
@@ -259,6 +259,8 @@ export default function CaseDetailScreen() {
         photos: (fullCaseData.photos ?? caseItemBase.photos) as string[],
         videos: (fullCaseData.videos ?? caseItemBase.videos) as string[] | undefined,
         activityLog: (fullCaseData.activityLog ?? caseItemBase.activityLog) as ActivityEntry[],
+        restorations: ((fullCaseData as { restorations?: LabCase["restorations"] }).restorations
+          ?? caseItemBase.restorations) as LabCase["restorations"],
       }
     : caseItemBase;
   const isAdmin = role === "admin";

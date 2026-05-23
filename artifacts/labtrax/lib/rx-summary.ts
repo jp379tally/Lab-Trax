@@ -270,8 +270,20 @@ function caseTypeToRestorationLabel(
 
 export function caseToRxSummary(c: Pick<
   LabCase,
-  "caseType" | "material" | "toothIndices"
+  "caseType" | "material" | "toothIndices" | "restorations"
 >): RxSummary {
+  // Prefer the real restorations array when the server provided one
+  // (desktop / iTero-imported cases). Fall back to deriving from the
+  // single-restoration LabCase fields for legacy mobile cases.
+  if (c.restorations && c.restorations.length > 0) {
+    return deriveRxSummary(
+      c.restorations.map((r) => ({
+        restorationType: r.restorationType ?? null,
+        material: r.material ?? null,
+        toothNumber: r.toothNumber ?? null,
+      })),
+    );
+  }
   const restorationType = caseTypeToRestorationLabel(c.caseType);
   if (!restorationType && !c.material && !c.toothIndices) {
     return deriveRxSummary([]);
