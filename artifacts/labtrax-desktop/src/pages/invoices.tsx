@@ -1354,16 +1354,16 @@ export function InvoiceEditor({
                 <Plus size={13} /> Add line
               </button>
             </div>
-            <div className="border border-border rounded-md overflow-hidden">
-              <table className="w-full text-sm">
+            <div className="border border-border rounded-md overflow-x-auto">
+              <table className="w-full text-sm" style={{ minWidth: "860px" }}>
                 <thead>
                   <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
                     <th className="text-left font-medium px-3 py-2 w-44">Item</th>
-                    <th className="text-right font-medium px-3 py-2 w-20">Tooth #</th>
-                    <th className="text-left font-medium px-3 py-2">Description</th>
-                    <th className="text-right font-medium px-3 py-2 w-20">Qty</th>
+                    <th className="text-right font-medium px-3 py-2 w-28">Tooth #</th>
+                    <th className="text-left font-medium px-3 py-2 min-w-[220px]">Description</th>
+                    <th className="text-right font-medium px-3 py-2 w-16">Qty</th>
                     <th className="text-right font-medium px-3 py-2 w-28">Unit price</th>
-                    <th className="text-right font-medium px-3 py-2 w-20">Total</th>
+                    <th className="text-right font-medium px-3 py-2 w-24">Total</th>
                     <th className="px-2 py-2 w-20" />
                   </tr>
                 </thead>
