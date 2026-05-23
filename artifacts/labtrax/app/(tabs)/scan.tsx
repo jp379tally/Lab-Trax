@@ -462,6 +462,19 @@ export default function ScanScreen() {
     useCallback(() => {
       setCameraPaused(false);
       isPickingFilesRef.current = false;
+      // "New Case" button navigates with mode="camera" + a fresh nonce to
+      // force-reset the screen to camera phase every time, even if the form
+      // was left open from a prior session.
+      const cameraModeRequested = params?.mode === "camera";
+      if (cameraModeRequested && manualModeNonce !== lastAppliedManualNonceRef.current) {
+        lastAppliedManualNonceRef.current = manualModeNonce;
+        setPhase("camera");
+        setCapturedUri(null);
+        setCasePhotos([]);
+        setCaseAttachments([]);
+        autoAnalyzedRef.current = false;
+        return () => {};
+      }
       const decision = decideManualEntry({
         manualModeRequested,
         currentNonce: manualModeNonce,
@@ -482,7 +495,7 @@ export default function ScanScreen() {
       // auto-start a new case. The dashboard's drop zone handles the
       // drain on its own focus effect.
       return () => {};
-    }, [phase, manualModeRequested, manualModeNonce])
+    }, [phase, manualModeRequested, manualModeNonce, params?.mode])
   );
 
   const cropDoneRef = useRef(false);
