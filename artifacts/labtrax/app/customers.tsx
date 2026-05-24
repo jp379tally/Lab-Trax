@@ -344,10 +344,19 @@ export default function CustomersScreen() {
                 </Text>
                 <Text style={styles.orgSub}>
                   {count} invoice{count !== 1 ? "s" : ""}
-                  {(org.city || org.state)
-                    ? ` · ${[org.city, org.state].filter(Boolean).join(", ")}`
-                    : ""}
                 </Text>
+                {(org.phone || org.city || org.state) ? (
+                  <Text style={styles.orgContact} numberOfLines={1}>
+                    {[
+                      org.phone,
+                      (org.city || org.state)
+                        ? [org.city, org.state].filter(Boolean).join(", ")
+                        : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </Text>
+                ) : null}
               </View>
               <View style={{ alignItems: "flex-end", marginRight: 4 }}>
                 {balance > 0 && (
@@ -465,6 +474,12 @@ const styles = StyleSheet.create({
     color: Colors.light.text,
   },
   orgSub: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textSecondary,
+    marginTop: 1,
+  },
+  orgContact: {
     fontSize: 12,
     fontFamily: "Inter_400Regular",
     color: Colors.light.textSecondary,
