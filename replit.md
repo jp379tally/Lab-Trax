@@ -116,6 +116,8 @@ allocated atomically per `(year, entityType)` via
 - `BACKUP_HISTORY_MAX_ROWS` — maximum number of `backup_runs` rows to retain (default: `500`); oldest rows are removed first; works alongside `BACKUP_HISTORY_RETENTION_DAYS` — whichever removes more rows wins; overridable per-lab via Settings → Backup → History retention
 - `CLEANUP_HISTORY_RETENTION_DAYS` — how many days of `media_cleanup_runs` history to keep (default: `365`); rows older than this are deleted after each run
 - `CLEANUP_HISTORY_MAX_ROWS` — maximum number of `media_cleanup_runs` rows to retain (default: `1000`); oldest rows are removed first; works alongside `CLEANUP_HISTORY_RETENTION_DAYS` — whichever removes more rows wins
+- `INSTALLER_HEALTH_CHECK_HOUR_UTC` — UTC hour (0–23) at which the nightly desktop-installer health check runs (default: `6`, i.e. 06:00 UTC); alerts admins via the same deduped 6 h email as the publish-failure path when any probe fails
+- `INSTALLER_HEALTH_BASE_URL` — absolute base URL the health check uses to resolve relative `/downloads/…` paths for the HEAD probe (e.g. `https://your.replit.app`); if unset, the download-reachability probe is skipped
 - `BACKUP_HOUR_UTC` — UTC hour (0–23) for the nightly OneDrive backup (default: `7`)
 - `MEDIA_CLEANUP_JOB_TOKEN` — shared secret for the standalone cleanup script (scheduled deployment path only)
 - `MEDIA_CLEANUP_API_URL` — base API URL for the standalone cleanup script (e.g. `https://your.replit.app/api`; scheduled deployment path only)

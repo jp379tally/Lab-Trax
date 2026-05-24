@@ -9,6 +9,10 @@ import {
   checkAndAlertOneDriveConnectionStatus,
 } from "./backup";
 import { checkEmailPref } from "./email-prefs";
+import {
+  checkAndAlertInstallerHealth,
+  startInstallerHealthCheckJob,
+} from "./installer-health-job";
 
 const GRACE_DAYS = () =>
   Math.max(1, parseInt(process.env.SUBSCRIPTION_GRACE_DAYS ?? "7", 10));
@@ -273,11 +277,23 @@ async function runBillingJobOnce() {
       "[billing] OneDrive connection state check failed",
     );
   }
+  try {
+    await checkAndAlertInstallerHealth();
+  } catch (err: any) {
+    logger.error(
+      { err: err?.message },
+      "[billing] Installer health check failed",
+    );
+  }
 }
 
 /**
  * Start the daily billing job.
  * Fires once 5 minutes after startup, then every 24 hours.
+ *
+ * Also starts the nightly installer health check via
+ * startInstallerHealthCheckJob() (first run at INSTALLER_HEALTH_CHECK_HOUR_UTC,
+ * default 06:00 UTC).
  */
 export function startBillingJobs(): void {
   if (_billingJobTimer !== null) return;
@@ -289,6 +305,8 @@ export function startBillingJobs(): void {
     await runBillingJobOnce();
     setInterval(runBillingJobOnce, MS_24H);
   }, MS_5MIN);
+
+  startInstallerHealthCheckJob();
 
   logger.info("[billing] Billing jobs scheduled (first run in 5 min)");
 }
