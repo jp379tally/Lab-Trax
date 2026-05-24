@@ -21,6 +21,7 @@ import {
   Plus,
   Printer,
   Search,
+  Send,
   Sparkles,
   Trash2,
   TrendingUp,
@@ -117,6 +118,7 @@ export default function InvoicesPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [statementBuilderOpen, setStatementBuilderOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkSendOpen, setBulkSendOpen] = useState(false);
 
   const queryString = useMemo(() => {
     const sp = new URLSearchParams();
@@ -160,6 +162,8 @@ export default function InvoicesPage() {
       overdue: overdueBucket || null,
     });
   }, [search, status, openOnly, aiOnly, practiceId, overdueBucket]);
+
+  useEffect(() => { setSelected(new Set()); }, [search, status, openOnly, aiOnly, practiceId, overdueBucket]);
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) {
@@ -379,11 +383,45 @@ export default function InvoicesPage() {
           </button>
         </div>
 
+        {selected.size > 0 && (
+          <div className="flex items-center gap-3 px-5 py-2 bg-primary/5 border border-primary/20 rounded-md mb-2 text-sm">
+            <span className="font-medium text-primary">{selected.size} invoice{selected.size !== 1 ? "s" : ""} selected</span>
+            <button
+              type="button"
+              onClick={() => setBulkSendOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:opacity-90"
+            >
+              <Send size={12} /> Send {selected.size > 1 ? `${selected.size} invoices` : "invoice"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelected(new Set())}
+              className="ml-auto text-xs text-muted-foreground hover:text-foreground"
+            >
+              Clear selection
+            </button>
+          </div>
+        )}
+
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
-                <th className="text-left font-medium px-5 py-2.5">Invoice #</th>
+                <th className="w-10 px-3 py-2.5">
+                  <input
+                    type="checkbox"
+                    className="h-3.5 w-3.5"
+                    checked={filtered.length > 0 && filtered.every((i) => selected.has(i.id))}
+                    ref={(el) => {
+                      if (el) el.indeterminate = selected.size > 0 && !filtered.every((i) => selected.has(i.id));
+                    }}
+                    onChange={(e) => {
+                      setSelected(e.target.checked ? new Set(filtered.map((i) => i.id)) : new Set());
+                    }}
+                    title={selected.size > 0 && !filtered.every((i) => selected.has(i.id)) ? "Deselect all" : "Select all"}
+                  />
+                </th>
+                <th className="text-left font-medium px-2 py-2.5">Invoice #</th>
                 <th className="text-left font-medium py-2.5">
                   <button
                     type="button"
@@ -436,7 +474,7 @@ export default function InvoicesPage() {
             <tbody>
               {isLoading && (
                 <tr>
-                  <td colSpan={9} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={10} className="px-5 py-12 text-center text-muted-foreground">
                     <Loader2 size={16} className="inline animate-spin mr-2" />
                     Loading invoices…
                   </td>
@@ -444,14 +482,14 @@ export default function InvoicesPage() {
               )}
               {error && (
                 <tr>
-                  <td colSpan={9} className="px-5 py-12 text-center text-destructive">
+                  <td colSpan={10} className="px-5 py-12 text-center text-destructive">
                     {(error as Error).message}
                   </td>
                 </tr>
               )}
               {!isLoading && filtered.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={10} className="px-5 py-12 text-center text-muted-foreground">
                     No invoices match the current filters.
                   </td>
                 </tr>
@@ -462,9 +500,23 @@ export default function InvoicesPage() {
                 <tr
                   key={i.id}
                   onClick={() => setEditing(i)}
-                  className="border-t border-border cursor-pointer hover:bg-secondary/40"
+                  className={`border-t border-border cursor-pointer hover:bg-secondary/40 ${selected.has(i.id) ? "bg-primary/5" : ""}`}
                 >
-                  <td className="px-5 py-3 font-mono text-xs">
+                  <td className="w-10 px-3 py-3" onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      className="h-3.5 w-3.5"
+                      checked={selected.has(i.id)}
+                      onChange={(e) => {
+                        setSelected((prev) => {
+                          const next = new Set(prev);
+                          if (e.target.checked) next.add(i.id); else next.delete(i.id);
+                          return next;
+                        });
+                      }}
+                    />
+                  </td>
+                  <td className="px-2 py-3 font-mono text-xs">
                     <span className="inline-flex items-center gap-1.5">
                       {i.invoiceNumber}
                       {i.aiGenerated && !i.aiReviewedAt && (
@@ -534,6 +586,244 @@ export default function InvoicesPage() {
           onClose={() => setStatementBuilderOpen(false)}
         />
       )}
+      {bulkSendOpen && (
+        <BulkSendDialog
+          invoices={filtered.filter((i) => selected.has(i.id))}
+          onClose={() => setBulkSendOpen(false)}
+          onSent={() => { setSelected(new Set()); setBulkSendOpen(false); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function BulkSendDialog({
+  invoices,
+  onClose,
+  onSent,
+}: {
+  invoices: Invoice[];
+  onClose: () => void;
+  onSent: () => void;
+}) {
+  const { user } = useAuth();
+  const [subject, setSubject] = useState("Your invoice from our lab");
+  const [message, setMessage] = useState(
+    "Hi,\n\nPlease find your invoice(s) attached.\n\nThank you,",
+  );
+  const [phase, setPhase] = useState<"compose" | "sending" | "done">("compose");
+  const [progress, setProgress] = useState(0);
+  const [results, setResults] = useState<{ invoiceNumber: string; status: "sent" | "failed"; error?: string }[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  const { template: invoiceTemplate, extraImageDataUrls } = useInvoiceTemplate(
+    user?.practiceOrganizationId ?? null,
+  );
+  const [logoDataUrl, setLogoDataUrl] = useState<string | null>(null);
+  useEffect(() => {
+    const logoUrl = user?.practiceLogoUrl;
+    if (!logoUrl) return;
+    fetch(logoUrl)
+      .then((r) => r.blob())
+      .then((blob) => {
+        const reader = new FileReader();
+        reader.onload = () => setLogoDataUrl(reader.result as string);
+        reader.readAsDataURL(blob);
+      })
+      .catch(() => {});
+  }, [user?.practiceLogoUrl]);
+
+  function buildOptions(inv: Invoice): InvoicePdfOptions {
+    const meta: InvoiceDisplayMetadata = inv.displayMetadata ?? inv.displayMetadataJson ?? {};
+    return {
+      invoiceNumber: inv.invoiceNumber,
+      labName: inv.labOrganization?.name ?? "",
+      practiceName: inv.providerOrganization?.name ?? "",
+      patientName: meta.patientName ?? null,
+      billTo: meta.billTo ?? null,
+      teeth: meta.teeth ?? null,
+      shade: meta.shade ?? null,
+      caseNotes: meta.caseNotes ?? null,
+      issuedAt: inv.issuedAt ?? null,
+      dueAt: inv.dueAt ?? inv.dueDate ?? null,
+      status: (inv.status ?? "").replace(/_/g, " "),
+      items: (inv.items ?? []).map((it) => ({
+        item: null,
+        toothNumber: it.toothNumber ?? null,
+        description: it.description,
+        quantity: it.quantity,
+        unitPrice: it.unitPrice,
+        lineTotal: Number(it.quantity ?? 0) * Number(it.unitPrice ?? 0),
+      })),
+      subtotal: inv.subtotal ?? 0,
+      tax: inv.tax ?? null,
+      discount: inv.discount ?? null,
+      credits: meta.credits ?? null,
+      total: inv.total ?? 0,
+      balanceDue: inv.balanceDue ?? inv.total ?? 0,
+      notes: inv.notes ?? null,
+      generatedAt: new Date(),
+      logoUrl: logoDataUrl,
+      template: invoiceTemplate,
+      extraImageDataUrls,
+    };
+  }
+
+  async function handleSend() {
+    setError(null);
+    setPhase("sending");
+    setProgress(0);
+    const items: Array<{ invoiceId: string; subject: string; message: string; filename: string; pdfBase64: string }> = [];
+    const partial: typeof results = [];
+    for (let idx = 0; idx < invoices.length; idx++) {
+      const inv = invoices[idx];
+      setProgress(idx + 1);
+      try {
+        const built = buildInvoicePdf(buildOptions(inv));
+        items.push({
+          invoiceId: inv.id,
+          subject: subject.trim(),
+          message,
+          filename: built.filename,
+          pdfBase64: built.base64,
+        });
+        partial.push({ invoiceNumber: inv.invoiceNumber, status: "sent" });
+      } catch (e) {
+        partial.push({ invoiceNumber: inv.invoiceNumber, status: "failed", error: (e as Error)?.message || "PDF generation failed" });
+      }
+    }
+    if (items.length > 0) {
+      try {
+        await apiFetch("/invoices/batch-email", {
+          method: "POST",
+          body: JSON.stringify({ items }),
+        });
+      } catch (e) {
+        const msg = e instanceof ApiError ? e.message : (e as Error)?.message || "Failed to send";
+        setError(msg);
+        setPhase("done");
+        setResults(partial.map((r) => r.status === "sent" ? { ...r, status: "failed" as const, error: msg } : r));
+        return;
+      }
+    }
+    setResults(partial);
+    setPhase("done");
+  }
+
+  const sentCount = results.filter((r) => r.status === "sent").length;
+  const failedCount = results.filter((r) => r.status === "failed").length;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-foreground/40">
+      <div className="w-full max-w-lg bg-card border border-border rounded-xl shadow-xl flex flex-col max-h-[90vh]">
+        <header className="flex items-center justify-between px-5 py-3 border-b border-border">
+          <div>
+            <div className="text-xs text-muted-foreground">Bulk email</div>
+            <div className="text-sm font-semibold">
+              {invoices.length} invoice{invoices.length !== 1 ? "s" : ""}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"
+          >
+            <X size={16} />
+          </button>
+        </header>
+
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+          {phase === "compose" && (
+            <>
+              <div className="text-xs text-muted-foreground bg-secondary/50 rounded-md px-3 py-2 space-y-0.5">
+                {invoices.slice(0, 5).map((inv) => (
+                  <div key={inv.id} className="font-mono">{inv.invoiceNumber} — {inv.providerOrganization?.name ?? "—"}</div>
+                ))}
+                {invoices.length > 5 && <div className="text-muted-foreground">…and {invoices.length - 5} more</div>}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Each invoice PDF will be generated and sent to the billing email on file for that practice. Invoices without a billing email will be skipped.
+              </p>
+              <div>
+                <label className="block text-xs font-medium mb-1">Subject</label>
+                <input
+                  type="text"
+                  value={subject}
+                  onChange={(e) => setSubject(e.target.value)}
+                  className="w-full h-9 px-3 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium mb-1">Message</label>
+                <textarea
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  rows={5}
+                  className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 resize-none"
+                />
+              </div>
+            </>
+          )}
+
+          {phase === "sending" && (
+            <div className="flex flex-col items-center justify-center py-8 gap-3 text-sm text-muted-foreground">
+              <Loader2 size={24} className="animate-spin text-primary" />
+              <p>Building PDF {progress} of {invoices.length}…</p>
+            </div>
+          )}
+
+          {phase === "done" && (
+            <div className="space-y-3">
+              <div className={`flex items-center gap-2 text-sm font-medium ${failedCount === 0 ? "text-emerald-600" : "text-amber-600"}`}>
+                {failedCount === 0
+                  ? <><CheckCircle2 size={15} /> {sentCount} invoice{sentCount !== 1 ? "s" : ""} sent successfully</>
+                  : <><AlertCircle size={15} /> {sentCount} sent, {failedCount} failed</>}
+              </div>
+              {error && <p className="text-xs text-destructive">{error}</p>}
+              <ul className="space-y-1 text-xs max-h-48 overflow-y-auto">
+                {results.map((r) => (
+                  <li key={r.invoiceNumber} className={`flex items-center gap-2 ${r.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}>
+                    {r.status === "sent" ? <CheckCircle2 size={11} /> : <AlertCircle size={11} />}
+                    <span className="font-mono">{r.invoiceNumber}</span>
+                    {r.error && <span className="truncate">{r.error}</span>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+
+        <footer className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border">
+          {phase === "done" ? (
+            <button
+              type="button"
+              onClick={sentCount > 0 ? onSent : onClose}
+              className="px-4 py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
+            >
+              Done
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={phase === "sending"}
+                className="px-4 py-2 rounded-md border border-border text-sm hover:bg-secondary disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleSend()}
+                disabled={phase === "sending" || !subject.trim()}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50"
+              >
+                <Send size={14} /> Send {invoices.length} invoice{invoices.length !== 1 ? "s" : ""}
+              </button>
+            </>
+          )}
+        </footer>
+      </div>
     </div>
   );
 }
