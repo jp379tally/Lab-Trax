@@ -1225,7 +1225,16 @@ export default function CasesPage() {
             </div>
           )}
         </div>
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto relative">
+          {resizingCaseCol !== null && (
+            <div
+              className="bg-primary/50 pointer-events-none absolute top-0 bottom-0 z-10"
+              style={{
+                left: caseColWidths.slice(0, resizingCaseCol + 1).reduce((a, b) => a + b, 0) - 1,
+                width: 2,
+              }}
+            />
+          )}
           <table className="text-sm" style={{ width: caseColWidths.reduce((a, b) => a + b, 0), tableLayout: "fixed" }}>
             <colgroup>
               {caseColWidths.map((w, i) => (

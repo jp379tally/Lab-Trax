@@ -1378,7 +1378,16 @@ export function InvoiceEditor({
                 </button>
               </div>
             </div>
-            <div className="border border-border rounded-md overflow-x-auto">
+            <div className="border border-border rounded-md overflow-x-auto relative">
+              {resizingCol !== null && (
+                <div
+                  className="bg-primary/50 pointer-events-none absolute top-0 bottom-0 z-10"
+                  style={{
+                    left: colWidths.slice(0, resizingCol + 1).reduce((a, b) => a + b, 0) - 1,
+                    width: 2,
+                  }}
+                />
+              )}
               <table
                 className="text-sm"
                 style={{
