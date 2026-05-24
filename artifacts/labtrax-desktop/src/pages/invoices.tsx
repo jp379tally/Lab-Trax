@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useColumnWidths } from "@/hooks/useColumnWidths";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { useAuth } from "@/lib/auth-context";
@@ -553,6 +554,12 @@ export function InvoiceEditor({
     user?.role === "owner" ||
     user?.role === "admin" ||
     user?.role === "billing";
+
+  // Column widths for the line-items table (Item, Tooth #, Desc, Qty, Unit price, Total)
+  const COL_DEFAULTS = [176, 112, 220, 64, 112, 96] as const;
+  const ACTION_COL_WIDTH = 80;
+  const { widths: colWidths, totalWidth: colTotalWidth, startResize, resetColumn } =
+    useColumnWidths([...COL_DEFAULTS]);
 
   // Per-lab visual invoice template + preloaded extra-image data URLs.
   const { template: invoiceTemplate, extraImageDataUrls } = useInvoiceTemplate(
@@ -1355,16 +1362,49 @@ export function InvoiceEditor({
               </button>
             </div>
             <div className="border border-border rounded-md overflow-x-auto">
-              <table className="w-full text-sm" style={{ minWidth: "860px" }}>
+              <table
+                className="text-sm"
+                style={{
+                  tableLayout: "fixed",
+                  width: colTotalWidth + ACTION_COL_WIDTH,
+                  userSelect: "none",
+                }}
+              >
+                <colgroup>
+                  {colWidths.map((w, i) => (
+                    <col key={i} style={{ width: w }} />
+                  ))}
+                  <col style={{ width: ACTION_COL_WIDTH }} />
+                </colgroup>
                 <thead>
                   <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
-                    <th className="text-left font-medium px-3 py-2 w-44">Item</th>
-                    <th className="text-right font-medium px-3 py-2 w-28">Tooth #</th>
-                    <th className="text-left font-medium px-3 py-2 min-w-[220px]">Description</th>
-                    <th className="text-right font-medium px-3 py-2 w-16">Qty</th>
-                    <th className="text-right font-medium px-3 py-2 w-28">Unit price</th>
-                    <th className="text-right font-medium px-3 py-2 w-24">Total</th>
-                    <th className="px-2 py-2 w-20" />
+                    {(["Item", "Tooth #", "Description", "Qty", "Unit price", "Total"] as const).map(
+                      (label, i) => (
+                        <th
+                          key={label}
+                          className={`font-medium px-3 py-2 relative${
+                            i === 0 || i === 2 ? " text-left" : " text-right"
+                          }`}
+                          style={{ overflow: "hidden" }}
+                        >
+                          {label}
+                          <div
+                            onMouseDown={(e) => startResize(i, e)}
+                            onDoubleClick={() => resetColumn(i)}
+                            style={{
+                              position: "absolute",
+                              top: 0,
+                              right: 0,
+                              width: 6,
+                              height: "100%",
+                              cursor: "col-resize",
+                              userSelect: "none",
+                            }}
+                          />
+                        </th>
+                      ),
+                    )}
+                    <th className="px-2 py-2" />
                   </tr>
                 </thead>
                 <tbody>
