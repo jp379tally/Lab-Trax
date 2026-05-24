@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Pause, Play, Plus, Send, Sparkles, Trash2, X } from "lucide-react";
+import { Pause, Play, Plus, RotateCcw, Send, Sparkles, Trash2, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { FinanceShell } from "@/components/finance/FinanceShell";
 import type { BankAccount, RecurringRule, TransactionCategory } from "@/lib/types";
@@ -44,8 +44,10 @@ function Recurring({
   const [editing, setEditing] = useState<RecurringRule | "new" | null>(null);
   const [genResult, setGenResult] = useState<string | null>(null);
 
-  const { widths: colWidths, totalWidth: colTotalWidth, resizingCol, startResize, resetColumn } =
+  const { widths: colWidths, totalWidth: colTotalWidth, resizingCol, startResize, resetColumn, resetAll } =
     useColumnWidths([...RECURRING_COL_DEFAULTS], "labtrax_recurring_col_widths_v1");
+
+  const columnsAreCustom = colWidths.some((w, i) => w !== RECURRING_COL_DEFAULTS[i]);
 
   const rules = useQuery({
     queryKey: ["finance", "recurring", organizationId],
@@ -126,6 +128,17 @@ function Recurring({
           )}
         </div>
         <div className="flex items-center gap-2">
+          {columnsAreCustom && (
+            <button
+              type="button"
+              onClick={resetAll}
+              title="Reset all column widths to default"
+              className="h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80 inline-flex items-center gap-1.5 text-muted-foreground hover:text-foreground"
+            >
+              <RotateCcw size={13} />
+              Reset columns
+            </button>
+          )}
           <button
             type="button"
             onClick={() => generate.mutate()}
