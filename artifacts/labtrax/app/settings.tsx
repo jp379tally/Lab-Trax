@@ -50,6 +50,12 @@ export default function SettingsScreen() {
   const [editLabPhone, setEditLabPhone] = useState("");
   const [editLabEmail, setEditLabEmail] = useState("");
   const [editLabSaving, setEditLabSaving] = useState(false);
+  const [showEditProvider, setShowEditProvider] = useState(false);
+  const [editProviderName, setEditProviderName] = useState("");
+  const [editProviderAddress, setEditProviderAddress] = useState("");
+  const [editProviderPhone, setEditProviderPhone] = useState("");
+  const [editProviderBillingEmail, setEditProviderBillingEmail] = useState("");
+  const [editProviderSaving, setEditProviderSaving] = useState(false);
   const [showEditEmail, setShowEditEmail] = useState(false);
   const [editEmailSaving, setEditEmailSaving] = useState(false);
   const [adminUsername, setAdminUsername] = useState("");
@@ -554,8 +560,8 @@ export default function SettingsScreen() {
   ];
 
   const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
-  const isProviderAdmin = userType === "provider" && currentUserData?.role === "admin";
-  const isLabAdmin = userType === "lab" && currentUserData?.role === "admin";
+  const isProviderAdmin = userType === "provider" && (currentUserData?.role === "admin" || currentUserData?.role === "owner");
+  const isLabAdmin = userType === "lab" && (currentUserData?.role === "admin" || currentUserData?.role === "owner");
   const isAnyAdmin = currentUserData?.role === "admin";
 
   async function triggerMobileBuild() {
@@ -676,12 +682,111 @@ export default function SettingsScreen() {
     }
   }
 
-  function openLabEditor() {
+  async function openLabEditor() {
     setEditLabName(currentUserData?.practiceName || "");
     setEditLabAddress(currentUserData?.practiceAddress || "");
     setEditLabPhone(currentUserData?.practicePhone || currentUserData?.phone || "");
-    setEditLabEmail(currentUserData?.email || "");
+    setEditLabEmail("");
     setShowEditLab(true);
+    try {
+      const membership = await fetchCurrentLabMembership();
+      setEditLabEmail((membership?.organization?.billingEmail as string) || "");
+    } catch {
+      // non-fatal — leave billing email blank so admin can fill it in
+    }
+  }
+
+  async function fetchCurrentProviderMembership() {
+    const response = await resilientFetch("/api/auth/me");
+    if (!response.ok) {
+      throw new Error("Could not load your current practice setup.");
+    }
+    const payload = await response.json();
+    const memberships = Array.isArray(payload?.memberships) ? payload.memberships : [];
+    return (
+      memberships.find(
+        (membership: any) =>
+          membership?.status === "active" &&
+          membership?.organization?.type === "provider"
+      ) || null
+    );
+  }
+
+  async function openProviderEditor() {
+    setEditProviderName(currentUserData?.practiceName || "");
+    setEditProviderAddress(currentUserData?.practiceAddress || "");
+    setEditProviderPhone(currentUserData?.practicePhone || currentUserData?.phone || "");
+    setEditProviderBillingEmail("");
+    setShowEditProvider(true);
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    try {
+      const membership = await fetchCurrentProviderMembership();
+      setEditProviderBillingEmail((membership?.organization?.billingEmail as string) || "");
+    } catch {
+      // non-fatal
+    }
+  }
+
+  async function handleSaveProvider() {
+    const practiceName = editProviderName.trim();
+    if (!practiceName) {
+      Alert.alert("Practice Name Required", "Please enter a practice name before saving.");
+      return;
+    }
+
+    const billingEmailVal = editProviderBillingEmail.trim();
+    if (billingEmailVal && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(billingEmailVal)) {
+      Alert.alert("Invalid Email", "Billing email is not a valid email address.");
+      return;
+    }
+    const phoneVal = editProviderPhone.trim();
+    if (phoneVal) {
+      const digits = phoneVal.replace(/\D/g, "");
+      if (digits.length < 10) {
+        Alert.alert("Invalid Phone", "Phone number must have at least 10 digits.");
+        return;
+      }
+    }
+
+    setEditProviderSaving(true);
+    try {
+      const membership = await fetchCurrentProviderMembership();
+      if (!membership?.organizationId) {
+        throw new Error("Could not find your practice organization.");
+      }
+
+      const payload: Record<string, string | undefined> = {
+        name: practiceName,
+        displayName: practiceName,
+        billingEmail: billingEmailVal || undefined,
+        phone: phoneVal || undefined,
+        addressLine1: editProviderAddress.trim() || undefined,
+      };
+
+      const response = await resilientFetch(`/api/organizations/${membership.organizationId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data?.message || data?.error || "Could not save your practice.");
+      }
+
+      await refreshUsers();
+      setShowEditProvider(false);
+
+      if (Platform.OS !== "web") {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+
+      Alert.alert("Practice Updated", `${practiceName} has been updated.`);
+    } catch (error: any) {
+      Alert.alert("Unable to Save", error?.message || "Could not save your practice.");
+    } finally {
+      setEditProviderSaving(false);
+    }
   }
 
   async function fetchCurrentLabMembership() {
@@ -708,6 +813,20 @@ export default function SettingsScreen() {
       return;
     }
 
+    const labBillingEmailVal = editLabEmail.trim();
+    if (labBillingEmailVal && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(labBillingEmailVal)) {
+      Alert.alert("Invalid Email", "Billing email is not a valid email address.");
+      return;
+    }
+    const labPhoneVal = editLabPhone.trim();
+    if (labPhoneVal) {
+      const digits = labPhoneVal.replace(/\D/g, "");
+      if (digits.length < 10) {
+        Alert.alert("Invalid Phone", "Phone number must have at least 10 digits.");
+        return;
+      }
+    }
+
     setEditLabSaving(true);
 
     try {
@@ -715,8 +834,8 @@ export default function SettingsScreen() {
       const payload = {
         name: labName,
         displayName: labName,
-        billingEmail: editLabEmail.trim() || undefined,
-        phone: editLabPhone.trim() || undefined,
+        billingEmail: labBillingEmailVal || undefined,
+        phone: labPhoneVal || undefined,
         addressLine1: editLabAddress.trim() || undefined,
       };
 
@@ -1032,6 +1151,37 @@ export default function SettingsScreen() {
           </View>
         </View>
 
+        {isProviderAdmin && currentUserData?.practiceName ? (
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>MY PRACTICE</Text>
+            <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <View style={styles.menuItem}>
+                <View style={[styles.menuIcon, { backgroundColor: "#DBEAFE", width: 44, height: 44, borderRadius: 10, marginRight: 12 }]}>
+                  <Ionicons name="business" size={22} color="#2563EB" />
+                </View>
+                <View style={[styles.menuInfo, { flex: 1 }]}>
+                  <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: colors.text }}>{currentUserData.practiceName}</Text>
+                  {currentUserData.practiceAddress ? (
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 4, marginTop: 3 }}>
+                      <Ionicons name="location-outline" size={12} color={colors.textSecondary} />
+                      <Text style={[styles.menuSub, { color: colors.textSecondary }]}>{currentUserData.practiceAddress}</Text>
+                    </View>
+                  ) : null}
+                  {(currentUserData.practicePhone || currentUserData.phone) ? (
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 4, marginTop: 2 }}>
+                      <Ionicons name="call-outline" size={12} color={colors.textSecondary} />
+                      <Text style={[styles.menuSub, { color: colors.textSecondary }]}>{currentUserData.practicePhone || currentUserData.phone}</Text>
+                    </View>
+                  ) : null}
+                </View>
+                <Pressable hitSlop={10} onPress={() => void openProviderEditor()}>
+                  <Ionicons name="create-outline" size={20} color={colors.textTertiary} />
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        ) : null}
+
         {isProviderAdmin && (
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>ADMIN</Text>
@@ -1119,7 +1269,7 @@ export default function SettingsScreen() {
                           hitSlop={10}
                           onPress={(e) => {
                             e.stopPropagation();
-                            openLabEditor();
+                            void openLabEditor();
                           }}
                         >
                           <Ionicons name="create-outline" size={20} color={colors.textTertiary} />
@@ -2533,12 +2683,12 @@ export default function SettingsScreen() {
                 keyboardType="phone-pad"
               />
 
-              <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.textSecondary, marginBottom: 6 }}>Email</Text>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.textSecondary, marginBottom: 6 }}>Billing Email</Text>
               <TextInput
                 style={[styles.input, { color: colors.text, backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
                 value={editLabEmail}
                 onChangeText={setEditLabEmail}
-                placeholder="Enter email address"
+                placeholder="Enter billing email address"
                 placeholderTextColor={colors.textTertiary}
                 keyboardType="email-address"
                 autoCapitalize="none"
@@ -2551,6 +2701,69 @@ export default function SettingsScreen() {
                 onPress={handleSaveLab}
               >
                 <Text style={styles.sendBtnText}>{editLabSaving ? "Saving..." : currentUserData?.practiceName ? "Save Changes" : "Create Lab"}</Text>
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal transparent visible={showEditProvider} animationType="slide" onRequestClose={() => setShowEditProvider(false)}>
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={{ flex: 1 }}>
+          <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" }}>
+            <View style={{ backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 24, paddingBottom: insets.bottom + 24 }}>
+              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+                <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: colors.text }}>Edit My Practice</Text>
+                <Pressable onPress={() => setShowEditProvider(false)}>
+                  <Ionicons name="close" size={24} color={colors.textSecondary} />
+                </Pressable>
+              </View>
+
+              <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.textSecondary, marginBottom: 6 }}>Practice Name</Text>
+              <TextInput
+                style={[styles.input, { color: colors.text, backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
+                value={editProviderName}
+                onChangeText={setEditProviderName}
+                placeholder="Enter practice name"
+                placeholderTextColor={colors.textTertiary}
+              />
+
+              <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.textSecondary, marginBottom: 6 }}>Address</Text>
+              <TextInput
+                style={[styles.input, { color: colors.text, backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
+                value={editProviderAddress}
+                onChangeText={setEditProviderAddress}
+                placeholder="Enter address"
+                placeholderTextColor={colors.textTertiary}
+              />
+
+              <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.textSecondary, marginBottom: 6 }}>Phone</Text>
+              <TextInput
+                style={[styles.input, { color: colors.text, backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
+                value={editProviderPhone}
+                onChangeText={(v) => setEditProviderPhone(formatPhone(v))}
+                placeholder="000-000-0000"
+                placeholderTextColor={colors.textTertiary}
+                keyboardType="phone-pad"
+              />
+
+              <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.textSecondary, marginBottom: 6 }}>Billing Email</Text>
+              <TextInput
+                style={[styles.input, { color: colors.text, backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
+                value={editProviderBillingEmail}
+                onChangeText={setEditProviderBillingEmail}
+                placeholder="Enter billing email address"
+                placeholderTextColor={colors.textTertiary}
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+
+              <Pressable
+                style={({ pressed }) => [styles.sendBtn, editProviderSaving && { opacity: 0.6 }, pressed && { opacity: 0.8 }]}
+                disabled={editProviderSaving}
+                onPress={handleSaveProvider}
+              >
+                <Text style={styles.sendBtnText}>{editProviderSaving ? "Saving..." : "Save Changes"}</Text>
               </Pressable>
             </View>
           </View>

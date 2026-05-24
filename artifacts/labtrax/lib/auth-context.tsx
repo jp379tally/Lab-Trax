@@ -32,7 +32,7 @@ interface StoredUser {
   practiceAddress?: string;
   practicePhone?: string;
   phoneContactName?: string;
-  role?: "user" | "admin" | "billing";
+  role?: "user" | "admin" | "billing" | "owner";
   accountNumber?: string;
   practiceAccountNumber?: string | null;
 }
