@@ -1115,20 +1115,36 @@ function OrganizationsPanel() {
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState("");
   const [editBillingEmail, setEditBillingEmail] = useState("");
+  const [editPhone, setEditPhone] = useState("");
+  const [editAddressLine1, setEditAddressLine1] = useState("");
+  const [editAddressLine2, setEditAddressLine2] = useState("");
+  const [editCity, setEditCity] = useState("");
+  const [editState, setEditState] = useState("");
+  const [editZip, setEditZip] = useState("");
   const [editError, setEditError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
   const updateOrgMutation = useMutation({
-    mutationFn: ({ orgId, name, billingEmail }: { orgId: string; name: string; billingEmail: string }) =>
+    mutationFn: ({ orgId, name, billingEmail, phone, addressLine1, addressLine2, city, state, zip }: {
+      orgId: string; name: string; billingEmail: string;
+      phone: string; addressLine1: string; addressLine2: string;
+      city: string; state: string; zip: string;
+    }) =>
       apiFetch<Organization>(`/organizations/${orgId}`, {
         method: "PATCH",
         body: JSON.stringify({
           name,
           displayName: name,
           billingEmail: billingEmail.trim() || undefined,
+          phone: phone.trim() || undefined,
+          addressLine1: addressLine1.trim() || undefined,
+          addressLine2: addressLine2.trim() || undefined,
+          city: city.trim() || undefined,
+          state: state.trim() || undefined,
+          zip: zip.trim() || undefined,
         }),
       }),
-    onMutate: async ({ orgId, name, billingEmail }) => {
+    onMutate: async ({ orgId, name, billingEmail, phone, addressLine1, addressLine2, city, state, zip }) => {
       await queryClient.cancelQueries({ queryKey: ["organizations"] });
       await queryClient.cancelQueries({ queryKey: ["auth", "me"] });
 
@@ -1137,7 +1153,10 @@ function OrganizationsPanel() {
 
       const applyToOrg = (o: Organization): Organization =>
         o.id === orgId
-          ? { ...o, name, displayName: name, billingEmail: billingEmail.trim() || null }
+          ? { ...o, name, displayName: name, billingEmail: billingEmail.trim() || null,
+              phone: phone.trim() || null, addressLine1: addressLine1.trim() || null,
+              addressLine2: addressLine2.trim() || null, city: city.trim() || null,
+              state: state.trim() || null, zip: zip.trim() || null }
           : o;
 
       if (prevOrgs) {
@@ -1376,6 +1395,12 @@ function OrganizationsPanel() {
                             onClick={() => {
                               setEditName(selectedOrg.displayName || selectedOrg.name || "");
                               setEditBillingEmail(selectedOrg.billingEmail ?? "");
+                              setEditPhone(selectedOrg.phone ?? "");
+                              setEditAddressLine1(selectedOrg.addressLine1 ?? "");
+                              setEditAddressLine2(selectedOrg.addressLine2 ?? "");
+                              setEditCity(selectedOrg.city ?? "");
+                              setEditState(selectedOrg.state ?? "");
+                              setEditZip(selectedOrg.zip ?? "");
                               setEditError(null);
                               setIsEditing(true);
                             }}
@@ -1414,6 +1439,105 @@ function OrganizationsPanel() {
                     </div>
                   )}
                 </div>
+                {/* Phone row */}
+                <div className="px-3 py-2.5">
+                  {isEditing ? (
+                    <div className="space-y-1">
+                      <label className="text-muted-foreground text-xs">Phone</label>
+                      <input
+                        type="tel"
+                        value={editPhone}
+                        onChange={(e) => setEditPhone(formatPhone(e.target.value))}
+                        className="w-full h-8 px-2 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                        placeholder="000-000-0000 (optional)"
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex justify-between items-center">
+                      <span className="text-muted-foreground text-xs">Phone</span>
+                      <span>{selectedOrg.phone || <span className="text-muted-foreground italic">none</span>}</span>
+                    </div>
+                  )}
+                </div>
+                {/* Address rows */}
+                <div className="px-3 py-2.5">
+                  {isEditing ? (
+                    <div className="space-y-2">
+                      <div className="space-y-1">
+                        <label className="text-muted-foreground text-xs">Address line 1</label>
+                        <input
+                          type="text"
+                          value={editAddressLine1}
+                          onChange={(e) => setEditAddressLine1(e.target.value)}
+                          className="w-full h-8 px-2 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                          placeholder="123 Main St (optional)"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-muted-foreground text-xs">Address line 2</label>
+                        <input
+                          type="text"
+                          value={editAddressLine2}
+                          onChange={(e) => setEditAddressLine2(e.target.value)}
+                          className="w-full h-8 px-2 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                          placeholder="Suite 200 (optional)"
+                        />
+                      </div>
+                      <div className="grid grid-cols-3 gap-2">
+                        <div className="col-span-1 space-y-1">
+                          <label className="text-muted-foreground text-xs">City</label>
+                          <input
+                            type="text"
+                            value={editCity}
+                            onChange={(e) => setEditCity(e.target.value)}
+                            className="w-full h-8 px-2 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            placeholder="City"
+                          />
+                        </div>
+                        <div className="col-span-1 space-y-1">
+                          <label className="text-muted-foreground text-xs">State</label>
+                          <input
+                            type="text"
+                            value={editState}
+                            onChange={(e) => setEditState(e.target.value)}
+                            className="w-full h-8 px-2 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            placeholder="CA"
+                            maxLength={2}
+                          />
+                        </div>
+                        <div className="col-span-1 space-y-1">
+                          <label className="text-muted-foreground text-xs">ZIP</label>
+                          <input
+                            type="text"
+                            value={editZip}
+                            onChange={(e) => setEditZip(e.target.value)}
+                            className="w-full h-8 px-2 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                            placeholder="00000"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex justify-between items-start">
+                      <span className="text-muted-foreground text-xs">Address</span>
+                      <div className="text-right text-sm">
+                        {selectedOrg.addressLine1 || selectedOrg.addressLine2 || selectedOrg.city || selectedOrg.state || selectedOrg.zip ? (
+                          <>
+                            {selectedOrg.addressLine1 && <div>{selectedOrg.addressLine1}</div>}
+                            {selectedOrg.addressLine2 && <div>{selectedOrg.addressLine2}</div>}
+                            {(selectedOrg.city || selectedOrg.state || selectedOrg.zip) && (
+                              <div>
+                                {[selectedOrg.city, selectedOrg.state, selectedOrg.zip].filter(Boolean).join(", ")}
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          <span className="text-muted-foreground italic">none</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
                 <div className="px-3 py-2.5 flex justify-between items-center">
                   <span className="text-muted-foreground text-xs">Your role</span>
                   <span className="px-2 py-0.5 rounded-full bg-secondary text-secondary-foreground text-xs capitalize">
@@ -1439,10 +1563,40 @@ function OrganizationsPanel() {
                       type="button"
                       disabled={updateOrgMutation.isPending || !editName.trim()}
                       onClick={() => {
+                        const emailVal = editBillingEmail.trim();
+                        if (emailVal && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailVal)) {
+                          setEditError("Billing email is not a valid email address.");
+                          return;
+                        }
+                        const phoneVal = editPhone.trim();
+                        if (phoneVal) {
+                          const digits = phoneVal.replace(/\D/g, "");
+                          if (digits.length < 10) {
+                            setEditError("Phone number must have at least 10 digits.");
+                            return;
+                          }
+                        }
+                        const stateVal = editState.trim();
+                        if (stateVal && !/^[A-Za-z]{2}$/.test(stateVal)) {
+                          setEditError("State must be a 2-letter abbreviation (e.g. CA).");
+                          return;
+                        }
+                        const zipVal = editZip.trim();
+                        if (zipVal && !/^\d{5}(-\d{4})?$/.test(zipVal)) {
+                          setEditError("ZIP code must be 5 digits or 5+4 format (e.g. 90210 or 90210-1234).");
+                          return;
+                        }
+                        setEditError(null);
                         updateOrgMutation.mutate({
                           orgId: selectedOrg.id,
                           name: editName.trim(),
                           billingEmail: editBillingEmail,
+                          phone: editPhone,
+                          addressLine1: editAddressLine1,
+                          addressLine2: editAddressLine2,
+                          city: editCity,
+                          state: editState,
+                          zip: editZip,
                         });
                       }}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
