@@ -450,6 +450,75 @@ describe("GET /downloads/LabTrax-Windows-Portable.zip — stream retry", () => {
     expect(body).toEqual(FAKE_CONTENT);
   });
 
+  it("completes with the correct partial bytes when the first stream errors mid-range and the retry succeeds", async () => {
+    // Scenario: client requests bytes=10-39 (a mid-file range, N=10, M=39).
+    // The first stream delivers 5 bytes of that range (file offsets 10-14) then
+    // drops.  The retry must resume from absoluteOffset = N + bytesSentSoFar =
+    // 10 + 5 = 15 with end=39 — not from 0 — and the response body must equal
+    // FAKE_CONTENT[10..39].
+    const rangeStart = 10;
+    const rangeEnd = 39;
+    const bytesFromFirstStream = 5; // deliver offsets 10-14 then error
+    const expectedAbsoluteOffset = rangeStart + bytesFromFirstStream; // 15
+    const streamError = new Error("GCS upstream dropped connection mid-range");
+
+    vi.mocked(openDesktopInstallerStream)
+      // First call — open with { start:10, end:39 }, emit 5 bytes then error
+      .mockImplementationOnce(async () => {
+        const s = new Readable({ read() {} });
+        process.nextTick(() => {
+          s.push(FAKE_CONTENT.slice(rangeStart, rangeStart + bytesFromFirstStream));
+          s.destroy(streamError);
+        });
+        return {
+          size: FAKE_CONTENT.length,
+          stream: s,
+          contentType: "application/zip",
+          fileName: "LabTrax-Windows-Portable.zip",
+        };
+      })
+      // Second call (retry from offset 15) — serves the remaining range bytes
+      .mockImplementationOnce(async (_kind, range?: { start?: number; end?: number }) => {
+        const start = range?.start ?? 0;
+        const end = range?.end ?? FAKE_CONTENT.length - 1;
+        return {
+          size: FAKE_CONTENT.length,
+          stream: makeStream(FAKE_CONTENT.slice(start, end + 1)),
+          contentType: "application/zip",
+          fileName: "LabTrax-Windows-Portable.zip",
+        };
+      });
+
+    const res = await request(server)
+      .get("/downloads/LabTrax-Windows-Portable.zip")
+      .set("Range", `bytes=${rangeStart}-${rangeEnd}`)
+      .buffer(true)
+      .parse((res, cb) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (d: Buffer) => chunks.push(d));
+        res.on("end", () => cb(null, Buffer.concat(chunks)));
+      });
+
+    // Headers were already sent, so status reflects the original 206.
+    expect(res.status).toBe(206);
+    expect(res.headers["content-range"]).toBe(
+      `bytes ${rangeStart}-${rangeEnd}/${FAKE_CONTENT.length}`,
+    );
+
+    // Both streams were opened.
+    expect(vi.mocked(openDesktopInstallerStream)).toHaveBeenCalledTimes(2);
+
+    // The retry must resume from N + bytesSentSoFar with the original end,
+    // not from file offset 0.
+    const retryRange = vi.mocked(openDesktopInstallerStream).mock.calls[1][1];
+    expect(retryRange).toMatchObject({ start: expectedAbsoluteOffset, end: rangeEnd });
+
+    // The client received exactly the bytes for the requested range.
+    const body = res.body as Buffer;
+    expect(body.length).toBe(rangeEnd - rangeStart + 1);
+    expect(body).toEqual(FAKE_CONTENT.slice(rangeStart, rangeEnd + 1));
+  });
+
   it("tears down the response socket when both the original stream and the retry stream error", async () => {
     // First stream delivers a few bytes then errors.  The retry mock throws at
     // the open level (simulating a GCS open failure) — this hits the catch
