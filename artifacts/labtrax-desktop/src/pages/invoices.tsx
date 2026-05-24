@@ -559,7 +559,7 @@ export function InvoiceEditor({
   const COL_DEFAULTS = [176, 112, 220, 64, 112, 96] as const;
   const ACTION_COL_WIDTH = 80;
   const { widths: colWidths, totalWidth: colTotalWidth, startResize, resetColumn } =
-    useColumnWidths([...COL_DEFAULTS]);
+    useColumnWidths([...COL_DEFAULTS], user?.id);
 
   // Per-lab visual invoice template + preloaded extra-image data URLs.
   const { template: invoiceTemplate, extraImageDataUrls } = useInvoiceTemplate(
