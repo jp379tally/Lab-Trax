@@ -352,6 +352,48 @@ export const MarkAllNotificationsReadResponse = zod.object({
 });
 
 /**
+ * Updates a list of cases to the same status in one operation. Every
+case ID must belong to a lab the caller is a member of. Returns the
+count of cases actually updated.
+
+ * @summary Change the status of multiple cases at once
+ */
+export const bulkChangeCaseStatusBodyCaseIdsMax = 500;
+
+export const BulkChangeCaseStatusBody = zod.object({
+  caseIds: zod
+    .array(zod.string())
+    .min(1)
+    .max(bulkChangeCaseStatusBodyCaseIdsMax),
+  status: zod.enum([
+    "received",
+    "in_design",
+    "scan",
+    "in_milling",
+    "post_mill",
+    "sintering_furnace",
+    "model_room",
+    "in_porcelain",
+    "qc",
+    "complete",
+    "shipped",
+    "delivered",
+    "on_hold",
+    "remake",
+    "cancelled",
+  ]),
+});
+
+export const BulkChangeCaseStatusResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      updatedCount: zod.number(),
+    })
+    .optional(),
+});
+
+/**
  * Reassigns a list of cases to a new provider organization in one
 operation. Every case ID must belong to a lab the caller is a member
 of. Returns the count of cases actually updated.

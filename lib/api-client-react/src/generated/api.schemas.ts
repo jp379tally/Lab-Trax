@@ -560,6 +560,45 @@ export interface RestoreStatusResult {
   completedAt?: string | null;
 }
 
+export type BulkStatusCasesInputStatus =
+  (typeof BulkStatusCasesInputStatus)[keyof typeof BulkStatusCasesInputStatus];
+
+export const BulkStatusCasesInputStatus = {
+  received: "received",
+  in_design: "in_design",
+  scan: "scan",
+  in_milling: "in_milling",
+  post_mill: "post_mill",
+  sintering_furnace: "sintering_furnace",
+  model_room: "model_room",
+  in_porcelain: "in_porcelain",
+  qc: "qc",
+  complete: "complete",
+  shipped: "shipped",
+  delivered: "delivered",
+  on_hold: "on_hold",
+  remake: "remake",
+  cancelled: "cancelled",
+} as const;
+
+export interface BulkStatusCasesInput {
+  /**
+   * @minItems 1
+   * @maxItems 500
+   */
+  caseIds: string[];
+  status: BulkStatusCasesInputStatus;
+}
+
+export type BulkStatusCasesResultData = {
+  updatedCount: number;
+};
+
+export interface BulkStatusCasesResult {
+  ok?: boolean;
+  data?: BulkStatusCasesResultData;
+}
+
 export interface BulkReassignCasesInput {
   /**
    * @minItems 1

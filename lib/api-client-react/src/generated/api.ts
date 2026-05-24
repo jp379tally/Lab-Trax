@@ -24,6 +24,8 @@ import type {
   BackupScheduleResult,
   BulkReassignCasesInput,
   BulkReassignCasesResult,
+  BulkStatusCasesInput,
+  BulkStatusCasesResult,
   CreateVendorInput,
   DeleteVendor200,
   DisableBackupSchedule200,
@@ -1346,6 +1348,96 @@ export const useMarkAllNotificationsRead = <
   TContext
 > => {
   return useMutation(getMarkAllNotificationsReadMutationOptions(options));
+};
+
+/**
+ * Updates a list of cases to the same status in one operation. Every
+case ID must belong to a lab the caller is a member of. Returns the
+count of cases actually updated.
+
+ * @summary Change the status of multiple cases at once
+ */
+export const getBulkChangeCaseStatusUrl = () => {
+  return `/api/cases/bulk-status`;
+};
+
+export const bulkChangeCaseStatus = async (
+  bulkStatusCasesInput: BulkStatusCasesInput,
+  options?: RequestInit,
+): Promise<BulkStatusCasesResult> => {
+  return customFetch<BulkStatusCasesResult>(getBulkChangeCaseStatusUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(bulkStatusCasesInput),
+  });
+};
+
+export const getBulkChangeCaseStatusMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof bulkChangeCaseStatus>>,
+    TError,
+    { data: BodyType<BulkStatusCasesInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof bulkChangeCaseStatus>>,
+  TError,
+  { data: BodyType<BulkStatusCasesInput> },
+  TContext
+> => {
+  const mutationKey = ["bulkChangeCaseStatus"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof bulkChangeCaseStatus>>,
+    { data: BodyType<BulkStatusCasesInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return bulkChangeCaseStatus(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type BulkChangeCaseStatusMutationResult = NonNullable<
+  Awaited<ReturnType<typeof bulkChangeCaseStatus>>
+>;
+export type BulkChangeCaseStatusMutationBody = BodyType<BulkStatusCasesInput>;
+export type BulkChangeCaseStatusMutationError = ErrorType<void>;
+
+/**
+ * @summary Change the status of multiple cases at once
+ */
+export const useBulkChangeCaseStatus = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof bulkChangeCaseStatus>>,
+    TError,
+    { data: BodyType<BulkStatusCasesInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof bulkChangeCaseStatus>>,
+  TError,
+  { data: BodyType<BulkStatusCasesInput> },
+  TContext
+> => {
+  return useMutation(getBulkChangeCaseStatusMutationOptions(options));
 };
 
 /**

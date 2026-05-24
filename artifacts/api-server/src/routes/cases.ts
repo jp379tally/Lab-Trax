@@ -940,6 +940,96 @@ router.post(
   })
 );
 
+const VALID_BULK_STATUSES = [
+  "received",
+  "in_design",
+  "scan",
+  "in_milling",
+  "post_mill",
+  "sintering_furnace",
+  "model_room",
+  "in_porcelain",
+  "qc",
+  "complete",
+  "shipped",
+  "delivered",
+  "on_hold",
+  "remake",
+  "cancelled",
+] as const;
+
+const bulkStatusSchema = z.object({
+  caseIds: z.array(z.string().min(1)).min(1).max(500),
+  status: z.enum(VALID_BULK_STATUSES),
+});
+
+router.post(
+  "/bulk-status",
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId as string;
+    const input = bulkStatusSchema.parse(req.body);
+
+    const uniqueCaseIds = Array.from(new Set(input.caseIds));
+
+    const firstCase = await db.query.cases.findFirst({
+      where: and(eq(cases.id, uniqueCaseIds[0]!), notDeleted(cases)),
+    });
+    if (!firstCase) {
+      throw new HttpError(404, "No matching cases found.");
+    }
+    const labOrganizationId = firstCase.labOrganizationId;
+
+    await requireMembership(userId, labOrganizationId);
+
+    const casesToUpdate = await db
+      .select({ id: cases.id, labOrganizationId: cases.labOrganizationId, caseNumber: cases.caseNumber })
+      .from(cases)
+      .where(and(inArray(cases.id, uniqueCaseIds), notDeleted(cases)));
+
+    const unauthorizedIds = casesToUpdate
+      .filter((c) => c.labOrganizationId !== labOrganizationId)
+      .map((c) => c.id);
+    if (unauthorizedIds.length > 0) {
+      throw new HttpError(403, "Some cases do not belong to your lab.");
+    }
+
+    if (casesToUpdate.length !== uniqueCaseIds.length) {
+      const foundIds = new Set(casesToUpdate.map((c) => c.id));
+      const missing = uniqueCaseIds.filter((id) => !foundIds.has(id));
+      if (missing.length > 0) {
+        throw new HttpError(404, `Cases not found: ${missing.slice(0, 5).join(", ")}`);
+      }
+    }
+
+    if (casesToUpdate.length === 0) {
+      return ok(res, { updatedCount: 0 });
+    }
+
+    const ids = casesToUpdate.map((c) => c.id);
+
+    await db
+      .update(cases)
+      .set({ status: input.status, updatedAt: new Date() })
+      .where(inArray(cases.id, ids));
+
+    await writeAuditLog({
+      userId,
+      organizationId: labOrganizationId,
+      action: "cases_bulk_status_changed",
+      entityType: "case",
+      entityId: labOrganizationId,
+      metadataJson: {
+        caseIds: ids,
+        caseNumbers: casesToUpdate.map((c) => c.caseNumber),
+        status: input.status,
+        count: ids.length,
+      },
+    });
+
+    return ok(res, { updatedCount: ids.length });
+  })
+);
+
 router.post(
   "/",
   asyncHandler(async (req, res) => {

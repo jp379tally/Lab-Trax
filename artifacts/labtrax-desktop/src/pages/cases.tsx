@@ -933,6 +933,8 @@ export default function CasesPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showReassignModal, setShowReassignModal] = useState(false);
   const [reassignTargetId, setReassignTargetId] = useState<string>("");
+  const [showBulkStatusModal, setShowBulkStatusModal] = useState(false);
+  const [bulkStatusValue, setBulkStatusValue] = useState<string>("");
 
   const CASES_COL_DEFAULTS = [120, 100, 160, 140, 140, 120, 100, 90, 130, 100, 90] as const;
   const { widths: caseColWidths, resizingCol: resizingCaseCol, startResize: startCaseResize, resetColumn: resetCaseColumn } =
@@ -965,6 +967,25 @@ export default function CasesPage() {
       setShowReassignModal(false);
       setReassignTargetId("");
       setBulkToast(`${result.updatedCount} case${result.updatedCount !== 1 ? "s" : ""} reassigned.`);
+    },
+    onError: (e: Error) => {
+      setBulkToastError(e.message);
+    },
+  });
+
+  const bulkStatusMutation = useMutation({
+    mutationFn: (body: { caseIds: string[]; status: string }) =>
+      apiFetch<{ updatedCount: number }>("/cases/bulk-status", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: ["cases"] });
+      setSelectedIds(new Set());
+      setShowBulkStatusModal(false);
+      setBulkStatusValue("");
+      const label = STATUS_FILTERS.find((s) => s.value === bulkStatusValue)?.label ?? bulkStatusValue;
+      setBulkToast(`${result.updatedCount} case${result.updatedCount !== 1 ? "s" : ""} marked as ${label}.`);
     },
     onError: (e: Error) => {
       setBulkToastError(e.message);
@@ -1281,6 +1302,16 @@ export default function CasesPage() {
             </button>
             <button
               type="button"
+              onClick={() => {
+                setBulkStatusValue("");
+                setShowBulkStatusModal(true);
+              }}
+              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-secondary text-foreground text-xs font-medium hover:bg-secondary/80 transition-colors border border-border"
+            >
+              Change status
+            </button>
+            <button
+              type="button"
               onClick={() => setSelectedIds(new Set())}
               className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2"
             >
@@ -1566,6 +1597,84 @@ export default function CasesPage() {
               >
                 {bulkReassignMutation.isPending && <Loader2 size={13} className="animate-spin" />}
                 Reassign
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showBulkStatusModal && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div
+            className="bg-card border border-border rounded-2xl shadow-2xl w-full max-w-sm mx-4"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Change case status"
+          >
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+              <h2 className="text-base font-semibold">Change status — {selectedIds.size} case{selectedIds.size !== 1 ? "s" : ""}</h2>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowBulkStatusModal(false);
+                  setBulkStatusValue("");
+                }}
+                className="text-muted-foreground hover:text-foreground transition-colors"
+                aria-label="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="px-6 py-5 space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-1.5" htmlFor="bulk-status-select">
+                  New status
+                </label>
+                <select
+                  id="bulk-status-select"
+                  value={bulkStatusValue}
+                  onChange={(e) => setBulkStatusValue(e.target.value)}
+                  className="w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
+                >
+                  <option value="" disabled>Select a status…</option>
+                  {STATUS_FILTERS.filter((s) => s.value !== "all").map((s) => (
+                    <option key={s.value} value={s.value}>{s.label}</option>
+                  ))}
+                </select>
+              </div>
+              {bulkStatusMutation.isError && (
+                <p className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md">
+                  {bulkStatusMutation.error instanceof Error
+                    ? bulkStatusMutation.error.message
+                    : "An error occurred."}
+                </p>
+              )}
+            </div>
+            <div className="flex gap-3 px-6 pb-5">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowBulkStatusModal(false);
+                  setBulkStatusValue("");
+                }}
+                className="flex-1 h-9 rounded-lg bg-secondary text-sm font-medium text-muted-foreground hover:text-foreground"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={!bulkStatusValue || bulkStatusMutation.isPending}
+                onClick={() => {
+                  if (!bulkStatusValue) return;
+                  bulkStatusMutation.mutate({
+                    caseIds: Array.from(selectedIds),
+                    status: bulkStatusValue,
+                  });
+                }}
+                className="flex-1 h-9 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center justify-center gap-1.5"
+              >
+                {bulkStatusMutation.isPending && <Loader2 size={13} className="animate-spin" />}
+                Apply
               </button>
             </div>
           </div>

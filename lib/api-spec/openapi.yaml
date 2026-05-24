@@ -289,6 +289,34 @@ paths:
                     type: object
                     properties:
                       ok: { type: boolean }
+  /cases/bulk-status:
+    post:
+      operationId: bulkChangeCaseStatus
+      tags: [cases]
+      summary: Change the status of multiple cases at once
+      description: |
+        Updates a list of cases to the same status in one operation. Every
+        case ID must belong to a lab the caller is a member of. Returns the
+        count of cases actually updated.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BulkStatusCasesInput"
+      responses:
+        "200":
+          description: Cases updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BulkStatusCasesResult"
+        "400":
+          description: Validation error
+        "403":
+          description: Caller is not a member of the cases' lab
+        "404":
+          description: One or more case IDs not found
   /cases/bulk-reassign:
     post:
       operationId: bulkReassignCases
@@ -1727,6 +1755,42 @@ components:
         message: { type: string, nullable: true }
         startedAt: { type: string, format: date-time, nullable: true }
         completedAt: { type: string, format: date-time, nullable: true }
+    BulkStatusCasesInput:
+      type: object
+      required: [caseIds, status]
+      properties:
+        caseIds:
+          type: array
+          items: { type: string }
+          minItems: 1
+          maxItems: 500
+        status:
+          type: string
+          enum:
+            - received
+            - in_design
+            - scan
+            - in_milling
+            - post_mill
+            - sintering_furnace
+            - model_room
+            - in_porcelain
+            - qc
+            - complete
+            - shipped
+            - delivered
+            - on_hold
+            - remake
+            - cancelled
+    BulkStatusCasesResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          required: [updatedCount]
+          properties:
+            updatedCount: { type: integer }
     BulkReassignCasesInput:
       type: object
       required: [caseIds, providerOrganizationId]
