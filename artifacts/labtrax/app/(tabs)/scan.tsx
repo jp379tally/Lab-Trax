@@ -1663,7 +1663,45 @@ export default function ScanScreen() {
           if (d.doctorName) setDoctorName(d.doctorName);
           if (d.patientName) setPatientName(d.patientName);
           else if (d.patientInitials) setPatientName(d.patientInitials);
-          if (d.caseType) setCaseType(d.caseType);
+          if (d.caseType) {
+            const AI_CASE_TYPE_MAP: Record<string, string> = {
+              "crown & bridge": "Restorative",
+              "crown and bridge": "Restorative",
+              "crown": "Restorative",
+              "bridge": "Restorative",
+              "implant": "Restorative",
+              "implants": "Restorative",
+              "veneers": "Restorative",
+              "veneer": "Restorative",
+              "inlay": "Restorative",
+              "onlay": "Restorative",
+              "inlay/onlay": "Restorative",
+              "fixed": "Restorative",
+              "fixed prosthetics": "Restorative",
+              "denture": "Removable",
+              "dentures": "Removable",
+              "partial": "Removable",
+              "partial denture": "Removable",
+              "full denture": "Removable",
+              "complete denture": "Removable",
+              "flipper": "Removable",
+              "night guard": "Appliance",
+              "nightguard": "Appliance",
+              "mouth guard": "Appliance",
+              "mouthguard": "Appliance",
+              "retainer": "Appliance",
+              "sports guard": "Appliance",
+              "sportsguard": "Appliance",
+              "bleaching tray": "Appliance",
+              "bite splint": "Appliance",
+              "temporary": "Temporary",
+              "temporaries": "Temporary",
+              "temp": "Temporary",
+              "provisional": "Temporary",
+            };
+            const normalized = AI_CASE_TYPE_MAP[d.caseType.trim().toLowerCase()];
+            setCaseType(normalized ?? d.caseType);
+          }
           if (d.toothIndices) {
             setToothIndices(d.toothIndices);
             const nums = d.toothIndices.match(/\d+/g);
