@@ -2636,4 +2636,52 @@ router.delete(
   })
 );
 
+// ─── Per-lab trusted-device TTL ─────────────────────────────────────────────
+
+const trustedDeviceTtlBodySchema = z.object({
+  ttlDays: z.number().int().min(1).max(365).nullable(),
+});
+
+router.patch(
+  "/:organizationId/trusted-device-ttl",
+  asyncHandler(async (req, res) => {
+    const { organizationId } = req.params;
+    await resolveOrgAdminAccess((req as any).auth.userId, organizationId);
+
+    const { ttlDays } = trustedDeviceTtlBodySchema.parse(req.body);
+
+    const existing = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organizationId),
+    });
+    if (!existing) throw new HttpError(404, "Organization not found.");
+    if (existing.type !== "lab") {
+      throw new HttpError(
+        400,
+        "Trusted-device TTL can only be set on lab organizations."
+      );
+    }
+
+    const [updated] = await db
+      .update(organizations)
+      .set({
+        trustedDeviceTtlDays: ttlDays,
+        updatedAt: new Date(),
+      })
+      .where(eq(organizations.id, organizationId))
+      .returning();
+
+    await writeAuditLog({
+      req,
+      labId: organizationId,
+      action: "organization_trusted_device_ttl_updated",
+      entityType: "organization",
+      entityId: organizationId,
+      beforeJson: { trustedDeviceTtlDays: existing.trustedDeviceTtlDays ?? null },
+      afterJson: { trustedDeviceTtlDays: ttlDays },
+    });
+
+    return ok(res, updated);
+  })
+);
+
 export default router;

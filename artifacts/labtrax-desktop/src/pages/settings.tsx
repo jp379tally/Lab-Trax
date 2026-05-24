@@ -1378,6 +1378,7 @@ function OrganizationsPanel() {
                     labName={selectedOrg.displayName || selectedOrg.name || "this lab"}
                   />
                   <DuplicateThresholdRow lab={selectedOrg} />
+                  <TrustedDeviceTtlRow lab={selectedOrg} />
                 </div>
               )}
 
@@ -1865,6 +1866,114 @@ function DuplicateThresholdRow({ lab }: { lab: Organization }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function TrustedDeviceTtlRow({ lab }: { lab: Organization }) {
+  const queryClient = useQueryClient();
+  const GLOBAL_DEFAULT = 30;
+
+  const savedTtl: number = lab.trustedDeviceTtlDays ?? GLOBAL_DEFAULT;
+  const hasOverride = lab.trustedDeviceTtlDays !== null && lab.trustedDeviceTtlDays !== undefined;
+
+  const [ttl, setTtl] = useState<number>(savedTtl);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [savedFlag, setSavedFlag] = useState(false);
+
+  useEffect(() => {
+    setTtl(lab.trustedDeviceTtlDays ?? GLOBAL_DEFAULT);
+  }, [lab.trustedDeviceTtlDays]);
+
+  const dirty = ttl !== savedTtl;
+
+  const saveMutation = useMutation({
+    mutationFn: (days: number | null) =>
+      apiFetch(`/organizations/${lab.id}/trusted-device-ttl`, {
+        method: "PATCH",
+        body: JSON.stringify({ ttlDays: days }),
+      }),
+    onSuccess: () => {
+      setSaveError(null);
+      setSavedFlag(true);
+      setTimeout(() => setSavedFlag(false), 2000);
+      queryClient.invalidateQueries({ queryKey: ["organizations"] });
+    },
+    onError: (err: Error) => setSaveError(err.message || "Failed to save."),
+  });
+
+  return (
+    <div className="rounded-md border border-border bg-background p-3 space-y-2.5">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <div className="text-xs font-semibold">Device trust period</div>
+          <div className="text-[11px] text-muted-foreground max-w-sm">
+            How long a trusted device can skip the 2FA challenge. Use a shorter period for shared workstations.
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {hasOverride ? (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-secondary-foreground">
+              Custom
+            </span>
+          ) : (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+              Default {GLOBAL_DEFAULT}d
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <input
+          type="range"
+          min={1}
+          max={90}
+          step={1}
+          value={ttl}
+          onChange={(e) => setTtl(parseInt(e.target.value, 10))}
+          className="flex-1 max-w-xs accent-primary"
+          aria-label="Device trust TTL days"
+        />
+        <span className="text-xs font-mono w-12 text-right">
+          {ttl} day{ttl === 1 ? "" : "s"}
+        </span>
+        <button
+          type="button"
+          onClick={() => saveMutation.mutate(ttl)}
+          disabled={!dirty || saveMutation.isPending}
+          className="h-7 px-2.5 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-50 inline-flex items-center gap-1.5"
+        >
+          {saveMutation.isPending ? <Loader2 size={11} className="animate-spin" /> : null}
+          Save
+        </button>
+        {hasOverride && (
+          <button
+            type="button"
+            onClick={() => {
+              setTtl(GLOBAL_DEFAULT);
+              saveMutation.mutate(null);
+            }}
+            disabled={saveMutation.isPending}
+            className="h-7 px-2 rounded-md border border-border text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+            title="Reset to global default"
+          >
+            Reset
+          </button>
+        )}
+        {savedFlag && (
+          <span className="text-[11px] text-success inline-flex items-center gap-1">
+            <Check size={11} />
+            Saved
+          </span>
+        )}
+      </div>
+
+      {saveError && (
+        <div className="mt-1">
+          <Alert tone="danger">{saveError}</Alert>
+        </div>
+      )}
     </div>
   );
 }

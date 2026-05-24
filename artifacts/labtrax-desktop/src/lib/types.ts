@@ -353,6 +353,7 @@ export interface Organization {
   logoUrl?: string | null;
   logoplacements?: string[] | null;
   duplicateSuggestionThreshold?: string | number | null;
+  trustedDeviceTtlDays?: number | null;
 }
 
 export interface BankAccount {

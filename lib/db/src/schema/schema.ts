@@ -206,6 +206,11 @@ export const organizations = pgTable(
       precision: 4,
       scale: 3,
     }),
+    // How many days a trusted device token remains valid before the user must
+    // pass the 2FA challenge again. Null = fall back to the global
+    // TRUSTED_DEVICE_TTL_DAYS env var (default 30). Valid range: 1–365.
+    // Only meaningful on type="lab" rows; ignored on provider organizations.
+    trustedDeviceTtlDays: integer("trusted_device_ttl_days"),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     deletedByUserId: varchar("deleted_by_user_id"),
   },

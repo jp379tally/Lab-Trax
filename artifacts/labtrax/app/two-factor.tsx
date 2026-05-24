@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   StyleSheet,
   View,
@@ -66,6 +66,43 @@ export default function TwoFactorScreen() {
   const [trustedDevices, setTrustedDevices] = useState<TrustedDevice[]>([]);
   const [revokingId, setRevokingId] = useState<string | null>(null);
 
+  // Lab-admin TTL control (Task #879)
+  const GLOBAL_TTL_DEFAULT = 30;
+  const [labOrgId, setLabOrgId] = useState<string | null>(null);
+  const [labOrgName, setLabOrgName] = useState("");
+  const [labTtlDays, setLabTtlDays] = useState<number>(GLOBAL_TTL_DEFAULT);
+  const [labTtlHasOverride, setLabTtlHasOverride] = useState(false);
+  const [labTtlInput, setLabTtlInput] = useState<string>(String(GLOBAL_TTL_DEFAULT));
+  const [labTtlSaving, setLabTtlSaving] = useState(false);
+  const [labTtlSaved, setLabTtlSaved] = useState(false);
+  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const fetchLabAdminMembership = useCallback(async () => {
+    try {
+      const res = await apiRequest("GET", "/api/auth/me");
+      const data = await res.json();
+      const memberships: any[] = data?.memberships ?? [];
+      const labAdminMembership = memberships.find(
+        (m: any) =>
+          m?.status === "active" &&
+          (m?.role === "admin" || m?.role === "owner") &&
+          m?.organization?.type === "lab"
+      );
+      if (labAdminMembership) {
+        const org = labAdminMembership.organization;
+        setLabOrgId(org.id);
+        setLabOrgName(org.displayName || org.name || "");
+        const ttl = org.trustedDeviceTtlDays ?? null;
+        const resolved = ttl ?? GLOBAL_TTL_DEFAULT;
+        setLabTtlDays(resolved);
+        setLabTtlInput(String(resolved));
+        setLabTtlHasOverride(ttl !== null);
+      }
+    } catch {
+      // not a lab admin — no-op
+    }
+  }, []);
+
   const fetchTrustedDevices = useCallback(async () => {
     try {
       const res = await apiRequest("GET", "/api/auth/2fa/trusted-devices");
@@ -116,11 +153,36 @@ export default function TwoFactorScreen() {
     } catch {
       setPhase("status");
     }
-  }, [fetchTrustedDevices]);
+    fetchLabAdminMembership();
+  }, [fetchTrustedDevices, fetchLabAdminMembership]);
 
   useEffect(() => {
     fetchStatus();
   }, [fetchStatus]);
+
+  async function handleSaveLabTtl(ttlDays: number | null) {
+    if (!labOrgId) return;
+    setLabTtlSaving(true);
+    try {
+      const res = await apiRequest("PATCH", `/api/organizations/${labOrgId}/trusted-device-ttl`, { ttlDays });
+      if (!res.ok) {
+        const d = await res.json();
+        Alert.alert("Error", d?.error || "Could not save setting.");
+        return;
+      }
+      const resolved = ttlDays ?? GLOBAL_TTL_DEFAULT;
+      setLabTtlDays(resolved);
+      setLabTtlInput(String(resolved));
+      setLabTtlHasOverride(ttlDays !== null);
+      setLabTtlSaved(true);
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+      savedTimerRef.current = setTimeout(() => setLabTtlSaved(false), 2000);
+    } catch {
+      Alert.alert("Error", "Could not save setting.");
+    } finally {
+      setLabTtlSaving(false);
+    }
+  }
 
   async function handleStartSetup() {
     setIsLoading(true);
@@ -319,6 +381,101 @@ export default function TwoFactorScreen() {
               </Pressable>
             )}
 
+            {/* Lab admin: device trust period */}
+            {labOrgId !== null && (
+              <View style={{ marginTop: 4, backgroundColor: "#F9FAFB", borderRadius: 12, borderWidth: 1, borderColor: "#E5E7EB", padding: 14, gap: 10 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+                  <Text style={{ fontSize: 13, fontWeight: "600", color: Colors.light.text }}>
+                    Device trust period
+                  </Text>
+                  {labTtlHasOverride ? (
+                    <View style={{ paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, backgroundColor: "#EDE9FE" }}>
+                      <Text style={{ fontSize: 10, fontWeight: "600", color: "#7C3AED" }}>Custom</Text>
+                    </View>
+                  ) : (
+                    <View style={{ paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, backgroundColor: "#F3F4F6" }}>
+                      <Text style={{ fontSize: 10, fontWeight: "600", color: "#6B7280" }}>Default {GLOBAL_TTL_DEFAULT}d</Text>
+                    </View>
+                  )}
+                </View>
+                <Text style={{ fontSize: 11, color: Colors.light.tabIconDefault }}>
+                  {labOrgName ? `${labOrgName}: ` : ""}How long trusted devices can skip the 2FA challenge. Shorter periods are better for shared workstations.
+                </Text>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+                  <TextInput
+                    style={{
+                      borderWidth: 1,
+                      borderColor: "#D1D5DB",
+                      borderRadius: 8,
+                      paddingHorizontal: 10,
+                      paddingVertical: 6,
+                      fontSize: 15,
+                      fontWeight: "600",
+                      width: 64,
+                      textAlign: "center",
+                      backgroundColor: "#FFFFFF",
+                      color: Colors.light.text,
+                    }}
+                    value={labTtlInput}
+                    onChangeText={(t) => setLabTtlInput(t.replace(/[^0-9]/g, ""))}
+                    keyboardType="number-pad"
+                    maxLength={3}
+                  />
+                  <Text style={{ fontSize: 12, color: Colors.light.tabIconDefault }}>days</Text>
+                  <Pressable
+                    onPress={() => {
+                      const v = parseInt(labTtlInput, 10);
+                      if (!Number.isFinite(v) || v < 1 || v > 365) {
+                        Alert.alert("Invalid value", "Enter a number from 1 to 365.");
+                        return;
+                      }
+                      handleSaveLabTtl(v);
+                    }}
+                    disabled={labTtlSaving}
+                    style={({ pressed }) => ({
+                      paddingHorizontal: 14,
+                      paddingVertical: 7,
+                      borderRadius: 8,
+                      backgroundColor: pressed ? "#4F46E5" : Colors.light.tint,
+                      opacity: labTtlSaving ? 0.6 : 1,
+                    })}
+                  >
+                    {labTtlSaving ? (
+                      <ActivityIndicator size="small" color="#FFF" />
+                    ) : (
+                      <Text style={{ fontSize: 12, fontWeight: "600", color: "#FFF" }}>Save</Text>
+                    )}
+                  </Pressable>
+                  {labTtlHasOverride && (
+                    <Pressable
+                      onPress={() => {
+                        setLabTtlInput(String(GLOBAL_TTL_DEFAULT));
+                        handleSaveLabTtl(null);
+                      }}
+                      disabled={labTtlSaving}
+                      style={({ pressed }) => ({
+                        paddingHorizontal: 10,
+                        paddingVertical: 7,
+                        borderRadius: 8,
+                        borderWidth: 1,
+                        borderColor: "#D1D5DB",
+                        backgroundColor: pressed ? "#F3F4F6" : "#FFFFFF",
+                        opacity: labTtlSaving ? 0.6 : 1,
+                      })}
+                    >
+                      <Text style={{ fontSize: 12, color: "#6B7280" }}>Reset</Text>
+                    </Pressable>
+                  )}
+                  {labTtlSaved && (
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+                      <Ionicons name="checkmark-circle" size={14} color="#059669" />
+                      <Text style={{ fontSize: 11, color: "#059669" }}>Saved</Text>
+                    </View>
+                  )}
+                </View>
+              </View>
+            )}
+
             {/* Trusted devices list */}
             {twoFactorEnabled && trustedDevices.length > 0 && (
               <View style={{ marginTop: 4, gap: 10 }}>
@@ -326,7 +483,7 @@ export default function TwoFactorScreen() {
                   Trusted devices
                 </Text>
                 <Text style={{ fontSize: 12, color: Colors.light.tabIconDefault, marginTop: -6 }}>
-                  These devices skip the 2FA challenge for 30 days. Revoke any you don't recognise.
+                  These devices skip the 2FA challenge for {labTtlDays} day{labTtlDays === 1 ? "" : "s"}. Revoke any you don't recognise.
                 </Text>
                 {trustedDevices.map((d) => (
                   <View

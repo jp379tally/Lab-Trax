@@ -5,7 +5,7 @@ import { z } from "zod";
 import { generateSecret, generateURI, verifySync } from "otplib";
 import QRCode from "qrcode";
 import { db } from "@workspace/db";
-import { users, userSessions, trustedDevices } from "@workspace/db";
+import { users, userSessions, trustedDevices, organizationMemberships, organizations } from "@workspace/db";
 import { requireAuth } from "../middlewares/auth";
 import { asyncHandler } from "../middlewares/async-handler";
 import { HttpError, ok } from "../lib/http";
@@ -406,10 +406,32 @@ router.post(
     // Optionally trust this device for future logins.
     let deviceTrustToken: string | undefined;
     if (trustDevice) {
+      // Resolve the effective TTL: use the smallest non-null per-lab setting
+      // across all the user's active lab memberships, falling back to the
+      // global env default when no per-lab override is configured.
+      const memberships = await db
+        .select({ ttlDays: organizations.trustedDeviceTtlDays })
+        .from(organizationMemberships)
+        .innerJoin(organizations, eq(organizationMemberships.labId, organizations.id))
+        .where(
+          and(
+            eq(organizationMemberships.userId, userId),
+            eq(organizationMemberships.status, "active"),
+            eq(organizations.type, "lab")
+          )
+        );
+
+      let effectiveTtlDays = TRUSTED_DEVICE_TTL_DAYS;
+      for (const m of memberships) {
+        if (m.ttlDays !== null && m.ttlDays !== undefined) {
+          effectiveTtlDays = Math.min(effectiveTtlDays, m.ttlDays);
+        }
+      }
+
       const plainToken = randomToken(32);
       const tokenHash = sha256(plainToken);
       const expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + TRUSTED_DEVICE_TTL_DAYS);
+      expiresAt.setDate(expiresAt.getDate() + effectiveTtlDays);
 
       await db.insert(trustedDevices).values({
         userId,
@@ -428,7 +450,7 @@ router.post(
         action: "trusted_device_added",
         entityType: "trusted_device",
         entityId: undefined,
-        metadataJson: { deviceName: deviceName ?? null, ttlDays: TRUSTED_DEVICE_TTL_DAYS },
+        metadataJson: { deviceName: deviceName ?? null, ttlDays: effectiveTtlDays },
       });
     }
 
