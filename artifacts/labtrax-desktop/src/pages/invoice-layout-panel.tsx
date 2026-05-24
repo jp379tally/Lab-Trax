@@ -10,6 +10,7 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronUp,
+  Copy,
   Eye,
   EyeOff,
   FileText,
@@ -368,6 +369,29 @@ export function InvoiceLayoutPanel() {
     onSuccess: (presetId) => {
       void qc.invalidateQueries({ queryKey: ["invoiceTemplatePresets", orgId] });
       if (activePresetId === presetId) setActivePresetId(null);
+    },
+  });
+
+  const duplicatePresetMutation = useMutation({
+    mutationFn: async (preset: TemplatePreset) => {
+      const res = await apiFetch<{ data: { preset: TemplatePreset } }>(
+        `/organizations/${orgId}/invoice-template/presets`,
+        {
+          method: "POST",
+          body: JSON.stringify({ name: `${preset.name} (copy)`, template: preset.template }),
+        },
+      );
+      return (res as any).data?.preset as TemplatePreset | undefined;
+    },
+    onSuccess: (preset) => {
+      void qc.invalidateQueries({ queryKey: ["invoiceTemplatePresets", orgId] });
+      if (preset?.id) {
+        setActivePresetId(preset.id);
+        setDraft(coerceInvoiceTemplate(preset.template as any));
+        setDirty(false);
+        setSelected(null);
+        setEditingDefaultId(null);
+      }
     },
   });
 
@@ -1155,6 +1179,19 @@ export function InvoiceLayoutPanel() {
                               className="p-0.5 rounded text-muted-foreground hover:bg-secondary"
                             >
                               <Pencil size={10} />
+                            </button>
+                            <button
+                              type="button"
+                              title="Duplicate preset"
+                              disabled={duplicatePresetMutation.isPending}
+                              onClick={() => duplicatePresetMutation.mutate(p)}
+                              className="p-0.5 rounded text-muted-foreground hover:bg-secondary disabled:opacity-50"
+                            >
+                              {duplicatePresetMutation.isPending && duplicatePresetMutation.variables?.id === p.id ? (
+                                <Loader2 size={10} className="animate-spin" />
+                              ) : (
+                                <Copy size={10} />
+                              )}
                             </button>
                             <button
                               type="button"
