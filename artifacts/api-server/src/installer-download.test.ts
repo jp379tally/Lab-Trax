@@ -10,6 +10,7 @@
  */
 import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import { Readable } from "node:stream";
+import http from "node:http";
 import type { Server } from "node:http";
 import request from "supertest";
 
@@ -360,6 +361,179 @@ describe("GET /downloads/LabTrax-Windows-Portable.zip", () => {
     // HEAD responses have no body — supertest gives an empty object
     expect(Object.keys(res.body as object)).toHaveLength(0);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Stream-retry tests
+//
+// These tests exercise the transparent single-retry path in serveInstaller
+// (app.ts ~line 179-196): when GCS drops the connection mid-transfer the
+// server opens a new range stream from the last confirmed byte and continues
+// piping to the client without changing the response status.
+// ---------------------------------------------------------------------------
+
+describe("GET /downloads/LabTrax-Windows-Portable.zip — stream retry", () => {
+  let server: Server;
+
+  beforeAll(() => {
+    vi.mocked(getDesktopInstallerHandle).mockResolvedValue({ ...FAKE_HANDLE });
+    server = app.listen(0);
+  });
+
+  afterAll(() => {
+    server.close();
+  });
+
+  beforeEach(() => {
+    // Each retry test installs its own per-call mocks via mockImplementationOnce.
+    // Reset first so leftover implementations from previous tests don't bleed in.
+    vi.mocked(openDesktopInstallerStream).mockReset();
+  });
+
+  it("completes with the correct full byte count when the first stream errors mid-transfer and the retry succeeds", async () => {
+    // The first stream delivers the first half of FAKE_CONTENT then errors.
+    // The retry should be opened from that offset and deliver the remainder.
+    const splitAt = 32; // bytes 0-31 from first stream, 32-63 from retry
+    const streamError = new Error("GCS upstream dropped connection");
+
+    vi.mocked(openDesktopInstallerStream)
+      // First call — partial data then broken stream
+      .mockImplementationOnce(async () => {
+        const s = new Readable({ read() {} });
+        // Schedule the push+destroy so they fire after the stream is piped to
+        // res (pipe is synchronous; nextTick fires in the following turn).
+        process.nextTick(() => {
+          s.push(FAKE_CONTENT.slice(0, splitAt));
+          s.destroy(streamError);
+        });
+        return {
+          size: FAKE_CONTENT.length,
+          stream: s,
+          contentType: "application/zip",
+          fileName: "LabTrax-Windows-Portable.zip",
+        };
+      })
+      // Second call (retry from offset 32) — serves the remaining bytes
+      .mockImplementationOnce(async (_kind, range?: { start?: number; end?: number }) => {
+        const start = range?.start ?? 0;
+        const end = range?.end ?? FAKE_CONTENT.length - 1;
+        return {
+          size: FAKE_CONTENT.length,
+          stream: makeStream(FAKE_CONTENT.slice(start, end + 1)),
+          contentType: "application/zip",
+          fileName: "LabTrax-Windows-Portable.zip",
+        };
+      });
+
+    const res = await request(server)
+      .get("/downloads/LabTrax-Windows-Portable.zip")
+      .buffer(true)
+      .parse((res, cb) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (d: Buffer) => chunks.push(d));
+        res.on("end", () => cb(null, Buffer.concat(chunks)));
+      });
+
+    // Response headers were sent before the stream started, so status is 200.
+    expect(res.status).toBe(200);
+
+    // The retry path opened a second stream — verify both calls happened.
+    expect(vi.mocked(openDesktopInstallerStream)).toHaveBeenCalledTimes(2);
+
+    // The second call must resume from exactly where the first stream left off.
+    const retryRange = vi.mocked(openDesktopInstallerStream).mock.calls[1][1];
+    expect(retryRange).toMatchObject({ start: splitAt });
+
+    // The client received every byte of FAKE_CONTENT despite the mid-stream error.
+    const body = res.body as Buffer;
+    expect(body.length).toBe(FAKE_CONTENT.length);
+    expect(body).toEqual(FAKE_CONTENT);
+  });
+
+  it("tears down the response socket when both the original stream and the retry stream error", async () => {
+    // First stream delivers a few bytes then errors.  The retry mock throws at
+    // the open level (simulating a GCS open failure) — this hits the catch
+    // block in the error handler and falls through to res.destroy(), which
+    // tears down the socket.  Using a throw rather than a mid-stream error
+    // avoids nextTick/microtask ordering hazards while still exercising the
+    // same res.destroy() code path.  We use raw http.get so the socket close
+    // is visible as a connection error instead of being silently absorbed by
+    // supertest's response buffer.
+    const splitAt = 10;
+    const streamError = new Error("GCS upstream dropped connection");
+
+    vi.mocked(openDesktopInstallerStream)
+      // First call — partial data then error
+      .mockImplementationOnce(async () => {
+        const s = new Readable({ read() {} });
+        process.nextTick(() => {
+          s.push(FAKE_CONTENT.slice(0, splitAt));
+          s.destroy(streamError);
+        });
+        return {
+          size: FAKE_CONTENT.length,
+          stream: s,
+          contentType: "application/zip",
+          fileName: "LabTrax-Windows-Portable.zip",
+        };
+      })
+      // Second call (retry) — throws at the open level, hitting the catch
+      // block in attachStreamHandlers which falls through to res.destroy(err).
+      .mockImplementationOnce(async () => {
+        throw new Error("GCS retry open also failed");
+      });
+
+    const port = (server.address() as { port: number }).port;
+
+    const { receivedBytes, hadConnectionError } = await new Promise<{
+      receivedBytes: number;
+      hadConnectionError: boolean;
+    }>((resolve) => {
+      let bytes = 0;
+      let settled = false;
+      const settle = (hadConnectionError: boolean) => {
+        if (!settled) {
+          settled = true;
+          resolve({ receivedBytes: bytes, hadConnectionError });
+        }
+      };
+
+      const req = http.get(
+        {
+          hostname: "127.0.0.1",
+          port,
+          path: "/downloads/LabTrax-Windows-Portable.zip",
+        },
+        (res) => {
+          res.on("data", (chunk: Buffer) => {
+            bytes += chunk.length;
+          });
+          res.on("end", () => settle(false));
+          res.on("error", () => settle(true));
+        },
+      );
+      req.on("error", () => settle(true));
+      // Safety net — should not be reached if res.destroy() works correctly.
+      req.setTimeout(4000, () => {
+        req.destroy();
+        settle(false);
+      });
+    });
+
+    // Both the initial stream and the retry open were attempted.
+    expect(vi.mocked(openDesktopInstallerStream)).toHaveBeenCalledTimes(2);
+
+    // The retry was requested starting from the byte the first stream left off.
+    const retryRange = vi.mocked(openDesktopInstallerStream).mock.calls[1][1];
+    expect(retryRange).toMatchObject({ start: splitAt });
+
+    // The server destroyed the socket — the client saw a connection error, not
+    // a clean stream end that would silently hide the truncation.
+    expect(hadConnectionError).toBe(true);
+
+    // Only the partial bytes from the first stream were delivered.
+    expect(receivedBytes).toBeLessThan(FAKE_CONTENT.length);
+  }, 8000);
 });
 
 // ---------------------------------------------------------------------------
