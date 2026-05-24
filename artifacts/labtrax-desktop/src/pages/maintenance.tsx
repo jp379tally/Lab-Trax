@@ -217,9 +217,9 @@ export default function MaintenancePage() {
         <Info size={15} className="flex-shrink-0 mt-0.5" />
         <p>
           <strong className="text-foreground font-medium">What are orphaned files?</strong>{" "}
-          Orphaned files are uploaded images and attachments that are no longer linked to any case.
-          They can build up over time when cases are deleted or attachments are replaced.
-          Cleanup moves them to a safe trash folder — they are <em>not</em> permanently deleted and can be recovered if needed.
+          Orphaned files are leftover files from interrupted or failed uploads — the file reached the server but the upload didn't complete, so no case record points to it.
+          Cases and their attachments are kept forever and are never flagged as orphaned.
+          Cleanup moves these leftover files to a safe trash folder — they are <em>not</em> permanently deleted and can be recovered if needed.
         </p>
       </div>
 
