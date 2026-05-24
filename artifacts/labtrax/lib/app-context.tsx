@@ -146,6 +146,8 @@ interface AppContextValue {
   hardRefresh: () => Promise<void>;
   hydrateInvoiceFromServer: (invoiceId: string) => Promise<void>;
   updateWorkStatus: (status: "available" | "break" | "out_of_office") => Promise<{ success: boolean; error?: string }>;
+  invoiceTemplate: { customTexts: any[]; defaultTextBlocks: any[] } | null;
+  fetchInvoiceTemplate: () => Promise<void>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -283,6 +285,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [customStationLabels, setCustomStationLabels] = useState<Record<string, string>>({});
   const [deletedClientInvoices, setDeletedClientInvoices] = useState<DeletedClientInvoice[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [invoiceTemplate, setInvoiceTemplate] = useState<{ customTexts: any[]; defaultTextBlocks: any[] } | null>(null);
+  const invoiceTemplateFetchedAtRef = useRef<number>(0);
+  const INVOICE_TEMPLATE_TTL_MS = 10 * 60 * 1000;
 
   const currentUserProfile = useMemo(() => {
     if (!currentUser) return null;
@@ -1515,6 +1520,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
       refreshUsers(),
       refreshInvoicesFromServer(),
     ]);
+  }
+
+  async function fetchInvoiceTemplate(): Promise<void> {
+    const orgId = allLabOrganizationIds[0];
+    if (!orgId) return;
+    const now = Date.now();
+    if (invoiceTemplate && now - invoiceTemplateFetchedAtRef.current < INVOICE_TEMPLATE_TTL_MS) {
+      return;
+    }
+    try {
+      const res = await resilientFetch(`/api/organizations/${encodeURIComponent(orgId)}/invoice-template`);
+      const payload = await res.json();
+      const template = (payload as any)?.data?.template;
+      if (template && Array.isArray(template.customTexts) && Array.isArray(template.defaultTextBlocks)) {
+        setInvoiceTemplate({ customTexts: template.customTexts, defaultTextBlocks: template.defaultTextBlocks });
+        invoiceTemplateFetchedAtRef.current = Date.now();
+      }
+    } catch {}
   }
 
   async function updateWorkStatus(
@@ -3574,8 +3597,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       hydrateInvoiceFromServer,
       hardRefresh,
       updateWorkStatus,
+      invoiceTemplate,
+      fetchInvoiceTemplate,
     }),
-    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, pendingInvoiceEditId, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers, allLabOrganizationIds, activeLabAffiliationKey, activeLabAffiliationName, allLabAffiliationKeysList],
+    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, pendingInvoiceEditId, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers, allLabOrganizationIds, activeLabAffiliationKey, activeLabAffiliationName, allLabAffiliationKeysList, invoiceTemplate],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

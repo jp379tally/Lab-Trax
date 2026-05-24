@@ -28,7 +28,7 @@ import { deriveDisplayInitials } from "@/lib/display-initials";
 import { getCaseInvoice as getCaseInvoiceFromLib } from "@/lib/case-invoice";
 
 export default function CasesScreen() {
-  const { cases, role, adminUnlocked, findCaseByBarcode, updateCaseStatus, customStationLabels, invoices, updateInvoice, addInvoice, updateCase, addCaseNote, clients, pricingTiers, refreshCases, fullRefreshCases, setPendingInvoiceEditId, hydrateInvoiceFromServer, allLabOrganizationIds } = useApp();
+  const { cases, role, adminUnlocked, findCaseByBarcode, updateCaseStatus, customStationLabels, invoices, updateInvoice, addInvoice, updateCase, addCaseNote, clients, pricingTiers, refreshCases, fullRefreshCases, setPendingInvoiceEditId, hydrateInvoiceFromServer, allLabOrganizationIds, invoiceTemplate, fetchInvoiceTemplate } = useApp();
   const [refreshing, setRefreshing] = useState(false);
   const { userType, currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
@@ -47,7 +47,6 @@ export default function CasesScreen() {
   const locateCase = locateCaseId ? cases.find(c => c.id === locateCaseId) : null;
   const [permission, requestPermission] = useCameraPermissions();
   const [invoiceCase, setInvoiceCase] = useState<LabCase | null>(null);
-  const [invoiceTemplateParsed, setInvoiceTemplateParsed] = useState<{ customTexts: any[]; defaultTextBlocks: any[] } | null>(null);
   useEffect(() => {
     if (invoiceCase?.invoiceId) {
       void hydrateInvoiceFromServer(invoiceCase.invoiceId);
@@ -55,18 +54,8 @@ export default function CasesScreen() {
   }, [invoiceCase?.invoiceId, hydrateInvoiceFromServer]);
   useEffect(() => {
     if (!invoiceCase) return;
-    const orgId = allLabOrganizationIds[0];
-    if (!orgId) return;
-    resilientFetch(`/api/organizations/${encodeURIComponent(orgId)}/invoice-template`)
-      .then((res) => res.json())
-      .then((payload: unknown) => {
-        const template = (payload as any)?.data?.template;
-        if (template && Array.isArray(template.customTexts) && Array.isArray(template.defaultTextBlocks)) {
-          setInvoiceTemplateParsed({ customTexts: template.customTexts, defaultTextBlocks: template.defaultTextBlocks });
-        }
-      })
-      .catch(() => {});
-  }, [invoiceCase?.id, allLabOrganizationIds]);
+    void fetchInvoiceTemplate();
+  }, [invoiceCase?.id]);
   const isAdmin = role === "admin";
   const currentRegisteredUser = registeredUsers.find(
     (user) => user.username?.toLowerCase() === (currentUser || "").toLowerCase()
@@ -574,7 +563,7 @@ export default function CasesScreen() {
           invoice={getCaseInvoice(invoiceCase)}
           editable={isAdmin}
           companyLogo={companyLogo}
-          invoiceTemplate={invoiceTemplateParsed}
+          invoiceTemplate={invoiceTemplate}
           doctorPricing={(() => {
             const stripDr = (n: string) => n.trim().toLowerCase().replace(/^dr\.?\s*/i, "");
             const drName = stripDr(invoiceCase.doctorName || "");
