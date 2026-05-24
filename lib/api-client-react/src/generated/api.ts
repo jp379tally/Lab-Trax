@@ -55,6 +55,8 @@ import type {
   OpenInvoiceListResult,
   ReceivePaymentsInput,
   ReceivePaymentsResult,
+  RegenerateBackupCodesInput,
+  RegenerateBackupCodesResult,
   RestoreBackupBody,
   RestoreStartResult,
   RestoreStatusResult,
@@ -414,6 +416,96 @@ export const useDisableTwoFactor = <
   TContext
 > => {
   return useMutation(getDisableTwoFactorMutationOptions(options));
+};
+
+/**
+ * @summary Regenerate backup codes (requires current TOTP code)
+ */
+export const getRegenerateBackupCodesUrl = () => {
+  return `/api/auth/2fa/backup-codes`;
+};
+
+export const regenerateBackupCodes = async (
+  regenerateBackupCodesInput: RegenerateBackupCodesInput,
+  options?: RequestInit,
+): Promise<RegenerateBackupCodesResult> => {
+  return customFetch<RegenerateBackupCodesResult>(
+    getRegenerateBackupCodesUrl(),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(regenerateBackupCodesInput),
+    },
+  );
+};
+
+export const getRegenerateBackupCodesMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof regenerateBackupCodes>>,
+    TError,
+    { data: BodyType<RegenerateBackupCodesInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof regenerateBackupCodes>>,
+  TError,
+  { data: BodyType<RegenerateBackupCodesInput> },
+  TContext
+> => {
+  const mutationKey = ["regenerateBackupCodes"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof regenerateBackupCodes>>,
+    { data: BodyType<RegenerateBackupCodesInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return regenerateBackupCodes(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type RegenerateBackupCodesMutationResult = NonNullable<
+  Awaited<ReturnType<typeof regenerateBackupCodes>>
+>;
+export type RegenerateBackupCodesMutationBody =
+  BodyType<RegenerateBackupCodesInput>;
+export type RegenerateBackupCodesMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Regenerate backup codes (requires current TOTP code)
+ */
+export const useRegenerateBackupCodes = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof regenerateBackupCodes>>,
+    TError,
+    { data: BodyType<RegenerateBackupCodesInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof regenerateBackupCodes>>,
+  TError,
+  { data: BodyType<RegenerateBackupCodesInput> },
+  TContext
+> => {
+  return useMutation(getRegenerateBackupCodesMutationOptions(options));
 };
 
 /**

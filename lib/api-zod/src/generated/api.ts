@@ -67,6 +67,22 @@ export const DisableTwoFactorResponse = zod.object({
 });
 
 /**
+ * @summary Regenerate backup codes (requires current TOTP code)
+ */
+export const RegenerateBackupCodesBody = zod.object({
+  code: zod.string(),
+});
+
+export const RegenerateBackupCodesResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      backupCodes: zod.array(zod.string()),
+    })
+    .optional(),
+});
+
+/**
  * @summary Complete login by verifying a TOTP or backup code
  */
 export const TwoFactorChallengeBody = zod.object({

@@ -645,6 +645,19 @@ export interface UpdateVendorInput {
   isActive?: boolean;
 }
 
+export interface RegenerateBackupCodesInput {
+  code: string;
+}
+
+export type RegenerateBackupCodesResultData = {
+  backupCodes: string[];
+};
+
+export interface RegenerateBackupCodesResult {
+  ok?: boolean;
+  data?: RegenerateBackupCodesResultData;
+}
+
 export type TwoFactorSetupResultData = {
   otpauthUrl: string;
   qrCodeDataUrl: string;

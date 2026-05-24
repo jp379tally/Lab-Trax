@@ -691,7 +691,7 @@ function PasswordPanel() {
 }
 
 function TwoFactorPanel() {
-  type Phase = "status" | "setup" | "confirm" | "backup-codes" | "disable";
+  type Phase = "status" | "setup" | "confirm" | "backup-codes" | "disable" | "regen-confirm" | "regen-codes";
   const [phase, setPhase] = useState<Phase>("status");
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
@@ -702,6 +702,7 @@ function TwoFactorPanel() {
   const [verifyCode, setVerifyCode] = useState("");
   const [backupCodes, setBackupCodes] = useState<string[]>([]);
   const [disableCode, setDisableCode] = useState("");
+  const [regenCode, setRegenCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -755,6 +756,22 @@ function TwoFactorPanel() {
     finally { setBusy(false); }
   }
 
+  async function regenerateBackupCodes() {
+    if (!regenCode.trim()) { setError("Please enter the 6-digit code from your authenticator app."); return; }
+    setError(null);
+    setBusy(true);
+    try {
+      const r = await apiFetch<{ data: { backupCodes: string[] } }>("/auth/2fa/backup-codes", {
+        method: "POST",
+        body: JSON.stringify({ code: regenCode.trim() }),
+      });
+      setBackupCodes(r.data.backupCodes);
+      setRegenCode("");
+      setPhase("regen-codes");
+    } catch (e: any) { setError(e.message || "Could not regenerate backup codes."); }
+    finally { setBusy(false); }
+  }
+
   function copyBackupCodes() {
     navigator.clipboard.writeText(backupCodes.join("\n"));
     setCopied(true);
@@ -781,10 +798,10 @@ function TwoFactorPanel() {
     );
   }
 
-  if (phase === "backup-codes") {
+  function BackupCodesDisplay({ title, subtitle }: { title: string; subtitle: string }) {
     return (
-      <PanelShell title="Two-factor authentication" subtitle="2FA is now enabled. Save these backup codes in a safe place.">
-        <Alert tone="success">Two-factor authentication is now active.</Alert>
+      <PanelShell title="Two-factor authentication" subtitle={subtitle}>
+        <Alert tone="success">{title}</Alert>
         <div className="rounded-lg border border-border bg-secondary/20 p-4">
           <div className="text-sm font-semibold mb-2">Backup codes</div>
           <p className="text-xs text-muted-foreground mb-3">
@@ -810,6 +827,47 @@ function TwoFactorPanel() {
           <button type="button" onClick={() => setPhase("status")}
             className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90">
             Done
+          </button>
+        </div>
+      </PanelShell>
+    );
+  }
+
+  if (phase === "backup-codes") {
+    return <BackupCodesDisplay title="Two-factor authentication is now active." subtitle="2FA is now enabled. Save these backup codes in a safe place." />;
+  }
+
+  if (phase === "regen-codes") {
+    return <BackupCodesDisplay title="New backup codes generated. Your old codes are no longer valid." subtitle="Save these new backup codes in a safe place." />;
+  }
+
+  if (phase === "regen-confirm") {
+    return (
+      <PanelShell title="Regenerate backup codes" subtitle="Confirm with your current authenticator code to get a new set of backup codes. Your existing codes will be invalidated.">
+        {error && <Alert tone="danger">{error}</Alert>}
+        <div className="max-w-xs">
+          <Field label="Authenticator code">
+            <input
+              type="text"
+              inputMode="numeric"
+              maxLength={6}
+              placeholder="000000"
+              value={regenCode}
+              onChange={(e) => { setRegenCode(e.target.value.replace(/\D/g, "")); setError(null); }}
+              className={`${inputCls} text-center tracking-widest text-lg font-mono`}
+              autoComplete="one-time-code"
+              autoFocus
+            />
+          </Field>
+        </div>
+        <div className="flex gap-2 justify-end">
+          <button type="button" onClick={() => { setPhase("status"); setError(null); setRegenCode(""); }}
+            className="h-9 px-4 rounded-md border border-input bg-background text-sm font-semibold hover:bg-secondary">
+            Cancel
+          </button>
+          <button type="button" onClick={regenerateBackupCodes} disabled={busy || regenCode.length !== 6}
+            className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60">
+            {busy ? "Generating…" : "Generate new codes"}
           </button>
         </div>
       </PanelShell>
@@ -919,6 +977,20 @@ function TwoFactorPanel() {
           )}
         </div>
       </div>
+      {enabled && (
+        <div className="rounded-lg border border-border bg-secondary/20 p-4 flex items-center justify-between gap-4">
+          <div>
+            <div className="text-sm font-semibold">Backup codes</div>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Generate a fresh set of backup codes. Your existing codes will be permanently invalidated.
+            </p>
+          </div>
+          <button type="button" onClick={() => { setRegenCode(""); setError(null); setPhase("regen-confirm"); }}
+            className="shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-input bg-background text-xs font-semibold hover:bg-secondary whitespace-nowrap">
+            <RefreshCcw size={12} /> Regenerate
+          </button>
+        </div>
+      )}
     </PanelShell>
   );
 }

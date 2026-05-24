@@ -163,6 +163,49 @@ router.delete(
   })
 );
 
+router.post(
+  "/backup-codes",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId as string;
+    const { code } = z.object({ code: z.string().min(1) }).parse(req.body);
+
+    const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
+    if (!user) throw new HttpError(404, "User not found.");
+    if (!user.twoFactorEnabled || !user.twoFactorSecret) {
+      throw new HttpError(400, "Two-factor authentication is not enabled.");
+    }
+
+    const trimmedCode = code.replace(/\s/g, "");
+    const secret = decryptTotpSecret(user.twoFactorSecret);
+    const isValid = verifySync({ token: trimmedCode, secret }).valid;
+    if (!isValid) {
+      throw new HttpError(422, "Invalid verification code. Please check your authenticator app and try again.");
+    }
+
+    const plainCodes: string[] = [];
+    const hashedCodes: string[] = [];
+    for (let i = 0; i < BACKUP_CODE_COUNT; i++) {
+      const plain = generateBackupCode();
+      const hashed = await hashPassword(plain);
+      plainCodes.push(plain);
+      hashedCodes.push(hashed);
+    }
+
+    await db.update(users).set({ twoFactorBackupCodes: hashedCodes }).where(eq(users.id, userId));
+
+    await writeAuditLog({
+      req,
+      userId,
+      action: "2fa_backup_codes_regenerated",
+      entityType: "user",
+      entityId: userId,
+    });
+
+    return ok(res, { backupCodes: plainCodes });
+  })
+);
+
 router.get(
   "/status",
   requireAuth,

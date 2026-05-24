@@ -91,6 +91,24 @@ paths:
                     type: object
                     properties:
                       disabled: { type: boolean }
+  /auth/2fa/backup-codes:
+    post:
+      operationId: regenerateBackupCodes
+      tags: [users]
+      summary: Regenerate backup codes (requires current TOTP code)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegenerateBackupCodesInput"
+      responses:
+        "200":
+          description: New backup codes generated; old codes invalidated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegenerateBackupCodesResult"
   /auth/2fa/challenge:
     post:
       operationId: twoFactorChallenge
@@ -1763,6 +1781,22 @@ components:
         vendorType:
           $ref: "#/components/schemas/VendorType"
         isActive: { type: boolean }
+    RegenerateBackupCodesInput:
+      type: object
+      required: [code]
+      properties:
+        code: { type: string }
+    RegenerateBackupCodesResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          required: [backupCodes]
+          properties:
+            backupCodes:
+              type: array
+              items: { type: string }
     TwoFactorSetupResult:
       type: object
       properties:
