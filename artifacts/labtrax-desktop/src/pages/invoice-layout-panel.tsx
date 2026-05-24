@@ -285,6 +285,10 @@ export function InvoiceLayoutPanel() {
 
   // Default text block editing state
   const [editingDefaultId, setEditingDefaultId] = useState<string | null>(null);
+  // Default text block preview hover state
+  const [hoveredDefaultId, setHoveredDefaultId] = useState<string | null>(null);
+  // Explicitly pinned preview (toggled open, survives mouse-leave)
+  const [pinnedPreviewId, setPinnedPreviewId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!query.data) return;
@@ -996,6 +1000,8 @@ export function InvoiceLayoutPanel() {
                     <li
                       key={def.id}
                       className="rounded border border-border bg-background overflow-hidden"
+                      onMouseEnter={() => setHoveredDefaultId(def.id)}
+                      onMouseLeave={() => setHoveredDefaultId(null)}
                     >
                       {/* Header row */}
                       <div className="flex items-center gap-1.5 px-2 py-1.5">
@@ -1008,11 +1014,11 @@ export function InvoiceLayoutPanel() {
                         >
                           {enabled ? <Eye size={13} /> : <EyeOff size={13} />}
                         </button>
-                        {/* Text preview */}
+                        {/* Text preview (single-line summary) */}
                         <span className="flex-1 text-xs truncate text-muted-foreground min-w-0">
                           {def.text || <span className="italic">Empty snippet</span>}
                         </span>
-                        {/* Reorder up */}
+                        {/* Move Up button */}
                         <button
                           type="button"
                           title="Move up"
@@ -1022,7 +1028,7 @@ export function InvoiceLayoutPanel() {
                         >
                           <ChevronUp size={13} />
                         </button>
-                        {/* Reorder down */}
+                        {/* Move Down button */}
                         <button
                           type="button"
                           title="Move down"
@@ -1032,11 +1038,30 @@ export function InvoiceLayoutPanel() {
                         >
                           <ChevronDown size={13} />
                         </button>
+                        {/* Preview pin toggle */}
+                        <button
+                          type="button"
+                          title={pinnedPreviewId === def.id ? "Collapse preview" : "Preview formatting"}
+                          onClick={() => setPinnedPreviewId(pinnedPreviewId === def.id ? null : def.id)}
+                          className={`p-1 rounded shrink-0 ${pinnedPreviewId === def.id ? "bg-primary/10 text-primary" : "hover:bg-secondary text-muted-foreground"}`}
+                        >
+                          <ChevronRight
+                            size={13}
+                            style={{
+                              transform: pinnedPreviewId === def.id ? "rotate(90deg)" : undefined,
+                              transition: "transform 150ms",
+                            }}
+                          />
+                        </button>
                         {/* Edit toggle */}
                         <button
                           type="button"
                           title={isEditing ? "Collapse" : "Edit snippet"}
-                          onClick={() => setEditingDefaultId(isEditing ? null : def.id)}
+                          onClick={() => {
+                            const opening = editingDefaultId !== def.id;
+                            setEditingDefaultId(opening ? def.id : null);
+                            if (opening) setPinnedPreviewId(null);
+                          }}
                           className={`p-1 rounded shrink-0 ${isEditing ? "bg-primary/10 text-primary" : "hover:bg-secondary text-muted-foreground"}`}
                         >
                           {isEditing ? <ChevronDown size={13} /> : <Pencil size={13} />}
@@ -1054,6 +1079,33 @@ export function InvoiceLayoutPanel() {
                           <Trash2 size={13} />
                         </button>
                       </div>
+
+                      {/* Styled live preview — shown on hover or when pinned, hidden when editor is open */}
+                      {!isEditing && (hoveredDefaultId === def.id || pinnedPreviewId === def.id) ? (
+                        <div className="border-t border-border px-3 py-2 bg-muted/30">
+                          {def.text.trim() ? (
+                            <div
+                              style={{
+                                fontSize: def.fontSize,
+                                fontWeight: def.bold ? "bold" : "normal",
+                                textAlign: def.align as TextAlign,
+                                lineHeight: 1.4,
+                                whiteSpace: "pre-wrap",
+                                wordBreak: "break-word",
+                                color: "var(--foreground)",
+                                userSelect: "none",
+                              }}
+                            >
+                              {def.text}
+                            </div>
+                          ) : (
+                            <p className="text-xs text-muted-foreground italic">No text yet.</p>
+                          )}
+                          <p className="mt-1.5 text-[10px] text-muted-foreground/60 leading-none">
+                            {def.fontSize} pt · {def.align}{def.bold ? " · bold" : ""}
+                          </p>
+                        </div>
+                      ) : null}
 
                       {/* Inline editor (expanded) */}
                       {isEditing && editingDefault ? (
