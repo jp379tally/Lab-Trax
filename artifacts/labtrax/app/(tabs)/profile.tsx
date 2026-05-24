@@ -330,6 +330,21 @@ export default function ProfileScreen() {
           <View style={styles.menuDivider} />
           <Pressable
             style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+            onPress={() => router.push("/payees" as any)}
+            testID="payees-button"
+          >
+            <View style={[styles.menuIcon, { backgroundColor: "#E0F2FE" }]}>
+              <Ionicons name="receipt-outline" size={18} color="#0284C7" />
+            </View>
+            <View style={styles.menuInfo}>
+              <Text style={styles.menuTitle}>Payees</Text>
+              <Text style={styles.menuSub}>Browse vendors, employees, and items</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={Colors.light.textSecondary} />
+          </Pressable>
+          <View style={styles.menuDivider} />
+          <Pressable
+            style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
             onPress={() => router.push("/link-labs" as any)}
             testID="link-labs-button"
           >
