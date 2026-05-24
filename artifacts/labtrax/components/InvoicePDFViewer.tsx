@@ -39,6 +39,28 @@ interface DoctorPricingItem {
   price: number;
 }
 
+export interface InvoiceDefaultTextBlock {
+  id: string;
+  text: string;
+  fontSize: number;
+  align: "left" | "center" | "right";
+  bold: boolean;
+}
+
+export interface InvoiceCustomText {
+  id: string;
+  text: string;
+  fontSize: number;
+  align: "left" | "center" | "right";
+  bold: boolean;
+  sourceId?: string;
+}
+
+export interface InvoiceTemplateShape {
+  customTexts: InvoiceCustomText[];
+  defaultTextBlocks: InvoiceDefaultTextBlock[];
+}
+
 interface InvoicePDFViewerProps {
   visible: boolean;
   onClose: () => void;
@@ -50,6 +72,7 @@ interface InvoicePDFViewerProps {
   labName?: string;
   labAddress?: string;
   labPhone?: string;
+  invoiceTemplate?: InvoiceTemplateShape | null;
 }
 
 function formatDate(ts: number) {
@@ -65,7 +88,7 @@ function formatCurrency(amount: number) {
   return "$" + amount.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
-export default function InvoicePDFViewer({ visible, onClose, invoice, editable = false, onSave, doctorPricing, companyLogo, labName, labAddress, labPhone }: InvoicePDFViewerProps) {
+export default function InvoicePDFViewer({ visible, onClose, invoice, editable = false, onSave, doctorPricing, companyLogo, labName, labAddress, labPhone, invoiceTemplate }: InvoicePDFViewerProps) {
   const insets = useSafeAreaInsets();
   const [editMode, setEditMode] = useState(false);
   const [editLineItems, setEditLineItems] = useState<InvoiceLineItem[]>([]);
@@ -115,6 +138,15 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
   }, [doctorPricing]);
 
   if (!invoice) return null;
+
+  const enabledSourceIds = new Set(
+    (invoiceTemplate?.customTexts ?? [])
+      .filter((ct) => ct.sourceId)
+      .map((ct) => ct.sourceId as string),
+  );
+  const enabledTextBlocks = (invoiceTemplate?.defaultTextBlocks ?? []).filter(
+    (dtb) => enabledSourceIds.has(dtb.id) && dtb.text.trim(),
+  );
 
   const displayItems = editMode ? editLineItems : invoice.lineItems;
   const subtotal = displayItems.reduce((sum, li) => sum + li.amount, 0);
@@ -364,6 +396,11 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
 
   ${invoice.caseNotes ? `<div class="notes"><strong>Notes:</strong>\n${esc(invoice.caseNotes)}</div>` : ""}
   ${invoice.notes ? `<div class="notes"><strong>Invoice Notes:</strong>\n${esc(invoice.notes)}</div>` : ""}
+  ${enabledTextBlocks.length > 0 ? `
+  <div style="margin-top:28px;padding-top:16px;border-top:1px solid #E5E7EB;display:flex;flex-wrap:wrap;gap:16px;">
+    ${enabledTextBlocks.map(tb => `
+    <div style="flex:1;min-width:220px;font-size:${tb.fontSize}px;font-weight:${tb.bold ? "700" : "400"};text-align:${tb.align};color:#1E293B;white-space:pre-wrap;">${esc(tb.text)}</div>`).join("")}
+  </div>` : ""}
 </body></html>`;
   }
 
@@ -658,6 +695,27 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                     <Text style={s.notesText}>{invoice.notes}</Text>
                   </View>
                 ) : null}
+
+                {/* Default text blocks (e.g. payment instructions set in the invoice template editor) */}
+                {enabledTextBlocks.length > 0 && (
+                  <View style={s.textBlocksSection}>
+                    <View style={s.textBlocksDivider} />
+                    {enabledTextBlocks.map((tb) => (
+                      <Text
+                        key={tb.id}
+                        style={[
+                          s.textBlockText,
+                          tb.bold && s.textBlockBold,
+                          tb.align === "center" && s.textBlockCenter,
+                          tb.align === "right" && s.textBlockRight,
+                          { fontSize: Math.max(10, Math.min(18, tb.fontSize)) },
+                        ]}
+                      >
+                        {tb.text}
+                      </Text>
+                    ))}
+                  </View>
+                )}
 
                 {/* Footer */}
                 <View style={s.footer}>
@@ -1193,6 +1251,31 @@ const s = StyleSheet.create({
     fontFamily: "Inter_400Regular",
     color: "#78350F",
     lineHeight: 18,
+  },
+  textBlocksSection: {
+    marginTop: 20,
+  },
+  textBlocksDivider: {
+    height: 1,
+    backgroundColor: "#E2E8F0",
+    marginBottom: 14,
+  },
+  textBlockText: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    color: "#1E293B",
+    lineHeight: 18,
+    marginBottom: 10,
+    whiteSpace: "pre-wrap",
+  } as any,
+  textBlockBold: {
+    fontFamily: "Inter_700Bold",
+  },
+  textBlockCenter: {
+    textAlign: "center",
+  },
+  textBlockRight: {
+    textAlign: "right",
   },
   footer: {
     marginTop: 24,

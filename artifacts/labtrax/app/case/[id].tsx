@@ -88,7 +88,7 @@ const SCAN_EXTENSIONS = new Set(["stl", "obj", "ply", "dcm", "3ds", "dae"]);
 
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addCasePhotosWithNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, addInvoice, updateCase, clients, pricingTiers, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate, assignBarcodeToCase, findCaseByBarcode, customStationLabels, addNotification, hardRefresh, hydrateInvoiceFromServer } = useApp();
+  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addCasePhotosWithNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, addInvoice, updateCase, clients, pricingTiers, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate, assignBarcodeToCase, findCaseByBarcode, customStationLabels, addNotification, hardRefresh, hydrateInvoiceFromServer, allLabOrganizationIds } = useApp();
   const { currentUser, userType, registeredUsers } = useAuth();
   const currentRegisteredUser = registeredUsers.find(
     (user) => user.username?.toLowerCase() === (currentUser || "").toLowerCase()
@@ -100,6 +100,7 @@ export default function CaseDetailScreen() {
   });
   const insets = useSafeAreaInsets();
   const [companyLogo, setCompanyLogo] = useState<string | null>(null);
+  const [invoiceTemplateParsed, setInvoiceTemplateParsed] = useState<{ customTexts: any[]; defaultTextBlocks: any[] } | null>(null);
   useEffect(() => {
     AsyncStorage.getItem("@drivesync_company_logo").then((uri) => {
       if (uri) setCompanyLogo(uri);
@@ -237,6 +238,20 @@ export default function CaseDetailScreen() {
       void hydrateInvoiceFromServer(caseItem.invoiceId);
     }
   };
+  useEffect(() => {
+    if (!showInvoiceModal) return;
+    const orgId = allLabOrganizationIds[0];
+    if (!orgId) return;
+    resilientFetch(`/api/organizations/${encodeURIComponent(orgId)}/invoice-template`)
+      .then((res) => res.json())
+      .then((payload: unknown) => {
+        const template = (payload as any)?.data?.template;
+        if (template && Array.isArray(template.customTexts) && Array.isArray(template.defaultTextBlocks)) {
+          setInvoiceTemplateParsed({ customTexts: template.customTexts, defaultTextBlocks: template.defaultTextBlocks });
+        }
+      })
+      .catch(() => {});
+  }, [showInvoiceModal, allLabOrganizationIds]);
   const [showLabSlipModal, setShowLabSlipModal] = useState(false);
   const [stlViewerState, setStlViewerState] = useState<{ url: string; fileName: string; format: ScanFormat } | null>(null);
   const [fullScreenPhoto, setFullScreenPhoto] = useState<string | null>(null);
@@ -3554,6 +3569,7 @@ export default function CaseDetailScreen() {
         invoice={caseInvoice}
         editable={isAdmin}
         companyLogo={companyLogo}
+        invoiceTemplate={invoiceTemplateParsed}
         doctorPricing={(() => {
           const stripDr = (n: string) => n.trim().toLowerCase().replace(/^dr\.?\s*/i, "");
           const drName = stripDr(caseItem.doctorName || "");
