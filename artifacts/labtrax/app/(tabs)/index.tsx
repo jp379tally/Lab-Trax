@@ -14,6 +14,7 @@ import {
   Dimensions,
   Linking,
   RefreshControl,
+  PanResponder,
 } from "react-native";
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -45,6 +46,7 @@ import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollV
 import { apiRequest, getApiUrl, getAccessToken } from "@/lib/query-client";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
+import { useColumnWidths } from "@/hooks/useColumnWidths";
 
 function formatCurrency(amount: number): string {
   return `$${amount.toFixed(2)}`;
@@ -1675,9 +1677,39 @@ type AdminView =
   | "receive-payment"
   | "backup";
 
+const INV_DETAIL_COL_DEFAULTS = [40, 80, 60, 70] as const;
+
+function ColResizeHandle({ colIdx, widthRef, onWidthChange }: {
+  colIdx: number;
+  widthRef: React.MutableRefObject<number>;
+  onWidthChange: (colIdx: number, w: number) => void;
+}) {
+  const startWidthRef = useRef(0);
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onPanResponderGrant: () => {
+        startWidthRef.current = widthRef.current;
+      },
+      onPanResponderMove: (_, gs) => {
+        onWidthChange(colIdx, startWidthRef.current + gs.dx);
+      },
+    }),
+  ).current;
+
+  return (
+    <View
+      {...panResponder.panHandlers}
+      style={{ width: 10, alignSelf: "stretch", alignItems: "center", justifyContent: "center", zIndex: 10 }}
+    >
+      <View style={{ width: 3, height: 14, backgroundColor: "#bbb", borderRadius: 2 }} />
+    </View>
+  );
+}
+
 function AdminDashboard() {
   const { cases, clients, addClient, updateClient, addCase, users, addUser, updateUser, removeUser, invoices, updateInvoice, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, addNotification, customStationLabels, updateStationLabel, removeCase, removeClient, deactivateClient, reactivateClient, deletedClientInvoices, inactiveClients, sendLabInvite, pendingInvoiceEditId, setPendingInvoiceEditId } = useApp();
-  const { currentUser, registeredUsers } = useAuth();
+  const { currentUser, currentUserId, registeredUsers } = useAuth();
   const [removeConfirmVisible, setRemoveConfirmVisible] = useState(false);
   const insets = useSafeAreaInsets();
   const [adminView, setAdminView] = useState<AdminView>("hub");
@@ -1807,6 +1839,20 @@ function AdminDashboard() {
   const labName = adminUserData?.practiceName || "My Lab";
   const labAddress = adminUserData?.practiceAddress || "";
   const labPhone = adminUserData?.practicePhone || adminUserData?.phone || "";
+
+  const { widths: invColWidths, setWidth: setInvColWidth } = useColumnWidths(
+    [...INV_DETAIL_COL_DEFAULTS],
+    currentUserId,
+  );
+  const invColWidthRef0 = useRef(invColWidths[0]);
+  const invColWidthRef1 = useRef(invColWidths[1]);
+  const invColWidthRef2 = useRef(invColWidths[2]);
+  const invColWidthRef3 = useRef(invColWidths[3]);
+  invColWidthRef0.current = invColWidths[0];
+  invColWidthRef1.current = invColWidths[1];
+  invColWidthRef2.current = invColWidths[2];
+  invColWidthRef3.current = invColWidths[3];
+  const invColWidthRefs = [invColWidthRef0, invColWidthRef1, invColWidthRef2, invColWidthRef3];
 
   const [salesPeriod, setSalesPeriod] = useState<"daily" | "mtd" | "ytd" | "custom">("mtd");
   const [salesCustomStart, setSalesCustomStart] = useState("");
@@ -3233,39 +3279,43 @@ function AdminDashboard() {
           </View>
 
           <View style={{ borderBottomWidth: 1, borderBottomColor: "#333" }}>
-            <View style={{ flexDirection: "row", backgroundColor: "#f0f0ec", borderBottomWidth: 1, borderBottomColor: "#999" }}>
-              <View style={{ width: 40, paddingVertical: 6, paddingHorizontal: 4, borderRightWidth: 1, borderRightColor: "#999", alignItems: "center" }}>
+            <View style={{ flexDirection: "row", backgroundColor: "#f0f0ec", borderBottomWidth: 1, borderBottomColor: "#999", alignItems: "center" }}>
+              <View style={{ width: invColWidths[0], paddingVertical: 6, paddingHorizontal: 4, alignItems: "center" }}>
                 <Text style={{ fontSize: 10, fontFamily: "Inter_700Bold", color: "#333" }}>Qty</Text>
               </View>
-              <View style={{ width: 80, paddingVertical: 6, paddingHorizontal: 6, borderRightWidth: 1, borderRightColor: "#999" }}>
+              <ColResizeHandle colIdx={0} widthRef={invColWidthRefs[0]} onWidthChange={setInvColWidth} />
+              <View style={{ width: invColWidths[1], paddingVertical: 6, paddingHorizontal: 6 }}>
                 <Text style={{ fontSize: 10, fontFamily: "Inter_700Bold", color: "#333" }}>Item</Text>
               </View>
-              <View style={{ flex: 1, paddingVertical: 6, paddingHorizontal: 6, borderRightWidth: 1, borderRightColor: "#999" }}>
+              <ColResizeHandle colIdx={1} widthRef={invColWidthRefs[1]} onWidthChange={setInvColWidth} />
+              <View style={{ flex: 1, paddingVertical: 6, paddingHorizontal: 6 }}>
                 <Text style={{ fontSize: 10, fontFamily: "Inter_700Bold", color: "#333" }}>Description</Text>
               </View>
-              <View style={{ width: 60, paddingVertical: 6, paddingHorizontal: 4, borderRightWidth: 1, borderRightColor: "#999", alignItems: "flex-end" }}>
+              <ColResizeHandle colIdx={2} widthRef={invColWidthRefs[2]} onWidthChange={setInvColWidth} />
+              <View style={{ width: invColWidths[2], paddingVertical: 6, paddingHorizontal: 4, alignItems: "flex-end" }}>
                 <Text style={{ fontSize: 10, fontFamily: "Inter_700Bold", color: "#333" }}>Rate</Text>
               </View>
-              <View style={{ width: 70, paddingVertical: 6, paddingHorizontal: 4, alignItems: "flex-end" }}>
+              <ColResizeHandle colIdx={3} widthRef={invColWidthRefs[3]} onWidthChange={setInvColWidth} />
+              <View style={{ width: invColWidths[3], paddingVertical: 6, paddingHorizontal: 4, alignItems: "flex-end" }}>
                 <Text style={{ fontSize: 10, fontFamily: "Inter_700Bold", color: "#333" }}>Amount</Text>
               </View>
             </View>
 
             {inv.lineItems.map((li, idx) => (
               <View key={idx} style={{ flexDirection: "row", borderBottomWidth: idx < inv.lineItems.length - 1 ? 1 : 0, borderBottomColor: "#ddd" }}>
-                <View style={{ width: 40, paddingVertical: 8, paddingHorizontal: 4, borderRightWidth: 1, borderRightColor: "#eee", alignItems: "center" }}>
+                <View style={{ width: invColWidths[0], paddingVertical: 8, paddingHorizontal: 4, borderRightWidth: 1, borderRightColor: "#eee", alignItems: "center" }}>
                   <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#333" }}>{li.qty}</Text>
                 </View>
-                <View style={{ width: 80, paddingVertical: 8, paddingHorizontal: 6, borderRightWidth: 1, borderRightColor: "#eee" }}>
+                <View style={{ width: invColWidths[1], paddingVertical: 8, paddingHorizontal: 6, borderRightWidth: 1, borderRightColor: "#eee" }}>
                   <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "#333" }}>{li.item}</Text>
                 </View>
                 <View style={{ flex: 1, paddingVertical: 8, paddingHorizontal: 6, borderRightWidth: 1, borderRightColor: "#eee" }}>
                   <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#555" }}>{li.description}</Text>
                 </View>
-                <View style={{ width: 60, paddingVertical: 8, paddingHorizontal: 4, borderRightWidth: 1, borderRightColor: "#eee", alignItems: "flex-end" }}>
+                <View style={{ width: invColWidths[2], paddingVertical: 8, paddingHorizontal: 4, borderRightWidth: 1, borderRightColor: "#eee", alignItems: "flex-end" }}>
                   <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#333" }}>{formatCurrency(li.rate)}</Text>
                 </View>
-                <View style={{ width: 70, paddingVertical: 8, paddingHorizontal: 4, alignItems: "flex-end" }}>
+                <View style={{ width: invColWidths[3], paddingVertical: 8, paddingHorizontal: 4, alignItems: "flex-end" }}>
                   <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#333" }}>{formatCurrency(li.amount)}</Text>
                 </View>
               </View>
@@ -3273,11 +3323,11 @@ function AdminDashboard() {
 
             {inv.lineItems.length < 6 && Array.from({ length: 6 - inv.lineItems.length }).map((_, idx) => (
               <View key={`empty-${idx}`} style={{ flexDirection: "row", borderBottomWidth: idx < 5 - inv.lineItems.length ? 1 : 0, borderBottomColor: "#eee", height: 28 }}>
-                <View style={{ width: 40, borderRightWidth: 1, borderRightColor: "#eee" }} />
-                <View style={{ width: 80, borderRightWidth: 1, borderRightColor: "#eee" }} />
+                <View style={{ width: invColWidths[0], borderRightWidth: 1, borderRightColor: "#eee" }} />
+                <View style={{ width: invColWidths[1], borderRightWidth: 1, borderRightColor: "#eee" }} />
                 <View style={{ flex: 1, borderRightWidth: 1, borderRightColor: "#eee" }} />
-                <View style={{ width: 60, borderRightWidth: 1, borderRightColor: "#eee" }} />
-                <View style={{ width: 70 }} />
+                <View style={{ width: invColWidths[2], borderRightWidth: 1, borderRightColor: "#eee" }} />
+                <View style={{ width: invColWidths[3] }} />
               </View>
             ))}
           </View>
