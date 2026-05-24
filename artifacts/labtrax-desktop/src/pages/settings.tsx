@@ -1214,7 +1214,21 @@ function OrganizationsPanel() {
       const name = (org?.displayName || org?.name || "").toLowerCase();
       const type = (org?.type || "").toLowerCase();
       const role = (m.role || "").toLowerCase();
-      return name.includes(q) || type.includes(q) || role.includes(q);
+      const phone = (org?.phone || "").toLowerCase();
+      const city = (org?.city || "").toLowerCase();
+      const state = (org?.state || "").toLowerCase();
+      const addressLine1 = (org?.addressLine1 || "").toLowerCase();
+      const addressLine2 = (org?.addressLine2 || "").toLowerCase();
+      return (
+        name.includes(q) ||
+        type.includes(q) ||
+        role.includes(q) ||
+        phone.includes(q) ||
+        city.includes(q) ||
+        state.includes(q) ||
+        addressLine1.includes(q) ||
+        addressLine2.includes(q)
+      );
     });
   }, [memberships, orgsById, search]);
 
@@ -1283,7 +1297,7 @@ function OrganizationsPanel() {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by name, type, or role…"
+            placeholder="Search by name, type, city, state, or phone…"
             className="w-full h-8 pl-8 pr-8 rounded-md border border-border bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
           />
           {search && (
