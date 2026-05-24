@@ -996,6 +996,7 @@ function TwoFactorPanel() {
 }
 
 function OrganizationsPanel() {
+  const queryClient = useQueryClient();
   const meQuery = useQuery({
     queryKey: ["auth", "me"],
     queryFn: () => apiFetch<MeResponse>("/auth/me"),
@@ -1014,7 +1015,23 @@ function OrganizationsPanel() {
 
   const [search, setSearch] = useState("");
   const [selectedMembershipId, setSelectedMembershipId] = useState<string | null>(null);
+  const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false);
+  const [leaveError, setLeaveError] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+
+  const leaveMutation = useMutation({
+    mutationFn: (membershipId: string) =>
+      apiFetch(`/organizations/memberships/${membershipId}`, { method: "DELETE" }),
+    onSuccess: () => {
+      setLeaveConfirmOpen(false);
+      setSelectedMembershipId(null);
+      setLeaveError(null);
+      queryClient.invalidateQueries({ queryKey: ["auth", "me"] });
+    },
+    onError: (err: Error) => {
+      setLeaveError(err.message || "Failed to leave organization.");
+    },
+  });
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -1188,10 +1205,52 @@ function OrganizationsPanel() {
                   <DuplicateThresholdRow lab={selectedOrg} />
                 </div>
               )}
+
+              {selectedMembership.role !== "owner" && selectedMembership.status === "active" && (
+                <div className="pt-2 border-t border-border/60">
+                  {leaveError && (
+                    <p className="text-xs text-destructive mb-2">{leaveError}</p>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => { setLeaveError(null); setLeaveConfirmOpen(true); }}
+                    className="inline-flex items-center gap-2 h-8 px-3 rounded-md border border-destructive/40 text-destructive text-xs font-semibold hover:bg-destructive/10 transition-colors"
+                  >
+                    <LogOut size={13} />
+                    Leave organization
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </SheetContent>
       </Sheet>
+
+      <AlertDialog open={leaveConfirmOpen} onOpenChange={setLeaveConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Leave {selectedOrg?.displayName || selectedOrg?.name || "this organization"}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Your access will be revoked immediately. You won't be able to see cases, invoices, or other data for this organization unless an admin re-invites you.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={leaveMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                if (selectedMembershipId) leaveMutation.mutate(selectedMembershipId);
+              }}
+              disabled={leaveMutation.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {leaveMutation.isPending ? (
+                <><Loader2 size={13} className="animate-spin mr-1.5" />Leaving…</>
+              ) : "Leave organization"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </PanelShell>
   );
 }
