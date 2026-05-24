@@ -35,7 +35,7 @@ import { getSessionSecret, clearSessionSecret, useSessionSecretVersion } from "@
 import { formatPhone } from "@/lib/format";
 import { useAuth } from "@/lib/auth-context";
 import type { MeResponse, Organization, OrgMemberRow } from "@/lib/types";
-import { InvoiceLayoutPanel } from "@/pages/invoice-layout-panel";
+import { TemplatesPanel } from "@/pages/invoice-layout-panel";
 
 interface AdminUser {
   id: string;
@@ -49,9 +49,9 @@ interface AdminUser {
   lastLoginAt?: string | null;
 }
 
-type TabKey = "profile" | "password" | "two-factor" | "sessions" | "organizations" | "users" | "backup" | "desktop" | "mobile" | "itero" | "platform-admin" | "subscriptions" | "notifications" | "invoice-layout";
+type TabKey = "profile" | "password" | "two-factor" | "sessions" | "organizations" | "users" | "backup" | "desktop" | "mobile" | "itero" | "platform-admin" | "subscriptions" | "notifications" | "templates";
 
-const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "two-factor", "sessions", "organizations", "users", "backup", "desktop", "mobile", "itero", "platform-admin", "subscriptions", "notifications", "invoice-layout"];
+const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "two-factor", "sessions", "organizations", "users", "backup", "desktop", "mobile", "itero", "platform-admin", "subscriptions", "notifications", "templates"];
 
 function readInitialTab(): TabKey {
   if (typeof window === "undefined") return "profile";
@@ -79,7 +79,7 @@ export default function SettingsPage() {
     { key: "users", label: "Users", icon: ShieldCheck, show: isAdmin },
     { key: "backup", label: "Backup", icon: ShieldCheck, show: isAdmin },
     { key: "desktop", label: "Desktop app", icon: Download, show: isAdmin },
-    { key: "invoice-layout", label: "Invoice layout", icon: LayoutList, show: isAdmin },
+    { key: "templates", label: "Templates", icon: LayoutList, show: isAdmin },
     { key: "mobile", label: "Mobile app", icon: Smartphone, show: isAdmin },
     { key: "itero", label: "iTero auto-import", icon: Sparkles, show: isAdmin && typeof window !== "undefined" && !!(window as { electronAPI?: { itero?: unknown } }).electronAPI?.itero },
     { key: "platform-admin", label: "Platform admin", icon: Wrench, show: isAdmin },
@@ -129,7 +129,7 @@ export default function SettingsPage() {
           {tab === "users" && isAdmin && <UsersPanel />}
           {tab === "backup" && isAdmin && <BackupPanel />}
           {tab === "desktop" && isAdmin && <DesktopInstallerPanel />}
-          {tab === "invoice-layout" && isAdmin && <InvoiceLayoutPanel />}
+          {tab === "templates" && isAdmin && <TemplatesPanel />}
           {tab === "mobile" && isAdmin && <MobileBuildPanel />}
           {tab === "itero" && isAdmin && <IteroPanel />}
           {tab === "platform-admin" && isAdmin && <PlatformAdminPanel />}

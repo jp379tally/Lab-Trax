@@ -174,6 +174,9 @@ export const organizations = pgTable(
     // that have not opened the layout editor). Edited via Settings →
     // Invoice Layout in the desktop app.
     invoiceTemplate: jsonb("invoice_template"),
+    // Named invoice-template presets (Task templates feature). JSON shape:
+    // Array<{id:string, name:string, template:InvoiceTemplate, savedAt:string}>
+    invoiceTemplatePresets: jsonb("invoice_template_presets"),
     // Provider organizations are created by a specific lab. We persist the
     // creating lab's id here (nullable for non-provider orgs / legacy rows)
     // so account-number uniqueness can be scoped per lab.

@@ -5,12 +5,15 @@ import {
   AlignLeft,
   AlignRight,
   Bold,
+  BookmarkPlus,
   Check,
   ChevronDown,
   ChevronRight,
   ChevronUp,
   Eye,
   EyeOff,
+  FileText,
+  FolderOpen,
   Loader2,
   Pencil,
   Plus,
@@ -289,6 +292,49 @@ export function InvoiceLayoutPanel() {
   const [hoveredDefaultId, setHoveredDefaultId] = useState<string | null>(null);
   // Explicitly pinned preview (toggled open, survives mouse-leave)
   const [pinnedPreviewId, setPinnedPreviewId] = useState<string | null>(null);
+
+  // ── Named presets ────────────────────────────────────────────────────────
+  const [presetsOpen, setPresetsOpen] = useState(false);
+  const [savePresetName, setSavePresetName] = useState("");
+  const [savePresetOpen, setSavePresetOpen] = useState(false);
+
+  type TemplatePreset = { id: string; name: string; template: unknown; savedAt: string };
+
+  const presetsQuery = useQuery<TemplatePreset[]>({
+    enabled: !!orgId,
+    queryKey: ["invoiceTemplatePresets", orgId],
+    queryFn: async () => {
+      const res = await apiFetch<{ data: { presets: TemplatePreset[] } }>(
+        `/organizations/${orgId}/invoice-template/presets`,
+      );
+      return (res as any).data?.presets ?? [];
+    },
+  });
+
+  const savePresetMutation = useMutation({
+    mutationFn: async (name: string) => {
+      await apiFetch(`/organizations/${orgId}/invoice-template/presets`, {
+        method: "POST",
+        body: JSON.stringify({ name, template: draft }),
+      });
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["invoiceTemplatePresets", orgId] });
+      setSavePresetName("");
+      setSavePresetOpen(false);
+    },
+  });
+
+  const deletePresetMutation = useMutation({
+    mutationFn: async (presetId: string) => {
+      await apiFetch(`/organizations/${orgId}/invoice-template/presets/${presetId}`, {
+        method: "DELETE",
+      });
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["invoiceTemplatePresets", orgId] });
+    },
+  });
 
   useEffect(() => {
     if (!query.data) return;
@@ -719,8 +765,50 @@ export function InvoiceLayoutPanel() {
             )}
             Save layout
           </button>
+          <button
+            type="button"
+            onClick={() => setSavePresetOpen((v) => !v)}
+            title="Save current layout as a named preset"
+            className="text-xs px-3 py-1.5 rounded border border-border hover:bg-secondary flex items-center gap-1"
+          >
+            <BookmarkPlus size={12} /> Save as preset
+          </button>
         </div>
       </div>
+
+      {savePresetOpen ? (
+        <div className="mb-3 flex items-center gap-2 p-2 rounded border border-border bg-secondary/40">
+          <BookmarkPlus size={13} className="text-muted-foreground shrink-0" />
+          <input
+            type="text"
+            placeholder="Preset name…"
+            value={savePresetName}
+            onChange={(e) => setSavePresetName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && savePresetName.trim()) savePresetMutation.mutate(savePresetName.trim());
+              if (e.key === "Escape") setSavePresetOpen(false);
+            }}
+            className="flex-1 text-xs bg-transparent outline-none"
+            autoFocus
+          />
+          <button
+            type="button"
+            onClick={() => { if (savePresetName.trim()) savePresetMutation.mutate(savePresetName.trim()); }}
+            disabled={!savePresetName.trim() || savePresetMutation.isPending}
+            className="text-xs px-2 py-1 rounded bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 flex items-center gap-1"
+          >
+            {savePresetMutation.isPending ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}
+            Save
+          </button>
+          <button
+            type="button"
+            onClick={() => setSavePresetOpen(false)}
+            className="p-1 rounded hover:bg-secondary text-muted-foreground"
+          >
+            <X size={11} />
+          </button>
+        </div>
+      ) : null}
 
       {previewError ? (
         <div className="mb-3 text-xs text-destructive">
@@ -926,6 +1014,62 @@ export function InvoiceLayoutPanel() {
               ) : null}
             </section>
           ) : null}
+
+          {/* ── Saved presets ─────────────────────────────────────── */}
+          <section>
+            <button
+              type="button"
+              onClick={() => setPresetsOpen((v) => !v)}
+              className="w-full flex items-center justify-between mb-2 group"
+            >
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                <FolderOpen size={11} /> Saved Presets
+                {presetsQuery.data && presetsQuery.data.length > 0 ? (
+                  <span className="text-[10px] font-normal bg-secondary rounded px-1">{presetsQuery.data.length}</span>
+                ) : null}
+              </h3>
+              {presetsOpen ? <ChevronUp size={12} className="text-muted-foreground" /> : <ChevronDown size={12} className="text-muted-foreground" />}
+            </button>
+            {presetsOpen ? (
+              presetsQuery.isLoading ? (
+                <p className="text-xs text-muted-foreground flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> Loading…</p>
+              ) : !presetsQuery.data || presetsQuery.data.length === 0 ? (
+                <p className="text-xs text-muted-foreground italic">No presets saved yet. Use "Save as preset" to capture the current layout.</p>
+              ) : (
+                <ul className="space-y-1">
+                  {presetsQuery.data.map((p) => (
+                    <li key={p.id} className="flex items-center gap-1.5 text-xs rounded border border-border bg-background px-2 py-1.5">
+                      <span className="flex-1 truncate font-medium" title={p.name}>{p.name}</span>
+                      <button
+                        type="button"
+                        title="Load this preset into the editor"
+                        onClick={() => {
+                          setDraft(coerceInvoiceTemplate(p.template as any));
+                          setDirty(true);
+                          setSelected(null);
+                          setEditingDefaultId(null);
+                        }}
+                        className="text-[10px] px-1.5 py-0.5 rounded border border-border hover:bg-secondary flex items-center gap-0.5"
+                      >
+                        <FolderOpen size={10} /> Load
+                      </button>
+                      <button
+                        type="button"
+                        title="Delete preset"
+                        onClick={() => {
+                          if (!confirm(`Delete preset "${p.name}"?`)) return;
+                          deletePresetMutation.mutate(p.id);
+                        }}
+                        className="p-0.5 rounded text-destructive hover:bg-destructive/10"
+                      >
+                        <Trash2 size={10} />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )
+            ) : null}
+          </section>
 
           {/* ── Selected extra image controls ──────────────────────── */}
           {selectedExtra ? (
@@ -1680,4 +1824,59 @@ function handleCursor(h: Handle): string {
     case "se": return "nwse-resize";
     default:   return "move";
   }
+}
+
+// ─── Templates panel (wrapper with type selector) ────────────────────────────
+
+type TemplateType = "invoice" | "statement" | "correspondence";
+
+export function TemplatesPanel() {
+  const [templateType, setTemplateType] = useState<TemplateType>("invoice");
+
+  const TYPES: { key: TemplateType; label: string }[] = [
+    { key: "invoice", label: "Invoice" },
+    { key: "statement", label: "Statement" },
+    { key: "correspondence", label: "Correspondence" },
+  ];
+
+  return (
+    <div>
+      <div className="px-6 pt-6 pb-0">
+        <h2 className="text-lg font-semibold">Templates</h2>
+        <p className="text-sm text-muted-foreground mt-1">
+          Design PDF layouts for invoices, statements, and correspondence.
+        </p>
+        <div className="flex gap-1 mt-4 bg-secondary rounded-lg p-1 w-fit">
+          {TYPES.map(({ key, label }) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setTemplateType(key)}
+              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                templateType === key
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {templateType === "invoice" ? (
+        <InvoiceLayoutPanel />
+      ) : (
+        <div className="flex flex-col items-center justify-center py-20 text-center text-muted-foreground">
+          <FileText size={36} className="mb-3 opacity-30" />
+          <p className="font-medium text-sm">
+            {templateType === "statement" ? "Statement" : "Correspondence"} layout editor coming soon
+          </p>
+          <p className="text-xs mt-1.5 max-w-xs">
+            This template type is being developed and will be available in a future update.
+          </p>
+        </div>
+      )}
+    </div>
+  );
 }
