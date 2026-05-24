@@ -2632,7 +2632,21 @@ export function CaseDrawer({
         <div className="flex-1 overflow-y-auto">
 
           {/* ── OVERVIEW ── */}
-          {activeTab === "overview" && (
+          {activeTab === "overview" && (() => {
+            const summary = deriveRxSummary(data?.restorations);
+            const overviewNotes = data?.notes ?? [];
+            const latestNote = [...overviewNotes].sort((a, b) => {
+              const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+              const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+              return tb - ta;
+            })[0];
+            const latestNoteText = latestNote?.noteText ?? "";
+            const notesPreview = latestNoteText
+              ? (latestNoteText.length > 120 ? latestNoteText.slice(0, 120) + "…" : latestNoteText)
+              : "No notes";
+            const toothLabel = formatRxTeethLabel(summary) || "—";
+            const shadeLabel = summary.shades.length > 0 ? summary.shades.join(", ") : "—";
+            return (
             <div className="px-5 py-5 space-y-6">
               <section>
                 <div className="flex items-center justify-between mb-3">
@@ -2679,6 +2693,11 @@ export function CaseDrawer({
                     />
                     <Field label="Due date" value={formatDate(data?.dueDate ?? labCase.dueDate)} />
                     <Field label="Created" value={formatDate(data?.createdAt ?? labCase.createdAt)} />
+                    <Field label="Tooth #" value={toothLabel} />
+                    <Field label="Shade" value={shadeLabel} />
+                    <div className="col-span-2">
+                      <Field label="Notes" value={notesPreview} />
+                    </div>
                     {(data?.casePanBarcode ?? labCase.casePanBarcode) && (
                       <div className="col-span-2">
                         <Field
@@ -2806,7 +2825,6 @@ export function CaseDrawer({
                   restorations and notes still happens in their dedicated
                   tabs; this section is read-only. */}
               {(() => {
-                const summary = deriveRxSummary(data?.restorations);
                 const hasAny =
                   summary.restorativeType ||
                   summary.materials.length > 0 ||
@@ -2963,7 +2981,8 @@ export function CaseDrawer({
                 )}
               </section>
             </div>
-          )}
+            );
+          })()}
 
           {/* ── RESTORATIONS ── */}
           {activeTab === "restorations" && (
