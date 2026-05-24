@@ -289,6 +289,34 @@ paths:
                     type: object
                     properties:
                       ok: { type: boolean }
+  /cases/bulk-reassign:
+    post:
+      operationId: bulkReassignCases
+      tags: [cases]
+      summary: Reassign multiple cases to a different practice
+      description: |
+        Reassigns a list of cases to a new provider organization in one
+        operation. Every case ID must belong to a lab the caller is a member
+        of. Returns the count of cases actually updated.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BulkReassignCasesInput"
+      responses:
+        "200":
+          description: Cases reassigned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BulkReassignCasesResult"
+        "400":
+          description: Validation error or target practice not found
+        "403":
+          description: Caller is not a member of the cases' lab
+        "404":
+          description: One or more case IDs not found
   /cases/import-from-itero-rx:
     post:
       operationId: importCaseFromIteroRx
@@ -1699,6 +1727,26 @@ components:
         message: { type: string, nullable: true }
         startedAt: { type: string, format: date-time, nullable: true }
         completedAt: { type: string, format: date-time, nullable: true }
+    BulkReassignCasesInput:
+      type: object
+      required: [caseIds, providerOrganizationId]
+      properties:
+        caseIds:
+          type: array
+          items: { type: string }
+          minItems: 1
+          maxItems: 500
+        providerOrganizationId:
+          type: string
+    BulkReassignCasesResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          required: [updatedCount]
+          properties:
+            updatedCount: { type: integer }
     EmailPreferences:
       type: object
       properties:

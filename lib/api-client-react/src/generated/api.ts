@@ -22,6 +22,8 @@ import type {
   BackupRunResult,
   BackupScheduleInput,
   BackupScheduleResult,
+  BulkReassignCasesInput,
+  BulkReassignCasesResult,
   CreateVendorInput,
   DeleteVendor200,
   DisableBackupSchedule200,
@@ -1344,6 +1346,96 @@ export const useMarkAllNotificationsRead = <
   TContext
 > => {
   return useMutation(getMarkAllNotificationsReadMutationOptions(options));
+};
+
+/**
+ * Reassigns a list of cases to a new provider organization in one
+operation. Every case ID must belong to a lab the caller is a member
+of. Returns the count of cases actually updated.
+
+ * @summary Reassign multiple cases to a different practice
+ */
+export const getBulkReassignCasesUrl = () => {
+  return `/api/cases/bulk-reassign`;
+};
+
+export const bulkReassignCases = async (
+  bulkReassignCasesInput: BulkReassignCasesInput,
+  options?: RequestInit,
+): Promise<BulkReassignCasesResult> => {
+  return customFetch<BulkReassignCasesResult>(getBulkReassignCasesUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(bulkReassignCasesInput),
+  });
+};
+
+export const getBulkReassignCasesMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof bulkReassignCases>>,
+    TError,
+    { data: BodyType<BulkReassignCasesInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof bulkReassignCases>>,
+  TError,
+  { data: BodyType<BulkReassignCasesInput> },
+  TContext
+> => {
+  const mutationKey = ["bulkReassignCases"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof bulkReassignCases>>,
+    { data: BodyType<BulkReassignCasesInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return bulkReassignCases(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type BulkReassignCasesMutationResult = NonNullable<
+  Awaited<ReturnType<typeof bulkReassignCases>>
+>;
+export type BulkReassignCasesMutationBody = BodyType<BulkReassignCasesInput>;
+export type BulkReassignCasesMutationError = ErrorType<void>;
+
+/**
+ * @summary Reassign multiple cases to a different practice
+ */
+export const useBulkReassignCases = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof bulkReassignCases>>,
+    TError,
+    { data: BodyType<BulkReassignCasesInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof bulkReassignCases>>,
+  TError,
+  { data: BodyType<BulkReassignCasesInput> },
+  TContext
+> => {
+  return useMutation(getBulkReassignCasesMutationOptions(options));
 };
 
 /**

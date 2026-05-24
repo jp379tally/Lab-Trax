@@ -930,6 +930,9 @@ export default function CasesPage() {
   const [sortDir, setSortDir] = useState<"asc" | "desc">(initialFilters.current.sortDir);
   const [selected, setSelected] = useState<LabCase | null>(null);
   const [showNewCase, setShowNewCase] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [showReassignModal, setShowReassignModal] = useState(false);
+  const [reassignTargetId, setReassignTargetId] = useState<string>("");
 
   const CASES_COL_DEFAULTS = [120, 100, 160, 140, 140, 120, 100, 90, 130, 100, 90] as const;
   const { widths: caseColWidths, resizingCol: resizingCaseCol, startResize: startCaseResize, resetColumn: resetCaseColumn } =
@@ -938,6 +941,38 @@ export default function CasesPage() {
   const pageRef = useRef<HTMLDivElement>(null);
   const scrollRestoredRef = useRef(false);
   const deepLinkOpenedRef = useRef(false);
+
+  const qc = useQueryClient();
+
+  const orgsQuery = useQuery({
+    queryKey: ["organizations"],
+    queryFn: () => apiFetch<Organization[]>("/organizations"),
+  });
+  const providerOrgs = useMemo(
+    () => (orgsQuery.data ?? []).filter((o) => o.type !== "lab"),
+    [orgsQuery.data],
+  );
+
+  const bulkReassignMutation = useMutation({
+    mutationFn: (body: { caseIds: string[]; providerOrganizationId: string }) =>
+      apiFetch<{ updatedCount: number }>("/cases/bulk-reassign", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: ["cases"] });
+      setSelectedIds(new Set());
+      setShowReassignModal(false);
+      setReassignTargetId("");
+      setBulkToast(`${result.updatedCount} case${result.updatedCount !== 1 ? "s" : ""} reassigned.`);
+    },
+    onError: (e: Error) => {
+      setBulkToastError(e.message);
+    },
+  });
+
+  const [bulkToast, setBulkToast] = useState<string | null>(null);
+  const [bulkToastError, setBulkToastError] = useState<string | null>(null);
 
   // Deep-link: if the URL contains ?caseId=<id>, auto-open that case in the drawer.
   useEffect(() => {
@@ -972,6 +1007,10 @@ export default function CasesPage() {
       );
     } catch {}
   }, [search, statusFilter, priorityFilter, dateRangeFilter, customStartDate, customEndDate, sortKey, sortDir]);
+
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [search, statusFilter, priorityFilter, dateRangeFilter, customStartDate, customEndDate, iteroActiveBatch]);
 
   useEffect(() => {
     const el = pageRef.current?.closest("main") as HTMLElement | null;
@@ -1225,24 +1264,72 @@ export default function CasesPage() {
             </div>
           )}
         </div>
+        {selectedIds.size > 0 && (
+          <div className="px-4 py-2.5 border-b border-border bg-primary/5 flex items-center gap-3">
+            <span className="text-sm font-medium">
+              {selectedIds.size} case{selectedIds.size !== 1 ? "s" : ""} selected
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setReassignTargetId("");
+                setShowReassignModal(true);
+              }}
+              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors"
+            >
+              Reassign
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedIds(new Set())}
+              className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2"
+            >
+              Clear selection
+            </button>
+          </div>
+        )}
         <div className="overflow-x-auto relative">
           {resizingCaseCol !== null && (
             <div
               className="bg-primary/50 pointer-events-none absolute top-0 bottom-0 z-10"
               style={{
-                left: caseColWidths.slice(0, resizingCaseCol + 1).reduce((a, b) => a + b, 0) - 1,
+                left: 36 + caseColWidths.slice(0, resizingCaseCol + 1).reduce((a, b) => a + b, 0) - 1,
                 width: 2,
               }}
             />
           )}
-          <table className="text-sm" style={{ width: caseColWidths.reduce((a, b) => a + b, 0), tableLayout: "fixed" }}>
+          <table className="text-sm" style={{ width: 36 + caseColWidths.reduce((a, b) => a + b, 0), tableLayout: "fixed" }}>
             <colgroup>
+              <col style={{ width: 36 }} />
               {caseColWidths.map((w, i) => (
                 <col key={i} style={{ width: w }} />
               ))}
             </colgroup>
             <thead>
               <tr className="bg-secondary/40">
+                <th className="py-2.5 pl-3 pr-1 w-9">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all cases"
+                    checked={filtered.length > 0 && filtered.every((c) => selectedIds.has(c.id))}
+                    ref={(el) => {
+                      if (el) {
+                        el.indeterminate =
+                          selectedIds.size > 0 &&
+                          !filtered.every((c) => selectedIds.has(c.id)) &&
+                          filtered.some((c) => selectedIds.has(c.id));
+                      }
+                    }}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setSelectedIds(new Set(filtered.map((c) => c.id)));
+                      } else {
+                        setSelectedIds(new Set());
+                      }
+                    }}
+                    className="rounded border-border"
+                  />
+                </th>
                 {([
                   { label: <SortHeader k="createdAt">Created</SortHeader>, align: "left" },
                   { label: <SortHeader k="caseNumber">Case #</SortHeader>, align: "left" },
@@ -1291,7 +1378,7 @@ export default function CasesPage() {
             <tbody>
               {isLoading && (
                 <tr>
-                  <td colSpan={11} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={12} className="px-5 py-12 text-center text-muted-foreground">
                     <Loader2 size={16} className="inline animate-spin mr-2" />
                     Loading cases…
                   </td>
@@ -1299,14 +1386,14 @@ export default function CasesPage() {
               )}
               {error && (
                 <tr>
-                  <td colSpan={11} className="px-5 py-12 text-center text-destructive">
+                  <td colSpan={12} className="px-5 py-12 text-center text-destructive">
                     {(error as Error).message}
                   </td>
                 </tr>
               )}
               {!isLoading && filtered.length === 0 && (
                 <tr>
-                  <td colSpan={11} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={12} className="px-5 py-12 text-center text-muted-foreground">
                     No cases match the current filters.
                   </td>
                 </tr>
@@ -1315,8 +1402,24 @@ export default function CasesPage() {
                 <tr
                   key={c.id}
                   onClick={() => setSelected(c)}
-                  className="border-t border-border cursor-pointer hover:bg-secondary/40"
+                  className={`border-t border-border cursor-pointer hover:bg-secondary/40 ${selectedIds.has(c.id) ? "bg-primary/5" : ""}`}
                 >
+                  <td className="pl-3 pr-1 py-3" onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      aria-label={`Select case ${c.caseNumber}`}
+                      checked={selectedIds.has(c.id)}
+                      onChange={(e) => {
+                        setSelectedIds((prev) => {
+                          const next = new Set(prev);
+                          if (e.target.checked) next.add(c.id);
+                          else next.delete(c.id);
+                          return next;
+                        });
+                      }}
+                      className="rounded border-border"
+                    />
+                  </td>
                   <td className="px-5 py-3 text-muted-foreground">{relativeTime(c.createdAt)}</td>
                   <td className="px-5 py-3 font-mono text-xs">
                     <div className="flex items-center gap-1.5">
@@ -1396,6 +1499,108 @@ export default function CasesPage() {
         />
       )}
       {showNewCase && <NewCaseModal onClose={() => setShowNewCase(false)} />}
+
+      {showReassignModal && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div
+            className="bg-card border border-border rounded-2xl shadow-2xl w-full max-w-md mx-4"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Reassign cases"
+          >
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+              <h2 className="text-base font-semibold">Reassign {selectedIds.size} case{selectedIds.size !== 1 ? "s" : ""}</h2>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowReassignModal(false);
+                  setReassignTargetId("");
+                }}
+                className="text-muted-foreground hover:text-foreground transition-colors"
+                aria-label="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="px-6 py-5 space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-1.5">
+                  New practice
+                </label>
+                <ProviderPicker
+                  value={reassignTargetId}
+                  onChange={(id) => setReassignTargetId(id)}
+                  providers={providerOrgs}
+                />
+              </div>
+              {bulkReassignMutation.isError && (
+                <p className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md">
+                  {bulkReassignMutation.error instanceof Error
+                    ? bulkReassignMutation.error.message
+                    : "An error occurred."}
+                </p>
+              )}
+            </div>
+            <div className="flex gap-3 px-6 pb-5">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowReassignModal(false);
+                  setReassignTargetId("");
+                }}
+                className="flex-1 h-9 rounded-lg bg-secondary text-sm font-medium text-muted-foreground hover:text-foreground"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={!reassignTargetId || bulkReassignMutation.isPending}
+                onClick={() => {
+                  if (!reassignTargetId) return;
+                  bulkReassignMutation.mutate({
+                    caseIds: Array.from(selectedIds),
+                    providerOrganizationId: reassignTargetId,
+                  });
+                }}
+                className="flex-1 h-9 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center justify-center gap-1.5"
+              >
+                {bulkReassignMutation.isPending && <Loader2 size={13} className="animate-spin" />}
+                Reassign
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {bulkToast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[70] bg-foreground text-background text-sm px-4 py-2.5 rounded-xl shadow-lg flex items-center gap-3 animate-in fade-in slide-in-from-bottom-2">
+          <Check size={14} className="shrink-0 text-green-400" />
+          {bulkToast}
+          <button
+            type="button"
+            onClick={() => setBulkToast(null)}
+            className="ml-1 opacity-70 hover:opacity-100"
+            aria-label="Dismiss"
+          >
+            <X size={13} />
+          </button>
+        </div>
+      )}
+
+      {bulkToastError && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[70] bg-destructive text-destructive-foreground text-sm px-4 py-2.5 rounded-xl shadow-lg flex items-center gap-3 animate-in fade-in slide-in-from-bottom-2">
+          <AlertTriangle size={14} className="shrink-0" />
+          {bulkToastError}
+          <button
+            type="button"
+            onClick={() => setBulkToastError(null)}
+            className="ml-1 opacity-70 hover:opacity-100"
+            aria-label="Dismiss"
+          >
+            <X size={13} />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

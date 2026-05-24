@@ -841,6 +841,105 @@ router.get(
   })
 );
 
+const bulkReassignSchema = z.object({
+  caseIds: z.array(z.string().min(1)).min(1).max(500),
+  providerOrganizationId: z.string().min(1),
+});
+
+router.post(
+  "/bulk-reassign",
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId as string;
+    const input = bulkReassignSchema.parse(req.body);
+
+    // Deduplicate submitted IDs so count checks and updates are not skewed.
+    const uniqueCaseIds = Array.from(new Set(input.caseIds));
+
+    // Determine which lab org the caller belongs to by looking up the first
+    // case in the batch. All cases must belong to the same lab.
+    const firstCase = await db.query.cases.findFirst({
+      where: and(eq(cases.id, uniqueCaseIds[0]!), notDeleted(cases)),
+    });
+    if (!firstCase) {
+      throw new HttpError(404, "No matching cases found.");
+    }
+    const labOrganizationId = firstCase.labOrganizationId;
+
+    // Require the caller to be a lab member.
+    const membership = await requireMembership(userId, labOrganizationId);
+    const actorInitials = String((membership as any).initials ?? (membership as any).role ?? "?");
+
+    // Validate the target provider org exists, is a provider type, and
+    // belongs to the same lab as the cases being reassigned.
+    // This prevents cross-tenant reassignment (tenant-boundary enforcement).
+    const targetProvider = await db.query.organizations.findFirst({
+      where: and(
+        eq(organizations.id, input.providerOrganizationId),
+        notDeleted(organizations),
+      ),
+    });
+    if (!targetProvider) {
+      throw new HttpError(400, "Target practice not found.");
+    }
+    if ((targetProvider as any).type !== "provider") {
+      throw new HttpError(400, "Target organization is not a provider practice.");
+    }
+    if ((targetProvider as any).parentLabOrganizationId !== labOrganizationId) {
+      throw new HttpError(403, "Target practice does not belong to your lab.");
+    }
+
+    // Load all requested cases and verify they all belong to the same lab.
+    const casesToUpdate = await db
+      .select({ id: cases.id, labOrganizationId: cases.labOrganizationId, caseNumber: cases.caseNumber })
+      .from(cases)
+      .where(and(inArray(cases.id, uniqueCaseIds), notDeleted(cases)));
+
+    const unauthorizedIds = casesToUpdate
+      .filter((c) => c.labOrganizationId !== labOrganizationId)
+      .map((c) => c.id);
+    if (unauthorizedIds.length > 0) {
+      throw new HttpError(403, "Some cases do not belong to your lab.");
+    }
+
+    // Missing IDs means the client passed IDs that don't exist.
+    if (casesToUpdate.length !== uniqueCaseIds.length) {
+      const foundIds = new Set(casesToUpdate.map((c) => c.id));
+      const missing = uniqueCaseIds.filter((id) => !foundIds.has(id));
+      if (missing.length > 0) {
+        throw new HttpError(404, `Cases not found: ${missing.slice(0, 5).join(", ")}`);
+      }
+    }
+
+    if (casesToUpdate.length === 0) {
+      return ok(res, { updatedCount: 0 });
+    }
+
+    const ids = casesToUpdate.map((c) => c.id);
+
+    await db
+      .update(cases)
+      .set({ providerOrganizationId: input.providerOrganizationId, updatedAt: new Date() })
+      .where(inArray(cases.id, ids));
+
+    await writeAuditLog({
+      userId,
+      organizationId: labOrganizationId,
+      action: "cases_bulk_reassigned",
+      entityType: "case",
+      entityId: labOrganizationId,
+      metadataJson: {
+        caseIds: ids,
+        caseNumbers: casesToUpdate.map((c) => c.caseNumber),
+        targetProviderOrganizationId: input.providerOrganizationId,
+        targetProviderName: (targetProvider as any).displayName || targetProvider.name,
+        count: ids.length,
+      },
+    });
+
+    return ok(res, { updatedCount: ids.length });
+  })
+);
+
 router.post(
   "/",
   asyncHandler(async (req, res) => {

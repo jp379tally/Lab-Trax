@@ -560,6 +560,24 @@ export interface RestoreStatusResult {
   completedAt?: string | null;
 }
 
+export interface BulkReassignCasesInput {
+  /**
+   * @minItems 1
+   * @maxItems 500
+   */
+  caseIds: string[];
+  providerOrganizationId: string;
+}
+
+export type BulkReassignCasesResultData = {
+  updatedCount: number;
+};
+
+export interface BulkReassignCasesResult {
+  ok?: boolean;
+  data?: BulkReassignCasesResultData;
+}
+
 export interface EmailPreferences {
   /** Emails when someone adds a note to a case you are involved in */
   caseNoteNotifications?: boolean;

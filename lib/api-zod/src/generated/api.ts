@@ -352,6 +352,29 @@ export const MarkAllNotificationsReadResponse = zod.object({
 });
 
 /**
+ * Reassigns a list of cases to a new provider organization in one
+operation. Every case ID must belong to a lab the caller is a member
+of. Returns the count of cases actually updated.
+
+ * @summary Reassign multiple cases to a different practice
+ */
+export const bulkReassignCasesBodyCaseIdsMax = 500;
+
+export const BulkReassignCasesBody = zod.object({
+  caseIds: zod.array(zod.string()).min(1).max(bulkReassignCasesBodyCaseIdsMax),
+  providerOrganizationId: zod.string(),
+});
+
+export const BulkReassignCasesResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      updatedCount: zod.number(),
+    })
+    .optional(),
+});
+
+/**
  * Auto-create a LabTrax case from an iTero Lab-Review prescription. The
 Rx file (PDF or image) is uploaded as multipart/form-data with the
 field name `file`. The server uses OpenAI to extract patient, doctor,
