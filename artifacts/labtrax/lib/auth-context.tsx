@@ -46,7 +46,7 @@ interface AuthContextValue {
   profilePicUri: string | null;
   setProfilePicUri: (uri: string | null) => void;
   login: (username: string, password: string) => Promise<{ success: boolean; requiresTwoFactor?: boolean; pendingToken?: string; error?: string }>;
-  completeTwoFactor: (pendingToken: string, code: string) => Promise<{ success: boolean; error?: string }>;
+  completeTwoFactor: (pendingToken: string, code: string, trustDevice?: boolean) => Promise<{ success: boolean; error?: string }>;
   loginWithBiometric: () => Promise<{ success: boolean; requiresTwoFactor?: boolean; pendingToken?: string; error?: string }>;
   register: (data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean; userType?: "provider" | "lab" | "master_admin"; licenseNumber?: string; practiceName?: string; doctorName?: string; practiceAddress?: string; practicePhone?: string; phoneContactName?: string; role?: "user" | "admin"; accountNumber?: string; joinOrganizationId?: string; createOrganization?: boolean; claimProvider?: { labId: string; accountNumber: string } }) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
@@ -67,6 +67,7 @@ const AUTH_KEY = "@drivesync_auth";
 const PROFILE_PIC_KEY = "@drivesync_profile_pic";
 const AUTH_PASSWORD_KEY = "@drivesync_auth_password";
 const BIOMETRIC_USER_KEY = "@drivesync_biometric_user";
+const TRUSTED_DEVICE_KEY = "@labtrax_trusted_device_v1";
 
 const INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000;
 
@@ -314,10 +315,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function login(username: string, password: string): Promise<{ success: boolean; requiresTwoFactor?: boolean; pendingToken?: string; error?: string }> {
     try {
+      // Include a stored trust token so a recognised device skips 2FA (Task #863).
+      const storedTrustToken = await getSensitiveItem(TRUSTED_DEVICE_KEY).catch(() => null);
       const res = await resilientFetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password, clientType: Platform.OS === "web" ? "web" : "mobile" }),
+        body: JSON.stringify({
+          username,
+          password,
+          clientType: Platform.OS === "web" ? "web" : "mobile",
+          deviceTrustToken: storedTrustToken ?? undefined,
+        }),
       });
 
       const data = await res.json();
@@ -362,20 +370,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  async function completeTwoFactor(pendingToken: string, code: string): Promise<{ success: boolean; error?: string }> {
+  async function completeTwoFactor(pendingToken: string, code: string, trustDevice = false): Promise<{ success: boolean; error?: string }> {
     try {
       const res = await resilientFetch("/api/auth/2fa/challenge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pendingToken, code, clientType: Platform.OS === "web" ? "web" : "mobile" }),
+        body: JSON.stringify({ pendingToken, code, clientType: Platform.OS === "web" ? "web" : "mobile", trustDevice }),
       });
       const data = await res.json();
       if (!res.ok || !data?.data?.success) {
         return { success: false, error: data?.error || data?.message || "Invalid code." };
       }
-      const { accessToken, refreshToken } = data.data;
+      const { accessToken, refreshToken, deviceTrustToken } = data.data;
       if (accessToken && refreshToken) {
         await saveTokens(accessToken, refreshToken);
+      }
+      // Persist the trust token for future logins (Task #863).
+      if (typeof deviceTrustToken === "string" && deviceTrustToken) {
+        await setSensitiveItem(TRUSTED_DEVICE_KEY, deviceTrustToken);
       }
       // Fetch updated user info from /auth/me
       const meRes = await resilientFetch("/api/auth/me");

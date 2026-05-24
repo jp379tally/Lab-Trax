@@ -18,6 +18,7 @@ import {
   TwoFactorRequiredError,
   type SessionUser,
 } from "./api";
+
 import type { AuthRestoreStatus } from "./auth-restore-status";
 
 interface AuthContextValue {
@@ -32,7 +33,8 @@ interface AuthContextValue {
   restoreNoticeDismissed: boolean;
   /** Throws TwoFactorRequiredError if 2FA is enabled. */
   login: (username: string, password: string) => Promise<void>;
-  completeTwoFactor: (pendingToken: string, code: string) => Promise<void>;
+  /** Pass trustDevice=true to remember this device for 30 days. */
+  completeTwoFactor: (pendingToken: string, code: string, trustDevice?: boolean) => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
 }
@@ -100,8 +102,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setStatus("authed");
   }, []);
 
-  const completeTwoFactor = useCallback(async (pendingToken: string, code: string) => {
-    const me = await apiCompleteTwoFactor(pendingToken, code);
+  const completeTwoFactor = useCallback(async (pendingToken: string, code: string, trustDevice = false) => {
+    const me = await apiCompleteTwoFactor(pendingToken, code, trustDevice);
     setUser(me);
     setStatus("authed");
   }, []);

@@ -1803,6 +1803,40 @@ export const rxPracticeNameAliases = pgTable(
   })
 );
 
+/**
+ * Trusted devices for 2FA skip (Task #863).
+ * After passing a 2FA challenge the user can tick "Trust this device for 30 days".
+ * We store a SHA-256 hash of the opaque token sent back to the client. The
+ * token is presented on subsequent logins (via the Authorization body or a
+ * custom header) so the server can skip the TOTP challenge for recognised
+ * devices.
+ *
+ * Indexed by userId (list all devices for a user) and tokenHash (verify a
+ * presented token in O(1)).
+ */
+export const trustedDevices = pgTable(
+  "trusted_devices",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    userId: varchar("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull(),
+    deviceName: text("device_name"),
+    userAgent: text("user_agent"),
+    ipAddress: text("ip_address"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (table) => ({
+    userIdx: index("trusted_devices_user_idx").on(table.userId),
+    tokenHashUnique: uniqueIndex("trusted_devices_token_hash_unique").on(table.tokenHash),
+  })
+);
+
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,
@@ -1813,3 +1847,4 @@ export type User = typeof users.$inferSelect;
 export type LabCaseRow = typeof labCases.$inferSelect;
 export type Subscription = typeof subscriptions.$inferSelect;
 export type SubscriptionEvent = typeof subscriptionEvents.$inferSelect;
+export type TrustedDevice = typeof trustedDevices.$inferSelect;

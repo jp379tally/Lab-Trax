@@ -9,6 +9,7 @@ import {
   organizations,
   userSessions,
   users,
+  trustedDevices,
 } from "@workspace/db";
 import {
   signAccessToken,
@@ -17,7 +18,7 @@ import {
   makeSessionHash,
   signPendingTwoFactorToken,
 } from "../lib/auth";
-import { hashPassword, verifyPassword } from "../lib/crypto";
+import { hashPassword, verifyPassword, sha256 } from "../lib/crypto";
 import {
   clearAuthCookies,
   getRefreshCookie,
@@ -545,6 +546,10 @@ const loginSchema = z
     password: z.string().min(1),
     deviceName: z.string().max(180).optional(),
     clientType: z.enum(["web", "mobile", "desktop"]).optional(),
+    // Optional: a trust token previously issued by the 2FA challenge endpoint.
+    // If the token is valid for this user and not expired, the 2FA challenge is
+    // skipped and a full session is issued immediately (Task #863).
+    deviceTrustToken: z.string().optional(),
   })
   .refine((v) => v.username || v.identifier, {
     message: "username or identifier is required",
@@ -595,8 +600,38 @@ router.post(
     }
 
     if (user.twoFactorEnabled) {
-      const pendingToken = signPendingTwoFactorToken(user.id);
-      return res.json({ requiresTwoFactor: true, pendingToken });
+      // Check if the client supplied a valid trusted-device token (Task #863).
+      // If so, skip the interactive 2FA challenge and issue a full session.
+      if (input.deviceTrustToken) {
+        const tokenHash = sha256(input.deviceTrustToken);
+        const now = new Date();
+        const [device] = await db
+          .select()
+          .from(trustedDevices)
+          .where(
+            and(
+              eq(trustedDevices.userId, user.id),
+              eq(trustedDevices.tokenHash, tokenHash),
+              gt(trustedDevices.expiresAt, now)
+            )
+          );
+
+        if (device) {
+          // Valid trust token — record usage and skip 2FA.
+          await db
+            .update(trustedDevices)
+            .set({ lastUsedAt: now })
+            .where(eq(trustedDevices.id, device.id));
+          // Fall through to session creation below (no pendingToken response).
+        } else {
+          // Token not found or expired — require 2FA as normal.
+          const pendingToken = signPendingTwoFactorToken(user.id);
+          return res.json({ requiresTwoFactor: true, pendingToken });
+        }
+      } else {
+        const pendingToken = signPendingTwoFactorToken(user.id);
+        return res.json({ requiresTwoFactor: true, pendingToken });
+      }
     }
 
     const sessionId = crypto.randomUUID();

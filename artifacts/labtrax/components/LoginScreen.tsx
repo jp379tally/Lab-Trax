@@ -57,6 +57,7 @@ export default function LoginScreen() {
   const [twoFactorPendingToken, setTwoFactorPendingToken] = useState<string | null>(null);
   const [totpCode, setTotpCode] = useState("");
   const [useBackupCode, setUseBackupCode] = useState(false);
+  const [trustDevice, setTrustDevice] = useState(true);
   const [isChallenging, setIsChallenging] = useState(false);
   const [diagTapCount, setDiagTapCount] = useState(0);
 
@@ -238,6 +239,7 @@ export default function LoginScreen() {
       setTwoFactorPendingToken(result.pendingToken);
       setTotpCode("");
       setUseBackupCode(false);
+      setTrustDevice(true);
       setError(null);
       return;
     }
@@ -248,7 +250,7 @@ export default function LoginScreen() {
     if (!totpCode.trim() || !twoFactorPendingToken) return;
     setError(null);
     setIsChallenging(true);
-    const result = await completeTwoFactor(twoFactorPendingToken, totpCode.trim());
+    const result = await completeTwoFactor(twoFactorPendingToken, totpCode.trim(), trustDevice);
     setIsChallenging(false);
     if (!result.success) {
       setError(result.error || "Invalid code.");
@@ -2514,6 +2516,23 @@ export default function LoginScreen() {
                     autoFocus
                   />
                 </View>
+                {/* Trust this device checkbox */}
+                <Pressable
+                  onPress={() => setTrustDevice(!trustDevice)}
+                  style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 2 }}
+                >
+                  <View style={{
+                    width: 22, height: 22, borderRadius: 5,
+                    borderWidth: 2, borderColor: trustDevice ? "#60A5FA" : "rgba(255,255,255,0.3)",
+                    backgroundColor: trustDevice ? "#60A5FA" : "transparent",
+                    alignItems: "center", justifyContent: "center",
+                  }}>
+                    {trustDevice && <Ionicons name="checkmark" size={14} color="#FFF" />}
+                  </View>
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.8)" }}>
+                    Trust this device for 30 days
+                  </Text>
+                </Pressable>
                 <Pressable
                   onPress={handleTwoFactorChallenge}
                   disabled={isChallenging || !totpCode.trim()}

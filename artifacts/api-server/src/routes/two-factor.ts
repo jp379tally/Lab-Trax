@@ -1,15 +1,15 @@
 import crypto from "node:crypto";
 import { Router } from "express";
-import { eq } from "drizzle-orm";
+import { and, eq, gt } from "drizzle-orm";
 import { z } from "zod";
 import { generateSecret, generateURI, verifySync } from "otplib";
 import QRCode from "qrcode";
 import { db } from "@workspace/db";
-import { users, userSessions } from "@workspace/db";
+import { users, userSessions, trustedDevices } from "@workspace/db";
 import { requireAuth } from "../middlewares/auth";
 import { asyncHandler } from "../middlewares/async-handler";
 import { HttpError, ok } from "../lib/http";
-import { hashPassword, verifyPassword } from "../lib/crypto";
+import { hashPassword, randomToken, sha256, verifyPassword } from "../lib/crypto";
 import {
   signAccessToken,
   signRefreshToken,
@@ -31,6 +31,8 @@ const router = Router();
 const APP_NAME = "LabTrax";
 const BACKUP_CODE_COUNT = 8;
 const BACKUP_CODE_LENGTH = 10;
+
+const TRUSTED_DEVICE_TTL_DAYS = parseInt(process.env.TRUSTED_DEVICE_TTL_DAYS ?? "30", 10);
 
 function generateBackupCode(): string {
   return crypto.randomBytes(5).toString("hex").toUpperCase();
@@ -167,6 +169,9 @@ router.delete(
       twoFactorBackupCodes: null,
     }).where(eq(users.id, userId));
 
+    // Revoke all trusted devices when 2FA is disabled.
+    await db.delete(trustedDevices).where(eq(trustedDevices.userId, userId));
+
     await writeAuditLog({
       req,
       userId,
@@ -244,17 +249,83 @@ router.get(
   })
 );
 
+// ---------------------------------------------------------------------------
+// Trusted devices — list and revoke
+// ---------------------------------------------------------------------------
+
+router.get(
+  "/trusted-devices",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId as string;
+    const now = new Date();
+    const devices = await db
+      .select({
+        id: trustedDevices.id,
+        deviceName: trustedDevices.deviceName,
+        userAgent: trustedDevices.userAgent,
+        ipAddress: trustedDevices.ipAddress,
+        createdAt: trustedDevices.createdAt,
+        lastUsedAt: trustedDevices.lastUsedAt,
+        expiresAt: trustedDevices.expiresAt,
+      })
+      .from(trustedDevices)
+      .where(
+        and(
+          eq(trustedDevices.userId, userId),
+          gt(trustedDevices.expiresAt, now)
+        )
+      );
+    return ok(res, { devices });
+  })
+);
+
+router.delete(
+  "/trusted-devices/:id",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId as string;
+    const { id } = req.params;
+
+    const [device] = await db
+      .select({ id: trustedDevices.id, userId: trustedDevices.userId })
+      .from(trustedDevices)
+      .where(eq(trustedDevices.id, id));
+
+    if (!device || device.userId !== userId) {
+      throw new HttpError(404, "Trusted device not found.");
+    }
+
+    await db.delete(trustedDevices).where(eq(trustedDevices.id, id));
+
+    await writeAuditLog({
+      req,
+      userId,
+      action: "trusted_device_revoked",
+      entityType: "trusted_device",
+      entityId: id,
+    });
+
+    return ok(res, { success: true });
+  })
+);
+
+// ---------------------------------------------------------------------------
+// 2FA challenge (login step 2)
+// ---------------------------------------------------------------------------
+
 const challengeSchema = z.object({
   pendingToken: z.string().min(1),
   code: z.string().min(1),
   deviceName: z.string().max(180).optional(),
   clientType: z.enum(["web", "mobile", "desktop"]).optional(),
+  trustDevice: z.boolean().optional(),
 });
 
 router.post(
   "/challenge",
   asyncHandler(async (req, res) => {
-    const { pendingToken, code, deviceName, clientType } = challengeSchema.parse(req.body);
+    const { pendingToken, code, deviceName, clientType, trustDevice } = challengeSchema.parse(req.body);
 
     let userId: string;
     try {
@@ -332,12 +403,42 @@ router.post(
       entityId: sessionId,
     });
 
+    // Optionally trust this device for future logins.
+    let deviceTrustToken: string | undefined;
+    if (trustDevice) {
+      const plainToken = randomToken(32);
+      const tokenHash = sha256(plainToken);
+      const expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + TRUSTED_DEVICE_TTL_DAYS);
+
+      await db.insert(trustedDevices).values({
+        userId,
+        tokenHash,
+        deviceName: deviceName ?? null,
+        userAgent: req.get("user-agent") ?? null,
+        ipAddress: req.ip,
+        expiresAt,
+      });
+
+      deviceTrustToken = plainToken;
+
+      await writeAuditLog({
+        req,
+        userId,
+        action: "trusted_device_added",
+        entityType: "trusted_device",
+        entityId: undefined,
+        metadataJson: { deviceName: deviceName ?? null, ttlDays: TRUSTED_DEVICE_TTL_DAYS },
+      });
+    }
+
     setAuthCookies(req, res, accessToken, rawRefreshToken);
 
     const useCookies = clientType === "web";
     return ok(res, {
       success: true,
       ...(useCookies ? {} : { accessToken, refreshToken: rawRefreshToken }),
+      ...(deviceTrustToken ? { deviceTrustToken } : {}),
     });
   })
 );

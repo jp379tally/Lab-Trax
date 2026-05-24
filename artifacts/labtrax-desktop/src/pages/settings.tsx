@@ -991,7 +991,86 @@ function TwoFactorPanel() {
           </button>
         </div>
       )}
+      {enabled && <TrustedDevicesSection />}
     </PanelShell>
+  );
+}
+
+interface TrustedDeviceRow {
+  id: string;
+  deviceName: string | null;
+  userAgent: string | null;
+  ipAddress: string | null;
+  createdAt: string;
+  lastUsedAt: string | null;
+  expiresAt: string;
+}
+
+function TrustedDevicesSection() {
+  const queryClient = useQueryClient();
+  const [revokeError, setRevokeError] = useState<string | null>(null);
+
+  const devicesQuery = useQuery({
+    queryKey: ["auth", "trusted-devices"],
+    queryFn: () =>
+      apiFetch<{ devices: TrustedDeviceRow[] }>("/auth/2fa/trusted-devices"),
+  });
+
+  const devices: TrustedDeviceRow[] = devicesQuery.data?.devices ?? [];
+
+  const revokeDevice = useMutation({
+    mutationFn: (id: string) =>
+      apiFetch(`/auth/2fa/trusted-devices/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      setRevokeError(null);
+      queryClient.invalidateQueries({ queryKey: ["auth", "trusted-devices"] });
+    },
+    onError: (err: Error) => {
+      setRevokeError(err.message || "Could not revoke that device.");
+    },
+  });
+
+  if (devicesQuery.isLoading) return null;
+  if (devices.length === 0) return null;
+
+  return (
+    <div>
+      <div className="text-sm font-semibold mb-1 flex items-center gap-2">
+        <Monitor size={14} />
+        Trusted devices
+      </div>
+      <p className="text-xs text-muted-foreground mb-3">
+        These devices are allowed to skip the 2FA challenge for 30 days. Revoke any device you don't recognise.
+      </p>
+      {revokeError && <Alert tone="danger">{revokeError}</Alert>}
+      <div className="border border-border rounded-md divide-y divide-border">
+        {devices.map((d) => (
+          <div key={d.id} className="px-3 py-3 flex items-center justify-between gap-3 text-sm">
+            <div className="min-w-0">
+              <div className="font-medium truncate">
+                {d.deviceName || describeUserAgent(d.userAgent)}
+              </div>
+              <div className="text-xs text-muted-foreground mt-0.5">
+                {describeUserAgent(d.userAgent)} · {d.ipAddress || "unknown IP"}
+              </div>
+              <div className="text-[11px] text-muted-foreground mt-0.5">
+                Trusted {formatRelative(d.createdAt)}
+                {d.lastUsedAt ? ` · last used ${formatRelative(d.lastUsedAt)}` : ""}
+                {" · "}expires {formatRelative(d.expiresAt)}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => revokeDevice.mutate(d.id)}
+              disabled={revokeDevice.isPending}
+              className="h-8 px-3 rounded-md text-xs font-semibold border border-border hover:bg-destructive/10 hover:text-destructive hover:border-destructive/40 disabled:opacity-50 shrink-0"
+            >
+              Revoke
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

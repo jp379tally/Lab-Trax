@@ -22,6 +22,7 @@ export default function LoginPage() {
   const [totpCode, setTotpCode] = useState("");
   const [useBackupCode, setUseBackupCode] = useState(false);
   const [challengeSubmitting, setChallengeSubmitting] = useState(false);
+  const [trustDevice, setTrustDevice] = useState(true);
 
   // One-shot toast-style notice when the saved sign-in blob couldn't be
   // decrypted. Distinct from the persistent keychain-unavailable banner
@@ -45,6 +46,7 @@ export default function LoginPage() {
         setPendingToken(err.pendingToken);
         setTotpCode("");
         setUseBackupCode(false);
+        setTrustDevice(true);
         setSubmitting(false);
         return;
       }
@@ -77,7 +79,7 @@ export default function LoginPage() {
     setChallengeSubmitting(true);
     setError(null);
     try {
-      await completeTwoFactor(pendingToken, totpCode.trim());
+      await completeTwoFactor(pendingToken, totpCode.trim(), trustDevice);
     } catch (err) {
       const message = (err as Error)?.message || "Invalid code.";
       setError(message);
@@ -133,6 +135,18 @@ export default function LoginPage() {
                     className="w-full h-10 px-3 rounded-md bg-background border border-input text-sm text-center font-mono tracking-widest focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
                   />
                 </div>
+                {/* Trust this device checkbox */}
+                <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={trustDevice}
+                    onChange={(e) => setTrustDevice(e.target.checked)}
+                    className="h-4 w-4 rounded border-input accent-primary cursor-pointer"
+                  />
+                  <span className="text-sm text-foreground">
+                    Trust this device for 30 days
+                  </span>
+                </label>
                 <button
                   type="submit"
                   disabled={challengeSubmitting || !totpCode.trim()}

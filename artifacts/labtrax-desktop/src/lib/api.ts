@@ -204,6 +204,36 @@ export function clearPlatformAdminSecretCache(): void {
 })();
 
 const TOKEN_STORAGE_KEY = "labtrax_desktop_tokens_v1";
+const TRUSTED_DEVICE_STORAGE_KEY = "labtrax_trusted_device_v1";
+
+export function getTrustedDeviceToken(): string | null {
+  try {
+    if (typeof localStorage === "undefined") return null;
+    return localStorage.getItem(TRUSTED_DEVICE_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function saveTrustedDeviceToken(token: string): void {
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(TRUSTED_DEVICE_STORAGE_KEY, token);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+export function clearTrustedDeviceToken(): void {
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.removeItem(TRUSTED_DEVICE_STORAGE_KEY);
+    }
+  } catch {
+    /* ignore */
+  }
+}
 
 type TokenPair = { accessToken: string; refreshToken: string };
 
@@ -766,6 +796,9 @@ export async function login(username: string, password: string): Promise<Session
         password,
         deviceName: "LabTrax Desktop",
         clientType: "desktop",
+        // Include a previously saved trust token so a recognised device skips
+        // the 2FA challenge on re-login (Task #863).
+        deviceTrustToken: getTrustedDeviceToken() ?? undefined,
       }),
     });
   } catch {
@@ -808,6 +841,7 @@ export async function login(username: string, password: string): Promise<Session
 export async function completeTwoFactorChallenge(
   pendingToken: string,
   code: string,
+  trustDevice = false,
 ): Promise<SessionUser> {
   const r = await fetch(apiUrl("/auth/2fa/challenge"), {
     method: "POST",
@@ -817,17 +851,22 @@ export async function completeTwoFactorChallenge(
       code,
       deviceName: "LabTrax Desktop",
       clientType: "desktop",
+      trustDevice,
     }),
   });
   const body = await r.json().catch(() => ({}));
   if (!r.ok || !body?.data?.success) {
     throw new ApiError(body?.error || body?.message || "Invalid code.", r.status);
   }
-  const { accessToken, refreshToken } = body.data;
+  const { accessToken, refreshToken, deviceTrustToken } = body.data;
   if (typeof accessToken === "string" && typeof refreshToken === "string") {
     persistTokens({ accessToken, refreshToken });
   } else {
     throw new ApiError("The server didn't return a sign-in token. Please contact your administrator.", r.status);
+  }
+  // Persist the trust token for future logins (Task #863).
+  if (typeof deviceTrustToken === "string" && deviceTrustToken) {
+    saveTrustedDeviceToken(deviceTrustToken);
   }
   const me = await apiFetch<{ success?: boolean; user?: SessionUser } | SessionUser>("/auth/me");
   const user = (me as any)?.user ?? (me as SessionUser);

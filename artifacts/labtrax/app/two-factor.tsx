@@ -18,6 +18,34 @@ import * as Clipboard from "expo-clipboard";
 import { apiRequest } from "@/lib/query-client";
 import Colors from "@/constants/colors";
 
+interface TrustedDevice {
+  id: string;
+  deviceName: string | null;
+  userAgent: string | null;
+  ipAddress: string | null;
+  createdAt: string;
+  lastUsedAt: string | null;
+  expiresAt: string;
+}
+
+function formatRelativeDate(iso: string | null): string {
+  if (!iso) return "—";
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return "—";
+  const diff = t - Date.now();
+  const future = diff > 0;
+  const absMs = Math.abs(diff);
+  const min = Math.round(absMs / 60000);
+  const suffix = (label: string) => (future ? `in ${label}` : `${label} ago`);
+  if (min < 1) return future ? "in a moment" : "just now";
+  if (min < 60) return suffix(`${min} min`);
+  const hr = Math.round(min / 60);
+  if (hr < 24) return suffix(`${hr} hr`);
+  const day = Math.round(hr / 24);
+  if (day < 30) return suffix(`${day} day${day === 1 ? "" : "s"}`);
+  return new Date(iso).toLocaleDateString();
+}
+
 type Phase = "loading" | "status" | "setup-start" | "setup-confirm" | "backup-codes" | "disable-confirm" | "regen-confirm" | "regen-codes";
 
 export default function TwoFactorScreen() {
@@ -34,18 +62,61 @@ export default function TwoFactorScreen() {
   const [copiedSecret, setCopiedSecret] = useState(false);
   const [regenCode, setRegenCode] = useState("");
 
+  // Trusted devices (Task #863)
+  const [trustedDevices, setTrustedDevices] = useState<TrustedDevice[]>([]);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
+
+  const fetchTrustedDevices = useCallback(async () => {
+    try {
+      const res = await apiRequest("GET", "/api/auth/2fa/trusted-devices");
+      const data = await res.json();
+      // API envelope: { ok: true, data: { devices: [...] } }
+      setTrustedDevices(data?.data?.devices ?? []);
+    } catch {
+      setTrustedDevices([]);
+    }
+  }, []);
+
+  async function handleRevokeDevice(id: string) {
+    Alert.alert(
+      "Revoke trusted device",
+      "This device will need to pass the 2FA challenge on next sign-in. Continue?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Revoke",
+          style: "destructive",
+          onPress: async () => {
+            setRevokingId(id);
+            try {
+              await apiRequest("DELETE", `/api/auth/2fa/trusted-devices/${id}`);
+              setTrustedDevices((prev) => prev.filter((d) => d.id !== id));
+            } catch {
+              Alert.alert("Error", "Could not revoke that device. Please try again.");
+            } finally {
+              setRevokingId(null);
+            }
+          },
+        },
+      ],
+    );
+  }
+
   const fetchStatus = useCallback(async () => {
     try {
       const res = await apiRequest("GET", "/api/auth/2fa/status");
       const data = await res.json();
       if (data?.data) {
         setTwoFactorEnabled(data.data.twoFactorEnabled ?? false);
+        if (data.data.twoFactorEnabled) {
+          fetchTrustedDevices();
+        }
       }
       setPhase("status");
     } catch {
       setPhase("status");
     }
-  }, []);
+  }, [fetchTrustedDevices]);
 
   useEffect(() => {
     fetchStatus();
@@ -246,6 +317,68 @@ export default function TwoFactorScreen() {
                   </>
                 )}
               </Pressable>
+            )}
+
+            {/* Trusted devices list */}
+            {twoFactorEnabled && trustedDevices.length > 0 && (
+              <View style={{ marginTop: 4, gap: 10 }}>
+                <Text style={{ fontSize: 14, fontWeight: "600", color: Colors.light.text }}>
+                  Trusted devices
+                </Text>
+                <Text style={{ fontSize: 12, color: Colors.light.tabIconDefault, marginTop: -6 }}>
+                  These devices skip the 2FA challenge for 30 days. Revoke any you don't recognise.
+                </Text>
+                {trustedDevices.map((d) => (
+                  <View
+                    key={d.id}
+                    style={{
+                      backgroundColor: "#F9FAFB",
+                      borderRadius: 10,
+                      borderWidth: 1,
+                      borderColor: "#E5E7EB",
+                      padding: 12,
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 10,
+                    }}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 13, fontWeight: "600", color: Colors.light.text }}>
+                        {d.deviceName || (d.userAgent?.includes("Mobile") ? "Mobile app" : "Desktop / Browser")}
+                      </Text>
+                      {d.ipAddress ? (
+                        <Text style={{ fontSize: 11, color: Colors.light.tabIconDefault, marginTop: 1 }}>
+                          {d.ipAddress}
+                        </Text>
+                      ) : null}
+                      <Text style={{ fontSize: 11, color: Colors.light.tabIconDefault, marginTop: 1 }}>
+                        Trusted {formatRelativeDate(d.createdAt)}
+                        {d.lastUsedAt ? ` · used ${formatRelativeDate(d.lastUsedAt)}` : ""}
+                        {" · "}expires {formatRelativeDate(d.expiresAt)}
+                      </Text>
+                    </View>
+                    <Pressable
+                      onPress={() => handleRevokeDevice(d.id)}
+                      disabled={revokingId === d.id}
+                      style={({ pressed }) => ({
+                        paddingHorizontal: 10,
+                        paddingVertical: 6,
+                        borderRadius: 6,
+                        backgroundColor: pressed ? "#FEE2E2" : "#FEF2F2",
+                        borderWidth: 1,
+                        borderColor: "#FECACA",
+                        opacity: revokingId === d.id ? 0.5 : 1,
+                      })}
+                    >
+                      {revokingId === d.id ? (
+                        <ActivityIndicator size="small" color="#DC2626" />
+                      ) : (
+                        <Text style={{ fontSize: 12, fontWeight: "600", color: "#DC2626" }}>Revoke</Text>
+                      )}
+                    </Pressable>
+                  </View>
+                ))}
+              </View>
             )}
           </View>
         )}
