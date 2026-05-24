@@ -1,5 +1,7 @@
 import {
   AlertTriangle,
+  Bell,
+  Check,
   Download,
   FileText,
   FolderOpen,
@@ -10,6 +12,7 @@ import {
   RefreshCw,
   Rocket,
 } from "lucide-react";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api";
 
@@ -31,6 +34,28 @@ export default function DownloadPage() {
     queryKey: ["desktop-installer", "public"],
     queryFn: () => apiFetch<DesktopInstallerPublicInfo>("/desktop-installer"),
   });
+
+  const [notifyEmail, setNotifyEmail] = useState("");
+  const [notifyState, setNotifyState] = useState<"idle" | "submitting" | "done" | "error">("idle");
+  const [notifyError, setNotifyError] = useState<string | null>(null);
+
+  async function handleNotifySubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const email = notifyEmail.trim();
+    if (!email) return;
+    setNotifyState("submitting");
+    setNotifyError(null);
+    try {
+      await apiFetch("/desktop-installer/notify-me", {
+        method: "POST",
+        body: JSON.stringify({ email }),
+      });
+      setNotifyState("done");
+    } catch (err: any) {
+      setNotifyError(err?.message || "Something went wrong. Please try again.");
+      setNotifyState("error");
+    }
+  }
 
   const info = query.data;
   const version = info?.version ?? FALLBACK_VERSION;
@@ -118,6 +143,55 @@ export default function DownloadPage() {
                     </button>
                   </div>
                 </div>
+
+                {/* Notify-me form */}
+                <div className="rounded-md border border-border bg-secondary/40 px-4 py-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Bell size={14} className="text-muted-foreground shrink-0" />
+                    <div className="text-sm font-medium">Email me when it's ready</div>
+                  </div>
+                  {notifyState === "done" ? (
+                    <div className="flex items-center gap-2 text-sm text-green-700 dark:text-green-400">
+                      <Check size={14} className="shrink-0" />
+                      <span>You're on the list — we'll email you as soon as the installer is published.</span>
+                    </div>
+                  ) : (
+                    <form onSubmit={handleNotifySubmit} className="flex flex-col sm:flex-row gap-2">
+                      <input
+                        type="email"
+                        placeholder="your@email.com"
+                        value={notifyEmail}
+                        onChange={(e) => {
+                          setNotifyEmail(e.target.value);
+                          if (notifyState === "error") setNotifyState("idle");
+                        }}
+                        disabled={notifyState === "submitting"}
+                        className="flex-1 text-sm px-3 py-1.5 rounded-md border border-border bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-50"
+                      />
+                      <button
+                        type="submit"
+                        disabled={notifyState === "submitting" || !notifyEmail.trim()}
+                        className="inline-flex items-center justify-center gap-1.5 text-sm font-medium bg-primary text-primary-foreground px-4 py-1.5 rounded-md hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                      >
+                        {notifyState === "submitting" ? (
+                          <>
+                            <Loader2 size={13} className="animate-spin" />
+                            Saving…
+                          </>
+                        ) : (
+                          "Notify me"
+                        )}
+                      </button>
+                    </form>
+                  )}
+                  {notifyState === "error" && notifyError && (
+                    <p className="text-xs text-destructive mt-1.5">{notifyError}</p>
+                  )}
+                  <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
+                    One-time notification only — we won't add you to any mailing list.
+                  </p>
+                </div>
+
                 <div className="rounded-md border border-border bg-secondary/40 px-4 py-3 flex items-start gap-2.5">
                   <Globe size={15} className="text-muted-foreground mt-0.5 shrink-0" />
                   <div>

@@ -734,6 +734,42 @@ export async function sendDownloadInterruptionAlertEmail(
   }
 }
 
+export interface InstallerReadyNotificationParams {
+  notifyEmails: string[];
+  version: string;
+  downloadUrl: string;
+}
+
+export async function sendInstallerReadyNotificationEmail(
+  params: InstallerReadyNotificationParams,
+): Promise<void> {
+  if (params.notifyEmails.length === 0) return;
+
+  const downloadPageUrl = `${getAppBaseUrl()}/desktop/download`;
+  const subject = `LabTrax Desktop v${params.version} is now available for download`;
+
+  const html = `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+    <div style="background:#4A6CF7;color:white;padding:20px;border-radius:8px 8px 0 0;">
+      <h2 style="margin:0;">LabTrax</h2>
+      <p style="margin:4px 0 0;opacity:0.9;">Desktop installer is ready</p>
+    </div>
+    <div style="padding:24px;border:1px solid #eee;border-top:none;border-radius:0 0 8px 8px;">
+      <p style="font-size:15px;">Great news — the LabTrax Desktop installer you signed up to be notified about is now available.</p>
+      <p style="font-size:14px;color:#555;"><strong>Version:</strong> ${escapeHtml(params.version)}</p>
+      <p style="margin:24px 0 8px;">
+        <a href="${escapeHtml(downloadPageUrl)}" style="display:inline-block;background:#4A6CF7;color:white;padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:bold;font-size:15px;">Download LabTrax Desktop</a>
+      </p>
+      <p style="font-size:13px;color:#888;margin-top:24px;">You received this email because you requested to be notified when the installer became available. You won't receive any further automated emails from this address.</p>
+    </div>
+  </div>`;
+
+  const text = `LabTrax Desktop v${params.version} is now available.\n\nDownload it at: ${downloadPageUrl}\n\nYou received this because you signed up for installer availability notifications.`;
+
+  for (const email of params.notifyEmails) {
+    await sendMail({ to: email, subject, html, text });
+  }
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")

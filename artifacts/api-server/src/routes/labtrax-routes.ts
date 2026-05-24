@@ -18,7 +18,7 @@ import { dispatchInstallerAlert } from "../lib/desktop-installer-alerts";
 import { runDesktopInstallerHealthCheck } from "../lib/desktop-installer-health";
 import { getDownloadInterruptionStats } from "../lib/download-interruptions";
 import { runOneDriveBackup, runBackup, getBackupHourUtc, getBackupScheduleConfig, getLastSuccessfulBackupAt, getBackupStaleAlertSettings, getBackupHistoryRetentionDays, restartScheduledBackupJob, executeRestore, getRestoreState, SETTING_BACKUP_HOUR_UTC, SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, SETTING_BACKUP_SCHEDULE_DESTINATION, SETTING_BACKUP_SCHEDULE_PATH, SETTING_BACKUP_SCHEDULE_ENABLED, SETTING_BACKUP_LAST_SUCCESSFUL_AT, SETTING_BACKUP_HISTORY_RETENTION_DAYS, SETTING_BACKUP_HISTORY_MAX_ROWS, SETTING_ROLLING_BACKUP_ENABLED, SETTING_ROLLING_BACKUP_LAST_RUN_AT, SETTING_ROLLING_BACKUP_LAST_ERROR, ALL_SCHEDULE_SETTINGS, SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS, SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS, SETTING_BACKUP_STALE_DAYS, DEFAULT_BACKUP_STALE_DAYS, type BackupDestination } from "../lib/backup";
-import { sendInstallerPublishFailureAlertEmail } from "../lib/mail";
+import { sendInstallerPublishFailureAlertEmail, sendMail, getAppBaseUrl } from "../lib/mail";
 import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, getCleanupProgress, getCleanupStuckTimeoutMinutes, cancelCleanup, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC, SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES } from "../lib/case-media";
 import multer from "multer";
 import OpenAI, { toFile } from "openai";
@@ -3996,6 +3996,7 @@ Important rules:
   const SETTING_DESKTOP_INSTALLER_URL = "desktop_installer_url";
   const SETTING_DESKTOP_INSTALLER_VERSION = "desktop_installer_version";
   const SETTING_DESKTOP_INSTALLER_RELEASE_NOTES = "desktop_installer_release_notes";
+  const SETTING_DESKTOP_INSTALLER_NOTIFY_LIST = "desktop_installer_notify_list";
   const SETTING_BUILD_COUNTER_WARNING = "build_counter_warning";
   const SETTING_DOWNLOAD_INTERRUPTION_ALERT_THRESHOLD = "download_interruption_alert_threshold";
   const SETTING_MOBILE_BUILD_LAST_TRIGGER = "mobile_build_last_trigger";
@@ -4056,6 +4057,55 @@ Important rules:
       installerObject,
       available,
     });
+  });
+
+  // ── Notify-me signup (no auth required) ──────────────────────────────────
+  //
+  // Public endpoint: any visitor who sees the "installer coming soon" banner
+  // can submit their email to be notified on the next publish. Emails are
+  // stored as a JSON array in system_settings under
+  // SETTING_DESKTOP_INSTALLER_NOTIFY_LIST and cleared after each publish.
+  router.post("/desktop-installer/notify-me", async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const email =
+      typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: "A valid email address is required." });
+    }
+    if (email.length > 254) {
+      return res.status(400).json({ error: "Email address is too long." });
+    }
+
+    try {
+      const existing = await db
+        .select({ value: systemSettings.value })
+        .from(systemSettings)
+        .where(eq(systemSettings.key, SETTING_DESKTOP_INSTALLER_NOTIFY_LIST));
+      let list: string[] = [];
+      if (existing.length > 0 && existing[0].value) {
+        try {
+          const parsed = JSON.parse(existing[0].value);
+          if (Array.isArray(parsed)) list = parsed as string[];
+        } catch {
+          list = [];
+        }
+      }
+      if (!list.includes(email)) {
+        list.push(email);
+        await db
+          .insert(systemSettings)
+          .values({ key: SETTING_DESKTOP_INSTALLER_NOTIFY_LIST, value: JSON.stringify(list) })
+          .onConflictDoUpdate({
+            target: systemSettings.key,
+            set: { value: JSON.stringify(list), updatedAt: new Date() },
+          });
+      }
+      return res.json({ success: true });
+    } catch (e: any) {
+      req.log?.error?.({ err: e }, "notify-me: failed to store email");
+      return res.status(500).json({ error: "Failed to save your email. Please try again." });
+    }
   });
 
   router.get("/admin/settings/desktop-installer", requireAuth, async (req, res) => {
@@ -4830,6 +4880,49 @@ Important rules:
         });
       } catch (logErr) {
         req.log?.warn?.({ err: logErr }, "publish: failed to record installer_changelog row");
+      }
+
+      // Best-effort: notify anyone who signed up via POST /desktop-installer/notify-me.
+      // Strategy: snapshot the list and delete it FIRST (before sending any email)
+      // so the one-time guarantee holds even if individual sends fail. Emails are
+      // then attempted per-recipient with Promise.allSettled so one bad address
+      // never blocks the others.
+      try {
+        const notifyRow = await db
+          .select({ value: systemSettings.value })
+          .from(systemSettings)
+          .where(eq(systemSettings.key, SETTING_DESKTOP_INSTALLER_NOTIFY_LIST));
+        let notifyEmails: string[] = [];
+        if (notifyRow.length > 0 && notifyRow[0].value) {
+          try {
+            const parsed = JSON.parse(notifyRow[0].value);
+            if (Array.isArray(parsed)) notifyEmails = parsed as string[];
+          } catch {
+            notifyEmails = [];
+          }
+        }
+        if (notifyEmails.length > 0) {
+          // Clear the list first — guarantees users are notified at most once per
+          // publish regardless of whether the mail transport succeeds.
+          await db.delete(systemSettings).where(eq(systemSettings.key, SETTING_DESKTOP_INSTALLER_NOTIFY_LIST));
+
+          // Send per-recipient so one bad address doesn't abort the others.
+          const downloadPageUrl = `${getAppBaseUrl()}/desktop/download`;
+          const subject = `LabTrax Desktop v${version} is now available for download`;
+          const html = `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;"><div style="background:#4A6CF7;color:white;padding:20px;border-radius:8px 8px 0 0;"><h2 style="margin:0;">LabTrax</h2><p style="margin:4px 0 0;opacity:0.9;">Desktop installer is ready</p></div><div style="padding:24px;border:1px solid #eee;border-top:none;border-radius:0 0 8px 8px;"><p style="font-size:15px;">Great news — the LabTrax Desktop installer you signed up to be notified about is now available.</p><p style="font-size:14px;color:#555;"><strong>Version:</strong> ${version}</p><p style="margin:24px 0 8px;"><a href="${downloadPageUrl}" style="display:inline-block;background:#4A6CF7;color:white;padding:12px 28px;border-radius:6px;text-decoration:none;font-weight:bold;font-size:15px;">Download LabTrax Desktop</a></p><p style="font-size:13px;color:#888;margin-top:24px;">You received this email because you requested to be notified when the installer became available. You won't receive any further automated emails from this address.</p></div></div>`;
+          const text = `LabTrax Desktop v${version} is now available.\n\nDownload it at: ${downloadPageUrl}\n\nYou received this because you signed up for installer availability notifications.`;
+
+          const results = await Promise.allSettled(
+            notifyEmails.map((email) => sendMail({ to: email, subject, html, text })),
+          );
+          const failed = results.filter((r) => r.status === "rejected").length;
+          req.log?.info?.(
+            { total: notifyEmails.length, failed },
+            "notify-me: sent installer-ready emails and cleared list",
+          );
+        }
+      } catch (notifyErr: any) {
+        req.log?.warn?.({ err: notifyErr }, "notify-me: failed to process installer-ready notifications (non-fatal)");
       }
 
       req.log?.info?.(
