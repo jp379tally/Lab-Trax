@@ -3,9 +3,11 @@ import {
   Download,
   FileText,
   FolderOpen,
+  Globe,
   Loader2,
   Monitor,
   Package,
+  RefreshCw,
   Rocket,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -83,44 +85,47 @@ export default function DownloadPage() {
                     : "Desktop download."}
             </p>
 
-            {unavailable ? (
-              <div className="mt-4 rounded-md border border-amber-300 bg-amber-50 dark:border-amber-800/40 dark:bg-amber-950/30 px-4 py-3 flex items-start gap-2.5 text-sm">
-                <AlertTriangle size={16} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
-                <div className="text-amber-800 dark:text-amber-200">
-                  <div className="font-semibold">Installer not yet uploaded</div>
-                  <p className="text-xs mt-1 text-amber-700 dark:text-amber-300/90">
-                    The LabTrax Desktop installer hasn't been uploaded yet. Contact your lab admin to upload it via Settings → Desktop App.
-                  </p>
-                </div>
-              </div>
-            ) : queryFailed ? (
-              <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 flex items-start gap-2.5 text-sm">
-                <AlertTriangle size={16} className="text-destructive mt-0.5 shrink-0" />
-                <div className="text-destructive flex-1">
-                  <div className="font-semibold">
-                    {is503 ? "Storage temporarily unavailable" : "Couldn't check for the latest installer"}
+            {unavailable || queryFailed ? (
+              <div className="mt-4 space-y-3">
+                <div className="rounded-md border border-amber-300 bg-amber-50 dark:border-amber-800/40 dark:bg-amber-950/30 px-4 py-3 flex items-start gap-2.5 text-sm">
+                  <AlertTriangle size={16} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+                  <div className="flex-1 text-amber-800 dark:text-amber-200">
+                    <div className="font-semibold">Desktop installer coming soon</div>
+                    <p className="text-xs mt-1 text-amber-700 dark:text-amber-300/90 leading-relaxed">
+                      {queryFailed && !is503
+                        ? "We couldn't reach the server to confirm the installer is available — it may still be loading. Check back soon, or use the web app in the meantime."
+                        : is503
+                          ? "The file storage service is temporarily unavailable. The installer should be available again shortly — check back soon."
+                          : "The desktop installer is being prepared — check back soon. In the meantime, you can use LabTrax directly in your browser — no installation needed."}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => query.refetch()}
+                      disabled={query.isFetching}
+                      className="mt-2.5 inline-flex items-center gap-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 underline underline-offset-2 hover:no-underline disabled:opacity-50"
+                    >
+                      {query.isFetching ? (
+                        <>
+                          <Loader2 size={11} className="animate-spin" />
+                          Checking…
+                        </>
+                      ) : (
+                        <>
+                          <RefreshCw size={11} />
+                          Check again
+                        </>
+                      )}
+                    </button>
                   </div>
-                  <p className="text-xs mt-1 text-destructive/90">
-                    {is503
-                      ? "The file storage service is temporarily unavailable. Please try again in a moment."
-                      : queryError?.message ||
-                        "We couldn't reach the LabTrax server to confirm the installer is available."}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => query.refetch()}
-                    disabled={query.isFetching}
-                    className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium underline disabled:opacity-50"
-                  >
-                    {query.isFetching ? (
-                      <>
-                        <Loader2 size={12} className="animate-spin" />
-                        Retrying…
-                      </>
-                    ) : (
-                      "Try again"
-                    )}
-                  </button>
+                </div>
+                <div className="rounded-md border border-border bg-secondary/40 px-4 py-3 flex items-start gap-2.5">
+                  <Globe size={15} className="text-muted-foreground mt-0.5 shrink-0" />
+                  <div>
+                    <div className="text-sm font-medium">Use the web app instead</div>
+                    <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                      LabTrax works in any modern browser — Chrome, Edge, Firefox, or Safari. Open it from the link your lab admin shared and bookmark it for quick access. No download required.
+                    </p>
+                  </div>
                 </div>
               </div>
             ) : showDownloadButton ? (

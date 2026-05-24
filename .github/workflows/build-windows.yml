@@ -267,3 +267,71 @@ process.stdout.write(out.join('\n').trim());
             exit 1
           fi
           echo "::notice::Published LabTrax-Setup.exe v$VERSION to $BASE_URL (atomic /publish call)."
+
+      # Publish the portable ZIP to the live download page so the
+      # /downloads/LabTrax-Windows-Portable.zip URL works immediately
+      # after CI completes. Same secret gating as the EXE step above.
+      - name: Publish portable ZIP to live download page
+        id: publish-zip
+        if: success()
+        shell: bash
+        env:
+          PLATFORM_ADMIN_SECRET: ${{ secrets.PLATFORM_ADMIN_SECRET }}
+          PUBLISH_API_BASE_URL: ${{ secrets.PUBLISH_API_BASE_URL }}
+        run: |
+          set -uo pipefail
+          if [[ -z "$PLATFORM_ADMIN_SECRET" || -z "$PUBLISH_API_BASE_URL" ]]; then
+            echo "::notice::Skipping portable ZIP auto-publish — PLATFORM_ADMIN_SECRET or PUBLISH_API_BASE_URL secret not set."
+            exit 0
+          fi
+          BASE_URL="${PUBLISH_API_BASE_URL%/}"
+          ZIP_PATH="artifacts/labtrax-desktop/electron-dist/LabTrax-Windows-Portable.zip"
+          if [[ ! -f "$ZIP_PATH" ]]; then
+            echo "::notice::Portable ZIP not found at $ZIP_PATH — skipping ZIP publish (EXE was still published)."
+            exit 0
+          fi
+          VERSION=$(node -p "require('./artifacts/labtrax-desktop/package.json').version")
+          NOTES=$(node -e "
+const fs = require('fs');
+const ver = 'v${VERSION}';
+let raw;
+try { raw = fs.readFileSync('artifacts/labtrax-desktop/RELEASE_NOTES.md', 'utf8'); } catch { process.exit(0); }
+const lines = raw.split(/\r?\n/);
+let inBlock = false, out = [];
+for (const line of lines) {
+  if (/^## v/.test(line)) {
+    if (inBlock) break;
+    if (line.replace(/^##\s+/, '').trim() === ver) inBlock = true;
+    continue;
+  }
+  if (inBlock) out.push(line);
+}
+process.stdout.write(out.join('\n').trim());
+" 2>/dev/null) || true
+          if [[ -z "$NOTES" ]]; then
+            NOTES="Auto-published from GitHub Actions run ${GITHUB_RUN_ID} (commit ${GITHUB_SHA})."
+          fi
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          echo "Publishing $ZIP_PATH (v$VERSION) to $BASE_URL/api/admin/desktop-installer/publish"
+          PUBLISH_BODY=$(mktemp)
+          PUBLISH_STATUS=$(curl --silent --show-error --output "$PUBLISH_BODY" --write-out '%{http_code}' \
+            -H "X-Platform-Admin-Secret: $PLATFORM_ADMIN_SECRET" \
+            -F "file=@${ZIP_PATH};type=application/zip" \
+            -F "version=${VERSION}" \
+            -F "downloadUrl=/downloads/LabTrax-Windows-Portable.zip" \
+            -F "releaseNotes=${NOTES}" \
+            -F "workflowName=${GITHUB_WORKFLOW}" \
+            -F "runUrl=${RUN_URL}" \
+            -F "runId=${GITHUB_RUN_ID}" \
+            -F "commitSha=${GITHUB_SHA}" \
+            -F "ref=${GITHUB_REF_NAME}" \
+            "$BASE_URL/api/admin/desktop-installer/publish") || true
+          PUBLISH_STATUS="${PUBLISH_STATUS:-000}"
+          cat "$PUBLISH_BODY"; echo
+          if [[ ! "$PUBLISH_STATUS" =~ ^2[0-9][0-9]$ ]]; then
+            BODY_TRUNC=$(head -c 1500 "$PUBLISH_BODY")
+            STAGE_PARSED=$(jq -r '.stage // "unknown"' "$PUBLISH_BODY" 2>/dev/null || echo "unknown")
+            echo "::warning::Portable ZIP publish failed (HTTP $PUBLISH_STATUS, stage=$STAGE_PARSED): $BODY_TRUNC — EXE is still live."
+          else
+            echo "::notice::Published LabTrax-Windows-Portable.zip v$VERSION to $BASE_URL (atomic /publish call)."
+          fi

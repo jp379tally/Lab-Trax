@@ -3258,27 +3258,68 @@ function DesktopInstallerPanel() {
             )}
           </div>
 
-          <div className="rounded-lg border border-border bg-secondary/20 px-5 py-4 space-y-2">
-            <div className="flex items-center gap-2 text-sm font-semibold">
-              <Package size={14} />
-              Build a one-click installer
+          <div className="rounded-lg border border-border bg-secondary/20 px-5 py-4 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-sm font-semibold">
+                <Package size={14} />
+                Build &amp; publish installer
+              </div>
+              {info.repoUrl && (
+                <a
+                  href={`${info.repoUrl.replace(/\/$/, "")}/actions`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-border bg-background text-xs font-semibold hover:bg-secondary shrink-0"
+                >
+                  <Github size={12} />
+                  Open GitHub Actions
+                  <ExternalLink size={10} className="text-muted-foreground" />
+                </a>
+              )}
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              The NSIS setup wizard (<code className="font-mono bg-secondary px-1 py-0.5 rounded">LabTrax-Setup.exe</code>) is built by the{" "}
-              <strong>Build Windows Installer (Test)</strong> workflow in GitHub Actions.
-              Download <code className="font-mono bg-secondary px-1 py-0.5 rounded">LabTrax-Setup.exe</code> from the workflow run summary,
-              upload it here, and set the <em>Download URL</em> above to{" "}
-              <code className="font-mono bg-secondary px-1 py-0.5 rounded">/downloads/LabTrax-Setup.exe</code>.
+              Trigger the <strong>Build Windows Installer (Test)</strong> workflow from GitHub Actions. When the
+              {" "}<code className="font-mono bg-secondary px-1 py-0.5 rounded">PLATFORM_ADMIN_SECRET</code> and{" "}
+              <code className="font-mono bg-secondary px-1 py-0.5 rounded">PUBLISH_API_BASE_URL</code> secrets are
+              configured in your repo, the built installer is automatically published to the live download page — no manual upload needed.
             </p>
-            <a
-              href={info.repoUrl ? `${info.repoUrl.replace(/\/$/, "")}/actions` : "https://github.com/features/actions"}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 text-xs text-primary hover:underline font-medium mt-1"
-            >
-              <ExternalLink size={11} />
-              Open GitHub Actions
-            </a>
+            {(info.installerStatus === "missing" || info.installerStatus === "unknown") && (
+              <div className="rounded-md border border-blue-300/60 bg-blue-50 dark:border-blue-800/40 dark:bg-blue-950/30 px-4 py-3 space-y-2">
+                <div className="flex items-start gap-2">
+                  <svg className="text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="10" />
+                    <path d="M12 16v-4" />
+                    <path d="M12 8h.01" />
+                  </svg>
+                  <div>
+                    <div className="text-xs font-semibold text-blue-800 dark:text-blue-300">One-time setup: add two secrets to your GitHub repo</div>
+                    <p className="text-[11px] text-blue-700 dark:text-blue-400/90 mt-0.5 leading-relaxed">
+                      For CI to auto-publish after each build, add these two Actions secrets under{" "}
+                      <strong>Settings → Secrets and variables → Actions</strong> in your GitHub repo:
+                    </p>
+                    <dl className="mt-2 space-y-1.5 text-[11px]">
+                      <div className="flex gap-2 items-start">
+                        <dt className="font-mono bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 px-1.5 py-0.5 rounded shrink-0 font-semibold">
+                          PLATFORM_ADMIN_SECRET
+                        </dt>
+                        <dd className="text-blue-700 dark:text-blue-400/80 pt-0.5">
+                          Must match the <code className="font-mono bg-blue-100 dark:bg-blue-900/40 px-1 rounded">PLATFORM_ADMIN_SECRET</code> env var set on this server.
+                        </dd>
+                      </div>
+                      <div className="flex gap-2 items-start">
+                        <dt className="font-mono bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 px-1.5 py-0.5 rounded shrink-0 font-semibold">
+                          PUBLISH_API_BASE_URL
+                        </dt>
+                        <dd className="text-blue-700 dark:text-blue-400/80 pt-0.5">
+                          The public base URL of this server, e.g.{" "}
+                          <code className="font-mono bg-blue-100 dark:bg-blue-900/40 px-1 rounded">https://your-app.replit.app</code>
+                        </dd>
+                      </div>
+                    </dl>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           <DesktopBuildCounterRecovery repoUrl={info.repoUrl} />
