@@ -7,6 +7,15 @@ import { VendorCombobox } from "@/components/finance/VendorCombobox";
 import { CategorySelect } from "@/components/finance/CategorySelect";
 import type { BankAccount, BankTransaction, Invoice, RecurringRule, TransactionCategory } from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
+import { useColumnWidths } from "@/hooks/useColumnWidths";
+
+// 9 resizable columns in body order: Date(0)…Deposit(7), then Balance(8) after fixed Clr/Rec
+const FINANCE_COL_DEFAULTS = [100, 90, 80, 160, 130, 180, 100, 100, 110] as const;
+const FINANCE_FIXED_CLR = 48;
+const FINANCE_FIXED_REC = 48;
+const FINANCE_FIXED_ACTIONS = 80;
+// Labels for the first 8 resizable columns (before Clr/Rec in body order)
+const FINANCE_PRE_LABELS = ["Date", "Type", "Check #", "Payee", "Category", "Memo", "Payment", "Deposit"] as const;
 
 export default function RegisterPage() {
   return (
@@ -44,6 +53,9 @@ function RegisterTable({
   const [recurringFor, setRecurringFor] = useState<BankTransaction | null>(null);
 
   const account = accounts.find((a) => a.id === accountId);
+
+  const { widths: colWidths, totalWidth: colTotalWidth, startResize, resetColumn } =
+    useColumnWidths([...FINANCE_COL_DEFAULTS], "labtrax_finance_col_widths_v1");
 
   const params = useMemo(() => {
     const sp = new URLSearchParams();
@@ -239,21 +251,100 @@ function RegisterTable({
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table
+            className="text-sm"
+            style={{
+              tableLayout: "fixed",
+              width: colTotalWidth + FINANCE_FIXED_CLR + FINANCE_FIXED_REC + FINANCE_FIXED_ACTIONS,
+              userSelect: "none",
+            }}
+          >
+            <colgroup>
+              {/* cols 0-7: resizable Date→Deposit */}
+              {colWidths.slice(0, 8).map((w, i) => (
+                <col key={i} style={{ width: w }} />
+              ))}
+              {/* col 8: fixed Clr */}
+              <col style={{ width: FINANCE_FIXED_CLR }} />
+              {/* col 9: fixed Rec */}
+              <col style={{ width: FINANCE_FIXED_REC }} />
+              {/* col 10: resizable Balance */}
+              <col style={{ width: colWidths[8] }} />
+              {/* col 11: fixed Actions */}
+              <col style={{ width: FINANCE_FIXED_ACTIONS }} />
+            </colgroup>
             <thead>
               <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
-                <th className="text-left font-medium px-4 py-2">Date</th>
-                <th className="text-left font-medium py-2">Type</th>
-                <th className="text-left font-medium py-2">Check #</th>
-                <th className="text-left font-medium py-2">Payee</th>
-                <th className="text-left font-medium py-2">Category</th>
-                <th className="text-left font-medium py-2">Memo</th>
-                <th className="text-right font-medium py-2">Payment</th>
-                <th className="text-right font-medium py-2">Deposit</th>
-                <th className="text-center font-medium py-2 w-12">Clr</th>
-                <th className="text-center font-medium py-2 w-12">Rec</th>
-                <th className="text-right font-medium px-4 py-2">Balance</th>
-                <th className="px-2 py-2 w-10" />
+                {/* First 8 resizable columns: Date → Deposit */}
+                {FINANCE_PRE_LABELS.map((label, i) => {
+                  const isRight = i === 6 || i === 7;
+                  const isFirst = i === 0;
+                  return (
+                    <th
+                      key={label}
+                      className={`font-medium py-2 relative${isFirst ? " px-4" : " px-3"}${isRight ? " text-right" : " text-left"}`}
+                      style={{ overflow: "hidden" }}
+                    >
+                      {label}
+                      <div
+                        onMouseDown={(e) => startResize(i, e)}
+                        onDoubleClick={() => resetColumn(i)}
+                        className="group/resize"
+                        style={{
+                          position: "absolute",
+                          top: 0,
+                          right: 0,
+                          width: 6,
+                          height: "100%",
+                          cursor: "col-resize",
+                          userSelect: "none",
+                          display: "flex",
+                          alignItems: "stretch",
+                          justifyContent: "flex-end",
+                        }}
+                      >
+                        <span
+                          className="w-0.5 transition-colors duration-100 bg-border/60 group-hover/resize:bg-primary/50"
+                          style={{ display: "block", height: "100%" }}
+                        />
+                      </div>
+                    </th>
+                  );
+                })}
+                {/* Fixed: Clr, Rec */}
+                <th className="text-center font-medium py-2">Clr</th>
+                <th className="text-center font-medium py-2">Rec</th>
+                {/* Resizable: Balance (index 8) */}
+                <th
+                  className="font-medium px-4 py-2 relative text-right"
+                  style={{ overflow: "hidden" }}
+                >
+                  Balance
+                  <div
+                    onMouseDown={(e) => startResize(8, e)}
+                    onDoubleClick={() => resetColumn(8)}
+                    className="group/resize"
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      right: 0,
+                      width: 6,
+                      height: "100%",
+                      cursor: "col-resize",
+                      userSelect: "none",
+                      display: "flex",
+                      alignItems: "stretch",
+                      justifyContent: "flex-end",
+                    }}
+                  >
+                    <span
+                      className="w-0.5 transition-colors duration-100 bg-border/60 group-hover/resize:bg-primary/50"
+                      style={{ display: "block", height: "100%" }}
+                    />
+                  </div>
+                </th>
+                {/* Fixed: Actions */}
+                <th className="px-2 py-2" />
               </tr>
             </thead>
             <tbody>
