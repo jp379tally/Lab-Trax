@@ -5900,7 +5900,12 @@ Important rules:
     const lastTriggerRaw = settingMap[SETTING_MOBILE_BUILD_LAST_TRIGGER];
     if (lastTriggerRaw) {
       try {
-        lastTrigger = JSON.parse(lastTriggerRaw) as typeof lastTrigger;
+        lastTrigger = JSON.parse(lastTriggerRaw) as {
+          platform: string;
+          profile: string;
+          triggeredAt: string;
+          triggeredByUsername: string;
+        };
       } catch {
         /* ignore malformed row */
       }
