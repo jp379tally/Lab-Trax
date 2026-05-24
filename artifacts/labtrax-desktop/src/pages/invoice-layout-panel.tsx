@@ -28,6 +28,52 @@ import { previewInvoicePdf } from "@/lib/export";
 
 type SectionKey = keyof InvoiceTemplate["boxes"];
 
+/**
+ * Estimates the number of wrapped lines jsPDF will produce for a custom text
+ * block. Mirrors the `fontSize * 1.3` line-height and word-wrap logic used in
+ * `buildInvoiceDoc` inside export.ts.
+ *
+ * @param text     Raw text content (may contain newlines)
+ * @param fontSize Point size used for the block (same unit as jsPDF)
+ * @param boxW     Box width in PDF points
+ */
+function estimateTextLines(text: string, fontSize: number, boxW: number): number {
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  const rawLines = text.split("\n");
+  let total = 0;
+
+  for (const rawLine of rawLines) {
+    if (!rawLine.trim()) {
+      total += 1;
+      continue;
+    }
+    if (ctx) {
+      // 1 PDF point ≈ 1 px for relative measurement; Helvetica is the PDF font.
+      ctx.font = `${fontSize}px Helvetica, Arial, sans-serif`;
+      const words = rawLine.split(" ");
+      let curW = 0;
+      let lines = 1;
+      for (const word of words) {
+        const space = curW > 0 ? " " : "";
+        const ww = ctx.measureText(space + word).width;
+        if (curW > 0 && curW + ww > boxW) {
+          lines++;
+          curW = ctx.measureText(word).width;
+        } else {
+          curW += ww;
+        }
+      }
+      total += lines;
+    } else {
+      // Fallback: assume ~0.55 pt per char (Helvetica average)
+      const charsPerLine = Math.max(1, Math.floor(boxW / (fontSize * 0.55)));
+      total += Math.max(1, Math.ceil(rawLine.length / charsPerLine));
+    }
+  }
+  return total;
+}
+
 const SECTION_LABELS: Record<SectionKey, string> = {
   header: "Header (Invoice + #)",
   billTo: "Bill-to / Patient",
@@ -579,6 +625,31 @@ export function InvoiceLayoutPanel() {
                 value={selectedText.text}
                 onChange={(e) => updateSelectedText({ text: e.target.value })}
               />
+              {/* Live line-count and overflow warning */}
+              {(() => {
+                const lineH = selectedText.fontSize * 1.3;
+                const maxLines = Math.max(1, Math.floor(selectedText.h / lineH));
+                const text = selectedText.text;
+                const estimatedLines = text.trim()
+                  ? estimateTextLines(text, selectedText.fontSize, selectedText.w)
+                  : 0;
+                const willClip = estimatedLines > maxLines;
+                return (
+                  <div className="space-y-1">
+                    <p className={`text-xs ${willClip ? "text-amber-700 dark:text-amber-400 font-medium" : "text-muted-foreground"}`}>
+                      {estimatedLines > 0
+                        ? `~${estimatedLines} line${estimatedLines !== 1 ? "s" : ""} / ${maxLines} max`
+                        : `${maxLines} line${maxLines !== 1 ? "s" : ""} max`}
+                    </p>
+                    {willClip && (
+                      <div className="flex items-start gap-1.5 rounded px-2 py-1.5 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 text-xs">
+                        <span className="shrink-0 mt-px">⚠</span>
+                        <span>Text will be clipped — resize the box or reduce content</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
               <div className="flex items-center gap-2">
                 <span className="text-xs text-muted-foreground shrink-0">Size</span>
                 <select
