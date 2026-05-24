@@ -2613,6 +2613,16 @@ function DesktopInstallerPanel() {
     queryFn: () => apiFetch<DesktopInstallerInfo>("/admin/settings/desktop-installer"),
   });
 
+  const interruptionStatsQuery = useQuery({
+    queryKey: ["admin", "desktop-installer", "interruption-stats"],
+    queryFn: () =>
+      apiFetch<{ count24h: number; retryFailCount24h: number; lastOccurredAt: string | null }>(
+        "/admin/desktop-installer/interruption-stats",
+      ),
+    refetchInterval: 5 * 60 * 1000,
+    staleTime: 60 * 1000,
+  });
+
   useEffect(() => {
     if (query.data) {
       setUrlInput(query.data.downloadUrl);
@@ -2930,6 +2940,46 @@ function DesktopInstallerPanel() {
                   </span>
                 )}
               </div>
+              {(() => {
+                const stats = interruptionStatsQuery.data;
+                if (!stats) return null;
+                const threshold = info.downloadInterruptionAlertThreshold;
+                const isAlert = stats.retryFailCount24h >= threshold;
+                const hasAny = stats.count24h > 0;
+                return (
+                  <div
+                    className={`text-[11px] rounded-md px-3 py-2 flex items-center gap-2 flex-wrap ${
+                      isAlert
+                        ? "bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                        : "bg-secondary/60 text-muted-foreground"
+                    }`}
+                  >
+                    <span className="font-medium shrink-0">Last 24 h:</span>
+                    {hasAny ? (
+                      <>
+                        <span>
+                          {stats.count24h} interruption{stats.count24h !== 1 ? "s" : ""}
+                          {stats.retryFailCount24h > 0 && (
+                            <> · <span className={isAlert ? "font-semibold" : ""}>{stats.retryFailCount24h} retry failure{stats.retryFailCount24h !== 1 ? "s" : ""}</span></>
+                          )}
+                        </span>
+                        {stats.lastOccurredAt && (
+                          <span className="text-muted-foreground">
+                            · last {new Date(stats.lastOccurredAt).toLocaleString()}
+                          </span>
+                        )}
+                        {isAlert && (
+                          <span className="font-semibold">
+                            ⚠ Retry failures at or above alert threshold ({threshold})
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      <span>no interruptions</span>
+                    )}
+                  </div>
+                );
+              })()}
               {info.releaseNotes && (
                 <div className="rounded-md border border-border bg-background px-4 py-3 space-y-1">
                   <div className="text-[11px] uppercase tracking-wide font-semibold text-muted-foreground">

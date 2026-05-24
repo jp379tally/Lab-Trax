@@ -16,6 +16,7 @@ import {
 } from "../lib/desktop-installer-storage";
 import { dispatchInstallerAlert } from "../lib/desktop-installer-alerts";
 import { runDesktopInstallerHealthCheck } from "../lib/desktop-installer-health";
+import { getDownloadInterruptionStats } from "../lib/download-interruptions";
 import { runOneDriveBackup, runBackup, getBackupHourUtc, getBackupScheduleConfig, getLastSuccessfulBackupAt, getBackupStaleAlertSettings, getBackupHistoryRetentionDays, restartScheduledBackupJob, executeRestore, getRestoreState, SETTING_BACKUP_HOUR_UTC, SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, SETTING_BACKUP_SCHEDULE_DESTINATION, SETTING_BACKUP_SCHEDULE_PATH, SETTING_BACKUP_SCHEDULE_ENABLED, SETTING_BACKUP_LAST_SUCCESSFUL_AT, SETTING_BACKUP_HISTORY_RETENTION_DAYS, SETTING_BACKUP_HISTORY_MAX_ROWS, SETTING_ROLLING_BACKUP_ENABLED, SETTING_ROLLING_BACKUP_LAST_RUN_AT, SETTING_ROLLING_BACKUP_LAST_ERROR, ALL_SCHEDULE_SETTINGS, SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS, SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS, SETTING_BACKUP_STALE_DAYS, DEFAULT_BACKUP_STALE_DAYS, type BackupDestination } from "../lib/backup";
 import { sendInstallerPublishFailureAlertEmail } from "../lib/mail";
 import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, getCleanupProgress, getCleanupStuckTimeoutMinutes, cancelCleanup, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC, SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES } from "../lib/case-media";
@@ -4869,6 +4870,22 @@ Important rules:
     } catch (e: any) {
       req.log?.error?.({ err: e }, "health: unhandled error");
       return res.status(500).json({ error: e?.message || "Health check failed." });
+    }
+  });
+
+  // Lightweight endpoint that returns only the download interruption stats for
+  // the past 24 h. Used by the Desktop App settings panel to surface an inline
+  // warning without triggering the full (expensive) health check pipeline.
+  router.get("/admin/desktop-installer/interruption-stats", requireAuth, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    try {
+      const stats = await getDownloadInterruptionStats();
+      return res.json(stats);
+    } catch (e: any) {
+      req.log?.error?.({ err: e }, "interruption-stats: unhandled error");
+      return res.status(500).json({ error: e?.message || "Failed to fetch interruption stats." });
     }
   });
 
