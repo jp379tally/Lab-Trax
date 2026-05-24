@@ -1332,6 +1332,14 @@ function OrganizationsPanel() {
                   <div className="text-xs text-muted-foreground capitalize">
                     {org?.type || "—"} · {org?.billingEmail || "no billing email"}
                   </div>
+                  {(org?.phone || org?.city || org?.state) && (
+                    <div className="text-xs text-muted-foreground mt-0.5">
+                      {[
+                        org?.phone,
+                        [org?.city, org?.state].filter(Boolean).join(", "),
+                      ].filter(Boolean).join(" · ")}
+                    </div>
+                  )}
                 </div>
                 <div className="flex items-center gap-2 text-xs">
                   <span className="px-2 py-0.5 rounded-full bg-secondary text-secondary-foreground capitalize">{m.role}</span>
