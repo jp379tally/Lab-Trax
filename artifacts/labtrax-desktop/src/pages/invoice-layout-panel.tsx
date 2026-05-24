@@ -150,6 +150,15 @@ function boxesOverlap(a: TemplateBox, b: TemplateBox): boolean {
   );
 }
 
+function boxEdgesOutOfBounds(b: TemplateBox): string[] {
+  const edges: string[] = [];
+  if (b.x < 0) edges.push("left");
+  if (b.y < 0) edges.push("top");
+  if (b.x + b.w > PAGE_W) edges.push("right");
+  if (b.y + b.h > PAGE_H) edges.push("bottom");
+  return edges;
+}
+
 function applyDrag(start: TemplateBox, h: Handle, dx: number, dy: number): TemplateBox {
   let { x, y, w, h: bh } = start;
   if (h === "move") {
@@ -416,6 +425,13 @@ export function InvoiceLayoutPanel() {
       }
     }
   }
+
+  // ── Out-of-bounds detection ──────────────────────────────────────────
+  const outOfBoundsSections: { key: SectionKey; edges: string[] }[] = (
+    Object.keys(draft.boxes) as SectionKey[]
+  )
+    .map((k) => ({ key: k, edges: boxEdgesOutOfBounds(draft.boxes[k]) }))
+    .filter((entry) => entry.edges.length > 0);
 
   // ── Selected extra image / text block props ─────────────────────────
   const selectedExtraIdx =
@@ -1290,6 +1306,24 @@ export function InvoiceLayoutPanel() {
                     {overlappingPairs.map(([a, b]) => (
                       <li key={`${a}-${b}`}>
                         {SECTION_LABELS[a]} overlaps {SECTION_LABELS[b]}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            ) : null}
+            {outOfBoundsSections.length > 0 ? (
+              <div className="flex items-start gap-1.5 rounded px-2 py-1.5 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 text-xs mt-3">
+                <span className="shrink-0 mt-px">⚠</span>
+                <div>
+                  <p className="font-medium mb-0.5">Sections outside the page</p>
+                  <ul className="space-y-0.5">
+                    {outOfBoundsSections.map(({ key, edges }) => (
+                      <li key={key}>
+                        {SECTION_LABELS[key]} extends past the{" "}
+                        {edges.length === 1
+                          ? `${edges[0]} of the page`
+                          : `${edges.slice(0, -1).join(", ")} and ${edges[edges.length - 1]} of the page`}
                       </li>
                     ))}
                   </ul>
