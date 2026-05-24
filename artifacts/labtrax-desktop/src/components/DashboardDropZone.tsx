@@ -1222,6 +1222,12 @@ export function DashboardDropZone() {
         if (r.doctorName?.trim()) fd.append("doctorNameHint", r.doctorName.trim());
         if (first?.trim()) fd.append("patientFirstNameHint", first.trim());
         if (last?.trim()) fd.append("patientLastNameHint", last.trim());
+        if (r.toothIndices?.trim()) fd.append("toothIndicesHint", r.toothIndices.trim());
+        if (r.shade?.trim()) fd.append("shadeHint", r.shade.trim());
+        if (r.material?.trim()) fd.append("materialHint", r.material.trim());
+        if (r.caseType?.trim()) fd.append("caseTypeHint", r.caseType.trim());
+        if (r.dueDate?.trim()) fd.append("dueDateHint", r.dueDate.trim());
+        if (r.notes?.trim()) fd.append("notesHint", r.notes.trim());
 
         const result = await apiFetch<{
           deduped: boolean;

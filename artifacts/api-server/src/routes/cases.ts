@@ -3836,6 +3836,12 @@ const iteroZipImportBodySchema = z.object({
   doctorNameHint: z.string().optional(),
   patientFirstNameHint: z.string().optional(),
   patientLastNameHint: z.string().optional(),
+  toothIndicesHint: z.string().optional(),
+  shadeHint: z.string().optional(),
+  materialHint: z.string().optional(),
+  caseTypeHint: z.string().optional(),
+  dueDateHint: z.string().optional(),
+  notesHint: z.string().optional(),
 });
 
 const EXT_TO_MIME: Record<string, string> = {
@@ -4859,16 +4865,30 @@ router.post(
       const parsed = new Date(extracted.dueDate);
       if (!Number.isNaN(parsed.getTime())) dueDate = parsed;
     }
+    if (!dueDate && body.dueDateHint) {
+      // Parse MM/DD/YYYY (from client AI) or ISO formats.
+      const hint = body.dueDateHint.trim();
+      const mmddyyyy = hint.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+      const parsedHint = mmddyyyy
+        ? new Date(`${mmddyyyy[3]}-${mmddyyyy[1]!.padStart(2, "0")}-${mmddyyyy[2]!.padStart(2, "0")}`)
+        : new Date(hint);
+      if (!Number.isNaN(parsedHint.getTime())) dueDate = parsedHint;
+    }
 
     const caseNumber = await generateIteroCaseNumber(body.labOrganizationId);
 
     const normalizedCaseType = extracted.caseType
       ? normalizeIteroCaseType(extracted.caseType)
-      : null;
+      : (body.caseTypeHint ? normalizeIteroCaseType(body.caseTypeHint) : null);
     if (normalizedCaseType) {
       extracted.caseType = normalizedCaseType;
     }
-    const teethList = (extracted.teeth || "")
+    // Fall back to hint values when AI didn't extract them.
+    if (!extracted.shade && body.shadeHint) extracted.shade = body.shadeHint;
+    if (!extracted.material && body.materialHint) extracted.material = body.materialHint;
+
+    const teethStr = extracted.teeth?.trim() || body.toothIndicesHint?.trim() || "";
+    const teethList = teethStr
       .split(/[,\s]+/)
       .map((t) => t.trim())
       .filter(Boolean);
@@ -4986,12 +5006,13 @@ router.post(
         );
       }
 
-      if (extracted.notes && extracted.notes.trim()) {
+      const zipNoteText = (extracted.notes?.trim() || body.notesHint?.trim()) ?? null;
+      if (zipNoteText) {
         await tx.insert(caseNotes).values({
           caseId: createdCase.id,
           authorUserId: userId,
           authorOrganizationId: body.labOrganizationId,
-          noteText: `[iTero AI import] ${extracted.notes.trim()}`,
+          noteText: `[iTero AI import] ${zipNoteText}`,
           visibility: "internal_lab_only",
         });
       }
@@ -5050,10 +5071,7 @@ router.post(
               .filter(Boolean)
           )
         );
-        const noteText =
-          extracted.notes && extracted.notes.trim()
-            ? `[iTero AI import] ${extracted.notes.trim()}`
-            : null;
+        const noteText = zipNoteText ? `[iTero AI import] ${zipNoteText}` : null;
         const displayMetadataJson = {
           patientName,
           billTo: (createdCase.doctorName ?? "").trim(),
