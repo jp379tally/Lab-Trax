@@ -558,7 +558,14 @@ export function InvoiceEditor({
   // Column widths for the line-items table (Item, Tooth #, Desc, Qty, Unit price, Total)
   const COL_DEFAULTS = [176, 112, 220, 64, 112, 96] as const;
   const ACTION_COL_WIDTH = 80;
-  const { widths: colWidths, totalWidth: colTotalWidth, startResize, resetColumn, resetAll: resetAllColWidths } =
+  const {
+    widths: colWidths,
+    totalWidth: colTotalWidth,
+    resizingCol,
+    startResize,
+    resetColumn,
+    resetAll: resetAllColWidths,
+  } =
     useColumnWidths([...COL_DEFAULTS], user?.id);
 
   // Per-lab visual invoice template + preloaded extra-image data URLs.
@@ -1416,7 +1423,7 @@ export function InvoiceEditor({
                             }}
                           >
                             <span
-                              className="w-0.5 transition-colors duration-100 bg-border/60 group-hover/resize:bg-primary/50"
+                              className={`w-0.5 transition-colors duration-100 ${resizingCol === i ? "bg-primary" : "bg-border/60 group-hover/resize:bg-primary/50"}`}
                               style={{ display: "block", height: "100%" }}
                             />
                           </div>

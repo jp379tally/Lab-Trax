@@ -932,7 +932,7 @@ export default function CasesPage() {
   const [showNewCase, setShowNewCase] = useState(false);
 
   const CASES_COL_DEFAULTS = [120, 100, 160, 140, 140, 120, 100, 90, 130, 100, 90] as const;
-  const { widths: caseColWidths, startResize: startCaseResize, resetColumn: resetCaseColumn } =
+  const { widths: caseColWidths, resizingCol: resizingCaseCol, startResize: startCaseResize, resetColumn: resetCaseColumn } =
     useColumnWidths([...CASES_COL_DEFAULTS], "labtrax_cases_col_widths_v1");
   const [iteroActiveBatch, setIteroActiveBatch] = useState<{ batchId: string; caseIds: string[]; importedAt: string; label: string } | null>(null);
   const pageRef = useRef<HTMLDivElement>(null);
@@ -1271,7 +1271,7 @@ export default function CasesPage() {
                       }}
                     >
                       <span
-                        className="w-0.5 transition-colors duration-100 bg-border/60 group-hover/resize:bg-primary/50"
+                        className={`w-0.5 transition-colors duration-100 ${resizingCaseCol === i ? "bg-primary" : "bg-border/60 group-hover/resize:bg-primary/50"}`}
                         style={{ display: "block", height: "100%" }}
                       />
                     </div>

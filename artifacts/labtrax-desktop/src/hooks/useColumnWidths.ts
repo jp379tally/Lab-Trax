@@ -10,6 +10,7 @@ function storageKey(userId?: string | number | null): string {
 export type UseColumnWidths = {
   widths: number[];
   totalWidth: number;
+  resizingCol: number | null;
   startResize: (colIdx: number, e: React.MouseEvent) => void;
   resetColumn: (colIdx: number) => void;
   resetAll: () => void;
@@ -20,6 +21,8 @@ export function useColumnWidths(
   userId?: string | number | null,
 ): UseColumnWidths {
   const key = storageKey(userId);
+
+  const [resizingCol, setResizingCol] = useState<number | null>(null);
 
   const [widths, setWidths] = useState<number[]>(() => {
     try {
@@ -68,6 +71,8 @@ export function useColumnWidths(
       const startX = e.clientX;
       const startWidth = widths[colIdx];
 
+      setResizingCol(colIdx);
+
       const onMouseMove = (ev: MouseEvent) => {
         const delta = ev.clientX - startX;
         const next = Math.max(MIN_WIDTH, startWidth + delta);
@@ -80,6 +85,7 @@ export function useColumnWidths(
       };
 
       const onMouseUp = () => {
+        setResizingCol(null);
         window.removeEventListener("mousemove", onMouseMove);
         window.removeEventListener("mouseup", onMouseUp);
       };
@@ -117,5 +123,5 @@ export function useColumnWidths(
 
   const totalWidth = widths.reduce((a, b) => a + b, 0);
 
-  return { widths, totalWidth, startResize, resetColumn, resetAll };
+  return { widths, totalWidth, resizingCol, startResize, resetColumn, resetAll };
 }
