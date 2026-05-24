@@ -1512,6 +1512,16 @@ function StatementDrawer({
   const [emailingInvoice, setEmailingInvoice] = useState<Invoice | null>(null);
   const [printingInvId, setPrintingInvId] = useState<string | null>(null);
 
+  const runsQuery = useQuery({
+    queryKey: ["statement-runs", orgId],
+    queryFn: () => apiFetch<StatementSendRun[]>(`/lab-orgs/${orgId}/statement-runs`),
+    enabled: !!orgId,
+    staleTime: 30_000,
+  });
+  const practiceRuns = (runsQuery.data ?? [])
+    .filter((r) => r.practiceOrganizationId === row.practiceId)
+    .slice(0, 10);
+
   const filteredInvoices = useMemo(() => {
     switch (activeFilter) {
       case "open":
@@ -1823,6 +1833,81 @@ function StatementDrawer({
                 </div>
               )}
             </div>
+          </section>
+
+          {/* Statements sent history */}
+          <section>
+            <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2 flex items-center gap-1.5">
+              <History size={12} /> Statements sent
+            </h3>
+            {runsQuery.isLoading ? (
+              <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
+                <Loader2 size={12} className="animate-spin" /> Loading…
+              </div>
+            ) : practiceRuns.length === 0 ? (
+              <div className="py-4 text-center text-sm text-muted-foreground border border-border rounded-md">
+                No statements sent yet.
+              </div>
+            ) : (
+              <div className="border border-border rounded-md divide-y divide-border">
+                {practiceRuns.map((r) => {
+                  const isOk = r.status === "sent";
+                  const isFail = r.status === "failed";
+                  const isSkipped = r.status.startsWith("skipped");
+                  const channelIcon = r.practiceEmail ? "email" : "sms";
+                  const date = r.lastAttemptAt ?? r.createdAt;
+                  return (
+                    <div key={r.id} className="px-3 py-2.5 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span
+                            className={
+                              isOk
+                                ? "text-emerald-600 font-medium"
+                                : isFail
+                                  ? "text-destructive font-medium"
+                                  : "text-muted-foreground font-medium"
+                            }
+                          >
+                            {isOk ? "Sent" : isFail ? "Failed" : "Skipped"}
+                          </span>
+                          <span className="text-muted-foreground truncate">
+                            {r.periodMonth || "—"}
+                          </span>
+                          {channelIcon === "email" ? (
+                            <Mail size={11} className="text-muted-foreground shrink-0" />
+                          ) : (
+                            <MessageSquare size={11} className="text-muted-foreground shrink-0" />
+                          )}
+                        </div>
+                        <div className="flex items-center gap-3 shrink-0 text-muted-foreground">
+                          <span className="tabular-nums">{formatMoney(Number(r.openBalance ?? 0))}</span>
+                          <span className="flex items-center gap-1">
+                            <CalendarClock size={11} />
+                            {date
+                              ? new Date(date).toLocaleDateString("en-US", {
+                                  month: "short",
+                                  day: "numeric",
+                                  year: "numeric",
+                                })
+                              : "—"}
+                          </span>
+                        </div>
+                      </div>
+                      {isFail && r.errorMessage && (
+                        <div className="mt-0.5 text-destructive/80 truncate">{r.errorMessage}</div>
+                      )}
+                      {isSkipped && (
+                        <div className="mt-0.5 text-muted-foreground">No contact info on file</div>
+                      )}
+                      <div className="mt-0.5 text-muted-foreground/60">
+                        {r.invoiceCount} invoice{r.invoiceCount !== 1 ? "s" : ""} · by {r.triggeredBy}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </section>
         </div>
       </aside>
