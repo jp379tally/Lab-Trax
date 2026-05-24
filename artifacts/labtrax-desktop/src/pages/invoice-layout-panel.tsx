@@ -5,6 +5,7 @@ import {
   AlignLeft,
   AlignRight,
   Bold,
+  Eye,
   Loader2,
   Plus,
   RotateCcw,
@@ -23,6 +24,7 @@ import {
   type InvoiceTemplateTextBlock,
   type TextAlign,
 } from "@/lib/invoice-template";
+import { previewInvoicePdf } from "@/lib/export";
 
 type SectionKey = keyof InvoiceTemplate["boxes"];
 
@@ -139,6 +141,8 @@ export function InvoiceLayoutPanel() {
   const [draft, setDraft] = useState<InvoiceTemplate>(DEFAULT_INVOICE_TEMPLATE);
   const [dirty, setDirty] = useState(false);
   const [selected, setSelected] = useState<{ kind: "section" | "logo" | "extra" | "text"; key: string } | null>(null);
+  const [isPreviewing, setIsPreviewing] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
 
@@ -319,6 +323,64 @@ export function InvoiceLayoutPanel() {
     }
   }
 
+  async function handlePreview() {
+    setIsPreviewing(true);
+    setPreviewError(null);
+    try {
+      const extraImageDataUrls: Record<string, string> = {};
+      await Promise.all(
+        draft.extraImages.map(async (img) => {
+          if (!img.url) return;
+          try {
+            const res = await fetch(img.url);
+            const blob = await res.blob();
+            const dataUrl = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(reader.result as string);
+              reader.onerror = reject;
+              reader.readAsDataURL(blob);
+            });
+            extraImageDataUrls[img.url] = dataUrl;
+          } catch {
+            /* skip image that fails to load */
+          }
+        }),
+      );
+      const opened = previewInvoicePdf({
+        invoiceNumber: "PREVIEW-001",
+        labName: "Sample Dental Lab",
+        practiceName: "Riverside Dental",
+        patientName: "Jane Doe",
+        billTo: "Riverside Dental",
+        teeth: "3, 14, 30",
+        shade: "A2",
+        issuedAt: new Date().toISOString(),
+        dueAt: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+        status: "Open",
+        items: [
+          { description: "PFM Crown", quantity: 1, unitPrice: 250, lineTotal: 250 },
+          { description: "Porcelain Pontic", quantity: 2, unitPrice: 175, lineTotal: 350 },
+          { description: "Custom Shade", quantity: 1, unitPrice: 45, lineTotal: 45 },
+        ],
+        subtotal: 645,
+        total: 645,
+        balanceDue: 645,
+        notes: "Thank you for choosing our lab.",
+        generatedAt: new Date(),
+        logoUrl: user?.practiceLogoUrl ?? null,
+        template: draft,
+        extraImageDataUrls,
+      });
+      if (!opened) {
+        setPreviewError("Preview was blocked. Please allow pop-ups for this site.");
+      }
+    } catch (err) {
+      setPreviewError((err as Error)?.message ?? "Preview failed.");
+    } finally {
+      setIsPreviewing(false);
+    }
+  }
+
   // ── Render ──────────────────────────────────────────────────────────
   if (!orgId) {
     return (
@@ -353,6 +415,20 @@ export function InvoiceLayoutPanel() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void handlePreview()}
+            disabled={isPreviewing}
+            title="Render a sample invoice PDF using the current unsaved layout"
+            className="text-xs px-3 py-1.5 rounded border border-border hover:bg-secondary disabled:opacity-50 flex items-center gap-1"
+          >
+            {isPreviewing ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : (
+              <Eye size={12} />
+            )}
+            Preview PDF
+          </button>
           <button
             type="button"
             onClick={() => {
@@ -393,6 +469,11 @@ export function InvoiceLayoutPanel() {
         </div>
       </div>
 
+      {previewError ? (
+        <div className="mb-3 text-xs text-destructive">
+          {previewError}
+        </div>
+      ) : null}
       {saveMutation.isError ? (
         <div className="mb-3 text-xs text-destructive">
           Save failed: {(saveMutation.error as Error)?.message}
