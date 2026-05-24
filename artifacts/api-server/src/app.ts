@@ -321,6 +321,21 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
       .status(err.statusCode)
       .json({ ok: false, message: err.message, details: err.details });
   }
+  // pg pool exhaustion surfaces as a generic Error when connectionTimeoutMillis
+  // is exceeded. Map it to 503 so clients know to retry rather than treating
+  // it as a permanent server error (500).
+  if (
+    err instanceof Error &&
+    /timeout.*connect|checkout.*timed|Client.*timed|ETIMEDOUT/i.test(
+      err.message
+    )
+  ) {
+    logger.warn({ err }, "DB connection pool timeout — returning 503");
+    return res.status(503).json({
+      ok: false,
+      message: "Service temporarily unavailable — please retry in a moment.",
+    });
+  }
   logger.error({ err }, "Unhandled API error");
   return res
     .status(500)

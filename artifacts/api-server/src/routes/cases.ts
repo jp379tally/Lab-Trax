@@ -48,8 +48,10 @@ import { HttpError, ok } from "../lib/http";
 import {
   buildLineItemDescription,
   materialToPriceKey,
+  resolveAllPricesForContext,
   resolveItemLabel,
   resolveServerPriceWithSource,
+  type ResolvedItemRow,
 } from "../lib/pricing";
 import { ADMIN_ROLES, BILLING_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
@@ -842,6 +844,27 @@ router.get(
 router.post(
   "/",
   asyncHandler(async (req, res) => {
+    // Race the entire handler against a hard 15 s ceiling so a saturated DB
+    // pool returns a retry-able 503 instead of hanging indefinitely.
+    // HttpError(503) is handled by the global error handler → 503 JSON response.
+    // The pg pool's own connectionTimeoutMillis (10 s) provides a deeper
+    // safety net; this guard catches any other long-running path.
+    const TIMEOUT_MS = 15_000;
+    const timeoutSignal = new Promise<never>((_, reject) =>
+      setTimeout(
+        () =>
+          reject(
+            new HttpError(
+              503,
+              "Case creation timed out — server is busy, please retry."
+            )
+          ),
+        TIMEOUT_MS
+      )
+    );
+
+    return Promise.race([
+      (async () => {
     const input = createCaseSchema.parse(req.body);
     await requireMembership(
       (req as any).auth.userId,
@@ -939,6 +962,30 @@ router.post(
     });
 
     if (input.restorations && input.restorations.length > 0) {
+      // Resolve all prices in a single batch (3 DB round-trips total) instead
+      // of one call per restoration, cutting O(N) pool pressure to O(1).
+      // For any price key not covered by the batch (non-standard keys), fall
+      // back to the individual resolver so pricing accuracy is preserved.
+      const needsAutoPrice = input.restorations.some(
+        (r) => !(Number.isFinite(r.unitPrice) && r.unitPrice > 0)
+      );
+      // Batch-resolve all standard-key prices once (3 DB round-trips total).
+      // Store every key the batch returns — including zero-price / no-source
+      // entries — so the map is authoritative for the entire standard-key set.
+      // Only fall back to the individual resolver for genuinely non-standard
+      // keys (i.e. keys not present in the batch at all), keeping pricing O(1).
+      const batchPriceMap = new Map<string, ResolvedItemRow>();
+      if (needsAutoPrice) {
+        const allPrices = await resolveAllPricesForContext({
+          labOrganizationId: input.labOrganizationId,
+          doctorName: input.doctorName,
+          providerOrganizationId: input.providerOrganizationId,
+        });
+        for (const p of allPrices) {
+          batchPriceMap.set(p.key, p);
+        }
+      }
+
       const resolved = await Promise.all(
         input.restorations.map(async (r) => {
           let unit = r.unitPrice;
@@ -948,21 +995,37 @@ router.post(
           let priceSourceName: string | null = null;
           let priceKey: string | null = null;
           if (!userSupplied) {
-            const fallback = await resolveServerPriceWithSource(
-              {
-                labOrganizationId: input.labOrganizationId,
-                doctorName: input.doctorName,
-                providerOrganizationId: input.providerOrganizationId,
-              },
-              r.material,
-              r.restorationType
-            );
-            if (fallback) {
-              unit = fallback.amount;
-              priceSource = fallback.source;
-              priceSourceId = fallback.sourceId;
-              priceSourceName = fallback.sourceName;
-              priceKey = fallback.key;
+            const key = materialToPriceKey(r.material, r.restorationType);
+            if (key !== null && batchPriceMap.has(key)) {
+              // Standard key — use the batch result as authoritative.
+              // batchHit.unitPrice may be 0 (no price configured), which is correct.
+              const batchHit = batchPriceMap.get(key)!;
+              if (batchHit.source !== null && batchHit.unitPrice > 0) {
+                unit = batchHit.unitPrice;
+                priceSource = batchHit.source;
+                priceSourceId = batchHit.sourceId;
+                priceSourceName = batchHit.sourceName;
+                priceKey = batchHit.key;
+              }
+              // else: no price configured — leave unit as-is (0 or user value)
+            } else {
+              // Non-standard key not covered by DEFAULT_TIER_ITEMS — fall back.
+              const fallback = await resolveServerPriceWithSource(
+                {
+                  labOrganizationId: input.labOrganizationId,
+                  doctorName: input.doctorName,
+                  providerOrganizationId: input.providerOrganizationId,
+                },
+                r.material,
+                r.restorationType
+              );
+              if (fallback) {
+                unit = fallback.amount;
+                priceSource = fallback.source;
+                priceSourceId = fallback.sourceId;
+                priceSourceName = fallback.sourceName;
+                priceKey = fallback.key;
+              }
             }
           }
           return {
@@ -1225,6 +1288,9 @@ router.post(
     }
 
     return ok(res, createdCase, 201);
+      })(),
+      timeoutSignal,
+    ]);
   })
 );
 
@@ -1294,6 +1360,9 @@ router.get(
               notDeleted(cases)
             ),
             orderBy: [desc(cases.createdAt)],
+            // Cap at 500 most-recent cases to bound query duration and release
+            // the DB connection sooner, reducing pool pressure on concurrent POSTs.
+            limit: 500,
           })
         : Promise.resolve([]),
       membershipOrgIds.length

@@ -31,6 +31,15 @@ function normalizeDbUrl(raw: string): string {
 export const pool = new Pool({
   connectionString: normalizeDbUrl(process.env.DATABASE_URL),
   ssl: { rejectUnauthorized: true },
+  // Fail fast when the pool is saturated rather than queuing requests
+  // indefinitely. 10 s is generous enough for normal operations (typical
+  // acquire time is <50 ms) while still surfacing pool exhaustion quickly
+  // so callers can return a 503 and free the HTTP connection.
+  connectionTimeoutMillis: 10_000,
+  // Bound individual statement execution so a slow query releases its
+  // connection before it cascades into pool starvation.  30 s is well
+  // above p99 for any intentional query in this codebase.
+  statement_timeout: 30_000,
 });
 export const db = drizzle(pool, { schema });
 
