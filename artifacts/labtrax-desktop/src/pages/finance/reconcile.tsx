@@ -5,6 +5,12 @@ import { apiFetch } from "@/lib/api";
 import { FinanceShell } from "@/components/finance/FinanceShell";
 import type { BankTransaction, Reconciliation } from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
+import { useColumnWidths } from "@/hooks/useColumnWidths";
+
+// 5 resizable columns: Date(0), Type(1), Payee(2), Memo(3), Amount(4)
+const RECON_COL_DEFAULTS = [100, 80, 160, 240, 110] as const;
+const RECON_FIXED_CHECK = 48;
+const RECON_COL_LABELS = ["Date", "Type", "Payee", "Memo", "Amount"] as const;
 
 export default function ReconcilePage() {
   return (
@@ -23,6 +29,9 @@ function Reconcile({ accountId }: { accountId: string }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
+
+  const { widths: colWidths, totalWidth: colTotalWidth, resizingCol, startResize, resetColumn } =
+    useColumnWidths([...RECON_COL_DEFAULTS], "labtrax_recon_col_widths_v1");
 
   const candidatesQuery = useQuery({
     queryKey: ["finance", "recon-candidates", accountId, statementDate],
@@ -132,8 +141,33 @@ function Reconcile({ accountId }: { accountId: string }) {
               cleared {formatMoney(totals.cleared)}
             </div>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+          <div className="overflow-x-auto relative">
+            {resizingCol !== null && (
+              <div
+                className="bg-primary/50 pointer-events-none absolute top-0 bottom-0 z-10"
+                style={{
+                  left:
+                    RECON_FIXED_CHECK +
+                    colWidths.slice(0, resizingCol + 1).reduce((a, b) => a + b, 0) -
+                    1,
+                  width: 2,
+                }}
+              />
+            )}
+            <table
+              className="text-sm"
+              style={{
+                tableLayout: "fixed",
+                width: RECON_FIXED_CHECK + colTotalWidth,
+                userSelect: "none",
+              }}
+            >
+              <colgroup>
+                <col style={{ width: RECON_FIXED_CHECK }} />
+                {colWidths.map((w, i) => (
+                  <col key={i} style={{ width: w }} />
+                ))}
+              </colgroup>
               <thead>
                 <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
                   <th className="px-4 py-2 w-10">
@@ -146,11 +180,40 @@ function Reconcile({ accountId }: { accountId: string }) {
                       }
                     />
                   </th>
-                  <th className="text-left font-medium py-2">Date</th>
-                  <th className="text-left font-medium py-2">Type</th>
-                  <th className="text-left font-medium py-2">Payee</th>
-                  <th className="text-left font-medium py-2">Memo</th>
-                  <th className="text-right font-medium px-4 py-2">Amount</th>
+                  {RECON_COL_LABELS.map((label, i) => {
+                    const isAmount = i === 4;
+                    return (
+                      <th
+                        key={label}
+                        className={`font-medium py-2 relative px-3${isAmount ? " text-right" : " text-left"}`}
+                        style={{ overflow: "hidden" }}
+                      >
+                        {label}
+                        <div
+                          onMouseDown={(e) => startResize(i, e)}
+                          onDoubleClick={() => resetColumn(i)}
+                          className="group/resize"
+                          style={{
+                            position: "absolute",
+                            top: 0,
+                            right: 0,
+                            width: 6,
+                            height: "100%",
+                            cursor: "col-resize",
+                            userSelect: "none",
+                            display: "flex",
+                            alignItems: "stretch",
+                            justifyContent: "flex-end",
+                          }}
+                        >
+                          <span
+                            className={`w-0.5 transition-colors duration-100 ${resizingCol === i ? "bg-primary" : "bg-border/60 group-hover/resize:bg-primary/50"}`}
+                            style={{ display: "block", height: "100%" }}
+                          />
+                        </div>
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
               <tbody>
@@ -170,14 +233,14 @@ function Reconcile({ accountId }: { accountId: string }) {
                     <td className="px-4 py-2">
                       <input type="checkbox" checked={selected.has(r.id)} readOnly />
                     </td>
-                    <td className="py-2 whitespace-nowrap">{formatDate(r.txnDate)}</td>
-                    <td className="py-2 capitalize">{r.type}</td>
-                    <td className="py-2">{r.payee || "—"}</td>
-                    <td className="py-2 text-muted-foreground truncate max-w-[260px]">
+                    <td className="py-2 px-3 whitespace-nowrap">{formatDate(r.txnDate)}</td>
+                    <td className="py-2 px-3 capitalize">{r.type}</td>
+                    <td className="py-2 px-3 truncate">{r.payee || "—"}</td>
+                    <td className="py-2 px-3 text-muted-foreground truncate">
                       {r.memo || ""}
                     </td>
                     <td
-                      className={`px-4 py-2 text-right tabular-nums ${
+                      className={`py-2 px-3 text-right tabular-nums ${
                         Number(r.netAmount) >= 0
                           ? "text-emerald-600 dark:text-emerald-400"
                           : ""
