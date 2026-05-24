@@ -175,7 +175,7 @@ export default function MaintenancePage() {
             onClick={() => triggerCleanup(true)}
             disabled={isRunning}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium border border-border hover:bg-secondary transition-colors disabled:opacity-50"
-            title="Preview orphaned files without deleting anything"
+            title="Scan for orphaned files without moving or deleting anything"
           >
             {isRunning && runState.dryRun ? (
               <Loader2 size={13} className="animate-spin" />
@@ -189,7 +189,7 @@ export default function MaintenancePage() {
             onClick={() => triggerCleanup(false)}
             disabled={isRunning}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50"
-            title="Delete orphaned files now"
+            title="Move orphaned files to the trash folder (safe — they can be recovered)"
           >
             {isRunning && !runState.dryRun ? (
               <Loader2 size={13} className="animate-spin" />
@@ -211,6 +211,16 @@ export default function MaintenancePage() {
             Refresh
           </button>
         </div>
+      </div>
+
+      <div className="mb-5 flex items-start gap-3 px-4 py-3 rounded-lg border border-border bg-secondary/40 text-sm text-muted-foreground">
+        <Info size={15} className="flex-shrink-0 mt-0.5" />
+        <p>
+          <strong className="text-foreground font-medium">What are orphaned files?</strong>{" "}
+          Orphaned files are uploaded images and attachments that are no longer linked to any case.
+          They can build up over time when cases are deleted or attachments are replaced.
+          Cleanup moves them to a safe trash folder — they are <em>not</em> permanently deleted and can be recovered if needed.
+        </p>
       </div>
 
       {runState.kind === "running" && (
@@ -308,6 +318,9 @@ export default function MaintenancePage() {
                         <strong>{formatBytes(runState.result.freedBytes)}</strong>
                       </>
                     )}
+                    {runState.result.removedCount > 0 && (
+                      <> (moved to trash — not permanently deleted)</>
+                    )}
                     .
                   </p>
                 </>
@@ -396,7 +409,10 @@ export default function MaintenancePage() {
                   <th className="text-right px-4 py-2.5 text-xs font-medium text-muted-foreground uppercase tracking-wide">
                     Scanned
                   </th>
-                  <th className="text-right px-4 py-2.5 text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  <th
+                    className="text-right px-4 py-2.5 text-xs font-medium text-muted-foreground uppercase tracking-wide cursor-help"
+                    title="Files found on disk that are not linked to any case"
+                  >
                     Orphans
                   </th>
                   <th className="text-right px-4 py-2.5 text-xs font-medium text-muted-foreground uppercase tracking-wide">
