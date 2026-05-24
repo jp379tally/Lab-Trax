@@ -15,7 +15,7 @@ import {
   Filter,
   Loader2,
   Lock,
-  Maximize2,
+
   Paperclip,
   Pencil,
   Plus,
@@ -3473,51 +3473,19 @@ export function CaseDrawer({
                 return (
                   <>
                     {images.length > 0 && (
-                      <div>
-                        <p className="text-[11px] text-muted-foreground mb-2 font-medium">
+                      <div className="space-y-2">
+                        <p className="text-[11px] text-muted-foreground font-medium">
                           Photos & Images ({images.length})
                         </p>
-                        <div className="grid grid-cols-3 gap-2">
-                          {images.map((a) => {
-                            const imgUrl = a.id
-                              ? `${getApiOrigin()}/api/cases/${labCase.id}/attachments/${a.id}/file`
-                              : a.storageKey;
-                            return (
-                            <div key={a.id} className="relative group">
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  const electronAPI = (window as any).electronAPI;
-                                  if (electronAPI?.previewFile && a.id) {
-                                    try {
-                                      await previewAttachmentInElectron(labCase.id, a);
-                                    } catch {
-                                      setLightboxUrl(imgUrl);
-                                    }
-                                  } else {
-                                    setLightboxUrl(imgUrl);
-                                  }
-                                }}
-                                className="relative w-full aspect-square rounded-lg overflow-hidden bg-secondary block"
-                                title={a.fileName}
-                              >
-                                <img
-                                  src={imgUrl}
-                                  alt={a.fileName}
-                                  className="w-full h-full object-cover"
-                                  loading="lazy"
-                                />
-                                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
-                                  <Maximize2 size={18} className="text-white opacity-0 group-hover:opacity-100 transition-opacity" />
-                                </div>
-                              </button>
-                              <p className="mt-1 text-[10px] text-muted-foreground truncate" title={a.fileName}>
-                                {a.fileName}
-                              </p>
-                            </div>
-                            );
-                          })}
-                        </div>
+                        {images.map((a) => (
+                          <AttachmentRow
+                            key={a.id}
+                            caseId={labCase.id}
+                            attachment={a}
+                            canManage={!!data?.viewerCanManageAttachments}
+                            onImageClick={(url) => setLightboxUrl(url)}
+                          />
+                        ))}
                       </div>
                     )}
                     {others.length > 0 && (
@@ -4202,10 +4170,12 @@ function AttachmentRow({
   caseId,
   attachment,
   canManage,
+  onImageClick,
 }: {
   caseId: string;
   attachment: CaseAttachment;
   canManage: boolean;
+  onImageClick?: (url: string) => void;
 }) {
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [scanViewerOpen, setScanViewerOpen] = useState(false);
@@ -4288,6 +4258,10 @@ function AttachmentRow({
   async function handleElectronPreview() {
     if (inAppFormat) {
       setScanViewerOpen(true);
+      return;
+    }
+    if (isImage && onImageClick && href) {
+      onImageClick(href);
       return;
     }
     if (isPreviewing) return;
@@ -4380,6 +4354,15 @@ function AttachmentRow({
             disabled={isPreviewing}
             className="flex items-start gap-3 flex-1 min-w-0 -mx-1 -my-0.5 px-1 py-0.5 rounded hover:bg-secondary/60 transition-colors cursor-pointer disabled:opacity-60 text-left"
             title={`Preview "${attachment.fileName}"`}
+          >
+            {rowBody}
+          </button>
+        ) : isImage && onImageClick ? (
+          <button
+            type="button"
+            onClick={() => onImageClick(href)}
+            className="flex items-start gap-3 flex-1 min-w-0 -mx-1 -my-0.5 px-1 py-0.5 rounded hover:bg-secondary/60 transition-colors cursor-pointer text-left"
+            title={`View "${attachment.fileName}"`}
           >
             {rowBody}
           </button>
