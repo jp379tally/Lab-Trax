@@ -3,11 +3,15 @@
  *
  * Runs three probes in parallel and returns a single JSON report:
  *
- *   1. settings   — the configured download URL / version / activeKind
- *   2. storage    — whether the configured installer object exists in App Storage
- *   3. download   — HEAD against the live /downloads/... URL (catches misconfigured
- *                   reverse proxies and stale CDN copies)
- *   4. githubRelease — fetches the latest release manifest from GitHub Releases so
+ *   1. settings       — the configured download URL / version / activeKind
+ *   2. storage        — whether the configured installer object exists in App Storage
+ *   3. download       — HEAD against the live /downloads/... URL (catches misconfigured
+ *                       reverse proxies and stale CDN copies)
+ *   4. downloadSpeed  — GETs the first 1 MB of the live download URL, measures
+ *                       throughput, and estimates total transfer time; warns if the
+ *                       estimate exceeds DOWNLOAD_SPEED_WARN_SECONDS (default 300 s)
+ *                       so admins know the connection may time out through the proxy.
+ *   5. githubRelease  — fetches the latest release manifest from GitHub Releases so
  *                       admins know if the auto-updater feed is in sync with the
  *                       live download page.
  *
@@ -59,6 +63,23 @@ export interface HealthReport {
     etagMatchesStorage: boolean | null;
     error: string | null;
   };
+  /**
+   * Speed probe: GETs the first 1 MB of the live download URL, measures
+   * throughput, and estimates total transfer time. Only present when the
+   * download URL is reachable.
+   */
+  downloadSpeed: {
+    /** Whether the speed probe ran at all. */
+    checked: boolean;
+    /** Measured throughput in bytes per second (null when probe did not run or failed). */
+    bytesPerSecond: number | null;
+    /** Estimated total download time in seconds based on Content-Length (null when unknown). */
+    estimatedSeconds: number | null;
+    /** True when estimated time exceeds the warning threshold. */
+    slow: boolean;
+    /** Error message if the probe failed. */
+    error: string | null;
+  };
   githubRelease: {
     ok: boolean;
     configured: boolean;
@@ -73,6 +94,13 @@ export interface HealthReport {
 
 const SETTING_URL = "desktop_installer_url";
 const SETTING_VERSION = "desktop_installer_version";
+
+/** Number of bytes to fetch for the speed probe (1 MB). */
+const SPEED_PROBE_BYTES = 1_048_576;
+/** Warning threshold in seconds — downloads estimated to take longer than this are flagged. */
+const DOWNLOAD_SPEED_WARN_SECONDS = 300; // 5 minutes
+/** Timeout for the speed probe fetch in milliseconds. */
+const SPEED_PROBE_TIMEOUT_MS = 30_000;
 
 interface FetchLike {
   (input: string, init?: { method?: string; headers?: Record<string, string>; signal?: AbortSignal }): Promise<{
@@ -168,6 +196,82 @@ async function headDownloadUrl(url: string): Promise<{
       status: res.status,
       contentLength: cl ? Number.parseInt(cl, 10) : null,
       etag: et,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Fetch the first SPEED_PROBE_BYTES bytes of the given URL, measure elapsed
+ * time, and return throughput + an estimated total download time.
+ *
+ * Uses a Range request so the server can satisfy it from a partial read.
+ * Falls back gracefully: if the server does not support Range (returns 200
+ * instead of 206) we still measure the time taken to receive the partial body.
+ *
+ * @param url - Absolute URL to probe.
+ * @param totalBytes - Total file size in bytes (from Content-Length on a HEAD),
+ *                     used to estimate full transfer time. May be null.
+ */
+async function measureDownloadSpeed(
+  url: string,
+  totalBytes: number | null,
+): Promise<{
+  bytesPerSecond: number | null;
+  estimatedSeconds: number | null;
+  error: string | null;
+}> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), SPEED_PROBE_TIMEOUT_MS);
+  const start = Date.now();
+  try {
+    const res = await fetchFn(url, {
+      method: "GET",
+      headers: { Range: `bytes=0-${SPEED_PROBE_BYTES - 1}` },
+      signal: ctrl.signal,
+    });
+    if (!res.ok && res.status !== 206) {
+      return {
+        bytesPerSecond: null,
+        estimatedSeconds: null,
+        error: `Speed probe GET returned HTTP ${res.status}`,
+      };
+    }
+    // Consume the body so we measure actual transfer, not just TTFB.
+    await res.text();
+    const elapsedMs = Date.now() - start;
+    const elapsedSec = elapsedMs / 1000;
+
+    // Determine how many bytes we actually received from the Content-Range
+    // or Content-Length response header, falling back to SPEED_PROBE_BYTES.
+    let receivedBytes = SPEED_PROBE_BYTES;
+    const contentRange = res.headers.get("content-range"); // e.g. "bytes 0-1048575/157286400"
+    if (contentRange) {
+      const m = contentRange.match(/\/(\d+)$/);
+      if (m) {
+        // Total file size from Content-Range is more reliable than a prior HEAD.
+        totalBytes = Number.parseInt(m[1]!, 10);
+      }
+    }
+    const rangeContentLength = res.headers.get("content-length");
+    if (rangeContentLength) {
+      receivedBytes = Number.parseInt(rangeContentLength, 10);
+    }
+
+    const bytesPerSecond = elapsedSec > 0 ? receivedBytes / elapsedSec : null;
+    const estimatedSeconds =
+      bytesPerSecond !== null && totalBytes !== null && totalBytes > 0
+        ? totalBytes / bytesPerSecond
+        : null;
+
+    return { bytesPerSecond, estimatedSeconds, error: null };
+  } catch (err) {
+    const msg = (err as Error)?.message ?? String(err);
+    return {
+      bytesPerSecond: null,
+      estimatedSeconds: null,
+      error: msg.includes("abort") ? "Speed probe timed out" : msg,
     };
   } finally {
     clearTimeout(timer);
@@ -285,6 +389,33 @@ export async function runDesktopInstallerHealthCheck(
     }
   }
 
+  // ── Download Speed ─────────────────────────────────────────────────────────
+  // Only probe speed when the HEAD check succeeded (download URL is reachable).
+  let speedChecked = false;
+  let speedBytesPerSecond: number | null = null;
+  let speedEstimatedSeconds: number | null = null;
+  let speedSlow = false;
+  let speedError: string | null = null;
+  if (downloadUrl && downloadOk) {
+    speedChecked = true;
+    try {
+      const probe = await measureDownloadSpeed(downloadUrl, downloadLength);
+      speedBytesPerSecond = probe.bytesPerSecond;
+      speedEstimatedSeconds = probe.estimatedSeconds;
+      speedError = probe.error;
+      if (speedEstimatedSeconds !== null && speedEstimatedSeconds > DOWNLOAD_SPEED_WARN_SECONDS) {
+        speedSlow = true;
+        const mins = Math.round(speedEstimatedSeconds / 60);
+        issues.push(
+          `downloadSpeed: estimated transfer time is ~${mins} min — the download may time out through the Replit proxy on this connection. ` +
+            `Consider setting DESKTOP_INSTALLER_URL to a GitHub Release asset URL for large-file downloads.`,
+        );
+      }
+    } catch (err) {
+      speedError = (err as Error)?.message ?? String(err);
+    }
+  }
+
   // ── GitHub Release ─────────────────────────────────────────────────────────
   const repo = parseGithubRepoUrl(process.env.GITHUB_REPO_URL);
   let releaseConfigured = repo !== null;
@@ -397,6 +528,13 @@ export async function runDesktopInstallerHealthCheck(
       etag: downloadEtag,
       etagMatchesStorage,
       error: downloadError,
+    },
+    downloadSpeed: {
+      checked: speedChecked,
+      bytesPerSecond: speedBytesPerSecond,
+      estimatedSeconds: speedEstimatedSeconds,
+      slow: speedSlow,
+      error: speedError,
     },
     githubRelease: {
       ok: releaseOk,

@@ -3323,6 +3323,13 @@ interface InstallerHealthReport {
     etagMatchesStorage: boolean | null;
     error: string | null;
   };
+  downloadSpeed?: {
+    checked: boolean;
+    bytesPerSecond: number | null;
+    estimatedSeconds: number | null;
+    slow: boolean;
+    error: string | null;
+  };
   githubRelease: {
     ok: boolean;
     configured: boolean;
@@ -3401,6 +3408,16 @@ function DesktopInstallerPipelineHealthPanel() {
             <StatusDot ok={report.storage.ok} label="App Storage" />
             <StatusDot ok={report.download.checked ? report.download.ok : null} label="Live /downloads HEAD" />
             <StatusDot
+              ok={
+                report.downloadSpeed?.checked
+                  ? report.downloadSpeed.slow || report.downloadSpeed.error != null
+                    ? false
+                    : true
+                  : null
+              }
+              label="Download speed"
+            />
+            <StatusDot
               ok={report.githubRelease.configured ? report.githubRelease.ok : null}
               label="GitHub Release"
             />
@@ -3458,6 +3475,29 @@ function DesktopInstallerPipelineHealthPanel() {
                 <strong>Download HEAD:</strong> HTTP {report.download.status ?? "?"}
                 {report.download.etagMatchesStorage === false && (
                   <span style={{ color: "#dc2626" }}> — ETag mismatch (stale copy?)</span>
+                )}
+              </div>
+            )}
+            {report.downloadSpeed?.checked && (
+              <div style={{ marginTop: 2 }}>
+                <strong>Download speed:</strong>{" "}
+                {report.downloadSpeed.bytesPerSecond != null
+                  ? `${(report.downloadSpeed.bytesPerSecond / 1_048_576).toFixed(2)} MB/s`
+                  : "—"}
+                {report.downloadSpeed.estimatedSeconds != null && (
+                  <span style={{ marginLeft: 6, color: report.downloadSpeed.slow ? "#b45309" : "inherit" }}>
+                    {`(est. ${report.downloadSpeed.estimatedSeconds < 60
+                      ? `${Math.round(report.downloadSpeed.estimatedSeconds)}s`
+                      : `${Math.round(report.downloadSpeed.estimatedSeconds / 60)} min`} total)`}
+                    {report.downloadSpeed.slow && (
+                      <span style={{ marginLeft: 6, fontWeight: 600 }}>
+                        ⚠ Slow — may time out through proxy. Consider a GitHub Release URL.
+                      </span>
+                    )}
+                  </span>
+                )}
+                {report.downloadSpeed.error && (
+                  <span style={{ marginLeft: 6, color: "#6b7280" }}>({report.downloadSpeed.error})</span>
                 )}
               </div>
             )}
