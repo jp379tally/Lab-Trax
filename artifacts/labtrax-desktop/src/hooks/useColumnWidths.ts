@@ -73,6 +73,9 @@ export function useColumnWidths(
 
       setResizingCol(colIdx);
 
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+
       const onMouseMove = (ev: MouseEvent) => {
         const delta = ev.clientX - startX;
         const next = Math.max(MIN_WIDTH, startWidth + delta);
@@ -85,6 +88,8 @@ export function useColumnWidths(
       };
 
       const onMouseUp = () => {
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
         setResizingCol(null);
         window.removeEventListener("mousemove", onMouseMove);
         window.removeEventListener("mouseup", onMouseUp);
