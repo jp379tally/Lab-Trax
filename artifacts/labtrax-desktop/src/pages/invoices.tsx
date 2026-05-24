@@ -1391,6 +1391,7 @@ export function InvoiceEditor({
                           <div
                             onMouseDown={(e) => startResize(i, e)}
                             onDoubleClick={() => resetColumn(i)}
+                            className="group/resize"
                             style={{
                               position: "absolute",
                               top: 0,
@@ -1399,8 +1400,16 @@ export function InvoiceEditor({
                               height: "100%",
                               cursor: "col-resize",
                               userSelect: "none",
+                              display: "flex",
+                              alignItems: "stretch",
+                              justifyContent: "flex-end",
                             }}
-                          />
+                          >
+                            <span
+                              className="w-0.5 transition-colors duration-100 bg-border/60 group-hover/resize:bg-primary/50"
+                              style={{ display: "block", height: "100%" }}
+                            />
+                          </div>
                         </th>
                       ),
                     )}
