@@ -14,13 +14,13 @@ export interface Vendor {
   isActive: boolean;
 }
 
-const TYPE_LABEL: Record<VendorType, string> = {
+export const TYPE_LABEL: Record<VendorType, string> = {
   vendor: "Vendor",
   employee: "Employee",
   item: "Item",
 };
 
-const TYPE_BADGE_CLASS: Record<VendorType, string> = {
+export const TYPE_BADGE_CLASS: Record<VendorType, string> = {
   vendor: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
   employee: "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300",
   item: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",

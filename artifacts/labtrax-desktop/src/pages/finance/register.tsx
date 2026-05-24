@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeftRight, Ban, CheckCircle2, Download, Loader2, Plus, Repeat, Search, Trash2, Upload, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { FinanceShell } from "@/components/finance/FinanceShell";
-import { VendorCombobox } from "@/components/finance/VendorCombobox";
+import { TYPE_BADGE_CLASS, TYPE_LABEL, useVendors, VendorCombobox } from "@/components/finance/VendorCombobox";
 import { CategorySelect } from "@/components/finance/CategorySelect";
 import type { BankAccount, BankTransaction, Invoice, RecurringRule, TransactionCategory } from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
@@ -83,6 +83,12 @@ function RegisterTable({
   });
 
   const catNameById = new Map((cats.data || []).map((c) => [c.id, c.name]));
+
+  const vendorsQuery = useVendors(organizationId);
+  const vendorTypeByName = useMemo(
+    () => new Map((vendorsQuery.data ?? []).map((v) => [v.name, v.vendorType])),
+    [vendorsQuery.data]
+  );
 
   const clearMut = useMutation({
     mutationFn: ({ id, cleared }: { id: string; cleared: boolean }) =>
@@ -397,7 +403,20 @@ function RegisterTable({
                     </td>
                     <td className="py-2.5 capitalize">{r.type}</td>
                     <td className="py-2.5 font-mono text-xs">{r.checkNumber || "—"}</td>
-                    <td className="py-2.5">{r.payee || "—"}</td>
+                    <td className="py-2.5">
+                      {r.payee ? (
+                        <span className="flex items-center gap-1.5 min-w-0">
+                          {vendorTypeByName.has(r.payee) && (
+                            <span
+                              className={`shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full ${TYPE_BADGE_CLASS[vendorTypeByName.get(r.payee)!]}`}
+                            >
+                              {TYPE_LABEL[vendorTypeByName.get(r.payee)!]}
+                            </span>
+                          )}
+                          <span className="truncate">{r.payee}</span>
+                        </span>
+                      ) : "—"}
+                    </td>
                     <td className="py-2.5 text-muted-foreground">
                       {r.categoryId ? catNameById.get(r.categoryId) || "—" : "—"}
                     </td>
