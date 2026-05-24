@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Building2, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, FileDown, Github, History, KeyRound, LayoutList, Loader2, LogOut, Monitor, Package, Play, RotateCcw, RefreshCcw, Search, ShieldCheck, Smartphone, Sparkles, Trash2, Upload, User as UserIcon, Wrench, X } from "lucide-react";
+import { AlertTriangle, Building2, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, FileDown, Github, History, KeyRound, LayoutList, Loader2, LogOut, Monitor, Package, Play, RotateCcw, RefreshCcw, Search, ShieldCheck, Smartphone, Sparkles, Trash2, Upload, User as UserIcon, UserMinus, Wrench, X } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -34,7 +34,7 @@ import { usePlatformAdminGate, PlatformAdminSetupNotice } from "@/lib/platform-a
 import { getSessionSecret, clearSessionSecret, useSessionSecretVersion } from "@/lib/platform-admin-session";
 import { formatPhone } from "@/lib/format";
 import { useAuth } from "@/lib/auth-context";
-import type { MeResponse, Organization } from "@/lib/types";
+import type { MeResponse, Organization, OrgMemberRow } from "@/lib/types";
 import { InvoiceLayoutPanel } from "@/pages/invoice-layout-panel";
 
 interface AdminUser {
@@ -1148,6 +1148,36 @@ function OrganizationsPanel() {
     selectedMembership?.status === "active" &&
     (selectedMembership?.role === "owner" || selectedMembership?.role === "admin");
 
+  const drawerIsAdmin =
+    selectedMembership?.status === "active" &&
+    (selectedMembership?.role === "owner" || selectedMembership?.role === "admin");
+
+  const [removeTargetId, setRemoveTargetId] = useState<string | null>(null);
+  const [removeMemberError, setRemoveMemberError] = useState<string | null>(null);
+
+  const orgMembersQuery = useQuery({
+    queryKey: ["org-members", selectedOrg?.id],
+    queryFn: () =>
+      apiFetch<OrgMemberRow[]>(`/organizations/${selectedOrg!.id}/members`),
+    enabled: !!selectedOrg && drawerIsAdmin,
+  });
+
+  const removeMemberMutation = useMutation({
+    mutationFn: (membershipId: string) =>
+      apiFetch(`/organizations/memberships/${membershipId}`, { method: "DELETE" }),
+    onSuccess: () => {
+      setRemoveTargetId(null);
+      setRemoveMemberError(null);
+      queryClient.invalidateQueries({ queryKey: ["org-members", selectedOrg?.id] });
+      queryClient.invalidateQueries({ queryKey: ["auth", "me"] });
+    },
+    onError: (err: Error) => {
+      setRemoveMemberError(err.message || "Failed to remove member.");
+    },
+  });
+
+  const currentUserId = meQuery.data?.user?.id;
+
   return (
     <PanelShell title="Organizations" subtitle="Labs and practices you belong to.">
       {(meQuery.isLoading || orgsQuery.isLoading) && (
@@ -1272,6 +1302,72 @@ function OrganizationsPanel() {
                 </div>
               </div>
 
+              {drawerIsAdmin && (
+                <div className="space-y-2">
+                  <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                    Members
+                  </div>
+                  {orgMembersQuery.isLoading && (
+                    <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+                      <Loader2 size={12} className="animate-spin" />
+                      Loading members…
+                    </div>
+                  )}
+                  {!orgMembersQuery.isLoading && (orgMembersQuery.data ?? []).length === 0 && (
+                    <div className="text-xs text-muted-foreground">No members found.</div>
+                  )}
+                  {(orgMembersQuery.data ?? []).length > 0 && (
+                    <div className="rounded-md border border-border divide-y divide-border">
+                      {(orgMembersQuery.data ?? []).map((m) => {
+                        const displayName = m.user
+                          ? [m.user.firstName, m.user.lastName].filter(Boolean).join(" ") || m.user.username
+                          : "Unknown";
+                        const isSelf = m.userId === currentUserId;
+                        const isOwner = m.role === "owner";
+                        const canRemove = !isSelf && !isOwner && m.status === "active";
+                        return (
+                          <div
+                            key={m.id}
+                            className="px-3 py-2.5 flex items-center justify-between gap-2"
+                          >
+                            <div className="min-w-0">
+                              <div className="text-xs font-medium truncate">
+                                {displayName}
+                                {isSelf && (
+                                  <span className="ml-1.5 text-muted-foreground font-normal">(you)</span>
+                                )}
+                              </div>
+                              {m.user?.email && (
+                                <div className="text-xs text-muted-foreground truncate">{m.user.email}</div>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="px-2 py-0.5 rounded-full bg-secondary text-secondary-foreground text-xs capitalize">
+                                {m.role}
+                              </span>
+                              {canRemove && (
+                                <button
+                                  type="button"
+                                  onClick={() => { setRemoveMemberError(null); setRemoveTargetId(m.id); }}
+                                  className="inline-flex items-center gap-1 h-6 px-2 rounded border border-destructive/40 text-destructive text-xs hover:bg-destructive/10 transition-colors"
+                                  title={`Remove ${displayName}`}
+                                >
+                                  <UserMinus size={11} />
+                                  Remove
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {removeMemberError && (
+                    <p className="text-xs text-destructive">{removeMemberError}</p>
+                  )}
+                </div>
+              )}
+
               {drawerCanBackfill && (
                 <div className="space-y-3">
                   <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
@@ -1326,6 +1422,40 @@ function OrganizationsPanel() {
               {leaveMutation.isPending ? (
                 <><Loader2 size={13} className="animate-spin mr-1.5" />Leaving…</>
               ) : "Leave organization"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={removeTargetId !== null}
+        onOpenChange={(open) => { if (!open) { setRemoveTargetId(null); setRemoveMemberError(null); } }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Remove member from {selectedOrg?.displayName || selectedOrg?.name || "this organization"}?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Their access will be revoked immediately. You can re-invite them later if needed.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {removeMemberError && (
+            <p className="text-xs text-destructive px-1">{removeMemberError}</p>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={removeMemberMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                if (removeTargetId) removeMemberMutation.mutate(removeTargetId);
+              }}
+              disabled={removeMemberMutation.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {removeMemberMutation.isPending ? (
+                <><Loader2 size={13} className="animate-spin mr-1.5" />Removing…</>
+              ) : "Remove member"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

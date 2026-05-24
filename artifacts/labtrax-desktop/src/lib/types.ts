@@ -446,6 +446,23 @@ export interface Membership {
   organization: Organization | null;
 }
 
+export interface OrgMemberRow {
+  id: string;
+  userId: string;
+  labId: string;
+  role: string;
+  status: string;
+  createdAt?: string | null;
+  user: {
+    id: string;
+    username: string;
+    email?: string | null;
+    firstName?: string | null;
+    lastName?: string | null;
+    initials?: string | null;
+  } | null;
+}
+
 export interface MeResponse {
   user: {
     id: string;
