@@ -1264,49 +1264,12 @@ export function DashboardDropZone() {
 
     // ── Standard path: multi-step Rx create flow ─────────────────────────────
     try {
-      // 1. Reserve a fresh case number from the modern endpoint so we
-      //    don't collide with cases created elsewhere on the same lab.
-      //    Skip this for remake cases — the server assigns the suffix
-      //    automatically (e.g. "26-15B") and ignores any client-provided
-      //    number, so fetching next-case-number would just waste a
-      //    sequence slot.
-      let caseNumber = requestedCaseNumber;
-      if (!remake) {
-        try {
-          const next = await apiFetch<{ caseNumber: string }>(
-            `/cases/next-case-number?labOrganizationId=${encodeURIComponent(
-              rxLabOrgId,
-            )}`,
-          );
-          if (next?.caseNumber) caseNumber = next.caseNumber;
-        } catch {
-          /* fall back to client-computed number */
-        }
-      }
-
-      // 2. Split AI-detected patient name into first/last (the modern
-      //    schema requires both).
+      // 1+5a. Fire next-case-number AND the file upload simultaneously —
+      //       neither depends on the other, so running them in parallel
+      //       hides the upload latency behind the case-number round-trip
+      //       and the subsequent POST /cases call.
       const { first, last } = splitPatientName(r.patientName);
 
-      // 3. Build a `restorations[]` array from the AI-extracted Rx so
-      //    the server can (a) insert one row per tooth into
-      //    case_restorations, (b) auto-look-up unit prices via the
-      //    lab's pricing tier / per-doctor overrides, and (c) auto-
-      //    generate invoice line items from those restorations. Without
-      //    this, the auto-generated invoice has zero line items and a
-      //    $0 subtotal even though the AI saw the teeth + material.
-      //
-      //    Mapping:
-      //      • toothNumber  — each tooth in r.toothIndices (split on
-      //                       commas / whitespace, trimmed)
-      //      • restorationType — r.caseType from the AI ("Crown &
-      //                       Bridge", "Removable", "Implant", etc.).
-      //                       Defaults to "Other" when the AI didn't
-      //                       extract a case type.
-      //      • material/shade — straight from the AI extraction
-      //      • quantity     — 1 per tooth (matches the iTero importer
-      //                       convention in cases.ts)
-      //      • unitPrice    — 0 so the server price-lookup runs
       const teethList = (r.toothIndices || "")
         .split(/[,\s]+/)
         .map((t) => t.trim())
@@ -1322,6 +1285,23 @@ export function DashboardDropZone() {
               unitPrice: 0,
             }))
           : undefined;
+
+      // Start both concurrently.
+      const caseNumberPromise: Promise<string> = remake
+        ? Promise.resolve(requestedCaseNumber)
+        : apiFetch<{ caseNumber: string }>(
+            `/cases/next-case-number?labOrganizationId=${encodeURIComponent(rxLabOrgId)}`,
+          )
+            .then((r) => r?.caseNumber || requestedCaseNumber)
+            .catch(() => requestedCaseNumber);
+
+      const uploadPromise: Promise<{ url: string; filename?: string } | null> =
+        uploadMediaFile(file).catch(() => null);
+
+      const [caseNumber, uploadResult] = await Promise.all([
+        caseNumberPromise,
+        uploadPromise,
+      ]);
 
       // 4. Create the case via the modern /api/cases endpoint.
       const created = await apiFetch<{ id: string; caseNumber: string }>(
@@ -1345,11 +1325,10 @@ export function DashboardDropZone() {
         },
       );
 
-      // 5. Upload the Rx file and attach it as a case_attachment so
-      //    it shows up in the Files tab and writes a case_event.
+      // 5. Attach the already-uploaded Rx file (upload ran in parallel above).
       let rxAttached = false;
       try {
-        const upload = await uploadMediaFile(file);
+        const upload = uploadResult;
         if (upload?.url) {
           await apiFetch(`/cases/${created.id}/attachments`, {
             method: "POST",
