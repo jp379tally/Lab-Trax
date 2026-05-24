@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { Link, useLocation } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, Pencil, Plus, Settings2, Trash2, X } from "lucide-react";
+import { Archive, Plus, Settings2, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import {
@@ -12,8 +12,6 @@ import {
 } from "@/lib/finance";
 import type { BankAccount, TransactionCategory } from "@/lib/types";
 import { formatMoney } from "@/lib/format";
-import { formatPhone } from "@/lib/format";
-import type { Vendor } from "./VendorCombobox";
 
 const ALL_TABS = [
   { path: "/finance/register", label: "Register", billingOnly: false },
@@ -165,14 +163,6 @@ function ManageAccountsModal({
         `/finance/categories?organizationId=${organizationId}`
       ),
   });
-  const vendorsQuery = useQuery({
-    queryKey: ["finance", "vendors", organizationId, "all"],
-    queryFn: () =>
-      apiFetch<Vendor[]>(
-        `/finance/vendors?organizationId=${organizationId}&includeInactive=true`
-      ),
-  });
-
   const [name, setName] = useState("");
   const [institution, setInstitution] = useState("");
   const [last4, setLast4] = useState("");
@@ -180,54 +170,6 @@ function ManageAccountsModal({
 
   const [catName, setCatName] = useState("");
   const [catKind, setCatKind] = useState<"income" | "expense" | "transfer">("expense");
-
-  // Vendor form state
-  const [vendorName, setVendorName] = useState("");
-  const [vendorAddress, setVendorAddress] = useState("");
-  const [vendorPhone, setVendorPhone] = useState("");
-  const [editingVendor, setEditingVendor] = useState<Vendor | null>(null);
-
-  const addVendor = useMutation({
-    mutationFn: () =>
-      apiFetch("/finance/vendors", {
-        method: "POST",
-        body: JSON.stringify({
-          organizationId,
-          name: vendorName.trim(),
-          address: vendorAddress.trim() || null,
-          phone: vendorPhone.trim() || null,
-        }),
-      }),
-    onSuccess: () => {
-      setVendorName("");
-      setVendorAddress("");
-      setVendorPhone("");
-      qc.invalidateQueries({ queryKey: ["finance", "vendors", organizationId] });
-    },
-  });
-
-  const updateVendor = useMutation({
-    mutationFn: (v: Vendor) =>
-      apiFetch(`/finance/vendors/${v.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          name: v.name.trim(),
-          address: v.address ?? null,
-          phone: v.phone ?? null,
-        }),
-      }),
-    onSuccess: () => {
-      setEditingVendor(null);
-      qc.invalidateQueries({ queryKey: ["finance", "vendors", organizationId] });
-    },
-  });
-
-  const deleteVendor = useMutation({
-    mutationFn: (id: string) =>
-      apiFetch(`/finance/vendors/${id}`, { method: "DELETE" }),
-    onSuccess: () =>
-      qc.invalidateQueries({ queryKey: ["finance", "vendors", organizationId] }),
-  });
 
   const settingsQuery = useQuery({
     queryKey: ["finance", "settings", organizationId],
@@ -469,139 +411,14 @@ function ManageAccountsModal({
           </section>
 
           <section>
-            <h3 className="text-sm font-semibold mb-3">Vendors</h3>
-            {(vendorsQuery.data ?? []).length > 0 && (
-              <div className="border border-border rounded-md overflow-hidden mb-4">
-                <table className="w-full text-sm">
-                  <thead className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
-                    <tr>
-                      <th className="text-left font-medium px-3 py-2">Name</th>
-                      <th className="text-left font-medium px-3 py-2">Address</th>
-                      <th className="text-left font-medium px-3 py-2">Phone</th>
-                      <th className="px-2 py-2 w-16" />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(vendorsQuery.data ?? []).map((v) =>
-                      editingVendor?.id === v.id ? (
-                        <tr key={v.id} className="border-t border-border bg-secondary/10">
-                          <td className="px-3 py-1.5">
-                            <input
-                              value={editingVendor.name}
-                              onChange={(e) =>
-                                setEditingVendor({ ...editingVendor, name: e.target.value })
-                              }
-                              className="h-8 px-2 rounded-md bg-background border border-input text-sm w-full"
-                            />
-                          </td>
-                          <td className="px-3 py-1.5">
-                            <input
-                              value={editingVendor.address ?? ""}
-                              onChange={(e) =>
-                                setEditingVendor({ ...editingVendor, address: e.target.value || null })
-                              }
-                              className="h-8 px-2 rounded-md bg-background border border-input text-sm w-full"
-                            />
-                          </td>
-                          <td className="px-3 py-1.5">
-                            <input
-                              value={editingVendor.phone ?? ""}
-                              onChange={(e) =>
-                                setEditingVendor({ ...editingVendor, phone: e.target.value || null })
-                              }
-                              className="h-8 px-2 rounded-md bg-background border border-input text-sm w-full"
-                            />
-                          </td>
-                          <td className="px-2 py-1.5">
-                            <div className="flex items-center gap-1 justify-end">
-                              <button
-                                type="button"
-                                onClick={() => updateVendor.mutate(editingVendor)}
-                                disabled={!editingVendor.name.trim() || updateVendor.isPending}
-                                className="h-7 px-2 rounded-md bg-primary text-primary-foreground text-xs font-medium disabled:opacity-60"
-                              >
-                                Save
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setEditingVendor(null)}
-                                className="h-7 w-7 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground"
-                              >
-                                <X size={13} />
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ) : (
-                        <tr key={v.id} className="border-t border-border">
-                          <td className="px-3 py-2 font-medium">{v.name}</td>
-                          <td className="px-3 py-2 text-muted-foreground text-xs">
-                            {v.address || "—"}
-                          </td>
-                          <td className="px-3 py-2 text-muted-foreground text-xs">
-                            {v.phone ? formatPhone(v.phone) : "—"}
-                          </td>
-                          <td className="px-2 py-2">
-                            <div className="flex items-center gap-1 justify-end">
-                              <button
-                                type="button"
-                                onClick={() => setEditingVendor(v)}
-                                className="h-7 w-7 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground"
-                                aria-label="Edit vendor"
-                              >
-                                <Pencil size={13} />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => deleteVendor.mutate(v.id)}
-                                disabled={deleteVendor.isPending}
-                                className="h-7 w-7 rounded-md hover:bg-destructive/10 flex items-center justify-center text-destructive disabled:opacity-50"
-                                aria-label="Delete vendor"
-                              >
-                                <Trash2 size={13} />
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      )
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            )}
-            {!(vendorsQuery.data ?? []).length && (
-              <p className="text-sm text-muted-foreground mb-4">No vendors yet.</p>
-            )}
-            <div className="grid grid-cols-3 gap-3">
-              <input
-                value={vendorName}
-                onChange={(e) => setVendorName(e.target.value)}
-                placeholder="Vendor name *"
-                className="h-9 px-2.5 rounded-md bg-background border border-input text-sm"
-              />
-              <input
-                value={vendorAddress}
-                onChange={(e) => setVendorAddress(e.target.value)}
-                placeholder="Address"
-                className="h-9 px-2.5 rounded-md bg-background border border-input text-sm"
-              />
-              <input
-                value={vendorPhone}
-                onChange={(e) => setVendorPhone(e.target.value)}
-                placeholder="Phone"
-                className="h-9 px-2.5 rounded-md bg-background border border-input text-sm"
-              />
-            </div>
-            <div className="flex justify-end mt-3">
-              <button
-                type="button"
-                disabled={!vendorName.trim() || addVendor.isPending}
-                onClick={() => addVendor.mutate()}
-                className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
-              >
-                <Plus size={14} /> Add vendor
-              </button>
-            </div>
+            <h3 className="text-sm font-semibold mb-1">Payees / Vendors</h3>
+            <p className="text-sm text-muted-foreground">
+              Manage payees and vendors from the{" "}
+              <Link href="/finance/payees" onClick={onClose} className="text-primary hover:underline font-medium">
+                Payees tab
+              </Link>
+              . From there you can add, edit, and group vendors by type.
+            </p>
           </section>
         </div>
       </div>
