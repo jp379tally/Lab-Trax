@@ -309,6 +309,7 @@ export function InvoiceLayoutPanel() {
   const [activePresetId, setActivePresetId] = useState<string | null>(null);
   const [renamingPresetId, setRenamingPresetId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [hoveredPresetId, setHoveredPresetId] = useState<string | null>(null);
 
   type TemplatePreset = { id: string; name: string; template: unknown; savedAt: string };
 
@@ -1110,11 +1111,33 @@ export function InvoiceLayoutPanel() {
                   {presetsQuery.data.map((p) => {
                     const isActive = activePresetId === p.id;
                     const isRenaming = renamingPresetId === p.id;
+                    const isHovered = hoveredPresetId === p.id;
                     return (
                       <li
                         key={p.id}
-                        className={`text-xs rounded border bg-background overflow-hidden ${isActive ? "border-primary" : "border-border"}`}
+                        className={`text-xs rounded border bg-background overflow-visible relative ${isActive ? "border-primary" : "border-border"}`}
+                        onMouseEnter={() => setHoveredPresetId(p.id)}
+                        onMouseLeave={() => setHoveredPresetId(null)}
                       >
+                        {/* Hover thumbnail popover */}
+                        {isHovered && !isRenaming ? (
+                          <div
+                            style={{
+                              position: "absolute",
+                              right: "calc(100% + 8px)",
+                              top: "50%",
+                              transform: "translateY(-50%)",
+                              zIndex: 50,
+                              pointerEvents: "none",
+                            }}
+                          >
+                            <div className="rounded-md border border-border shadow-lg bg-background p-1.5">
+                              <p className="text-[10px] text-muted-foreground mb-1 px-0.5 truncate max-w-[180px]">{p.name}</p>
+                              <PresetThumbnail template={p.template as InvoiceTemplate} />
+                            </div>
+                          </div>
+                        ) : null}
+
                         {isRenaming ? (
                           <div className="flex items-center gap-1 px-2 py-1.5">
                             <input
@@ -1726,6 +1749,104 @@ export function InvoiceLayoutPanel() {
     </div>
   );
 }
+
+// ─── Preset thumbnail ─────────────────────────────────────────────────────────
+
+const THUMB_W = 180;
+const THUMB_H = Math.round((THUMB_W / PAGE_W) * PAGE_H); // ~233 px
+
+function PresetThumbnail({ template }: { template: InvoiceTemplate }) {
+  const t = coerceInvoiceTemplate(template);
+  const scaleX = THUMB_W / PAGE_W;
+  const scaleY = THUMB_H / PAGE_H;
+
+  return (
+    <div
+      style={{
+        width: THUMB_W,
+        height: THUMB_H,
+        position: "relative",
+        background: "white",
+        border: "1px solid #e2e8f0",
+        borderRadius: 3,
+        overflow: "hidden",
+        flexShrink: 0,
+      }}
+    >
+      {/* Section boxes */}
+      {(Object.keys(t.boxes) as SectionKey[]).map((k) => {
+        const b = t.boxes[k];
+        return (
+          <div
+            key={k}
+            style={{
+              position: "absolute",
+              left: Math.round(b.x * scaleX),
+              top: Math.round(b.y * scaleY),
+              width: Math.round(b.w * scaleX),
+              height: Math.round(b.h * scaleY),
+              background: SECTION_COLORS[k],
+              border: "1px dashed rgba(0,0,0,0.22)",
+              boxSizing: "border-box",
+            }}
+          />
+        );
+      })}
+
+      {/* Custom text blocks */}
+      {t.customTexts.map((tb) => (
+        <div
+          key={tb.id}
+          style={{
+            position: "absolute",
+            left: Math.round(tb.x * scaleX),
+            top: Math.round(tb.y * scaleY),
+            width: Math.round(tb.w * scaleX),
+            height: Math.round(tb.h * scaleY),
+            background: tb.sourceId ? "rgba(34,197,94,0.18)" : "rgba(251,146,60,0.18)",
+            border: "1px dashed rgba(0,0,0,0.18)",
+            boxSizing: "border-box",
+          }}
+        />
+      ))}
+
+      {/* Extra images */}
+      {t.extraImages.map((img, i) => (
+        <div
+          key={img.id ?? i}
+          style={{
+            position: "absolute",
+            left: Math.round(img.x * scaleX),
+            top: Math.round(img.y * scaleY),
+            width: Math.round(img.w * scaleX),
+            height: Math.round(img.h * scaleY),
+            background: "rgba(99,102,241,0.18)",
+            border: "1px dashed rgba(0,0,0,0.18)",
+            boxSizing: "border-box",
+          }}
+        />
+      ))}
+
+      {/* Logo (header mode) */}
+      {t.logo.mode === "header" ? (
+        <div
+          style={{
+            position: "absolute",
+            left: Math.round(t.logo.x * scaleX),
+            top: Math.round(t.logo.y * scaleY),
+            width: Math.round(t.logo.w * scaleX),
+            height: Math.round(t.logo.h * scaleY),
+            background: "rgba(14,165,233,0.22)",
+            border: "1px dashed rgba(0,0,0,0.18)",
+            boxSizing: "border-box",
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+// ─── Draggable canvas box ─────────────────────────────────────────────────────
 
 interface DraggableBoxProps {
   box: TemplateBox;
