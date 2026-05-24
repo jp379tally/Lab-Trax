@@ -13,6 +13,7 @@ if (!JWT_SECRET) {
 const RESOLVED_JWT_SECRET: string = JWT_SECRET ?? "labtrax-dev-only-jwt-secret-do-not-use-in-production";
 const ACCESS_TOKEN_TTL = "15m";
 const REFRESH_TOKEN_TTL = "7d";
+const PENDING_2FA_TOKEN_TTL = "5m";
 
 export type AccessTokenPayload = {
   sub: string;
@@ -67,4 +68,24 @@ export function generateInviteToken() {
 
 export function makeSessionHash(rawRefreshToken: string) {
   return sha256(rawRefreshToken);
+}
+
+export type PendingTwoFactorPayload = {
+  sub: string;
+  type: "2fa-pending";
+  exp?: number;
+};
+
+export function signPendingTwoFactorToken(userId: string): string {
+  return jwt.sign({ sub: userId, type: "2fa-pending" }, RESOLVED_JWT_SECRET, {
+    expiresIn: PENDING_2FA_TOKEN_TTL,
+  });
+}
+
+export function verifyPendingTwoFactorToken(token: string): PendingTwoFactorPayload {
+  const payload = jwt.verify(token, RESOLVED_JWT_SECRET) as PendingTwoFactorPayload;
+  if (payload.type !== "2fa-pending") {
+    throw new Error("Invalid token type: expected 2fa-pending token");
+  }
+  return payload;
 }

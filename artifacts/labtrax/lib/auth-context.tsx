@@ -45,8 +45,9 @@ interface AuthContextValue {
   userType: "provider" | "lab" | "master_admin" | null;
   profilePicUri: string | null;
   setProfilePicUri: (uri: string | null) => void;
-  login: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
-  loginWithBiometric: () => Promise<{ success: boolean; error?: string }>;
+  login: (username: string, password: string) => Promise<{ success: boolean; requiresTwoFactor?: boolean; pendingToken?: string; error?: string }>;
+  completeTwoFactor: (pendingToken: string, code: string) => Promise<{ success: boolean; error?: string }>;
+  loginWithBiometric: () => Promise<{ success: boolean; requiresTwoFactor?: boolean; pendingToken?: string; error?: string }>;
   register: (data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean; userType?: "provider" | "lab" | "master_admin"; licenseNumber?: string; practiceName?: string; doctorName?: string; practiceAddress?: string; practicePhone?: string; phoneContactName?: string; role?: "user" | "admin"; accountNumber?: string; joinOrganizationId?: string; createOrganization?: boolean; claimProvider?: { labId: string; accountNumber: string } }) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   deleteAccount: () => Promise<{ success: boolean; error?: string }>;
@@ -311,7 +312,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  async function login(username: string, password: string): Promise<{ success: boolean; error?: string }> {
+  async function login(username: string, password: string): Promise<{ success: boolean; requiresTwoFactor?: boolean; pendingToken?: string; error?: string }> {
     try {
       const res = await resilientFetch("/api/auth/login", {
         method: "POST",
@@ -320,6 +321,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
 
       const data = await res.json();
+
+      if (res.ok && data.requiresTwoFactor && data.pendingToken) {
+        return { success: false, requiresTwoFactor: true, pendingToken: data.pendingToken };
+      }
 
       if (!res.ok || !data.success) {
         return { success: false, error: data.message || data.error || "Invalid username or password." };
@@ -357,7 +362,47 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  async function loginWithBiometric(): Promise<{ success: boolean; error?: string }> {
+  async function completeTwoFactor(pendingToken: string, code: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      const res = await resilientFetch("/api/auth/2fa/challenge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pendingToken, code, clientType: Platform.OS === "web" ? "web" : "mobile" }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.data?.success) {
+        return { success: false, error: data?.error || data?.message || "Invalid code." };
+      }
+      const { accessToken, refreshToken } = data.data;
+      if (accessToken && refreshToken) {
+        await saveTokens(accessToken, refreshToken);
+      }
+      // Fetch updated user info from /auth/me
+      const meRes = await resilientFetch("/api/auth/me");
+      const meData = await meRes.json();
+      const user = meData?.user ?? meData;
+      if (user?.username) {
+        setIsAuthenticated(true);
+        setCurrentUser(user.username);
+        setCurrentUserId(user.id);
+        setUserType(user.userType || "lab");
+        await AsyncStorage.setItem(
+          AUTH_KEY,
+          JSON.stringify({ loggedIn: true, username: user.username, userId: user.id, userType: user.userType || "lab" }),
+        );
+        await fetchAllUsers();
+        const userPicKey = `${PROFILE_PIC_KEY}_${user.id || user.username}`;
+        const savedPic = await AsyncStorage.getItem(userPicKey);
+        setProfilePicUriState(savedPic);
+        logAudit("LOGIN_2FA", user.username, "User completed 2FA challenge");
+      }
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e?.message || "Verification failed." };
+    }
+  }
+
+  async function loginWithBiometric(): Promise<{ success: boolean; requiresTwoFactor?: boolean; pendingToken?: string; error?: string }> {
     try {
       const stored = await getSensitiveItem(BIOMETRIC_USER_KEY);
       if (!stored) {
@@ -574,6 +619,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       profilePicUri,
       setProfilePicUri,
       login,
+      completeTwoFactor,
       loginWithBiometric,
       register,
       logout,

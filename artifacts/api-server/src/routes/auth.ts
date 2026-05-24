@@ -15,6 +15,7 @@ import {
   signRefreshToken,
   verifyRefreshToken,
   makeSessionHash,
+  signPendingTwoFactorToken,
 } from "../lib/auth";
 import { hashPassword, verifyPassword } from "../lib/crypto";
 import {
@@ -591,6 +592,11 @@ router.post(
         entityId: user.id,
       });
       throw new HttpError(401, "Invalid username or password.");
+    }
+
+    if (user.twoFactorEnabled) {
+      const pendingToken = signPendingTwoFactorToken(user.id);
+      return res.json({ requiresTwoFactor: true, pendingToken });
     }
 
     const sessionId = crypto.randomUUID();

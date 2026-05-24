@@ -645,6 +645,80 @@ export interface UpdateVendorInput {
   isActive?: boolean;
 }
 
+export type TwoFactorSetupResultData = {
+  otpauthUrl: string;
+  qrCodeDataUrl: string;
+  secret: string;
+};
+
+export interface TwoFactorSetupResult {
+  ok?: boolean;
+  data?: TwoFactorSetupResultData;
+}
+
+export interface TwoFactorConfirmInput {
+  code: string;
+}
+
+export type TwoFactorConfirmResultData = {
+  success: boolean;
+  backupCodes: string[];
+};
+
+export interface TwoFactorConfirmResult {
+  ok?: boolean;
+  data?: TwoFactorConfirmResultData;
+}
+
+export interface TwoFactorDisableInput {
+  code: string;
+}
+
+export type TwoFactorStatusResultData = {
+  twoFactorEnabled: boolean;
+};
+
+export interface TwoFactorStatusResult {
+  ok?: boolean;
+  data?: TwoFactorStatusResultData;
+}
+
+export type TwoFactorChallengeInputClientType =
+  (typeof TwoFactorChallengeInputClientType)[keyof typeof TwoFactorChallengeInputClientType];
+
+export const TwoFactorChallengeInputClientType = {
+  web: "web",
+  mobile: "mobile",
+  desktop: "desktop",
+} as const;
+
+export interface TwoFactorChallengeInput {
+  pendingToken: string;
+  code: string;
+  deviceName?: string;
+  clientType?: TwoFactorChallengeInputClientType;
+}
+
+export type TwoFactorChallengeResultData = {
+  success?: boolean;
+  accessToken?: string;
+  refreshToken?: string;
+};
+
+export interface TwoFactorChallengeResult {
+  ok?: boolean;
+  data?: TwoFactorChallengeResultData;
+}
+
+export type DisableTwoFactor200Data = {
+  disabled?: boolean;
+};
+
+export type DisableTwoFactor200 = {
+  ok?: boolean;
+  data?: DisableTwoFactor200Data;
+};
+
 export type ListVendorsParams = {
   organizationId: string;
   vendorType?: VendorType;

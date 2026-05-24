@@ -42,7 +42,7 @@ function validatePassword(pw: string): { valid: boolean; errors: string[] } {
 
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
-  const { login, loginWithBiometric, register, registeredUsers } = useAuth();
+  const { login, completeTwoFactor, loginWithBiometric, register, registeredUsers } = useAuth();
   const [mode, setMode] = useState<"signin" | "signup">("signin");
 
   const [username, setUsername] = useState("");
@@ -52,6 +52,12 @@ export default function LoginScreen() {
   const [error, setError] = useState<string | null>(null);
   const [biometricAvailable, setBiometricAvailable] = useState(false);
   const [biometricType, setBiometricType] = useState<string>("Biometric");
+
+  // Two-factor auth challenge state
+  const [twoFactorPendingToken, setTwoFactorPendingToken] = useState<string | null>(null);
+  const [totpCode, setTotpCode] = useState("");
+  const [useBackupCode, setUseBackupCode] = useState(false);
+  const [isChallenging, setIsChallenging] = useState(false);
   const [diagTapCount, setDiagTapCount] = useState(0);
 
   const [showForgotPassword, setShowForgotPassword] = useState(false);
@@ -228,7 +234,25 @@ export default function LoginScreen() {
     setIsLoggingIn(true);
     const result = await login(username.trim(), password.trim());
     setIsLoggingIn(false);
+    if (result.requiresTwoFactor && result.pendingToken) {
+      setTwoFactorPendingToken(result.pendingToken);
+      setTotpCode("");
+      setUseBackupCode(false);
+      setError(null);
+      return;
+    }
     if (!result.success) setError(result.error || "Login failed.");
+  }
+
+  async function handleTwoFactorChallenge() {
+    if (!totpCode.trim() || !twoFactorPendingToken) return;
+    setError(null);
+    setIsChallenging(true);
+    const result = await completeTwoFactor(twoFactorPendingToken, totpCode.trim());
+    setIsChallenging(false);
+    if (!result.success) {
+      setError(result.error || "Invalid code.");
+    }
   }
 
   function openForgotPassword() {
@@ -2459,6 +2483,70 @@ export default function LoginScreen() {
               </View>
             )}
 
+            {twoFactorPendingToken ? (
+              <View style={{ gap: 12 }}>
+                <View style={{ alignItems: "center", marginBottom: 4 }}>
+                  <View style={{ width: 52, height: 52, borderRadius: 26, backgroundColor: "rgba(59,130,246,0.15)", alignItems: "center", justifyContent: "center", marginBottom: 8 }}>
+                    <Ionicons name="shield-checkmark" size={26} color="#60A5FA" />
+                  </View>
+                  <Text style={{ fontSize: 17, fontFamily: "Inter_600SemiBold", color: "#FFF", marginBottom: 4 }}>Two-Factor Verification</Text>
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.6)", textAlign: "center" }}>
+                    {useBackupCode
+                      ? "Enter one of your saved backup codes."
+                      : "Enter the 6-digit code from your authenticator app."}
+                  </Text>
+                </View>
+                <View style={styles.inputWrapper}>
+                  <Ionicons name="keypad-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
+                  <TextInput
+                    style={[styles.input, { letterSpacing: 4, textAlign: "center" }]}
+                    value={totpCode}
+                    onChangeText={(t) => {
+                      setTotpCode(useBackupCode ? t.toUpperCase() : t.replace(/\D/g, "").slice(0, 6));
+                      setError(null);
+                    }}
+                    placeholder={useBackupCode ? "BACKUP CODE" : "000000"}
+                    placeholderTextColor="rgba(255,255,255,0.3)"
+                    keyboardType={useBackupCode ? "default" : "number-pad"}
+                    autoCapitalize="characters"
+                    autoCorrect={false}
+                    maxLength={useBackupCode ? 20 : 6}
+                    autoFocus
+                  />
+                </View>
+                <Pressable
+                  onPress={handleTwoFactorChallenge}
+                  disabled={isChallenging || !totpCode.trim()}
+                  style={({ pressed }) => [styles.loginBtn, pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }, (isChallenging || !totpCode.trim()) && { opacity: 0.6 }]}
+                >
+                  {isChallenging ? (
+                    <ActivityIndicator size="small" color="#FFF" />
+                  ) : (
+                    <>
+                      <Ionicons name="checkmark-circle-outline" size={20} color="#FFF" />
+                      <Text style={styles.loginBtnText}>Verify</Text>
+                    </>
+                  )}
+                </Pressable>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", paddingHorizontal: 4 }}>
+                  <Pressable
+                    onPress={() => { setUseBackupCode(!useBackupCode); setTotpCode(""); setError(null); }}
+                    style={({ pressed }) => [pressed && { opacity: 0.7 }]}
+                  >
+                    <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "#60A5FA" }}>
+                      {useBackupCode ? "Use authenticator app" : "Use backup code"}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => { setTwoFactorPendingToken(null); setTotpCode(""); setError(null); }}
+                    style={({ pressed }) => [pressed && { opacity: 0.7 }]}
+                  >
+                    <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "#60A5FA" }}>Back</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ) : (
+            <>
             <View style={styles.inputGroup}>
               <View style={styles.inputWrapper}>
                 <Ionicons name="person-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
@@ -2541,6 +2629,8 @@ export default function LoginScreen() {
                   <Text style={styles.biometricBtnText}>Sign in with {biometricType}</Text>
                 </Pressable>
               </>
+            )}
+            </>
             )}
           </View>
 

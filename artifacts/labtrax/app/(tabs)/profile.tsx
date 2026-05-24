@@ -395,6 +395,20 @@ export default function ProfileScreen() {
             </View>
             <Ionicons name="chevron-forward" size={18} color={Colors.light.textSecondary} />
           </Pressable>
+          <View style={styles.menuDivider} />
+          <Pressable
+            style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+            onPress={() => router.push("/two-factor" as any)}
+          >
+            <View style={[styles.menuIcon, { backgroundColor: "#EDE9FE" }]}>
+              <Ionicons name="shield-checkmark" size={18} color="#7C3AED" />
+            </View>
+            <View style={styles.menuInfo}>
+              <Text style={styles.menuTitle}>Two-Factor Authentication</Text>
+              <Text style={styles.menuSub}>Add an extra layer of security</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={Colors.light.textSecondary} />
+          </Pressable>
           {currentUser && (() => {
             const userData = registeredUsers.find(u => u.username.toLowerCase() === currentUser.toLowerCase());
             if (!userData?.practiceName) return null;

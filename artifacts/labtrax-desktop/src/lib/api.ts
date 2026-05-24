@@ -746,6 +746,15 @@ export async function sendUploadChunk(
   return result.data;
 }
 
+export class TwoFactorRequiredError extends Error {
+  readonly pendingToken: string;
+  constructor(pendingToken: string) {
+    super("Two-factor authentication required.");
+    this.name = "TwoFactorRequiredError";
+    this.pendingToken = pendingToken;
+  }
+}
+
 export async function login(username: string, password: string): Promise<SessionUser> {
   let r: Response;
   try {
@@ -775,6 +784,9 @@ export async function login(username: string, password: string): Promise<Session
     );
   }
   const body = await r.json().catch(() => ({}));
+  if (r.ok && body?.requiresTwoFactor && typeof body.pendingToken === "string") {
+    throw new TwoFactorRequiredError(body.pendingToken);
+  }
   if (!r.ok || !body?.success) {
     throw new ApiError(body?.message || "Invalid username or password.", r.status);
   }
@@ -791,6 +803,36 @@ export async function login(username: string, password: string): Promise<Session
   }
   emit(body.user);
   return body.user as SessionUser;
+}
+
+export async function completeTwoFactorChallenge(
+  pendingToken: string,
+  code: string,
+): Promise<SessionUser> {
+  const r = await fetch(apiUrl("/auth/2fa/challenge"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      pendingToken,
+      code,
+      deviceName: "LabTrax Desktop",
+      clientType: "desktop",
+    }),
+  });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok || !body?.data?.success) {
+    throw new ApiError(body?.error || body?.message || "Invalid code.", r.status);
+  }
+  const { accessToken, refreshToken } = body.data;
+  if (typeof accessToken === "string" && typeof refreshToken === "string") {
+    persistTokens({ accessToken, refreshToken });
+  } else {
+    throw new ApiError("The server didn't return a sign-in token. Please contact your administrator.", r.status);
+  }
+  const me = await apiFetch<{ success?: boolean; user?: SessionUser } | SessionUser>("/auth/me");
+  const user = (me as any)?.user ?? (me as SessionUser);
+  emit(user);
+  return user;
 }
 
 export async function logout(): Promise<void> {

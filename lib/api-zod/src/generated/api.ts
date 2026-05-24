@@ -8,6 +8,86 @@
 import * as zod from "zod";
 
 /**
+ * @summary Get current 2FA status for the authenticated user
+ */
+export const GetTwoFactorStatusResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      twoFactorEnabled: zod.boolean(),
+    })
+    .optional(),
+});
+
+/**
+ * @summary Initiate 2FA setup — generates a TOTP secret and QR code
+ */
+export const SetupTwoFactorResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      otpauthUrl: zod.string(),
+      qrCodeDataUrl: zod.string(),
+      secret: zod.string(),
+    })
+    .optional(),
+});
+
+/**
+ * @summary Confirm 2FA setup by submitting a verification code
+ */
+export const ConfirmTwoFactorBody = zod.object({
+  code: zod.string(),
+});
+
+export const ConfirmTwoFactorResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      success: zod.boolean(),
+      backupCodes: zod.array(zod.string()),
+    })
+    .optional(),
+});
+
+/**
+ * @summary Disable 2FA (requires current password confirmation)
+ */
+export const DisableTwoFactorBody = zod.object({
+  code: zod.string(),
+});
+
+export const DisableTwoFactorResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      disabled: zod.boolean().optional(),
+    })
+    .optional(),
+});
+
+/**
+ * @summary Complete login by verifying a TOTP or backup code
+ */
+export const TwoFactorChallengeBody = zod.object({
+  pendingToken: zod.string(),
+  code: zod.string(),
+  deviceName: zod.string().optional(),
+  clientType: zod.enum(["web", "mobile", "desktop"]).optional(),
+});
+
+export const TwoFactorChallengeResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      success: zod.boolean().optional(),
+      accessToken: zod.string().optional(),
+      refreshToken: zod.string().optional(),
+    })
+    .optional(),
+});
+
+/**
  * @summary List vendors / employees / items for a lab
  */
 export const ListVendorsQueryParams = zod.object({

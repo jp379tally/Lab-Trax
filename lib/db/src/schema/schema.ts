@@ -54,6 +54,13 @@ export const users = pgTable(
     // Nullable — missing keys default to true (opt-in matches previous behaviour).
     // Keys: caseNoteNotifications, orgInviteNotifications, statementEmails, billingReminders
     emailPreferences: jsonb("email_preferences"),
+    // Two-factor authentication (Task #825). twoFactorSecret is AES-256-GCM
+    // encrypted using a key derived from JWT_SECRET. twoFactorBackupCodes is a
+    // JSONB array of bcrypt-hashed one-time-use codes (8 codes generated on
+    // enable). Plain-text codes are returned exactly once at setup time.
+    twoFactorSecret: text("two_factor_secret"),
+    twoFactorEnabled: boolean("two_factor_enabled").default(false).notNull(),
+    twoFactorBackupCodes: jsonb("two_factor_backup_codes"),
     createdAt: timestamp("created_at").defaultNow(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     deletedByUserId: varchar("deleted_by_user_id"),

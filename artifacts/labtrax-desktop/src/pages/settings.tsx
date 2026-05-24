@@ -42,9 +42,9 @@ interface AdminUser {
   lastLoginAt?: string | null;
 }
 
-type TabKey = "profile" | "password" | "sessions" | "organizations" | "users" | "backup" | "desktop" | "mobile" | "itero" | "platform-admin" | "subscriptions" | "notifications" | "invoice-layout";
+type TabKey = "profile" | "password" | "two-factor" | "sessions" | "organizations" | "users" | "backup" | "desktop" | "mobile" | "itero" | "platform-admin" | "subscriptions" | "notifications" | "invoice-layout";
 
-const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "sessions", "organizations", "users", "backup", "desktop", "mobile", "itero", "platform-admin", "subscriptions", "notifications", "invoice-layout"];
+const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "two-factor", "sessions", "organizations", "users", "backup", "desktop", "mobile", "itero", "platform-admin", "subscriptions", "notifications", "invoice-layout"];
 
 function readInitialTab(): TabKey {
   if (typeof window === "undefined") return "profile";
@@ -66,6 +66,7 @@ export default function SettingsPage() {
   const tabs: Array<{ key: TabKey; label: string; icon: typeof UserIcon; show: boolean }> = [
     { key: "profile", label: "Profile", icon: UserIcon, show: true },
     { key: "password", label: "Password", icon: KeyRound, show: true },
+    { key: "two-factor", label: "Two-factor auth", icon: ShieldCheck, show: true },
     { key: "sessions", label: "Active sessions", icon: Monitor, show: true },
     { key: "organizations", label: "Organizations", icon: Building2, show: true },
     { key: "users", label: "Users", icon: ShieldCheck, show: isAdmin },
@@ -115,6 +116,7 @@ export default function SettingsPage() {
         <div className="flex-1 min-w-0 bg-card border border-border rounded-xl">
           {tab === "profile" && <ProfilePanel />}
           {tab === "password" && <PasswordPanel />}
+          {tab === "two-factor" && <TwoFactorPanel />}
           {tab === "sessions" && <SessionsPanel />}
           {tab === "organizations" && <OrganizationsPanel />}
           {tab === "users" && isAdmin && <UsersPanel />}
@@ -676,6 +678,239 @@ function PasswordPanel() {
         >
           {mutation.isPending ? "Updating…" : "Update password"}
         </button>
+      </div>
+    </PanelShell>
+  );
+}
+
+function TwoFactorPanel() {
+  type Phase = "status" | "setup" | "confirm" | "backup-codes" | "disable";
+  const [phase, setPhase] = useState<Phase>("status");
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string | null>(null);
+  const [secretKey, setSecretKey] = useState<string | null>(null);
+  const [verifyCode, setVerifyCode] = useState("");
+  const [backupCodes, setBackupCodes] = useState<string[]>([]);
+  const [disableCode, setDisableCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    apiFetch<{ data: { twoFactorEnabled: boolean } }>("/auth/2fa/status")
+      .then((r) => { setEnabled(r.data.twoFactorEnabled); setLoading(false); })
+      .catch(() => { setLoading(false); });
+  }, []);
+
+  async function startSetup() {
+    setError(null);
+    setBusy(true);
+    try {
+      const r = await apiFetch<{ data: { qrCodeDataUrl: string; secret: string } }>("/auth/2fa/setup", { method: "POST" });
+      setQrCodeDataUrl(r.data.qrCodeDataUrl);
+      setSecretKey(r.data.secret);
+      setVerifyCode("");
+      setPhase("setup");
+    } catch (e: any) { setError(e.message || "Setup failed."); }
+    finally { setBusy(false); }
+  }
+
+  async function confirmSetup() {
+    if (!verifyCode.trim()) { setError("Please enter the 6-digit code from your authenticator app."); return; }
+    setError(null);
+    setBusy(true);
+    try {
+      const r = await apiFetch<{ data: { success: boolean; backupCodes: string[] } }>("/auth/2fa/confirm", {
+        method: "POST",
+        body: JSON.stringify({ code: verifyCode.trim() }),
+      });
+      setBackupCodes(r.data.backupCodes);
+      setEnabled(true);
+      setPhase("backup-codes");
+    } catch (e: any) { setError(e.message || "Verification failed."); }
+    finally { setBusy(false); }
+  }
+
+  async function disable2fa() {
+    if (!disableCode.trim()) { setError("Please enter the code from your authenticator app."); return; }
+    setError(null);
+    setBusy(true);
+    try {
+      await apiFetch("/auth/2fa", { method: "DELETE", body: JSON.stringify({ code: disableCode.trim() }) });
+      setEnabled(false);
+      setDisableCode("");
+      setPhase("status");
+      setSuccess("Two-factor authentication has been disabled.");
+      setTimeout(() => setSuccess(null), 4000);
+    } catch (e: any) { setError(e.message || "Could not disable 2FA."); }
+    finally { setBusy(false); }
+  }
+
+  function copyBackupCodes() {
+    navigator.clipboard.writeText(backupCodes.join("\n"));
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  function downloadBackupCodes() {
+    const blob = new Blob([backupCodes.join("\n")], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "labtrax-backup-codes.txt";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  if (loading) {
+    return (
+      <PanelShell title="Two-factor authentication">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 size={14} className="animate-spin" /> Loading…
+        </div>
+      </PanelShell>
+    );
+  }
+
+  if (phase === "backup-codes") {
+    return (
+      <PanelShell title="Two-factor authentication" subtitle="2FA is now enabled. Save these backup codes in a safe place.">
+        <Alert tone="success">Two-factor authentication is now active.</Alert>
+        <div className="rounded-lg border border-border bg-secondary/20 p-4">
+          <div className="text-sm font-semibold mb-2">Backup codes</div>
+          <p className="text-xs text-muted-foreground mb-3">
+            Each code can be used once in place of your authenticator code if you lose access to your device.
+          </p>
+          <div className="grid grid-cols-2 gap-1.5 font-mono text-sm mb-4">
+            {backupCodes.map((c) => (
+              <div key={c} className="px-2 py-1 bg-background border border-border rounded text-center tracking-wider">{c}</div>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <button type="button" onClick={copyBackupCodes}
+              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-input bg-background text-xs font-semibold hover:bg-secondary">
+              <Copy size={12} /> {copied ? "Copied!" : "Copy codes"}
+            </button>
+            <button type="button" onClick={downloadBackupCodes}
+              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-input bg-background text-xs font-semibold hover:bg-secondary">
+              <Download size={12} /> Download
+            </button>
+          </div>
+        </div>
+        <div className="flex justify-end">
+          <button type="button" onClick={() => setPhase("status")}
+            className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90">
+            Done
+          </button>
+        </div>
+      </PanelShell>
+    );
+  }
+
+  if (phase === "setup") {
+    return (
+      <PanelShell title="Set up two-factor authentication" subtitle="Scan the QR code with your authenticator app, then enter the 6-digit code to confirm.">
+        {error && <Alert tone="danger">{error}</Alert>}
+        <div className="flex flex-col items-center gap-4">
+          {qrCodeDataUrl && <img src={qrCodeDataUrl} alt="QR code" className="w-48 h-48 border border-border rounded-lg" />}
+          {secretKey && (
+            <div className="text-center">
+              <p className="text-xs text-muted-foreground mb-1">Or enter this key manually:</p>
+              <code className="text-xs font-mono bg-secondary px-2 py-1 rounded tracking-widest select-all">{secretKey}</code>
+            </div>
+          )}
+        </div>
+        <div className="max-w-xs">
+          <Field label="Verification code">
+            <input
+              type="text"
+              inputMode="numeric"
+              maxLength={6}
+              placeholder="000000"
+              value={verifyCode}
+              onChange={(e) => setVerifyCode(e.target.value.replace(/\D/g, ""))}
+              className={`${inputCls} text-center tracking-widest text-lg font-mono`}
+              autoComplete="one-time-code"
+            />
+          </Field>
+        </div>
+        <div className="flex gap-2 justify-end">
+          <button type="button" onClick={() => { setPhase("status"); setError(null); }}
+            className="h-9 px-4 rounded-md border border-input bg-background text-sm font-semibold hover:bg-secondary">
+            Cancel
+          </button>
+          <button type="button" onClick={confirmSetup} disabled={busy || verifyCode.length !== 6}
+            className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60">
+            {busy ? "Verifying…" : "Verify and enable"}
+          </button>
+        </div>
+      </PanelShell>
+    );
+  }
+
+  if (phase === "disable") {
+    return (
+      <PanelShell title="Disable two-factor authentication" subtitle="Enter the 6-digit code from your authenticator app (or a backup code) to confirm.">
+        {error && <Alert tone="danger">{error}</Alert>}
+        <div className="max-w-xs">
+          <Field label="Verification code">
+            <input
+              type="text"
+              inputMode="numeric"
+              maxLength={6}
+              placeholder="000000"
+              value={disableCode}
+              onChange={(e) => setDisableCode(e.target.value.replace(/\D/g, ""))}
+              className={`${inputCls} text-center tracking-widest font-mono`}
+              autoComplete="one-time-code"
+            />
+          </Field>
+        </div>
+        <div className="flex gap-2 justify-end">
+          <button type="button" onClick={() => { setPhase("status"); setError(null); setDisableCode(""); }}
+            className="h-9 px-4 rounded-md border border-input bg-background text-sm font-semibold hover:bg-secondary">
+            Cancel
+          </button>
+          <button type="button" onClick={disable2fa} disabled={busy || !disableCode.trim()}
+            className="h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-semibold hover:bg-destructive/90 disabled:opacity-60">
+            {busy ? "Disabling…" : "Disable 2FA"}
+          </button>
+        </div>
+      </PanelShell>
+    );
+  }
+
+  return (
+    <PanelShell title="Two-factor authentication" subtitle="Add a second layer of protection to your account.">
+      {error && <Alert tone="danger">{error}</Alert>}
+      {success && <Alert tone="success">{success}</Alert>}
+      <div className="rounded-lg border border-border bg-secondary/20 p-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-sm font-semibold flex items-center gap-2">
+              <ShieldCheck size={15} className={enabled ? "text-emerald-600" : "text-muted-foreground"} />
+              {enabled ? "Enabled" : "Not enabled"}
+            </div>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {enabled
+                ? "Your account is protected with an authenticator app."
+                : "Use an authenticator app (Google Authenticator, Authy, etc.) as a second sign-in step."}
+            </p>
+          </div>
+          {enabled ? (
+            <button type="button" onClick={() => { setPhase("disable"); setError(null); }}
+              className="h-8 px-3 rounded-md border border-input bg-background text-xs font-semibold hover:bg-secondary text-destructive hover:text-destructive">
+              Disable
+            </button>
+          ) : (
+            <button type="button" onClick={startSetup} disabled={busy}
+              className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 disabled:opacity-60">
+              {busy ? "Loading…" : "Set up authenticator app"}
+            </button>
+          )}
+        </div>
       </div>
     </PanelShell>
   );

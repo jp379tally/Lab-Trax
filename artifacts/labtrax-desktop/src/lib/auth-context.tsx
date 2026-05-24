@@ -12,8 +12,10 @@ import {
   getAuthRestoreStatus,
   login as apiLogin,
   logout as apiLogout,
+  completeTwoFactorChallenge as apiCompleteTwoFactor,
   subscribeSession,
   waitForTokenHydration,
+  TwoFactorRequiredError,
   type SessionUser,
 } from "./api";
 import type { AuthRestoreStatus } from "./auth-restore-status";
@@ -28,7 +30,9 @@ interface AuthContextValue {
    * The notice is one-shot per launch. */
   acknowledgeRestoreNotice: () => void;
   restoreNoticeDismissed: boolean;
+  /** Throws TwoFactorRequiredError if 2FA is enabled. */
   login: (username: string, password: string) => Promise<void>;
+  completeTwoFactor: (pendingToken: string, code: string) => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
 }
@@ -96,6 +100,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setStatus("authed");
   }, []);
 
+  const completeTwoFactor = useCallback(async (pendingToken: string, code: string) => {
+    const me = await apiCompleteTwoFactor(pendingToken, code);
+    setUser(me);
+    setStatus("authed");
+  }, []);
+
   const logout = useCallback(async () => {
     await apiLogout();
     setUser(null);
@@ -110,6 +120,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       restoreNoticeDismissed,
       acknowledgeRestoreNotice,
       login,
+      completeTwoFactor,
       logout,
       refresh: verify,
     }),
@@ -120,6 +131,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       restoreNoticeDismissed,
       acknowledgeRestoreNotice,
       login,
+      completeTwoFactor,
       logout,
       verify,
     ],

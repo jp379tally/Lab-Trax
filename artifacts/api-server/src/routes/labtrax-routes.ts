@@ -56,6 +56,7 @@ async function fetchUserActiveLabIds(userId: string): Promise<string[]> {
 }
 
 import authRoutes from "./auth";
+import twoFactorRoutes from "./two-factor";
 import organizationRoutes from "./organizations";
 import caseRoutes from "./cases";
 import doctorRoutes from "./doctors";
@@ -1003,6 +1004,7 @@ export async function registerRoutes(): Promise<IRouter> {
   });
 
   router.use("/auth", authRoutes);
+  router.use("/auth/2fa", twoFactorRoutes);
   router.use("/users", usersRoutes);
   router.use("/organizations", organizationRoutes);
   router.use("/cases", caseRoutes);

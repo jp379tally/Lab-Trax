@@ -76,6 +76,7 @@
     "zod-validation-error": "^3.4.0"
   },
   "dependencies": {
+    "expo-clipboard": "^8.0.8",
     "expo-file-system": "~19.0.22",
     "react-native-purchases": "^10.1.1"
   }
