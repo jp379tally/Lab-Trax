@@ -88,6 +88,20 @@ export default function SettingsPage() {
   ];
   const [tab, setTab] = useState<TabKey>(readInitialTab);
 
+  const backupScheduleQuery = useQuery<{ lastSuccessfulBackupAt?: string | null; staleAfterDays?: number }>({
+    enabled: isAdmin,
+    queryKey: ["admin", "backup-schedule-v2"],
+    queryFn: () => apiFetch("/admin/backup/schedule"),
+    staleTime: 5 * 60 * 1000,
+  });
+  const backupOverdue = isAdmin && backupScheduleQuery.isSuccess && (() => {
+    const last = backupScheduleQuery.data?.lastSuccessfulBackupAt;
+    if (!last) return true;
+    const t = new Date(last).getTime();
+    const staleDays = backupScheduleQuery.data?.staleAfterDays ?? 7;
+    return Number.isNaN(t) ? true : Date.now() - t > staleDays * 24 * 60 * 60 * 1000;
+  })();
+
   return (
     <div className="px-8 py-7 max-w-[1100px] mx-auto">
       <div className="mb-6">
@@ -108,12 +122,16 @@ export default function SettingsPage() {
                   <button
                     type="button"
                     onClick={() => setTab(t.key)}
+                    title={t.key === "backup" && backupOverdue ? "Backup overdue — check backup settings" : undefined}
                     className={`w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
                       active ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-secondary hover:text-foreground"
                     }`}
                   >
                     <Icon size={14} />
-                    {t.label}
+                    <span className="flex-1 text-left">{t.label}</span>
+                    {t.key === "backup" && backupOverdue && (
+                      <AlertTriangle size={13} className="shrink-0 text-amber-400" aria-label="Backup overdue" />
+                    )}
                   </button>
                 </li>
               );
