@@ -2494,6 +2494,13 @@ function RestoreSection({
   );
 }
 
+interface InstallerSlotInfo {
+  available: boolean;
+  size: number | null;
+  uploadedAt: string | null;
+  error: string | null;
+}
+
 interface DesktopInstallerInfo {
   version: string;
   dbVersion: string | null;
@@ -2508,6 +2515,7 @@ interface DesktopInstallerInfo {
   releaseNotes: string | null;
   dbReleaseNotes: string | null;
   installerObject: { size: number; uploadedAt: string } | null;
+  installerSlots?: { zip: InstallerSlotInfo; exe: InstallerSlotInfo; dmg: InstallerSlotInfo };
   installerStatus: "ok" | "missing" | "stale" | "external" | "unknown";
   installerStatusMessage: string | null;
   settingsUpdatedAt: string | null;
@@ -2861,14 +2869,26 @@ function DesktopInstallerPanel() {
                     Version {info.version} · {info.fileName}
                   </div>
                 </div>
-                <a
-                  href={info.downloadUrl}
-                  download
-                  className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-2 shrink-0"
-                >
-                  <Download size={14} />
-                  {isZip ? "Download Portable ZIP" : isDmg ? "Download macOS DMG" : "Download Installer"}
-                </a>
+                {info.installerStatus === "missing" || info.installerStatus === "unknown" ? (
+                  <button
+                    type="button"
+                    disabled
+                    title={info.installerStatusMessage ?? "Installer file not uploaded — use the upload control below."}
+                    className="h-9 px-4 rounded-md bg-primary/40 text-primary-foreground/70 text-sm font-semibold cursor-not-allowed inline-flex items-center gap-2 shrink-0"
+                  >
+                    <Download size={14} />
+                    {isZip ? "Download Portable ZIP" : isDmg ? "Download macOS DMG" : "Download Installer"}
+                  </button>
+                ) : (
+                  <a
+                    href={info.downloadUrl}
+                    download
+                    className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-2 shrink-0"
+                  >
+                    <Download size={14} />
+                    {isZip ? "Download Portable ZIP" : isDmg ? "Download macOS DMG" : "Download Installer"}
+                  </a>
+                )}
               </div>
               {info.installerStatusMessage && info.installerStatus !== "ok" && (
                 <div
@@ -3280,11 +3300,19 @@ function DesktopInstallerPanel() {
 // have to grep server logs to figure out why "Download for Windows"
 // returns a stale or broken file.
 
+interface InstallerHealthSlotStatus {
+  ok: boolean;
+  size: number | null;
+  uploadedAt: string | null;
+  error: string | null;
+}
+
 interface InstallerHealthReport {
   ok: boolean;
   checkedAt: string;
   settings: { version: string | null; downloadUrl: string | null; activeKind: string | null; error: string | null };
   storage: { ok: boolean; size: number | null; uploadedAt: string | null; etag: string | null; error: string | null };
+  storageSlots?: { zip: InstallerHealthSlotStatus; exe: InstallerHealthSlotStatus; dmg: InstallerHealthSlotStatus };
   download: {
     ok: boolean;
     checked: boolean;
@@ -3389,6 +3417,40 @@ function DesktopInstallerPipelineHealthPanel() {
                   ? `${(report.storage.size / 1_048_576).toFixed(1)} MB`
                   : "?"}
                 , uploaded {new Date(report.storage.uploadedAt).toLocaleString()}
+              </div>
+            )}
+            {report.storageSlots && (
+              <div style={{ marginTop: 8 }}>
+                <strong>Installer slots:</strong>
+                <table style={{ marginTop: 4, borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ textAlign: "left", color: "var(--muted, #6b7280)" }}>
+                      <th style={{ paddingRight: 12, fontWeight: 500 }}>Kind</th>
+                      <th style={{ paddingRight: 12, fontWeight: 500 }}>Status</th>
+                      <th style={{ paddingRight: 12, fontWeight: 500 }}>Size</th>
+                      <th style={{ fontWeight: 500 }}>Uploaded</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(["zip", "exe", "dmg"] as const).map((kind) => {
+                      const slot = report.storageSlots![kind];
+                      return (
+                        <tr key={kind}>
+                          <td style={{ paddingRight: 12, fontFamily: "monospace" }}>{kind}</td>
+                          <td style={{ paddingRight: 12, color: slot.ok ? "#16a34a" : "#dc2626" }}>
+                            {slot.ok ? "✓ present" : "✗ missing"}
+                          </td>
+                          <td style={{ paddingRight: 12 }}>
+                            {slot.size != null ? `${(slot.size / 1_048_576).toFixed(1)} MB` : "—"}
+                          </td>
+                          <td>
+                            {slot.uploadedAt ? new Date(slot.uploadedAt).toLocaleString() : "—"}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             )}
             {report.download.checked && (

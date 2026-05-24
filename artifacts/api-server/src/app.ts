@@ -147,39 +147,68 @@ function serveInstaller(
         return;
       }
 
+      // bytesSent tracks total bytes written to res across all stream segments
+      // (including after a transparent retry). Combined with `start` it gives
+      // the absolute file offset of the next byte the client needs.
       let bytesSent = 0;
-      let upstreamFailed = false;
-      obj.stream.on("data", (chunk: Buffer | string) => {
-        bytesSent += typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.length;
-      });
-      obj.stream.on("error", (err) => {
-        upstreamFailed = true;
-        logger.error(
-          { err, kind, bytesSent, range: isPartial ? `${start}-${end}` : "full" },
-          "Desktop installer stream error",
-        );
-        // Headers are already sent (we set status above), so we cannot send a
-        // JSON error. Close the underlying socket so the client treats the
-        // response as truncated and can issue a Range-based resume.
-        try {
-          obj.stream.unpipe(res);
-        } catch {
-          // ignore
-        }
-        if (!res.writableEnded) {
-          res.destroy(err);
-        }
-      });
+      let retried = false;
+      // activeStream is updated to point at the current upstream stream so
+      // cleanupUpstream always destroys the right one (original or retry).
+      let activeStream: NodeJS.ReadableStream = obj.stream;
+
+      const attachStreamHandlers = (stream: NodeJS.ReadableStream) => {
+        stream.on("data", (chunk: Buffer | string) => {
+          bytesSent += typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.length;
+        });
+        stream.on("error", async (err) => {
+          const absoluteOffset = start + bytesSent;
+          logger.error(
+            { err, kind, bytesSent, absoluteOffset, range: isPartial ? `${start}-${end}` : "full", retried },
+            "Desktop installer stream error",
+          );
+          try {
+            stream.unpipe(res);
+          } catch {
+            // ignore
+          }
+          // Single transparent retry: open a new GCS range stream from exactly
+          // the last confirmed byte so the client's response stays continuous.
+          // We only retry once — a second consecutive failure means the storage
+          // layer is genuinely broken and the client should see a truncated
+          // response and resume with a Range request.
+          if (!retried && !res.writableEnded && absoluteOffset <= end) {
+            retried = true;
+            logger.warn({ kind, absoluteOffset, end }, "Retrying desktop installer stream from offset");
+            try {
+              const retryObj = await openDesktopInstallerStream(kind, { start: absoluteOffset, end });
+              if (retryObj && !res.writableEnded) {
+                activeStream = retryObj.stream;
+                attachStreamHandlers(retryObj.stream);
+                retryObj.stream.pipe(res);
+                return;
+              }
+            } catch (retryErr) {
+              logger.error({ err: retryErr, kind }, "Desktop installer stream retry failed");
+            }
+          }
+          if (!res.writableEnded) {
+            res.destroy(err);
+          }
+        });
+      };
+
+      attachStreamHandlers(obj.stream);
+
       // If the client disconnects mid-transfer, stop pulling bytes from the
       // upstream stream so we don't leak resources or keep the upstream open.
       const cleanupUpstream = () => {
-        const maybeDestroy = (obj.stream as unknown as { destroy?: () => void }).destroy;
+        const maybeDestroy = (activeStream as unknown as { destroy?: () => void }).destroy;
         if (typeof maybeDestroy === "function") {
-          maybeDestroy.call(obj.stream);
+          maybeDestroy.call(activeStream);
         }
       };
       res.on("close", () => {
-        if (!res.writableEnded || upstreamFailed) {
+        if (!res.writableEnded) {
           cleanupUpstream();
         }
       });

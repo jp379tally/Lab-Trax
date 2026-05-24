@@ -17,9 +17,19 @@ import { db, systemSettings } from "@workspace/db";
 import { inArray } from "drizzle-orm";
 import {
   getDesktopInstallerHandle,
+  getDesktopInstallerMetadata,
   installerKindFromUrl,
   type DesktopInstallerKind,
 } from "./desktop-installer-storage.js";
+
+const ALL_INSTALLER_KINDS: DesktopInstallerKind[] = ["zip", "exe", "dmg"];
+
+export interface InstallerSlotStatus {
+  ok: boolean;
+  size: number | null;
+  uploadedAt: string | null;
+  error: string | null;
+}
 
 export interface HealthReport {
   ok: boolean;
@@ -37,6 +47,8 @@ export interface HealthReport {
     etag: string | null;
     error: string | null;
   };
+  /** Per-slot availability for all three installer kinds. */
+  storageSlots: Record<DesktopInstallerKind, InstallerSlotStatus>;
   download: {
     ok: boolean;
     checked: boolean;
@@ -320,6 +332,38 @@ export async function runDesktopInstallerHealthCheck(
     }
   }
 
+  // ── Per-slot storage availability ─────────────────────────────────────────
+  // Check all three installer kinds in parallel so the health report can flag
+  // every missing slot, not just the currently-active one.
+  const slotResults = await Promise.all(
+    ALL_INSTALLER_KINDS.map(async (k) => {
+      try {
+        const meta = await getDesktopInstallerMetadata(k);
+        return {
+          kind: k,
+          ok: meta !== null,
+          size: meta?.size ?? null,
+          uploadedAt: meta?.uploadedAt ?? null,
+          error: meta === null ? `No ${k} installer has been uploaded.` : null,
+        };
+      } catch (err) {
+        return {
+          kind: k,
+          ok: false,
+          size: null,
+          uploadedAt: null,
+          error: (err as Error)?.message ?? String(err),
+        };
+      }
+    }),
+  );
+  const storageSlots = Object.fromEntries(
+    slotResults.map((r) => [
+      r.kind,
+      { ok: r.ok, size: r.size, uploadedAt: r.uploadedAt, error: r.error },
+    ]),
+  ) as Record<DesktopInstallerKind, InstallerSlotStatus>;
+
   const ok =
     settingsError === null &&
     storageOk &&
@@ -343,6 +387,7 @@ export async function runDesktopInstallerHealthCheck(
       etag: storageEtag,
       error: storageError,
     },
+    storageSlots,
     download: {
       ok: downloadOk,
       checked: downloadChecked,

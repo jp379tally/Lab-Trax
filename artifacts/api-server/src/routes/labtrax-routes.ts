@@ -4102,6 +4102,23 @@ Important rules:
           (err as Error)?.message || "Could not read installer metadata from storage.";
       }
     }
+    // Per-slot availability: check all three installer kinds in parallel so
+    // the UI can show which ones are present regardless of the active URL.
+    const INSTALLER_SLOT_KINDS = ["zip", "exe", "dmg"] as const;
+    const slotResults = await Promise.allSettled(
+      INSTALLER_SLOT_KINDS.map((k) => getDesktopInstallerMetadata(k)),
+    );
+    const installerSlots = Object.fromEntries(
+      INSTALLER_SLOT_KINDS.map((k, i) => {
+        const result = slotResults[i];
+        if (!result) return [k, { available: false, size: null, uploadedAt: null, error: "No result" }];
+        if (result.status === "fulfilled") {
+          const meta = result.value;
+          return [k, { available: meta !== null, size: meta?.size ?? null, uploadedAt: meta?.uploadedAt ?? null, error: null }];
+        }
+        return [k, { available: false, size: null, uploadedAt: null, error: (result.reason as Error)?.message ?? String(result.reason) }];
+      }),
+    ) as Record<string, { available: boolean; size: number | null; uploadedAt: string | null; error: string | null }>;
     // Status badge: classify the active download URL so admins see at a glance
     // whether the link will actually work.
     //   - "external": URL is https://… so we can't introspect it; assume ok.
@@ -4221,6 +4238,7 @@ Important rules:
       releaseNotes: dbReleaseNotes,
       dbReleaseNotes,
       installerObject,
+      installerSlots,
       activeKind,
       installerStatus,
       installerStatusMessage,

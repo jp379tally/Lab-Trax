@@ -189,6 +189,38 @@ check) into at most one per 6-hour window per distinct failure.
    attach assets to the GitHub Release. Re-run that job from the Actions
    tab; existing installs will auto-update on their next launch.
 
+## Download streaming and resume behaviour
+
+`GET /downloads/LabTrax-*.{zip,exe,dmg}` is handled by `serveInstaller()` in
+`artifacts/api-server/src/app.ts`. The server streams bytes from App Storage
+(GCS) directly to the client response. Key implementation details:
+
+- **Range requests / resumable downloads.** The endpoint always emits
+  `Accept-Ranges: bytes` and a strong `ETag` derived from the file size and
+  upload timestamp. Chrome's "Resume" link sends `Range: bytes=X-`, which the
+  server answers with a 206 Partial Content from the correct file offset.
+  `If-Range` / `If-None-Match` conditional-GET semantics are also supported.
+
+- **Single transparent retry.** If the upstream GCS read stream dies
+  mid-transfer (e.g. a transient storage blip), `serveInstaller()` opens a
+  second range stream starting at the last confirmed byte and continues piping
+  to the same HTTP response. The client never sees the interruption. If the
+  retry also fails the response socket is torn down cleanly, prompting Chrome
+  to offer the "Resume" link again.
+
+- **No signed-URL redirect.** The Replit sidecar workload-identity credentials
+  are `external_account` type and do not include a `client_email`, so GCS
+  `file.getSignedUrl()` always throws. The streaming path is the only option
+  inside the Replit runtime.
+
+- **Slot availability.** `GET /api/admin/settings/desktop-installer` returns an
+  `installerSlots` map (`{ zip, exe, dmg }`) showing which installer kinds are
+  present in App Storage regardless of which one is currently active. The
+  health check's `storageSlots` field mirrors this information. The admin
+  Settings → Desktop App panel disables the download button and shows a warning
+  when the active slot is missing, instead of letting the click through to a
+  404.
+
 ## Where to make pipeline changes
 
 - **Add a new installer kind (e.g. Linux .AppImage):** `desktop-installer-storage.ts`
