@@ -603,6 +603,92 @@ describe("GET /downloads/LabTrax-Windows-Portable.zip — stream retry", () => {
     // Only the partial bytes from the first stream were delivered.
     expect(receivedBytes).toBeLessThan(FAKE_CONTENT.length);
   }, 8000);
+
+  it("tears down the response socket when both streams error on a mid-range request (N > 0)", async () => {
+    // Scenario: client requests bytes=10-39 (N=10, M=39, range length=30).
+    // The first stream delivers a few bytes then errors.  The retry open throws.
+    // Even though headers (206) were already sent, res.destroy() must be called
+    // so the client sees a connection error rather than a silently short body.
+    const rangeStart = 10;
+    const rangeEnd = 39;
+    const splitAt = 5; // bytes delivered by the first stream before it errors
+    const streamError = new Error("GCS upstream dropped connection mid-range");
+
+    vi.mocked(openDesktopInstallerStream)
+      // First call — open with { start:10, end:39 }, emit 5 bytes then error
+      .mockImplementationOnce(async () => {
+        const s = new Readable({ read() {} });
+        process.nextTick(() => {
+          s.push(FAKE_CONTENT.slice(rangeStart, rangeStart + splitAt));
+          s.destroy(streamError);
+        });
+        return {
+          size: FAKE_CONTENT.length,
+          stream: s,
+          contentType: "application/zip",
+          fileName: "LabTrax-Windows-Portable.zip",
+        };
+      })
+      // Second call (retry) — throws at the open level, hitting the catch
+      // block in attachStreamHandlers which falls through to res.destroy(err).
+      .mockImplementationOnce(async () => {
+        throw new Error("GCS retry open also failed (mid-range)");
+      });
+
+    const port = (server.address() as { port: number }).port;
+
+    const { receivedBytes, hadConnectionError } = await new Promise<{
+      receivedBytes: number;
+      hadConnectionError: boolean;
+    }>((resolve) => {
+      let bytes = 0;
+      let settled = false;
+      const settle = (hadConnectionError: boolean) => {
+        if (!settled) {
+          settled = true;
+          resolve({ receivedBytes: bytes, hadConnectionError });
+        }
+      };
+
+      const req = http.get(
+        {
+          hostname: "127.0.0.1",
+          port,
+          path: "/downloads/LabTrax-Windows-Portable.zip",
+          headers: { Range: `bytes=${rangeStart}-${rangeEnd}` },
+        },
+        (res) => {
+          res.on("data", (chunk: Buffer) => {
+            bytes += chunk.length;
+          });
+          res.on("end", () => settle(false));
+          res.on("error", () => settle(true));
+        },
+      );
+      req.on("error", () => settle(true));
+      // Safety net — should not be reached if res.destroy() works correctly.
+      req.setTimeout(4000, () => {
+        req.destroy();
+        settle(false);
+      });
+    });
+
+    // Both the initial stream and the retry open were attempted.
+    expect(vi.mocked(openDesktopInstallerStream)).toHaveBeenCalledTimes(2);
+
+    // The retry was requested starting from rangeStart + bytesSentSoFar,
+    // not from file offset 0.
+    const retryRange = vi.mocked(openDesktopInstallerStream).mock.calls[1][1];
+    expect(retryRange).toMatchObject({ start: rangeStart + splitAt, end: rangeEnd });
+
+    // The server destroyed the socket — the client saw a connection error, not
+    // a clean stream end that would silently hide the truncation.
+    expect(hadConnectionError).toBe(true);
+
+    // Only the partial bytes from the first stream were delivered — fewer than
+    // the requested range length (30 bytes).
+    expect(receivedBytes).toBeLessThan(rangeEnd - rangeStart + 1);
+  }, 8000);
 });
 
 // ---------------------------------------------------------------------------
