@@ -558,7 +558,7 @@ export function InvoiceEditor({
   // Column widths for the line-items table (Item, Tooth #, Desc, Qty, Unit price, Total)
   const COL_DEFAULTS = [176, 112, 220, 64, 112, 96] as const;
   const ACTION_COL_WIDTH = 80;
-  const { widths: colWidths, totalWidth: colTotalWidth, startResize, resetColumn } =
+  const { widths: colWidths, totalWidth: colTotalWidth, startResize, resetColumn, resetAll: resetAllColWidths } =
     useColumnWidths([...COL_DEFAULTS], user?.id);
 
   // Per-lab visual invoice template + preloaded extra-image data URLs.
@@ -1353,13 +1353,23 @@ export function InvoiceEditor({
           <section>
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-semibold">Line items</h3>
-              <button
-                type="button"
-                onClick={addItem}
-                className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
-              >
-                <Plus size={13} /> Add line
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={resetAllColWidths}
+                  className="text-xs text-muted-foreground hover:text-foreground"
+                  title="Reset all column widths to defaults"
+                >
+                  Reset columns
+                </button>
+                <button
+                  type="button"
+                  onClick={addItem}
+                  className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                >
+                  <Plus size={13} /> Add line
+                </button>
+              </div>
             </div>
             <div className="border border-border rounded-md overflow-x-auto">
               <table

@@ -12,6 +12,7 @@ export type UseColumnWidths = {
   totalWidth: number;
   startResize: (colIdx: number, e: React.MouseEvent) => void;
   resetColumn: (colIdx: number) => void;
+  resetAll: () => void;
 };
 
 export function useColumnWidths(
@@ -101,7 +102,20 @@ export function useColumnWidths(
     [defaults, persist],
   );
 
+  const resetAll = useCallback(() => {
+    if (debounceTimer.current !== null) {
+      clearTimeout(debounceTimer.current);
+      debounceTimer.current = null;
+    }
+    try {
+      localStorage.removeItem(keyRef.current);
+    } catch {
+      // ignore
+    }
+    setWidths([...defaults]);
+  }, [defaults]);
+
   const totalWidth = widths.reduce((a, b) => a + b, 0);
 
-  return { widths, totalWidth, startResize, resetColumn };
+  return { widths, totalWidth, startResize, resetColumn, resetAll };
 }
