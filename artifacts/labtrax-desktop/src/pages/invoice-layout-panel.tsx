@@ -29,49 +29,60 @@ import { previewInvoicePdf } from "@/lib/export";
 type SectionKey = keyof InvoiceTemplate["boxes"];
 
 /**
- * Estimates the number of wrapped lines jsPDF will produce for a custom text
- * block. Mirrors the `fontSize * 1.3` line-height and word-wrap logic used in
- * `buildInvoiceDoc` inside export.ts.
+ * Splits text into the individual wrapped lines that jsPDF will produce for a
+ * custom text block. Mirrors the `fontSize * 1.3` line-height and word-wrap
+ * logic used in `buildInvoiceDoc` inside export.ts.
  *
  * @param text     Raw text content (may contain newlines)
  * @param fontSize Point size used for the block (same unit as jsPDF)
  * @param boxW     Box width in PDF points
  */
-function estimateTextLines(text: string, fontSize: number, boxW: number): number {
+function splitTextToPreviewLines(text: string, fontSize: number, boxW: number): string[] {
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
-  const rawLines = text.split("\n");
-  let total = 0;
+  const result: string[] = [];
 
-  for (const rawLine of rawLines) {
+  for (const rawLine of text.split("\n")) {
     if (!rawLine.trim()) {
-      total += 1;
+      result.push("");
       continue;
     }
     if (ctx) {
       // 1 PDF point ≈ 1 px for relative measurement; Helvetica is the PDF font.
       ctx.font = `${fontSize}px Helvetica, Arial, sans-serif`;
       const words = rawLine.split(" ");
+      let current = "";
       let curW = 0;
-      let lines = 1;
       for (const word of words) {
-        const space = curW > 0 ? " " : "";
+        const space = current ? " " : "";
         const ww = ctx.measureText(space + word).width;
-        if (curW > 0 && curW + ww > boxW) {
-          lines++;
+        if (current && curW + ww > boxW) {
+          result.push(current);
+          current = word;
           curW = ctx.measureText(word).width;
         } else {
+          current += space + word;
           curW += ww;
         }
       }
-      total += lines;
+      if (current) result.push(current);
     } else {
       // Fallback: assume ~0.55 pt per char (Helvetica average)
       const charsPerLine = Math.max(1, Math.floor(boxW / (fontSize * 0.55)));
-      total += Math.max(1, Math.ceil(rawLine.length / charsPerLine));
+      for (let i = 0; i < rawLine.length; i += charsPerLine) {
+        result.push(rawLine.slice(i, i + charsPerLine));
+      }
     }
   }
-  return total;
+  return result;
+}
+
+/**
+ * Estimates the number of wrapped lines jsPDF will produce — thin wrapper
+ * over splitTextToPreviewLines kept for the sidebar line-count display.
+ */
+function estimateTextLines(text: string, fontSize: number, boxW: number): number {
+  return splitTextToPreviewLines(text, fontSize, boxW).length;
 }
 
 const SECTION_LABELS: Record<SectionKey, string> = {
@@ -1014,32 +1025,69 @@ function DraggableBox({
         />
       ) : null}
 
-      {textBlock ? (
-        <div
-          style={{
-            position: "absolute",
-            inset: 2,
-            overflow: "hidden",
-            fontSize: `${(textBlock.fontSize / PAGE_H) * 100}cqh`,
-            fontWeight: textBlock.bold ? "bold" : "normal",
-            textAlign: textBlock.align as TextAlign,
-            color: "#111",
-            lineHeight: 1.3,
-            pointerEvents: "none",
-            display: "flex",
-            alignItems: "flex-start",
-            padding: "2px 4px",
-          }}
-        >
-          <span style={{ width: "100%" }}>
-            {textBlock.text || (
-              <span style={{ opacity: 0.4, fontStyle: "italic", fontWeight: "normal" }}>
+      {textBlock ? (() => {
+        const lineH = textBlock.fontSize * 1.3;
+        const maxLines = Math.max(1, Math.floor(textBlock.h / lineH));
+        const hasText = !!textBlock.text?.trim();
+        const lines = hasText
+          ? splitTextToPreviewLines(textBlock.text, textBlock.fontSize, textBlock.w)
+          : [];
+        const visibleLines = lines.slice(0, maxLines);
+        const clippedLines = lines.slice(maxLines);
+
+        return (
+          <div
+            style={{
+              position: "absolute",
+              inset: 2,
+              fontSize: `${(textBlock.fontSize / PAGE_H) * 100}cqh`,
+              fontWeight: textBlock.bold ? "bold" : "normal",
+              textAlign: textBlock.align as TextAlign,
+              color: "#111",
+              lineHeight: 1.3,
+              pointerEvents: "none",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "flex-start",
+              padding: "2px 4px",
+              overflow: "visible",
+            }}
+          >
+            {!hasText ? (
+              <span style={{ opacity: 0.4, fontStyle: "italic", fontWeight: "normal", width: "100%" }}>
                 Text
               </span>
+            ) : (
+              <>
+                {visibleLines.map((line, i) => (
+                  <span
+                    key={i}
+                    style={{ width: "100%", display: "block", whiteSpace: "pre-wrap" }}
+                  >
+                    {line || "\u00A0"}
+                  </span>
+                ))}
+                {clippedLines.map((line, i) => (
+                  <span
+                    key={`clipped-${i}`}
+                    style={{
+                      width: "100%",
+                      display: "block",
+                      whiteSpace: "pre-wrap",
+                      opacity: 0.3,
+                      textDecoration: "line-through",
+                      textDecorationColor: "#ef4444",
+                      color: "#ef4444",
+                    }}
+                  >
+                    {line || "\u00A0"}
+                  </span>
+                ))}
+              </>
             )}
-          </span>
-        </div>
-      ) : null}
+          </div>
+        );
+      })() : null}
 
       {!textBlock ? (
         <span
