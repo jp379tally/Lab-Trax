@@ -425,6 +425,7 @@ export function InvoiceLayoutPanel() {
       }
     }
   }
+  const overlappingSections = new Set<SectionKey>(overlappingPairs.flat());
 
   // ── Out-of-bounds detection ──────────────────────────────────────────
   const outOfBoundsSections: { key: SectionKey; edges: string[] }[] = (
@@ -784,6 +785,7 @@ export function InvoiceLayoutPanel() {
               color={SECTION_COLORS[k]}
               label={SECTION_LABELS[k]}
               selected={selected?.kind === "section" && selected?.key === k}
+              overlapping={overlappingSections.has(k)}
               onStart={(e, h) => startDrag(e, "section", k, h, draft.boxes[k])}
             />
           ))}
@@ -1347,6 +1349,7 @@ interface DraggableBoxProps {
   color: string;
   label: string;
   selected?: boolean;
+  overlapping?: boolean;
   imageUrl?: string;
   opacity?: number;
   textBlock?: InvoiceTemplateTextBlock;
@@ -1359,6 +1362,7 @@ function DraggableBox({
   color,
   label,
   selected,
+  overlapping,
   imageUrl,
   opacity,
   textBlock,
@@ -1367,6 +1371,12 @@ function DraggableBox({
 }: DraggableBoxProps) {
   const [hovered, setHovered] = useState(false);
 
+  const border = overlapping
+    ? "2px dashed #ef4444"
+    : selected
+      ? "1.5px solid #2563eb"
+      : "1px dashed rgba(0,0,0,0.35)";
+
   const style: React.CSSProperties = {
     position: "absolute",
     left: `${(box.x / PAGE_W) * 100}%`,
@@ -1374,7 +1384,9 @@ function DraggableBox({
     width: `${(box.w / PAGE_W) * 100}%`,
     height: `${(box.h / PAGE_H) * 100}%`,
     background: color,
-    border: selected ? "1.5px solid #2563eb" : "1px dashed rgba(0,0,0,0.35)",
+    border,
+    outline: overlapping && selected ? "1.5px solid #2563eb" : undefined,
+    outlineOffset: overlapping && selected ? "2px" : undefined,
     cursor: "move",
     boxSizing: "border-box",
   };
