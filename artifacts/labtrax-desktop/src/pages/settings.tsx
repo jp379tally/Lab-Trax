@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Building2, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, FileDown, Github, History, KeyRound, LayoutList, Loader2, LogOut, Monitor, Package, Play, RotateCcw, RefreshCcw, ShieldCheck, Smartphone, Sparkles, Trash2, Upload, User as UserIcon, Wrench } from "lucide-react";
+import { AlertTriangle, Building2, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, FileDown, Github, History, KeyRound, LayoutList, Loader2, LogOut, Monitor, Package, Play, RotateCcw, RefreshCcw, Search, ShieldCheck, Smartphone, Sparkles, Trash2, Upload, User as UserIcon, Wrench, X } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -11,6 +11,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from "@/components/ui/sheet";
 import { apiFetch, ApiError, notifySessionCleared } from "@/lib/api";
 import {
   DEFAULT_DUP_SIMILARITY_THRESHOLD,
@@ -933,6 +940,46 @@ function OrganizationsPanel() {
     return map;
   }, [orgsQuery.data]);
 
+  const [search, setSearch] = useState("");
+  const [selectedMembershipId, setSelectedMembershipId] = useState<string | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape" && search) {
+        setSearch("");
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [search]);
+
+  const filteredMemberships = useMemo(() => {
+    if (!search.trim()) return memberships;
+    const q = search.trim().toLowerCase();
+    return memberships.filter((m) => {
+      const org = m.organization || orgsById.get(m.organizationId);
+      const name = (org?.displayName || org?.name || "").toLowerCase();
+      const type = (org?.type || "").toLowerCase();
+      const role = (m.role || "").toLowerCase();
+      return name.includes(q) || type.includes(q) || role.includes(q);
+    });
+  }, [memberships, orgsById, search]);
+
+  const selectedMembership = useMemo(
+    () => filteredMemberships.find((m) => m.id === selectedMembershipId) ??
+      memberships.find((m) => m.id === selectedMembershipId) ?? null,
+    [filteredMemberships, memberships, selectedMembershipId],
+  );
+  const selectedOrg = selectedMembership
+    ? selectedMembership.organization || orgsById.get(selectedMembership.organizationId)
+    : null;
+
+  const drawerCanBackfill =
+    selectedOrg?.type === "lab" &&
+    selectedMembership?.status === "active" &&
+    (selectedMembership?.role === "owner" || selectedMembership?.role === "admin");
+
   return (
     <PanelShell title="Organizations" subtitle="Labs and practices you belong to.">
       {(meQuery.isLoading || orgsQuery.isLoading) && (
@@ -941,20 +988,58 @@ function OrganizationsPanel() {
           Loading…
         </div>
       )}
+
+      {memberships.length > 0 && (
+        <div className="relative mb-3">
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+          <input
+            ref={searchRef}
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by name, type, or role…"
+            className="w-full h-8 pl-8 pr-8 rounded-md border border-border bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+          />
+          {search && (
+            <button
+              type="button"
+              onClick={() => { setSearch(""); searchRef.current?.focus(); }}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              aria-label="Clear search"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+      )}
+
       <div className="border border-border rounded-md divide-y divide-border">
         {memberships.length === 0 && !meQuery.isLoading && (
           <div className="px-3 py-6 text-center text-sm text-muted-foreground">
             You're not a member of any organization yet.
           </div>
         )}
-        {memberships.map((m) => {
+        {memberships.length > 0 && filteredMemberships.length === 0 && (
+          <div className="px-3 py-6 text-center text-sm text-muted-foreground">
+            <div>No organizations match "{search}".</div>
+            <button
+              type="button"
+              onClick={() => setSearch("")}
+              className="mt-2 text-xs text-primary hover:underline"
+            >
+              Clear search
+            </button>
+          </div>
+        )}
+        {filteredMemberships.map((m) => {
           const org = m.organization || orgsById.get(m.organizationId);
-          const canBackfill =
-            org?.type === "lab" &&
-            m.status === "active" &&
-            (m.role === "owner" || m.role === "admin");
           return (
-            <div key={m.id} className="px-3 py-3 text-sm">
+            <button
+              key={m.id}
+              type="button"
+              onClick={() => setSelectedMembershipId(m.id)}
+              className="w-full px-3 py-3 text-sm text-left hover:bg-muted/50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+            >
               <div className="flex items-center justify-between">
                 <div className="min-w-0">
                   <div className="font-medium">{org?.displayName || org?.name || "Unknown"}</div>
@@ -967,23 +1052,74 @@ function OrganizationsPanel() {
                   <span className={`px-2 py-0.5 rounded-full ${m.status === "active" ? "bg-success/15 text-success" : "bg-warning/20 text-warning"}`}>
                     {m.status}
                   </span>
+                  <ChevronRight size={14} className="text-muted-foreground ml-1 shrink-0" />
                 </div>
               </div>
-              {canBackfill && (
-                <BackfillInvoicesRow
-                  labOrganizationId={m.organizationId}
-                  labName={org?.displayName || org?.name || "this lab"}
-                />
-              )}
-              {canBackfill && org && (
-                <DuplicateThresholdRow
-                  lab={org}
-                />
-              )}
-            </div>
+            </button>
           );
         })}
       </div>
+
+      <Sheet
+        open={selectedMembershipId !== null}
+        onOpenChange={(open) => { if (!open) setSelectedMembershipId(null); }}
+      >
+        <SheetContent side="right" className="w-full sm:max-w-lg overflow-y-auto">
+          <SheetHeader className="mb-4">
+            <SheetTitle className="flex items-center gap-2">
+              <Building2 size={18} />
+              {selectedOrg?.displayName || selectedOrg?.name || "Organization"}
+            </SheetTitle>
+            <SheetDescription className="capitalize">
+              {selectedOrg?.type || "Organization"} details
+            </SheetDescription>
+          </SheetHeader>
+
+          {selectedOrg && selectedMembership && (
+            <div className="space-y-4 text-sm">
+              <div className="rounded-md border border-border divide-y divide-border">
+                <div className="px-3 py-2.5 flex justify-between items-center">
+                  <span className="text-muted-foreground text-xs">Name</span>
+                  <span className="font-medium">{selectedOrg.displayName || selectedOrg.name || "—"}</span>
+                </div>
+                <div className="px-3 py-2.5 flex justify-between items-center">
+                  <span className="text-muted-foreground text-xs">Type</span>
+                  <span className="capitalize">{selectedOrg.type || "—"}</span>
+                </div>
+                <div className="px-3 py-2.5 flex justify-between items-center">
+                  <span className="text-muted-foreground text-xs">Billing email</span>
+                  <span>{selectedOrg.billingEmail || <span className="text-muted-foreground italic">none</span>}</span>
+                </div>
+                <div className="px-3 py-2.5 flex justify-between items-center">
+                  <span className="text-muted-foreground text-xs">Your role</span>
+                  <span className="px-2 py-0.5 rounded-full bg-secondary text-secondary-foreground text-xs capitalize">
+                    {selectedMembership.role}
+                  </span>
+                </div>
+                <div className="px-3 py-2.5 flex justify-between items-center">
+                  <span className="text-muted-foreground text-xs">Status</span>
+                  <span className={`px-2 py-0.5 rounded-full text-xs ${selectedMembership.status === "active" ? "bg-success/15 text-success" : "bg-warning/20 text-warning"}`}>
+                    {selectedMembership.status}
+                  </span>
+                </div>
+              </div>
+
+              {drawerCanBackfill && (
+                <div className="space-y-3">
+                  <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                    Admin controls
+                  </div>
+                  <BackfillInvoicesRow
+                    labOrganizationId={selectedMembership.organizationId}
+                    labName={selectedOrg.displayName || selectedOrg.name || "this lab"}
+                  />
+                  <DuplicateThresholdRow lab={selectedOrg} />
+                </div>
+              )}
+            </div>
+          )}
+        </SheetContent>
+      </Sheet>
     </PanelShell>
   );
 }
