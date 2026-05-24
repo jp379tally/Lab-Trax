@@ -8,6 +8,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   Eye,
   EyeOff,
   Loader2,
@@ -587,6 +588,27 @@ export function InvoiceLayoutPanel() {
     setDirty(true);
   }
 
+  function moveDefaultBlock(id: string, dir: "up" | "down") {
+    setDraft((d) => {
+      const blocks = d.defaultTextBlocks.slice();
+      const idx = blocks.findIndex((b) => b.id === id);
+      if (idx < 0) return d;
+      const swapIdx = dir === "up" ? idx - 1 : idx + 1;
+      if (swapIdx < 0 || swapIdx >= blocks.length) return d;
+      [blocks[idx], blocks[swapIdx]] = [blocks[swapIdx], blocks[idx]];
+      // Re-stack canvas positions so enabled blocks reflect the new order
+      const customTexts = d.customTexts.map((ct) => {
+        if (!ct.sourceId) return ct;
+        const newIdx = blocks.findIndex((b) => b.id === ct.sourceId);
+        if (newIdx < 0) return ct;
+        const pos = defaultTextBlockPosition(newIdx);
+        return { ...ct, x: pos.x, y: pos.y, w: pos.w, h: pos.h };
+      });
+      return { ...d, defaultTextBlocks: blocks, customTexts };
+    });
+    setDirty(true);
+  }
+
   // ── Render ──────────────────────────────────────────────────────────
   if (!orgId) {
     return (
@@ -965,9 +987,11 @@ export function InvoiceLayoutPanel() {
               </p>
             ) : (
               <ul className="space-y-2">
-                {draft.defaultTextBlocks.map((def) => {
+                {draft.defaultTextBlocks.map((def, defIdx) => {
                   const enabled = isDefaultEnabled(draft, def.id);
                   const isEditing = editingDefaultId === def.id;
+                  const isFirst = defIdx === 0;
+                  const isLast = defIdx === draft.defaultTextBlocks.length - 1;
                   return (
                     <li
                       key={def.id}
@@ -988,6 +1012,26 @@ export function InvoiceLayoutPanel() {
                         <span className="flex-1 text-xs truncate text-muted-foreground min-w-0">
                           {def.text || <span className="italic">Empty snippet</span>}
                         </span>
+                        {/* Reorder up */}
+                        <button
+                          type="button"
+                          title="Move up"
+                          disabled={isFirst}
+                          onClick={() => moveDefaultBlock(def.id, "up")}
+                          className="p-1 rounded shrink-0 text-muted-foreground hover:bg-secondary disabled:opacity-30 disabled:cursor-default"
+                        >
+                          <ChevronUp size={13} />
+                        </button>
+                        {/* Reorder down */}
+                        <button
+                          type="button"
+                          title="Move down"
+                          disabled={isLast}
+                          onClick={() => moveDefaultBlock(def.id, "down")}
+                          className="p-1 rounded shrink-0 text-muted-foreground hover:bg-secondary disabled:opacity-30 disabled:cursor-default"
+                        >
+                          <ChevronDown size={13} />
+                        </button>
                         {/* Edit toggle */}
                         <button
                           type="button"
