@@ -44,6 +44,21 @@ export const textBlockSchema = z.object({
   fontSize: z.number().min(6).max(72).default(10),
   align: z.enum(["left", "center", "right"]).default("left"),
   bold: z.boolean().default(false),
+  /** When set, this block was injected from a default text block with this id. */
+  sourceId: z.string().max(64).optional(),
+});
+
+/**
+ * A saved reusable text snippet (Task #827). Defines content and formatting
+ * but not position — position is assigned when the block is injected into
+ * the canvas `customTexts` array.
+ */
+export const defaultTextBlockSchema = z.object({
+  id: z.string().min(1).max(64),
+  text: z.string().max(2000).default(""),
+  fontSize: z.number().min(6).max(72).default(10),
+  align: z.enum(["left", "center", "right"]).default("left"),
+  bold: z.boolean().default(false),
 });
 
 export const invoiceTemplateSchema = z.object({
@@ -65,12 +80,15 @@ export const invoiceTemplateSchema = z.object({
   }),
   extraImages: z.array(extraImageSchema).max(12).default([]),
   customTexts: z.array(textBlockSchema).max(20).default([]),
+  /** Saved reusable text snippets (e.g. payment instructions). */
+  defaultTextBlocks: z.array(defaultTextBlockSchema).max(20).default([]),
 });
 
 export type InvoiceTemplate = z.infer<typeof invoiceTemplateSchema>;
 export type InvoiceTemplateBox = z.infer<typeof boxSchema>;
 export type InvoiceTemplateExtraImage = z.infer<typeof extraImageSchema>;
 export type InvoiceTemplateTextBlock = z.infer<typeof textBlockSchema>;
+export type DefaultTextBlock = z.infer<typeof defaultTextBlockSchema>;
 
 /**
  * Default template — coordinates match the original hard-coded jsPDF
@@ -96,6 +114,7 @@ export const DEFAULT_INVOICE_TEMPLATE: InvoiceTemplate = {
   },
   extraImages: [],
   customTexts: [],
+  defaultTextBlocks: [],
 };
 
 /**
@@ -108,4 +127,24 @@ export function coerceInvoiceTemplate(value: unknown): InvoiceTemplate {
   const parsed = invoiceTemplateSchema.safeParse(value);
   if (!parsed.success) return DEFAULT_INVOICE_TEMPLATE;
   return parsed.data;
+}
+
+/**
+ * Build the canvas position for the nth default text block injection.
+ * Stacked at the bottom of the page; wraps after 8 blocks.
+ */
+export function defaultTextBlockPosition(index: number): {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+} {
+  const col = index % 2;
+  const row = Math.floor(index / 2);
+  return {
+    x: col === 0 ? 40 : 330,
+    y: 650 + row * 40,
+    w: 260,
+    h: 35,
+  };
 }

@@ -5,8 +5,13 @@ import {
   AlignLeft,
   AlignRight,
   Bold,
+  Check,
+  ChevronDown,
+  ChevronRight,
   Eye,
+  EyeOff,
   Loader2,
+  Pencil,
   Plus,
   RotateCcw,
   Save,
@@ -19,6 +24,8 @@ import { useAuth } from "@/lib/auth-context";
 import {
   coerceInvoiceTemplate,
   DEFAULT_INVOICE_TEMPLATE,
+  defaultTextBlockPosition,
+  type DefaultTextBlock,
   type InvoiceTemplate,
   type InvoiceTemplateBox as TemplateBox,
   type InvoiceTemplateTextBlock,
@@ -185,6 +192,60 @@ function newTextBlock(): InvoiceTemplateTextBlock {
   };
 }
 
+/** Returns true when the default block has a matching enabled canvas entry. */
+function isDefaultEnabled(draft: InvoiceTemplate, defId: string): boolean {
+  return draft.customTexts.some((ct) => ct.sourceId === defId);
+}
+
+/** Inject a default block into customTexts at its default position. */
+function enableDefault(draft: InvoiceTemplate, def: DefaultTextBlock): InvoiceTemplate {
+  if (isDefaultEnabled(draft, def.id)) return draft;
+  const idx = draft.defaultTextBlocks.findIndex((d) => d.id === def.id);
+  const pos = defaultTextBlockPosition(idx >= 0 ? idx : draft.defaultTextBlocks.length);
+  const newBlock: InvoiceTemplateTextBlock = {
+    id: crypto.randomUUID(),
+    sourceId: def.id,
+    x: pos.x,
+    y: pos.y,
+    w: pos.w,
+    h: pos.h,
+    text: def.text,
+    fontSize: def.fontSize,
+    align: def.align,
+    bold: def.bold,
+  };
+  return { ...draft, customTexts: [...draft.customTexts, newBlock] };
+}
+
+/** Remove a default block's canvas entry from customTexts. */
+function disableDefault(draft: InvoiceTemplate, defId: string): InvoiceTemplate {
+  return {
+    ...draft,
+    customTexts: draft.customTexts.filter((ct) => ct.sourceId !== defId),
+  };
+}
+
+/** Propagate content edits from a default block to all matching customTexts entries. */
+function syncDefaultToCanvas(
+  draft: InvoiceTemplate,
+  patch: Partial<DefaultTextBlock> & { id: string },
+): InvoiceTemplate {
+  return {
+    ...draft,
+    customTexts: draft.customTexts.map((ct) =>
+      ct.sourceId === patch.id
+        ? {
+            ...ct,
+            text: patch.text ?? ct.text,
+            fontSize: patch.fontSize ?? ct.fontSize,
+            align: patch.align ?? ct.align,
+            bold: patch.bold ?? ct.bold,
+          }
+        : ct,
+    ),
+  };
+}
+
 export function InvoiceLayoutPanel() {
   const { user, refresh } = useAuth() as {
     user: { practiceOrganizationId?: string | null; practiceLogoUrl?: string | null } | null;
@@ -211,6 +272,9 @@ export function InvoiceLayoutPanel() {
   const [previewError, setPreviewError] = useState<string | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
+
+  // Default text block editing state
+  const [editingDefaultId, setEditingDefaultId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!query.data) return;
@@ -366,10 +430,10 @@ export function InvoiceLayoutPanel() {
   function updateSelectedText(patch: Partial<InvoiceTemplateTextBlock>) {
     if (!selected || selected.kind !== "text") return;
     const id = selected.key;
-    setDraft((d) => ({
-      ...d,
-      customTexts: d.customTexts.map((t) => (t.id === id ? { ...t, ...patch } : t)),
-    }));
+    setDraft((d) => {
+      const updated = d.customTexts.map((t) => (t.id === id ? { ...t, ...patch } : t));
+      return { ...d, customTexts: updated };
+    });
     setDirty(true);
   }
 
@@ -460,6 +524,52 @@ export function InvoiceLayoutPanel() {
     }
   }
 
+  // ── Default text block handlers ─────────────────────────────────────
+
+  function addDefaultBlock() {
+    const newDef: DefaultTextBlock = {
+      id: crypto.randomUUID(),
+      text: "",
+      fontSize: 10,
+      align: "left",
+      bold: false,
+    };
+    setDraft((d) => {
+      const withDef = { ...d, defaultTextBlocks: [...d.defaultTextBlocks, newDef] };
+      // Auto-enable: inject into canvas
+      return enableDefault(withDef, newDef);
+    });
+    setEditingDefaultId(newDef.id);
+    setDirty(true);
+  }
+
+  function updateDefaultBlock(id: string, patch: Partial<DefaultTextBlock>) {
+    setDraft((d) => {
+      const updated = d.defaultTextBlocks.map((b) => (b.id === id ? { ...b, ...patch } : b));
+      const withPatch = { ...d, defaultTextBlocks: updated };
+      // Sync content to canvas entries that reference this default
+      return syncDefaultToCanvas(withPatch, { id, ...patch });
+    });
+    setDirty(true);
+  }
+
+  function deleteDefaultBlock(id: string) {
+    setDraft((d) => ({
+      ...d,
+      defaultTextBlocks: d.defaultTextBlocks.filter((b) => b.id !== id),
+      // Remove all canvas entries that came from this default
+      customTexts: d.customTexts.filter((ct) => ct.sourceId !== id),
+    }));
+    setDirty(true);
+    if (editingDefaultId === id) setEditingDefaultId(null);
+  }
+
+  function toggleDefault(def: DefaultTextBlock) {
+    const enabled = isDefaultEnabled(draft, def.id);
+    setDraft((d) => (enabled ? disableDefault(d, def.id) : enableDefault(d, def)));
+    setDirty(true);
+  }
+
   // ── Render ──────────────────────────────────────────────────────────
   if (!orgId) {
     return (
@@ -482,6 +592,8 @@ export function InvoiceLayoutPanel() {
       </div>
     );
   }
+
+  const editingDefault = draft.defaultTextBlocks.find((b) => b.id === editingDefaultId) ?? null;
 
   return (
     <div className="p-6">
@@ -514,6 +626,7 @@ export function InvoiceLayoutPanel() {
               setDraft(coerceInvoiceTemplate(query.data?.template));
               setDirty(false);
               setSelected(null);
+              setEditingDefaultId(null);
             }}
             disabled={!dirty || saveMutation.isPending}
             className="text-xs px-3 py-1.5 rounded border border-border hover:bg-secondary disabled:opacity-50"
@@ -523,9 +636,27 @@ export function InvoiceLayoutPanel() {
           <button
             type="button"
             onClick={() => {
-              if (!confirm("Reset to the built-in default layout?")) return;
+              if (!confirm("Reset the layout to the built-in defaults? Your saved default text blocks will be preserved.")) return;
               setSelected(null);
-              saveMutation.mutate(null);
+              setEditingDefaultId(null);
+              // Preserve defaultTextBlocks but reset layout to defaults.
+              // Re-inject all enabled defaults at fresh positions.
+              const preserved = draft.defaultTextBlocks;
+              const freshTexts: InvoiceTemplateTextBlock[] = preserved.map((def, i) => ({
+                id: crypto.randomUUID(),
+                sourceId: def.id,
+                ...defaultTextBlockPosition(i),
+                text: def.text,
+                fontSize: def.fontSize,
+                align: def.align,
+                bold: def.bold,
+              }));
+              const resetTemplate: InvoiceTemplate = {
+                ...DEFAULT_INVOICE_TEMPLATE,
+                defaultTextBlocks: preserved,
+                customTexts: freshTexts,
+              };
+              saveMutation.mutate(resetTemplate);
             }}
             disabled={saveMutation.isPending}
             className="text-xs px-3 py-1.5 rounded border border-border hover:bg-secondary disabled:opacity-50 flex items-center gap-1"
@@ -608,8 +739,8 @@ export function InvoiceLayoutPanel() {
             <DraggableBox
               key={tb.id}
               box={tb}
-              color="rgba(251,146,60,0.18)"
-              label={tb.text || "Text"}
+              color={tb.sourceId ? "rgba(34,197,94,0.18)" : "rgba(251,146,60,0.18)"}
+              label={tb.text || (tb.sourceId ? "Default text" : "Text")}
               selected={selected?.kind === "text" && selected?.key === tb.id}
               textBlock={tb}
               onStart={(e, h) => startDrag(e, "text", tb.id, h, tb)}
@@ -649,17 +780,23 @@ export function InvoiceLayoutPanel() {
           {selectedText ? (
             <section className="p-3 rounded border border-orange-200 bg-orange-50 dark:bg-orange-950/20 dark:border-orange-800 space-y-2">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-orange-600 dark:text-orange-400 mb-2">
-                Edit text block
+                {selectedText.sourceId ? "Default text block (canvas)" : "Edit text block"}
               </h3>
-              <textarea
-                className="w-full text-xs p-2 rounded border border-border bg-background resize-none focus:outline-none focus:ring-1 focus:ring-primary"
-                rows={3}
-                placeholder="Enter text…"
-                value={selectedText.text}
-                onChange={(e) => updateSelectedText({ text: e.target.value })}
-              />
-              {/* Live line-count and overflow warning */}
-              {(() => {
+              {selectedText.sourceId ? (
+                <p className="text-xs text-muted-foreground">
+                  This block is linked to a default snippet. Edit its content in "Default text blocks" below, or drag/resize it here to reposition.
+                </p>
+              ) : (
+                <textarea
+                  className="w-full text-xs p-2 rounded border border-border bg-background resize-none focus:outline-none focus:ring-1 focus:ring-primary"
+                  rows={3}
+                  placeholder="Enter text…"
+                  value={selectedText.text}
+                  onChange={(e) => updateSelectedText({ text: e.target.value })}
+                />
+              )}
+              {/* Live line-count and overflow warning (custom blocks only) */}
+              {!selectedText.sourceId && (() => {
                 const lineH = selectedText.fontSize * 1.3;
                 const maxLines = Math.max(1, Math.floor(selectedText.h / lineH));
                 const text = selectedText.text;
@@ -683,62 +820,66 @@ export function InvoiceLayoutPanel() {
                   </div>
                 );
               })()}
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground shrink-0">Size</span>
-                <select
-                  value={selectedText.fontSize}
-                  onChange={(e) => updateSelectedText({ fontSize: Number(e.target.value) })}
-                  className="text-xs px-1.5 py-1 rounded border border-border bg-background focus:outline-none focus:ring-1 focus:ring-primary flex-1"
-                >
-                  {FONT_SIZES.map((s) => (
-                    <option key={s} value={s}>{s} pt</option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => updateSelectedText({ align: "left" })}
-                  title="Align left"
-                  className={`p-1.5 rounded ${selectedText.align === "left" ? "bg-primary text-primary-foreground" : "hover:bg-secondary"}`}
-                >
-                  <AlignLeft size={12} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => updateSelectedText({ align: "center" })}
-                  title="Align center"
-                  className={`p-1.5 rounded ${selectedText.align === "center" ? "bg-primary text-primary-foreground" : "hover:bg-secondary"}`}
-                >
-                  <AlignCenter size={12} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => updateSelectedText({ align: "right" })}
-                  title="Align right"
-                  className={`p-1.5 rounded ${selectedText.align === "right" ? "bg-primary text-primary-foreground" : "hover:bg-secondary"}`}
-                >
-                  <AlignRight size={12} />
-                </button>
-                <div className="w-px h-4 bg-border mx-0.5" />
-                <button
-                  type="button"
-                  onClick={() => updateSelectedText({ bold: !selectedText.bold })}
-                  title="Bold"
-                  className={`p-1.5 rounded ${selectedText.bold ? "bg-primary text-primary-foreground" : "hover:bg-secondary"}`}
-                >
-                  <Bold size={12} />
-                </button>
-                <div className="flex-1" />
-                <button
-                  type="button"
-                  onClick={() => deleteTextBlock(selectedText.id)}
-                  title="Delete text block"
-                  className="p-1.5 rounded text-destructive hover:bg-destructive/10"
-                >
-                  <Trash2 size={12} />
-                </button>
-              </div>
+              {!selectedText.sourceId ? (
+                <>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground shrink-0">Size</span>
+                    <select
+                      value={selectedText.fontSize}
+                      onChange={(e) => updateSelectedText({ fontSize: Number(e.target.value) })}
+                      className="text-xs px-1.5 py-1 rounded border border-border bg-background focus:outline-none focus:ring-1 focus:ring-primary flex-1"
+                    >
+                      {FONT_SIZES.map((s) => (
+                        <option key={s} value={s}>{s} pt</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => updateSelectedText({ align: "left" })}
+                      title="Align left"
+                      className={`p-1.5 rounded ${selectedText.align === "left" ? "bg-primary text-primary-foreground" : "hover:bg-secondary"}`}
+                    >
+                      <AlignLeft size={12} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateSelectedText({ align: "center" })}
+                      title="Align center"
+                      className={`p-1.5 rounded ${selectedText.align === "center" ? "bg-primary text-primary-foreground" : "hover:bg-secondary"}`}
+                    >
+                      <AlignCenter size={12} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateSelectedText({ align: "right" })}
+                      title="Align right"
+                      className={`p-1.5 rounded ${selectedText.align === "right" ? "bg-primary text-primary-foreground" : "hover:bg-secondary"}`}
+                    >
+                      <AlignRight size={12} />
+                    </button>
+                    <div className="w-px h-4 bg-border mx-0.5" />
+                    <button
+                      type="button"
+                      onClick={() => updateSelectedText({ bold: !selectedText.bold })}
+                      title="Bold"
+                      className={`p-1.5 rounded ${selectedText.bold ? "bg-primary text-primary-foreground" : "hover:bg-secondary"}`}
+                    >
+                      <Bold size={12} />
+                    </button>
+                    <div className="flex-1" />
+                    <button
+                      type="button"
+                      onClick={() => deleteTextBlock(selectedText.id)}
+                      title="Delete text block"
+                      className="p-1.5 rounded text-destructive hover:bg-destructive/10"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                </>
+              ) : null}
             </section>
           ) : null}
 
@@ -779,6 +920,156 @@ export function InvoiceLayoutPanel() {
               </button>
             </section>
           ) : null}
+
+          {/* ── Default text blocks (Task #827) ────────────────────── */}
+          <section>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Default text blocks
+              </h3>
+              <button
+                type="button"
+                onClick={addDefaultBlock}
+                disabled={draft.defaultTextBlocks.length >= 20}
+                className="text-xs px-2 py-1 rounded border border-border hover:bg-secondary flex items-center gap-1 disabled:opacity-50"
+                title="Add a reusable text snippet"
+              >
+                <Plus size={11} /> Add
+              </button>
+            </div>
+            <p className="text-xs text-muted-foreground mb-3">
+              Saved snippets (e.g. payment instructions) that are automatically included on every invoice. Toggle each one on or off per template.
+            </p>
+
+            {draft.defaultTextBlocks.length === 0 ? (
+              <p className="text-xs text-muted-foreground italic">
+                No default text blocks yet.
+              </p>
+            ) : (
+              <ul className="space-y-2">
+                {draft.defaultTextBlocks.map((def) => {
+                  const enabled = isDefaultEnabled(draft, def.id);
+                  const isEditing = editingDefaultId === def.id;
+                  return (
+                    <li
+                      key={def.id}
+                      className="rounded border border-border bg-background overflow-hidden"
+                    >
+                      {/* Header row */}
+                      <div className="flex items-center gap-1.5 px-2 py-1.5">
+                        {/* Enable/disable toggle */}
+                        <button
+                          type="button"
+                          title={enabled ? "Disable on this template" : "Enable on this template"}
+                          onClick={() => toggleDefault(def)}
+                          className={`p-1 rounded shrink-0 ${enabled ? "text-green-600 hover:bg-green-50 dark:hover:bg-green-950/30" : "text-muted-foreground hover:bg-secondary"}`}
+                        >
+                          {enabled ? <Eye size={13} /> : <EyeOff size={13} />}
+                        </button>
+                        {/* Text preview */}
+                        <span className="flex-1 text-xs truncate text-muted-foreground min-w-0">
+                          {def.text || <span className="italic">Empty snippet</span>}
+                        </span>
+                        {/* Edit toggle */}
+                        <button
+                          type="button"
+                          title={isEditing ? "Collapse" : "Edit snippet"}
+                          onClick={() => setEditingDefaultId(isEditing ? null : def.id)}
+                          className={`p-1 rounded shrink-0 ${isEditing ? "bg-primary/10 text-primary" : "hover:bg-secondary text-muted-foreground"}`}
+                        >
+                          {isEditing ? <ChevronDown size={13} /> : <Pencil size={13} />}
+                        </button>
+                        {/* Delete */}
+                        <button
+                          type="button"
+                          title="Delete this default block"
+                          onClick={() => {
+                            if (!confirm("Delete this default text block? It will be removed from the canvas too.")) return;
+                            deleteDefaultBlock(def.id);
+                          }}
+                          className="p-1 rounded shrink-0 text-destructive hover:bg-destructive/10"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+
+                      {/* Inline editor (expanded) */}
+                      {isEditing && editingDefault ? (
+                        <div className="px-2 pb-2 space-y-2 border-t border-border pt-2">
+                          <textarea
+                            className="w-full text-xs p-2 rounded border border-border bg-background resize-none focus:outline-none focus:ring-1 focus:ring-primary"
+                            rows={4}
+                            placeholder="Enter payment instructions or other text…"
+                            value={editingDefault.text}
+                            onChange={(e) =>
+                              updateDefaultBlock(editingDefault.id, { text: e.target.value })
+                            }
+                          />
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-muted-foreground shrink-0">Size</span>
+                            <select
+                              value={editingDefault.fontSize}
+                              onChange={(e) =>
+                                updateDefaultBlock(editingDefault.id, { fontSize: Number(e.target.value) })
+                              }
+                              className="text-xs px-1.5 py-1 rounded border border-border bg-background focus:outline-none focus:ring-1 focus:ring-primary flex-1"
+                            >
+                              {FONT_SIZES.map((s) => (
+                                <option key={s} value={s}>{s} pt</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              title="Align left"
+                              onClick={() => updateDefaultBlock(editingDefault.id, { align: "left" })}
+                              className={`p-1.5 rounded ${editingDefault.align === "left" ? "bg-primary text-primary-foreground" : "hover:bg-secondary"}`}
+                            >
+                              <AlignLeft size={12} />
+                            </button>
+                            <button
+                              type="button"
+                              title="Align center"
+                              onClick={() => updateDefaultBlock(editingDefault.id, { align: "center" })}
+                              className={`p-1.5 rounded ${editingDefault.align === "center" ? "bg-primary text-primary-foreground" : "hover:bg-secondary"}`}
+                            >
+                              <AlignCenter size={12} />
+                            </button>
+                            <button
+                              type="button"
+                              title="Align right"
+                              onClick={() => updateDefaultBlock(editingDefault.id, { align: "right" })}
+                              className={`p-1.5 rounded ${editingDefault.align === "right" ? "bg-primary text-primary-foreground" : "hover:bg-secondary"}`}
+                            >
+                              <AlignRight size={12} />
+                            </button>
+                            <div className="w-px h-4 bg-border mx-0.5" />
+                            <button
+                              type="button"
+                              title="Bold"
+                              onClick={() => updateDefaultBlock(editingDefault.id, { bold: !editingDefault.bold })}
+                              className={`p-1.5 rounded ${editingDefault.bold ? "bg-primary text-primary-foreground" : "hover:bg-secondary"}`}
+                            >
+                              <Bold size={12} />
+                            </button>
+                            <div className="flex-1" />
+                            <button
+                              type="button"
+                              onClick={() => setEditingDefaultId(null)}
+                              className="text-xs px-2 py-1 rounded bg-primary/10 text-primary hover:bg-primary/20 flex items-center gap-1"
+                            >
+                              <Check size={11} /> Done
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
 
           <section>
             <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
@@ -848,34 +1139,37 @@ export function InvoiceLayoutPanel() {
             >
               <Plus size={12} /> Add text block
             </button>
-            {draft.customTexts.length > 0 ? (
+            {/* Non-default custom text blocks */}
+            {draft.customTexts.filter((ct) => !ct.sourceId).length > 0 ? (
               <ul className="mt-3 space-y-1">
-                {draft.customTexts.map((tb, i) => (
-                  <li
-                    key={tb.id}
-                    className={`flex items-center gap-2 text-xs p-2 rounded border cursor-pointer ${
-                      selected?.kind === "text" && selected.key === tb.id
-                        ? "border-primary bg-primary/5"
-                        : "border-border hover:bg-secondary"
-                    }`}
-                    onClick={() => setSelected({ kind: "text", key: tb.id })}
-                  >
-                    <span className="truncate flex-1 text-muted-foreground">
-                      {tb.text || `Text ${i + 1}`}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        deleteTextBlock(tb.id);
-                      }}
-                      className="text-destructive hover:bg-destructive/10 p-0.5 rounded"
-                      aria-label="Remove text block"
+                {draft.customTexts
+                  .filter((ct) => !ct.sourceId)
+                  .map((tb, i) => (
+                    <li
+                      key={tb.id}
+                      className={`flex items-center gap-2 text-xs p-2 rounded border cursor-pointer ${
+                        selected?.kind === "text" && selected.key === tb.id
+                          ? "border-primary bg-primary/5"
+                          : "border-border hover:bg-secondary"
+                      }`}
+                      onClick={() => setSelected({ kind: "text", key: tb.id })}
                     >
-                      <X size={11} />
-                    </button>
-                  </li>
-                ))}
+                      <span className="truncate flex-1 text-muted-foreground">
+                        {tb.text || `Text ${i + 1}`}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteTextBlock(tb.id);
+                        }}
+                        className="text-destructive hover:bg-destructive/10 p-0.5 rounded"
+                        aria-label="Remove text block"
+                      >
+                        <X size={11} />
+                      </button>
+                    </li>
+                  ))}
               </ul>
             ) : (
               <p className="mt-2 text-xs text-muted-foreground">
@@ -972,6 +1266,20 @@ export function InvoiceLayoutPanel() {
                   {SECTION_LABELS[k]}
                 </li>
               ))}
+              <li className="flex items-center gap-2">
+                <span
+                  className="inline-block w-3 h-3 rounded-sm border border-border"
+                  style={{ background: "rgba(34,197,94,0.18)" }}
+                />
+                Default text block
+              </li>
+              <li className="flex items-center gap-2">
+                <span
+                  className="inline-block w-3 h-3 rounded-sm border border-border"
+                  style={{ background: "rgba(251,146,60,0.18)" }}
+                />
+                Custom text block
+              </li>
             </ul>
             {overlappingPairs.length > 0 ? (
               <div className="flex items-start gap-1.5 rounded px-2 py-1.5 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 text-xs mt-3">
@@ -1092,7 +1400,7 @@ function DraggableBox({
           >
             {!hasText ? (
               <span style={{ opacity: 0.4, fontStyle: "italic", fontWeight: "normal", width: "100%" }}>
-                Text
+                {textBlock.sourceId ? "Default text" : "Text"}
               </span>
             ) : (
               <>
