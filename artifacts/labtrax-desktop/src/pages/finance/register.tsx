@@ -54,7 +54,7 @@ function RegisterTable({
 
   const account = accounts.find((a) => a.id === accountId);
 
-  const { widths: colWidths, totalWidth: colTotalWidth, startResize, resetColumn } =
+  const { widths: colWidths, totalWidth: colTotalWidth, resizingCol, startResize, resetColumn } =
     useColumnWidths([...FINANCE_COL_DEFAULTS], "labtrax_finance_col_widths_v1");
 
   const params = useMemo(() => {
@@ -250,7 +250,23 @@ function RegisterTable({
           </button>
         </div>
 
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto relative">
+          {resizingCol !== null && (
+            <div
+              className="bg-primary/50 pointer-events-none absolute top-0 bottom-0 z-10"
+              style={{
+                left:
+                  resizingCol <= 7
+                    ? colWidths.slice(0, resizingCol + 1).reduce((a, b) => a + b, 0) - 1
+                    : colWidths.slice(0, 8).reduce((a, b) => a + b, 0) +
+                      FINANCE_FIXED_CLR +
+                      FINANCE_FIXED_REC +
+                      colWidths[8] -
+                      1,
+                width: 2,
+              }}
+            />
+          )}
           <table
             className="text-sm"
             style={{
@@ -304,7 +320,7 @@ function RegisterTable({
                         }}
                       >
                         <span
-                          className="w-0.5 transition-colors duration-100 bg-border/60 group-hover/resize:bg-primary/50"
+                          className={`w-0.5 transition-colors duration-100 ${resizingCol === i ? "bg-primary" : "bg-border/60 group-hover/resize:bg-primary/50"}`}
                           style={{ display: "block", height: "100%" }}
                         />
                       </div>
@@ -338,7 +354,7 @@ function RegisterTable({
                     }}
                   >
                     <span
-                      className="w-0.5 transition-colors duration-100 bg-border/60 group-hover/resize:bg-primary/50"
+                      className={`w-0.5 transition-colors duration-100 ${resizingCol === 8 ? "bg-primary" : "bg-border/60 group-hover/resize:bg-primary/50"}`}
                       style={{ display: "block", height: "100%" }}
                     />
                   </div>
