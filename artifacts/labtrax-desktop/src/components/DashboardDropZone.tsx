@@ -1537,23 +1537,11 @@ export function DashboardDropZone() {
                     </option>
                   ))}
               </select>
-              <button
-                type="button"
-                onClick={openAddPracticeForm}
-                className="shrink-0 h-8 px-2.5 rounded-md bg-primary text-primary-foreground text-[11px] font-medium hover:bg-primary/90 transition-colors inline-flex items-center gap-1"
-                title={
-                  r.practiceName
-                    ? `Add "${r.practiceName}" as a new practice`
-                    : "Add a new practice"
-                }
-              >
-                + Add practice
-              </button>
             </div>
             {rxProviderSearch && !rxProviderOrgId && (
               <span className="block text-[10px] text-muted-foreground">
                 No exact match for "{rxProviderSearch}". Pick the closest
-                practice or tap "+ Add practice" to create it.
+                practice or choose "+ Add new practice" from the dropdown.
               </span>
             )}
           </label>
