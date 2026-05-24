@@ -1208,7 +1208,7 @@ export default function CasesPage() {
         </div>
       )}
 
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
+      <div className="bg-card border border-border rounded-xl overflow-clip">
         <div className="px-4 py-3 border-b border-border flex flex-wrap items-center gap-3">
           <div className="relative flex-1 min-w-[200px] max-w-md">
             <Search
@@ -1286,7 +1286,7 @@ export default function CasesPage() {
           )}
         </div>
         {selectedIds.size > 0 && (
-          <div className="px-4 py-2.5 border-b border-border bg-primary/5 flex items-center gap-3">
+          <div className="sticky top-0 z-10 px-4 py-2.5 border-b border-border bg-card/95 backdrop-blur-sm flex items-center gap-3 shadow-sm">
             <span className="text-sm font-medium">
               {selectedIds.size} case{selectedIds.size !== 1 ? "s" : ""} selected
             </span>
