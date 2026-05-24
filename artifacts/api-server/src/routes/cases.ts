@@ -916,10 +916,22 @@ router.post(
 
     const ids = casesToUpdate.map((c) => c.id);
 
-    await db
-      .update(cases)
-      .set({ providerOrganizationId: input.providerOrganizationId, updatedAt: new Date() })
-      .where(inArray(cases.id, ids));
+    // Chunk the IDs into bounded batches so each SQL IN clause is bounded and
+    // avoids long-running transactions on large batches (up to 500 IDs).
+    const BULK_REASSIGN_CHUNK_SIZE = 100;
+    const idChunks: string[][] = [];
+    for (let i = 0; i < ids.length; i += BULK_REASSIGN_CHUNK_SIZE) {
+      idChunks.push(ids.slice(i, i + BULK_REASSIGN_CHUNK_SIZE));
+    }
+
+    await db.transaction(async (tx) => {
+      for (const idChunk of idChunks) {
+        await tx
+          .update(cases)
+          .set({ providerOrganizationId: input.providerOrganizationId, updatedAt: new Date() })
+          .where(inArray(cases.id, idChunk));
+      }
+    });
 
     await writeAuditLog({
       userId,

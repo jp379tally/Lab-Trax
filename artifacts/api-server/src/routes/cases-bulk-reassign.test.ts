@@ -353,4 +353,45 @@ maybe("POST /api/cases/bulk-reassign (db integration)", () => {
 
     expect(r.status).toBe(401);
   });
+
+  it("chunks large batches: 150 cases spanning 2 chunk boundaries are all updated", async () => {
+    const { db, cases } = dbMod as any;
+    const { inArray: inArrayDrizzle } = await import("drizzle-orm");
+
+    const COUNT = 150;
+    const caseRows = Array.from({ length: COUNT }, (_, i) => ({
+      id: rid(`CHK${i}`),
+      caseNumber: rid(`BLK${i}`),
+      labOrganizationId: labOrgId,
+      providerOrganizationId: practiceAId,
+      doctorName: "Dr. Chunk",
+      patientFirstName: "Chunk",
+      patientLastName: "Test",
+      status: "draft",
+      createdByUserId: adminUserId,
+    }));
+
+    await db.insert(cases).values(caseRows);
+    const caseIds = caseRows.map((c: { id: string }) => c.id);
+
+    const r = await request(appMod.default)
+      .post("/api/cases/bulk-reassign")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({ caseIds, providerOrganizationId: practiceBId });
+
+    expect(r.status).toBe(200);
+    expect(r.body.ok).toBe(true);
+    expect(r.body.data.updatedCount).toBe(COUNT);
+
+    const updated = await db
+      .select({ id: cases.id, providerOrganizationId: cases.providerOrganizationId })
+      .from(cases)
+      .where(inArrayDrizzle(cases.id, caseIds));
+    expect(updated).toHaveLength(COUNT);
+    for (const row of updated) {
+      expect(row.providerOrganizationId).toBe(practiceBId);
+    }
+
+    await db.delete(cases).where(inArrayDrizzle(cases.id, caseIds));
+  });
 });
