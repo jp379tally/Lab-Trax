@@ -4000,6 +4000,7 @@ Important rules:
   const SETTING_DOWNLOAD_INTERRUPTION_ALERT_THRESHOLD = "download_interruption_alert_threshold";
   const SETTING_MOBILE_BUILD_LAST_TRIGGER = "mobile_build_last_trigger";
   const SETTING_MOBILE_VERSION_HISTORY = "mobile_app_version_history";
+  const SETTING_DESKTOP_BUILD_LAST_TRIGGER = "desktop_build_last_trigger";
   const MOBILE_VERSION_HISTORY_MAX_ROWS = 20;
 
   function validateInstallerUrl(url: string): string | null {
@@ -4098,11 +4099,15 @@ Important rules:
     const urlError = validateInstallerUrl(rawUrl);
     const fileName = urlError ? null : (rawUrl.split("/").pop() ?? "LabTrax-Windows-Portable.zip");
     const repoUrl = process.env.GITHUB_REPO_URL ?? null;
-    const githubRepoPattern = /^https:\/\/github\.com\/[^/]+\/[^/]+(\/)?$/;
+    const githubRepoPattern = /^https:\/\/github\.com\/([^/]+)\/([^/]+?)(\/)?$/;
     const repoUrlWarning =
       repoUrl !== null && !githubRepoPattern.test(repoUrl)
         ? "GITHUB_REPO_URL does not look like a valid https://github.com/<owner>/<repo> URL. The Actions link may not work correctly."
         : undefined;
+    const repoMatch = repoUrl ? githubRepoPattern.exec(repoUrl) : null;
+    const repoOwner = repoMatch?.[1] ?? null;
+    const repoName = repoMatch?.[2] ?? null;
+    const tokenConfigured = !!(process.env.GITHUB_ACTIONS_TOKEN);
     const activeKind = urlError ? null : installerKindFromUrl(rawUrl);
     let installerObject: Awaited<ReturnType<typeof getDesktopInstallerMetadata>> | null = null;
     let installerObjectError: string | null = null;
@@ -4236,6 +4241,25 @@ Important rules:
       }
     }
 
+    // Last desktop build trigger record (for the "Trigger build" button).
+    let lastDesktopBuildTrigger: {
+      triggeredAt: string;
+      triggeredByUsername: string;
+      apiBaseUrl: string;
+    } | null = null;
+    try {
+      const triggerRow = await db
+        .select()
+        .from(systemSettings)
+        .where(eq(systemSettings.key, SETTING_DESKTOP_BUILD_LAST_TRIGGER))
+        .limit(1);
+      if (triggerRow[0]?.value) {
+        lastDesktopBuildTrigger = JSON.parse(triggerRow[0].value) as typeof lastDesktopBuildTrigger;
+      }
+    } catch {
+      // Non-fatal — just omit.
+    }
+
     return res.json({
       version,
       dbVersion,
@@ -4246,6 +4270,9 @@ Important rules:
       fileName,
       installerObjectError,
       repoUrl,
+      repoOwner,
+      repoName,
+      tokenConfigured,
       urlError: urlError ?? null,
       repoUrlWarning,
       releaseNotes: dbReleaseNotes,
@@ -4260,6 +4287,7 @@ Important rules:
       downloadInterruptionAlertThreshold,
       downloadInterruptionAlertThresholdSource: dbAlertThreshold !== null && Number.isFinite(dbAlertThreshold) && dbAlertThreshold > 0 ? "db" : "env",
       envDownloadInterruptionAlertThreshold: envAlertThreshold,
+      lastDesktopBuildTrigger,
     });
   });
 
@@ -5900,6 +5928,186 @@ Important rules:
       const msg = e instanceof Error ? e.message : "Failed to save backup history retention settings.";
       return res.status(500).json({ error: msg });
     }
+  });
+
+  // ── Admin: Desktop Windows Build Trigger ──────────────────────────────────
+  // Dispatches the "Build Windows Installer (Test)" GitHub Actions workflow
+  // with the server's public URL pre-filled as api_base_url. Uses the same
+  // GITHUB_ACTIONS_TOKEN + GITHUB_REPO_URL env vars as the mobile build trigger.
+
+  router.post("/admin/desktop-build/trigger", requireAuth, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+
+    const token = process.env.GITHUB_ACTIONS_TOKEN;
+    if (!token) {
+      return res.status(503).json({
+        error: "GITHUB_ACTIONS_TOKEN is not configured. Set it as an environment secret to enable build triggering.",
+      });
+    }
+
+    const repoUrl = process.env.GITHUB_REPO_URL ?? null;
+    const githubRepoPattern = /^https:\/\/github\.com\/([^/]+)\/([^/]+?)(\/)?$/;
+    const repoMatch = repoUrl ? githubRepoPattern.exec(repoUrl) : null;
+    const repoOwner = repoMatch?.[1] ?? null;
+    const repoName = repoMatch?.[2] ?? null;
+    if (!repoOwner || !repoName) {
+      return res.status(503).json({
+        error: "GITHUB_REPO_URL is not set or not a valid https://github.com/<owner>/<repo> URL.",
+      });
+    }
+
+    // Auto-detect the public API base URL: prefer PUBLISH_API_BASE_URL (already
+    // configured for the publish CI step), then REPLIT_DOMAINS (first entry),
+    // then fall back to empty string — the caller may also pass it in the body.
+    const replitDomains = process.env.REPLIT_DOMAINS ?? "";
+    const firstDomain = replitDomains.split(",")[0]?.trim() ?? "";
+    const autoApiBaseUrl =
+      process.env.PUBLISH_API_BASE_URL ??
+      (firstDomain ? `https://${firstDomain}` : "");
+    const { apiBaseUrl: bodyApiBaseUrl } = req.body as { apiBaseUrl?: unknown };
+    const apiBaseUrl =
+      (typeof bodyApiBaseUrl === "string" && bodyApiBaseUrl.trim())
+        ? bodyApiBaseUrl.trim()
+        : autoApiBaseUrl;
+
+    if (!apiBaseUrl) {
+      return res.status(400).json({
+        error: "Could not determine the API base URL to pass to the workflow. Set PUBLISH_API_BASE_URL or pass apiBaseUrl in the request body.",
+      });
+    }
+
+    const dispatchUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/actions/workflows/build-windows.yml/dispatches`;
+    let ghRes: Response;
+    try {
+      ghRes = await fetch(dispatchUrl, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+          "Content-Type": "application/json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+        body: JSON.stringify({
+          ref: "main",
+          inputs: { api_base_url: apiBaseUrl },
+        }),
+      });
+    } catch (err) {
+      req.log.error({ err }, "GitHub API request failed for desktop build trigger");
+      return res.status(502).json({ error: "Could not reach the GitHub API. Check server connectivity." });
+    }
+
+    if (!ghRes.ok) {
+      let detail = "";
+      try {
+        const body = await ghRes.json() as { message?: string };
+        detail = body.message ? ` — ${body.message}` : "";
+      } catch { /* ignore */ }
+      req.log.error(
+        { status: ghRes.status, url: dispatchUrl },
+        "GitHub workflow_dispatch returned a non-2xx response for desktop build",
+      );
+      return res.status(502).json({
+        error: `GitHub rejected the workflow dispatch (HTTP ${ghRes.status})${detail}. Verify that GITHUB_ACTIONS_TOKEN has workflow write access and that build-windows.yml exists on the main branch.`,
+      });
+    }
+
+    const reqUser = (req as any).user as { username?: string } | undefined;
+    const triggerRecord = {
+      triggeredAt: new Date().toISOString(),
+      triggeredByUsername: reqUser?.username ?? "unknown",
+      apiBaseUrl,
+    };
+
+    try {
+      await db
+        .insert(systemSettings)
+        .values({ key: SETTING_DESKTOP_BUILD_LAST_TRIGGER, value: JSON.stringify(triggerRecord) })
+        .onConflictDoUpdate({
+          target: systemSettings.key,
+          set: { value: JSON.stringify(triggerRecord), updatedAt: new Date() },
+        });
+    } catch (err) {
+      req.log.warn({ err }, "Failed to persist desktop build last-trigger record");
+    }
+
+    return res.json({ ok: true, trigger: triggerRecord, apiBaseUrl });
+  });
+
+  // Returns the status of the most recent build-windows.yml GitHub Actions run.
+  router.get("/admin/desktop-build/status", requireAuth, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+
+    const token = process.env.GITHUB_ACTIONS_TOKEN;
+    if (!token) {
+      return res.status(503).json({
+        error: "GITHUB_ACTIONS_TOKEN is not configured.",
+      });
+    }
+
+    const repoUrl = process.env.GITHUB_REPO_URL ?? null;
+    const githubRepoPattern = /^https:\/\/github\.com\/([^/]+)\/([^/]+?)(\/)?$/;
+    const repoMatch = repoUrl ? githubRepoPattern.exec(repoUrl) : null;
+    const repoOwner = repoMatch?.[1] ?? null;
+    const repoName = repoMatch?.[2] ?? null;
+    if (!repoOwner || !repoName) {
+      return res.status(503).json({
+        error: "GITHUB_REPO_URL is not set or not a valid https://github.com/<owner>/<repo> URL.",
+      });
+    }
+
+    const runsUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/actions/workflows/build-windows.yml/runs?per_page=1`;
+    let ghRes: Response;
+    try {
+      ghRes = await fetch(runsUrl, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      });
+    } catch (err) {
+      req.log.error({ err }, "GitHub API request failed for desktop build status");
+      return res.status(502).json({ error: "Could not reach the GitHub API." });
+    }
+
+    if (!ghRes.ok) {
+      req.log.error({ status: ghRes.status, url: runsUrl }, "GitHub workflow runs returned a non-2xx response for desktop build");
+      return res.status(502).json({ error: `GitHub API returned HTTP ${ghRes.status}.` });
+    }
+
+    const body = await ghRes.json() as {
+      workflow_runs: Array<{
+        id: number;
+        name: string;
+        status: string;
+        conclusion: string | null;
+        html_url: string;
+        created_at: string;
+        updated_at: string;
+      }>;
+    };
+
+    const run = body.workflow_runs?.[0] ?? null;
+    if (!run) {
+      return res.json({ run: null });
+    }
+
+    return res.json({
+      run: {
+        id: run.id,
+        name: run.name,
+        status: run.status,
+        conclusion: run.conclusion,
+        htmlUrl: run.html_url,
+        createdAt: run.created_at,
+        updatedAt: run.updated_at,
+      },
+    });
   });
 
   // ── Admin: Mobile Build ────────────────────────────────────────────────────

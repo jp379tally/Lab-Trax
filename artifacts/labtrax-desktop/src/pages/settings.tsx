@@ -2510,6 +2510,9 @@ interface DesktopInstallerInfo {
   envDownloadUrl: string;
   fileName: string | null;
   repoUrl: string | null;
+  repoOwner: string | null;
+  repoName: string | null;
+  tokenConfigured: boolean;
   urlError: string | null;
   repoUrlWarning?: string;
   releaseNotes: string | null;
@@ -2530,6 +2533,25 @@ interface DesktopInstallerInfo {
   downloadInterruptionAlertThreshold: number;
   downloadInterruptionAlertThresholdSource: "db" | "env";
   envDownloadInterruptionAlertThreshold: number;
+  lastDesktopBuildTrigger: {
+    triggeredAt: string;
+    triggeredByUsername: string;
+    apiBaseUrl: string;
+  } | null;
+}
+
+interface DesktopBuildRun {
+  id: number;
+  name: string;
+  status: string;
+  conclusion: string | null;
+  htmlUrl: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface DesktopBuildStatus {
+  run: DesktopBuildRun | null;
 }
 
 function formatInstallerSize(bytes: number): string {
@@ -2607,6 +2629,11 @@ function DesktopInstallerPanel() {
   } | null>(null);
   const [uploadConfirmPending, setUploadConfirmPending] = useState<File | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Desktop build trigger state
+  const [buildTriggerError, setBuildTriggerError] = useState<string | null>(null);
+  const [buildTriggerSuccess, setBuildTriggerSuccess] = useState(false);
+  const [buildTriggerTimestamp, setBuildTriggerTimestamp] = useState<string | null>(null);
 
   const query = useQuery({
     queryKey: ["admin", "desktop-installer"],
@@ -2721,6 +2748,53 @@ function DesktopInstallerPanel() {
       setUploadError(err.message || "Failed to upload installer.");
     },
   });
+
+  const buildTriggerMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ ok: boolean; trigger: DesktopInstallerInfo["lastDesktopBuildTrigger"]; apiBaseUrl: string }>(
+        "/admin/desktop-build/trigger",
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) },
+      ),
+    onSuccess: () => {
+      const ts = new Date().toISOString();
+      setBuildTriggerError(null);
+      setBuildTriggerSuccess(true);
+      setBuildTriggerTimestamp(ts);
+      queryClient.invalidateQueries({ queryKey: ["admin", "desktop-installer"] });
+      setTimeout(() => {
+        queryClient.invalidateQueries({ queryKey: ["admin", "desktop-build-status"] });
+      }, 5_000);
+      setTimeout(() => setBuildTriggerSuccess(false), 4000);
+    },
+    onError: (err: Error) => {
+      setBuildTriggerSuccess(false);
+      setBuildTriggerError(err.message || "Failed to trigger build.");
+    },
+  });
+
+  const buildStatusQuery = useQuery({
+    queryKey: ["admin", "desktop-build-status"],
+    queryFn: () => apiFetch<DesktopBuildStatus>("/admin/desktop-build/status"),
+    enabled: !!(query.data?.tokenConfigured && query.data?.repoOwner && query.data?.repoName),
+    refetchInterval: (q) => {
+      if (!buildTriggerTimestamp) return false;
+      const run = q.state.data?.run;
+      if (!run) return 30_000;
+      if (new Date(run.createdAt) >= new Date(buildTriggerTimestamp) && run.status === "completed") return false;
+      return 30_000;
+    },
+  });
+
+  useEffect(() => {
+    if (!buildTriggerTimestamp) return;
+    const run = buildStatusQuery.data?.run;
+    if (!run) return;
+    if (new Date(run.createdAt) >= new Date(buildTriggerTimestamp) && run.status === "completed") {
+      setBuildTriggerTimestamp(null);
+    }
+  }, [buildTriggerTimestamp, buildStatusQuery.data]);
+
+  const isBuildPolling = buildTriggerTimestamp !== null;
 
   function handleUploadButtonClick() {
     setUploadError(null);
@@ -3370,6 +3444,105 @@ function DesktopInstallerPanel() {
               <code className="font-mono bg-secondary px-1 py-0.5 rounded">PUBLISH_API_BASE_URL</code> secrets are
               configured in your repo, the built installer is automatically published to the live download page — no manual upload needed.
             </p>
+
+            {/* Trigger button — shown when token + repo are configured; falls back to the Actions link otherwise */}
+            {info.tokenConfigured && info.repoOwner && info.repoName ? (
+              <div className="space-y-3">
+                {buildTriggerError && <Alert tone="danger">{buildTriggerError}</Alert>}
+                {buildTriggerSuccess && (
+                  <Alert tone="success">
+                    Build triggered — the <strong>Build Windows Installer (Test)</strong> workflow is now queued on GitHub Actions. Status will update automatically below.
+                  </Alert>
+                )}
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBuildTriggerError(null);
+                      setBuildTriggerSuccess(false);
+                      buildTriggerMutation.mutate();
+                    }}
+                    disabled={buildTriggerMutation.isPending}
+                    className="inline-flex items-center gap-2 h-8 px-4 rounded-md bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 disabled:opacity-60"
+                  >
+                    {buildTriggerMutation.isPending ? (
+                      <Loader2 size={13} className="animate-spin" />
+                    ) : (
+                      <Play size={13} />
+                    )}
+                    {buildTriggerMutation.isPending ? "Triggering…" : "Trigger build"}
+                  </button>
+                  {info.lastDesktopBuildTrigger && (
+                    <span className="text-[11px] text-muted-foreground">
+                      Last triggered{" "}
+                      {new Date(info.lastDesktopBuildTrigger.triggeredAt).toLocaleString()}{" "}
+                      by {info.lastDesktopBuildTrigger.triggeredByUsername}
+                    </span>
+                  )}
+                </div>
+
+                {/* Live run status */}
+                {buildStatusQuery.data !== undefined && (
+                  <div className="rounded-md border border-border bg-background px-4 py-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Latest build run</div>
+                      <button
+                        type="button"
+                        onClick={() => queryClient.invalidateQueries({ queryKey: ["admin", "desktop-build-status"] })}
+                        disabled={buildStatusQuery.isFetching}
+                        className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-50"
+                      >
+                        <RefreshCcw size={11} className={buildStatusQuery.isFetching ? "animate-spin" : ""} />
+                        Refresh
+                      </button>
+                    </div>
+                    {buildStatusQuery.data.run ? (
+                      <div className="space-y-1.5">
+                        <div className="flex items-center gap-2">
+                          <BuildStatusBadge run={{
+                            ...buildStatusQuery.data.run,
+                            htmlUrl: buildStatusQuery.data.run.htmlUrl,
+                          }} />
+                          {isBuildPolling && buildStatusQuery.data.run.status !== "completed" && (
+                            <span className="text-[11px] text-muted-foreground">Auto-refreshing every 30 s…</span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-muted-foreground">
+                          <Clock size={11} className="inline mr-1 -mt-px" />
+                          Started {new Date(buildStatusQuery.data.run.createdAt).toLocaleString()}
+                          {buildStatusQuery.data.run.status === "completed" && (
+                            <> · Updated {new Date(buildStatusQuery.data.run.updatedAt).toLocaleString()}</>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="text-[11px] text-muted-foreground">No runs found for <code className="font-mono">build-windows.yml</code>.</p>
+                    )}
+                  </div>
+                )}
+                {buildStatusQuery.isLoading && (
+                  <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                    <Loader2 size={11} className="animate-spin" />
+                    Loading run status…
+                  </div>
+                )}
+              </div>
+            ) : (
+              /* Fallback: no token or repo — explain what needs to be set up */
+              <div className="space-y-2">
+                {!info.repoUrl && (
+                  <p className="text-[11px] text-muted-foreground">
+                    Set <code className="font-mono bg-secondary px-1 rounded">GITHUB_REPO_URL</code> to your repository URL to enable in-app build triggering.
+                  </p>
+                )}
+                {info.repoUrl && !info.tokenConfigured && (
+                  <p className="text-[11px] text-muted-foreground">
+                    Set <code className="font-mono bg-secondary px-1 rounded">GITHUB_ACTIONS_TOKEN</code> (a fine-grained PAT with <em>Actions: Read and write</em> access) to enable in-app build triggering.
+                  </p>
+                )}
+              </div>
+            )}
+
             {(info.installerStatus === "missing" || info.installerStatus === "unknown") && (
               <div className="rounded-md border border-blue-300/60 bg-blue-50 dark:border-blue-800/40 dark:bg-blue-950/30 px-4 py-3 space-y-2">
                 <div className="flex items-start gap-2">
