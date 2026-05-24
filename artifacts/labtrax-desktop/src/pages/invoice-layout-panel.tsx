@@ -136,6 +136,8 @@ interface DragState {
   startX: number;
   startY: number;
   startBox: TemplateBox;
+  scaleX: number;
+  scaleY: number;
 }
 
 const PAGE_W = 612;
@@ -191,11 +193,17 @@ function applyDrag(start: TemplateBox, h: Handle, dx: number, dy: number): Templ
   return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(bh) };
 }
 
-function newTextBlock(): InvoiceTemplateTextBlock {
+function newTextBlock(customTexts: InvoiceTemplateTextBlock[]): InvoiceTemplateTextBlock {
+  // Stagger new blocks below the last non-default custom text block so they
+  // don't pile on top of each other. Fall back to the standard bottom position.
+  const nonDefault = customTexts.filter((ct) => !ct.sourceId);
+  const last = nonDefault[nonDefault.length - 1];
+  const x = last ? last.x : 40;
+  const y = last ? Math.min(last.y + 45, PAGE_H - 40) : 680;
   return {
     id: crypto.randomUUID(),
-    x: 40,
-    y: 680,
+    x,
+    y,
     w: 240,
     h: 40,
     text: "",
@@ -297,6 +305,9 @@ export function InvoiceLayoutPanel() {
   const [presetsOpen, setPresetsOpen] = useState(false);
   const [savePresetName, setSavePresetName] = useState("");
   const [savePresetOpen, setSavePresetOpen] = useState(false);
+  const [activePresetId, setActivePresetId] = useState<string | null>(null);
+  const [renamingPresetId, setRenamingPresetId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
 
   type TemplatePreset = { id: string; name: string; template: unknown; savedAt: string };
 
@@ -313,15 +324,37 @@ export function InvoiceLayoutPanel() {
 
   const savePresetMutation = useMutation({
     mutationFn: async (name: string) => {
-      await apiFetch(`/organizations/${orgId}/invoice-template/presets`, {
-        method: "POST",
-        body: JSON.stringify({ name, template: draft }),
+      const res = await apiFetch<{ data: { preset: TemplatePreset } }>(
+        `/organizations/${orgId}/invoice-template/presets`,
+        {
+          method: "POST",
+          body: JSON.stringify({ name, template: draft }),
+        },
+      );
+      return (res as any).data?.preset as TemplatePreset | undefined;
+    },
+    onSuccess: (preset) => {
+      void qc.invalidateQueries({ queryKey: ["invoiceTemplatePresets", orgId] });
+      setSavePresetName("");
+      setSavePresetOpen(false);
+      if (preset?.id) setActivePresetId(preset.id);
+    },
+  });
+
+  const patchPresetMutation = useMutation({
+    mutationFn: async ({
+      presetId,
+      name,
+      template,
+    }: { presetId: string; name?: string; template?: unknown }) => {
+      await apiFetch(`/organizations/${orgId}/invoice-template/presets/${presetId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name, template }),
       });
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["invoiceTemplatePresets", orgId] });
-      setSavePresetName("");
-      setSavePresetOpen(false);
+      setRenamingPresetId(null);
     },
   });
 
@@ -330,9 +363,11 @@ export function InvoiceLayoutPanel() {
       await apiFetch(`/organizations/${orgId}/invoice-template/presets/${presetId}`, {
         method: "DELETE",
       });
+      return presetId;
     },
-    onSuccess: () => {
+    onSuccess: (presetId) => {
       void qc.invalidateQueries({ queryKey: ["invoiceTemplatePresets", orgId] });
+      if (activePresetId === presetId) setActivePresetId(null);
     },
   });
 
@@ -412,14 +447,19 @@ export function InvoiceLayoutPanel() {
     e.preventDefault();
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const scale = PAGE_W / rect.width;
+    // Snapshot separate X and Y scales once so scroll drift during drag is
+    // eliminated and the non-square aspect ratio (612×792) is handled correctly.
+    const scaleX = PAGE_W / rect.width;
+    const scaleY = PAGE_H / rect.height;
     dragRef.current = {
       kind,
       key,
       handle,
-      startX: e.clientX * scale,
-      startY: e.clientY * scale,
+      startX: e.clientX * scaleX,
+      startY: e.clientY * scaleY,
       startBox: { ...box },
+      scaleX,
+      scaleY,
     };
     setSelected({ kind, key });
     (e.target as Element).setPointerCapture?.(e.pointerId);
@@ -428,11 +468,10 @@ export function InvoiceLayoutPanel() {
   function onPointerMove(e: React.PointerEvent) {
     const d = dragRef.current;
     if (!d) return;
-    const rect = canvasRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const scale = PAGE_W / rect.width;
-    const dx = e.clientX * scale - d.startX;
-    const dy = e.clientY * scale - d.startY;
+    // Use the snapshotted scales from startDrag — no new getBoundingClientRect
+    // call so the drag stays stable even if the panel scrolls.
+    const dx = e.clientX * d.scaleX - d.startX;
+    const dy = e.clientY * d.scaleY - d.startY;
     const next = applyDrag(d.startBox, d.handle, dx, dy);
     setDraft((cur) => {
       if (d.kind === "section") {
@@ -754,7 +793,12 @@ export function InvoiceLayoutPanel() {
           </button>
           <button
             type="button"
-            onClick={() => saveMutation.mutate(draft)}
+            onClick={() => {
+              saveMutation.mutate(draft);
+              if (activePresetId) {
+                patchPresetMutation.mutate({ presetId: activePresetId, template: draft });
+              }
+            }}
             disabled={!dirty || saveMutation.isPending}
             className="text-xs px-3 py-1.5 rounded bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 flex items-center gap-1"
           >
@@ -763,7 +807,9 @@ export function InvoiceLayoutPanel() {
             ) : (
               <Save size={12} />
             )}
-            Save layout
+            {activePresetId
+              ? `Save "${presetsQuery.data?.find((p) => p.id === activePresetId)?.name ?? "preset"}"`
+              : "Save layout"}
           </button>
           <button
             type="button"
@@ -1037,35 +1083,95 @@ export function InvoiceLayoutPanel() {
                 <p className="text-xs text-muted-foreground italic">No presets saved yet. Use "Save as preset" to capture the current layout.</p>
               ) : (
                 <ul className="space-y-1">
-                  {presetsQuery.data.map((p) => (
-                    <li key={p.id} className="flex items-center gap-1.5 text-xs rounded border border-border bg-background px-2 py-1.5">
-                      <span className="flex-1 truncate font-medium" title={p.name}>{p.name}</span>
-                      <button
-                        type="button"
-                        title="Load this preset into the editor"
-                        onClick={() => {
-                          setDraft(coerceInvoiceTemplate(p.template as any));
-                          setDirty(true);
-                          setSelected(null);
-                          setEditingDefaultId(null);
-                        }}
-                        className="text-[10px] px-1.5 py-0.5 rounded border border-border hover:bg-secondary flex items-center gap-0.5"
+                  {presetsQuery.data.map((p) => {
+                    const isActive = activePresetId === p.id;
+                    const isRenaming = renamingPresetId === p.id;
+                    return (
+                      <li
+                        key={p.id}
+                        className={`text-xs rounded border bg-background overflow-hidden ${isActive ? "border-primary" : "border-border"}`}
                       >
-                        <FolderOpen size={10} /> Load
-                      </button>
-                      <button
-                        type="button"
-                        title="Delete preset"
-                        onClick={() => {
-                          if (!confirm(`Delete preset "${p.name}"?`)) return;
-                          deletePresetMutation.mutate(p.id);
-                        }}
-                        className="p-0.5 rounded text-destructive hover:bg-destructive/10"
-                      >
-                        <Trash2 size={10} />
-                      </button>
-                    </li>
-                  ))}
+                        {isRenaming ? (
+                          <div className="flex items-center gap-1 px-2 py-1.5">
+                            <input
+                              type="text"
+                              className="flex-1 text-xs bg-transparent outline-none border-b border-primary"
+                              value={renameValue}
+                              autoFocus
+                              onChange={(e) => setRenameValue(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" && renameValue.trim()) {
+                                  patchPresetMutation.mutate({ presetId: p.id, name: renameValue.trim() });
+                                }
+                                if (e.key === "Escape") setRenamingPresetId(null);
+                              }}
+                            />
+                            <button
+                              type="button"
+                              disabled={!renameValue.trim() || patchPresetMutation.isPending}
+                              onClick={() => {
+                                if (renameValue.trim()) patchPresetMutation.mutate({ presetId: p.id, name: renameValue.trim() });
+                              }}
+                              className="p-0.5 rounded text-primary hover:bg-primary/10 disabled:opacity-50"
+                            >
+                              {patchPresetMutation.isPending ? <Loader2 size={10} className="animate-spin" /> : <Check size={10} />}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setRenamingPresetId(null)}
+                              className="p-0.5 rounded text-muted-foreground hover:bg-secondary"
+                            >
+                              <X size={10} />
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1.5 px-2 py-1.5">
+                            {isActive ? (
+                              <span className="shrink-0 w-1.5 h-1.5 rounded-full bg-primary" title="Active preset" />
+                            ) : null}
+                            <span className="flex-1 truncate font-medium" title={p.name}>{p.name}</span>
+                            <button
+                              type="button"
+                              title="Load this preset into the editor"
+                              onClick={() => {
+                                if (dirty && !confirm("Discard unsaved changes and load this preset?")) return;
+                                setDraft(coerceInvoiceTemplate(p.template as any));
+                                setDirty(false);
+                                setSelected(null);
+                                setEditingDefaultId(null);
+                                setActivePresetId(p.id);
+                              }}
+                              className={`text-[10px] px-1.5 py-0.5 rounded border hover:bg-secondary flex items-center gap-0.5 ${isActive ? "border-primary text-primary" : "border-border"}`}
+                            >
+                              <FolderOpen size={10} /> {isActive ? "Active" : "Load"}
+                            </button>
+                            <button
+                              type="button"
+                              title="Rename preset"
+                              onClick={() => {
+                                setRenamingPresetId(p.id);
+                                setRenameValue(p.name);
+                              }}
+                              className="p-0.5 rounded text-muted-foreground hover:bg-secondary"
+                            >
+                              <Pencil size={10} />
+                            </button>
+                            <button
+                              type="button"
+                              title="Delete preset"
+                              onClick={() => {
+                                if (!confirm(`Delete preset "${p.name}"?`)) return;
+                                deletePresetMutation.mutate(p.id);
+                              }}
+                              className="p-0.5 rounded text-destructive hover:bg-destructive/10"
+                            >
+                              <Trash2 size={10} />
+                            </button>
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
                 </ul>
               )
             ) : null}
@@ -1388,7 +1494,7 @@ export function InvoiceLayoutPanel() {
             <button
               type="button"
               onClick={() => {
-                const tb = newTextBlock();
+                const tb = newTextBlock(draft.customTexts);
                 setDraft((d) => ({ ...d, customTexts: [...d.customTexts, tb] }));
                 setDirty(true);
                 setSelected({ kind: "text", key: tb.id });

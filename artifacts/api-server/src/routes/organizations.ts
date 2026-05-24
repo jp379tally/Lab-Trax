@@ -2896,6 +2896,39 @@ router.post(
   }),
 );
 
+const presetPatchSchema = z.object({
+  name: z.string().min(1).max(80).trim().optional(),
+  template: z.unknown().optional(),
+});
+
+router.patch(
+  "/:organizationId/invoice-template/presets/:presetId",
+  asyncHandler(async (req, res) => {
+    const { organizationId, presetId } = req.params;
+    await resolveOrgAdminAccess((req as any).auth.userId, organizationId);
+    const body = presetPatchSchema.parse(req.body);
+    const org = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organizationId),
+      columns: { invoiceTemplatePresets: true },
+    });
+    if (!org) throw new HttpError(404, "Organization not found.");
+    const presets = parsePresets(org.invoiceTemplatePresets);
+    const idx = presets.findIndex((p) => p.id === presetId);
+    if (idx < 0) throw new HttpError(404, "Preset not found.");
+    const updated: TemplatePreset = {
+      ...presets[idx],
+      ...(body.name !== undefined ? { name: body.name } : {}),
+      ...(body.template !== undefined ? { template: body.template, savedAt: new Date().toISOString() } : {}),
+    };
+    presets[idx] = updated;
+    await db
+      .update(organizations)
+      .set({ invoiceTemplatePresets: presets })
+      .where(eq(organizations.id, organizationId));
+    return ok(res, { preset: updated });
+  }),
+);
+
 router.delete(
   "/:organizationId/invoice-template/presets/:presetId",
   asyncHandler(async (req, res) => {
