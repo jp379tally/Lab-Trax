@@ -27,6 +27,7 @@ import { logger } from "./logger.js";
 
 const SETTING_EVENTS = "installer_download_interruptions";
 const SETTING_ALERT_LAST = "installer_download_interruption_alert_last";
+export const SETTING_DOWNLOAD_INTERRUPTION_ALERT_THRESHOLD = "download_interruption_alert_threshold";
 const WINDOW_MS = 24 * 60 * 60 * 1000;
 const ALERT_DEDUP_WINDOW_MS = 60 * 60 * 1000;
 
@@ -83,13 +84,26 @@ function pruneToWindow(events: DownloadInterruptionEvent[]): DownloadInterruptio
   return events.filter((e) => Date.parse(e.occurredAt) >= cutoff);
 }
 
-function alertThreshold(): number {
+async function alertThreshold(): Promise<number> {
+  try {
+    const rows = await db
+      .select({ value: systemSettings.value })
+      .from(systemSettings)
+      .where(eq(systemSettings.key, SETTING_DOWNLOAD_INTERRUPTION_ALERT_THRESHOLD));
+    const raw = rows[0]?.value;
+    if (raw) {
+      const v = parseInt(raw, 10);
+      if (Number.isFinite(v) && v > 0) return v;
+    }
+  } catch {
+    // fall through to env var
+  }
   const v = parseInt(process.env.DOWNLOAD_INTERRUPTION_ALERT_THRESHOLD ?? "", 10);
   return Number.isFinite(v) && v > 0 ? v : 3;
 }
 
 async function maybeFireAlert(events: DownloadInterruptionEvent[]): Promise<void> {
-  const threshold = alertThreshold();
+  const threshold = await alertThreshold();
   const retryFailCount = events.filter((e) => e.retryFailed).length;
   if (retryFailCount < threshold) return;
 

@@ -3996,6 +3996,7 @@ Important rules:
   const SETTING_DESKTOP_INSTALLER_VERSION = "desktop_installer_version";
   const SETTING_DESKTOP_INSTALLER_RELEASE_NOTES = "desktop_installer_release_notes";
   const SETTING_BUILD_COUNTER_WARNING = "build_counter_warning";
+  const SETTING_DOWNLOAD_INTERRUPTION_ALERT_THRESHOLD = "download_interruption_alert_threshold";
   const SETTING_MOBILE_BUILD_LAST_TRIGGER = "mobile_build_last_trigger";
   const SETTING_MOBILE_VERSION_HISTORY = "mobile_app_version_history";
   const MOBILE_VERSION_HISTORY_MAX_ROWS = 20;
@@ -4071,6 +4072,7 @@ Important rules:
           SETTING_DESKTOP_INSTALLER_VERSION,
           SETTING_DESKTOP_INSTALLER_RELEASE_NOTES,
           SETTING_BUILD_COUNTER_WARNING,
+          SETTING_DOWNLOAD_INTERRUPTION_ALERT_THRESHOLD,
         ]),
       );
     const byKey = Object.fromEntries(dbRows.map((r) => [r.key, r.value]));
@@ -4080,6 +4082,16 @@ Important rules:
     const dbUrl = byKey[SETTING_DESKTOP_INSTALLER_URL] ?? null;
     const dbVersion = byKey[SETTING_DESKTOP_INSTALLER_VERSION] ?? null;
     const dbReleaseNotes = byKey[SETTING_DESKTOP_INSTALLER_RELEASE_NOTES] ?? null;
+    const dbAlertThresholdRaw = byKey[SETTING_DOWNLOAD_INTERRUPTION_ALERT_THRESHOLD] ?? null;
+    const dbAlertThreshold = dbAlertThresholdRaw !== null ? parseInt(dbAlertThresholdRaw, 10) : null;
+    const envAlertThreshold = (() => {
+      const v = parseInt(process.env.DOWNLOAD_INTERRUPTION_ALERT_THRESHOLD ?? "", 10);
+      return Number.isFinite(v) && v > 0 ? v : 3;
+    })();
+    const downloadInterruptionAlertThreshold =
+      dbAlertThreshold !== null && Number.isFinite(dbAlertThreshold) && dbAlertThreshold > 0
+        ? dbAlertThreshold
+        : envAlertThreshold;
     const rawUrl = dbUrl ?? envUrl;
     const version = dbVersion ?? envVersion;
     const urlError = validateInstallerUrl(rawUrl);
@@ -4244,6 +4256,9 @@ Important rules:
       installerStatusMessage,
       settingsUpdatedAt: settingsUpdatedAt ? settingsUpdatedAt.toISOString() : null,
       buildCounterWarning,
+      downloadInterruptionAlertThreshold,
+      downloadInterruptionAlertThresholdSource: dbAlertThreshold !== null && Number.isFinite(dbAlertThreshold) && dbAlertThreshold > 0 ? "db" : "env",
+      envDownloadInterruptionAlertThreshold: envAlertThreshold,
     });
   });
 
@@ -4879,6 +4894,16 @@ Important rules:
     }
     const releaseNotes =
       typeof body?.releaseNotes === "string" ? body.releaseNotes.trim() || null : null;
+    const alertThresholdRaw = body?.downloadInterruptionAlertThreshold;
+    const alertThreshold: number | null = (() => {
+      if (alertThresholdRaw === undefined || alertThresholdRaw === null || alertThresholdRaw === "") return null;
+      const v = typeof alertThresholdRaw === "number" ? alertThresholdRaw : parseInt(String(alertThresholdRaw), 10);
+      if (!Number.isFinite(v) || v <= 0 || v > 1000) return "invalid" as unknown as null;
+      return v;
+    })();
+    if (alertThreshold === ("invalid" as unknown as null)) {
+      return res.status(400).json({ error: "downloadInterruptionAlertThreshold must be a positive integer between 1 and 1000." });
+    }
     try {
       const ops: Promise<unknown>[] = [
         db
@@ -4915,6 +4940,17 @@ Important rules:
           db
             .delete(systemSettings)
             .where(eq(systemSettings.key, SETTING_DESKTOP_INSTALLER_RELEASE_NOTES)),
+        );
+      }
+      if (alertThreshold !== null) {
+        ops.push(
+          db
+            .insert(systemSettings)
+            .values({ key: SETTING_DOWNLOAD_INTERRUPTION_ALERT_THRESHOLD, value: String(alertThreshold) })
+            .onConflictDoUpdate({
+              target: systemSettings.key,
+              set: { value: String(alertThreshold), updatedAt: new Date() },
+            }),
         );
       }
       await Promise.all(ops);

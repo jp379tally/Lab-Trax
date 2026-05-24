@@ -2527,6 +2527,9 @@ interface DesktopInstallerInfo {
     attemptedBuildNumber: number | null;
     reportedAt: string;
   } | null;
+  downloadInterruptionAlertThreshold: number;
+  downloadInterruptionAlertThresholdSource: "db" | "env";
+  envDownloadInterruptionAlertThreshold: number;
 }
 
 function formatInstallerSize(bytes: number): string {
@@ -2593,6 +2596,7 @@ function DesktopInstallerPanel() {
   const [releaseNotesInput, setReleaseNotesInput] = useState<string>("");
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [alertThresholdInput, setAlertThresholdInput] = useState<string>("");
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadSuccess, setUploadSuccess] = useState(false);
   const [importNotesLoading, setImportNotesLoading] = useState(false);
@@ -2614,6 +2618,7 @@ function DesktopInstallerPanel() {
       setUrlInput(query.data.downloadUrl);
       setVersionInput(query.data.version);
       setReleaseNotesInput(query.data.releaseNotes ?? "");
+      setAlertThresholdInput(String(query.data.downloadInterruptionAlertThreshold));
     }
   }, [query.data]);
 
@@ -2626,6 +2631,10 @@ function DesktopInstallerPanel() {
           downloadUrl: urlInput.trim(),
           version: versionInput.trim(),
           releaseNotes: releaseNotesInput.trim() || null,
+          downloadInterruptionAlertThreshold: (() => {
+            const v = parseInt(alertThresholdInput.trim(), 10);
+            return Number.isFinite(v) && v > 0 ? v : undefined;
+          })(),
         }),
       }),
     onSuccess: () => {
@@ -2740,7 +2749,11 @@ function DesktopInstallerPanel() {
     !!info &&
     (urlInput.trim() !== info.downloadUrl ||
       versionInput.trim() !== info.version ||
-      (releaseNotesInput.trim() || null) !== info.releaseNotes);
+      (releaseNotesInput.trim() || null) !== info.releaseNotes ||
+      (() => {
+        const v = parseInt(alertThresholdInput.trim(), 10);
+        return Number.isFinite(v) && v > 0 && v !== info.downloadInterruptionAlertThreshold;
+      })());
 
   return (
     <PanelShell
@@ -2955,6 +2968,30 @@ function DesktopInstallerPanel() {
                 aria-label="Version"
               />
             </div>
+            <div className="flex items-center gap-3">
+              <label className="text-xs font-medium text-muted-foreground shrink-0">
+                Alert after
+              </label>
+              <input
+                className={`${inputCls} w-20 shrink-0`}
+                type="number"
+                min={1}
+                max={1000}
+                step={1}
+                value={alertThresholdInput}
+                onChange={(e) => setAlertThresholdInput(e.target.value)}
+                aria-label="Alert threshold: number of retry failures in 24 h"
+              />
+              <span className="text-xs text-muted-foreground">
+                retry failure{alertThresholdInput === "1" ? "" : "s"} in 24 h
+                {info && info.downloadInterruptionAlertThresholdSource === "env" && (
+                  <span className="ml-1.5 text-[11px] text-muted-foreground/70">
+                    (env default: {info.envDownloadInterruptionAlertThreshold})
+                  </span>
+                )}
+              </span>
+            </div>
+
             <div className="space-y-1">
               <div className="flex items-center justify-between gap-2">
                 <label className="text-xs font-medium text-muted-foreground">
