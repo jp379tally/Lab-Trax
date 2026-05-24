@@ -19,6 +19,7 @@
  */
 import { db, systemSettings } from "@workspace/db";
 import { inArray } from "drizzle-orm";
+import { getDownloadInterruptionStats, type DownloadInterruptionStats } from "./download-interruptions.js";
 import {
   getDesktopInstallerHandle,
   getDesktopInstallerMetadata,
@@ -89,6 +90,11 @@ export interface HealthReport {
     hasManifest: boolean;
     issue: string | null;
   };
+  /**
+   * Interrupted-download telemetry from the past 24 h.
+   * Populated from system_settings; never throws — failures yield zero counts.
+   */
+  downloadInterruptions: DownloadInterruptionStats;
   issues: string[];
 }
 
@@ -495,6 +501,17 @@ export async function runDesktopInstallerHealthCheck(
     ]),
   ) as Record<DesktopInstallerKind, InstallerSlotStatus>;
 
+  // ── Download interruption telemetry ───────────────────────────────────────
+  const downloadInterruptions = await getDownloadInterruptionStats();
+  if (downloadInterruptions.retryFailCount24h > 0) {
+    issues.push(
+      `downloadInterruptions: ${downloadInterruptions.retryFailCount24h} retry failure${downloadInterruptions.retryFailCount24h !== 1 ? "s" : ""} in the past 24 h` +
+        (downloadInterruptions.lastOccurredAt
+          ? ` (last: ${new Date(downloadInterruptions.lastOccurredAt).toUTCString()})`
+          : ""),
+    );
+  }
+
   const ok =
     settingsError === null &&
     storageOk &&
@@ -545,6 +562,7 @@ export async function runDesktopInstallerHealthCheck(
       hasManifest,
       issue: releaseIssue,
     },
+    downloadInterruptions,
     issues,
   };
 }

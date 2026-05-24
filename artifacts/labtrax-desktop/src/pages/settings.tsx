@@ -3339,6 +3339,11 @@ interface InstallerHealthReport {
     hasManifest: boolean;
     issue: string | null;
   };
+  downloadInterruptions?: {
+    count24h: number;
+    retryFailCount24h: number;
+    lastOccurredAt: string | null;
+  };
   issues: string[];
 }
 
@@ -3421,6 +3426,12 @@ function DesktopInstallerPipelineHealthPanel() {
               ok={report.githubRelease.configured ? report.githubRelease.ok : null}
               label="GitHub Release"
             />
+            {report.downloadInterruptions != null && (
+              <StatusDot
+                ok={report.downloadInterruptions.retryFailCount24h > 0 ? false : true}
+                label={`Interruptions (24 h): ${report.downloadInterruptions.count24h}`}
+              />
+            )}
           </div>
           <div style={{ marginTop: 12, fontSize: 13, lineHeight: 1.5 }}>
             <div>
@@ -3509,6 +3520,28 @@ function DesktopInstallerPipelineHealthPanel() {
                 )}
                 {!report.githubRelease.hasManifest && (
                   <span style={{ color: "#dc2626" }}> — no latest.yml/latest-mac.yml asset</span>
+                )}
+              </div>
+            )}
+            {report.downloadInterruptions != null && (
+              <div style={{ marginTop: 4 }}>
+                <strong>Download interruptions (24 h):</strong>{" "}
+                {report.downloadInterruptions.count24h === 0 ? (
+                  <span style={{ color: "#16a34a" }}>none</span>
+                ) : (
+                  <>
+                    <span style={{ color: report.downloadInterruptions.retryFailCount24h > 0 ? "#dc2626" : "#b45309" }}>
+                      {report.downloadInterruptions.count24h} total
+                      {report.downloadInterruptions.retryFailCount24h > 0 && (
+                        <>, {report.downloadInterruptions.retryFailCount24h} retry failure{report.downloadInterruptions.retryFailCount24h !== 1 ? "s" : ""}</>
+                      )}
+                    </span>
+                    {report.downloadInterruptions.lastOccurredAt && (
+                      <span style={{ marginLeft: 6, color: "var(--muted, #6b7280)" }}>
+                        — last {new Date(report.downloadInterruptions.lastOccurredAt).toLocaleString()}
+                      </span>
+                    )}
+                  </>
                 )}
               </div>
             )}

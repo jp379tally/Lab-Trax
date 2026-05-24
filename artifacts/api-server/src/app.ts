@@ -21,6 +21,7 @@ import {
   DesktopInstallerNotConfiguredError,
 } from "./lib/desktop-installer-storage";
 import { parseRangeHeader } from "./lib/range-parser";
+import { recordDownloadInterruption } from "./lib/download-interruptions";
 
 const app: Express = express();
 app.set("trust proxy", 1);
@@ -179,6 +180,7 @@ function serveInstaller(
           if (!retried && !res.writableEnded && absoluteOffset <= end) {
             retried = true;
             logger.warn({ kind, absoluteOffset, end }, "Retrying desktop installer stream from offset");
+            recordDownloadInterruption({ kind, absoluteOffset, retryFailed: false });
             try {
               const retryObj = await openDesktopInstallerStream(kind, { start: absoluteOffset, end });
               if (retryObj && !res.writableEnded) {
@@ -188,8 +190,15 @@ function serveInstaller(
                 return;
               }
             } catch (retryErr) {
+              // openDesktopInstallerStream threw synchronously — record this as a
+              // retry failure so the health panel counts it correctly.
               logger.error({ err: retryErr, kind }, "Desktop installer stream retry failed");
+              recordDownloadInterruption({ kind, absoluteOffset, retryFailed: true });
             }
+          } else if (retried) {
+            // The retry stream opened successfully but later errored — this is the
+            // second-failure path. Record it as a retry failure.
+            recordDownloadInterruption({ kind, absoluteOffset, retryFailed: true });
           }
           if (!res.writableEnded) {
             res.destroy(err);

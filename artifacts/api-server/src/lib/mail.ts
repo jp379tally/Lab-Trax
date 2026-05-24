@@ -678,6 +678,62 @@ export async function sendOneDriveReconnectedAlertEmail(
   }
 }
 
+export interface DownloadInterruptionAlertParams {
+  adminEmails: string[];
+  retryFailCount: number;
+  totalCount: number;
+  windowHours: number;
+  threshold: number;
+  lastOccurredAt: string;
+}
+
+export async function sendDownloadInterruptionAlertEmail(
+  params: DownloadInterruptionAlertParams,
+): Promise<void> {
+  if (params.adminEmails.length === 0) return;
+
+  const settingsUrl = `${getAppBaseUrl()}/desktop/settings`;
+  const dateStr = params.lastOccurredAt.slice(0, 10);
+  const subject = `LabTrax — Download interruptions detected (${dateStr})`;
+  const lastLabel = (() => {
+    const ms = new Date(params.lastOccurredAt).getTime();
+    return isNaN(ms) ? params.lastOccurredAt : new Date(ms).toUTCString();
+  })();
+
+  const html = `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+    <div style="background: #b45309; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+      <h2 style="margin: 0;">LabTrax</h2>
+      <p style="margin: 4px 0 0; opacity: 0.9;">Desktop installer download interruptions detected</p>
+    </div>
+    <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
+      <div style="background:#fffbeb;border-left:4px solid #b45309;padding:12px 16px;border-radius:4px;margin-bottom:16px;">
+        <strong>${escapeHtml(String(params.retryFailCount))} retry failure${params.retryFailCount !== 1 ? "s" : ""}</strong> (threshold: ${escapeHtml(String(params.threshold))}) and
+        <strong>${escapeHtml(String(params.totalCount))} total interruption${params.totalCount !== 1 ? "s" : ""}</strong> in the past ${escapeHtml(String(params.windowHours))} hours.
+        This may indicate App Storage instability or network issues between the server and GCS.
+      </div>
+      <table style="border-collapse:collapse;width:100%;font-size:14px;">
+        <tr style="background:#f5f5f5;"><td style="padding:8px 12px;font-weight:bold;">Retry failures (24 h)</td><td style="padding:8px 12px;">${escapeHtml(String(params.retryFailCount))}</td></tr>
+        <tr><td style="padding:8px 12px;font-weight:bold;">Total interruptions (24 h)</td><td style="padding:8px 12px;">${escapeHtml(String(params.totalCount))}</td></tr>
+        <tr style="background:#f5f5f5;"><td style="padding:8px 12px;font-weight:bold;">Alert threshold</td><td style="padding:8px 12px;">${escapeHtml(String(params.threshold))} retry failures</td></tr>
+        <tr><td style="padding:8px 12px;font-weight:bold;">Last occurrence</td><td style="padding:8px 12px;">${escapeHtml(lastLabel)}</td></tr>
+      </table>
+      <p style="font-size: 13px; color: #555; margin-top: 16px;">
+        A download interruption means a GCS stream dropped mid-transfer. LabTrax retried automatically — a retry failure means the second stream also failed and the client received a truncated response. Clients can resume with a Range request.
+      </p>
+      <p style="text-align: center; margin: 24px 0;">
+        <a href="${settingsUrl}?tab=desktop" style="display: inline-block; background: #b45309; color: white; padding: 12px 32px; border-radius: 8px; text-decoration: none; font-weight: bold;">Review in Settings →</a>
+      </p>
+      <p style="color: #888; font-size: 12px;">You can adjust the alert threshold with the DOWNLOAD_INTERRUPTION_ALERT_THRESHOLD environment variable (default: 3). This alert is suppressed for 1 hour after the first send at the same failure count.</p>
+    </div>
+  </div>`;
+
+  const text = `LabTrax — Desktop installer download interruptions\n\n${params.retryFailCount} retry failure(s) and ${params.totalCount} total interruption(s) detected in the past ${params.windowHours} hours. Alert threshold: ${params.threshold}.\n\nLast occurrence: ${lastLabel}\n\nReview at: ${settingsUrl}?tab=desktop\n\nThis alert is suppressed for 1 hour after the first send at the same failure count.`;
+
+  for (const email of params.adminEmails) {
+    await sendMail({ to: email, subject, html, text });
+  }
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
