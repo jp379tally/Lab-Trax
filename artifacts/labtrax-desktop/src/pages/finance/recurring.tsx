@@ -5,6 +5,23 @@ import { apiFetch } from "@/lib/api";
 import { FinanceShell } from "@/components/finance/FinanceShell";
 import type { BankAccount, RecurringRule, TransactionCategory } from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
+import { useColumnWidths } from "@/hooks/useColumnWidths";
+
+// 10 resizable columns: Name, Account, Payee, Category, Direction, Day, Amount, Last gen., Next run, Status
+const RECURRING_COL_DEFAULTS = [160, 140, 140, 120, 90, 70, 90, 100, 100, 90] as const;
+const RECURRING_FIXED_ACTIONS = 128;
+const RECURRING_COL_LABELS = [
+  "Name",
+  "Account",
+  "Payee",
+  "Category",
+  "Direction",
+  "Day",
+  "Amount",
+  "Last gen.",
+  "Next run",
+  "Status",
+] as const;
 
 export default function RecurringPage() {
   return (
@@ -26,6 +43,9 @@ function Recurring({
   const qc = useQueryClient();
   const [editing, setEditing] = useState<RecurringRule | "new" | null>(null);
   const [genResult, setGenResult] = useState<string | null>(null);
+
+  const { widths: colWidths, totalWidth: colTotalWidth, resizingCol, startResize, resetColumn } =
+    useColumnWidths([...RECURRING_COL_DEFAULTS], "labtrax_recurring_col_widths_v1");
 
   const rules = useQuery({
     queryKey: ["finance", "recurring", organizationId],
@@ -126,107 +146,156 @@ function Recurring({
       </div>
 
       <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
-              <th className="text-left font-medium px-4 py-2">Name</th>
-              <th className="text-left font-medium py-2">Account</th>
-              <th className="text-left font-medium py-2">Payee</th>
-              <th className="text-left font-medium py-2">Category</th>
-              <th className="text-left font-medium py-2">Direction</th>
-              <th className="text-left font-medium py-2">Day</th>
-              <th className="text-right font-medium py-2">Amount</th>
-              <th className="text-left font-medium py-2">Last gen.</th>
-              <th className="text-left font-medium py-2">Next run</th>
-              <th className="text-left font-medium py-2">Status</th>
-              <th className="px-2 py-2 w-32" />
-            </tr>
-          </thead>
-          <tbody>
-            {(rules.data || []).map((r) => (
-              <tr
-                key={r.id}
-                onClick={() => setEditing(r)}
-                className="border-t border-border cursor-pointer hover:bg-secondary/30"
-              >
-                <td className="px-4 py-2.5 font-medium">{r.name}</td>
-                <td className="py-2.5">{acctNameById.get(r.bankAccountId) || "—"}</td>
-                <td className="py-2.5">{r.payee || "—"}</td>
-                <td className="py-2.5 text-muted-foreground">
-                  {r.categoryId ? catNameById.get(r.categoryId) || "—" : "—"}
-                </td>
-                <td className="py-2.5 capitalize">{r.direction}</td>
-                <td className="py-2.5">Day {r.dayOfMonth}</td>
-                <td className="py-2.5 text-right tabular-nums">
-                  {r.amount != null
-                    ? formatMoney(r.amount)
-                    : <span className="text-muted-foreground italic">avg</span>}
-                </td>
-                <td className="py-2.5 text-muted-foreground">
-                  {r.lastGeneratedFor || "—"}
-                </td>
-                <td className="py-2.5 text-muted-foreground">
-                  {r.isActive ? computeNextRun(r) : "—"}
-                </td>
-                <td className="py-2.5">
-                  {r.isActive ? (
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-700 dark:text-emerald-400">
-                      Active
-                    </span>
-                  ) : (
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-secondary text-muted-foreground">
-                      Paused
-                    </span>
-                  )}
-                </td>
-                <td
-                  className="px-2 py-2.5"
-                  onClick={(e) => e.stopPropagation()}
+        <div className="overflow-x-auto relative">
+          {resizingCol !== null && (
+            <div
+              className="bg-primary/50 pointer-events-none absolute top-0 bottom-0 z-10"
+              style={{
+                left:
+                  colWidths.slice(0, resizingCol + 1).reduce((a, b) => a + b, 0) - 1,
+                width: 2,
+              }}
+            />
+          )}
+          <table
+            className="text-sm"
+            style={{
+              tableLayout: "fixed",
+              width: colTotalWidth + RECURRING_FIXED_ACTIONS,
+              userSelect: "none",
+            }}
+          >
+            <colgroup>
+              {colWidths.map((w, i) => (
+                <col key={i} style={{ width: w }} />
+              ))}
+              <col style={{ width: RECURRING_FIXED_ACTIONS }} />
+            </colgroup>
+            <thead>
+              <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
+                {RECURRING_COL_LABELS.map((label, i) => {
+                  const isAmount = i === 6;
+                  return (
+                    <th
+                      key={label}
+                      className={`font-medium py-2 relative px-3${i === 0 ? " pl-4" : ""}${isAmount ? " text-right" : " text-left"}`}
+                      style={{ overflow: "hidden" }}
+                    >
+                      {label}
+                      <div
+                        onMouseDown={(e) => startResize(i, e)}
+                        onDoubleClick={() => resetColumn(i)}
+                        className="group/resize"
+                        style={{
+                          position: "absolute",
+                          top: 0,
+                          right: 0,
+                          width: 6,
+                          height: "100%",
+                          cursor: "col-resize",
+                          userSelect: "none",
+                          display: "flex",
+                          alignItems: "stretch",
+                          justifyContent: "flex-end",
+                        }}
+                      >
+                        <span
+                          className={`w-0.5 transition-colors duration-100 ${resizingCol === i ? "bg-primary" : "bg-border/60 group-hover/resize:bg-primary/50"}`}
+                          style={{ display: "block", height: "100%" }}
+                        />
+                      </div>
+                    </th>
+                  );
+                })}
+                <th className="px-2 py-2" />
+              </tr>
+            </thead>
+            <tbody>
+              {(rules.data || []).map((r) => (
+                <tr
+                  key={r.id}
+                  onClick={() => setEditing(r)}
+                  className="border-t border-border cursor-pointer hover:bg-secondary/30"
                 >
-                  <div className="flex items-center justify-end gap-1">
-                    <button
-                      type="button"
-                      title="Post next entry now"
-                      disabled={!r.isActive || postNext.isPending}
-                      onClick={() => postNext.mutate(r.id)}
-                      className="h-7 w-7 rounded hover:bg-secondary text-muted-foreground hover:text-primary flex items-center justify-center disabled:opacity-40"
-                    >
-                      <Send size={13} />
-                    </button>
-                    <button
-                      type="button"
-                      title={r.isActive ? "Pause" : "Resume"}
-                      onClick={() =>
-                        togglePause.mutate({ id: r.id, isActive: !r.isActive })
-                      }
-                      className="h-7 w-7 rounded hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center"
-                    >
-                      {r.isActive ? <Pause size={13} /> : <Play size={13} />}
-                    </button>
-                    <button
-                      type="button"
-                      title="Delete"
-                      onClick={() => {
-                        if (confirm(`Delete recurring rule "${r.name}"?`))
-                          deleteMut.mutate(r.id);
-                      }}
-                      className="h-7 w-7 rounded hover:bg-secondary text-muted-foreground hover:text-destructive flex items-center justify-center"
-                    >
-                      <Trash2 size={13} />
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-            {!rules.data?.length && (
-              <tr>
-                <td colSpan={11} className="px-4 py-12 text-center text-muted-foreground">
-                  No recurring rules yet.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+                  <td className="pl-4 pr-3 py-2.5 font-medium truncate">{r.name}</td>
+                  <td className="px-3 py-2.5 truncate">{acctNameById.get(r.bankAccountId) || "—"}</td>
+                  <td className="px-3 py-2.5 truncate">{r.payee || "—"}</td>
+                  <td className="px-3 py-2.5 text-muted-foreground truncate">
+                    {r.categoryId ? catNameById.get(r.categoryId) || "—" : "—"}
+                  </td>
+                  <td className="px-3 py-2.5 capitalize truncate">{r.direction}</td>
+                  <td className="px-3 py-2.5 truncate">Day {r.dayOfMonth}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums truncate">
+                    {r.amount != null
+                      ? formatMoney(r.amount)
+                      : <span className="text-muted-foreground italic">avg</span>}
+                  </td>
+                  <td className="px-3 py-2.5 text-muted-foreground truncate">
+                    {r.lastGeneratedFor || "—"}
+                  </td>
+                  <td className="px-3 py-2.5 text-muted-foreground truncate">
+                    {r.isActive ? computeNextRun(r) : "—"}
+                  </td>
+                  <td className="px-3 py-2.5 truncate">
+                    {r.isActive ? (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-700 dark:text-emerald-400">
+                        Active
+                      </span>
+                    ) : (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-secondary text-muted-foreground">
+                        Paused
+                      </span>
+                    )}
+                  </td>
+                  <td
+                    className="px-2 py-2.5"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="flex items-center justify-end gap-1">
+                      <button
+                        type="button"
+                        title="Post next entry now"
+                        disabled={!r.isActive || postNext.isPending}
+                        onClick={() => postNext.mutate(r.id)}
+                        className="h-7 w-7 rounded hover:bg-secondary text-muted-foreground hover:text-primary flex items-center justify-center disabled:opacity-40"
+                      >
+                        <Send size={13} />
+                      </button>
+                      <button
+                        type="button"
+                        title={r.isActive ? "Pause" : "Resume"}
+                        onClick={() =>
+                          togglePause.mutate({ id: r.id, isActive: !r.isActive })
+                        }
+                        className="h-7 w-7 rounded hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center"
+                      >
+                        {r.isActive ? <Pause size={13} /> : <Play size={13} />}
+                      </button>
+                      <button
+                        type="button"
+                        title="Delete"
+                        onClick={() => {
+                          if (confirm(`Delete recurring rule "${r.name}"?`))
+                            deleteMut.mutate(r.id);
+                        }}
+                        className="h-7 w-7 rounded hover:bg-secondary text-muted-foreground hover:text-destructive flex items-center justify-center"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {!rules.data?.length && (
+                <tr>
+                  <td colSpan={11} className="px-4 py-12 text-center text-muted-foreground">
+                    No recurring rules yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {editing && (
