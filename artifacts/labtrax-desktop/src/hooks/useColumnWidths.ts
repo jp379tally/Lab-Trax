@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-const STORAGE_KEY = "labtrax_invoice_col_widths_v1";
+const DEFAULT_STORAGE_KEY = "labtrax_invoice_col_widths_v1";
 const MIN_WIDTH = 48;
 
 export type UseColumnWidths = {
@@ -10,10 +10,13 @@ export type UseColumnWidths = {
   resetColumn: (colIdx: number) => void;
 };
 
-export function useColumnWidths(defaults: number[]): UseColumnWidths {
+export function useColumnWidths(
+  defaults: number[],
+  storageKey: string = DEFAULT_STORAGE_KEY,
+): UseColumnWidths {
   const [widths, setWidths] = useState<number[]>(() => {
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
+      const stored = localStorage.getItem(storageKey);
       if (stored) {
         const parsed = JSON.parse(stored) as unknown;
         if (
@@ -32,16 +35,19 @@ export function useColumnWidths(defaults: number[]): UseColumnWidths {
 
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const persist = useCallback((next: number[]) => {
-    if (debounceTimer.current !== null) clearTimeout(debounceTimer.current);
-    debounceTimer.current = setTimeout(() => {
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-      } catch {
-        // ignore
-      }
-    }, 150);
-  }, []);
+  const persist = useCallback(
+    (next: number[]) => {
+      if (debounceTimer.current !== null) clearTimeout(debounceTimer.current);
+      debounceTimer.current = setTimeout(() => {
+        try {
+          localStorage.setItem(storageKey, JSON.stringify(next));
+        } catch {
+          // ignore
+        }
+      }, 150);
+    },
+    [storageKey],
+  );
 
   useEffect(() => {
     return () => {

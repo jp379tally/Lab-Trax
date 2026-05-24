@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useColumnWidths } from "@/hooks/useColumnWidths";
 import { useLocation } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -929,6 +930,10 @@ export default function CasesPage() {
   const [sortDir, setSortDir] = useState<"asc" | "desc">(initialFilters.current.sortDir);
   const [selected, setSelected] = useState<LabCase | null>(null);
   const [showNewCase, setShowNewCase] = useState(false);
+
+  const CASES_COL_DEFAULTS = [120, 100, 160, 140, 140, 120, 100, 90, 130, 100, 90] as const;
+  const { widths: caseColWidths, startResize: startCaseResize, resetColumn: resetCaseColumn } =
+    useColumnWidths([...CASES_COL_DEFAULTS], "labtrax_cases_col_widths_v1");
   const [iteroActiveBatch, setIteroActiveBatch] = useState<{ batchId: string; caseIds: string[]; importedAt: string; label: string } | null>(null);
   const pageRef = useRef<HTMLDivElement>(null);
   const scrollRestoredRef = useRef(false);
@@ -1221,20 +1226,48 @@ export default function CasesPage() {
           )}
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="text-sm" style={{ width: caseColWidths.reduce((a, b) => a + b, 0), tableLayout: "fixed" }}>
+            <colgroup>
+              {caseColWidths.map((w, i) => (
+                <col key={i} style={{ width: w }} />
+              ))}
+            </colgroup>
             <thead>
               <tr className="bg-secondary/40">
-                <th className="text-left px-5 py-2.5"><SortHeader k="createdAt">Created</SortHeader></th>
-                <th className="text-left py-2.5"><SortHeader k="caseNumber">Case #</SortHeader></th>
-                <th className="text-left py-2.5">Patient</th>
-                <th className="text-left py-2.5"><SortHeader k="doctorName">Doctor</SortHeader></th>
-                <th className="text-left py-2.5">Type</th>
-                <th className="text-left py-2.5">Material</th>
-                <th className="text-left py-2.5">Teeth</th>
-                <th className="text-left py-2.5">Priority</th>
-                <th className="text-left py-2.5"><SortHeader k="status">Status</SortHeader></th>
-                <th className="text-left py-2.5"><SortHeader k="dueDate">Due</SortHeader></th>
-                <th className="text-right py-2.5"><SortHeader k="totalPrice">Price</SortHeader></th>
+                {([
+                  { label: <SortHeader k="createdAt">Created</SortHeader>, align: "left" },
+                  { label: <SortHeader k="caseNumber">Case #</SortHeader>, align: "left" },
+                  { label: "Patient", align: "left" },
+                  { label: <SortHeader k="doctorName">Doctor</SortHeader>, align: "left" },
+                  { label: "Type", align: "left" },
+                  { label: "Material", align: "left" },
+                  { label: "Teeth", align: "left" },
+                  { label: "Priority", align: "left" },
+                  { label: <SortHeader k="status">Status</SortHeader>, align: "left" },
+                  { label: <SortHeader k="dueDate">Due</SortHeader>, align: "left" },
+                  { label: <SortHeader k="totalPrice">Price</SortHeader>, align: "right" },
+                ] as const).map((col, i) => (
+                  <th
+                    key={i}
+                    className={`${col.align === "right" ? "text-right" : "text-left"} ${i === 0 ? "px-5" : ""} py-2.5 relative`}
+                    style={{ overflow: "hidden" }}
+                  >
+                    {col.label}
+                    <div
+                      onMouseDown={(e) => startCaseResize(i, e)}
+                      onDoubleClick={() => resetCaseColumn(i)}
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        right: 0,
+                        width: 6,
+                        height: "100%",
+                        cursor: "col-resize",
+                        userSelect: "none",
+                      }}
+                    />
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
