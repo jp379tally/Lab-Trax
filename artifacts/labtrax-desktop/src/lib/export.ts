@@ -5,6 +5,17 @@ import {
   DEFAULT_INVOICE_TEMPLATE,
   type InvoiceTemplate,
 } from "./invoice-template";
+import {
+  coerceStatementTemplate,
+  DEFAULT_STATEMENT_TEMPLATE,
+  type StatementTemplate,
+} from "./statement-template";
+import {
+  coerceCorrespondenceTemplate,
+  DEFAULT_CORRESPONDENCE_TEMPLATE,
+  resolveMergeFields,
+  type CorrespondenceTemplate,
+} from "./correspondence-template";
 
 export function downloadCsv(filename: string, rows: Array<Record<string, string | number | null | undefined>>) {
   if (rows.length === 0) {
@@ -69,6 +80,14 @@ export interface StatementPdfOptions {
     patientName?: string | null;
     billTo?: string | null;
   }>;
+  /** Full URL of the lab logo; shown when provided. */
+  logoUrl?: string | null;
+  /** Per-lab visual statement template. Null/undefined uses the built-in default. */
+  template?: StatementTemplate | null;
+  /** Map of extraImage.url → data-URL bytes. */
+  extraImageDataUrls?: Record<string, string>;
+  /** Lab name for the header fallback when no logo is available. */
+  labName?: string;
 }
 
 function fmtMoney(n: number | string): string {
@@ -593,6 +612,287 @@ function fmtDate(value?: string | null): string {
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return "";
   return d.toLocaleDateString("en-US");
+}
+
+// ── Template-aware statement PDF ─────────────────────────────────────────────
+
+/**
+ * Builds a statement PDF using the per-lab template layout.
+ * Returns true when the preview window opened successfully.
+ */
+export function previewStatementLayoutPdf(opts: StatementPdfOptions): boolean {
+  const tpl = coerceStatementTemplate(opts.template ?? null);
+  const doc = new jsPDF({ unit: "pt", format: "letter" });
+  const pageWidth = doc.internal.pageSize.getWidth();
+
+  // ── Logo ────────────────────────────────────────────────────────────────────
+  const extraImageDataUrls = opts.extraImageDataUrls ?? {};
+  if (opts.logoUrl) {
+    const logoData = extraImageDataUrls[opts.logoUrl] ?? null;
+    if (logoData) {
+      const logo = tpl.logo;
+      if (logo.mode === "watermark") {
+        const currentOpacity = (doc as any).internal?.getCurrentPageInfo?.()?.pageContext?.globalAlpha;
+        (doc as any).setGState?.(new (doc as any).GState({ opacity: logo.opacity }));
+        doc.addImage(logoData, "PNG", logo.x, logo.y, logo.w, logo.h);
+        if (currentOpacity !== undefined) {
+          (doc as any).setGState?.(new (doc as any).GState({ opacity: 1 }));
+        }
+      } else {
+        doc.addImage(logoData, "PNG", logo.x, logo.y, logo.w, logo.h);
+      }
+    }
+  }
+
+  // ── Extra images ─────────────────────────────────────────────────────────────
+  for (const img of tpl.extraImages) {
+    const data = extraImageDataUrls[img.url];
+    if (!data) continue;
+    try {
+      (doc as any).setGState?.(new (doc as any).GState({ opacity: img.opacity }));
+      doc.addImage(data, "PNG", img.x, img.y, img.w, img.h);
+      (doc as any).setGState?.(new (doc as any).GState({ opacity: 1 }));
+    } catch { /* skip */ }
+  }
+
+  // ── Custom / default text blocks ─────────────────────────────────────────────
+  for (const tb of tpl.customTexts) {
+    if (!tb.text?.trim()) continue;
+    doc.setFontSize(tb.fontSize);
+    doc.setFont("helvetica", tb.bold ? "bold" : "normal");
+    doc.setTextColor(0);
+    const lines = doc.splitTextToSize(tb.text, tb.w);
+    doc.text(lines, tb.align === "right" ? tb.x + tb.w : tb.align === "center" ? tb.x + tb.w / 2 : tb.x, tb.y + tb.fontSize, { align: tb.align });
+  }
+
+  // ── Statement header section ─────────────────────────────────────────────────
+  const sh = tpl.boxes.stmtHeader;
+  doc.setFontSize(18);
+  doc.setFont("helvetica", "bold");
+  doc.setTextColor(0);
+  doc.text("Statement", sh.x, sh.y + 22);
+  doc.setFontSize(11);
+  doc.setFont("helvetica", "normal");
+  doc.text(opts.practiceName, sh.x, sh.y + 40);
+
+  // ── Practice info section ────────────────────────────────────────────────────
+  const pi = tpl.boxes.practiceInfo;
+  doc.setFontSize(9);
+  doc.setTextColor(120);
+  doc.text(`Generated ${opts.generatedAt.toLocaleString("en-US")}`, pi.x, pi.y + 14);
+  if (opts.filtersDescription) {
+    doc.text(opts.filtersDescription, pi.x, pi.y + 28);
+  }
+  doc.setTextColor(0);
+
+  // ── Balance summary ──────────────────────────────────────────────────────────
+  const bs = tpl.boxes.balanceSummary;
+  const cols = 4;
+  const colW = bs.w / cols;
+  const summary: Array<[string, string]> = [
+    ["Billed", fmtMoney(opts.totals.billed)],
+    ["Paid", fmtMoney(opts.totals.paid)],
+    ["Open balance", fmtMoney(opts.totals.open)],
+    ["Overdue", fmtMoney(opts.totals.overdue)],
+  ];
+  summary.forEach(([label, value], i) => {
+    const x = bs.x + colW * i;
+    doc.setDrawColor(220);
+    doc.setFillColor(248, 248, 250);
+    doc.roundedRect(x, bs.y, colW - 8, bs.h, 4, 4, "FD");
+    doc.setFontSize(8);
+    doc.setTextColor(120);
+    doc.text(label.toUpperCase(), x + 10, bs.y + 18);
+    doc.setFontSize(13);
+    doc.setTextColor(0);
+    doc.setFont("helvetica", "bold");
+    doc.text(value, x + 10, bs.y + bs.h - 10);
+    doc.setFont("helvetica", "normal");
+  });
+
+  // ── Transaction table ────────────────────────────────────────────────────────
+  const tx = tpl.boxes.transactions;
+  autoTable(doc, {
+    startY: tx.y,
+    head: [["Invoice", "Patient", "Issued", "Due", "Status", "Total", "Open"]],
+    body: opts.invoices.map((inv) => {
+      const patient = (inv.patientName && inv.patientName.trim()) || "—";
+      const billTo = inv.billTo && inv.billTo.trim() ? inv.billTo.trim() : "";
+      const invoiceCell = billTo && billTo !== opts.practiceName ? `${inv.invoiceNumber}\nBill to: ${billTo}` : inv.invoiceNumber;
+      return [invoiceCell, patient, fmtDate(inv.issuedAt), fmtDate(inv.dueAt), inv.status, fmtMoney(inv.total), Number(inv.balanceDue) > 0 ? fmtMoney(inv.balanceDue) : "—"];
+    }),
+    styles: { fontSize: 9, cellPadding: 6, valign: "top" },
+    headStyles: { fillColor: [40, 44, 52], textColor: 255 },
+    columnStyles: { 5: { halign: "right" }, 6: { halign: "right" } },
+    margin: { left: tx.x, right: pageWidth - (tx.x + tx.w) },
+  });
+
+  // ── Aging summary ────────────────────────────────────────────────────────────
+  const ag = tpl.boxes.aging;
+  doc.setFontSize(8);
+  doc.setTextColor(120);
+  doc.text("AGING SUMMARY", ag.x, ag.y + 14);
+  doc.setFontSize(9);
+  doc.setTextColor(0);
+  const agingCols = ["Current", "1–30 days", "31–60 days", "61–90 days", "90+ days"];
+  const agingW = ag.w / agingCols.length;
+  agingCols.forEach((label, i) => {
+    const x = ag.x + agingW * i;
+    doc.setFontSize(8);
+    doc.setTextColor(120);
+    doc.text(label, x, ag.y + 28);
+    doc.setFontSize(10);
+    doc.setTextColor(0);
+    doc.text("—", x, ag.y + 44);
+  });
+
+  // ── Totals ───────────────────────────────────────────────────────────────────
+  const tt = tpl.boxes.totals;
+  let ty = tt.y + 14;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  doc.setTextColor(0);
+  doc.text("Total billed", tt.x, ty);
+  doc.text(fmtMoney(opts.totals.billed), tt.x + tt.w, ty, { align: "right" });
+  ty += 16;
+  doc.text("Total paid", tt.x, ty);
+  doc.text(fmtMoney(opts.totals.paid), tt.x + tt.w, ty, { align: "right" });
+  ty += 2;
+  doc.setDrawColor(220);
+  doc.line(tt.x, ty, tt.x + tt.w, ty);
+  ty += 14;
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(11);
+  doc.text("Balance due", tt.x, ty);
+  doc.text(fmtMoney(opts.totals.open), tt.x + tt.w, ty, { align: "right" });
+  doc.setFont("helvetica", "normal");
+
+  // ── Footer / notes ───────────────────────────────────────────────────────────
+  const ft = tpl.boxes.footer;
+  doc.setFontSize(8);
+  doc.setTextColor(120);
+  doc.text("Thank you for your business.", ft.x, ft.y + 14);
+
+  doc.output("dataurlnewwindow", { filename: "statement-preview.pdf" });
+  return true;
+}
+
+// ── Correspondence PDF ────────────────────────────────────────────────────────
+
+export interface CorrespondencePdfOptions {
+  labName: string;
+  practiceName: string;
+  patientName?: string;
+  balance?: string;
+  dueDate?: string;
+  invoiceNumber?: string;
+  date: string;
+  generatedAt: Date;
+  logoUrl?: string | null;
+  template?: CorrespondenceTemplate | null;
+  extraImageDataUrls?: Record<string, string>;
+}
+
+export function previewCorrespondencePdf(opts: CorrespondencePdfOptions): boolean {
+  const tpl = coerceCorrespondenceTemplate(opts.template ?? null);
+  const doc = new jsPDF({ unit: "pt", format: "letter" });
+  const extraImageDataUrls = opts.extraImageDataUrls ?? {};
+
+  // ── Logo ─────────────────────────────────────────────────────────────────────
+  if (opts.logoUrl) {
+    const logoData = extraImageDataUrls[opts.logoUrl] ?? null;
+    if (logoData) {
+      const logo = tpl.logo;
+      if (logo.mode === "watermark") {
+        (doc as any).setGState?.(new (doc as any).GState({ opacity: logo.opacity }));
+        doc.addImage(logoData, "PNG", logo.x, logo.y, logo.w, logo.h);
+        (doc as any).setGState?.(new (doc as any).GState({ opacity: 1 }));
+      } else {
+        doc.addImage(logoData, "PNG", logo.x, logo.y, logo.w, logo.h);
+      }
+    }
+  }
+
+  // ── Extra images ─────────────────────────────────────────────────────────────
+  for (const img of tpl.extraImages) {
+    const data = extraImageDataUrls[img.url];
+    if (!data) continue;
+    try {
+      (doc as any).setGState?.(new (doc as any).GState({ opacity: img.opacity }));
+      doc.addImage(data, "PNG", img.x, img.y, img.w, img.h);
+      (doc as any).setGState?.(new (doc as any).GState({ opacity: 1 }));
+    } catch { /* skip */ }
+  }
+
+  // ── Custom text blocks ────────────────────────────────────────────────────────
+  for (const tb of tpl.customTexts) {
+    if (!tb.text?.trim()) continue;
+    doc.setFontSize(tb.fontSize);
+    doc.setFont("helvetica", tb.bold ? "bold" : "normal");
+    doc.setTextColor(0);
+    const lines = doc.splitTextToSize(tb.text, tb.w);
+    doc.text(lines, tb.align === "right" ? tb.x + tb.w : tb.align === "center" ? tb.x + tb.w / 2 : tb.x, tb.y + tb.fontSize, { align: tb.align });
+  }
+
+  const mergeCtx = {
+    practiceName: opts.practiceName,
+    patientName: opts.patientName,
+    balance: opts.balance,
+    dueDate: opts.dueDate,
+    labName: opts.labName,
+    date: opts.date,
+    invoiceNumber: opts.invoiceNumber,
+  };
+
+  // ── Letter header ─────────────────────────────────────────────────────────────
+  const lh = tpl.boxes.letterHeader;
+  doc.setFontSize(14);
+  doc.setFont("helvetica", "bold");
+  doc.setTextColor(0);
+  doc.text(opts.labName, lh.x, lh.y + 20);
+  doc.setFontSize(10);
+  doc.setFont("helvetica", "normal");
+
+  // ── Date block ────────────────────────────────────────────────────────────────
+  const db = tpl.boxes.dateBlock;
+  doc.setFontSize(10);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(0);
+  doc.text(opts.date, db.x, db.y + 14);
+
+  // ── Recipient block ───────────────────────────────────────────────────────────
+  const rb = tpl.boxes.recipientBlock;
+  doc.setFontSize(10);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(0);
+  doc.text(opts.practiceName, rb.x, rb.y + 14);
+  if (opts.patientName) {
+    doc.setFontSize(9);
+    doc.setTextColor(120);
+    doc.text(`RE: Patient ${opts.patientName}`, rb.x, rb.y + 30);
+    doc.setTextColor(0);
+  }
+
+  // ── Body block ────────────────────────────────────────────────────────────────
+  const bb = tpl.boxes.bodyBlock;
+  const resolvedBody = resolveMergeFields(tpl.bodyText, mergeCtx);
+  doc.setFontSize(10);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(0);
+  const bodyLines = doc.splitTextToSize(resolvedBody, bb.w);
+  doc.text(bodyLines, bb.x, bb.y + 14);
+
+  // ── Closing block ─────────────────────────────────────────────────────────────
+  const cb = tpl.boxes.closingBlock;
+  const resolvedClosing = resolveMergeFields(tpl.closingText, mergeCtx);
+  doc.setFontSize(10);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(0);
+  const closingLines = doc.splitTextToSize(resolvedClosing, cb.w);
+  doc.text(closingLines, cb.x, cb.y + 14);
+
+  doc.output("dataurlnewwindow", { filename: "correspondence-preview.pdf" });
+  return true;
 }
 
 function buildStatementDoc(opts: StatementPdfOptions) {

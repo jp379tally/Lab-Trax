@@ -177,6 +177,14 @@ export const organizations = pgTable(
     // Named invoice-template presets (Task templates feature). JSON shape:
     // Array<{id:string, name:string, template:InvoiceTemplate, savedAt:string}>
     invoiceTemplatePresets: jsonb("invoice_template_presets"),
+    // Per-lab visual statement-layout template (Task #906). JSON shape is
+    // defined by `StatementTemplate` in lib/statement-template. Null = use
+    // the built-in default layout.
+    statementTemplate: jsonb("statement_template"),
+    // Per-lab visual correspondence-layout template (Task #906). JSON shape
+    // is defined by `CorrespondenceTemplate` in lib/correspondence-template.
+    // Null = use the built-in default layout.
+    correspondenceTemplate: jsonb("correspondence_template"),
     // Provider organizations are created by a specific lab. We persist the
     // creating lab's id here (nullable for non-provider orgs / legacy rows)
     // so account-number uniqueness can be scoped per lab.

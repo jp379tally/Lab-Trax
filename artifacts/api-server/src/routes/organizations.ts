@@ -14,6 +14,16 @@ import {
   DEFAULT_INVOICE_TEMPLATE,
   invoiceTemplateSchema,
 } from "../lib/invoice-template";
+import {
+  coerceStatementTemplate,
+  DEFAULT_STATEMENT_TEMPLATE,
+  statementTemplateSchema,
+} from "../lib/statement-template";
+import {
+  coerceCorrespondenceTemplate,
+  DEFAULT_CORRESPONDENCE_TEMPLATE,
+  correspondenceTemplateSchema,
+} from "../lib/correspondence-template";
 import { and, eq, inArray, isNotNull, ne } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
@@ -2633,6 +2643,142 @@ router.delete(
     await resolveOrgAdminAccess((req as any).auth.userId, organizationId);
     await deleteInvoiceTemplateImage(organizationId, imageId);
     return ok(res, { deleted: true });
+  })
+);
+
+// ─── Statement template ──────────────────────────────────────────────────────
+
+router.get(
+  "/:organizationId/statement-template",
+  asyncHandler(async (req, res) => {
+    const { organizationId } = req.params;
+    await resolveOrgReadAccess((req as any).auth.userId, organizationId);
+    const org = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organizationId),
+    });
+    if (!org) throw new HttpError(404, "Organization not found.");
+    const template = coerceStatementTemplate((org as any).statementTemplate);
+    return ok(res, {
+      template,
+      isCustom: (org as any).statementTemplate != null,
+      defaultTemplate: DEFAULT_STATEMENT_TEMPLATE,
+    });
+  })
+);
+
+router.put(
+  "/:organizationId/statement-template",
+  asyncHandler(async (req, res) => {
+    const { organizationId } = req.params;
+    await resolveOrgAdminAccess((req as any).auth.userId, organizationId);
+
+    const body = req.body as { template?: unknown };
+    let toStore: unknown = null;
+    if (body && body.template !== null && body.template !== undefined) {
+      const parsed = statementTemplateSchema.safeParse(body.template);
+      if (!parsed.success) {
+        throw new HttpError(
+          400,
+          `Invalid statement template: ${parsed.error.message}`,
+        );
+      }
+      toStore = parsed.data;
+    }
+
+    const existing = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organizationId),
+    });
+    if (!existing) throw new HttpError(404, "Organization not found.");
+
+    const [updated] = await db
+      .update(organizations)
+      .set({ statementTemplate: toStore as any, updatedAt: new Date() } as any)
+      .where(eq(organizations.id, organizationId))
+      .returning();
+
+    await writeAuditLog({
+      req,
+      labId: organizationId,
+      action: "organization_statement_template_updated",
+      entityType: "organization",
+      entityId: organizationId,
+      beforeJson: { statementTemplate: (existing as any).statementTemplate ?? null },
+      afterJson: { statementTemplate: toStore },
+    });
+
+    return ok(res, {
+      template: coerceStatementTemplate((updated as any).statementTemplate),
+      isCustom: (updated as any).statementTemplate != null,
+      defaultTemplate: DEFAULT_STATEMENT_TEMPLATE,
+    });
+  })
+);
+
+// ─── Correspondence template ─────────────────────────────────────────────────
+
+router.get(
+  "/:organizationId/correspondence-template",
+  asyncHandler(async (req, res) => {
+    const { organizationId } = req.params;
+    await resolveOrgReadAccess((req as any).auth.userId, organizationId);
+    const org = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organizationId),
+    });
+    if (!org) throw new HttpError(404, "Organization not found.");
+    const template = coerceCorrespondenceTemplate((org as any).correspondenceTemplate);
+    return ok(res, {
+      template,
+      isCustom: (org as any).correspondenceTemplate != null,
+      defaultTemplate: DEFAULT_CORRESPONDENCE_TEMPLATE,
+    });
+  })
+);
+
+router.put(
+  "/:organizationId/correspondence-template",
+  asyncHandler(async (req, res) => {
+    const { organizationId } = req.params;
+    await resolveOrgAdminAccess((req as any).auth.userId, organizationId);
+
+    const body = req.body as { template?: unknown };
+    let toStore: unknown = null;
+    if (body && body.template !== null && body.template !== undefined) {
+      const parsed = correspondenceTemplateSchema.safeParse(body.template);
+      if (!parsed.success) {
+        throw new HttpError(
+          400,
+          `Invalid correspondence template: ${parsed.error.message}`,
+        );
+      }
+      toStore = parsed.data;
+    }
+
+    const existing = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organizationId),
+    });
+    if (!existing) throw new HttpError(404, "Organization not found.");
+
+    const [updated] = await db
+      .update(organizations)
+      .set({ correspondenceTemplate: toStore as any, updatedAt: new Date() } as any)
+      .where(eq(organizations.id, organizationId))
+      .returning();
+
+    await writeAuditLog({
+      req,
+      labId: organizationId,
+      action: "organization_correspondence_template_updated",
+      entityType: "organization",
+      entityId: organizationId,
+      beforeJson: { correspondenceTemplate: (existing as any).correspondenceTemplate ?? null },
+      afterJson: { correspondenceTemplate: toStore },
+    });
+
+    return ok(res, {
+      template: coerceCorrespondenceTemplate((updated as any).correspondenceTemplate),
+      isCustom: (updated as any).correspondenceTemplate != null,
+      defaultTemplate: DEFAULT_CORRESPONDENCE_TEMPLATE,
+    });
   })
 );
 
