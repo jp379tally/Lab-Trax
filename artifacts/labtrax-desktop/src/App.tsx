@@ -29,6 +29,7 @@ import BillingPage from "@/pages/billing";
 import CustomerCenterPage from "@/pages/customer-center";
 import NotFound from "@/pages/not-found";
 import { AppLayout } from "@/components/AppLayout";
+import { OfflineBanner } from "@/components/OfflineBanner";
 
 // Wire the generated react-query hooks (`@workspace/api-client-react`) up
 // to the same bearer-token + base-URL machinery the legacy `apiFetch`
@@ -120,6 +121,7 @@ function Gate() {
   if (status === "anonymous") {
     return (
       <>
+        <OfflineBanner />
         <AuthRestoreBanner />
         <LoginPage />
       </>
@@ -127,6 +129,7 @@ function Gate() {
   }
   return (
     <>
+      <OfflineBanner />
       <AuthRestoreBanner />
       <AuthedRoutes />
     </>

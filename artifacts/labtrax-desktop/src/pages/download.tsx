@@ -86,6 +86,61 @@ export default function DownloadPage() {
         </p>
       </div>
 
+      {/* Install as Web App (PWA) */}
+      <div className="bg-card border border-border rounded-lg p-6 mb-6">
+        <div className="flex items-start gap-5">
+          <div className="shrink-0 h-16 w-16 rounded-xl bg-blue-50 dark:bg-blue-950/30 flex items-center justify-center">
+            <Globe size={32} className="text-blue-600 dark:text-blue-400" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-baseline gap-3 flex-wrap">
+              <h2 className="text-lg font-semibold">Install as Web App</h2>
+              <span className="text-xs font-medium bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 px-2 py-0.5 rounded-full">
+                No download required
+              </span>
+            </div>
+            <p className="text-sm text-muted-foreground mt-1">
+              Use Chrome or Edge to install LabTrax directly from your browser — it opens in its own window just like a native app, with no file download or admin rights needed.
+            </p>
+
+            <div className="mt-4 space-y-3">
+              {[
+                {
+                  step: 1,
+                  title: "Open in Chrome or Edge",
+                  detail: "Make sure you're using Google Chrome or Microsoft Edge on your desktop.",
+                },
+                {
+                  step: 2,
+                  title: 'Look for the install icon in the address bar',
+                  detail: 'A small computer or download icon (⊕) appears at the right end of the address bar when the page is installable.',
+                },
+                {
+                  step: 3,
+                  title: 'Click "Install LabTrax"',
+                  detail: "Click the icon, then confirm in the prompt that appears. LabTrax will be added to your Start Menu, taskbar, and desktop.",
+                },
+              ].map(({ step, title, detail }) => (
+                <div key={step} className="flex gap-3">
+                  <span className="shrink-0 h-6 w-6 rounded-full bg-blue-600 text-white text-xs font-bold flex items-center justify-center">
+                    {step}
+                  </span>
+                  <div>
+                    <div className="text-sm font-medium">{title}</div>
+                    <p className="text-sm text-muted-foreground mt-0.5">{detail}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <p className="mt-4 text-xs text-muted-foreground">
+              The installed web app stays in sync with the latest version automatically — no manual updates needed.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Electron native download */}
       <div className="bg-card border border-border rounded-lg p-6 mb-6">
         <div className="flex items-start gap-5">
           <div className="shrink-0 h-16 w-16 rounded-xl bg-primary/10 flex items-center justify-center">
@@ -223,27 +278,6 @@ export default function DownloadPage() {
             )}
           </div>
         </div>
-      </div>
-
-      <div className="bg-card border border-border rounded-lg p-6 mb-6">
-        <div className="flex items-center gap-2 mb-3">
-          <FileText size={16} className="text-muted-foreground" />
-          <h3 className="text-sm font-semibold">What's new in v{version}</h3>
-        </div>
-        {query.isLoading ? (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Loader2 size={13} className="animate-spin" />
-            Loading release notes…
-          </div>
-        ) : releaseNotes ? (
-          <p className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
-            {releaseNotes}
-          </p>
-        ) : (
-          <p className="text-sm text-muted-foreground italic">
-            Release notes for this version are coming soon.
-          </p>
-        )}
       </div>
 
       <div className="bg-card border border-border rounded-lg divide-y divide-border">
@@ -432,6 +466,27 @@ export default function DownloadPage() {
             )}
           </ul>
         </div>
+      </div>
+
+      <div className="bg-card border border-border rounded-lg p-6 mt-6">
+        <div className="flex items-center gap-2 mb-3">
+          <FileText size={16} className="text-muted-foreground" />
+          <h3 className="text-sm font-semibold">What's new in v{version}</h3>
+        </div>
+        {query.isLoading ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 size={13} className="animate-spin" />
+            Loading release notes…
+          </div>
+        ) : releaseNotes ? (
+          <p className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
+            {releaseNotes}
+          </p>
+        ) : (
+          <p className="text-sm text-muted-foreground italic">
+            Release notes for this version are coming soon.
+          </p>
+        )}
       </div>
     </div>
   );

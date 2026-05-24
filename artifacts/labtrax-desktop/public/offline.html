@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LabTrax — Offline</title>
+    <style>
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #F4F7FB;
+        color: #0F172A;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100dvh;
+        padding: 24px;
+      }
+      .card {
+        background: #fff;
+        border: 1px solid #D9E3EE;
+        border-radius: 12px;
+        padding: 40px 48px;
+        max-width: 420px;
+        width: 100%;
+        text-align: center;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+      }
+      .icon-wrap {
+        width: 64px;
+        height: 64px;
+        background: #EEF4F8;
+        border-radius: 16px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin: 0 auto 20px;
+      }
+      .icon-wrap svg {
+        width: 32px;
+        height: 32px;
+        color: #145DA0;
+      }
+      h1 {
+        font-size: 18px;
+        font-weight: 600;
+        margin-bottom: 8px;
+        letter-spacing: -0.01em;
+      }
+      p {
+        font-size: 14px;
+        color: #64748B;
+        line-height: 1.6;
+        margin-bottom: 24px;
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background: #145DA0;
+        color: #fff;
+        font-size: 14px;
+        font-weight: 500;
+        padding: 10px 20px;
+        border-radius: 6px;
+        border: none;
+        cursor: pointer;
+        text-decoration: none;
+        transition: background 0.15s;
+      }
+      .btn:hover { background: #1167b1; }
+      .logo {
+        font-size: 13px;
+        font-weight: 700;
+        color: #145DA0;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        margin-bottom: 28px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="logo">LabTrax</div>
+      <div class="icon-wrap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="1" y1="1" x2="23" y2="23"/>
+          <path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/>
+          <path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/>
+          <path d="M10.71 5.05A16 16 0 0 1 22.56 9"/>
+          <path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/>
+          <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
+          <line x1="12" y1="20" x2="12.01" y2="20"/>
+        </svg>
+      </div>
+      <h1>You're offline</h1>
+      <p>
+        LabTrax needs a connection to load. Check your internet or network and try again.
+      </p>
+      <button class="btn" onclick="window.location.reload()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
+          <polyline points="23 4 23 10 17 10"/>
+          <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+        </svg>
+        Try again
+      </button>
+    </div>
+  </body>
+</html>
