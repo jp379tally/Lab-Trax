@@ -2007,20 +2007,28 @@ router.get(
 
 // ─── Vendors ──────────────────────────────────────────────────────────────────
 
+const VENDOR_TYPES = ["vendor", "employee", "item"] as const;
+type VendorType = typeof VENDOR_TYPES[number];
+
 router.get(
   "/vendors",
   asyncHandler(async (req, res) => {
-    const { organizationId } = z.object({ organizationId: z.string().min(1) }).parse(req.query);
+    const { organizationId, vendorType, includeInactive } = z.object({
+      organizationId: z.string().min(1),
+      vendorType: z.enum(VENDOR_TYPES).optional(),
+      includeInactive: z.enum(["true", "false"]).transform((v) => v === "true").optional(),
+    }).parse(req.query);
     await requireAnyRole(uid(req), organizationId, BILLING_ROLES);
+    const conditions = [
+      eq(vendors.labOrganizationId, organizationId),
+      sql`${vendors.deletedAt} IS NULL`,
+    ];
+    if (vendorType) conditions.push(eq(vendors.vendorType, vendorType));
+    if (!includeInactive) conditions.push(eq(vendors.isActive, true));
     const rows = await db
       .select()
       .from(vendors)
-      .where(
-        and(
-          eq(vendors.labOrganizationId, organizationId),
-          sql`${vendors.deletedAt} IS NULL`
-        )
-      )
+      .where(and(...conditions))
       .orderBy(asc(vendors.name));
     return ok(res, rows);
   }),
@@ -2035,6 +2043,7 @@ router.post(
         name: z.string().min(1).max(200),
         address: z.string().max(500).nullable().optional(),
         phone: z.string().max(50).nullable().optional(),
+        vendorType: z.enum(VENDOR_TYPES).optional(),
         isActive: z.boolean().optional(),
       })
       .parse(req.body);
@@ -2046,6 +2055,7 @@ router.post(
         name: input.name.trim(),
         address: input.address ?? null,
         phone: input.phone ?? null,
+        vendorType: input.vendorType ?? "vendor",
         isActive: input.isActive ?? true,
       })
       .returning();
@@ -2062,6 +2072,7 @@ router.patch(
         name: z.string().min(1).max(200).optional(),
         address: z.string().max(500).nullable().optional(),
         phone: z.string().max(50).nullable().optional(),
+        vendorType: z.enum(VENDOR_TYPES).optional(),
         isActive: z.boolean().optional(),
       })
       .parse(req.body);
@@ -2076,6 +2087,7 @@ router.patch(
     if (input.name !== undefined) updates.name = input.name.trim();
     if (input.address !== undefined) updates.address = input.address;
     if (input.phone !== undefined) updates.phone = input.phone;
+    if (input.vendorType !== undefined) updates.vendorType = input.vendorType;
     if (input.isActive !== undefined) updates.isActive = input.isActive;
     const [updated] = await db
       .update(vendors)

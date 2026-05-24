@@ -21,6 +21,7 @@ const ALL_TABS = [
   { path: "/finance/reconcile", label: "Reconcile", billingOnly: false },
   { path: "/finance/cash-flow", label: "Cash Flow", billingOnly: false },
   { path: "/finance/recurring", label: "Recurring", billingOnly: false },
+  { path: "/finance/payees", label: "Payees", billingOnly: false },
 ];
 
 export function canReceivePayments(user: {
@@ -165,9 +166,11 @@ function ManageAccountsModal({
       ),
   });
   const vendorsQuery = useQuery({
-    queryKey: ["finance", "vendors", organizationId],
+    queryKey: ["finance", "vendors", organizationId, "all"],
     queryFn: () =>
-      apiFetch<Vendor[]>(`/finance/vendors?organizationId=${organizationId}`),
+      apiFetch<Vendor[]>(
+        `/finance/vendors?organizationId=${organizationId}&includeInactive=true`
+      ),
   });
 
   const [name, setName] = useState("");

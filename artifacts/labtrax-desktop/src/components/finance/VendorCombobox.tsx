@@ -3,13 +3,30 @@ import { useQuery } from "@tanstack/react-query";
 import { ChevronDown } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 
+export type VendorType = "vendor" | "employee" | "item";
+
 export interface Vendor {
   id: string;
   name: string;
   address: string | null;
   phone: string | null;
+  vendorType: VendorType;
   isActive: boolean;
 }
+
+const TYPE_LABEL: Record<VendorType, string> = {
+  vendor: "Vendor",
+  employee: "Employee",
+  item: "Item",
+};
+
+const TYPE_BADGE_CLASS: Record<VendorType, string> = {
+  vendor: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+  employee: "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300",
+  item: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
+};
+
+const GROUP_ORDER: VendorType[] = ["vendor", "employee", "item"];
 
 export function useVendors(organizationId: string) {
   return useQuery({
@@ -38,7 +55,7 @@ export function VendorCombobox({
   disabled = false,
 }: Props) {
   const vendorsQuery = useVendors(organizationId);
-  const vendors = vendorsQuery.data ?? [];
+  const activeVendors = (vendorsQuery.data ?? []).filter((v) => v.isActive);
 
   const [open, setOpen] = useState(false);
   const [inputVal, setInputVal] = useState(value);
@@ -49,11 +66,15 @@ export function VendorCombobox({
     setInputVal(value);
   }, [value]);
 
-  const filtered = inputVal.trim()
-    ? vendors.filter((v) =>
-        v.name.toLowerCase().includes(inputVal.toLowerCase())
+  const trimmed = inputVal.trim();
+
+  const filtered = trimmed
+    ? activeVendors.filter((v) =>
+        v.name.toLowerCase().includes(trimmed.toLowerCase())
       )
-    : vendors;
+    : activeVendors;
+
+  const isGrouped = !trimmed;
 
   function select(name: string) {
     setInputVal(name);
@@ -80,6 +101,50 @@ export function VendorCombobox({
     }
   }
 
+  function renderItems(items: Vendor[]) {
+    return items.map((v) => (
+      <li key={v.id}>
+        <button
+          type="button"
+          tabIndex={0}
+          className="w-full text-left px-3 py-1.5 hover:bg-secondary flex items-center gap-2 min-w-0"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            select(v.name);
+          }}
+        >
+          <span
+            className={`shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full ${TYPE_BADGE_CLASS[v.vendorType]}`}
+          >
+            {TYPE_LABEL[v.vendorType]}
+          </span>
+          <span className="font-medium truncate">{v.name}</span>
+          {v.address && (
+            <span className="ml-1 text-xs text-muted-foreground truncate hidden sm:block">
+              {v.address}
+            </span>
+          )}
+        </button>
+      </li>
+    ));
+  }
+
+  function renderGrouped() {
+    const groups = GROUP_ORDER.map((type) => ({
+      type,
+      items: filtered.filter((v) => v.vendorType === type),
+    })).filter((g) => g.items.length > 0);
+
+    return groups.map((g) => (
+      <li key={g.type}>
+        <div className="px-3 py-1 text-[10px] uppercase tracking-widest text-muted-foreground font-semibold bg-secondary/40 border-t border-border first:border-t-0">
+          {TYPE_LABEL[g.type]}s
+        </div>
+        <ul>{renderItems(g.items)}</ul>
+      </li>
+    ));
+  }
+
   return (
     <div ref={containerRef} className="relative" onBlur={handleBlur}>
       <input
@@ -94,7 +159,7 @@ export function VendorCombobox({
         className={className}
         autoComplete="off"
       />
-      {vendors.length > 0 && !disabled && (
+      {activeVendors.length > 0 && !disabled && (
         <button
           type="button"
           tabIndex={-1}
@@ -110,27 +175,8 @@ export function VendorCombobox({
         </button>
       )}
       {open && filtered.length > 0 && (
-        <ul className="absolute z-50 left-0 top-[calc(100%+2px)] w-full max-h-52 overflow-y-auto bg-card border border-border rounded-md shadow-lg text-sm py-1">
-          {filtered.map((v) => (
-            <li key={v.id}>
-              <button
-                type="button"
-                tabIndex={0}
-                className="w-full text-left px-3 py-1.5 hover:bg-secondary"
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  select(v.name);
-                }}
-              >
-                <span className="font-medium">{v.name}</span>
-                {v.address && (
-                  <span className="ml-2 text-xs text-muted-foreground truncate">
-                    {v.address}
-                  </span>
-                )}
-              </button>
-            </li>
-          ))}
+        <ul className="absolute z-50 left-0 top-[calc(100%+2px)] w-full max-h-64 overflow-y-auto bg-card border border-border rounded-md shadow-lg text-sm py-1">
+          {isGrouped ? renderGrouped() : renderItems(filtered)}
         </ul>
       )}
     </div>

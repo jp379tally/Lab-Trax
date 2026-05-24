@@ -8,6 +8,140 @@
 import * as zod from "zod";
 
 /**
+ * @summary List vendors / employees / items for a lab
+ */
+export const ListVendorsQueryParams = zod.object({
+  organizationId: zod.coerce.string(),
+  vendorType: zod.enum(["vendor", "employee", "item"]).optional(),
+  includeInactive: zod.coerce.boolean().optional(),
+});
+
+export const ListVendorsResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .array(
+      zod.object({
+        id: zod.string(),
+        labOrganizationId: zod.string(),
+        name: zod.string(),
+        address: zod.string().nullish(),
+        phone: zod.string().nullish(),
+        vendorType: zod
+          .enum(["vendor", "employee", "item"])
+          .describe(
+            "Category of the payee — general vendor, employee, or lab supply item",
+          ),
+        isActive: zod.boolean(),
+        createdAt: zod.coerce.date(),
+        updatedAt: zod.coerce.date(),
+        deletedAt: zod.coerce.date().nullish(),
+      }),
+    )
+    .optional(),
+});
+
+/**
+ * @summary Create a vendor / employee / item
+ */
+export const createVendorBodyNameMax = 200;
+
+export const CreateVendorBody = zod.object({
+  organizationId: zod.string(),
+  name: zod.string().min(1).max(createVendorBodyNameMax),
+  address: zod.string().nullish(),
+  phone: zod.string().nullish(),
+  vendorType: zod
+    .enum(["vendor", "employee", "item"])
+    .optional()
+    .describe(
+      "Category of the payee — general vendor, employee, or lab supply item",
+    ),
+  isActive: zod.boolean().optional(),
+});
+
+export const CreateVendorResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      id: zod.string(),
+      labOrganizationId: zod.string(),
+      name: zod.string(),
+      address: zod.string().nullish(),
+      phone: zod.string().nullish(),
+      vendorType: zod
+        .enum(["vendor", "employee", "item"])
+        .describe(
+          "Category of the payee — general vendor, employee, or lab supply item",
+        ),
+      isActive: zod.boolean(),
+      createdAt: zod.coerce.date(),
+      updatedAt: zod.coerce.date(),
+      deletedAt: zod.coerce.date().nullish(),
+    })
+    .optional(),
+});
+
+/**
+ * @summary Update a vendor / employee / item
+ */
+export const UpdateVendorParams = zod.object({
+  vendorId: zod.coerce.string(),
+});
+
+export const updateVendorBodyNameMax = 200;
+
+export const UpdateVendorBody = zod.object({
+  name: zod.string().min(1).max(updateVendorBodyNameMax).optional(),
+  address: zod.string().nullish(),
+  phone: zod.string().nullish(),
+  vendorType: zod
+    .enum(["vendor", "employee", "item"])
+    .optional()
+    .describe(
+      "Category of the payee — general vendor, employee, or lab supply item",
+    ),
+  isActive: zod.boolean().optional(),
+});
+
+export const UpdateVendorResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      id: zod.string(),
+      labOrganizationId: zod.string(),
+      name: zod.string(),
+      address: zod.string().nullish(),
+      phone: zod.string().nullish(),
+      vendorType: zod
+        .enum(["vendor", "employee", "item"])
+        .describe(
+          "Category of the payee — general vendor, employee, or lab supply item",
+        ),
+      isActive: zod.boolean(),
+      createdAt: zod.coerce.date(),
+      updatedAt: zod.coerce.date(),
+      deletedAt: zod.coerce.date().nullish(),
+    })
+    .optional(),
+});
+
+/**
+ * @summary Soft-delete a vendor / employee / item
+ */
+export const DeleteVendorParams = zod.object({
+  vendorId: zod.coerce.string(),
+});
+
+export const DeleteVendorResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      ok: zod.boolean().optional(),
+    })
+    .optional(),
+});
+
+/**
  * Returns the stored preferences merged with all-true defaults so missing keys are always ON.
  * @summary Get the authenticated user's email notification preferences
  */

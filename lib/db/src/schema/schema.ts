@@ -1729,6 +1729,7 @@ export const vendors = pgTable(
     name: text("name").notNull(),
     address: text("address"),
     phone: text("phone"),
+    vendorType: text("vendor_type", { enum: ["vendor", "employee", "item"] }).notNull().default("vendor"),
     isActive: boolean("is_active").default(true).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

@@ -586,6 +586,80 @@ export interface EmailPreferencesInput {
   billingReminders?: boolean;
 }
 
+/**
+ * Category of the payee — general vendor, employee, or lab supply item
+ */
+export type VendorType = (typeof VendorType)[keyof typeof VendorType];
+
+export const VendorType = {
+  vendor: "vendor",
+  employee: "employee",
+  item: "item",
+} as const;
+
+export interface Vendor {
+  id: string;
+  labOrganizationId: string;
+  name: string;
+  address?: string | null;
+  phone?: string | null;
+  vendorType: VendorType;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt?: string | null;
+}
+
+export interface VendorListResult {
+  ok?: boolean;
+  data?: Vendor[];
+}
+
+export interface VendorResult {
+  ok?: boolean;
+  data?: Vendor;
+}
+
+export interface CreateVendorInput {
+  organizationId: string;
+  /**
+   * @minLength 1
+   * @maxLength 200
+   */
+  name: string;
+  address?: string | null;
+  phone?: string | null;
+  vendorType?: VendorType;
+  isActive?: boolean;
+}
+
+export interface UpdateVendorInput {
+  /**
+   * @minLength 1
+   * @maxLength 200
+   */
+  name?: string;
+  address?: string | null;
+  phone?: string | null;
+  vendorType?: VendorType;
+  isActive?: boolean;
+}
+
+export type ListVendorsParams = {
+  organizationId: string;
+  vendorType?: VendorType;
+  includeInactive?: boolean;
+};
+
+export type DeleteVendor200Data = {
+  ok?: boolean;
+};
+
+export type DeleteVendor200 = {
+  ok?: boolean;
+  data?: DeleteVendor200Data;
+};
+
 export type MarkAllNotificationsRead200Data = {
   ok?: boolean;
 };
