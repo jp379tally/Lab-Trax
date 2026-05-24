@@ -134,6 +134,15 @@ function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
 }
 
+function boxesOverlap(a: TemplateBox, b: TemplateBox): boolean {
+  return (
+    a.x < b.x + b.w &&
+    a.x + a.w > b.x &&
+    a.y < b.y + b.h &&
+    a.y + a.h > b.y
+  );
+}
+
 function applyDrag(start: TemplateBox, h: Handle, dx: number, dy: number): TemplateBox {
   let { x, y, w, h: bh } = start;
   if (h === "move") {
@@ -329,6 +338,19 @@ export function InvoiceLayoutPanel() {
 
   function endDrag() {
     dragRef.current = null;
+  }
+
+  // ── Overlap detection ────────────────────────────────────────────────
+  const overlappingPairs: [SectionKey, SectionKey][] = [];
+  {
+    const keys = Object.keys(draft.boxes) as SectionKey[];
+    for (let i = 0; i < keys.length; i++) {
+      for (let j = i + 1; j < keys.length; j++) {
+        if (boxesOverlap(draft.boxes[keys[i]], draft.boxes[keys[j]])) {
+          overlappingPairs.push([keys[i], keys[j]]);
+        }
+      }
+    }
   }
 
   // ── Selected extra image / text block props ─────────────────────────
@@ -951,6 +973,21 @@ export function InvoiceLayoutPanel() {
                 </li>
               ))}
             </ul>
+            {overlappingPairs.length > 0 ? (
+              <div className="flex items-start gap-1.5 rounded px-2 py-1.5 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 text-xs mt-3">
+                <span className="shrink-0 mt-px">⚠</span>
+                <div>
+                  <p className="font-medium mb-0.5">Overlapping sections</p>
+                  <ul className="space-y-0.5">
+                    {overlappingPairs.map(([a, b]) => (
+                      <li key={`${a}-${b}`}>
+                        {SECTION_LABELS[a]} overlaps {SECTION_LABELS[b]}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            ) : null}
             <p className="text-xs text-muted-foreground mt-2">
               {query.data?.isCustom
                 ? "This lab is using a custom layout."
