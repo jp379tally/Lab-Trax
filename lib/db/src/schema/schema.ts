@@ -783,6 +783,7 @@ export const invoices = pgTable(
       () => users.id,
       { onDelete: "set null" },
     ),
+    layoutPresetId: varchar("layout_preset_id"),
     voidedAt: timestamp("voided_at", { withTimezone: true }),
     voidedByUserId: varchar("voided_by_user_id").references(() => users.id, {
       onDelete: "set null",

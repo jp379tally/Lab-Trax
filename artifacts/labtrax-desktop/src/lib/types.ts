@@ -261,6 +261,7 @@ export interface Invoice {
   voidKind?: "void" | "writeoff" | null;
   sourceInvoiceId?: string | null;
   caseCompletedAt?: string | null;
+  layoutPresetId?: string | null;
 }
 
 export interface InvoiceAttachment {

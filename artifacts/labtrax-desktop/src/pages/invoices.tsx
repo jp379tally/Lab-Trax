@@ -858,9 +858,32 @@ export function InvoiceEditor({
   } =
     useColumnWidths([...COL_DEFAULTS], user?.id);
 
+  // Layout preset selection (per-invoice override of the lab's default template).
+  const [layoutPresetId, setLayoutPresetId] = useState<string | null>(
+    invoice.layoutPresetId ?? null,
+  );
+  const presetsQuery = useQuery({
+    queryKey: ["invoice-template-presets", invoice.labOrganizationId],
+    queryFn: () =>
+      apiFetch<{ presets: Array<{ id: string; name: string; template: unknown; savedAt: string }> }>(
+        `/organizations/${invoice.labOrganizationId}/invoice-template/presets`,
+      ),
+    staleTime: 60_000,
+  });
+  const availablePresets = presetsQuery.data?.presets ?? [];
+
+  // Use the selected preset's template if one is picked and still exists;
+  // fall back to the lab-default template from the /me payload.
+  const selectedPresetTemplate =
+    layoutPresetId != null
+      ? (availablePresets.find((p) => p.id === layoutPresetId)?.template ?? null)
+      : null;
+
   // Per-lab visual invoice template + preloaded extra-image data URLs.
+  // Passes the preset template when one is selected so extra images in the
+  // preset are preloaded the same way as the lab-default template.
   const { template: invoiceTemplate, extraImageDataUrls } = useInvoiceTemplate(
-    user?.practiceInvoiceTemplate,
+    selectedPresetTemplate ?? user?.practiceInvoiceTemplate,
   );
 
   // Pre-fetch lab logo as a data-URL for invoice PDFs (only when placement is active)
@@ -989,6 +1012,7 @@ export function InvoiceEditor({
     setShade(meta.shade ?? "");
     setCaseNotes(meta.caseNotes ?? "");
     setCredits(Number(meta.credits ?? 0) || 0);
+    setLayoutPresetId((d as any).layoutPresetId ?? null);
     const metaItems = Array.isArray(meta.lineItems) ? meta.lineItems : [];
     setItems(
       (d.items ?? []).map((it: InvoiceLineItem, idx: number) => ({
@@ -1058,6 +1082,7 @@ export function InvoiceEditor({
         discount,
         notes: notes.trim() ? notes.trim() : null,
         displayMetadata,
+        layoutPresetId: layoutPresetId ?? null,
         items: trimmedItems.map((it, idx) => ({
           toothNumber: it.toothNumber ?? null,
           description: it.description,
@@ -1566,6 +1591,31 @@ export function InvoiceEditor({
                 className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
               />
             </div>
+            {availablePresets.length > 0 && (
+              <div>
+                <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                  Layout preset
+                </label>
+                <select
+                  value={layoutPresetId ?? ""}
+                  onChange={(e) => setLayoutPresetId(e.target.value || null)}
+                  className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+                >
+                  <option value="">Lab default</option>
+                  {availablePresets.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+                {layoutPresetId != null &&
+                  !availablePresets.some((p) => p.id === layoutPresetId) && (
+                    <p className="mt-1 text-[10px] text-muted-foreground">
+                      Previously selected preset was deleted — using lab default.
+                    </p>
+                  )}
+              </div>
+            )}
           </section>
 
           <section>

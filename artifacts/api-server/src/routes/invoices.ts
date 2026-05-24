@@ -1896,6 +1896,7 @@ router.patch(
           )
           .optional(),
         displayMetadata: z.record(z.any()).nullable().optional(),
+        layoutPresetId: z.string().nullable().optional(),
       })
       .parse(req.body);
 
@@ -2012,6 +2013,10 @@ router.patch(
             input.displayMetadata === undefined
               ? invoice.displayMetadataJson
               : input.displayMetadata,
+          layoutPresetId:
+            input.layoutPresetId === undefined
+              ? invoice.layoutPresetId
+              : input.layoutPresetId,
           updatedByUserId: (req as any).auth.userId,
         })
         .where(eq(invoices.id, invoice.id))

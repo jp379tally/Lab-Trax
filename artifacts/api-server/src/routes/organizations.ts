@@ -2859,7 +2859,7 @@ router.get(
   "/:organizationId/invoice-template/presets",
   asyncHandler(async (req, res) => {
     const { organizationId } = req.params;
-    await resolveOrgAdminAccess((req as any).auth.userId, organizationId);
+    await requireMembership((req as any).auth.userId, organizationId);
     const org = await db.query.organizations.findFirst({
       where: eq(organizations.id, organizationId),
       columns: { invoiceTemplatePresets: true },
