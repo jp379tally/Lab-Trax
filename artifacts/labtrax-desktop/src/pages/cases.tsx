@@ -1611,6 +1611,38 @@ export function CaseDrawer({
   const [toothDialogId, setToothDialogId] = useState<string | null>(null);
   const [toothDialogError, setToothDialogError] = useState<string | null>(null);
 
+  // --- Draft / pending changes state ---
+  type PendingCreate = {
+    localId: string;
+    toothNumber: string;
+    restorationType: string;
+    material: string;
+    shade: string;
+    quantity: number;
+    unitPrice: string;
+  };
+  type PendingUpdate = {
+    restorationId: string;
+    newToothNumber: string;
+    material?: string;
+    shade?: string;
+  };
+  type PendingCaseEdit = {
+    patientFirstName: string;
+    patientLastName: string;
+    doctorName: string;
+    dueDate: string;
+    priority: "normal" | "rush";
+  };
+
+  const [pendingCreates, setPendingCreates] = useState<PendingCreate[]>([]);
+  const [pendingDeletes, setPendingDeletes] = useState<Set<string>>(new Set());
+  const [pendingUpdates, setPendingUpdates] = useState<PendingUpdate[]>([]);
+  const [pendingCaseEdit, setPendingCaseEdit] = useState<PendingCaseEdit | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
+
   // Bridge connector state — initialised from case data once loaded
   const [connectedPairs, setConnectedPairs] = useState<Set<string>>(() =>
     parseBridgeConnectors((labCase as any).bridgeConnectors ?? null),
@@ -1692,19 +1724,25 @@ export function CaseDrawer({
 
   // Teeth that already have a restoration line on this case. The tooth
   // chart highlights these so the user can avoid double-billing.
+  // Includes pending creates and excludes pending deletes.
   const billedTeeth = useMemo(() => {
     const set = new Set<string>();
     for (const r of data?.restorations ?? []) {
+      if (pendingDeletes.has(r.id)) continue;
       for (const id of parseToothField(r.toothNumber)) set.add(id);
     }
+    for (const c of pendingCreates) {
+      for (const id of parseToothField(c.toothNumber)) set.add(id);
+    }
     return set;
-  }, [data?.restorations]);
+  }, [data?.restorations, pendingDeletes, pendingCreates]);
 
   // Per-tooth restoration descriptions surfaced in the tooth-chart
   // tooltip so users immediately see what's already on the case.
   const billedTeethTypes = useMemo(() => {
     const map = new Map<string, string[]>();
     for (const r of data?.restorations ?? []) {
+      if (pendingDeletes.has(r.id)) continue;
       const materialShade = [r.material, r.shade].filter(Boolean).join(" · ");
       const label = [r.restorationType, materialShade].filter(Boolean).join(" / ");
       for (const id of parseToothField(r.toothNumber)) {
@@ -1713,8 +1751,17 @@ export function CaseDrawer({
         map.set(id, list);
       }
     }
+    for (const c of pendingCreates) {
+      const materialShade = [c.material, c.shade].filter(Boolean).join(" · ");
+      const label = [c.restorationType, materialShade].filter(Boolean).join(" / ");
+      for (const id of parseToothField(c.toothNumber)) {
+        const list = map.get(id) ?? [];
+        if (label) list.push(`${label} (unsaved)`);
+        map.set(id, list);
+      }
+    }
     return map;
-  }, [data?.restorations]);
+  }, [data?.restorations, pendingDeletes, pendingCreates]);
 
   const editMutation = useMutation({
     mutationFn: (updates: typeof editForm) =>
@@ -2084,6 +2131,203 @@ export function CaseDrawer({
     saveConnectorsMutation.mutate(pairs);
   }
 
+  // --- Pending changes computed value and handlers ---
+
+  const hasPendingChanges =
+    pendingCreates.length > 0 ||
+    pendingDeletes.size > 0 ||
+    pendingUpdates.length > 0 ||
+    pendingCaseEdit !== null;
+
+  function handleDiscardChanges() {
+    setPendingCreates([]);
+    setPendingDeletes(new Set());
+    setPendingUpdates([]);
+    setPendingCaseEdit(null);
+    setSaveError(null);
+    qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+  }
+
+  function handleCloseWithGuard() {
+    if (hasPendingChanges) {
+      setShowDiscardConfirm(true);
+    } else {
+      onClose();
+    }
+  }
+
+  async function handleSaveChanges() {
+    setIsSaving(true);
+    setSaveError(null);
+
+    // Snapshot state at save time so the loop iterates a stable list even
+    // as we remove successful items from pending state one-by-one.  This
+    // makes retries safe: only items that haven't been saved yet remain in
+    // pending state after a partial failure.
+    const snapshotCaseEdit = pendingCaseEdit;
+    const snapshotDeletes = Array.from(pendingDeletes);
+    const snapshotUpdates = [...pendingUpdates];
+    const snapshotCreates = [...pendingCreates];
+
+    const invalidateAll = () => {
+      qc.invalidateQueries({ queryKey: ["cases"] });
+      qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+      qc.invalidateQueries({ queryKey: ["invoice-for-case", labCase.id] });
+      qc.invalidateQueries({ queryKey: ["invoice-detail"] });
+      qc.invalidateQueries({ queryKey: ["invoices"] });
+    };
+
+    try {
+      // 1. Case detail patch (single atomic call)
+      if (snapshotCaseEdit) {
+        await apiFetch(`/cases/${labCase.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            patientFirstName: snapshotCaseEdit.patientFirstName,
+            patientLastName: snapshotCaseEdit.patientLastName,
+            doctorName: snapshotCaseEdit.doctorName,
+            priority: snapshotCaseEdit.priority,
+            ...(snapshotCaseEdit.dueDate ? { dueDate: snapshotCaseEdit.dueDate } : {}),
+          }),
+        });
+        setPendingCaseEdit(null);
+      }
+
+      // 2. Deletes — remove from pending state immediately after each success
+      for (const id of snapshotDeletes) {
+        await apiFetch(`/cases/${labCase.id}/restorations/${id}`, { method: "DELETE" });
+        setPendingDeletes((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      }
+
+      // 3. Updates (replace_tooth) — remove from pending state after each success
+      for (const upd of snapshotUpdates) {
+        await apiFetch(`/cases/${labCase.id}/restorations/${upd.restorationId}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            toothNumber: upd.newToothNumber,
+            ...(upd.material ? { material: upd.material } : {}),
+            ...(upd.shade ? { shade: upd.shade } : {}),
+          }),
+        });
+        setPendingUpdates((prev) =>
+          prev.filter((u) => u.restorationId !== upd.restorationId),
+        );
+      }
+
+      // 4. Creates — remove from pending state after each success so a retry
+      //    cannot POST the same restoration twice.
+      for (const c of snapshotCreates) {
+        await apiFetch(`/cases/${labCase.id}/restorations`, {
+          method: "POST",
+          body: JSON.stringify({
+            toothNumber: c.toothNumber,
+            restorationType: c.restorationType,
+            ...(c.material ? { material: c.material } : {}),
+            ...(c.shade ? { shade: c.shade } : {}),
+            quantity: c.quantity,
+            ...(c.unitPrice ? { unitPrice: Number(c.unitPrice) } : {}),
+          }),
+        });
+        setPendingCreates((prev) => prev.filter((p) => p.localId !== c.localId));
+      }
+
+      invalidateAll();
+    } catch (e: any) {
+      setSaveError(e?.message ?? "Failed to save changes. Please try again.");
+      // Refetch server state so the list reflects what was already saved
+      // before the failure.  Remaining pending items are safe to retry.
+      invalidateAll();
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  function handleToothDialogStage(payload: ToothActionPayload) {
+    if (payload.kind === "add_crown") {
+      const localId = `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      setPendingCreates((prev) => [
+        ...prev,
+        {
+          localId,
+          toothNumber: payload.toothId,
+          restorationType: payload.restorationType,
+          material: payload.material,
+          shade: payload.shade ?? "",
+          quantity: 1,
+          unitPrice: "",
+        },
+      ]);
+      setToothDialogId(null);
+      setToothDialogError(null);
+    } else if (payload.kind === "add_pontic") {
+      let inferredMaterial = "";
+      const ponticTooth = Number(payload.toothId);
+      if (
+        Number.isInteger(ponticTooth) &&
+        ponticTooth >= 1 &&
+        ponticTooth <= 32 &&
+        connectedPairs.size > 0
+      ) {
+        const span = new Set<number>();
+        const toVisit: number[] = [ponticTooth];
+        while (toVisit.length > 0) {
+          const curr = toVisit.pop()!;
+          if (span.has(curr)) continue;
+          span.add(curr);
+          for (const pair of connectedPairs) {
+            const [as, bs] = pair.split("-");
+            const a = Number(as);
+            const b = Number(bs);
+            if (a === curr && !span.has(b)) toVisit.push(b);
+            if (b === curr && !span.has(a)) toVisit.push(a);
+          }
+        }
+        const abutment = (data?.restorations ?? []).find((r) => {
+          const rTooth = Number((r.toothNumber ?? "").trim());
+          return span.has(rTooth) && !/pontic/i.test(r.restorationType) && r.material;
+        });
+        inferredMaterial = abutment?.material ?? "";
+      }
+      const localId = `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      setPendingCreates((prev) => [
+        ...prev,
+        {
+          localId,
+          toothNumber: payload.toothId,
+          restorationType: "Pontic",
+          material: inferredMaterial,
+          shade: "",
+          quantity: 1,
+          unitPrice: "",
+        },
+      ]);
+      setToothDialogId(null);
+      setToothDialogError(null);
+    } else if (payload.kind === "mark_missing") {
+      const existing = parseToothField(restForm.toothNumber);
+      existing.add(payload.toothId);
+      setRestForm((f) => ({ ...f, toothNumber: Array.from(existing).join(", ") }));
+      setToothDialogId(null);
+      setToothDialogError(null);
+    } else if (payload.kind === "replace_tooth") {
+      setPendingUpdates((prev) => [
+        ...prev,
+        {
+          restorationId: payload.restorationId,
+          newToothNumber: payload.newToothNumber,
+          material: payload.material,
+          shade: payload.shade,
+        },
+      ]);
+      setToothDialogId(null);
+      setToothDialogError(null);
+    }
+  }
+
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const deleteCaseMutation = useMutation({
     mutationFn: () =>
@@ -2216,7 +2460,7 @@ export function CaseDrawer({
 
   return (
     <div className="fixed inset-0 z-50 flex">
-      <div className="flex-1 bg-foreground/30" onClick={onClose} />
+      <div className="flex-1 bg-foreground/30" onClick={handleCloseWithGuard} />
       <aside className="w-full max-w-[700px] bg-card border-l border-border h-full flex flex-col shadow-2xl">
         {/* Header */}
         <header className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
@@ -2261,13 +2505,46 @@ export function CaseDrawer({
             )}
             <button
               type="button"
-              onClick={onClose}
+              onClick={handleCloseWithGuard}
               className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"
             >
               <X size={16} />
             </button>
           </div>
         </header>
+
+        {/* Save / Discard bar — appears whenever there are staged but unsaved changes */}
+        {hasPendingChanges && (
+          <div className="px-5 py-2.5 bg-amber-500/10 border-b border-amber-500/20 flex items-center gap-3 shrink-0">
+            <div className="flex-1 min-w-0">
+              <span className="text-xs font-medium text-amber-700 dark:text-amber-300">
+                Unsaved changes
+              </span>
+              {saveError && (
+                <span className="ml-2 text-xs text-destructive">{saveError}</span>
+              )}
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={handleDiscardChanges}
+                disabled={isSaving}
+                className="h-7 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-xs font-medium text-muted-foreground hover:text-foreground disabled:opacity-50 transition-colors"
+              >
+                Discard
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleSaveChanges()}
+                disabled={isSaving}
+                className="h-7 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5 transition-colors"
+              >
+                {isSaving && <Loader2 size={11} className="animate-spin" />}
+                {isSaving ? "Saving…" : "Save Changes"}
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Remake link banner: shown both ways — when this case IS a remake of
             an earlier one, and when this case HAS been remade later. */}
@@ -2654,6 +2931,12 @@ export function CaseDrawer({
                     {editMode ? "Edit Case Details" : "Case Details"}
                   </h3>
                   <div className="flex items-center gap-2">
+                    {pendingCaseEdit !== null && !editMode && (
+                      <span className="inline-flex items-center gap-1.5 text-[11px] text-amber-700 dark:text-amber-300 bg-amber-500/10 px-2 py-0.5 rounded">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
+                        Staged
+                      </span>
+                    )}
                     <button
                       type="button"
                       onClick={() =>
@@ -2683,15 +2966,15 @@ export function CaseDrawer({
                   <div className="grid grid-cols-2 gap-4 text-sm">
                     <Field
                       label="Patient"
-                      value={`${data?.patientFirstName ?? labCase.patientFirstName} ${data?.patientLastName ?? labCase.patientLastName}`}
+                      value={`${pendingCaseEdit?.patientFirstName ?? data?.patientFirstName ?? labCase.patientFirstName} ${pendingCaseEdit?.patientLastName ?? data?.patientLastName ?? labCase.patientLastName}`}
                     />
-                    <Field label="Doctor" value={data?.doctorName ?? labCase.doctorName} />
+                    <Field label="Doctor" value={pendingCaseEdit?.doctorName ?? data?.doctorName ?? labCase.doctorName} />
                     <Field label="Status" value={statusLabel(currentStatus)} />
                     <Field
                       label="Priority"
-                      value={(data?.priority ?? labCase.priority) === "rush" ? "Rush" : "Normal"}
+                      value={(pendingCaseEdit?.priority ?? data?.priority ?? labCase.priority) === "rush" ? "Rush" : "Normal"}
                     />
-                    <Field label="Due date" value={formatDate(data?.dueDate ?? labCase.dueDate)} />
+                    <Field label="Due date" value={formatDate(pendingCaseEdit?.dueDate ?? data?.dueDate ?? labCase.dueDate)} />
                     <Field label="Created" value={formatDate(data?.createdAt ?? labCase.createdAt)} />
                     <Field label="Tooth #" value={toothLabel} />
                     <Field label="Shade" value={shadeLabel} />
@@ -2808,12 +3091,14 @@ export function CaseDrawer({
                       </button>
                       <button
                         type="button"
-                        onClick={() => editMutation.mutate(editForm)}
-                        disabled={editMutation.isPending}
-                        className="flex-1 h-9 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center justify-center gap-1.5"
+                        onClick={() => {
+                          setPendingCaseEdit({ ...editForm });
+                          setEditMode(false);
+                          setEditError(null);
+                        }}
+                        className="flex-1 h-9 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 inline-flex items-center justify-center gap-1.5"
                       >
-                        {editMutation.isPending && <Loader2 size={13} className="animate-spin" />}
-                        Save changes
+                        Stage changes
                       </button>
                     </div>
                   </div>
@@ -3168,12 +3453,33 @@ export function CaseDrawer({
                           setRestError("Restoration type is required.");
                           return;
                         }
-                        addRestorationMutation.mutate();
+                        const localId = `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                        setPendingCreates((prev) => [
+                          ...prev,
+                          {
+                            localId,
+                            toothNumber: restForm.toothNumber || "N/A",
+                            restorationType: typeValue,
+                            material: restForm.material,
+                            shade: restForm.shade,
+                            quantity: restForm.quantity,
+                            unitPrice: restForm.unitPrice,
+                          },
+                        ]);
+                        setRestForm({
+                          toothNumber: "",
+                          restorationType: "",
+                          customType: "",
+                          material: "",
+                          shade: "",
+                          quantity: 1,
+                          unitPrice: "",
+                        });
+                        setShowAddRest(false);
+                        setRestError(null);
                       }}
-                      disabled={addRestorationMutation.isPending}
-                      className="flex-1 h-8 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center justify-center gap-1.5"
+                      className="flex-1 h-8 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 inline-flex items-center justify-center gap-1.5"
                     >
-                      {addRestorationMutation.isPending && <Loader2 size={11} className="animate-spin" />}
                       Add restoration
                     </button>
                   </div>
@@ -3181,7 +3487,7 @@ export function CaseDrawer({
               )}
 
               {isLoading && <div className="text-sm text-muted-foreground">Loading…</div>}
-              {!isLoading && restorationCount === 0 && (
+              {!isLoading && restorationCount === 0 && pendingCreates.length === 0 && (
                 <div className="text-sm text-muted-foreground">
                   No restorations yet. Use "Add restoration" to add one.
                 </div>
@@ -3193,17 +3499,30 @@ export function CaseDrawer({
                     restoration={r}
                     caseId={labCase.id}
                     labOrganizationId={labCase.labOrganizationId}
-                    onDeleted={() => {
-                      qc.invalidateQueries({ queryKey: ["case", labCase.id] });
-                      qc.invalidateQueries({ queryKey: ["cases"] });
-                      // Server keeps the invoice in sync, so refresh
-                      // the Invoice tab queries too.
-                      qc.invalidateQueries({
-                        queryKey: ["invoice-for-case", labCase.id],
+                    isPendingDelete={pendingDeletes.has(r.id)}
+                    onPendingDelete={() => {
+                      setPendingDeletes((prev) => {
+                        const next = new Set(prev);
+                        next.add(r.id);
+                        return next;
                       });
-                      qc.invalidateQueries({ queryKey: ["invoice-detail"] });
-                      qc.invalidateQueries({ queryKey: ["invoices"] });
                     }}
+                    onUndoPendingDelete={() => {
+                      setPendingDeletes((prev) => {
+                        const next = new Set(prev);
+                        next.delete(r.id);
+                        return next;
+                      });
+                    }}
+                  />
+                ))}
+                {pendingCreates.map((c) => (
+                  <PendingRestorationRow
+                    key={c.localId}
+                    pending={c}
+                    onRemove={() =>
+                      setPendingCreates((prev) => prev.filter((p) => p.localId !== c.localId))
+                    }
                   />
                 ))}
               </div>
@@ -3849,14 +4168,59 @@ export function CaseDrawer({
         <ToothActionDialog
           toothId={toothDialogId}
           restorations={data?.restorations ?? []}
-          isPending={toothDialogMutation.isPending}
+          isPending={false}
           error={toothDialogError}
           onClose={() => {
             setToothDialogId(null);
             setToothDialogError(null);
           }}
-          onConfirm={(payload) => toothDialogMutation.mutate(payload)}
+          onConfirm={(payload) => handleToothDialogStage(payload)}
         />
+      )}
+
+      {/* Discard confirm overlay — shown when closing with unsaved changes */}
+      {showDiscardConfirm && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-foreground/40"
+          onClick={() => setShowDiscardConfirm(false)}
+        >
+          <div
+            className="bg-card rounded-xl border border-border p-6 max-w-sm mx-4 space-y-4 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <div className="h-9 w-9 rounded-full bg-amber-500/15 flex items-center justify-center shrink-0">
+                <AlertTriangle size={17} className="text-amber-600" />
+              </div>
+              <div>
+                <h3 className="font-semibold">Unsaved changes</h3>
+                <p className="text-sm text-muted-foreground mt-1">
+                  You have unsaved changes to this case. Do you want to discard them and close?
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setShowDiscardConfirm(false)}
+                className="flex-1 h-9 rounded-md bg-secondary text-sm font-medium text-muted-foreground hover:text-foreground"
+              >
+                Keep editing
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handleDiscardChanges();
+                  setShowDiscardConfirm(false);
+                  onClose();
+                }}
+                className="flex-1 h-9 rounded-md bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90"
+              >
+                Discard &amp; close
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -3888,16 +4252,73 @@ const PRICE_SOURCE_STYLES: Record<
   },
 };
 
+function PendingRestorationRow({
+  pending,
+  onRemove,
+}: {
+  pending: {
+    localId: string;
+    toothNumber: string;
+    restorationType: string;
+    material: string;
+    shade: string;
+    quantity: number;
+    unitPrice: string;
+  };
+  onRemove: () => void;
+}) {
+  return (
+    <div className="border border-amber-500/40 bg-amber-500/5 rounded-md px-3 py-2 text-sm flex items-start justify-between gap-3">
+      <div className="min-w-0 flex-1">
+        <div className="font-medium">
+          {pending.restorationType}
+          <span className="text-muted-foreground"> · Tooth {pending.toothNumber}</span>
+        </div>
+        {(pending.material || pending.shade) && (
+          <div className="text-xs text-muted-foreground">
+            {[pending.material, pending.shade].filter(Boolean).join(" · ")}
+          </div>
+        )}
+        <div className="mt-1.5">
+          <span className="text-[10px] uppercase font-semibold tracking-wide px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-300">
+            Unsaved
+          </span>
+        </div>
+      </div>
+      <div className="flex items-start gap-2 shrink-0">
+        <div className="text-right whitespace-nowrap">
+          <div className="text-xs text-muted-foreground tabular-nums">Qty {pending.quantity}</div>
+          <div className="text-sm tabular-nums font-medium text-muted-foreground">
+            {pending.unitPrice ? `$${Number(pending.unitPrice).toFixed(2)}` : "Auto"}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onRemove}
+          className="h-7 w-7 rounded hover:bg-destructive/10 flex items-center justify-center text-muted-foreground hover:text-destructive transition-colors mt-0.5"
+          title="Remove (not saved yet)"
+        >
+          <X size={13} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function RestorationRow({
   restoration: r,
   caseId,
   labOrganizationId,
-  onDeleted,
+  isPendingDelete,
+  onPendingDelete,
+  onUndoPendingDelete,
 }: {
   restoration: CaseRestoration;
   caseId: string;
   labOrganizationId: string;
-  onDeleted?: () => void;
+  isPendingDelete?: boolean;
+  onPendingDelete?: () => void;
+  onUndoPendingDelete?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -3906,27 +4327,19 @@ function RestorationRow({
   const hasHistorySource =
     source === "tier" || source === "override" || source === "default";
 
-  const deleteMutation = useMutation({
-    mutationFn: () =>
-      apiFetch(`/cases/${caseId}/restorations/${r.id}`, { method: "DELETE" }),
-    onSuccess: () => {
-      onDeleted?.();
-    },
-    onError: (err: Error) => {
-      window.alert(err.message || "Couldn't delete restoration.");
-      setConfirmDelete(false);
-    },
-  });
-
   return (
     <div
       className={`border rounded-md px-3 py-2 text-sm transition-colors ${
-        confirmDelete ? "border-destructive/40 bg-destructive/5" : "border-border"
+        isPendingDelete
+          ? "border-amber-500/40 bg-amber-500/5 opacity-70"
+          : confirmDelete
+          ? "border-destructive/40 bg-destructive/5"
+          : "border-border"
       }`}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <div className="font-medium">
+          <div className={`font-medium ${isPendingDelete ? "line-through text-muted-foreground" : ""}`}>
             {r.restorationType}
             <span className="text-muted-foreground"> · Tooth {r.toothNumber}</span>
           </div>
@@ -3936,7 +4349,12 @@ function RestorationRow({
             </div>
           )}
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-            {style && (
+            {isPendingDelete && (
+              <span className="text-[10px] uppercase font-semibold tracking-wide px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-300">
+                Pending delete
+              </span>
+            )}
+            {!isPendingDelete && style && (
               <span
                 title={style.title}
                 className={`text-[10px] uppercase font-semibold tracking-wide px-1.5 py-0.5 rounded ${style.className}`}
@@ -3947,7 +4365,7 @@ function RestorationRow({
                   : ""}
               </span>
             )}
-            {!style && (
+            {!isPendingDelete && !style && (
               <span className="text-[10px] uppercase font-semibold tracking-wide px-1.5 py-0.5 rounded bg-secondary text-muted-foreground">
                 Unknown source
               </span>
@@ -3959,7 +4377,16 @@ function RestorationRow({
             <div className="text-xs text-muted-foreground tabular-nums">Qty {r.quantity}</div>
             <div className="text-sm tabular-nums font-medium">{formatMoney(r.unitPrice)}</div>
           </div>
-          {!confirmDelete ? (
+          {isPendingDelete ? (
+            <button
+              type="button"
+              onClick={() => { onUndoPendingDelete?.(); setConfirmDelete(false); }}
+              className="h-7 px-2 rounded text-[11px] font-medium bg-secondary hover:bg-secondary/80 text-muted-foreground hover:text-foreground transition-colors mt-0.5"
+              title="Undo — this deletion hasn't been saved yet"
+            >
+              Undo
+            </button>
+          ) : !confirmDelete ? (
             <button
               type="button"
               onClick={() => setConfirmDelete(true)}
@@ -3973,18 +4400,16 @@ function RestorationRow({
               <button
                 type="button"
                 onClick={() => setConfirmDelete(false)}
-                disabled={deleteMutation.isPending}
-                className="h-6 px-1.5 rounded text-[11px] text-muted-foreground hover:text-foreground bg-secondary disabled:opacity-50"
+                className="h-6 px-1.5 rounded text-[11px] text-muted-foreground hover:text-foreground bg-secondary"
               >
                 Keep
               </button>
               <button
                 type="button"
-                onClick={() => deleteMutation.mutate()}
-                disabled={deleteMutation.isPending}
-                className="h-6 px-1.5 rounded text-[11px] font-medium text-destructive-foreground bg-destructive hover:bg-destructive/90 disabled:opacity-60 inline-flex items-center gap-0.5"
+                onClick={() => { onPendingDelete?.(); setConfirmDelete(false); }}
+                className="h-6 px-1.5 rounded text-[11px] font-medium text-destructive-foreground bg-destructive hover:bg-destructive/90 inline-flex items-center gap-0.5"
               >
-                {deleteMutation.isPending ? <Loader2 size={10} className="animate-spin" /> : "Delete"}
+                Delete
               </button>
             </div>
           )}
