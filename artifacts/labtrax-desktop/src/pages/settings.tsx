@@ -1606,12 +1606,12 @@ function BackupPanel() {
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
           <div className="flex-1 text-xs leading-snug space-y-0.5">
             <p className="font-semibold">
-              {lastBackupAt ? "Backup overdue" : "No backup on record"}
+              {lastBackupAt ? "Backup overdue" : "Backup never completed"}
             </p>
             <p className="text-amber-700 dark:text-amber-400">
               {lastBackupAt
                 ? `Last successful backup was ${Math.floor((Date.now() - new Date(lastBackupAt).getTime()) / (24 * 60 * 60 * 1000))} day(s) ago.`
-                : "No successful backup has been recorded."}
+                : "A successful backup has never been run for this lab."}
             </p>
           </div>
           <button
