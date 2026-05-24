@@ -218,6 +218,7 @@ export default function ScanScreen() {
   const allProviderEntries = React.useMemo(() => {
     const entries: { providerName: string; practiceName: string; address: string; phone: string; accountNumber: string; clientId: string }[] = [];
     const seen = new Set<string>();
+    // 1. Local client directory (primary source).
     clients.forEach(c => {
       const key1 = `${c.leadDoctor.toLowerCase()}::${c.id}`;
       if (!seen.has(key1)) {
@@ -234,8 +235,39 @@ export default function ScanScreen() {
         }
       });
     });
+    // 2. Registered provider users (added via the server / desktop portal).
+    registeredUsers.forEach((u: any) => {
+      const name = (u.doctorName || "").trim();
+      if (!name) return;
+      const key = `__user__${name.toLowerCase()}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        // Try to pair with an existing client entry for practice name.
+        const matched = clients.find(c =>
+          c.leadDoctor.toLowerCase() === name.toLowerCase() ||
+          c.practiceName.toLowerCase() === (u.practiceName || "").toLowerCase()
+        );
+        entries.push({ providerName: name, practiceName: matched?.practiceName || u.practiceName || "", address: matched?.address || "", phone: matched?.phone || u.phone || "", accountNumber: u.accountNumber || "", clientId: matched?.id || u.id || "" });
+      }
+    });
+    // 3. Doctor names from past cases — catches providers added on the desktop
+    //    that haven't synced to the local client directory yet.
+    cases.forEach(c => {
+      const name = (c.doctorName || "").trim();
+      if (!name) return;
+      const key = `__case__${name.toLowerCase()}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        const matched = clients.find(cl =>
+          cl.leadDoctor.toLowerCase() === name.toLowerCase()
+        );
+        if (!matched) {
+          entries.push({ providerName: name, practiceName: "", address: "", phone: "", accountNumber: "", clientId: "" });
+        }
+      }
+    });
     return entries;
-  }, [clients]);
+  }, [clients, registeredUsers, cases]);
 
   const filteredProviderEntries = allProviderEntries.filter((e) => {
     const q = doctorSearch.toLowerCase();
