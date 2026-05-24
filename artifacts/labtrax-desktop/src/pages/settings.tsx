@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Building2, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, FileDown, Github, History, KeyRound, LayoutList, Loader2, LogOut, Monitor, Package, Play, RotateCcw, RefreshCcw, Search, ShieldCheck, Smartphone, Sparkles, Trash2, Upload, User as UserIcon, UserMinus, Wrench, X } from "lucide-react";
+import { AlertTriangle, Building2, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, FileDown, Github, History, KeyRound, LayoutList, Loader2, LogOut, Monitor, Package, Pencil, Play, RotateCcw, RefreshCcw, Search, ShieldCheck, Smartphone, Sparkles, Trash2, Upload, User as UserIcon, UserMinus, Wrench, X } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -1112,6 +1112,68 @@ function OrganizationsPanel() {
     },
   });
 
+  const [isEditing, setIsEditing] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editBillingEmail, setEditBillingEmail] = useState("");
+  const [editError, setEditError] = useState<string | null>(null);
+
+  const updateOrgMutation = useMutation({
+    mutationFn: ({ orgId, name, billingEmail }: { orgId: string; name: string; billingEmail: string }) =>
+      apiFetch<Organization>(`/organizations/${orgId}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          name,
+          displayName: name,
+          billingEmail: billingEmail.trim() || undefined,
+        }),
+      }),
+    onMutate: async ({ orgId, name, billingEmail }) => {
+      await queryClient.cancelQueries({ queryKey: ["organizations"] });
+      await queryClient.cancelQueries({ queryKey: ["auth", "me"] });
+
+      const prevOrgs = queryClient.getQueryData<Organization[]>(["organizations"]);
+      const prevMe = queryClient.getQueryData<MeResponse>(["auth", "me"]);
+
+      const applyToOrg = (o: Organization): Organization =>
+        o.id === orgId
+          ? { ...o, name, displayName: name, billingEmail: billingEmail.trim() || null }
+          : o;
+
+      if (prevOrgs) {
+        queryClient.setQueryData<Organization[]>(["organizations"], prevOrgs.map(applyToOrg));
+      }
+      if (prevMe) {
+        queryClient.setQueryData<MeResponse>(["auth", "me"], {
+          ...prevMe,
+          memberships: prevMe.memberships.map((m) =>
+            m.organizationId === orgId && m.organization
+              ? { ...m, organization: applyToOrg(m.organization) }
+              : m,
+          ),
+        });
+      }
+
+      return { prevOrgs, prevMe };
+    },
+    onError: (err, _vars, context) => {
+      if (context?.prevOrgs !== undefined) {
+        queryClient.setQueryData(["organizations"], context.prevOrgs);
+      }
+      if (context?.prevMe !== undefined) {
+        queryClient.setQueryData(["auth", "me"], context.prevMe);
+      }
+      setEditError(err instanceof Error ? err.message : "Failed to save changes.");
+    },
+    onSuccess: () => {
+      setIsEditing(false);
+      setEditError(null);
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["organizations"] });
+      void queryClient.invalidateQueries({ queryKey: ["auth", "me"] });
+    },
+  });
+
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape" && search) {
@@ -1142,6 +1204,10 @@ function OrganizationsPanel() {
   const selectedOrg = selectedMembership
     ? selectedMembership.organization || orgsById.get(selectedMembership.organizationId)
     : null;
+
+  const drawerCanEdit =
+    selectedMembership?.status === "active" &&
+    (selectedMembership?.role === "owner" || selectedMembership?.role === "admin");
 
   const drawerCanBackfill =
     selectedOrg?.type === "lab" &&
@@ -1260,7 +1326,13 @@ function OrganizationsPanel() {
 
       <Sheet
         open={selectedMembershipId !== null}
-        onOpenChange={(open) => { if (!open) setSelectedMembershipId(null); }}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSelectedMembershipId(null);
+            setIsEditing(false);
+            setEditError(null);
+          }
+        }}
       >
         <SheetContent side="right" className="w-full sm:max-w-lg overflow-y-auto">
           <SheetHeader className="mb-4">
@@ -1276,17 +1348,68 @@ function OrganizationsPanel() {
           {selectedOrg && selectedMembership && (
             <div className="space-y-4 text-sm">
               <div className="rounded-md border border-border divide-y divide-border">
-                <div className="px-3 py-2.5 flex justify-between items-center">
-                  <span className="text-muted-foreground text-xs">Name</span>
-                  <span className="font-medium">{selectedOrg.displayName || selectedOrg.name || "—"}</span>
+                {/* Name row */}
+                <div className="px-3 py-2.5">
+                  {isEditing ? (
+                    <div className="space-y-1">
+                      <label className="text-muted-foreground text-xs">Name</label>
+                      <input
+                        type="text"
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                        className="w-full h-8 px-2 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                        placeholder="Organization name"
+                        autoFocus
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex justify-between items-center">
+                      <span className="text-muted-foreground text-xs">Name</span>
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">{selectedOrg.displayName || selectedOrg.name || "—"}</span>
+                        {drawerCanEdit && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditName(selectedOrg.displayName || selectedOrg.name || "");
+                              setEditBillingEmail(selectedOrg.billingEmail ?? "");
+                              setEditError(null);
+                              setIsEditing(true);
+                            }}
+                            className="text-muted-foreground hover:text-foreground transition-colors"
+                            aria-label="Edit organization"
+                            title="Edit organization"
+                          >
+                            <Pencil size={12} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <div className="px-3 py-2.5 flex justify-between items-center">
                   <span className="text-muted-foreground text-xs">Type</span>
                   <span className="capitalize">{selectedOrg.type || "—"}</span>
                 </div>
-                <div className="px-3 py-2.5 flex justify-between items-center">
-                  <span className="text-muted-foreground text-xs">Billing email</span>
-                  <span>{selectedOrg.billingEmail || <span className="text-muted-foreground italic">none</span>}</span>
+                {/* Billing email row */}
+                <div className="px-3 py-2.5">
+                  {isEditing ? (
+                    <div className="space-y-1">
+                      <label className="text-muted-foreground text-xs">Billing email</label>
+                      <input
+                        type="email"
+                        value={editBillingEmail}
+                        onChange={(e) => setEditBillingEmail(e.target.value)}
+                        className="w-full h-8 px-2 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                        placeholder="billing@example.com (optional)"
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex justify-between items-center">
+                      <span className="text-muted-foreground text-xs">Billing email</span>
+                      <span>{selectedOrg.billingEmail || <span className="text-muted-foreground italic">none</span>}</span>
+                    </div>
+                  )}
                 </div>
                 <div className="px-3 py-2.5 flex justify-between items-center">
                   <span className="text-muted-foreground text-xs">Your role</span>
@@ -1301,6 +1424,45 @@ function OrganizationsPanel() {
                   </span>
                 </div>
               </div>
+
+              {/* Edit action row */}
+              {isEditing && (
+                <div className="space-y-2">
+                  {editError && (
+                    <p className="text-xs text-destructive">{editError}</p>
+                  )}
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      disabled={updateOrgMutation.isPending || !editName.trim()}
+                      onClick={() => {
+                        updateOrgMutation.mutate({
+                          orgId: selectedOrg.id,
+                          name: editName.trim(),
+                          billingEmail: editBillingEmail,
+                        });
+                      }}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {updateOrgMutation.isPending ? (
+                        <Loader2 size={12} className="animate-spin" />
+                      ) : (
+                        <Check size={12} />
+                      )}
+                      Save changes
+                    </button>
+                    <button
+                      type="button"
+                      disabled={updateOrgMutation.isPending}
+                      onClick={() => { setIsEditing(false); setEditError(null); }}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border text-xs hover:bg-muted transition-colors"
+                    >
+                      <X size={12} />
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {drawerIsAdmin && (
                 <div className="space-y-2">
