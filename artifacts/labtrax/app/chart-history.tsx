@@ -169,19 +169,19 @@ export default function ChartHistoryScreen() {
                 ) : null}
 
                 <View style={styles.timelinePreview}>
-                  {c.routeHistory.slice(0, 5).map((rh, ri) => {
+                  {(c.routeHistory ?? []).slice(0, 5).map((rh, ri) => {
                     const si = getStationInfo(rh.station, customStationLabels);
                     return (
                       <View key={ri} style={styles.miniTimelineItem}>
                         <View style={[styles.miniDot, { backgroundColor: si.color }]} />
-                        {ri < Math.min(c.routeHistory.length - 1, 4) && (
+                        {ri < Math.min((c.routeHistory ?? []).length - 1, 4) && (
                           <View style={styles.miniLine} />
                         )}
                       </View>
                     );
                   })}
-                  {c.routeHistory.length > 5 && (
-                    <Text style={styles.moreStations}>+{c.routeHistory.length - 5}</Text>
+                  {(c.routeHistory ?? []).length > 5 && (
+                    <Text style={styles.moreStations}>+{(c.routeHistory ?? []).length - 5}</Text>
                   )}
                 </View>
               </Pressable>
