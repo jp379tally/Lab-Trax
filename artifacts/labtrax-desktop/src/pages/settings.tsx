@@ -1116,6 +1116,7 @@ function OrganizationsPanel() {
   const [editName, setEditName] = useState("");
   const [editBillingEmail, setEditBillingEmail] = useState("");
   const [editError, setEditError] = useState<string | null>(null);
+  const [saveSuccess, setSaveSuccess] = useState(false);
 
   const updateOrgMutation = useMutation({
     mutationFn: ({ orgId, name, billingEmail }: { orgId: string; name: string; billingEmail: string }) =>
@@ -1167,6 +1168,8 @@ function OrganizationsPanel() {
     onSuccess: () => {
       setIsEditing(false);
       setEditError(null);
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 2000);
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["organizations"] });
@@ -1461,6 +1464,13 @@ function OrganizationsPanel() {
                       Cancel
                     </button>
                   </div>
+                </div>
+              )}
+
+              {saveSuccess && (
+                <div className="flex items-center gap-1.5 text-xs text-success">
+                  <Check size={12} />
+                  Changes saved
                 </div>
               )}
 
