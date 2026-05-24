@@ -1581,7 +1581,7 @@ export function DashboardDropZone() {
                       await apiFetch("/rx-practice-aliases", {
                         method: "POST",
                         body: JSON.stringify({
-                          labOrganizationId: rxLabOrgId,
+                          labOrganizationId: rxLabOrgId || labOrg?.id || "",
                           rxName: rxNameDisplay.toLowerCase(),
                           providerOrganizationId: rxProviderOrgId,
                         }),
