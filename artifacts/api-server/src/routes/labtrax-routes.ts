@@ -3168,20 +3168,21 @@ Important rules:
       let response: any;
       try {
         response = await openai.chat.completions.create({
-          model: "gpt-5.1",
-          messages: baseMessages,
-          max_completion_tokens: 1000,
-        });
-        console.log("AI analyze-prescription: used gpt-5.1");
-      } catch (modelErr: any) {
-        console.log("AI analyze-prescription: gpt-5.1 failed, falling back to gpt-4o:", modelErr?.message);
-        response = await openai.chat.completions.create({
           model: "gpt-4o",
           messages: baseMessages,
           max_completion_tokens: 1000,
           temperature: 0.1,
         });
-        console.log("AI analyze-prescription: used gpt-4o (fallback)");
+        console.log("AI analyze-prescription: used gpt-4o");
+      } catch (modelErr: any) {
+        console.log("AI analyze-prescription: gpt-4o failed, falling back to gpt-4o-mini:", modelErr?.message);
+        response = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: baseMessages,
+          max_completion_tokens: 1000,
+          temperature: 0.1,
+        });
+        console.log("AI analyze-prescription: used gpt-4o-mini (fallback)");
       }
 
       const text = response.choices?.[0]?.message?.content || "";

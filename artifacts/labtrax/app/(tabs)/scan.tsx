@@ -1845,9 +1845,11 @@ export default function ScanScreen() {
             {
               text: "Retry AI",
               onPress: () => {
-                if (casePhotos.length === 0) return;
+                setCapturedUri(null);
+                setCasePhotos([]);
+                setCaseAttachments([]);
                 autoAnalyzedRef.current = false;
-                handleFinishedReview();
+                setPhase("camera");
               },
             },
           ],
