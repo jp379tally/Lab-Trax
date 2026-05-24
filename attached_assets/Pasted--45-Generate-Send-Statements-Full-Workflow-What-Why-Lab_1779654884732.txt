@@ -1,0 +1,57 @@
+#45 - Generate & Send Statements — Full Workflow
+What & Why
+Lab admins need a first-class statement generation workflow on the Statements page. Today the page shows aggregated balances per practice, but sending statements requires manually opening each drawer. The new flow lets the user select any combination of practices/doctors, choose which invoices to include, preview PDF statements, and blast them all out by email and/or SMS in one operation.
+
+Done looks like
+A prominent "Generate Statements" button appears in the Statements page header (next to the existing Export CSV / Auto-send / Send history buttons).
+Clicking it opens a multi-step modal:
+Step 1 — Select recipients: A searchable, multi-select list of all practices/doctors (with checkbox per row). "Select all" and "Deselect all" controls included. Each row shows the practice name, open balance, and overdue amount.
+Step 2 — Invoice scope: Three options the user can pick:
+"Open invoices only" — unpaid/partial invoices regardless of age (default)
+"Open invoices + 90-day overdue" — same as above but the PDF calls out a separate 90+ days section
+"All invoices" — includes paid and voided invoices (full history statement)
+Step 3 — Delivery options: Toggles for "Send by email" and "Send by text (SMS)". Email uses the billing email on file; SMS uses the phone number on file. If a practice is missing the selected contact method it is flagged with a warning icon. User can also choose "Download only" to get all PDFs as a ZIP without sending.
+Step 4 — Review & Send: Shows a summary table (practice, email/phone, invoice count, open balance) before the final send. User optionally edits the email subject and body (pre-filled from the saved lab template with {{practiceName}}, {{openBalance}}, {{periodLabel}} placeholders). Hitting "Send" triggers the batch.
+A progress indicator shows real-time status as each statement is generated and sent ("Sending 3 of 12…").
+A final results screen shows how many succeeded and lists any failures (reason: no email on file, no phone on file, SMTP error, etc.) with a "Retry failed" option.
+All generated statements are server-side PDFs (via the existing pdfkit pipeline in lib/statements.ts). Each PDF includes:
+Lab logo and contact info at the top
+Practice name and billing address
+Invoice table grouped by status (open, paid, voided) with columns: invoice #, case #, date, due date, amount, paid, balance
+If "90-day overdue" scope is chosen, overdue invoices are highlighted in a separate section with aging buckets (30 / 60 / 90+ days)
+Totals row: total billed, total paid, open balance
+Statement period label (e.g. "Statement as of May 2026")
+Batch email hits a new API endpoint POST /api/:orgId/statements/batch-send that accepts a list of practice IDs, invoice scope, and delivery channels. It generates each PDF in sequence server-side and fires emails/SMS concurrently.
+Batch SMS uses the existing Twilio integration (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_PHONE_NUMBER). The SMS body is short: "Hi [Practice], your statement from [Lab] is ready. Open balance: $X. Reply STOP to opt out." with a note that the PDF was also emailed (if email was also selected).
+Every send is recorded in statement_send_runs (existing table) so history remains intact.
+Statement history on the practice page: The practice drawer/detail page shows a "Statements sent" section listing recent sends (date, period, channel, status, who triggered it).
+Saved email template: Lab admins can open "Statement Settings" (accessible from the Auto-send config or a gear icon on step 3) to save a default subject + body with placeholder support. This template pre-fills step 3 on every future send.
+If a practice has no billing email AND no phone number on file, it is disabled in the recipient list with a tooltip explaining why.
+Out of scope
+Provider/doctor-facing self-service portal for viewing their own statements (separate feature)
+Payments collected through the statement (no pay-now link in this iteration)
+Scheduling a one-off future send (Auto-send schedule already covers recurring sends)
+Statement generation for individual invoices (this is practice-level rollup only)
+Steps
+New API endpoint — batch statement generation and send: Add POST /api/:orgId/statements/batch-send accepting { practiceIds, invoiceScope, channels, emailSubject?, emailBody? }. Extend the existing generateStatementPdf function in lib/statements.ts to accept invoiceScope (open | open_overdue_90 | all) and adjust the invoice filter and PDF layout accordingly (add aging-bucket section and overdue callouts when requested). Generate each PDF and fan out email + SMS delivery.
+
+Twilio SMS delivery in statements: Add a sendStatementSms helper alongside the existing sendStatementEmail in lib/statements.ts. Use the same Twilio client already configured for SMS invites. The message body includes practice name, lab name, open balance, and an opt-out instruction. Wire it into the batch-send route.
+
+"Generate Statements" button and multi-step modal — recipient selection (Step 1): Add the button to the Statements page header. Build the modal shell with step navigation. Step 1 renders the full practice list with checkboxes (reuses the existing StatementRow data already fetched for the page), a search box, open balance, and overdue callouts. Practices missing both email and phone are shown but disabled with an explanatory tooltip.
+
+Modal — invoice scope and delivery options (Steps 2 & 3): Step 2 radio group for invoice scope. Step 3 toggles for email / SMS / download-only, with per-practice warnings for missing contact info. Include a "Statement Settings" link that opens the saved-template editor inline (or as a nested modal).
+
+Modal — review, send, and results (Step 4): Summary table before send. Email subject/body editor pre-filled from the saved template. "Send" button calls the batch-send endpoint. While in-flight show a progress state ("Generating 3 of 12…" — poll or use the response stream). On completion show a results screen: success count, failed list with reasons, and "Retry failed" button that re-triggers the endpoint for the subset.
+
+Saved email template persistence: Extend statement_schedule (or add a separate statement_settings row per lab) to store defaultEmailSubject and defaultEmailBody. Add a PUT /api/:orgId/statement-settings endpoint. The modal step 3 reads from this and the existing ScheduleModal (Auto-send settings) also shows/saves the same template fields. This supersedes the separate stub for Task #47.
+
+Statement history on the practice detail drawer: In the existing StatementDrawer (or the practice detail section of the statements page), add a "Statements sent" tab or section that queries GET /api/:orgId/statement-runs?practiceId=X and lists each run with date, channel (email/SMS/download), status, invoice count, open balance, and the triggering user. This supersedes the separate stub for Task #46.
+
+"Download all as ZIP" path: When the user selects "Download only" in step 3, the batch-send endpoint streams a ZIP archive (using the existing archiver dependency) containing one PDF per practice named Statement-<PracticeName>-<Period>.pdf. The frontend triggers a file download.
+
+Relevant files
+artifacts/labtrax-desktop/src/pages/statements.tsx
+artifacts/api-server/src/lib/statements.ts
+artifacts/api-server/src/routes/statements.ts
+artifacts/labtrax-desktop/src/lib/export.ts
+lib/db/src/schema/schema.ts
