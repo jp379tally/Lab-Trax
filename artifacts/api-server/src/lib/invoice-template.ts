@@ -34,6 +34,18 @@ export const extraImageSchema = z.object({
   opacity: z.number().min(0).max(1).default(1),
 });
 
+export const textBlockSchema = z.object({
+  id: z.string().min(1).max(64),
+  x: z.number().min(0).max(PAGE_W),
+  y: z.number().min(0).max(PAGE_H),
+  w: z.number().min(10).max(PAGE_W),
+  h: z.number().min(10).max(PAGE_H),
+  text: z.string().max(2000).default(""),
+  fontSize: z.number().min(6).max(72).default(10),
+  align: z.enum(["left", "center", "right"]).default("left"),
+  bold: z.boolean().default(false),
+});
+
 export const invoiceTemplateSchema = z.object({
   version: z.literal(1),
   logo: z.object({
@@ -52,11 +64,13 @@ export const invoiceTemplateSchema = z.object({
     totals: boxSchema,
   }),
   extraImages: z.array(extraImageSchema).max(12).default([]),
+  customTexts: z.array(textBlockSchema).max(20).default([]),
 });
 
 export type InvoiceTemplate = z.infer<typeof invoiceTemplateSchema>;
 export type InvoiceTemplateBox = z.infer<typeof boxSchema>;
 export type InvoiceTemplateExtraImage = z.infer<typeof extraImageSchema>;
+export type InvoiceTemplateTextBlock = z.infer<typeof textBlockSchema>;
 
 /**
  * Default template — coordinates match the original hard-coded jsPDF
@@ -81,6 +95,7 @@ export const DEFAULT_INVOICE_TEMPLATE: InvoiceTemplate = {
     totals: { x: 372, y: 500, w: 200, h: 120 },
   },
   extraImages: [],
+  customTexts: [],
 };
 
 /**

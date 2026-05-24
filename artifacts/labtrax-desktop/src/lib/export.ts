@@ -393,6 +393,31 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
     }
   }
 
+  // ── Custom text blocks ───────────────────────────────────────────────
+  for (const tb of template.customTexts ?? []) {
+    if (!tb.text || !tb.text.trim()) continue;
+    doc.setFontSize(tb.fontSize);
+    doc.setFont("helvetica", tb.bold ? "bold" : "normal");
+    doc.setTextColor(0);
+
+    const jsPdfAlign = tb.align === "center" ? "center" : tb.align === "right" ? "right" : "left";
+    const textX =
+      tb.align === "center"
+        ? tb.x + tb.w / 2
+        : tb.align === "right"
+        ? tb.x + tb.w
+        : tb.x;
+
+    // Split text to fit within the box width, then clip to box height.
+    const lines = doc.splitTextToSize(tb.text.trim(), tb.w);
+    const lineH = tb.fontSize * 1.3;
+    const maxLines = Math.max(1, Math.floor(tb.h / lineH));
+    const visibleLines = lines.slice(0, maxLines) as string[];
+
+    doc.text(visibleLines, textX, tb.y + tb.fontSize, { align: jsPdfAlign });
+    doc.setFont("helvetica", "normal");
+  }
+
   // ── Header box ───────────────────────────────────────────────────────
   const hdr = boxes.header;
   doc.setFontSize(20);

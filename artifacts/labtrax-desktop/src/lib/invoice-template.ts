@@ -27,6 +27,21 @@ export interface InvoiceTemplateExtraImage {
   opacity: number;
 }
 
+export type TextAlign = "left" | "center" | "right";
+
+export interface InvoiceTemplateTextBlock {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  text: string;
+  /** PDF points (8 | 10 | 12 | 14 | 18). */
+  fontSize: number;
+  align: TextAlign;
+  bold: boolean;
+}
+
 export interface InvoiceTemplate {
   version: 1;
   logo: {
@@ -45,6 +60,7 @@ export interface InvoiceTemplate {
     totals: InvoiceTemplateBox;
   };
   extraImages: InvoiceTemplateExtraImage[];
+  customTexts: InvoiceTemplateTextBlock[];
 }
 
 export const DEFAULT_INVOICE_TEMPLATE: InvoiceTemplate = {
@@ -65,6 +81,7 @@ export const DEFAULT_INVOICE_TEMPLATE: InvoiceTemplate = {
     totals: { x: 372, y: 500, w: 200, h: 120 },
   },
   extraImages: [],
+  customTexts: [],
 };
 
 export const SECTION_KEYS = [
@@ -102,6 +119,19 @@ export function coerceInvoiceTemplate(value: unknown): InvoiceTemplate {
       ? v.extraImages.map((img) => ({
           ...img,
           opacity: img.opacity ?? 1,
+        }))
+      : [],
+    customTexts: Array.isArray(v.customTexts)
+      ? v.customTexts.map((tb) => ({
+          id: tb.id ?? crypto.randomUUID(),
+          x: tb.x ?? 40,
+          y: tb.y ?? 700,
+          w: tb.w ?? 200,
+          h: tb.h ?? 40,
+          text: tb.text ?? "",
+          fontSize: tb.fontSize ?? 10,
+          align: tb.align ?? "left",
+          bold: tb.bold ?? false,
         }))
       : [],
   };

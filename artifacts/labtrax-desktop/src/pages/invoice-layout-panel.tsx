@@ -1,6 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, RotateCcw, Save, Trash2, Upload } from "lucide-react";
+import {
+  AlignCenter,
+  AlignLeft,
+  AlignRight,
+  Bold,
+  Loader2,
+  Plus,
+  RotateCcw,
+  Save,
+  Trash2,
+  Upload,
+  X,
+} from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import {
@@ -8,6 +20,8 @@ import {
   DEFAULT_INVOICE_TEMPLATE,
   type InvoiceTemplate,
   type InvoiceTemplateBox as TemplateBox,
+  type InvoiceTemplateTextBlock,
+  type TextAlign,
 } from "@/lib/invoice-template";
 
 type SectionKey = keyof InvoiceTemplate["boxes"];
@@ -28,6 +42,8 @@ const SECTION_COLORS: Record<SectionKey, string> = {
   totals: "rgba(244,63,94,0.18)",
 };
 
+const FONT_SIZES = [8, 10, 12, 14, 18] as const;
+
 interface TemplateApi {
   template: InvoiceTemplate;
   isCustom: boolean;
@@ -44,8 +60,8 @@ interface UploadedImage {
 type Handle = "move" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 
 interface DragState {
-  kind: "section" | "logo" | "extra";
-  key: string; // section name or extra index as string
+  kind: "section" | "logo" | "extra" | "text";
+  key: string;
   handle: Handle;
   startX: number;
   startY: number;
@@ -54,7 +70,6 @@ interface DragState {
 
 const PAGE_W = 612;
 const PAGE_H = 792;
-const CANVAS_W = 612; // 1pt = 1px at this scale; clamp via CSS
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
@@ -88,6 +103,20 @@ function applyDrag(start: TemplateBox, h: Handle, dx: number, dy: number): Templ
   return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(bh) };
 }
 
+function newTextBlock(): InvoiceTemplateTextBlock {
+  return {
+    id: crypto.randomUUID(),
+    x: 40,
+    y: 680,
+    w: 240,
+    h: 40,
+    text: "",
+    fontSize: 10,
+    align: "left",
+    bold: false,
+  };
+}
+
 export function InvoiceLayoutPanel() {
   const { user, refresh } = useAuth() as {
     user: { practiceOrganizationId?: string | null; practiceLogoUrl?: string | null } | null;
@@ -103,23 +132,35 @@ export function InvoiceLayoutPanel() {
       const res = await apiFetch<{ data: TemplateApi } | TemplateApi>(
         `/organizations/${orgId}/invoice-template`,
       );
-      // apiFetch may unwrap or not; handle both.
       return (res as any).data ?? (res as any);
     },
   });
 
   const [draft, setDraft] = useState<InvoiceTemplate>(DEFAULT_INVOICE_TEMPLATE);
   const [dirty, setDirty] = useState(false);
-  const [selected, setSelected] = useState<{ kind: "section" | "logo" | "extra"; key: string } | null>(null);
+  const [selected, setSelected] = useState<{ kind: "section" | "logo" | "extra" | "text"; key: string } | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
 
-  // Sync draft when server template loads.
   useEffect(() => {
     if (!query.data) return;
     setDraft(coerceInvoiceTemplate(query.data.template));
     setDirty(false);
   }, [query.data]);
+
+  // Deselect when clicking outside selection.
+  useEffect(() => {
+    if (!selected) return;
+    const kind = selected.kind;
+    const key = selected.key;
+    if (kind === "text") {
+      const exists = draft.customTexts.some((t) => t.id === key);
+      if (!exists) setSelected(null);
+    } else if (kind === "extra") {
+      const idx = Number(key);
+      if (!draft.extraImages[idx]) setSelected(null);
+    }
+  }, [draft, selected]);
 
   const saveMutation = useMutation({
     mutationFn: async (template: InvoiceTemplate | null) => {
@@ -206,16 +247,76 @@ export function InvoiceLayoutPanel() {
       if (d.kind === "logo") {
         return { ...cur, logo: { ...cur.logo, ...next } };
       }
-      const idx = Number(d.key);
-      const extras = cur.extraImages.slice();
-      extras[idx] = { ...extras[idx], ...next };
-      return { ...cur, extraImages: extras };
+      if (d.kind === "extra") {
+        const idx = Number(d.key);
+        const extras = cur.extraImages.slice();
+        extras[idx] = { ...extras[idx], ...next };
+        return { ...cur, extraImages: extras };
+      }
+      if (d.kind === "text") {
+        return {
+          ...cur,
+          customTexts: cur.customTexts.map((t) =>
+            t.id === d.key ? { ...t, ...next } : t
+          ),
+        };
+      }
+      return cur;
     });
     setDirty(true);
   }
 
   function endDrag() {
     dragRef.current = null;
+  }
+
+  // ── Selected extra image / text block props ─────────────────────────
+  const selectedExtraIdx =
+    selected?.kind === "extra" ? Number(selected.key) : -1;
+  const selectedExtra =
+    selectedExtraIdx >= 0 ? draft.extraImages[selectedExtraIdx] : null;
+  const selectedText =
+    selected?.kind === "text"
+      ? draft.customTexts.find((t) => t.id === selected.key) ?? null
+      : null;
+
+  function updateSelectedText(patch: Partial<InvoiceTemplateTextBlock>) {
+    if (!selected || selected.kind !== "text") return;
+    const id = selected.key;
+    setDraft((d) => ({
+      ...d,
+      customTexts: d.customTexts.map((t) => (t.id === id ? { ...t, ...patch } : t)),
+    }));
+    setDirty(true);
+  }
+
+  function deleteExtraImage(idx: number) {
+    const img = draft.extraImages[idx];
+    setDraft((d) => ({
+      ...d,
+      extraImages: d.extraImages.filter((_, j) => j !== idx),
+    }));
+    setDirty(true);
+    if (selected?.kind === "extra" && Number(selected.key) === idx) {
+      setSelected(null);
+    }
+    if (img) {
+      apiFetch(
+        `/organizations/${orgId}/invoice-template/images/${img.id}`,
+        { method: "DELETE" },
+      ).catch(() => undefined);
+    }
+  }
+
+  function deleteTextBlock(id: string) {
+    setDraft((d) => ({
+      ...d,
+      customTexts: d.customTexts.filter((t) => t.id !== id),
+    }));
+    setDirty(true);
+    if (selected?.kind === "text" && selected.key === id) {
+      setSelected(null);
+    }
   }
 
   // ── Render ──────────────────────────────────────────────────────────
@@ -247,7 +348,7 @@ export function InvoiceLayoutPanel() {
         <div>
           <h2 className="text-lg font-semibold">Invoice layout</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Drag and resize the labelled sections to design the invoice PDF.
+            Drag and resize sections, images, and text blocks to design the invoice PDF.
             Changes apply to every invoice this lab generates.
           </p>
         </div>
@@ -257,6 +358,7 @@ export function InvoiceLayoutPanel() {
             onClick={() => {
               setDraft(coerceInvoiceTemplate(query.data?.template));
               setDirty(false);
+              setSelected(null);
             }}
             disabled={!dirty || saveMutation.isPending}
             className="text-xs px-3 py-1.5 rounded border border-border hover:bg-secondary disabled:opacity-50"
@@ -267,6 +369,7 @@ export function InvoiceLayoutPanel() {
             type="button"
             onClick={() => {
               if (!confirm("Reset to the built-in default layout?")) return;
+              setSelected(null);
               saveMutation.mutate(null);
             }}
             disabled={saveMutation.isPending}
@@ -334,7 +437,23 @@ export function InvoiceLayoutPanel() {
               label={`Image ${i + 1}`}
               selected={selected?.kind === "extra" && selected?.key === String(i)}
               imageUrl={img.url}
+              opacity={img.opacity}
               onStart={(e, h) => startDrag(e, "extra", String(i), h, img)}
+              onDelete={() => deleteExtraImage(i)}
+            />
+          ))}
+
+          {/* Custom text blocks */}
+          {draft.customTexts.map((tb) => (
+            <DraggableBox
+              key={tb.id}
+              box={tb}
+              color="rgba(251,146,60,0.18)"
+              label={tb.text || "Text"}
+              selected={selected?.kind === "text" && selected?.key === tb.id}
+              textBlock={tb}
+              onStart={(e, h) => startDrag(e, "text", tb.id, h, tb)}
+              onDelete={() => deleteTextBlock(tb.id)}
             />
           ))}
 
@@ -365,6 +484,117 @@ export function InvoiceLayoutPanel() {
 
         {/* Right rail: controls */}
         <div className="space-y-5 text-sm">
+
+          {/* ── Selected text block editor ─────────────────────────── */}
+          {selectedText ? (
+            <section className="p-3 rounded border border-orange-200 bg-orange-50 dark:bg-orange-950/20 dark:border-orange-800 space-y-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-orange-600 dark:text-orange-400 mb-2">
+                Edit text block
+              </h3>
+              <textarea
+                className="w-full text-xs p-2 rounded border border-border bg-background resize-none focus:outline-none focus:ring-1 focus:ring-primary"
+                rows={3}
+                placeholder="Enter text…"
+                value={selectedText.text}
+                onChange={(e) => updateSelectedText({ text: e.target.value })}
+              />
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground shrink-0">Size</span>
+                <select
+                  value={selectedText.fontSize}
+                  onChange={(e) => updateSelectedText({ fontSize: Number(e.target.value) })}
+                  className="text-xs px-1.5 py-1 rounded border border-border bg-background focus:outline-none focus:ring-1 focus:ring-primary flex-1"
+                >
+                  {FONT_SIZES.map((s) => (
+                    <option key={s} value={s}>{s} pt</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => updateSelectedText({ align: "left" })}
+                  title="Align left"
+                  className={`p-1.5 rounded ${selectedText.align === "left" ? "bg-primary text-primary-foreground" : "hover:bg-secondary"}`}
+                >
+                  <AlignLeft size={12} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateSelectedText({ align: "center" })}
+                  title="Align center"
+                  className={`p-1.5 rounded ${selectedText.align === "center" ? "bg-primary text-primary-foreground" : "hover:bg-secondary"}`}
+                >
+                  <AlignCenter size={12} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateSelectedText({ align: "right" })}
+                  title="Align right"
+                  className={`p-1.5 rounded ${selectedText.align === "right" ? "bg-primary text-primary-foreground" : "hover:bg-secondary"}`}
+                >
+                  <AlignRight size={12} />
+                </button>
+                <div className="w-px h-4 bg-border mx-0.5" />
+                <button
+                  type="button"
+                  onClick={() => updateSelectedText({ bold: !selectedText.bold })}
+                  title="Bold"
+                  className={`p-1.5 rounded ${selectedText.bold ? "bg-primary text-primary-foreground" : "hover:bg-secondary"}`}
+                >
+                  <Bold size={12} />
+                </button>
+                <div className="flex-1" />
+                <button
+                  type="button"
+                  onClick={() => deleteTextBlock(selectedText.id)}
+                  title="Delete text block"
+                  className="p-1.5 rounded text-destructive hover:bg-destructive/10"
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
+            </section>
+          ) : null}
+
+          {/* ── Selected extra image controls ──────────────────────── */}
+          {selectedExtra ? (
+            <section className="p-3 rounded border border-indigo-200 bg-indigo-50 dark:bg-indigo-950/20 dark:border-indigo-800 space-y-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-indigo-600 dark:text-indigo-400 mb-2">
+                Image {selectedExtraIdx + 1}
+              </h3>
+              <label className="block">
+                <span className="text-xs text-muted-foreground">
+                  Opacity {(selectedExtra.opacity * 100).toFixed(0)}%
+                </span>
+                <input
+                  type="range"
+                  min={0.05}
+                  max={1}
+                  step={0.05}
+                  value={selectedExtra.opacity}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    setDraft((d) => {
+                      const next = d.extraImages.slice();
+                      next[selectedExtraIdx] = { ...next[selectedExtraIdx], opacity: v };
+                      return { ...d, extraImages: next };
+                    });
+                    setDirty(true);
+                  }}
+                  className="w-full mt-1"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={() => deleteExtraImage(selectedExtraIdx)}
+                className="text-xs text-destructive hover:bg-destructive/10 px-2 py-1 rounded flex items-center gap-1"
+              >
+                <Trash2 size={11} /> Remove image
+              </button>
+            </section>
+          ) : null}
+
           <section>
             <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
               Lab logo
@@ -419,6 +649,58 @@ export function InvoiceLayoutPanel() {
 
           <section>
             <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+              Custom text
+            </h3>
+            <button
+              type="button"
+              onClick={() => {
+                const tb = newTextBlock();
+                setDraft((d) => ({ ...d, customTexts: [...d.customTexts, tb] }));
+                setDirty(true);
+                setSelected({ kind: "text", key: tb.id });
+              }}
+              className="text-xs px-3 py-1.5 rounded border border-border hover:bg-secondary flex items-center gap-1"
+            >
+              <Plus size={12} /> Add text block
+            </button>
+            {draft.customTexts.length > 0 ? (
+              <ul className="mt-3 space-y-1">
+                {draft.customTexts.map((tb, i) => (
+                  <li
+                    key={tb.id}
+                    className={`flex items-center gap-2 text-xs p-2 rounded border cursor-pointer ${
+                      selected?.kind === "text" && selected.key === tb.id
+                        ? "border-primary bg-primary/5"
+                        : "border-border hover:bg-secondary"
+                    }`}
+                    onClick={() => setSelected({ kind: "text", key: tb.id })}
+                  >
+                    <span className="truncate flex-1 text-muted-foreground">
+                      {tb.text || `Text ${i + 1}`}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteTextBlock(tb.id);
+                      }}
+                      className="text-destructive hover:bg-destructive/10 p-0.5 rounded"
+                      aria-label="Remove text block"
+                    >
+                      <X size={11} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-2 text-xs text-muted-foreground">
+                No custom text blocks.
+              </p>
+            )}
+          </section>
+
+          <section>
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
               Extra images
             </h3>
             <label className="block">
@@ -459,40 +741,22 @@ export function InvoiceLayoutPanel() {
               {draft.extraImages.map((img, i) => (
                 <li
                   key={img.id}
-                  className="flex items-center gap-2 text-xs p-2 rounded border border-border"
+                  className={`flex items-center gap-2 text-xs p-2 rounded border cursor-pointer ${
+                    selected?.kind === "extra" && selected.key === String(i)
+                      ? "border-primary bg-primary/5"
+                      : "border-border hover:bg-secondary"
+                  }`}
+                  onClick={() => setSelected({ kind: "extra", key: String(i) })}
                 >
                   <span className="truncate flex-1">Image {i + 1}</span>
-                  <input
-                    type="range"
-                    min={0.05}
-                    max={1}
-                    step={0.05}
-                    value={img.opacity}
-                    onChange={(e) => {
-                      const v = Number(e.target.value);
-                      setDraft((d) => {
-                        const next = d.extraImages.slice();
-                        next[i] = { ...next[i], opacity: v };
-                        return { ...d, extraImages: next };
-                      });
-                      setDirty(true);
-                    }}
-                    className="w-20"
-                    title={`Opacity ${(img.opacity * 100).toFixed(0)}%`}
-                  />
+                  <span className="text-muted-foreground shrink-0">
+                    {(img.opacity * 100).toFixed(0)}%
+                  </span>
                   <button
                     type="button"
-                    onClick={() => {
-                      setDraft((d) => ({
-                        ...d,
-                        extraImages: d.extraImages.filter((_, j) => j !== i),
-                      }));
-                      setDirty(true);
-                      // best-effort server-side delete; ignore failure
-                      apiFetch(
-                        `/organizations/${orgId}/invoice-template/images/${img.id}`,
-                        { method: "DELETE" },
-                      ).catch(() => undefined);
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      deleteExtraImage(i);
                     }}
                     className="text-destructive hover:bg-destructive/10 p-1 rounded"
                     aria-label="Remove image"
@@ -542,7 +806,10 @@ interface DraggableBoxProps {
   label: string;
   selected?: boolean;
   imageUrl?: string;
+  opacity?: number;
+  textBlock?: InvoiceTemplateTextBlock;
   onStart: (e: React.PointerEvent, handle: Handle) => void;
+  onDelete?: () => void;
 }
 
 function DraggableBox({
@@ -551,8 +818,13 @@ function DraggableBox({
   label,
   selected,
   imageUrl,
+  opacity,
+  textBlock,
   onStart,
+  onDelete,
 }: DraggableBoxProps) {
+  const [hovered, setHovered] = useState(false);
+
   const style: React.CSSProperties = {
     position: "absolute",
     left: `${(box.x / PAGE_W) * 100}%`,
@@ -564,9 +836,17 @@ function DraggableBox({
     cursor: "move",
     boxSizing: "border-box",
   };
+
   const handles: Handle[] = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
+  const showDelete = onDelete && (selected || hovered);
+
   return (
-    <div style={style} onPointerDown={(e) => onStart(e, "move")}>
+    <div
+      style={style}
+      onPointerDown={(e) => onStart(e, "move")}
+      onPointerEnter={() => setHovered(true)}
+      onPointerLeave={() => setHovered(false)}
+    >
       {imageUrl ? (
         <img
           src={imageUrl}
@@ -577,27 +857,92 @@ function DraggableBox({
             height: "100%",
             objectFit: "contain",
             pointerEvents: "none",
-            opacity: 0.7,
+            opacity: opacity !== undefined ? opacity : 0.7,
           }}
         />
       ) : null}
-      <span
-        style={{
-          position: "absolute",
-          left: 4,
-          top: 2,
-          fontSize: 9,
-          fontFamily: "ui-sans-serif, system-ui",
-          color: "#111",
-          background: "rgba(255,255,255,0.7)",
-          padding: "0 4px",
-          borderRadius: 2,
-          pointerEvents: "none",
-          whiteSpace: "nowrap",
-        }}
-      >
-        {label}
-      </span>
+
+      {textBlock ? (
+        <div
+          style={{
+            position: "absolute",
+            inset: 2,
+            overflow: "hidden",
+            fontSize: `${(textBlock.fontSize / PAGE_H) * 100}cqh`,
+            fontWeight: textBlock.bold ? "bold" : "normal",
+            textAlign: textBlock.align as TextAlign,
+            color: "#111",
+            lineHeight: 1.3,
+            pointerEvents: "none",
+            display: "flex",
+            alignItems: "flex-start",
+            padding: "2px 4px",
+          }}
+        >
+          <span style={{ width: "100%" }}>
+            {textBlock.text || (
+              <span style={{ opacity: 0.4, fontStyle: "italic", fontWeight: "normal" }}>
+                Text
+              </span>
+            )}
+          </span>
+        </div>
+      ) : null}
+
+      {!textBlock ? (
+        <span
+          style={{
+            position: "absolute",
+            left: 4,
+            top: 2,
+            fontSize: 9,
+            fontFamily: "ui-sans-serif, system-ui",
+            color: "#111",
+            background: "rgba(255,255,255,0.7)",
+            padding: "0 4px",
+            borderRadius: 2,
+            pointerEvents: "none",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {label}
+        </span>
+      ) : null}
+
+      {/* Delete button */}
+      {showDelete ? (
+        <button
+          type="button"
+          onPointerDown={(e) => {
+            e.stopPropagation();
+          }}
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete?.();
+          }}
+          style={{
+            position: "absolute",
+            top: -8,
+            right: -8,
+            width: 16,
+            height: 16,
+            borderRadius: "50%",
+            background: "#ef4444",
+            color: "white",
+            border: "1.5px solid white",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+            zIndex: 10,
+            padding: 0,
+          }}
+          aria-label="Delete"
+        >
+          <X size={9} strokeWidth={3} />
+        </button>
+      ) : null}
+
       {handles.map((h) => (
         <span
           key={h}
