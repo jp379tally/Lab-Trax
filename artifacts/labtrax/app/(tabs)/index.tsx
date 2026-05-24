@@ -1708,7 +1708,7 @@ function ColResizeHandle({ colIdx, widthRef, onWidthChange }: {
 }
 
 function AdminDashboard() {
-  const { cases, clients, addClient, updateClient, addCase, users, addUser, updateUser, removeUser, invoices, updateInvoice, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, addNotification, customStationLabels, updateStationLabel, removeCase, removeClient, deactivateClient, reactivateClient, deletedClientInvoices, inactiveClients, sendLabInvite, pendingInvoiceEditId, setPendingInvoiceEditId } = useApp();
+  const { cases, clients, addClient, updateClient, addCase, users, addUser, updateUser, removeUser, invoices, updateInvoice, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, addNotification, customStationLabels, updateStationLabel, removeCase, removeClient, deactivateClient, reactivateClient, deletedClientInvoices, inactiveClients, sendLabInvite, pendingInvoiceEditId, setPendingInvoiceEditId, allLabOrganizationIds } = useApp();
   const { currentUser, currentUserId, registeredUsers } = useAuth();
   const [removeConfirmVisible, setRemoveConfirmVisible] = useState(false);
   const insets = useSafeAreaInsets();
@@ -1983,6 +1983,35 @@ function AdminDashboard() {
     textMessage?: string
   ) {
     const stmtDate = new Date().toLocaleDateString();
+
+    let textBlocksHtml = "";
+    const orgId = allLabOrganizationIds[0];
+    if (orgId) {
+      try {
+        const resp = await apiRequest("GET", `/api/organizations/${encodeURIComponent(orgId)}/invoice-template`);
+        const payload = resp as { data?: { template?: { customTexts?: { id: string; sourceId?: string }[]; defaultTextBlocks?: { id: string; text: string; fontSize: number; align: string; bold: boolean }[] } } };
+        const template = payload?.data?.template;
+        if (template && Array.isArray(template.customTexts) && Array.isArray(template.defaultTextBlocks)) {
+          const enabledSourceIds = new Set(
+            template.customTexts.filter((ct) => ct.sourceId).map((ct) => ct.sourceId as string)
+          );
+          const enabledBlocks = template.defaultTextBlocks.filter(
+            (dtb) => enabledSourceIds.has(dtb.id) && dtb.text.trim()
+          );
+          if (enabledBlocks.length > 0) {
+            const esc = (v: unknown) =>
+              String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+            textBlocksHtml = `<div style="margin-top:24px;padding-top:16px;border-top:1px solid #ddd;display:flex;flex-wrap:wrap;gap:16px;">
+              ${enabledBlocks.map(tb =>
+                `<div style="flex:1;min-width:220px;font-size:${tb.fontSize}px;font-weight:${tb.bold ? "700" : "400"};text-align:${tb.align};color:#1a1a1a;white-space:pre-wrap;">${esc(tb.text)}</div>`
+              ).join("")}
+            </div>`;
+          }
+        }
+      } catch {
+      }
+    }
+
     const htmlSections = stmtData.map(cs => {
       let runBal = 0;
       const rows = cs.invoices.map(inv => {
@@ -2032,7 +2061,7 @@ function AdminDashboard() {
       </div>`;
     }).join("");
 
-    const fullHtml = `<html><head><meta charset="utf-8"><style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:20px;color:#1a1a1a;}</style></head><body>${htmlSections}</body></html>`;
+    const fullHtml = `<html><head><meta charset="utf-8"><style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:20px;color:#1a1a1a;}</style></head><body>${htmlSections}${textBlocksHtml}</body></html>`;
 
     try {
       const { uri } = await Print.printToFileAsync({ html: fullHtml });
