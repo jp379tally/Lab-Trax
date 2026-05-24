@@ -2391,10 +2391,11 @@ export default function ScanScreen() {
           throw new Error(body?.message ?? "Server error");
         }
         const data = await r.json();
-        if (typeof data?.caseNumber !== "string" || !data.caseNumber) {
+        const caseNum = data?.data?.caseNumber ?? data?.caseNumber;
+        if (typeof caseNum !== "string" || !caseNum) {
           throw new Error("Invalid response from server");
         }
-        caseNumber = data.caseNumber as string;
+        caseNumber = caseNum;
       } catch (fetchErr: unknown) {
         const msg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
         Alert.alert(
