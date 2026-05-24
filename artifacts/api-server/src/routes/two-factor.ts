@@ -20,6 +20,11 @@ import {
 import { setAuthCookies } from "../lib/cookies";
 import { encryptTotpSecret, decryptTotpSecret } from "../lib/totp-encryption";
 import { writeAuditLog } from "../lib/audit";
+import {
+  sendTwoFactorEnabledEmail,
+  sendTwoFactorDisabledEmail,
+  sendTwoFactorBackupCodeUsedEmail,
+} from "../lib/mail";
 
 const router = Router();
 
@@ -104,6 +109,17 @@ router.post(
       entityId: userId,
     });
 
+    if (user.email) {
+      sendTwoFactorEnabledEmail({
+        to: user.email,
+        username: user.username ?? user.email,
+        ipAddress: req.ip ?? null,
+        timestamp: new Date().toISOString(),
+      }).catch((err) => {
+        req.log.warn({ err }, "[2fa] failed to send 2fa_enabled email");
+      });
+    }
+
     return ok(res, { enabled: true, backupCodes: plainCodes });
   })
 );
@@ -158,6 +174,17 @@ router.delete(
       entityType: "user",
       entityId: userId,
     });
+
+    if (user.email) {
+      sendTwoFactorDisabledEmail({
+        to: user.email,
+        username: user.username ?? user.email,
+        ipAddress: req.ip ?? null,
+        timestamp: new Date().toISOString(),
+      }).catch((err) => {
+        req.log.warn({ err }, "[2fa] failed to send 2fa_disabled email");
+      });
+    }
 
     return ok(res, { success: true });
   })
@@ -259,6 +286,17 @@ router.post(
           const remaining = codes.filter((_, idx) => idx !== i);
           await db.update(users).set({ twoFactorBackupCodes: remaining }).where(eq(users.id, userId));
           await writeAuditLog({ req, userId, action: "2fa_backup_code_used", entityType: "user", entityId: userId });
+          if (user.email) {
+            sendTwoFactorBackupCodeUsedEmail({
+              to: user.email,
+              username: user.username ?? user.email,
+              remainingCount: remaining.length,
+              ipAddress: req.ip ?? null,
+              timestamp: new Date().toISOString(),
+            }).catch((err) => {
+              req.log.warn({ err }, "[2fa] failed to send 2fa_backup_code_used email");
+            });
+          }
           verified = true;
           break;
         }
