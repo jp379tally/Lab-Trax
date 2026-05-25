@@ -63,6 +63,7 @@ function RegisterTable({
   const [editing, setEditing] = useState<BankTransaction | null>(null);
   const [showInlineRows, setShowInlineRows] = useState(false);
   const [inlineDateGroup, setInlineDateGroup] = useState<string | null>(null);
+  const [inlineDateGroupIsPartial, setInlineDateGroupIsPartial] = useState(false);
   const [importing, setImporting] = useState(false);
   const [transferring, setTransferring] = useState(false);
   const [recurringFor, setRecurringFor] = useState<BankTransaction | null>(null);
@@ -542,18 +543,25 @@ function RegisterTable({
                       rowCount={1}
                       defaultDate={date}
                       onSaved={() => qc.invalidateQueries({ queryKey: ["finance"] })}
-                      onAllDismissed={() => setInlineDateGroup(null)}
+                      onAllDismissed={() => {
+                        setInlineDateGroup(null);
+                        setInlineDateGroupIsPartial(false);
+                      }}
+                      onPartialChange={setInlineDateGroupIsPartial}
                     />
                   ) : (
                     <tr className="border-t border-border/30">
                       <td colSpan={12} className="px-4 py-0">
                         <button
                           type="button"
+                          disabled={inlineDateGroupIsPartial}
+                          title={inlineDateGroupIsPartial ? "Finish or dismiss the open entry form first" : undefined}
                           onClick={() => {
                             setShowInlineRows(false);
+                            setInlineDateGroupIsPartial(false);
                             setInlineDateGroup(date);
                           }}
-                          className="text-xs text-muted-foreground/60 hover:text-primary inline-flex items-center gap-1 py-1 transition-colors"
+                          className="text-xs text-muted-foreground/60 hover:text-primary inline-flex items-center gap-1 py-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-muted-foreground/60"
                         >
                           <Plus size={11} /> Add entry
                         </button>
@@ -990,6 +998,7 @@ function InlineBlankRows({
   defaultDate,
   onSaved,
   onAllDismissed,
+  onPartialChange,
 }: {
   accountId: string;
   organizationId: string;
@@ -999,6 +1008,7 @@ function InlineBlankRows({
   defaultDate?: string;
   onSaved: () => void;
   onAllDismissed?: () => void;
+  onPartialChange?: (hasPartial: boolean) => void;
 }) {
   const [entries, setEntries] = useState<BlankRowEntry[]>(() =>
     Array.from({ length: Math.max(1, rowCount) }, (_, i) => ({
@@ -1010,6 +1020,19 @@ function InlineBlankRows({
   );
   const nextKeyRef = useRef(entries.length);
   const [latestKey, setLatestKey] = useState<number | null>(null);
+  const partialKeysRef = useRef<Set<number>>(new Set());
+  const onPartialChangeRef = useRef(onPartialChange);
+  onPartialChangeRef.current = onPartialChange;
+
+  function handlePartialChange(key: number, isPartial: boolean) {
+    const prev = partialKeysRef.current.has(key);
+    if (isPartial === prev) return;
+    const next = new Set(partialKeysRef.current);
+    if (isPartial) next.add(key);
+    else next.delete(key);
+    partialKeysRef.current = next;
+    onPartialChangeRef.current?.(next.size > 0);
+  }
 
   function handleSaved() {
     const newKey = nextKeyRef.current++;
@@ -1027,6 +1050,7 @@ function InlineBlankRows({
   }
 
   function handleDismiss(key: number, values: BlankRowValues) {
+    handlePartialChange(key, false);
     setEntries((prev) => {
       const next = prev.filter((e) => e.key !== key);
       if (next.length === 0) onAllDismissed?.();
@@ -1062,6 +1086,7 @@ function InlineBlankRows({
           autoFocus={entry.key === latestKey}
           onSaved={handleSaved}
           onDismiss={(values) => handleDismiss(entry.key, values)}
+          onIsPartialChange={(partial) => handlePartialChange(entry.key, partial)}
         />
       ))}
     </>
@@ -1077,6 +1102,7 @@ function BlankRow({
   initialValues,
   onSaved,
   onDismiss,
+  onIsPartialChange,
 }: {
   accountId: string;
   organizationId: string;
@@ -1086,6 +1112,7 @@ function BlankRow({
   initialValues?: BlankRowValues;
   onSaved: () => void;
   onDismiss?: (values: BlankRowValues) => void;
+  onIsPartialChange?: (isPartial: boolean) => void;
 }) {
   const qc = useQueryClient();
   const rowRef = useRef<HTMLTableRowElement>(null);
@@ -1110,6 +1137,15 @@ function BlankRow({
   const hasAnyData =
     !!payee.trim() || hasAmount || !!memo.trim() || !!categoryId;
   const isPartial = hasAnyData && !ready && !savedOnce;
+
+  const onIsPartialChangeRef = useRef(onIsPartialChange);
+  onIsPartialChangeRef.current = onIsPartialChange;
+  useEffect(() => {
+    onIsPartialChangeRef.current?.(isPartial);
+  }, [isPartial]);
+  useEffect(() => {
+    return () => { onIsPartialChangeRef.current?.(false); };
+  }, []);
 
   async function save() {
     if (!ready || saving || savedOnce) return;
