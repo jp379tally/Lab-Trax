@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeftRight, Ban, CheckCircle2, Download, Loader2, Plus, Repeat, Search, Trash2, Upload, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
@@ -72,6 +72,14 @@ function RegisterTable({
 
   const { widths: colWidths, totalWidth: colTotalWidth, resizingCol, startResize, resetColumn } =
     useColumnWidths([...FINANCE_COL_DEFAULTS], "labtrax_finance_col_widths_v2");
+
+  const theadRef = useRef<HTMLTableSectionElement>(null);
+  const [theadHeight, setTheadHeight] = useState(33);
+  useLayoutEffect(() => {
+    if (theadRef.current) {
+      setTheadHeight(theadRef.current.getBoundingClientRect().height);
+    }
+  }, [colWidths]);
 
   const params = useMemo(() => {
     const sp = new URLSearchParams();
@@ -287,7 +295,7 @@ function RegisterTable({
           </button>
         </div>
 
-        <div className="overflow-x-auto relative">
+        <div className="overflow-x-auto overflow-y-auto relative" style={{ maxHeight: "calc(100vh - 22rem)" }}>
           {resizingCol !== null && (
             <div
               className="bg-primary/50 pointer-events-none absolute top-0 bottom-0 z-10"
@@ -326,8 +334,8 @@ function RegisterTable({
               {/* col 10: fixed Actions */}
               <col style={{ width: FINANCE_FIXED_ACTIONS }} />
             </colgroup>
-            <thead>
-              <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
+            <thead ref={theadRef} style={{ position: "sticky", top: 0, zIndex: 20 }}>
+              <tr className="bg-secondary text-[11px] uppercase tracking-wide text-muted-foreground">
                 {/* First 7 resizable columns: Type → Deposit */}
                 {FINANCE_PRE_LABELS.map((label, i) => {
                   const isRight = i === 5 || i === 6;
@@ -418,8 +426,12 @@ function RegisterTable({
               )}
               {dateGroups.map(({ date, rows: groupRows }) => (
                 <Fragment key={date}>
-                  <tr className="border-t border-border/60 bg-muted/40">
-                    <td colSpan={11} className="px-4 py-1 text-[11px] font-semibold text-muted-foreground tracking-wide uppercase select-none">
+                  <tr className="border-t border-border/60">
+                    <td
+                      colSpan={11}
+                      className="px-4 py-1 text-[11px] font-semibold text-muted-foreground tracking-wide uppercase select-none bg-muted/80"
+                      style={{ position: "sticky", top: theadHeight, zIndex: 10 }}
+                    >
                       {formatDate(date)}
                     </td>
                   </tr>
