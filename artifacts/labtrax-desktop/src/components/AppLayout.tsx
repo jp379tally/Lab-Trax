@@ -12,6 +12,7 @@ import {
   FileBarChart2,
   FileText,
   LayoutDashboard,
+  List,
   Loader2,
   LogOut,
   MonitorDown,
@@ -77,6 +78,7 @@ const NAV: (NavItem | NavGroup)[] = [
     ],
   },
   { label: "Pricing", path: "/pricing", icon: Tag },
+  { label: "Lists", path: "/lists", icon: List, billingOnly: true },
   { label: "Reports", path: "/reports", icon: FileBarChart2, billingOnly: true },
 ];
 

@@ -1,0 +1,1026 @@
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ChevronsUpDown, ChevronUp, ChevronDown as ChevronDownIcon, Loader2, Pencil, Plus, Search, X } from "lucide-react";
+import { apiFetch } from "@/lib/api";
+import { formatPhone } from "@/lib/format";
+
+type SortDir = "asc" | "desc";
+
+function SortTh({
+  label,
+  sortKey,
+  active,
+  dir,
+  onClick,
+  className = "",
+}: {
+  label: string;
+  sortKey: string;
+  active: boolean;
+  dir: SortDir;
+  onClick: (key: string) => void;
+  className?: string;
+}) {
+  return (
+    <th
+      className={`text-left font-medium px-3 py-2 cursor-pointer select-none whitespace-nowrap group ${className}`}
+      onClick={() => onClick(sortKey)}
+    >
+      <span className="inline-flex items-center gap-1">
+        {label}
+        {active ? (
+          dir === "asc" ? <ChevronUp size={11} className="opacity-70" /> : <ChevronDownIcon size={11} className="opacity-70" />
+        ) : (
+          <ChevronsUpDown size={11} className="opacity-0 group-hover:opacity-40 transition-opacity" />
+        )}
+      </span>
+    </th>
+  );
+}
+
+type VendorType = "vendor" | "employee" | "item";
+
+interface Vendor {
+  id: string;
+  name: string;
+  address: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+  phone: string | null;
+  email: string | null;
+  website: string | null;
+  notes: string | null;
+  vendorType: VendorType;
+  isActive: boolean;
+}
+
+interface Category {
+  id: string;
+  name: string;
+  kind: string;
+  color: string | null;
+  description: string | null;
+  isArchived: boolean;
+}
+
+const TYPE_TABS: { key: VendorType; label: string }[] = [
+  { key: "vendor", label: "Vendors" },
+  { key: "employee", label: "Employees" },
+  { key: "item", label: "Items" },
+];
+
+const TYPE_BADGE: Record<VendorType, string> = {
+  vendor: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+  employee: "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300",
+  item: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
+};
+
+const TYPE_LABEL: Record<VendorType, string> = {
+  vendor: "Vendor",
+  employee: "Employee",
+  item: "Item",
+};
+
+const KIND_BADGE: Record<string, string> = {
+  income: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+  expense: "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300",
+  transfer: "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300",
+};
+
+const KIND_LABEL: Record<string, string> = {
+  income: "Income",
+  expense: "Expense",
+  transfer: "Transfer",
+};
+
+type Tab = VendorType | "categories";
+
+interface VendorForm {
+  name: string;
+  vendorType: VendorType;
+  address: string;
+  city: string;
+  state: string;
+  zip: string;
+  phone: string;
+  email: string;
+  website: string;
+  notes: string;
+  isActive: boolean;
+}
+
+interface CategoryForm {
+  name: string;
+  kind: "income" | "expense" | "transfer";
+  color: string;
+  description: string;
+  isActive: boolean;
+}
+
+const emptyVendorForm = (type: VendorType = "vendor"): VendorForm => ({
+  name: "",
+  vendorType: type,
+  address: "",
+  city: "",
+  state: "",
+  zip: "",
+  phone: "",
+  email: "",
+  website: "",
+  notes: "",
+  isActive: true,
+});
+
+const emptyCategoryForm = (): CategoryForm => ({
+  name: "",
+  kind: "expense",
+  color: "",
+  description: "",
+  isActive: true,
+});
+
+export default function ListsPage() {
+  const qc = useQueryClient();
+  const meQuery = useQuery({
+    queryKey: ["auth", "me"],
+    queryFn: () => apiFetch<any>("/auth/me"),
+  });
+
+  const orgId: string | undefined = meQuery.data?.memberships?.find(
+    (m: any) => m.status === "active" && m.organization?.type === "lab"
+  )?.labId;
+
+  if (!orgId) {
+    return (
+      <div className="flex items-center justify-center py-24 text-muted-foreground">
+        <Loader2 size={16} className="animate-spin mr-2" />
+        Loading…
+      </div>
+    );
+  }
+
+  return <ListsContent organizationId={orgId} />;
+}
+
+function ListsContent({ organizationId }: { organizationId: string }) {
+  const qc = useQueryClient();
+  const [activeTab, setActiveTab] = useState<Tab>("vendor");
+  const [search, setSearch] = useState("");
+  const [showDrawer, setShowDrawer] = useState(false);
+  const [drawerVendor, setDrawerVendor] = useState<Vendor | null>(null);
+  const [drawerCategory, setDrawerCategory] = useState<Category | null>(null);
+  const [vendorForm, setVendorForm] = useState<VendorForm>(emptyVendorForm("vendor"));
+  const [categoryForm, setCategoryForm] = useState<CategoryForm>(emptyCategoryForm());
+
+  const vendorsQuery = useQuery({
+    queryKey: ["finance", "vendors", organizationId, "all"],
+    queryFn: () =>
+      apiFetch<Vendor[]>(
+        `/finance/vendors?organizationId=${organizationId}&includeInactive=true`
+      ),
+    enabled: !!organizationId,
+  });
+
+  const catsQuery = useQuery({
+    queryKey: ["finance", "categories", organizationId, "all"],
+    queryFn: () =>
+      apiFetch<Category[]>(`/finance/categories?organizationId=${organizationId}`),
+    enabled: !!organizationId,
+  });
+
+  const allVendors = vendorsQuery.data ?? [];
+  const allCategories = catsQuery.data ?? [];
+
+  function invalidateVendors() {
+    qc.invalidateQueries({ queryKey: ["finance", "vendors", organizationId] });
+  }
+  function invalidateCategories() {
+    qc.invalidateQueries({ queryKey: ["finance", "categories", organizationId] });
+  }
+
+  const createVendorMut = useMutation({
+    mutationFn: (form: VendorForm) =>
+      apiFetch("/finance/vendors", {
+        method: "POST",
+        body: JSON.stringify({
+          organizationId,
+          name: form.name.trim(),
+          vendorType: form.vendorType,
+          address: form.address.trim() || null,
+          city: form.city.trim() || null,
+          state: form.state.trim() || null,
+          zip: form.zip.trim() || null,
+          phone: form.phone.trim() || null,
+          email: form.email.trim() || null,
+          website: form.website.trim() || null,
+          notes: form.notes.trim() || null,
+          isActive: form.isActive,
+        }),
+      }),
+    onSuccess: () => {
+      closeDrawer();
+      invalidateVendors();
+    },
+  });
+
+  const updateVendorMut = useMutation({
+    mutationFn: ({ id, form }: { id: string; form: VendorForm }) =>
+      apiFetch(`/finance/vendors/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          name: form.name.trim(),
+          vendorType: form.vendorType,
+          address: form.address.trim() || null,
+          city: form.city.trim() || null,
+          state: form.state.trim() || null,
+          zip: form.zip.trim() || null,
+          phone: form.phone.trim() || null,
+          email: form.email.trim() || null,
+          website: form.website.trim() || null,
+          notes: form.notes.trim() || null,
+          isActive: form.isActive,
+        }),
+      }),
+    onSuccess: () => {
+      closeDrawer();
+      invalidateVendors();
+    },
+  });
+
+  const createCatMut = useMutation({
+    mutationFn: (form: CategoryForm) =>
+      apiFetch("/finance/categories", {
+        method: "POST",
+        body: JSON.stringify({
+          organizationId,
+          name: form.name.trim(),
+          kind: form.kind,
+          color: form.color || null,
+          description: form.description.trim() || null,
+        }),
+      }),
+    onSuccess: () => {
+      closeDrawer();
+      invalidateCategories();
+    },
+  });
+
+  const updateCatMut = useMutation({
+    mutationFn: ({ id, form }: { id: string; form: CategoryForm }) =>
+      apiFetch(`/finance/categories/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          name: form.name.trim(),
+          kind: form.kind,
+          color: form.color || null,
+          description: form.description.trim() || null,
+          isArchived: !form.isActive,
+        }),
+      }),
+    onSuccess: () => {
+      closeDrawer();
+      invalidateCategories();
+    },
+  });
+
+  const deactivateCatMut = useMutation({
+    mutationFn: (id: string) =>
+      apiFetch(`/finance/categories/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      closeDrawer();
+      invalidateCategories();
+    },
+  });
+
+  function openAddVendor(type: VendorType) {
+    setDrawerVendor(null);
+    setDrawerCategory(null);
+    setVendorForm(emptyVendorForm(type));
+    setShowDrawer(true);
+  }
+
+  function openEditVendor(v: Vendor) {
+    setDrawerVendor(v);
+    setDrawerCategory(null);
+    setVendorForm({
+      name: v.name,
+      vendorType: v.vendorType,
+      address: v.address ?? "",
+      city: v.city ?? "",
+      state: v.state ?? "",
+      zip: v.zip ?? "",
+      phone: v.phone ?? "",
+      email: v.email ?? "",
+      website: v.website ?? "",
+      notes: v.notes ?? "",
+      isActive: v.isActive,
+    });
+    setShowDrawer(true);
+  }
+
+  function openAddCategory() {
+    setDrawerVendor(null);
+    setDrawerCategory(null);
+    setCategoryForm(emptyCategoryForm());
+    setShowDrawer(true);
+  }
+
+  function openEditCategory(c: Category) {
+    setDrawerVendor(null);
+    setDrawerCategory(c);
+    setCategoryForm({
+      name: c.name,
+      kind: c.kind as CategoryForm["kind"],
+      color: c.color ?? "",
+      description: c.description ?? "",
+      isActive: !c.isArchived,
+    });
+    setShowDrawer(true);
+  }
+
+  function closeDrawer() {
+    setShowDrawer(false);
+    setDrawerVendor(null);
+    setDrawerCategory(null);
+  }
+
+  const isCategoriesTab = activeTab === "categories";
+
+  const filteredVendors = allVendors
+    .filter((v) => v.vendorType === (activeTab as VendorType))
+    .filter(
+      (v) =>
+        !search.trim() ||
+        v.name.toLowerCase().includes(search.toLowerCase()) ||
+        (v.email ?? "").toLowerCase().includes(search.toLowerCase()) ||
+        (v.phone ?? "").includes(search) ||
+        (v.city ?? "").toLowerCase().includes(search.toLowerCase())
+    );
+
+  const filteredCategories = allCategories.filter(
+    (c) =>
+      !search.trim() ||
+      c.name.toLowerCase().includes(search.toLowerCase()) ||
+      c.kind.toLowerCase().includes(search.toLowerCase())
+  );
+
+  const tabCounts = {
+    vendor: allVendors.filter((v) => v.vendorType === "vendor").length,
+    employee: allVendors.filter((v) => v.vendorType === "employee").length,
+    item: allVendors.filter((v) => v.vendorType === "item").length,
+    categories: allCategories.length,
+  };
+
+  const allTabs: { key: Tab; label: string }[] = [
+    ...TYPE_TABS,
+    { key: "categories", label: "Categories" },
+  ];
+
+  function handleTabChange(tab: Tab) {
+    setActiveTab(tab);
+    setSearch("");
+    setShowDrawer(false);
+  }
+
+  const isVendorPending = createVendorMut.isPending || updateVendorMut.isPending;
+  const isCatPending = createCatMut.isPending || updateCatMut.isPending;
+  const vendorError =
+    (createVendorMut.error instanceof Error ? createVendorMut.error.message : null) ||
+    (updateVendorMut.error instanceof Error ? updateVendorMut.error.message : null);
+  const catError =
+    (createCatMut.error instanceof Error ? createCatMut.error.message : null) ||
+    (updateCatMut.error instanceof Error ? updateCatMut.error.message : null);
+
+  return (
+    <div className="space-y-5 relative">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">Lists</h1>
+        <p className="text-sm text-muted-foreground mt-1">
+          Manage vendors, employees, items, and transaction categories used across the register.
+        </p>
+      </div>
+
+      <div className="bg-card border border-border rounded-xl overflow-hidden">
+        <div className="border-b border-border">
+          <div className="flex items-center justify-between px-4 pt-3 pb-0">
+            <nav className="flex gap-1 -mb-px">
+              {allTabs.map((t) => {
+                const count = tabCounts[t.key];
+                const active = activeTab === t.key;
+                return (
+                  <button
+                    key={t.key}
+                    type="button"
+                    onClick={() => handleTabChange(t.key)}
+                    className={`px-3.5 py-2 text-sm font-medium border-b-2 transition-colors inline-flex items-center gap-1.5 ${
+                      active
+                        ? "border-primary text-foreground"
+                        : "border-transparent text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {t.label}
+                    {count > 0 && (
+                      <span className="text-[11px] bg-secondary text-muted-foreground rounded-full px-1.5 py-0 leading-5 tabular-nums">
+                        {count}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </nav>
+          </div>
+        </div>
+
+        <div className="px-4 py-3 border-b border-border flex items-center gap-2">
+          <div className="relative flex-1 min-w-[180px] max-w-sm">
+            <Search
+              size={14}
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+            />
+            <input
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={`Search ${isCategoriesTab ? "categories" : TYPE_LABEL[activeTab as VendorType].toLowerCase() + "s"}…`}
+              className="w-full h-9 pl-8 pr-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
+            />
+          </div>
+          <div className="flex-1" />
+          <button
+            type="button"
+            onClick={() =>
+              isCategoriesTab
+                ? openAddCategory()
+                : openAddVendor(activeTab as VendorType)
+            }
+            className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-1.5"
+          >
+            <Plus size={14} />
+            Add {isCategoriesTab ? "Category" : TYPE_LABEL[activeTab as VendorType]}
+          </button>
+        </div>
+
+        {isCategoriesTab ? (
+          <CategoriesTable
+            categories={filteredCategories}
+            isLoading={catsQuery.isLoading}
+            search={search}
+            onEdit={openEditCategory}
+          />
+        ) : (
+          <VendorsTable
+            vendors={filteredVendors}
+            isLoading={vendorsQuery.isLoading}
+            search={search}
+            typeLabel={TYPE_LABEL[activeTab as VendorType]}
+            onEdit={openEditVendor}
+          />
+        )}
+      </div>
+
+      {showDrawer && (
+        <>
+          <div
+            className="fixed inset-0 z-40 bg-foreground/20"
+            onClick={closeDrawer}
+          />
+          <div className="fixed right-0 top-0 bottom-0 w-[420px] z-50 bg-card border-l border-border shadow-2xl flex flex-col">
+            <header className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
+              <h2 className="text-sm font-semibold">
+                {isCategoriesTab
+                  ? drawerCategory
+                    ? "Edit Category"
+                    : "New Category"
+                  : drawerVendor
+                  ? `Edit ${TYPE_LABEL[vendorForm.vendorType]}`
+                  : `New ${TYPE_LABEL[vendorForm.vendorType]}`}
+              </h2>
+              <button
+                type="button"
+                onClick={closeDrawer}
+                className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground"
+              >
+                <X size={15} />
+              </button>
+            </header>
+
+            <div className="flex-1 overflow-y-auto px-5 py-4">
+              {isCategoriesTab ? (
+                <CategoryFormFields form={categoryForm} onChange={setCategoryForm} error={catError} />
+              ) : (
+                <VendorFormFields form={vendorForm} onChange={setVendorForm} error={vendorError} />
+              )}
+            </div>
+
+            <footer className="px-5 py-4 border-t border-border shrink-0 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeDrawer}
+                className="h-9 px-4 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80"
+              >
+                Cancel
+              </button>
+              {!isCategoriesTab && drawerVendor && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    updateVendorMut.mutate({ id: drawerVendor.id, form: vendorForm })
+                  }
+                  disabled={!vendorForm.name.trim() || isVendorPending}
+                  className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
+                >
+                  {isVendorPending && <Loader2 size={13} className="animate-spin" />}
+                  Save changes
+                </button>
+              )}
+              {!isCategoriesTab && !drawerVendor && (
+                <button
+                  type="button"
+                  onClick={() => createVendorMut.mutate(vendorForm)}
+                  disabled={!vendorForm.name.trim() || isVendorPending}
+                  className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
+                >
+                  {isVendorPending && <Loader2 size={13} className="animate-spin" />}
+                  Add {TYPE_LABEL[vendorForm.vendorType]}
+                </button>
+              )}
+              {isCategoriesTab && drawerCategory && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    updateCatMut.mutate({ id: drawerCategory.id, form: categoryForm })
+                  }
+                  disabled={!categoryForm.name.trim() || isCatPending}
+                  className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
+                >
+                  {isCatPending && <Loader2 size={13} className="animate-spin" />}
+                  Save changes
+                </button>
+              )}
+              {isCategoriesTab && !drawerCategory && (
+                <button
+                  type="button"
+                  onClick={() => createCatMut.mutate(categoryForm)}
+                  disabled={!categoryForm.name.trim() || isCatPending}
+                  className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
+                >
+                  {isCatPending && <Loader2 size={13} className="animate-spin" />}
+                  Add Category
+                </button>
+              )}
+            </footer>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function VendorsTable({
+  vendors,
+  isLoading,
+  search,
+  typeLabel,
+  onEdit,
+}: {
+  vendors: Vendor[];
+  isLoading: boolean;
+  search: string;
+  typeLabel: string;
+  onEdit: (v: Vendor) => void;
+}) {
+  const [sortKey, setSortKey] = useState<keyof Vendor>("name");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+
+  function handleSort(key: string) {
+    if (key === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSortKey(key as keyof Vendor); setSortDir("asc"); }
+  }
+
+  const sorted = [...vendors].sort((a, b) => {
+    const av = String(a[sortKey] ?? "").toLowerCase();
+    const bv = String(b[sortKey] ?? "").toLowerCase();
+    return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
+  });
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-12 text-muted-foreground">
+        <Loader2 size={16} className="animate-spin mr-2" />
+        Loading…
+      </div>
+    );
+  }
+  if (vendors.length === 0) {
+    return (
+      <div className="py-12 text-center text-sm text-muted-foreground">
+        {search.trim()
+          ? "No results match your search."
+          : `No ${typeLabel.toLowerCase()}s yet. Click "Add ${typeLabel}" to create one.`}
+      </div>
+    );
+  }
+  return (
+    <table className="w-full text-sm">
+      <thead className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
+        <tr>
+          <SortTh label="Name" sortKey="name" active={sortKey === "name"} dir={sortDir} onClick={handleSort} className="px-4" />
+          <SortTh label="Phone" sortKey="phone" active={sortKey === "phone"} dir={sortDir} onClick={handleSort} />
+          <SortTh label="Email" sortKey="email" active={sortKey === "email"} dir={sortDir} onClick={handleSort} />
+          <SortTh label="City" sortKey="city" active={sortKey === "city"} dir={sortDir} onClick={handleSort} />
+          <SortTh label="Type" sortKey="vendorType" active={sortKey === "vendorType"} dir={sortDir} onClick={handleSort} className="w-28" />
+          <th className="text-center font-medium px-3 py-2 w-20">Active</th>
+          <th className="px-2 py-2 w-16" />
+        </tr>
+      </thead>
+      <tbody>
+        {sorted.map((v) => (
+          <tr
+            key={v.id}
+            className={`border-t border-border hover:bg-secondary/20 ${!v.isActive ? "opacity-50" : ""}`}
+          >
+            <td className="px-4 py-2.5 font-medium">
+              {v.name}
+              {!v.isActive && (
+                <span className="ml-2 text-[10px] uppercase tracking-wide text-muted-foreground font-normal">
+                  inactive
+                </span>
+              )}
+            </td>
+            <td className="px-3 py-2.5 text-muted-foreground text-xs">
+              {v.phone ? formatPhone(v.phone) : "—"}
+            </td>
+            <td className="px-3 py-2.5 text-muted-foreground text-xs truncate max-w-[180px]">
+              {v.email || "—"}
+            </td>
+            <td className="px-3 py-2.5 text-muted-foreground text-xs">
+              {v.city || "—"}
+            </td>
+            <td className="px-3 py-2.5">
+              <span
+                className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${TYPE_BADGE[v.vendorType]}`}
+              >
+                {TYPE_LABEL[v.vendorType]}
+              </span>
+            </td>
+            <td className="px-3 py-2.5 text-center">
+              <span
+                className={`inline-block h-2 w-2 rounded-full ${v.isActive ? "bg-emerald-500" : "bg-muted-foreground/30"}`}
+              />
+            </td>
+            <td className="px-2 py-2.5 text-right">
+              <button
+                type="button"
+                onClick={() => onEdit(v)}
+                className="h-7 w-7 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground"
+                aria-label="Edit"
+              >
+                <Pencil size={13} />
+              </button>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function CategoriesTable({
+  categories,
+  isLoading,
+  search,
+  onEdit,
+}: {
+  categories: Category[];
+  isLoading: boolean;
+  search: string;
+  onEdit: (c: Category) => void;
+}) {
+  const [sortKey, setSortKey] = useState<keyof Category>("name");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+
+  function handleSort(key: string) {
+    if (key === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSortKey(key as keyof Category); setSortDir("asc"); }
+  }
+
+  const sorted = [...categories].sort((a, b) => {
+    const av = String(a[sortKey] ?? "").toLowerCase();
+    const bv = String(b[sortKey] ?? "").toLowerCase();
+    return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
+  });
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-12 text-muted-foreground">
+        <Loader2 size={16} className="animate-spin mr-2" />
+        Loading…
+      </div>
+    );
+  }
+  if (categories.length === 0) {
+    return (
+      <div className="py-12 text-center text-sm text-muted-foreground">
+        {search.trim()
+          ? "No categories match your search."
+          : "No categories yet. Click \"Add Category\" to create one."}
+      </div>
+    );
+  }
+  return (
+    <table className="w-full text-sm">
+      <thead className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
+        <tr>
+          <SortTh label="Name" sortKey="name" active={sortKey === "name"} dir={sortDir} onClick={handleSort} className="px-4" />
+          <SortTh label="Kind" sortKey="kind" active={sortKey === "kind"} dir={sortDir} onClick={handleSort} className="w-32" />
+          <SortTh label="Description" sortKey="description" active={sortKey === "description"} dir={sortDir} onClick={handleSort} />
+          <th className="text-left font-medium px-3 py-2 w-20">Color</th>
+          <th className="text-center font-medium px-3 py-2 w-20">Active</th>
+          <th className="px-2 py-2 w-16" />
+        </tr>
+      </thead>
+      <tbody>
+        {sorted.map((c) => (
+          <tr
+            key={c.id}
+            className={`border-t border-border hover:bg-secondary/20 ${c.isArchived ? "opacity-50" : ""}`}
+          >
+            <td className="px-4 py-2.5 font-medium">
+              {c.name}
+              {c.isArchived && (
+                <span className="ml-2 text-[10px] uppercase tracking-wide text-muted-foreground font-normal">
+                  inactive
+                </span>
+              )}
+            </td>
+            <td className="px-3 py-2.5">
+              <span
+                className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${KIND_BADGE[c.kind] ?? "bg-secondary text-muted-foreground"}`}
+              >
+                {KIND_LABEL[c.kind] ?? c.kind}
+              </span>
+            </td>
+            <td className="px-3 py-2.5 text-muted-foreground text-xs truncate max-w-[240px]">
+              {c.description || "—"}
+            </td>
+            <td className="px-3 py-2.5">
+              {c.color ? (
+                <span className="flex items-center gap-1.5">
+                  <span
+                    className="inline-block h-4 w-4 rounded-full border border-border"
+                    style={{ backgroundColor: c.color }}
+                  />
+                  <span className="text-xs text-muted-foreground">{c.color}</span>
+                </span>
+              ) : (
+                <span className="text-muted-foreground text-xs">—</span>
+              )}
+            </td>
+            <td className="px-3 py-2.5 text-center">
+              <span
+                className={`inline-block h-2 w-2 rounded-full ${!c.isArchived ? "bg-emerald-500" : "bg-muted-foreground/30"}`}
+              />
+            </td>
+            <td className="px-2 py-2.5 text-right">
+              <button
+                type="button"
+                onClick={() => onEdit(c)}
+                className="h-7 w-7 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground"
+                aria-label="Edit"
+              >
+                <Pencil size={13} />
+              </button>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function FieldRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-1">
+      <label className="block text-xs font-medium text-foreground/80">{label}</label>
+      {children}
+    </div>
+  );
+}
+
+const inputCls =
+  "w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm focus:outline-none focus:ring-1 focus:ring-ring";
+const textareaCls =
+  "w-full px-2.5 py-1.5 rounded-md bg-background border border-input text-sm focus:outline-none focus:ring-1 focus:ring-ring resize-none";
+
+function VendorFormFields({
+  form,
+  onChange,
+  error,
+}: {
+  form: VendorForm;
+  onChange: (f: VendorForm) => void;
+  error: string | null;
+}) {
+  const set = (patch: Partial<VendorForm>) => onChange({ ...form, ...patch });
+  return (
+    <div className="space-y-4">
+      {error && (
+        <p className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">{error}</p>
+      )}
+      <FieldRow label="Name *">
+        <input
+          autoFocus
+          value={form.name}
+          onChange={(e) => set({ name: e.target.value })}
+          placeholder="Full name"
+          className={inputCls}
+        />
+      </FieldRow>
+      <FieldRow label="Type">
+        <select
+          value={form.vendorType}
+          onChange={(e) => set({ vendorType: e.target.value as VendorType })}
+          className={inputCls}
+        >
+          <option value="vendor">Vendor</option>
+          <option value="employee">Employee</option>
+          <option value="item">Item</option>
+        </select>
+      </FieldRow>
+      <FieldRow label="Phone">
+        <input
+          value={form.phone}
+          onChange={(e) => set({ phone: e.target.value })}
+          placeholder="(555) 555-5555"
+          className={inputCls}
+        />
+      </FieldRow>
+      <FieldRow label="Email">
+        <input
+          type="email"
+          value={form.email}
+          onChange={(e) => set({ email: e.target.value })}
+          placeholder="name@example.com"
+          className={inputCls}
+        />
+      </FieldRow>
+      <FieldRow label="Website">
+        <input
+          value={form.website}
+          onChange={(e) => set({ website: e.target.value })}
+          placeholder="https://example.com"
+          className={inputCls}
+        />
+      </FieldRow>
+      <FieldRow label="Address">
+        <input
+          value={form.address}
+          onChange={(e) => set({ address: e.target.value })}
+          placeholder="Street address"
+          className={inputCls}
+        />
+      </FieldRow>
+      <div className="grid grid-cols-3 gap-2">
+        <FieldRow label="City">
+          <input
+            value={form.city}
+            onChange={(e) => set({ city: e.target.value })}
+            placeholder="City"
+            className={inputCls}
+          />
+        </FieldRow>
+        <FieldRow label="State">
+          <input
+            value={form.state}
+            onChange={(e) => set({ state: e.target.value })}
+            placeholder="CA"
+            className={inputCls}
+          />
+        </FieldRow>
+        <FieldRow label="ZIP">
+          <input
+            value={form.zip}
+            onChange={(e) => set({ zip: e.target.value })}
+            placeholder="90210"
+            className={inputCls}
+          />
+        </FieldRow>
+      </div>
+      <FieldRow label="Notes">
+        <textarea
+          value={form.notes}
+          onChange={(e) => set({ notes: e.target.value })}
+          placeholder="Internal notes…"
+          rows={3}
+          className={textareaCls}
+        />
+      </FieldRow>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => set({ isActive: !form.isActive })}
+          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${
+            form.isActive ? "bg-primary" : "bg-muted"
+          }`}
+        >
+          <span
+            className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform ${
+              form.isActive ? "translate-x-4" : "translate-x-1"
+            }`}
+          />
+        </button>
+        <span className="text-sm">{form.isActive ? "Active" : "Inactive"}</span>
+      </div>
+    </div>
+  );
+}
+
+function CategoryFormFields({
+  form,
+  onChange,
+  error,
+}: {
+  form: CategoryForm;
+  onChange: (f: CategoryForm) => void;
+  error: string | null;
+}) {
+  const set = (patch: Partial<CategoryForm>) => onChange({ ...form, ...patch });
+  return (
+    <div className="space-y-4">
+      {error && (
+        <p className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">{error}</p>
+      )}
+      <FieldRow label="Name *">
+        <input
+          autoFocus
+          value={form.name}
+          onChange={(e) => set({ name: e.target.value })}
+          placeholder="e.g. Office supplies"
+          className={inputCls}
+        />
+      </FieldRow>
+      <FieldRow label="Kind">
+        <select
+          value={form.kind}
+          onChange={(e) => set({ kind: e.target.value as CategoryForm["kind"] })}
+          className={inputCls}
+        >
+          <option value="expense">Expense</option>
+          <option value="income">Income</option>
+          <option value="transfer">Transfer</option>
+        </select>
+      </FieldRow>
+      <FieldRow label="Color">
+        <div className="flex items-center gap-2">
+          <input
+            type="color"
+            value={form.color || "#6366f1"}
+            onChange={(e) => set({ color: e.target.value })}
+            className="h-9 w-12 rounded-md border border-input cursor-pointer bg-background p-1"
+          />
+          <input
+            value={form.color}
+            onChange={(e) => set({ color: e.target.value })}
+            placeholder="#6366f1 (optional)"
+            className={`${inputCls} flex-1`}
+          />
+          {form.color && (
+            <button
+              type="button"
+              onClick={() => set({ color: "" })}
+              className="h-9 w-9 flex items-center justify-center rounded-md hover:bg-secondary text-muted-foreground"
+            >
+              <X size={13} />
+            </button>
+          )}
+        </div>
+      </FieldRow>
+      <FieldRow label="Description">
+        <textarea
+          value={form.description}
+          onChange={(e) => set({ description: e.target.value })}
+          placeholder="Optional description…"
+          rows={2}
+          className={textareaCls}
+        />
+      </FieldRow>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => set({ isActive: !form.isActive })}
+          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${
+            form.isActive ? "bg-primary" : "bg-muted"
+          }`}
+        >
+          <span
+            className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform ${
+              form.isActive ? "translate-x-4" : "translate-x-1"
+            }`}
+          />
+        </button>
+        <span className="text-sm">{form.isActive ? "Active" : "Inactive"}</span>
+      </div>
+    </div>
+  );
+}

@@ -24,6 +24,7 @@ import CashFlowPage from "@/pages/finance/cash-flow";
 import RecurringPage from "@/pages/finance/recurring";
 import ReceivePaymentsPage from "@/pages/finance/receive-payments";
 import PayeesPage from "@/pages/finance/payees";
+import ListsPage from "@/pages/lists";
 import { canReceivePayments } from "@/components/finance/FinanceShell";
 import DownloadPage from "@/pages/download";
 import BillingPage from "@/pages/billing";
@@ -79,6 +80,7 @@ function AppLayoutWithUploads() {
         <Route path="/finance/recurring" component={RecurringPage} />
         <Route path="/finance/receive-payments" component={ReceivePaymentsGuard} />
         <Route path="/finance/payees" component={PayeesPage} />
+        <Route path="/lists" component={ListsPage} />
         <Route path="/customer-center" component={CustomerCenterPage} />
         <Route path="/download" component={DownloadPage} />
         <Route path="/billing" component={BillingPage} />

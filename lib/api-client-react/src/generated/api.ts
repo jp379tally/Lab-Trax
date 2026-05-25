@@ -26,8 +26,8 @@ import type {
   BulkReassignCasesResult,
   BulkStatusCasesInput,
   BulkStatusCasesResult,
+  CreateCategoryInput,
   CreateVendorInput,
-  DeleteVendor200,
   DisableBackupSchedule200,
   DisableTwoFactor200,
   DoctorMergePreview,
@@ -52,6 +52,7 @@ import type {
   IteroImportResult,
   IteroZipBatchImportResult,
   IteroZipImportResult,
+  ListCategoriesParams,
   ListOpenInvoicesParams,
   ListVendorsParams,
   MarkAllNotificationsRead200,
@@ -73,6 +74,8 @@ import type {
   SmsInvoiceBody,
   StatementScheduleInput,
   StatementScheduleResult,
+  TransactionCategoryListResult,
+  TransactionCategoryResult,
   TwoFactorChallengeInput,
   TwoFactorChallengeResult,
   TwoFactorConfirmInput,
@@ -82,6 +85,7 @@ import type {
   TwoFactorStatusResult,
   UpdateCase200,
   UpdateCaseInput,
+  UpdateCategoryInput,
   UpdateOrganizationLogoPlacements200,
   UpdateOrganizationLogoPlacementsBody,
   UpdateVendorInput,
@@ -870,7 +874,7 @@ export const useUpdateVendor = <
 };
 
 /**
- * @summary Soft-delete a vendor / employee / item
+ * @summary Deactivate a vendor / employee / item (sets isActive=false)
  */
 export const getDeleteVendorUrl = (vendorId: string) => {
   return `/api/finance/vendors/${vendorId}`;
@@ -879,8 +883,8 @@ export const getDeleteVendorUrl = (vendorId: string) => {
 export const deleteVendor = async (
   vendorId: string,
   options?: RequestInit,
-): Promise<DeleteVendor200> => {
-  return customFetch<DeleteVendor200>(getDeleteVendorUrl(vendorId), {
+): Promise<VendorResult> => {
+  return customFetch<VendorResult>(getDeleteVendorUrl(vendorId), {
     ...options,
     method: "DELETE",
   });
@@ -931,7 +935,7 @@ export type DeleteVendorMutationResult = NonNullable<
 export type DeleteVendorMutationError = ErrorType<unknown>;
 
 /**
- * @summary Soft-delete a vendor / employee / item
+ * @summary Deactivate a vendor / employee / item (sets isActive=false)
  */
 export const useDeleteVendor = <
   TError = ErrorType<unknown>,
@@ -951,6 +955,360 @@ export const useDeleteVendor = <
   TContext
 > => {
   return useMutation(getDeleteVendorMutationOptions(options));
+};
+
+/**
+ * @summary List transaction categories for a lab
+ */
+export const getListCategoriesUrl = (params: ListCategoriesParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/finance/categories?${stringifiedParams}`
+    : `/api/finance/categories`;
+};
+
+export const listCategories = async (
+  params: ListCategoriesParams,
+  options?: RequestInit,
+): Promise<TransactionCategoryListResult> => {
+  return customFetch<TransactionCategoryListResult>(
+    getListCategoriesUrl(params),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getListCategoriesQueryKey = (params?: ListCategoriesParams) => {
+  return [`/api/finance/categories`, ...(params ? [params] : [])] as const;
+};
+
+export const getListCategoriesQueryOptions = <
+  TData = Awaited<ReturnType<typeof listCategories>>,
+  TError = ErrorType<unknown>,
+>(
+  params: ListCategoriesParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listCategories>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getListCategoriesQueryKey(params);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof listCategories>>> = ({
+    signal,
+  }) => listCategories(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof listCategories>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ListCategoriesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listCategories>>
+>;
+export type ListCategoriesQueryError = ErrorType<unknown>;
+
+/**
+ * @summary List transaction categories for a lab
+ */
+
+export function useListCategories<
+  TData = Awaited<ReturnType<typeof listCategories>>,
+  TError = ErrorType<unknown>,
+>(
+  params: ListCategoriesParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listCategories>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getListCategoriesQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Create a transaction category
+ */
+export const getCreateCategoryUrl = () => {
+  return `/api/finance/categories`;
+};
+
+export const createCategory = async (
+  createCategoryInput: CreateCategoryInput,
+  options?: RequestInit,
+): Promise<TransactionCategoryResult> => {
+  return customFetch<TransactionCategoryResult>(getCreateCategoryUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(createCategoryInput),
+  });
+};
+
+export const getCreateCategoryMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createCategory>>,
+    TError,
+    { data: BodyType<CreateCategoryInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof createCategory>>,
+  TError,
+  { data: BodyType<CreateCategoryInput> },
+  TContext
+> => {
+  const mutationKey = ["createCategory"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof createCategory>>,
+    { data: BodyType<CreateCategoryInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return createCategory(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type CreateCategoryMutationResult = NonNullable<
+  Awaited<ReturnType<typeof createCategory>>
+>;
+export type CreateCategoryMutationBody = BodyType<CreateCategoryInput>;
+export type CreateCategoryMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Create a transaction category
+ */
+export const useCreateCategory = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createCategory>>,
+    TError,
+    { data: BodyType<CreateCategoryInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof createCategory>>,
+  TError,
+  { data: BodyType<CreateCategoryInput> },
+  TContext
+> => {
+  return useMutation(getCreateCategoryMutationOptions(options));
+};
+
+/**
+ * @summary Update a transaction category
+ */
+export const getUpdateCategoryUrl = (id: string) => {
+  return `/api/finance/categories/${id}`;
+};
+
+export const updateCategory = async (
+  id: string,
+  updateCategoryInput: UpdateCategoryInput,
+  options?: RequestInit,
+): Promise<TransactionCategoryResult> => {
+  return customFetch<TransactionCategoryResult>(getUpdateCategoryUrl(id), {
+    ...options,
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(updateCategoryInput),
+  });
+};
+
+export const getUpdateCategoryMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateCategory>>,
+    TError,
+    { id: string; data: BodyType<UpdateCategoryInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof updateCategory>>,
+  TError,
+  { id: string; data: BodyType<UpdateCategoryInput> },
+  TContext
+> => {
+  const mutationKey = ["updateCategory"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof updateCategory>>,
+    { id: string; data: BodyType<UpdateCategoryInput> }
+  > = (props) => {
+    const { id, data } = props ?? {};
+
+    return updateCategory(id, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UpdateCategoryMutationResult = NonNullable<
+  Awaited<ReturnType<typeof updateCategory>>
+>;
+export type UpdateCategoryMutationBody = BodyType<UpdateCategoryInput>;
+export type UpdateCategoryMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Update a transaction category
+ */
+export const useUpdateCategory = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateCategory>>,
+    TError,
+    { id: string; data: BodyType<UpdateCategoryInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof updateCategory>>,
+  TError,
+  { id: string; data: BodyType<UpdateCategoryInput> },
+  TContext
+> => {
+  return useMutation(getUpdateCategoryMutationOptions(options));
+};
+
+/**
+ * @summary Archive a transaction category (sets isArchived=true)
+ */
+export const getArchiveCategoryUrl = (id: string) => {
+  return `/api/finance/categories/${id}`;
+};
+
+export const archiveCategory = async (
+  id: string,
+  options?: RequestInit,
+): Promise<TransactionCategoryResult> => {
+  return customFetch<TransactionCategoryResult>(getArchiveCategoryUrl(id), {
+    ...options,
+    method: "DELETE",
+  });
+};
+
+export const getArchiveCategoryMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof archiveCategory>>,
+    TError,
+    { id: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof archiveCategory>>,
+  TError,
+  { id: string },
+  TContext
+> => {
+  const mutationKey = ["archiveCategory"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof archiveCategory>>,
+    { id: string }
+  > = (props) => {
+    const { id } = props ?? {};
+
+    return archiveCategory(id, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ArchiveCategoryMutationResult = NonNullable<
+  Awaited<ReturnType<typeof archiveCategory>>
+>;
+
+export type ArchiveCategoryMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Archive a transaction category (sets isArchived=true)
+ */
+export const useArchiveCategory = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof archiveCategory>>,
+    TError,
+    { id: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof archiveCategory>>,
+  TError,
+  { id: string },
+  TContext
+> => {
+  return useMutation(getArchiveCategoryMutationOptions(options));
 };
 
 /**

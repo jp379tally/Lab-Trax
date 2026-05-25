@@ -659,7 +659,13 @@ export interface Vendor {
   labOrganizationId: string;
   name: string;
   address?: string | null;
+  city?: string | null;
+  state?: string | null;
+  zip?: string | null;
   phone?: string | null;
+  email?: string | null;
+  website?: string | null;
+  notes?: string | null;
   vendorType: VendorType;
   isActive: boolean;
   createdAt: string;
@@ -685,7 +691,13 @@ export interface CreateVendorInput {
    */
   name: string;
   address?: string | null;
+  city?: string | null;
+  state?: string | null;
+  zip?: string | null;
   phone?: string | null;
+  email?: string | null;
+  website?: string | null;
+  notes?: string | null;
   vendorType?: VendorType;
   isActive?: boolean;
 }
@@ -697,9 +709,82 @@ export interface UpdateVendorInput {
    */
   name?: string;
   address?: string | null;
+  city?: string | null;
+  state?: string | null;
+  zip?: string | null;
   phone?: string | null;
+  email?: string | null;
+  website?: string | null;
+  notes?: string | null;
   vendorType?: VendorType;
   isActive?: boolean;
+}
+
+export type TransactionCategoryKind =
+  (typeof TransactionCategoryKind)[keyof typeof TransactionCategoryKind];
+
+export const TransactionCategoryKind = {
+  income: "income",
+  expense: "expense",
+  transfer: "transfer",
+} as const;
+
+export interface TransactionCategory {
+  id: string;
+  labOrganizationId: string;
+  name: string;
+  kind: TransactionCategoryKind;
+  color?: string | null;
+  description?: string | null;
+  isArchived: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TransactionCategoryListResult {
+  ok?: boolean;
+  data?: TransactionCategory[];
+}
+
+export interface TransactionCategoryResult {
+  ok?: boolean;
+  data?: TransactionCategory;
+}
+
+export type CreateCategoryInputKind =
+  (typeof CreateCategoryInputKind)[keyof typeof CreateCategoryInputKind];
+
+export const CreateCategoryInputKind = {
+  income: "income",
+  expense: "expense",
+  transfer: "transfer",
+} as const;
+
+export interface CreateCategoryInput {
+  organizationId: string;
+  /** @minLength 1 */
+  name: string;
+  kind?: CreateCategoryInputKind;
+  color?: string | null;
+  description?: string | null;
+}
+
+export type UpdateCategoryInputKind =
+  (typeof UpdateCategoryInputKind)[keyof typeof UpdateCategoryInputKind];
+
+export const UpdateCategoryInputKind = {
+  income: "income",
+  expense: "expense",
+  transfer: "transfer",
+} as const;
+
+export interface UpdateCategoryInput {
+  /** @minLength 1 */
+  name?: string;
+  kind?: UpdateCategoryInputKind;
+  color?: string | null;
+  description?: string | null;
+  isArchived?: boolean;
 }
 
 export interface RegenerateBackupCodesInput {
@@ -795,13 +880,9 @@ export type ListVendorsParams = {
   includeInactive?: boolean;
 };
 
-export type DeleteVendor200Data = {
-  ok?: boolean;
-};
-
-export type DeleteVendor200 = {
-  ok?: boolean;
-  data?: DeleteVendor200Data;
+export type ListCategoriesParams = {
+  organizationId: string;
+  includeArchived?: boolean;
 };
 
 export type MarkAllNotificationsRead200Data = {

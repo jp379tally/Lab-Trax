@@ -14,7 +14,13 @@ export interface UpdateVendorInput {
    */
   name?: string;
   address?: string | null;
+  city?: string | null;
+  state?: string | null;
+  zip?: string | null;
   phone?: string | null;
+  email?: string | null;
+  website?: string | null;
+  notes?: string | null;
   vendorType?: VendorType;
   isActive?: boolean;
 }

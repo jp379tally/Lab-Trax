@@ -194,7 +194,7 @@ paths:
     delete:
       operationId: deleteVendor
       tags: [finance]
-      summary: Soft-delete a vendor / employee / item
+      summary: Deactivate a vendor / employee / item (sets isActive=false)
       parameters:
         - in: path
           name: vendorId
@@ -202,17 +202,93 @@ paths:
           schema: { type: string }
       responses:
         "200":
-          description: Deleted
+          description: Deactivated vendor
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  ok: { type: boolean }
-                  data:
-                    type: object
-                    properties:
-                      ok: { type: boolean }
+                $ref: "#/components/schemas/VendorResult"
+  /finance/categories:
+    get:
+      operationId: listCategories
+      tags: [finance]
+      summary: List transaction categories for a lab
+      parameters:
+        - in: query
+          name: organizationId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: includeArchived
+          schema: { type: boolean }
+      responses:
+        "200":
+          description: Category list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionCategoryListResult"
+    post:
+      operationId: createCategory
+      tags: [finance]
+      summary: Create a transaction category
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCategoryInput"
+      responses:
+        "200":
+          description: Created or existing category
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionCategoryResult"
+        "201":
+          description: Created category
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionCategoryResult"
+  /finance/categories/{id}:
+    patch:
+      operationId: updateCategory
+      tags: [finance]
+      summary: Update a transaction category
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateCategoryInput"
+      responses:
+        "200":
+          description: Updated category
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionCategoryResult"
+    delete:
+      operationId: archiveCategory
+      tags: [finance]
+      summary: Archive a transaction category (sets isArchived=true)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Archived category
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionCategoryResult"
   /users/me/email-preferences:
     get:
       operationId: getEmailPreferences
@@ -1969,7 +2045,13 @@ components:
         labOrganizationId: { type: string }
         name: { type: string }
         address: { type: string, nullable: true }
+        city: { type: string, nullable: true }
+        state: { type: string, nullable: true }
+        zip: { type: string, nullable: true }
         phone: { type: string, nullable: true }
+        email: { type: string, nullable: true }
+        website: { type: string, nullable: true }
+        notes: { type: string, nullable: true }
         vendorType:
           $ref: "#/components/schemas/VendorType"
         isActive: { type: boolean }
@@ -1997,7 +2079,13 @@ components:
         organizationId: { type: string }
         name: { type: string, minLength: 1, maxLength: 200 }
         address: { type: string, nullable: true }
+        city: { type: string, nullable: true }
+        state: { type: string, nullable: true }
+        zip: { type: string, nullable: true }
         phone: { type: string, nullable: true }
+        email: { type: string, nullable: true }
+        website: { type: string, nullable: true }
+        notes: { type: string, nullable: true }
         vendorType:
           $ref: "#/components/schemas/VendorType"
         isActive: { type: boolean }
@@ -2006,10 +2094,66 @@ components:
       properties:
         name: { type: string, minLength: 1, maxLength: 200 }
         address: { type: string, nullable: true }
+        city: { type: string, nullable: true }
+        state: { type: string, nullable: true }
+        zip: { type: string, nullable: true }
         phone: { type: string, nullable: true }
+        email: { type: string, nullable: true }
+        website: { type: string, nullable: true }
+        notes: { type: string, nullable: true }
         vendorType:
           $ref: "#/components/schemas/VendorType"
         isActive: { type: boolean }
+    TransactionCategory:
+      type: object
+      required: [id, labOrganizationId, name, kind, isArchived, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        labOrganizationId: { type: string }
+        name: { type: string }
+        kind:
+          type: string
+          enum: [income, expense, transfer]
+        color: { type: string, nullable: true }
+        description: { type: string, nullable: true }
+        isArchived: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    TransactionCategoryListResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransactionCategory"
+    TransactionCategoryResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          $ref: "#/components/schemas/TransactionCategory"
+    CreateCategoryInput:
+      type: object
+      required: [organizationId, name]
+      properties:
+        organizationId: { type: string }
+        name: { type: string, minLength: 1 }
+        kind:
+          type: string
+          enum: [income, expense, transfer]
+        color: { type: string, nullable: true }
+        description: { type: string, nullable: true }
+    UpdateCategoryInput:
+      type: object
+      properties:
+        name: { type: string, minLength: 1 }
+        kind:
+          type: string
+          enum: [income, expense, transfer]
+        color: { type: string, nullable: true }
+        description: { type: string, nullable: true }
+        isArchived: { type: boolean }
     RegenerateBackupCodesInput:
       type: object
       required: [code]

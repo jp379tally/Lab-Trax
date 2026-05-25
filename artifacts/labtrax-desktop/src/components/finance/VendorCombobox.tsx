@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { ChevronDown } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ChevronDown, Loader2, Plus, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 
 export type VendorType = "vendor" | "employee" | "item";
@@ -9,7 +9,13 @@ export interface Vendor {
   id: string;
   name: string;
   address: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
   phone: string | null;
+  email: string | null;
+  website: string | null;
+  notes: string | null;
   vendorType: VendorType;
   isActive: boolean;
 }
@@ -59,6 +65,7 @@ export function VendorCombobox({
 
   const [open, setOpen] = useState(false);
   const [inputVal, setInputVal] = useState(value);
+  const [showQuickAdd, setShowQuickAdd] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -75,6 +82,10 @@ export function VendorCombobox({
     : activeVendors;
 
   const isGrouped = !trimmed;
+  const hasExactMatch = activeVendors.some(
+    (v) => v.name.toLowerCase() === trimmed.toLowerCase()
+  );
+  const showAddOption = trimmed.length > 0 && !hasExactMatch;
 
   function select(name: string) {
     setInputVal(name);
@@ -101,6 +112,13 @@ export function VendorCombobox({
     }
   }
 
+  function handleQuickAddSaved(name: string) {
+    setInputVal(name);
+    onChange(name);
+    setShowQuickAdd(false);
+    setOpen(false);
+  }
+
   function renderItems(items: Vendor[]) {
     return items.map((v) => (
       <li key={v.id}>
@@ -119,9 +137,9 @@ export function VendorCombobox({
             {TYPE_LABEL[v.vendorType]}
           </span>
           <span className="font-medium truncate">{v.name}</span>
-          {v.address && (
+          {(v.city || v.address) && (
             <span className="ml-1 text-xs text-muted-foreground truncate hidden sm:block">
-              {v.address}
+              {v.city || v.address}
             </span>
           )}
         </button>
@@ -145,40 +163,199 @@ export function VendorCombobox({
     ));
   }
 
+  const dropdownVisible = open && (filtered.length > 0 || showAddOption);
+
   return (
-    <div ref={containerRef} className="relative" onBlur={handleBlur}>
-      <input
-        ref={inputRef}
-        type="text"
-        value={inputVal}
-        onChange={handleInput}
-        onFocus={() => setOpen(true)}
-        onKeyDown={handleKeyDown}
-        placeholder={placeholder}
-        disabled={disabled}
-        className={className}
-        autoComplete="off"
-      />
-      {activeVendors.length > 0 && !disabled && (
-        <button
-          type="button"
-          tabIndex={-1}
-          onMouseDown={(e) => {
-            e.preventDefault();
-            setOpen((v) => !v);
-            inputRef.current?.focus();
-          }}
-          className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-          aria-label="Show vendors"
-        >
-          <ChevronDown size={13} />
-        </button>
+    <>
+      <div ref={containerRef} className="relative" onBlur={handleBlur}>
+        <input
+          ref={inputRef}
+          type="text"
+          value={inputVal}
+          onChange={handleInput}
+          onFocus={() => setOpen(true)}
+          onKeyDown={handleKeyDown}
+          placeholder={placeholder}
+          disabled={disabled}
+          className={className}
+          autoComplete="off"
+        />
+        {activeVendors.length > 0 && !disabled && (
+          <button
+            type="button"
+            tabIndex={-1}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              setOpen((v) => !v);
+              inputRef.current?.focus();
+            }}
+            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            aria-label="Show vendors"
+          >
+            <ChevronDown size={13} />
+          </button>
+        )}
+        {dropdownVisible && (
+          <ul className="absolute z-50 left-0 top-[calc(100%+2px)] w-full max-h-64 overflow-y-auto bg-card border border-border rounded-md shadow-lg text-sm py-1">
+            {filtered.length > 0 && (isGrouped ? renderGrouped() : renderItems(filtered))}
+            {showAddOption && (
+              <li className="border-t border-border mt-1 pt-1">
+                <button
+                  type="button"
+                  tabIndex={0}
+                  className="w-full text-left px-3 py-1.5 hover:bg-secondary flex items-center gap-2 text-primary font-medium"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    setOpen(false);
+                    setShowQuickAdd(true);
+                  }}
+                >
+                  <Plus size={13} className="shrink-0" />
+                  Add "{trimmed}" to list…
+                </button>
+              </li>
+            )}
+          </ul>
+        )}
+      </div>
+
+      {showQuickAdd && (
+        <QuickAddVendorModal
+          organizationId={organizationId}
+          initialName={trimmed}
+          onClose={() => setShowQuickAdd(false)}
+          onSaved={handleQuickAddSaved}
+        />
       )}
-      {open && filtered.length > 0 && (
-        <ul className="absolute z-50 left-0 top-[calc(100%+2px)] w-full max-h-64 overflow-y-auto bg-card border border-border rounded-md shadow-lg text-sm py-1">
-          {isGrouped ? renderGrouped() : renderItems(filtered)}
-        </ul>
-      )}
+    </>
+  );
+}
+
+function QuickAddVendorModal({
+  organizationId,
+  initialName,
+  onClose,
+  onSaved,
+}: {
+  organizationId: string;
+  initialName: string;
+  onClose: () => void;
+  onSaved: (name: string) => void;
+}) {
+  const qc = useQueryClient();
+  const [name, setName] = useState(initialName);
+  const [vendorType, setVendorType] = useState<VendorType>("vendor");
+  const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const createMut = useMutation({
+    mutationFn: () =>
+      apiFetch<Vendor>("/finance/vendors", {
+        method: "POST",
+        body: JSON.stringify({
+          organizationId,
+          name: name.trim(),
+          vendorType,
+          phone: phone.trim() || null,
+          email: email.trim() || null,
+        }),
+      }),
+    onSuccess: (row) => {
+      qc.invalidateQueries({ queryKey: ["finance", "vendors", organizationId] });
+      onSaved(row.name);
+    },
+    onError: (e: Error) => setError(e.message || "Failed to create."),
+  });
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!name.trim()) return;
+    setError(null);
+    createMut.mutate();
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-foreground/30 p-4">
+      <div className="w-full max-w-sm bg-card border border-border rounded-xl shadow-xl">
+        <header className="flex items-center justify-between px-5 py-3 border-b border-border">
+          <h2 className="text-sm font-semibold">Add to list</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"
+            aria-label="Close"
+          >
+            <X size={15} />
+          </button>
+        </header>
+        <form onSubmit={submit} className="px-5 py-4 space-y-3">
+          {error && (
+            <p className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">
+              {error}
+            </p>
+          )}
+          <div>
+            <label className="block text-xs font-medium mb-1">Name</label>
+            <input
+              autoFocus
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Full name"
+              className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1">List type</label>
+            <select
+              value={vendorType}
+              onChange={(e) => setVendorType(e.target.value as VendorType)}
+              className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+            >
+              <option value="vendor">Vendor</option>
+              <option value="employee">Employee</option>
+              <option value="item">Item</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1">Phone (optional)</label>
+            <input
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              placeholder="(555) 555-5555"
+              className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1">Email (optional)</label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="name@example.com"
+              className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              className="h-9 px-4 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={!name.trim() || createMut.isPending}
+              className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
+            >
+              {createMut.isPending && <Loader2 size={13} className="animate-spin" />}
+              <Plus size={14} />
+              Add to list
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }

@@ -121,7 +121,13 @@ export const ListVendorsResponse = zod.object({
         labOrganizationId: zod.string(),
         name: zod.string(),
         address: zod.string().nullish(),
+        city: zod.string().nullish(),
+        state: zod.string().nullish(),
+        zip: zod.string().nullish(),
         phone: zod.string().nullish(),
+        email: zod.string().nullish(),
+        website: zod.string().nullish(),
+        notes: zod.string().nullish(),
         vendorType: zod
           .enum(["vendor", "employee", "item"])
           .describe(
@@ -145,7 +151,13 @@ export const CreateVendorBody = zod.object({
   organizationId: zod.string(),
   name: zod.string().min(1).max(createVendorBodyNameMax),
   address: zod.string().nullish(),
+  city: zod.string().nullish(),
+  state: zod.string().nullish(),
+  zip: zod.string().nullish(),
   phone: zod.string().nullish(),
+  email: zod.string().nullish(),
+  website: zod.string().nullish(),
+  notes: zod.string().nullish(),
   vendorType: zod
     .enum(["vendor", "employee", "item"])
     .optional()
@@ -163,7 +175,13 @@ export const CreateVendorResponse = zod.object({
       labOrganizationId: zod.string(),
       name: zod.string(),
       address: zod.string().nullish(),
+      city: zod.string().nullish(),
+      state: zod.string().nullish(),
+      zip: zod.string().nullish(),
       phone: zod.string().nullish(),
+      email: zod.string().nullish(),
+      website: zod.string().nullish(),
+      notes: zod.string().nullish(),
       vendorType: zod
         .enum(["vendor", "employee", "item"])
         .describe(
@@ -189,7 +207,13 @@ export const updateVendorBodyNameMax = 200;
 export const UpdateVendorBody = zod.object({
   name: zod.string().min(1).max(updateVendorBodyNameMax).optional(),
   address: zod.string().nullish(),
+  city: zod.string().nullish(),
+  state: zod.string().nullish(),
+  zip: zod.string().nullish(),
   phone: zod.string().nullish(),
+  email: zod.string().nullish(),
+  website: zod.string().nullish(),
+  notes: zod.string().nullish(),
   vendorType: zod
     .enum(["vendor", "employee", "item"])
     .optional()
@@ -207,7 +231,13 @@ export const UpdateVendorResponse = zod.object({
       labOrganizationId: zod.string(),
       name: zod.string(),
       address: zod.string().nullish(),
+      city: zod.string().nullish(),
+      state: zod.string().nullish(),
+      zip: zod.string().nullish(),
       phone: zod.string().nullish(),
+      email: zod.string().nullish(),
+      website: zod.string().nullish(),
+      notes: zod.string().nullish(),
       vendorType: zod
         .enum(["vendor", "employee", "item"])
         .describe(
@@ -222,7 +252,7 @@ export const UpdateVendorResponse = zod.object({
 });
 
 /**
- * @summary Soft-delete a vendor / employee / item
+ * @summary Deactivate a vendor / employee / item (sets isActive=false)
  */
 export const DeleteVendorParams = zod.object({
   vendorId: zod.coerce.string(),
@@ -232,7 +262,138 @@ export const DeleteVendorResponse = zod.object({
   ok: zod.boolean().optional(),
   data: zod
     .object({
-      ok: zod.boolean().optional(),
+      id: zod.string(),
+      labOrganizationId: zod.string(),
+      name: zod.string(),
+      address: zod.string().nullish(),
+      city: zod.string().nullish(),
+      state: zod.string().nullish(),
+      zip: zod.string().nullish(),
+      phone: zod.string().nullish(),
+      email: zod.string().nullish(),
+      website: zod.string().nullish(),
+      notes: zod.string().nullish(),
+      vendorType: zod
+        .enum(["vendor", "employee", "item"])
+        .describe(
+          "Category of the payee — general vendor, employee, or lab supply item",
+        ),
+      isActive: zod.boolean(),
+      createdAt: zod.coerce.date(),
+      updatedAt: zod.coerce.date(),
+      deletedAt: zod.coerce.date().nullish(),
+    })
+    .optional(),
+});
+
+/**
+ * @summary List transaction categories for a lab
+ */
+export const ListCategoriesQueryParams = zod.object({
+  organizationId: zod.coerce.string(),
+  includeArchived: zod.coerce.boolean().optional(),
+});
+
+export const ListCategoriesResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .array(
+      zod.object({
+        id: zod.string(),
+        labOrganizationId: zod.string(),
+        name: zod.string(),
+        kind: zod.enum(["income", "expense", "transfer"]),
+        color: zod.string().nullish(),
+        description: zod.string().nullish(),
+        isArchived: zod.boolean(),
+        createdAt: zod.coerce.date(),
+        updatedAt: zod.coerce.date(),
+      }),
+    )
+    .optional(),
+});
+
+/**
+ * @summary Create a transaction category
+ */
+
+export const CreateCategoryBody = zod.object({
+  organizationId: zod.string(),
+  name: zod.string().min(1),
+  kind: zod.enum(["income", "expense", "transfer"]).optional(),
+  color: zod.string().nullish(),
+  description: zod.string().nullish(),
+});
+
+export const CreateCategoryResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      id: zod.string(),
+      labOrganizationId: zod.string(),
+      name: zod.string(),
+      kind: zod.enum(["income", "expense", "transfer"]),
+      color: zod.string().nullish(),
+      description: zod.string().nullish(),
+      isArchived: zod.boolean(),
+      createdAt: zod.coerce.date(),
+      updatedAt: zod.coerce.date(),
+    })
+    .optional(),
+});
+
+/**
+ * @summary Update a transaction category
+ */
+export const UpdateCategoryParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const UpdateCategoryBody = zod.object({
+  name: zod.string().min(1).optional(),
+  kind: zod.enum(["income", "expense", "transfer"]).optional(),
+  color: zod.string().nullish(),
+  description: zod.string().nullish(),
+  isArchived: zod.boolean().optional(),
+});
+
+export const UpdateCategoryResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      id: zod.string(),
+      labOrganizationId: zod.string(),
+      name: zod.string(),
+      kind: zod.enum(["income", "expense", "transfer"]),
+      color: zod.string().nullish(),
+      description: zod.string().nullish(),
+      isArchived: zod.boolean(),
+      createdAt: zod.coerce.date(),
+      updatedAt: zod.coerce.date(),
+    })
+    .optional(),
+});
+
+/**
+ * @summary Archive a transaction category (sets isArchived=true)
+ */
+export const ArchiveCategoryParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const ArchiveCategoryResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      id: zod.string(),
+      labOrganizationId: zod.string(),
+      name: zod.string(),
+      kind: zod.enum(["income", "expense", "transfer"]),
+      color: zod.string().nullish(),
+      description: zod.string().nullish(),
+      isArchived: zod.boolean(),
+      createdAt: zod.coerce.date(),
+      updatedAt: zod.coerce.date(),
     })
     .optional(),
 });

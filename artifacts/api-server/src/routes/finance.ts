@@ -344,6 +344,7 @@ const createCategorySchema = z.object({
   name: z.string().min(1),
   kind: z.enum(["income", "expense", "transfer"]).default("expense"),
   color: z.string().nullable().optional(),
+  description: z.string().max(500).nullable().optional(),
 });
 
 router.post(
@@ -358,6 +359,7 @@ router.post(
         name: input.name,
         kind: input.kind,
         color: input.color || null,
+        description: input.description || null,
       })
       .onConflictDoNothing()
       .returning();
@@ -387,12 +389,30 @@ router.patch(
         name: z.string().min(1).optional(),
         kind: z.enum(["income", "expense", "transfer"]).optional(),
         color: z.string().nullable().optional(),
+        description: z.string().max(500).nullable().optional(),
         isArchived: z.boolean().optional(),
       })
       .parse(req.body);
     const [row] = await db
       .update(transactionCategories)
       .set({ ...input, updatedAt: new Date() })
+      .where(eq(transactionCategories.id, cat.id))
+      .returning();
+    return ok(res, row);
+  })
+);
+
+router.delete(
+  "/categories/:id",
+  asyncHandler(async (req, res) => {
+    const cat = await db.query.transactionCategories.findFirst({
+      where: eq(transactionCategories.id, String(req.params.id)),
+    });
+    if (!cat) throw new HttpError(404, "Category not found.");
+    await requireAnyRole(uid(req), cat.labOrganizationId, BILLING_ROLES);
+    const [row] = await db
+      .update(transactionCategories)
+      .set({ isArchived: true, updatedAt: new Date() })
       .where(eq(transactionCategories.id, cat.id))
       .returning();
     return ok(res, row);
@@ -2034,19 +2054,25 @@ router.get(
   }),
 );
 
+const vendorBodySchema = z.object({
+  organizationId: z.string().min(1).optional(),
+  name: z.string().min(1).max(200).optional(),
+  address: z.string().max(500).nullable().optional(),
+  city: z.string().max(100).nullable().optional(),
+  state: z.string().max(100).nullable().optional(),
+  zip: z.string().max(20).nullable().optional(),
+  phone: z.string().max(50).nullable().optional(),
+  email: z.string().max(200).nullable().optional(),
+  website: z.string().max(500).nullable().optional(),
+  notes: z.string().max(2000).nullable().optional(),
+  vendorType: z.enum(VENDOR_TYPES).optional(),
+  isActive: z.boolean().optional(),
+});
+
 router.post(
   "/vendors",
   asyncHandler(async (req, res) => {
-    const input = z
-      .object({
-        organizationId: z.string().min(1),
-        name: z.string().min(1).max(200),
-        address: z.string().max(500).nullable().optional(),
-        phone: z.string().max(50).nullable().optional(),
-        vendorType: z.enum(VENDOR_TYPES).optional(),
-        isActive: z.boolean().optional(),
-      })
-      .parse(req.body);
+    const input = vendorBodySchema.required({ organizationId: true, name: true }).parse(req.body);
     await requireAnyRole(uid(req), input.organizationId, BILLING_ROLES);
     const [row] = await db
       .insert(vendors)
@@ -2054,7 +2080,13 @@ router.post(
         labOrganizationId: input.organizationId,
         name: input.name.trim(),
         address: input.address ?? null,
+        city: input.city ?? null,
+        state: input.state ?? null,
+        zip: input.zip ?? null,
         phone: input.phone ?? null,
+        email: input.email ?? null,
+        website: input.website ?? null,
+        notes: input.notes ?? null,
         vendorType: input.vendorType ?? "vendor",
         isActive: input.isActive ?? true,
       })
@@ -2067,15 +2099,7 @@ router.patch(
   "/vendors/:vendorId",
   asyncHandler(async (req, res) => {
     const { vendorId } = req.params;
-    const input = z
-      .object({
-        name: z.string().min(1).max(200).optional(),
-        address: z.string().max(500).nullable().optional(),
-        phone: z.string().max(50).nullable().optional(),
-        vendorType: z.enum(VENDOR_TYPES).optional(),
-        isActive: z.boolean().optional(),
-      })
-      .parse(req.body);
+    const input = vendorBodySchema.parse(req.body);
     const [existing] = await db
       .select()
       .from(vendors)
@@ -2083,10 +2107,16 @@ router.patch(
       .limit(1);
     if (!existing || existing.deletedAt) throw new HttpError(404, "Vendor not found");
     await requireAnyRole(uid(req), existing.labOrganizationId, BILLING_ROLES);
-    const updates: Partial<typeof vendors.$inferInsert> = {};
+    const updates: Partial<typeof vendors.$inferInsert> = { updatedAt: new Date() };
     if (input.name !== undefined) updates.name = input.name.trim();
     if (input.address !== undefined) updates.address = input.address;
+    if (input.city !== undefined) updates.city = input.city;
+    if (input.state !== undefined) updates.state = input.state;
+    if (input.zip !== undefined) updates.zip = input.zip;
     if (input.phone !== undefined) updates.phone = input.phone;
+    if (input.email !== undefined) updates.email = input.email;
+    if (input.website !== undefined) updates.website = input.website;
+    if (input.notes !== undefined) updates.notes = input.notes;
     if (input.vendorType !== undefined) updates.vendorType = input.vendorType;
     if (input.isActive !== undefined) updates.isActive = input.isActive;
     const [updated] = await db
@@ -2109,11 +2139,12 @@ router.delete(
       .limit(1);
     if (!existing || existing.deletedAt) throw new HttpError(404, "Vendor not found");
     await requireAnyRole(uid(req), existing.labOrganizationId, BILLING_ROLES);
-    await db
+    const [updated] = await db
       .update(vendors)
-      .set({ deletedAt: new Date() })
-      .where(eq(vendors.id, vendorId));
-    return ok(res, { ok: true });
+      .set({ isActive: false, updatedAt: new Date() })
+      .where(eq(vendors.id, vendorId))
+      .returning();
+    return ok(res, updated);
   }),
 );
 
