@@ -47,9 +47,10 @@ import { deleteFromOneDrive } from "../lib/onedrive";
 import { HttpError, ok } from "../lib/http";
 import {
   buildLineItemDescription,
+  fetchLabItemLabels,
   materialToPriceKey,
   resolveAllPricesForContext,
-  resolveItemLabel,
+  resolveItemLabelFromMap,
   resolveServerPriceWithSource,
   type ResolvedItemRow,
 } from "../lib/pricing";
@@ -1249,69 +1250,9 @@ router.post(
     }
 
     const user = (req as any).user;
-    await db.insert(caseEvents).values({
-      caseId: createdCase.id,
-      eventType: "case_created",
-      actorUserId: (req as any).auth.userId,
-      actorOrganizationId: input.labOrganizationId,
-      actorInitials: user?.initials || "SYS",
-      metadataJson: {
-        patientFirstName: input.patientFirstName,
-        patientLastName: input.patientLastName,
-        restorations: input.restorations?.length || 0,
-      },
-    });
 
-    // Cross-link history entries on both the new (remake) case and the
-    // original being remade so staff can navigate between them and see
-    // the remake reason / charge decision in the timeline forever.
-    if (remakeOriginal) {
-      const reason = input.remakeReason ?? null;
-      const charged = input.remakeCharged ?? null;
-      // Forward-side event on the new canonical case is always written
-      // to case_events. Reciprocal "remade_by" goes to case_events when
-      // the original is canonical, or onto the legacy activityLog when
-      // the original is a legacy lab_cases row (handled by helper).
-      await db.insert(caseEvents).values({
-        caseId: createdCase.id,
-        eventType: "remake_of",
-        actorUserId: (req as any).auth.userId,
-        actorOrganizationId: input.labOrganizationId,
-        actorInitials: user?.initials || "SYS",
-        metadataJson: {
-          originalCaseId: remakeOriginal.id,
-          originalCaseNumber: remakeOriginal.caseNumber,
-          originalCaseKind: remakeOriginal.kind,
-          remakeReason: reason,
-          remakeCharged: charged,
-          note: `Marked as remake of ${remakeOriginal.kind === "legacy" ? "legacy " : ""}case ${remakeOriginal.caseNumber}${reason ? ` (reason: ${reason})` : ""}`,
-        },
-      });
-      await writeReciprocalRemadeBy(
-        remakeOriginal,
-        { id: createdCase.id, caseNumber: createdCase.caseNumber },
-        reason,
-        charged,
-        {
-          userId: (req as any).auth.userId,
-          orgId: input.labOrganizationId,
-          initials: user?.initials || "SYS",
-        },
-      );
-    }
-
-    await writeAuditLog({
-      req,
-      organizationId: input.labOrganizationId,
-      action: "case_created",
-      entityType: "case",
-      entityId: createdCase.id,
-      afterJson: createdCase,
-    });
-
-    // Persist any AI-extracted (or user-entered) case-level note BEFORE
-    // the auto-invoice block runs so `displayMetadataJson.caseNotes`
-    // picks it up when the invoice is materialized.
+    // Persist any AI-extracted (or user-entered) case-level note FIRST so
+    // the auto-invoice block (which reads caseNotes) sees it when it runs.
     if (input.notes && input.notes.trim()) {
       await db.insert(caseNotes).values({
         caseId: createdCase.id,
@@ -1322,18 +1263,6 @@ router.post(
       });
     }
 
-    // Auto-generate an invoice for every new case so the
-    // History tab shows the invoice and the Invoice tab is
-    // immediately editable. The invoice is created in "open" status
-    // (not "draft") so it shows up as an active, open balance from
-    // day one — even for AI-imported / drag-and-dropped cases that
-    // may not have priced restorations yet.
-    //
-    // We also pre-populate displayMetadataJson with the patient name,
-    // tooth list, shade, and case notes pulled from the case + its
-    // restorations so the Invoice tab doesn't show empty fields the
-    // user has to copy over by hand.
-    //
     // No-charge remake exception: when the user explicitly marked the
     // remake as "no charge" we still create the invoice so it's visible
     // in the Invoice tab, but force it to $0 with all restoration line
@@ -1342,151 +1271,248 @@ router.post(
     // while making the no-charge intent explicit and auditable.
     const noChargeRemake =
       !!remakeOriginal && input.remakeCharged === false;
-    try {
-      const restorationsForInvoice = await db.query.caseRestorations.findMany({
-        where: eq(caseRestorations.caseId, createdCase.id),
-      });
-      const hasLines = restorationsForInvoice.length > 0;
-      const invoiceNumber = `INV-${createdCase.caseNumber}`;
-      const noChargeNote = noChargeRemake
-        ? `No-charge remake of case ${remakeOriginal!.caseNumber}${input.remakeReason ? ` — reason: ${input.remakeReason}` : ""}`
-        : null;
 
-      // Build the display metadata so the Invoice tab shows patient,
-      // teeth, shade, and case notes without the user having to retype
-      // anything. Sources:
-      //   • patientName  — case.patientFirstName + patientLastName
-      //   • teeth        — distinct tooth numbers across restorations
-      //   • shade        — distinct shades across restorations
-      //   • caseNotes    — restoration-level notes joined; the case-
-      //                    level notes table is populated separately
-      //                    (e.g. iTero AI import) and we read those too
-      const providerOrgRow = await db.query.organizations.findFirst({
-        where: eq(organizations.id, createdCase.providerOrganizationId),
-      });
-      const billToName =
-        providerOrgRow?.displayName || providerOrgRow?.name || "";
-      const teethList = Array.from(
-        new Set(
-          restorationsForInvoice
-            .map((r) => (r.toothNumber || "").trim())
-            .filter(Boolean),
-        ),
-      ).join(", ");
-      const shadeList = Array.from(
-        new Set(
-          restorationsForInvoice
-            .map((r) => (r.shade || "").trim())
-            .filter(Boolean),
-        ),
-      ).join(", ");
-      const caseLevelNotes = await db.query.caseNotes.findMany({
-        where: eq(caseNotes.caseId, createdCase.id),
-      });
-      const caseNotesText = [
-        ...caseLevelNotes.map((n) => (n.noteText || "").trim()),
-        ...restorationsForInvoice.map((r) => (r.notes || "").trim()),
-      ]
-        .filter(Boolean)
-        .join("\n");
-      const displayMetadata: Record<string, unknown> = {
-        patientName: `${input.patientFirstName} ${input.patientLastName}`.trim(),
-        billTo: billToName,
-        teeth: teethList,
-        shade: shadeList,
-        caseNotes: caseNotesText,
-        credits: 0,
-        lineItems: restorationsForInvoice.map((r) => ({
-          item: r.restorationType,
-          description: `${r.restorationType} - Tooth ${r.toothNumber}`,
-        })),
-      };
+    // Fire all independent post-insert work concurrently:
+    //   • case_created timeline event
+    //   • audit log write
+    //   • remake cross-link events (when applicable)
+    //   • auto-invoice generation
+    // None of these depend on each other's result, so running them in
+    // parallel cuts the perceived latency of the "Creating case…" spinner
+    // roughly in half compared to the previous sequential chain.
+    await Promise.all([
+      // ── timeline event ────────────────────────────────────────────────
+      db.insert(caseEvents).values({
+        caseId: createdCase.id,
+        eventType: "case_created",
+        actorUserId: (req as any).auth.userId,
+        actorOrganizationId: input.labOrganizationId,
+        actorInitials: user?.initials || "SYS",
+        metadataJson: {
+          patientFirstName: input.patientFirstName,
+          patientLastName: input.patientLastName,
+          restorations: input.restorations?.length || 0,
+        },
+      }),
 
-      const [newInvoice] = await db
-        .insert(invoices)
-        .values({
-          invoiceNumber,
-          caseId: createdCase.id,
-          labOrganizationId: createdCase.labOrganizationId,
-          providerOrganizationId: createdCase.providerOrganizationId,
-          // Always create the invoice as "open" (active, awaiting
-          // payment) — never "draft". Even an empty / unpriced auto-
-          // invoice should appear on the open-balance worklist so the
-          // lab knows it needs to be filled in and sent.
-          status: "open",
-          issuedAt: new Date(),
-          displayMetadataJson: displayMetadata,
-          createdByUserId: (req as any).auth.userId,
-          updatedByUserId: (req as any).auth.userId,
-          ...(noChargeNote ? { notes: noChargeNote } : {}),
-        })
-        .onConflictDoNothing()
-        .returning();
-      if (newInvoice) {
-        if (hasLines) {
-          const labelMap: Record<string, string> = {};
-          for (const r of restorationsForInvoice) {
-            const pk = materialToPriceKey(r.material, r.restorationType) ?? r.restorationType;
-            if (!(pk in labelMap)) {
-              labelMap[pk] = await resolveItemLabel(createdCase.labOrganizationId, pk);
-            }
-          }
-          await db.insert(invoiceLineItems).values(
-            restorationsForInvoice.map((r, idx) => {
-              const pk = materialToPriceKey(r.material, r.restorationType) ?? r.restorationType;
-              const baseLabel = labelMap[pk] ?? r.restorationType;
-              const baseDesc = buildLineItemDescription(r.toothNumber, baseLabel);
-              return {
-                invoiceId: newInvoice.id,
-                caseRestorationId: r.id,
-                description: noChargeRemake
-                  ? `${baseDesc} (no-charge remake)`
-                  : baseDesc,
-                quantity: r.quantity,
-                unitPrice: noChargeRemake ? "0.00" : r.unitPrice,
-                lineTotal: noChargeRemake
-                  ? "0.00"
-                  : calculateLineTotal(r.quantity, r.unitPrice),
-                sortOrder: idx,
-              };
+      // ── audit log ─────────────────────────────────────────────────────
+      writeAuditLog({
+        req,
+        organizationId: input.labOrganizationId,
+        action: "case_created",
+        entityType: "case",
+        entityId: createdCase.id,
+        afterJson: createdCase,
+      }),
+
+      // ── remake cross-link events (no-op when not a remake) ────────────
+      // Cross-link history entries on both the new (remake) case and the
+      // original being remade so staff can navigate between them and see
+      // the remake reason / charge decision in the timeline forever.
+      remakeOriginal
+        ? (async () => {
+            const reason = input.remakeReason ?? null;
+            const charged = input.remakeCharged ?? null;
+            // Forward-side event on the new canonical case is always
+            // written to case_events. Reciprocal "remade_by" goes to
+            // case_events when the original is canonical, or onto the
+            // legacy activityLog when the original is a legacy lab_cases
+            // row (handled by helper).
+            await db.insert(caseEvents).values({
+              caseId: createdCase.id,
+              eventType: "remake_of",
+              actorUserId: (req as any).auth.userId,
+              actorOrganizationId: input.labOrganizationId,
+              actorInitials: user?.initials || "SYS",
+              metadataJson: {
+                originalCaseId: remakeOriginal.id,
+                originalCaseNumber: remakeOriginal.caseNumber,
+                originalCaseKind: remakeOriginal.kind,
+                remakeReason: reason,
+                remakeCharged: charged,
+                note: `Marked as remake of ${remakeOriginal.kind === "legacy" ? "legacy " : ""}case ${remakeOriginal.caseNumber}${reason ? ` (reason: ${reason})` : ""}`,
+              },
+            });
+            await writeReciprocalRemadeBy(
+              remakeOriginal,
+              { id: createdCase.id, caseNumber: createdCase.caseNumber },
+              reason,
+              charged,
+              {
+                userId: (req as any).auth.userId,
+                orgId: input.labOrganizationId,
+                initials: user?.initials || "SYS",
+              },
+            );
+          })()
+        : Promise.resolve(),
+
+      // ── auto-invoice generation ────────────────────────────────────────
+      // Auto-generate an invoice for every new case so the History tab
+      // shows the invoice and the Invoice tab is immediately editable.
+      // The invoice is created in "open" status (not "draft") so it shows
+      // up as an active, open balance from day one — even for AI-imported
+      // / drag-and-dropped cases that may not have priced restorations yet.
+      //
+      // We also pre-populate displayMetadataJson with the patient name,
+      // tooth list, shade, and case notes pulled from the case + its
+      // restorations so the Invoice tab doesn't show empty fields the
+      // user has to copy over by hand.
+      (async () => {
+        try {
+          // Fetch restorations, provider org, and case notes in parallel —
+          // all three are independent reads against different tables.
+          const [restorationsForInvoice, providerOrgRow, caseLevelNotes] =
+            await Promise.all([
+              db.query.caseRestorations.findMany({
+                where: eq(caseRestorations.caseId, createdCase.id),
+              }),
+              db.query.organizations.findFirst({
+                where: eq(organizations.id, createdCase.providerOrganizationId),
+              }),
+              db.query.caseNotes.findMany({
+                where: eq(caseNotes.caseId, createdCase.id),
+              }),
+            ]);
+
+          const hasLines = restorationsForInvoice.length > 0;
+          const invoiceNumber = `INV-${createdCase.caseNumber}`;
+          const noChargeNote = noChargeRemake
+            ? `No-charge remake of case ${remakeOriginal!.caseNumber}${input.remakeReason ? ` — reason: ${input.remakeReason}` : ""}`
+            : null;
+
+          // Build the display metadata so the Invoice tab shows patient,
+          // teeth, shade, and case notes without the user having to retype
+          // anything. Sources:
+          //   • patientName  — case.patientFirstName + patientLastName
+          //   • teeth        — distinct tooth numbers across restorations
+          //   • shade        — distinct shades across restorations
+          //   • caseNotes    — restoration-level notes joined; the case-
+          //                    level notes table is populated separately
+          //                    (e.g. iTero AI import) and we read those too
+          const billToName =
+            providerOrgRow?.displayName || providerOrgRow?.name || "";
+          const teethList = Array.from(
+            new Set(
+              restorationsForInvoice
+                .map((r) => (r.toothNumber || "").trim())
+                .filter(Boolean),
+            ),
+          ).join(", ");
+          const shadeList = Array.from(
+            new Set(
+              restorationsForInvoice
+                .map((r) => (r.shade || "").trim())
+                .filter(Boolean),
+            ),
+          ).join(", ");
+          const caseNotesText = [
+            ...caseLevelNotes.map((n) => (n.noteText || "").trim()),
+            ...restorationsForInvoice.map((r) => (r.notes || "").trim()),
+          ]
+            .filter(Boolean)
+            .join("\n");
+          const displayMetadata: Record<string, unknown> = {
+            patientName: `${input.patientFirstName} ${input.patientLastName}`.trim(),
+            billTo: billToName,
+            teeth: teethList,
+            shade: shadeList,
+            caseNotes: caseNotesText,
+            credits: 0,
+            lineItems: restorationsForInvoice.map((r) => ({
+              item: r.restorationType,
+              description: `${r.restorationType} - Tooth ${r.toothNumber}`,
+            })),
+          };
+
+          const [newInvoice] = await db
+            .insert(invoices)
+            .values({
+              invoiceNumber,
+              caseId: createdCase.id,
+              labOrganizationId: createdCase.labOrganizationId,
+              providerOrganizationId: createdCase.providerOrganizationId,
+              // Always create the invoice as "open" (active, awaiting
+              // payment) — never "draft". Even an empty / unpriced auto-
+              // invoice should appear on the open-balance worklist so the
+              // lab knows it needs to be filled in and sent.
+              status: "open",
+              issuedAt: new Date(),
+              displayMetadataJson: displayMetadata,
+              createdByUserId: (req as any).auth.userId,
+              updatedByUserId: (req as any).auth.userId,
+              ...(noChargeNote ? { notes: noChargeNote } : {}),
             })
+            .onConflictDoNothing()
+            .returning();
+          if (newInvoice) {
+            if (hasLines) {
+              // Batch-fetch all custom labels for this lab in one query so
+              // the per-restoration label resolution below is N×0 DB calls
+              // instead of the previous N×1 pattern.
+              const labLabelMap = await fetchLabItemLabels(
+                createdCase.labOrganizationId,
+              );
+              await db.insert(invoiceLineItems).values(
+                restorationsForInvoice.map((r, idx) => {
+                  const pk =
+                    materialToPriceKey(r.material, r.restorationType) ??
+                    r.restorationType;
+                  const baseLabel = resolveItemLabelFromMap(labLabelMap, pk);
+                  const baseDesc = buildLineItemDescription(r.toothNumber, baseLabel);
+                  return {
+                    invoiceId: newInvoice.id,
+                    caseRestorationId: r.id,
+                    description: noChargeRemake
+                      ? `${baseDesc} (no-charge remake)`
+                      : baseDesc,
+                    quantity: r.quantity,
+                    unitPrice: noChargeRemake ? "0.00" : r.unitPrice,
+                    lineTotal: noChargeRemake
+                      ? "0.00"
+                      : calculateLineTotal(r.quantity, r.unitPrice),
+                    sortOrder: idx,
+                  };
+                }),
+              );
+            }
+            const items = await db.query.invoiceLineItems.findMany({
+              where: eq(invoiceLineItems.invoiceId, newInvoice.id),
+            });
+            const subtotal = sumMoney(items.map((it) => it.lineTotal));
+            const [finalized] = await db
+              .update(invoices)
+              .set({
+                subtotal,
+                total: subtotal,
+                balanceDue: subtotal,
+                updatedByUserId: (req as any).auth.userId,
+              })
+              .where(eq(invoices.id, newInvoice.id))
+              .returning();
+            await db.insert(caseEvents).values({
+              caseId: createdCase.id,
+              eventType: "invoice_generated",
+              actorUserId: (req as any).auth.userId,
+              actorOrganizationId: createdCase.labOrganizationId,
+              actorInitials: user?.initials || "SYS",
+              metadataJson: {
+                invoiceId: finalized.id,
+                invoiceNumber: finalized.invoiceNumber,
+                empty: !hasLines,
+              },
+            });
+          }
+        } catch (err) {
+          // Auto-invoice failure should not block case creation. The user
+          // can hit "Generate invoice" manually from the Invoice tab.
+          req.log?.warn?.(
+            { err, caseId: createdCase.id },
+            "auto invoice generation on case create failed",
           );
         }
-        const items = await db.query.invoiceLineItems.findMany({
-          where: eq(invoiceLineItems.invoiceId, newInvoice.id),
-        });
-        const subtotal = sumMoney(items.map((it) => it.lineTotal));
-        const [finalized] = await db
-          .update(invoices)
-          .set({
-            subtotal,
-            total: subtotal,
-            balanceDue: subtotal,
-            updatedByUserId: (req as any).auth.userId,
-          })
-          .where(eq(invoices.id, newInvoice.id))
-          .returning();
-        await db.insert(caseEvents).values({
-          caseId: createdCase.id,
-          eventType: "invoice_generated",
-          actorUserId: (req as any).auth.userId,
-          actorOrganizationId: createdCase.labOrganizationId,
-          actorInitials: user?.initials || "SYS",
-          metadataJson: {
-            invoiceId: finalized.id,
-            invoiceNumber: finalized.invoiceNumber,
-            empty: !hasLines,
-          },
-        });
-      }
-    } catch (err) {
-      // Auto-invoice failure should not block case creation. The user
-      // can hit "Generate invoice" manually from the Invoice tab.
-      req.log?.warn?.(
-        { err, caseId: createdCase.id },
-        "auto invoice generation on case create failed"
-      );
-    }
+      })(),
+    ]);
 
     return ok(res, createdCase, 201);
       })(),
@@ -4302,21 +4328,11 @@ router.post(
           .returning();
 
         if (autoInvoice) {
-          // Pre-fetch resolved labels to avoid N+1 queries per restoration
-          const iteroLabelCache: Record<string, string> = {};
-          if (hasRestorations) {
-            for (const restoration of restorationRowsForInvoice) {
-              const pk =
-                materialToPriceKey(restoration.material, restoration.restorationType) ??
-                restoration.restorationType;
-              if (!(pk in iteroLabelCache)) {
-                iteroLabelCache[pk] = await resolveItemLabel(
-                  createdCase.labOrganizationId,
-                  pk,
-                );
-              }
-            }
-          }
+          // Batch-fetch all custom labels for this lab in one query so
+          // the per-restoration label resolution below is zero DB calls.
+          const iteroLabelCache = hasRestorations
+            ? await fetchLabItemLabels(createdCase.labOrganizationId)
+            : ({} as Record<string, string>);
           const itemsToInsert = hasRestorations
             ? restorationRowsForInvoice.map(
                 (restoration: any, index: number) => {
@@ -4325,7 +4341,7 @@ router.post(
                   const pk =
                     materialToPriceKey(restoration.material, restoration.restorationType) ??
                     restoration.restorationType;
-                  const label = iteroLabelCache[pk] ?? restoration.restorationType;
+                  const label = resolveItemLabelFromMap(iteroLabelCache, pk);
                   return {
                     invoiceId: autoInvoice.id,
                     caseRestorationId: restoration.id,
@@ -5194,22 +5210,9 @@ router.post(
           .returning();
 
         if (autoInvoice) {
-          const labelCache: Record<string, string> = {};
-          if (hasRestorations) {
-            for (const restoration of restorationRowsForInvoice) {
-              const pk =
-                materialToPriceKey(
-                  restoration.material,
-                  restoration.restorationType
-                ) ?? restoration.restorationType;
-              if (!(pk in labelCache)) {
-                labelCache[pk] = await resolveItemLabel(
-                  createdCase.labOrganizationId,
-                  pk
-                );
-              }
-            }
-          }
+          const labelCache = hasRestorations
+            ? await fetchLabItemLabels(createdCase.labOrganizationId)
+            : ({} as Record<string, string>);
           const itemsToInsert = hasRestorations
             ? restorationRowsForInvoice.map(
                 (restoration: any, index: number) => {
@@ -5220,7 +5223,7 @@ router.post(
                       restoration.material,
                       restoration.restorationType
                     ) ?? restoration.restorationType;
-                  const label = labelCache[pk] ?? restoration.restorationType;
+                  const label = resolveItemLabelFromMap(labelCache, pk);
                   return {
                     invoiceId: autoInvoice.id,
                     caseRestorationId: restoration.id,
@@ -5790,19 +5793,15 @@ async function processOneIteroZipFile(
       }).onConflictDoNothing().returning();
 
       if (autoInvoice) {
-        const labelCache: Record<string, string> = {};
-        if (hasRestorations) {
-          for (const restoration of restorationRowsForInvoice) {
-            const pk = materialToPriceKey(restoration.material, restoration.restorationType) ?? restoration.restorationType;
-            if (!(pk in labelCache)) labelCache[pk] = await resolveItemLabel(createdCase.labOrganizationId, pk);
-          }
-        }
+        const labelCache = hasRestorations
+          ? await fetchLabItemLabels(createdCase.labOrganizationId)
+          : ({} as Record<string, string>);
         const itemsToInsert = hasRestorations
           ? restorationRowsForInvoice.map((restoration: any, index: number) => {
               const qty = Number(restoration.quantity ?? 1);
               const unit = Number(restoration.unitPrice ?? 0);
               const pk = materialToPriceKey(restoration.material, restoration.restorationType) ?? restoration.restorationType;
-              const label = labelCache[pk] ?? restoration.restorationType;
+              const label = resolveItemLabelFromMap(labelCache, pk);
               return { invoiceId: autoInvoice.id, caseRestorationId: restoration.id, description: buildLineItemDescription(restoration.toothNumber, label), quantity: restoration.quantity, unitPrice: restoration.unitPrice, lineTotal: (qty * unit).toFixed(2), sortOrder: index };
             })
           : [{ invoiceId: autoInvoice.id, caseRestorationId: null, description: "[AI placeholder] Restorations could not be extracted — replace with actual line items.", quantity: "1", unitPrice: "0.00", lineTotal: "0.00", sortOrder: 0 }];

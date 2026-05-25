@@ -40,6 +40,21 @@ export async function resolveItemLabel(
 }
 
 /**
+ * Resolve a label for a price key using an already-fetched label map (from
+ * `fetchLabItemLabels`). Falls back to static defaults for keys not in the map.
+ * This is the zero-DB-query sibling of `resolveItemLabel` — use it inside
+ * loops after a single `fetchLabItemLabels` call to avoid N+1 queries.
+ */
+export function resolveItemLabelFromMap(
+  labItemLabelMap: Record<string, string>,
+  priceKey: string,
+): string {
+  if (labItemLabelMap[priceKey]) return labItemLabelMap[priceKey]!;
+  const defaultItem = DEFAULT_TIER_ITEMS.find((i) => i.key === priceKey);
+  return defaultItem?.label ?? priceKey.replace(/_/g, " ").replace(/\b\w/g, (s) => s.toUpperCase());
+}
+
+/**
  * Fetch all configured labels for a lab as a map. Keys present in the map
  * are admin-set; keys absent should still resolve via static defaults.
  */
