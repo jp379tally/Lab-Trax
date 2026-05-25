@@ -258,6 +258,49 @@ export async function getSignedDownloadUrl(
 }
 
 /**
+ * Fetches a short-lived OAuth2 access token from the Replit GCS sidecar and
+ * builds a direct GCS object URL that the browser can download from without
+ * passing through the Replit reverse proxy.
+ *
+ * Returns `null` on any failure (sidecar unreachable, empty token, object
+ * missing, Object Storage not configured) so the caller can fall back to the
+ * existing server-streaming path.
+ *
+ * The returned URL contains the access token in the query string and must
+ * NOT be cached by intermediaries — callers should set `Cache-Control: no-store`
+ * on the redirect response.
+ */
+export async function getDirectDownloadUrl(
+  kind: DesktopInstallerKind = "zip",
+): Promise<string | null> {
+  if (!process.env.PRIVATE_OBJECT_DIR) {
+    return null;
+  }
+  try {
+    const tokenRes = await fetch(`${REPLIT_SIDECAR_ENDPOINT}/token`);
+    if (!tokenRes.ok) return null;
+    const tokenData = (await tokenRes.json()) as { access_token?: string };
+    const accessToken = tokenData.access_token;
+    if (!accessToken) return null;
+
+    const file = getInstallerFile(kind);
+    const [exists] = await file.exists();
+    if (!exists) return null;
+
+    const cfg = INSTALLER_KIND_CONFIG[kind];
+    const fullPath = `${getPrivateObjectDir()}/${cfg.objectKeySuffix}`;
+    const { bucketName, objectName } = parseObjectPath(fullPath);
+    const encodedObject = objectName
+      .split("/")
+      .map((part) => encodeURIComponent(part))
+      .join("/");
+    return `https://storage.googleapis.com/${bucketName}/${encodedObject}?access_token=${encodeURIComponent(accessToken)}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Deletes the stored installer of the given kind from App Storage.
  * Returns true if the object was deleted, false if it did not exist.
  *

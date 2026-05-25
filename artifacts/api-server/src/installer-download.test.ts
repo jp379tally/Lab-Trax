@@ -51,6 +51,7 @@ vi.mock("pino-http", () => ({
 vi.mock("./lib/desktop-installer-storage.js", () => ({
   getDesktopInstallerHandle: vi.fn(),
   openDesktopInstallerStream: vi.fn(),
+  getDirectDownloadUrl: vi.fn().mockResolvedValue(null),
   installerKindFromUrl: vi.fn(),
   getDesktopInstallerMetadata: vi.fn(),
   uploadDesktopInstaller: vi.fn(),
