@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeftRight, Ban, CheckCircle2, Download, Loader2, Plus, Repeat, Search, Trash2, Upload, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
@@ -984,6 +984,7 @@ function BlankRow({
   onDismiss?: () => void;
 }) {
   const qc = useQueryClient();
+  const rowRef = useRef<HTMLTableRowElement>(null);
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
   const [payee, setPayee] = useState("");
   const [memo, setMemo] = useState("");
@@ -994,6 +995,10 @@ function BlankRow({
   const [savedOnce, setSavedOnce] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [recurringOpen, setRecurringOpen] = useState(false);
+
+  useEffect(() => {
+    rowRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, []);
 
   const hasAmount =
     (Number(payment) || 0) > 0 || (Number(deposit) || 0) > 0;
@@ -1055,6 +1060,7 @@ function BlankRow({
   return (
     <>
       <tr
+        ref={rowRef}
         className="border-t border-border bg-secondary/10"
         onBlur={handleBlur}
         onKeyDownCapture={onRowKeyDownCapture}
