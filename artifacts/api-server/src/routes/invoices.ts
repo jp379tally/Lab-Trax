@@ -1,5 +1,6 @@
 import { Router } from "express";
 import multer from "multer";
+import { normalizePhoneE164 } from "../lib/account-link-sms";
 import fs from "fs";
 import path from "path";
 import { randomBytes } from "crypto";
@@ -227,12 +228,16 @@ router.post(
     });
     if (!practice) throw new HttpError(404, "Practice not found.");
 
-    const recipient = (input.to ?? (practice as any).phone ?? "").trim();
-    if (!recipient) {
+    const rawRecipient = (input.to ?? (practice as any).phone ?? "").trim();
+    if (!rawRecipient) {
       throw new HttpError(
         400,
         "This practice has no phone number on file. Add one first or enter a number.",
       );
+    }
+    const recipient = normalizePhoneE164(rawRecipient);
+    if (!recipient) {
+      throw new HttpError(400, "Invalid phone number. Please use a 10-digit US number or E.164 format (e.g. +18503633336).");
     }
 
     const invoiceRows = await db.query.invoices.findMany({
@@ -3221,6 +3226,11 @@ router.post(
       })
       .parse(req.body);
 
+    const toE164 = normalizePhoneE164(input.to);
+    if (!toE164) {
+      throw new HttpError(400, "Invalid phone number. Please use a 10-digit US number or E.164 format (e.g. +18503633336).");
+    }
+
     const sid = process.env.TWILIO_ACCOUNT_SID;
     const token = process.env.TWILIO_AUTH_TOKEN;
     const from = process.env.TWILIO_PHONE_NUMBER;
@@ -3229,7 +3239,7 @@ router.post(
     }
     const params = new URLSearchParams();
     params.set("From", from);
-    params.set("To", input.to.trim());
+    params.set("To", toE164);
     params.set("Body", input.message);
     let status: "sent" | "failed" = "sent";
     let errorMessage: string | null = null;

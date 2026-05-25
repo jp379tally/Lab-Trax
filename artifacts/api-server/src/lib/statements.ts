@@ -1,4 +1,5 @@
 import PDFDocument from "pdfkit";
+import { normalizePhoneE164 } from "./account-link-sms";
 import archiver from "archiver";
 import nodemailer from "nodemailer";
 import { and, asc, eq, gte, inArray, lt, or, isNull, ne, lte } from "drizzle-orm";
@@ -936,9 +937,13 @@ export async function sendStatementSms(opts: {
   const body =
     `${opts.labName}: Statement for ${opts.practiceName} — ${opts.periodLabel}. ` +
     `Open balance: ${fmtMoney(opts.openBalance)}. Please contact us with any questions.`;
+  const toE164 = normalizePhoneE164(opts.to);
+  if (!toE164) {
+    return { delivered: false, reason: `Invalid phone number: ${opts.to}` };
+  }
   const params = new URLSearchParams();
   params.set("From", from);
-  params.set("To", opts.to);
+  params.set("To", toE164);
   params.set("Body", body);
   try {
     const r = await fetch(

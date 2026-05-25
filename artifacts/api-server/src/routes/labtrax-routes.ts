@@ -1,4 +1,5 @@
 import express, { Router, type IRouter } from "express";
+import { normalizePhoneE164 } from "../lib/account-link-sms";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import * as fs from "node:fs";
@@ -140,9 +141,11 @@ async function sendAdminPinResetSms(phone: string, code: string): Promise<void> 
   const from = process.env.TWILIO_PHONE_NUMBER;
   if (!sid || !token || !from) throw new Error("SMS not configured on this server.");
   const url = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`;
+  const toE164 = normalizePhoneE164(phone);
+  if (!toE164) throw new Error(`Invalid phone number: ${phone}`);
   const body = new URLSearchParams({
     From: from,
-    To: phone,
+    To: toE164,
     Body: `Your LabTrax admin PIN reset code is: ${code}. It expires in 10 minutes.`,
   });
   const r = await fetch(url, {
@@ -2800,7 +2803,9 @@ export async function registerRoutes(): Promise<IRouter> {
         const authHeader = "Basic " + Buffer.from(`${twilioSid}:${twilioToken}`).toString("base64");
         const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`;
         const params = new URLSearchParams();
-        params.append("To", phone.trim());
+        const phoneE164 = normalizePhoneE164(phone);
+        if (!phoneE164) throw new Error(`Invalid phone number: ${phone}`);
+        params.append("To", phoneE164);
         params.append("From", twilioFrom);
         params.append("Body", `Your LabTrax verification code is: ${code}. It expires in 10 minutes.`);
         const twilioResp = await globalThis.fetch(twilioUrl, {
