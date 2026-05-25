@@ -24,6 +24,10 @@ args = "api-server-tests"
 task = "workflow.run"
 args = "EAS iOS Build + Submit"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "regression-tests"
+
 [[workflows.workflow]]
 name = "api-server-tests"
 author = "agent"
@@ -45,6 +49,17 @@ outputType = "console"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "cd /home/runner/workspace/artifacts/labtrax && python3 scripts/write-asc-key.py && EAS_NO_VCS=1 EAS_BUILD_NO_EXPO_GO_WARNING=true eas build --platform ios --profile production --non-interactive --auto-submit"
+
+[[workflows.workflow]]
+name = "regression-tests"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/api-server run test && pnpm --filter @workspace/labtrax run test"
+
+[workflows.workflow.metadata]
+isValidation = true
 
 [agent]
 stack = "PNPM_WORKSPACE"
