@@ -61,8 +61,7 @@ function RegisterTable({
   const [dateTo, setDateTo] = useState("");
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<BankTransaction | null>(null);
-  const [blankRowKeys, setBlankRowKeys] = useState<BlankRowEntry[]>([]);
-  const nextBlankKeyRef = useRef(0);
+  const [showInlineRows, setShowInlineRows] = useState(false);
   const [importing, setImporting] = useState(false);
   const [transferring, setTransferring] = useState(false);
   const [recurringFor, setRecurringFor] = useState<BankTransaction | null>(null);
@@ -264,9 +263,7 @@ function RegisterTable({
           </button>
           <button
             type="button"
-            onClick={() =>
-              setBlankRowKeys((prev) => [...prev, { key: nextBlankKeyRef.current++ }])
-            }
+            onClick={() => setShowInlineRows(true)}
             className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-1.5"
           >
             <Plus size={14} /> Add entry
@@ -513,43 +510,17 @@ function RegisterTable({
                   </tr>
                 );
               })}
-              {blankRowKeys.map((entry, i) => (
-                <BlankRow
-                  key={entry.key}
+              {showInlineRows && (
+                <InlineBlankRows
                   accountId={accountId}
                   organizationId={organizationId}
                   accounts={accounts}
                   categories={cats.data || []}
-                  autoFocus={i === blankRowKeys.length - 1}
-                  initialValues={entry.initialValues}
-                  onSaved={() =>
-                    qc.invalidateQueries({ queryKey: ["finance"] })
-                  }
-                  onDismiss={(values) => {
-                    setBlankRowKeys((prev) =>
-                      prev.filter((e) => e.key !== entry.key)
-                    );
-                    const newKey = nextBlankKeyRef.current++;
-                    toast({
-                      title: "Entry dismissed",
-                      duration: 5000,
-                      action: (
-                        <ToastAction
-                          altText="Undo"
-                          onClick={() =>
-                            setBlankRowKeys((prev) => [
-                              ...prev,
-                              { key: newKey, initialValues: values },
-                            ])
-                          }
-                        >
-                          Undo
-                        </ToastAction>
-                      ),
-                    });
-                  }}
+                  rowCount={1}
+                  onSaved={() => qc.invalidateQueries({ queryKey: ["finance"] })}
+                  onAllDismissed={() => setShowInlineRows(false)}
                 />
-              ))}
+              )}
             </tbody>
           </table>
         </div>
@@ -965,6 +936,7 @@ function InlineBlankRows({
   rowCount,
   categories,
   onSaved,
+  onAllDismissed,
 }: {
   accountId: string;
   organizationId: string;
@@ -972,19 +944,27 @@ function InlineBlankRows({
   rowCount: number;
   categories: TransactionCategory[];
   onSaved: () => void;
+  onAllDismissed?: () => void;
 }) {
   const [entries, setEntries] = useState<BlankRowEntry[]>(() =>
     Array.from({ length: Math.max(1, rowCount) }, (_, i) => ({ key: i }))
   );
   const nextKeyRef = useRef(entries.length);
+  const [latestKey, setLatestKey] = useState<number | null>(null);
 
   function handleSaved() {
-    setEntries((prev) => [...prev, { key: nextKeyRef.current++ }]);
+    const newKey = nextKeyRef.current++;
+    setEntries((prev) => [...prev, { key: newKey }]);
+    setLatestKey(newKey);
     onSaved();
   }
 
   function handleDismiss(key: number, values: BlankRowValues) {
-    setEntries((prev) => prev.filter((e) => e.key !== key));
+    setEntries((prev) => {
+      const next = prev.filter((e) => e.key !== key);
+      if (next.length === 0) onAllDismissed?.();
+      return next;
+    });
     const newKey = nextKeyRef.current++;
     toast({
       title: "Entry dismissed",
@@ -1012,6 +992,7 @@ function InlineBlankRows({
           accounts={accounts}
           categories={categories}
           initialValues={entry.initialValues}
+          autoFocus={entry.key === latestKey}
           onSaved={handleSaved}
           onDismiss={(values) => handleDismiss(entry.key, values)}
         />
