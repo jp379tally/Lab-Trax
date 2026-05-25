@@ -48,6 +48,8 @@ function RegisterTable({
   const [dateTo, setDateTo] = useState("");
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<BankTransaction | null>(null);
+  const [blankRowKeys, setBlankRowKeys] = useState<number[]>([]);
+  const nextBlankKeyRef = useRef(0);
   const [importing, setImporting] = useState(false);
   const [transferring, setTransferring] = useState(false);
   const [recurringFor, setRecurringFor] = useState<BankTransaction | null>(null);
@@ -249,7 +251,9 @@ function RegisterTable({
           </button>
           <button
             type="button"
-            onClick={() => setAdding(true)}
+            onClick={() =>
+              setBlankRowKeys((prev) => [...prev, nextBlankKeyRef.current++])
+            }
             className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-1.5"
           >
             <Plus size={14} /> Add entry
@@ -496,16 +500,19 @@ function RegisterTable({
                   </tr>
                 );
               })}
-              <InlineBlankRows
-                accountId={accountId}
-                organizationId={organizationId}
-                accounts={accounts}
-                rowCount={3}
-                categories={cats.data || []}
-                onSaved={() =>
-                  qc.invalidateQueries({ queryKey: ["finance"] })
-                }
-              />
+              {blankRowKeys.map((k, i) => (
+                <BlankRow
+                  key={k}
+                  accountId={accountId}
+                  organizationId={organizationId}
+                  accounts={accounts}
+                  categories={cats.data || []}
+                  autoFocus={i === blankRowKeys.length - 1}
+                  onSaved={() =>
+                    qc.invalidateQueries({ queryKey: ["finance"] })
+                  }
+                />
+              ))}
             </tbody>
           </table>
         </div>
@@ -960,12 +967,14 @@ function BlankRow({
   organizationId,
   accounts,
   categories,
+  autoFocus,
   onSaved,
 }: {
   accountId: string;
   organizationId: string;
   accounts: BankAccount[];
   categories: TransactionCategory[];
+  autoFocus?: boolean;
   onSaved: () => void;
 }) {
   const qc = useQueryClient();
@@ -1042,6 +1051,7 @@ function BlankRow({
             onChange={(e) => setDate(e.target.value)}
             onKeyDown={onKeyDown}
             disabled={savedOnce}
+            autoFocus={autoFocus}
             className={inputCls}
           />
         </td>
