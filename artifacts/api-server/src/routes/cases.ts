@@ -3887,20 +3887,50 @@ router.post(
       ),
     });
     if (preExisting && preExisting.createdCaseId) {
-      try {
-        if (req.file?.path) fs.unlinkSync(req.file.path);
-      } catch {
-        /* ignore */
-      }
-      await db
-        .update(iteroImportedOrders)
-        .set({ lastSeenAt: new Date() })
-        .where(eq(iteroImportedOrders.id, preExisting.id));
-      return ok(res, {
-        deduped: true,
-        caseId: preExisting.createdCaseId,
-        iteroOrderId: preExisting.iteroOrderId,
+      // Verify the referenced case still exists and hasn't been soft-deleted.
+      // If it's gone (failed import, soft-delete, or cross-environment ID), the
+      // dedup record is stale — wipe it so this import can proceed fresh.
+      const liveCase = await db.query.cases.findFirst({
+        where: and(
+          eq(cases.id, preExisting.createdCaseId),
+          notDeleted(cases)
+        ),
+        columns: { id: true, caseNumber: true },
       });
+      if (liveCase) {
+        try {
+          if (req.file?.path) fs.unlinkSync(req.file.path);
+        } catch {
+          /* ignore */
+        }
+        await db
+          .update(iteroImportedOrders)
+          .set({ lastSeenAt: new Date() })
+          .where(eq(iteroImportedOrders.id, preExisting.id));
+        return ok(res, {
+          deduped: true,
+          caseId: preExisting.createdCaseId,
+          iteroOrderId: preExisting.iteroOrderId,
+        });
+      }
+      // Stale dedup record — delete it so the transaction can claim a fresh slot.
+      req.log?.warn?.(
+        { iteroOrderId: body.iteroOrderId, staleCreatedCaseId: preExisting.createdCaseId },
+        "iTero dedup: stale record found (case missing or deleted) — clearing and re-importing"
+      );
+      await db
+        .delete(iteroImportedOrders)
+        .where(eq(iteroImportedOrders.id, preExisting.id));
+    } else if (preExisting && !preExisting.createdCaseId) {
+      // A previous import started but its transaction rolled back leaving a
+      // null-caseId sentinel. Clear it so this request can proceed.
+      req.log?.warn?.(
+        { iteroOrderId: body.iteroOrderId },
+        "iTero dedup: stuck null-caseId slot found — clearing and re-importing"
+      );
+      await db
+        .delete(iteroImportedOrders)
+        .where(eq(iteroImportedOrders.id, preExisting.id));
     }
 
     // AI extraction (best-effort — if AI is unconfigured or fails, we still
@@ -4083,13 +4113,27 @@ router.post(
             eq(iteroImportedOrders.iteroOrderId, body.iteroOrderId)
           ),
         });
-        if (existing) {
-          await tx
-            .update(iteroImportedOrders)
-            .set({ lastSeenAt: new Date() })
-            .where(eq(iteroImportedOrders.id, existing.id));
+        // Only return deduped when the referenced case is alive.
+        // A null createdCaseId means another concurrent request's transaction is
+        // still in-flight (or rolled back leaving a stuck slot that the pre-check
+        // should have cleaned up). Throw so the client can retry.
+        if (existing?.createdCaseId) {
+          const liveCase = await tx.query.cases.findFirst({
+            where: and(eq(cases.id, existing.createdCaseId), notDeleted(cases)),
+            columns: { id: true },
+          });
+          if (liveCase) {
+            await tx
+              .update(iteroImportedOrders)
+              .set({ lastSeenAt: new Date() })
+              .where(eq(iteroImportedOrders.id, existing.id));
+            return { kind: "deduped" as const, existing };
+          }
         }
-        return { kind: "deduped" as const, existing };
+        throw new HttpError(
+          409,
+          "A previous import for this order is still in progress or failed to complete. Please retry in a moment."
+        );
       }
 
       const [createdCase] = await tx
@@ -4761,16 +4805,46 @@ router.post(
       ),
     });
     if (preExisting && preExisting.createdCaseId) {
-      await db
-        .update(iteroImportedOrders)
-        .set({ lastSeenAt: new Date() })
-        .where(eq(iteroImportedOrders.id, preExisting.id));
-      return ok(res, {
-        deduped: true,
-        caseId: preExisting.createdCaseId,
-        iteroOrderId: preExisting.iteroOrderId,
-        extraFilesAttached: 0,
+      // Verify the referenced case still exists and hasn't been soft-deleted.
+      // If it's gone (failed import, soft-delete, or cross-environment ID), the
+      // dedup record is stale — wipe it so this import can proceed fresh.
+      const liveCase = await db.query.cases.findFirst({
+        where: and(
+          eq(cases.id, preExisting.createdCaseId),
+          notDeleted(cases)
+        ),
+        columns: { id: true },
       });
+      if (liveCase) {
+        await db
+          .update(iteroImportedOrders)
+          .set({ lastSeenAt: new Date() })
+          .where(eq(iteroImportedOrders.id, preExisting.id));
+        return ok(res, {
+          deduped: true,
+          caseId: preExisting.createdCaseId,
+          iteroOrderId: preExisting.iteroOrderId,
+          extraFilesAttached: 0,
+        });
+      }
+      // Stale dedup record — delete it so the transaction can claim a fresh slot.
+      req.log?.warn?.(
+        { iteroOrderId, staleCreatedCaseId: preExisting.createdCaseId },
+        "iTero ZIP dedup: stale record found (case missing or deleted) — clearing and re-importing"
+      );
+      await db
+        .delete(iteroImportedOrders)
+        .where(eq(iteroImportedOrders.id, preExisting.id));
+    } else if (preExisting && !preExisting.createdCaseId) {
+      // A previous import started but its transaction rolled back leaving a
+      // null-caseId sentinel. Clear it so this request can proceed.
+      req.log?.warn?.(
+        { iteroOrderId },
+        "iTero ZIP dedup: stuck null-caseId slot found — clearing and re-importing"
+      );
+      await db
+        .delete(iteroImportedOrders)
+        .where(eq(iteroImportedOrders.id, preExisting.id));
     }
 
     // ── Save Rx PDF to caseMediaDir before the transaction ──────────────────
@@ -4958,13 +5032,23 @@ router.post(
             eq(iteroImportedOrders.iteroOrderId, iteroOrderId)
           ),
         });
-        if (existing) {
-          await tx
-            .update(iteroImportedOrders)
-            .set({ lastSeenAt: new Date() })
-            .where(eq(iteroImportedOrders.id, existing.id));
+        if (existing?.createdCaseId) {
+          const liveCase = await tx.query.cases.findFirst({
+            where: and(eq(cases.id, existing.createdCaseId), notDeleted(cases)),
+            columns: { id: true },
+          });
+          if (liveCase) {
+            await tx
+              .update(iteroImportedOrders)
+              .set({ lastSeenAt: new Date() })
+              .where(eq(iteroImportedOrders.id, existing.id));
+            return { kind: "deduped" as const, existing };
+          }
         }
-        return { kind: "deduped" as const, existing };
+        throw new HttpError(
+          409,
+          "A previous import for this order is still in progress or failed to complete. Please retry in a moment."
+        );
       }
 
       const [createdCase] = await tx
@@ -5602,8 +5686,20 @@ async function processOneIteroZipFile(
       const existing = await tx.query.iteroImportedOrders.findFirst({
         where: and(eq(iteroImportedOrders.labOrganizationId, body.labOrganizationId), eq(iteroImportedOrders.iteroOrderId, iteroOrderId)),
       });
-      if (existing) await tx.update(iteroImportedOrders).set({ lastSeenAt: new Date() }).where(eq(iteroImportedOrders.id, existing.id));
-      return { kind: "deduped" as const, existing };
+      if (existing?.createdCaseId) {
+        const liveCase = await tx.query.cases.findFirst({
+          where: and(eq(cases.id, existing.createdCaseId), notDeleted(cases)),
+          columns: { id: true },
+        });
+        if (liveCase) {
+          await tx.update(iteroImportedOrders).set({ lastSeenAt: new Date() }).where(eq(iteroImportedOrders.id, existing.id));
+          return { kind: "deduped" as const, existing };
+        }
+      }
+      throw new HttpError(
+        409,
+        "A previous import for this order is still in progress or failed to complete. Please retry in a moment."
+      );
     }
 
     const [createdCase] = await tx.insert(cases).values({
