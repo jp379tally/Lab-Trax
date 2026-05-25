@@ -125,12 +125,6 @@ function ProviderPicker({ value, onChange, providers, disabled }: ProviderPicker
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [newPhone, setNewPhone] = useState("");
-  const [newEmail, setNewEmail] = useState("");
-  const [newAddress, setNewAddress] = useState("");
-  const [createError, setCreateError] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const selected = providers.find((o) => o.id === value) || null;
@@ -140,7 +134,6 @@ function ProviderPicker({ value, onChange, providers, disabled }: ProviderPicker
     function onDocClick(e: MouseEvent) {
       if (!containerRef.current?.contains(e.target as Node)) {
         setOpen(false);
-        setAdding(false);
       }
     }
     document.addEventListener("mousedown", onDocClick);
@@ -155,59 +148,12 @@ function ProviderPicker({ value, onChange, providers, disabled }: ProviderPicker
     );
   }, [providers, search]);
 
-  const createMutation = useMutation({
-    mutationFn: async () => {
-      const body = {
-        type: "provider" as const,
-        name: newName.trim(),
-        ...(newPhone.trim() ? { phone: newPhone.trim() } : {}),
-        ...(newEmail.trim() ? { billingEmail: newEmail.trim() } : {}),
-        ...(newAddress.trim() ? { addressLine1: newAddress.trim() } : {}),
-      };
-      return apiFetch<Organization>("/organizations", {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
-    },
-    onSuccess: (created) => {
-      qc.invalidateQueries({ queryKey: ["organizations"] });
-      onChange(created.id, created);
-      setOpen(false);
-      setAdding(false);
-      setNewName("");
-      setNewPhone("");
-      setNewEmail("");
-      setNewAddress("");
-      setSearch("");
-      setCreateError(null);
-    },
-    onError: (e: Error) => setCreateError(e.message),
-  });
-
-  function startAddingFromSearch() {
-    setNewName(search.trim());
-    setAdding(true);
-    setCreateError(null);
-  }
-
-  function submitNew(e: React.FormEvent) {
-    e.preventDefault();
-    if (!newName.trim()) {
-      setCreateError("Practice name is required.");
-      return;
-    }
-    createMutation.mutate();
-  }
-
   return (
     <div ref={containerRef} className="relative">
       <button
         type="button"
         disabled={disabled}
-        onClick={() => {
-          setOpen((o) => !o);
-          setAdding(false);
-        }}
+        onClick={() => setOpen((o) => !o)}
         className={`w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary text-left flex items-center justify-between gap-2 ${
           disabled ? "opacity-60 cursor-not-allowed" : ""
         }`}
@@ -220,9 +166,8 @@ function ProviderPicker({ value, onChange, providers, disabled }: ProviderPicker
 
       {open && (
         <div className="absolute z-50 left-0 right-0 mt-1 bg-card border border-border rounded-lg shadow-xl overflow-hidden">
-          {!adding && (
-            <>
-              <div className="p-2 border-b border-border">
+          <>
+            <div className="p-2 border-b border-border">
                 <input
                   autoFocus
                   type="search"
@@ -264,78 +209,7 @@ function ProviderPicker({ value, onChange, providers, disabled }: ProviderPicker
                   );
                 })}
               </ul>
-              <button
-                type="button"
-                onClick={startAddingFromSearch}
-                className="w-full px-3 py-2 text-sm font-medium text-primary border-t border-border hover:bg-primary/5 flex items-center gap-2"
-              >
-                <Plus size={13} /> Add new practice
-                {search.trim() && (
-                  <span className="text-muted-foreground font-normal truncate">
-                    "{search.trim()}"
-                  </span>
-                )}
-              </button>
             </>
-          )}
-
-          {adding && (
-            <form onSubmit={submitNew} className="p-3 space-y-2">
-              <p className="text-xs font-medium text-muted-foreground">
-                New practice
-              </p>
-              <input
-                autoFocus
-                placeholder="Practice / office name *"
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                className="w-full h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
-              />
-              <input
-                placeholder="Phone (optional, 000-000-0000)"
-                value={newPhone}
-                onChange={(e) => setNewPhone(formatPhone(e.target.value))}
-                className="w-full h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
-              />
-              <input
-                placeholder="Email (optional)"
-                value={newEmail}
-                onChange={(e) => setNewEmail(e.target.value)}
-                className="w-full h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
-              />
-              <input
-                placeholder="Address (optional)"
-                value={newAddress}
-                onChange={(e) => setNewAddress(e.target.value)}
-                className="w-full h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
-              />
-              {createError && (
-                <p className="text-xs text-destructive">{createError}</p>
-              )}
-              <div className="flex gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAdding(false);
-                    setCreateError(null);
-                  }}
-                  className="flex-1 h-8 rounded-md bg-secondary text-xs font-medium text-muted-foreground hover:text-foreground"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={createMutation.isPending}
-                  className="flex-1 h-8 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center justify-center gap-1.5"
-                >
-                  {createMutation.isPending && (
-                    <Loader2 size={11} className="animate-spin" />
-                  )}
-                  Add practice
-                </button>
-              </div>
-            </form>
-          )}
         </div>
       )}
     </div>

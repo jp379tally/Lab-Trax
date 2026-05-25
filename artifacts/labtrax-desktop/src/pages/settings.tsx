@@ -7564,48 +7564,48 @@ function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
     }
   }
 
-  const rows: Array<{ key: keyof EmailPrefsData; label: string; desc: string }> = [
+  const rows: Array<{ prefKey: keyof EmailPrefsData; label: string; desc: string }> = [
     {
-      key: "caseNoteNotifications",
+      prefKey: "caseNoteNotifications",
       label: "Case note alerts",
       desc: "Receive an email when a note is sent on a case",
     },
     {
-      key: "orgInviteNotifications",
+      prefKey: "orgInviteNotifications",
       label: "Lab invitations",
       desc: "Receive invitation emails when you are added to a lab",
     },
     {
-      key: "statementEmails",
+      prefKey: "statementEmails",
       label: "Monthly statements",
       desc: "Receive monthly billing statement PDFs by email",
     },
     {
-      key: "billingReminders",
+      prefKey: "billingReminders",
       label: "Billing reminders",
       desc: "Trial expiry, payment due, and account status alerts",
     },
   ];
 
-  const adminRows: Array<{ key: keyof EmailPrefsData; label: string; desc: string }> = [
+  const adminRows: Array<{ prefKey: keyof EmailPrefsData; label: string; desc: string }> = [
     {
-      key: "installerAlerts",
+      prefKey: "installerAlerts",
       label: "Desktop installer alerts",
       desc: "Publish failures, health-check warnings, and download interruption reports",
     },
     {
-      key: "backupAlerts",
+      prefKey: "backupAlerts",
       label: "Backup alerts",
       desc: "Backup success / failure summaries and OneDrive connection warnings",
     },
     {
-      key: "cleanupAlerts",
+      prefKey: "cleanupAlerts",
       label: "Media cleanup reports",
       desc: "Nightly orphaned case-media cleanup summaries",
     },
   ];
 
-  function ToggleRow({ key, label, desc }: { key: keyof EmailPrefsData; label: string; desc: string }) {
+  function ToggleRow({ prefKey, label, desc }: { prefKey: keyof EmailPrefsData; label: string; desc: string }) {
     return (
       <div className="flex items-center justify-between px-4 py-3 bg-card">
         <div className="min-w-0 mr-6">
@@ -7615,13 +7615,13 @@ function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
         <button
           type="button"
           role="switch"
-          aria-checked={prefs[key]}
-          disabled={!!saving[key]}
-          onClick={() => toggle(key, !prefs[key])}
-          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${prefs[key] ? "bg-primary" : "bg-input"}`}
+          aria-checked={prefs[prefKey]}
+          disabled={!!saving[prefKey]}
+          onClick={() => toggle(prefKey, !prefs[prefKey])}
+          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${prefs[prefKey] ? "bg-primary" : "bg-input"}`}
         >
           <span
-            className={`pointer-events-none block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform ${prefs[key] ? "translate-x-5" : "translate-x-0"}`}
+            className={`pointer-events-none block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform ${prefs[prefKey] ? "translate-x-5" : "translate-x-0"}`}
           />
         </button>
       </div>
@@ -7636,7 +7636,7 @@ function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
       {loadError && <Alert tone="danger">{loadError}</Alert>}
       <div className="divide-y divide-border rounded-lg border border-border overflow-hidden">
         {rows.map((row) => (
-          <ToggleRow key={row.key} {...row} />
+          <ToggleRow key={row.prefKey} {...row} />
         ))}
       </div>
       {isAdmin && (
@@ -7647,7 +7647,7 @@ function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
           </div>
           <div className="divide-y divide-border rounded-lg border border-border overflow-hidden">
             {adminRows.map((row) => (
-              <ToggleRow key={row.key} {...row} />
+              <ToggleRow key={row.prefKey} {...row} />
             ))}
           </div>
         </div>
