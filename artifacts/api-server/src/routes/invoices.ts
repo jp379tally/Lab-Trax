@@ -472,6 +472,117 @@ router.post(
   }),
 );
 
+const smsInvoiceSchema = z.object({
+  to: z.string().min(7).max(40).optional(),
+  message: z.string().min(1).max(1500),
+});
+
+router.post(
+  "/:invoiceId/sms",
+  asyncHandler(async (req, res) => {
+    const input = smsInvoiceSchema.parse(req.body);
+    const invoice = await db.query.invoices.findFirst({
+      where: eq(invoices.id, req.params.invoiceId),
+    });
+    if (!invoice) throw new HttpError(404, "Invoice not found.");
+    await requireAnyRole(
+      (req as any).auth.userId,
+      invoice.labOrganizationId,
+      BILLING_ROLES,
+    );
+
+    const practice = await db.query.organizations.findFirst({
+      where: eq(organizations.id, invoice.providerOrganizationId),
+    });
+    if (!practice) throw new HttpError(404, "Practice not found.");
+
+    const recipient = (input.to ?? (practice as any).phone ?? "").trim();
+    if (!recipient) {
+      throw new HttpError(
+        400,
+        "This practice has no phone number on file. Add one first or enter a number.",
+      );
+    }
+
+    const sid = process.env.TWILIO_ACCOUNT_SID;
+    const token = process.env.TWILIO_AUTH_TOKEN;
+    const from = process.env.TWILIO_PHONE_NUMBER;
+    if (!sid || !token || !from) {
+      throw new HttpError(503, "SMS is not configured on the server. Ask an administrator to set Twilio credentials.");
+    }
+
+    const params = new URLSearchParams();
+    params.set("From", from);
+    params.set("To", recipient);
+    params.set("Body", input.message);
+
+    let twilioError: string | null = null;
+    try {
+      const r = await fetch(
+        `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: "Basic " + Buffer.from(`${sid}:${token}`).toString("base64"),
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: params.toString(),
+        },
+      );
+      if (!r.ok) {
+        twilioError = `Twilio HTTP ${r.status}`;
+      }
+    } catch (err: any) {
+      twilioError = err?.message || "SMS failed.";
+    }
+
+    if (twilioError) {
+      throw new HttpError(502, `Failed to send SMS. ${twilioError}`);
+    }
+
+    const user = (req as any).user;
+    const actorInitials = user?.initials || "SYS";
+    const sentAt = new Date();
+
+    await writeAuditLog({
+      req,
+      organizationId: invoice.labOrganizationId,
+      action: "invoice_sms_sent",
+      entityType: "invoice",
+      entityId: invoice.id,
+      metadataJson: {
+        practiceOrganizationId: practice.id,
+        practiceName: practice.displayName || practice.name,
+        to: recipient,
+        invoiceId: invoice.id,
+        invoiceNumber: invoice.invoiceNumber,
+        sentAt: sentAt.toISOString(),
+      },
+    });
+
+    if (invoice.caseId) {
+      await db.insert(caseEvents).values({
+        caseId: invoice.caseId,
+        eventType: "invoice_sms_sent",
+        actorUserId: (req as any).auth.userId,
+        actorOrganizationId: invoice.labOrganizationId,
+        actorInitials,
+        metadataJson: {
+          invoiceId: invoice.id,
+          invoiceNumber: invoice.invoiceNumber,
+          to: recipient,
+          practiceOrganizationId: practice.id,
+        },
+      });
+    }
+
+    return ok(res, {
+      sentAt: sentAt.toISOString(),
+      to: recipient,
+    });
+  }),
+);
+
 router.post(
   "/",
   asyncHandler(async (req, res) => {
@@ -1859,12 +1970,18 @@ router.get(
         }
       }
     }
+    const practiceOrg = await db.query.organizations.findFirst({
+      where: eq(organizations.id, invoice.providerOrganizationId),
+    }).catch(() => null);
+
     return ok(res, {
       ...invoice,
       items,
       payments: safePaymentRows,
       linkedTransactions: labMember ? linkedTxns : [],
       caseCompletedAt,
+      practiceEmail: practiceOrg?.billingEmail ?? null,
+      practicePhone: practiceOrg?.phone ?? null,
     });
   })
 );

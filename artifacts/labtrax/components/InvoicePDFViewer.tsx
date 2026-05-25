@@ -10,12 +10,15 @@ import {
   TextInput,
   Alert,
   KeyboardAvoidingView,
+  ActivityIndicator,
 } from "react-native";
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
+import * as FileSystem from "expo-file-system";
+import { useEmailInvoice, useSmsInvoice } from "@workspace/api-client-react";
 import type { Invoice, InvoiceLineItem } from "@/lib/data";
 import { formatInvNum } from "@/lib/data";
 
@@ -73,6 +76,10 @@ interface InvoicePDFViewerProps {
   labAddress?: string;
   labPhone?: string;
   invoiceTemplate?: InvoiceTemplateShape | null;
+  isAdmin?: boolean;
+  practiceEmail?: string;
+  practicePhone?: string;
+  serverId?: string;
 }
 
 function formatDate(ts: number) {
@@ -88,8 +95,11 @@ function formatCurrency(amount: number) {
   return "$" + amount.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
-export default function InvoicePDFViewer({ visible, onClose, invoice, editable = false, onSave, doctorPricing, companyLogo, labName, labAddress, labPhone, invoiceTemplate }: InvoicePDFViewerProps) {
+export default function InvoicePDFViewer({ visible, onClose, invoice, editable = false, onSave, doctorPricing, companyLogo, labName, labAddress, labPhone, invoiceTemplate, isAdmin = false, practiceEmail = "", practicePhone = "", serverId }: InvoicePDFViewerProps) {
   const insets = useSafeAreaInsets();
+  const emailMutation = useEmailInvoice();
+  const smsMutation = useSmsInvoice();
+  const isSending = emailMutation.isPending || smsMutation.isPending;
   const [editMode, setEditMode] = useState(false);
   const [editLineItems, setEditLineItems] = useState<InvoiceLineItem[]>([]);
   const [editCredits, setEditCredits] = useState(0);
@@ -108,6 +118,13 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
   const [editBillTo, setEditBillTo] = useState("");
   const [editNotes, setEditNotes] = useState("");
   const [editInvoiceNotes, setEditInvoiceNotes] = useState("");
+  const [showEmailModal, setShowEmailModal] = useState(false);
+  const [showSmsModal, setShowSmsModal] = useState(false);
+  const [sendToEmail, setSendToEmail] = useState("");
+  const [sendEmailSubject, setSendEmailSubject] = useState("");
+  const [sendEmailMessage, setSendEmailMessage] = useState("");
+  const [sendToPhone, setSendToPhone] = useState("");
+  const [sendSmsMessage, setSendSmsMessage] = useState("");
 
   useEffect(() => {
     if (invoice && visible) {
@@ -456,6 +473,104 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
     }
   }
 
+  function handleOpenSend() {
+    if (!serverId) {
+      Alert.alert("Not Available", "This invoice has not been synced to the server yet. Save the invoice first.");
+      return;
+    }
+    Alert.alert(
+      "Send Invoice",
+      "How would you like to send this invoice?",
+      [
+        {
+          text: "Email",
+          onPress: () => {
+            setSendToEmail(practiceEmail);
+            setSendEmailSubject(`Invoice ${formatInvNum(invoice?.invoiceNumber || "")} from ${labName || "Lab"}`);
+            setSendEmailMessage(`Please find your invoice attached.\n\nInvoice: ${formatInvNum(invoice?.invoiceNumber || "")}\nAmount Due: ${formatCurrency(total)}\n\nThank you for your business.`);
+            setShowEmailModal(true);
+          },
+        },
+        {
+          text: "Text (SMS)",
+          onPress: () => {
+            setSendToPhone(practicePhone);
+            setSendSmsMessage(`Invoice ${formatInvNum(invoice?.invoiceNumber || "")} from ${labName || "Lab"} — Amount Due: ${formatCurrency(total)}. Please contact us with any questions.`);
+            setShowSmsModal(true);
+          },
+        },
+        { text: "Cancel", style: "cancel" },
+      ]
+    );
+  }
+
+  async function handleSendEmail() {
+    if (!serverId || !invoice) return;
+    const recipient = sendToEmail.trim();
+    if (!recipient) {
+      Alert.alert("Required", "Please enter an email address.");
+      return;
+    }
+    if (!sendEmailSubject.trim()) {
+      Alert.alert("Required", "Please enter a subject.");
+      return;
+    }
+    try {
+      let pdfBase64 = "";
+      if (Platform.OS !== "web") {
+        const html = buildInvoiceHtml();
+        const { uri } = await Print.printToFileAsync({ html, base64: false });
+        const b64 = await FileSystem.readAsStringAsync(uri, { encoding: "base64" as const });
+        pdfBase64 = b64;
+        FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+      } else {
+        pdfBase64 = btoa(buildInvoiceHtml());
+      }
+      await emailMutation.mutateAsync({
+        invoiceId: serverId,
+        data: {
+          to: recipient,
+          subject: sendEmailSubject.trim(),
+          message: sendEmailMessage.trim() || "Please find your invoice attached.",
+          filename: `Invoice-${formatInvNum(invoice.invoiceNumber)}`,
+          pdfBase64,
+        },
+      });
+      setShowEmailModal(false);
+      Alert.alert("Sent", `Invoice emailed to ${recipient}.`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Could not send the email.";
+      Alert.alert("Email Failed", msg);
+    }
+  }
+
+  async function handleSendSms() {
+    if (!serverId || !invoice) return;
+    const recipient = sendToPhone.trim();
+    if (!recipient) {
+      Alert.alert("Required", "Please enter a phone number.");
+      return;
+    }
+    if (!sendSmsMessage.trim()) {
+      Alert.alert("Required", "Please enter a message.");
+      return;
+    }
+    try {
+      await smsMutation.mutateAsync({
+        invoiceId: serverId,
+        data: {
+          to: recipient,
+          message: sendSmsMessage.trim(),
+        },
+      });
+      setShowSmsModal(false);
+      Alert.alert("Sent", `SMS sent to ${recipient}.`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Could not send the SMS.";
+      Alert.alert("SMS Failed", msg);
+    }
+  }
+
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
       <KeyboardAvoidingView
@@ -477,6 +592,16 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                 >
                   <Ionicons name="print-outline" size={18} color="#2563EB" />
                   <Text style={s.editBtnText}>Print</Text>
+                </Pressable>
+              )}
+              {isAdmin && !editMode && (
+                <Pressable
+                  onPress={handleOpenSend}
+                  style={[s.editBtn, { backgroundColor: "#F0FDF4" }]}
+                  testID="invoice-send-btn"
+                >
+                  <Ionicons name="paper-plane-outline" size={18} color="#16A34A" />
+                  <Text style={[s.editBtnText, { color: "#16A34A" }]}>Send</Text>
                 </Pressable>
               )}
               {editable && !editMode ? (
@@ -889,6 +1014,153 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
               </View>
             </Pressable>
           </Pressable>
+        </Modal>
+
+        <Modal visible={showEmailModal} transparent animationType="fade">
+          <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
+            <Pressable style={s.modalOverlay} onPress={() => !isSending && setShowEmailModal(false)}>
+              <Pressable style={s.modalCard} onPress={(e) => e.stopPropagation()}>
+                <Text style={s.modalTitle}>Email Invoice</Text>
+
+                {!practiceEmail ? (
+                  <>
+                    <View style={s.sendWarnBox}>
+                      <Ionicons name="warning-outline" size={15} color="#D97706" />
+                      <Text style={s.sendWarnText}>
+                        No billing email on file for this practice. Update it in the practice profile before sending.
+                      </Text>
+                    </View>
+                    <View style={s.modalBtnRow}>
+                      <Pressable onPress={() => setShowEmailModal(false)} style={[s.modalBtn, s.modalBtnCancel]}>
+                        <Text style={s.modalBtnCancelText}>Close</Text>
+                      </Pressable>
+                      <Pressable style={[s.modalBtn, s.modalBtnSave, { opacity: 0.4 }]} disabled>
+                        <Text style={s.modalBtnSaveText}>Send Email</Text>
+                      </Pressable>
+                    </View>
+                  </>
+                ) : (
+                  <>
+                    <Text style={s.fieldLabel}>To</Text>
+                    <TextInput
+                      style={s.fieldInput}
+                      value={sendToEmail}
+                      onChangeText={setSendToEmail}
+                      placeholder="billing@practice.com"
+                      placeholderTextColor="#94A3B8"
+                      keyboardType="email-address"
+                      autoCapitalize="none"
+                      editable={!isSending}
+                    />
+
+                    <Text style={s.fieldLabel}>Subject</Text>
+                    <TextInput
+                      style={s.fieldInput}
+                      value={sendEmailSubject}
+                      onChangeText={setSendEmailSubject}
+                      placeholder="Invoice subject"
+                      placeholderTextColor="#94A3B8"
+                      editable={!isSending}
+                    />
+
+                    <Text style={s.fieldLabel}>Message</Text>
+                    <TextInput
+                      style={[s.fieldInput, { height: 100, textAlignVertical: "top" }]}
+                      value={sendEmailMessage}
+                      onChangeText={setSendEmailMessage}
+                      placeholder="Message body"
+                      placeholderTextColor="#94A3B8"
+                      multiline
+                      editable={!isSending}
+                    />
+
+                    <View style={s.modalBtnRow}>
+                      <Pressable onPress={() => setShowEmailModal(false)} style={[s.modalBtn, s.modalBtnCancel]} disabled={isSending}>
+                        <Text style={s.modalBtnCancelText}>Cancel</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => { void handleSendEmail(); }}
+                        style={[s.modalBtn, s.modalBtnSave, (!sendToEmail.trim() || isSending) && { opacity: 0.5 }]}
+                        disabled={!sendToEmail.trim() || isSending}
+                      >
+                        {isSending
+                          ? <ActivityIndicator size="small" color="#FFF" />
+                          : <Text style={s.modalBtnSaveText}>Send Email</Text>}
+                      </Pressable>
+                    </View>
+                  </>
+                )}
+              </Pressable>
+            </Pressable>
+          </KeyboardAvoidingView>
+        </Modal>
+
+        <Modal visible={showSmsModal} transparent animationType="fade">
+          <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
+            <Pressable style={s.modalOverlay} onPress={() => !isSending && setShowSmsModal(false)}>
+              <Pressable style={s.modalCard} onPress={(e) => e.stopPropagation()}>
+                <Text style={s.modalTitle}>Text Invoice (SMS)</Text>
+
+                {!practicePhone ? (
+                  <>
+                    <View style={s.sendWarnBox}>
+                      <Ionicons name="warning-outline" size={15} color="#D97706" />
+                      <Text style={s.sendWarnText}>
+                        No phone number on file for this practice. Update it in the practice profile before sending.
+                      </Text>
+                    </View>
+                    <View style={s.modalBtnRow}>
+                      <Pressable onPress={() => setShowSmsModal(false)} style={[s.modalBtn, s.modalBtnCancel]}>
+                        <Text style={s.modalBtnCancelText}>Close</Text>
+                      </Pressable>
+                      <Pressable style={[s.modalBtn, s.modalBtnSave, { opacity: 0.4 }]} disabled>
+                        <Text style={s.modalBtnSaveText}>Send Text</Text>
+                      </Pressable>
+                    </View>
+                  </>
+                ) : (
+                  <>
+                    <Text style={s.fieldLabel}>Phone Number</Text>
+                    <TextInput
+                      style={s.fieldInput}
+                      value={sendToPhone}
+                      onChangeText={setSendToPhone}
+                      placeholder="+1 (555) 000-0000"
+                      placeholderTextColor="#94A3B8"
+                      keyboardType="phone-pad"
+                      editable={!isSending}
+                    />
+
+                    <Text style={s.fieldLabel}>Message</Text>
+                    <TextInput
+                      style={[s.fieldInput, { height: 100, textAlignVertical: "top" }]}
+                      value={sendSmsMessage}
+                      onChangeText={setSendSmsMessage}
+                      placeholder="Message text"
+                      placeholderTextColor="#94A3B8"
+                      multiline
+                      editable={!isSending}
+                    />
+
+                    <View style={s.modalBtnRow}>
+                      <Pressable onPress={() => setShowSmsModal(false)} style={[s.modalBtn, s.modalBtnCancel]} disabled={isSending}>
+                        <Text style={s.modalBtnCancelText}>Cancel</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => { void handleSendSms(); }}
+                        style={[s.modalBtn, s.modalBtnSave, (!sendToPhone.trim() || isSending) && { opacity: 0.5 }]}
+                        disabled={!sendToPhone.trim() || isSending}
+                      >
+                        {isSending
+                          ? <ActivityIndicator size="small" color="#FFF" />
+                          : <Text style={s.modalBtnSaveText}>Send Text</Text>}
+                      </Pressable>
+                    </View>
+                  </>
+                )}
+              </Pressable>
+            </Pressable>
+          </KeyboardAvoidingView>
         </Modal>
       </KeyboardAvoidingView>
     </Modal>
@@ -1465,5 +1737,23 @@ const s = StyleSheet.create({
     fontSize: 14,
     fontFamily: "Inter_700Bold",
     color: "#2563EB",
+  },
+  sendWarnBox: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 6,
+    backgroundColor: "#FFFBEB",
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: "#FDE68A",
+  },
+  sendWarnText: {
+    flex: 1,
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    color: "#92400E",
+    lineHeight: 17,
   },
 });

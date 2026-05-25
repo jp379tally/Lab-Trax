@@ -673,6 +673,8 @@ export interface Invoice {
   creditNote?: string;
   serverId?: string;
   serverUpdatedAt?: number;
+  practiceEmail?: string | null;
+  practicePhone?: string | null;
 }
 
 export const SAMPLE_CLIENTS: Client[] = [

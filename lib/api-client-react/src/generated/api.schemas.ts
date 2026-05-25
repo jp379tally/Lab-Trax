@@ -962,3 +962,50 @@ export type UpdateOrganizationLogoPlacementsBody = {
 export type UpdateOrganizationLogoPlacements200 = {
   logoplacements?: string[] | null;
 };
+
+export type EmailInvoiceBody = {
+  /** Recipient override; falls back to practice billingEmail. */
+  to?: string;
+  /** @maxItems 10 */
+  cc?: string[];
+  /**
+   * @minLength 1
+   * @maxLength 500
+   */
+  subject: string;
+  /**
+   * @minLength 1
+   * @maxLength 20000
+   */
+  message: string;
+  /**
+   * @minLength 1
+   * @maxLength 200
+   */
+  filename: string;
+  /** Base-64 encoded PDF bytes. */
+  pdfBase64: string;
+  /** @maxItems 20 */
+  attachmentIds?: string[];
+};
+
+export type EmailInvoice200 = {
+  sentAt: string;
+  to: string;
+  cc: string[];
+};
+
+export type SmsInvoiceBody = {
+  /** Phone number override; falls back to practice phone. */
+  to?: string;
+  /**
+   * @minLength 1
+   * @maxLength 1500
+   */
+  message: string;
+};
+
+export type SmsInvoice200 = {
+  sentAt: string;
+  to: string;
+};

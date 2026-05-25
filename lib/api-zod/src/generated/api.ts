@@ -1357,3 +1357,75 @@ export const UpdateOrganizationLogoPlacementsBody = zod.object({
 export const UpdateOrganizationLogoPlacementsResponse = zod.object({
   logoplacements: zod.array(zod.string()).nullish(),
 });
+
+/**
+ * Generates a PDF from the supplied base-64 payload and sends it to the
+practice's billing email (or the `to` override). Requires a billing
+role (owner, admin, or billing) on the lab organization that owns the
+invoice. Returns 503 when SMTP is not configured.
+
+ * @summary Email a single invoice as a PDF attachment
+ */
+export const EmailInvoiceParams = zod.object({
+  invoiceId: zod.coerce.string(),
+});
+
+export const emailInvoiceBodyCcMax = 10;
+
+export const emailInvoiceBodySubjectMax = 500;
+
+export const emailInvoiceBodyMessageMax = 20000;
+
+export const emailInvoiceBodyFilenameMax = 200;
+
+export const emailInvoiceBodyAttachmentIdsMax = 20;
+
+export const EmailInvoiceBody = zod.object({
+  to: zod
+    .string()
+    .email()
+    .optional()
+    .describe("Recipient override; falls back to practice billingEmail."),
+  cc: zod.array(zod.string().email()).max(emailInvoiceBodyCcMax).optional(),
+  subject: zod.string().min(1).max(emailInvoiceBodySubjectMax),
+  message: zod.string().min(1).max(emailInvoiceBodyMessageMax),
+  filename: zod.string().min(1).max(emailInvoiceBodyFilenameMax),
+  pdfBase64: zod.string().describe("Base-64 encoded PDF bytes."),
+  attachmentIds: zod
+    .array(zod.string())
+    .max(emailInvoiceBodyAttachmentIdsMax)
+    .optional(),
+});
+
+export const EmailInvoiceResponse = zod.object({
+  sentAt: zod.coerce.date(),
+  to: zod.string(),
+  cc: zod.array(zod.string()),
+});
+
+/**
+ * Sends an SMS message to the practice's phone number (or the `to`
+override) notifying them of the invoice. Requires a billing role
+(owner, admin, or billing) on the lab. Returns 503 when Twilio is
+not configured.
+
+ * @summary Send a single invoice notification via SMS
+ */
+export const SmsInvoiceParams = zod.object({
+  invoiceId: zod.coerce.string(),
+});
+
+export const smsInvoiceBodyMessageMax = 1500;
+
+export const SmsInvoiceBody = zod.object({
+  to: zod
+    .string()
+    .optional()
+    .describe("Phone number override; falls back to practice phone."),
+  message: zod.string().min(1).max(smsInvoiceBodyMessageMax),
+});
+
+export const SmsInvoiceResponse = zod.object({
+  sentAt: zod.coerce.date(),
+  to: zod.string(),
+});

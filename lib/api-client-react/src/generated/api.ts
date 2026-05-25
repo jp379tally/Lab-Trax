@@ -35,6 +35,8 @@ import type {
   DoctorMergeResult,
   DoctorMergeUndoResult,
   DoctorSearchResult,
+  EmailInvoice200,
+  EmailInvoiceBody,
   EmailPreferencesInput,
   EmailPreferencesResult,
   GetItemLabelsParams,
@@ -67,6 +69,8 @@ import type {
   RxPracticeAliasInput,
   RxPracticeAliasResult,
   SearchDoctorsParams,
+  SmsInvoice200,
+  SmsInvoiceBody,
   StatementScheduleInput,
   StatementScheduleResult,
   TwoFactorChallengeInput,
@@ -4139,4 +4143,188 @@ export const useUpdateOrganizationLogoPlacements = <
   return useMutation(
     getUpdateOrganizationLogoPlacementsMutationOptions(options),
   );
+};
+
+/**
+ * Generates a PDF from the supplied base-64 payload and sends it to the
+practice's billing email (or the `to` override). Requires a billing
+role (owner, admin, or billing) on the lab organization that owns the
+invoice. Returns 503 when SMTP is not configured.
+
+ * @summary Email a single invoice as a PDF attachment
+ */
+export const getEmailInvoiceUrl = (invoiceId: string) => {
+  return `/api/invoices/${invoiceId}/email`;
+};
+
+export const emailInvoice = async (
+  invoiceId: string,
+  emailInvoiceBody: EmailInvoiceBody,
+  options?: RequestInit,
+): Promise<EmailInvoice200> => {
+  return customFetch<EmailInvoice200>(getEmailInvoiceUrl(invoiceId), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(emailInvoiceBody),
+  });
+};
+
+export const getEmailInvoiceMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof emailInvoice>>,
+    TError,
+    { invoiceId: string; data: BodyType<EmailInvoiceBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof emailInvoice>>,
+  TError,
+  { invoiceId: string; data: BodyType<EmailInvoiceBody> },
+  TContext
+> => {
+  const mutationKey = ["emailInvoice"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof emailInvoice>>,
+    { invoiceId: string; data: BodyType<EmailInvoiceBody> }
+  > = (props) => {
+    const { invoiceId, data } = props ?? {};
+
+    return emailInvoice(invoiceId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type EmailInvoiceMutationResult = NonNullable<
+  Awaited<ReturnType<typeof emailInvoice>>
+>;
+export type EmailInvoiceMutationBody = BodyType<EmailInvoiceBody>;
+export type EmailInvoiceMutationError = ErrorType<void>;
+
+/**
+ * @summary Email a single invoice as a PDF attachment
+ */
+export const useEmailInvoice = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof emailInvoice>>,
+    TError,
+    { invoiceId: string; data: BodyType<EmailInvoiceBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof emailInvoice>>,
+  TError,
+  { invoiceId: string; data: BodyType<EmailInvoiceBody> },
+  TContext
+> => {
+  return useMutation(getEmailInvoiceMutationOptions(options));
+};
+
+/**
+ * Sends an SMS message to the practice's phone number (or the `to`
+override) notifying them of the invoice. Requires a billing role
+(owner, admin, or billing) on the lab. Returns 503 when Twilio is
+not configured.
+
+ * @summary Send a single invoice notification via SMS
+ */
+export const getSmsInvoiceUrl = (invoiceId: string) => {
+  return `/api/invoices/${invoiceId}/sms`;
+};
+
+export const smsInvoice = async (
+  invoiceId: string,
+  smsInvoiceBody: SmsInvoiceBody,
+  options?: RequestInit,
+): Promise<SmsInvoice200> => {
+  return customFetch<SmsInvoice200>(getSmsInvoiceUrl(invoiceId), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(smsInvoiceBody),
+  });
+};
+
+export const getSmsInvoiceMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof smsInvoice>>,
+    TError,
+    { invoiceId: string; data: BodyType<SmsInvoiceBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof smsInvoice>>,
+  TError,
+  { invoiceId: string; data: BodyType<SmsInvoiceBody> },
+  TContext
+> => {
+  const mutationKey = ["smsInvoice"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof smsInvoice>>,
+    { invoiceId: string; data: BodyType<SmsInvoiceBody> }
+  > = (props) => {
+    const { invoiceId, data } = props ?? {};
+
+    return smsInvoice(invoiceId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type SmsInvoiceMutationResult = NonNullable<
+  Awaited<ReturnType<typeof smsInvoice>>
+>;
+export type SmsInvoiceMutationBody = BodyType<SmsInvoiceBody>;
+export type SmsInvoiceMutationError = ErrorType<void>;
+
+/**
+ * @summary Send a single invoice notification via SMS
+ */
+export const useSmsInvoice = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof smsInvoice>>,
+    TError,
+    { invoiceId: string; data: BodyType<SmsInvoiceBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof smsInvoice>>,
+  TError,
+  { invoiceId: string; data: BodyType<SmsInvoiceBody> },
+  TContext
+> => {
+  return useMutation(getSmsInvoiceMutationOptions(options));
 };

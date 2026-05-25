@@ -1184,6 +1184,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     displayMetadata?: Record<string, any> | null;
     displayMetadataJson?: Record<string, any> | null;
     items?: ServerInvoiceLineItem[];
+    practiceEmail?: string | null;
+    practicePhone?: string | null;
   };
 
   function readServerDisplayMetadata(
@@ -1288,6 +1290,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (serverItems) {
       merged.lineItems = serverItems;
     }
+    if (server.practiceEmail !== undefined) {
+      merged.practiceEmail = server.practiceEmail ?? null;
+    }
+    if (server.practicePhone !== undefined) {
+      merged.practicePhone = server.practicePhone ?? null;
+    }
     return merged;
   }
 
@@ -1332,6 +1340,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     );
     const serverItems = lineItemsFromServer(server);
     if (serverItems && serverItems.length > 0) withMeta.lineItems = serverItems;
+    withMeta.practiceEmail = server.practiceEmail ?? null;
+    withMeta.practicePhone = server.practicePhone ?? null;
     return withMeta;
   }
 
@@ -1374,6 +1384,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
             merged.caseType !== cur.caseType ||
             merged.clientName !== cur.clientName ||
             merged.credits !== cur.credits ||
+            merged.practiceEmail !== cur.practiceEmail ||
+            merged.practicePhone !== cur.practicePhone ||
             lineItemsChanged
           ) {
             next[idx] = merged;

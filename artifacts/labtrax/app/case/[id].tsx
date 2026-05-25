@@ -3557,8 +3557,12 @@ export default function CaseDetailScreen() {
         onClose={() => setShowInvoiceModal(false)}
         invoice={caseInvoice}
         editable={isAdmin}
+        isAdmin={isAdmin}
         companyLogo={companyLogo}
         invoiceTemplate={invoiceTemplate}
+        serverId={caseInvoice?.serverId}
+        practiceEmail={caseInvoice?.practiceEmail ?? ""}
+        practicePhone={caseInvoice?.practicePhone ?? ""}
         doctorPricing={(() => {
           const stripDr = (n: string) => n.trim().toLowerCase().replace(/^dr\.?\s*/i, "");
           const drName = stripDr(caseItem.doctorName || "");
