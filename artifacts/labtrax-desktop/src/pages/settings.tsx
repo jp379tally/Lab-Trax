@@ -18,7 +18,7 @@ import {
   SheetTitle,
   SheetDescription,
 } from "@/components/ui/sheet";
-import { apiFetch, ApiError, notifySessionCleared } from "@/lib/api";
+import { apiFetch, ApiError, notifySessionCleared, getApiOrigin } from "@/lib/api";
 import {
   DEFAULT_DUP_SIMILARITY_THRESHOLD,
   buildDuplicateClusters,
@@ -4016,6 +4016,13 @@ function DesktopInstallerPanel() {
   ]);
 
   const info = query.data;
+  // Convert relative /downloads/… paths to absolute URLs so the link works in
+  // the Electron renderer (origin is app://labtrax, not the API host).
+  const absDownloadUrl = info?.downloadUrl
+    ? info.downloadUrl.startsWith("/")
+      ? `${getApiOrigin() || (typeof window !== "undefined" ? window.location.origin : "")}${info.downloadUrl}`
+      : info.downloadUrl
+    : "";
   const isExe = info?.downloadUrl.toLowerCase().endsWith(".exe") ?? false;
   const isDmg = info?.downloadUrl.toLowerCase().endsWith(".dmg") ?? false;
   const isZip = info?.downloadUrl.toLowerCase().endsWith(".zip") ?? (!isExe && !isDmg);
@@ -4170,7 +4177,7 @@ function DesktopInstallerPanel() {
                   </button>
                 ) : (
                   <a
-                    href={info.downloadUrl}
+                    href={absDownloadUrl}
                     download
                     className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-2 shrink-0"
                   >
@@ -5548,7 +5555,11 @@ function DesktopInstallerHistoryPanel({ repoUrl }: { repoUrl: string | null }) {
                       </td>
                       <td className="py-2 pr-3 max-w-[280px]">
                         <a
-                          href={e.downloadUrl}
+                          href={
+                            e.downloadUrl.startsWith("/")
+                              ? `${getApiOrigin() || (typeof window !== "undefined" ? window.location.origin : "")}${e.downloadUrl}`
+                              : e.downloadUrl
+                          }
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-primary hover:underline break-all font-mono"

@@ -14,7 +14,21 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, getApiOrigin } from "@/lib/api";
+
+/**
+ * Turn a potentially relative download path (e.g. "/downloads/LabTrax-Windows-Portable.zip")
+ * into an absolute URL so it works from any page origin:
+ *   • Electron renderer: origin is app://labtrax — relative paths would resolve
+ *     against the custom protocol handler instead of the API server.
+ *   • Web browser:       window.location.origin is the correct API host.
+ *   • https:// URLs already set by an admin stay unchanged.
+ */
+function toAbsoluteDownloadUrl(url: string): string {
+  if (!url.startsWith("/")) return url; // already absolute (https://…)
+  const origin = getApiOrigin() || (typeof window !== "undefined" ? window.location.origin : "");
+  return `${origin}${url}`;
+}
 
 interface DesktopInstallerPublicInfo {
   version: string;
@@ -60,7 +74,7 @@ export default function DownloadPage() {
   const info = query.data;
   const version = info?.version ?? FALLBACK_VERSION;
   const fileName = info?.fileName ?? FALLBACK_FILE_NAME;
-  const downloadUrl = info?.downloadUrl ?? FALLBACK_DOWNLOAD_URL;
+  const downloadUrl = toAbsoluteDownloadUrl(info?.downloadUrl ?? FALLBACK_DOWNLOAD_URL);
   const releaseNotes = info?.releaseNotes ?? null;
   const isExe = downloadUrl.toLowerCase().endsWith(".exe");
   const isZip = downloadUrl.toLowerCase().endsWith(".zip");
