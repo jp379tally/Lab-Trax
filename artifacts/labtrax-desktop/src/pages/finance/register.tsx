@@ -22,13 +22,13 @@ type BlankRowValues = {
 
 type BlankRowEntry = { key: number; initialValues?: BlankRowValues };
 
-// 9 resizable columns in body order: Date(0)…Deposit(7), then Balance(8) after fixed Clr/Rec
-const FINANCE_COL_DEFAULTS = [100, 90, 80, 160, 130, 180, 100, 100, 110] as const;
+// 8 resizable columns in body order: Type(0)…Deposit(6), then Balance(7) after fixed Clr/Rec
+const FINANCE_COL_DEFAULTS = [90, 80, 160, 130, 180, 100, 100, 110] as const;
 const FINANCE_FIXED_CLR = 48;
 const FINANCE_FIXED_REC = 48;
 const FINANCE_FIXED_ACTIONS = 80;
-// Labels for the first 8 resizable columns (before Clr/Rec in body order)
-const FINANCE_PRE_LABELS = ["Date", "Type", "Check #", "Payee", "Category", "Memo", "Payment", "Deposit"] as const;
+// Labels for the first 7 resizable columns (before Clr/Rec in body order)
+const FINANCE_PRE_LABELS = ["Type", "Check #", "Payee", "Category", "Memo", "Payment", "Deposit"] as const;
 
 export default function RegisterPage() {
   return (
@@ -71,7 +71,7 @@ function RegisterTable({
   const account = accounts.find((a) => a.id === accountId);
 
   const { widths: colWidths, totalWidth: colTotalWidth, resizingCol, startResize, resetColumn } =
-    useColumnWidths([...FINANCE_COL_DEFAULTS], "labtrax_finance_col_widths_v1");
+    useColumnWidths([...FINANCE_COL_DEFAULTS], "labtrax_finance_col_widths_v2");
 
   const params = useMemo(() => {
     const sp = new URLSearchParams();
@@ -293,12 +293,12 @@ function RegisterTable({
               className="bg-primary/50 pointer-events-none absolute top-0 bottom-0 z-10"
               style={{
                 left:
-                  resizingCol <= 7
+                  resizingCol <= 6
                     ? colWidths.slice(0, resizingCol + 1).reduce((a, b) => a + b, 0) - 1
-                    : colWidths.slice(0, 8).reduce((a, b) => a + b, 0) +
+                    : colWidths.slice(0, 7).reduce((a, b) => a + b, 0) +
                       FINANCE_FIXED_CLR +
                       FINANCE_FIXED_REC +
-                      colWidths[8] -
+                      colWidths[7] -
                       1,
                 width: 2,
               }}
@@ -313,24 +313,24 @@ function RegisterTable({
             }}
           >
             <colgroup>
-              {/* cols 0-7: resizable Date→Deposit */}
-              {colWidths.slice(0, 8).map((w, i) => (
+              {/* cols 0-6: resizable Type→Deposit */}
+              {colWidths.slice(0, 7).map((w, i) => (
                 <col key={i} style={{ width: w }} />
               ))}
-              {/* col 8: fixed Clr */}
+              {/* col 7: fixed Clr */}
               <col style={{ width: FINANCE_FIXED_CLR }} />
-              {/* col 9: fixed Rec */}
+              {/* col 8: fixed Rec */}
               <col style={{ width: FINANCE_FIXED_REC }} />
-              {/* col 10: resizable Balance */}
-              <col style={{ width: colWidths[8] }} />
-              {/* col 11: fixed Actions */}
+              {/* col 9: resizable Balance */}
+              <col style={{ width: colWidths[7] }} />
+              {/* col 10: fixed Actions */}
               <col style={{ width: FINANCE_FIXED_ACTIONS }} />
             </colgroup>
             <thead>
               <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
-                {/* First 8 resizable columns: Date → Deposit */}
+                {/* First 7 resizable columns: Type → Deposit */}
                 {FINANCE_PRE_LABELS.map((label, i) => {
-                  const isRight = i === 6 || i === 7;
+                  const isRight = i === 5 || i === 6;
                   const isFirst = i === 0;
                   return (
                     <th
@@ -374,8 +374,8 @@ function RegisterTable({
                 >
                   Balance
                   <div
-                    onMouseDown={(e) => startResize(8, e)}
-                    onDoubleClick={() => resetColumn(8)}
+                    onMouseDown={(e) => startResize(7, e)}
+                    onDoubleClick={() => resetColumn(7)}
                     className="group/resize"
                     style={{
                       position: "absolute",
@@ -391,7 +391,7 @@ function RegisterTable({
                     }}
                   >
                     <span
-                      className={`w-0.5 transition-colors duration-100 ${resizingCol === 8 ? "bg-primary" : "bg-border/60 group-hover/resize:bg-primary/50"}`}
+                      className={`w-0.5 transition-colors duration-100 ${resizingCol === 7 ? "bg-primary" : "bg-border/60 group-hover/resize:bg-primary/50"}`}
                       style={{ display: "block", height: "100%" }}
                     />
                   </div>
@@ -403,7 +403,7 @@ function RegisterTable({
             <tbody>
               {txnsQuery.isLoading && (
                 <tr>
-                  <td colSpan={12} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={11} className="px-5 py-12 text-center text-muted-foreground">
                     <Loader2 size={16} className="inline animate-spin mr-2" />
                     Loading register…
                   </td>
@@ -411,7 +411,7 @@ function RegisterTable({
               )}
               {txnsQuery.data?.length === 0 && !txnsQuery.isLoading && (
                 <tr>
-                  <td colSpan={12} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={11} className="px-5 py-12 text-center text-muted-foreground">
                     No transactions match the current filters.
                   </td>
                 </tr>
@@ -419,7 +419,7 @@ function RegisterTable({
               {dateGroups.map(({ date, rows: groupRows }) => (
                 <Fragment key={date}>
                   <tr className="border-t border-border/60 bg-muted/40">
-                    <td colSpan={12} className="px-4 py-1 text-[11px] font-semibold text-muted-foreground tracking-wide uppercase select-none">
+                    <td colSpan={11} className="px-4 py-1 text-[11px] font-semibold text-muted-foreground tracking-wide uppercase select-none">
                       {formatDate(date)}
                     </td>
                   </tr>
@@ -436,9 +436,6 @@ function RegisterTable({
                           isVoid ? "text-muted-foreground line-through" : ""
                         } ${isProjected ? "italic text-muted-foreground" : ""}`}
                       >
-                        <td className="px-4 py-2.5 whitespace-nowrap text-muted-foreground/50 text-xs">
-                          {formatDate(r.txnDate)}
-                        </td>
                         <td className="py-2.5 capitalize">{r.type}</td>
                         <td className="py-2.5 font-mono text-xs">{r.checkNumber || "—"}</td>
                         <td className="py-2.5">
@@ -551,7 +548,7 @@ function RegisterTable({
                     />
                   ) : (
                     <tr className="border-t border-border/30">
-                      <td colSpan={12} className="px-4 py-0">
+                      <td colSpan={11} className="px-4 py-0">
                         <button
                           type="button"
                           disabled={inlineDateGroupIsPartial}
@@ -1212,17 +1209,6 @@ function BlankRow({
         onBlur={handleBlur}
         onKeyDownCapture={onRowKeyDownCapture}
       >
-        <td className="px-4 py-1.5">
-          <input
-            type="date"
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
-            onKeyDown={onKeyDown}
-            disabled={savedOnce}
-            autoFocus={autoFocus}
-            className={inputCls}
-          />
-        </td>
         <td className="py-1.5 text-xs text-muted-foreground italic">
           <span className="inline-flex items-center gap-1">
             {savedOnce ? "saved" : "new"}
@@ -1338,7 +1324,7 @@ function BlankRow({
       </tr>
       {error && (
         <tr>
-          <td colSpan={12} className="px-4 py-1 text-xs text-destructive">
+          <td colSpan={11} className="px-4 py-1 text-xs text-destructive">
             {error}
           </td>
         </tr>
