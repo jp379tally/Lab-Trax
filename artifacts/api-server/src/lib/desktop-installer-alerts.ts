@@ -20,6 +20,7 @@ import { db, systemSettings } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { sendInstallerPublishFailureAlertEmail } from "./mail.js";
 import { logger as defaultLogger } from "./logger.js";
+import { filterEmailsByPref } from "./email-prefs.js";
 
 const SETTING_LAST_ALERT = "installer_publish_alert_last";
 
@@ -131,7 +132,9 @@ export async function dispatchInstallerAlert(
 ): Promise<InstallerAlertOutcome> {
   const hash = alertHash(input);
 
-  if (input.adminEmails.length === 0) {
+  const adminEmails = await filterEmailsByPref(input.adminEmails, "installerAlerts");
+
+  if (adminEmails.length === 0) {
     logger.warn(
       { hash, stage: input.stage, version: input.version },
       "Installer alert skipped — no admin recipients configured.",
@@ -159,7 +162,7 @@ export async function dispatchInstallerAlert(
 
   // emit
   await sendInstallerPublishFailureAlertEmail({
-    adminEmails: input.adminEmails,
+    adminEmails,
     workflowName: input.workflowName ?? null,
     runUrl: input.runUrl ?? null,
     runId: input.runId ?? null,

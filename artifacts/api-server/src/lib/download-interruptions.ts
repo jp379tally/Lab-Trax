@@ -24,6 +24,7 @@ import { eq } from "drizzle-orm";
 import type { DesktopInstallerKind } from "./desktop-installer-storage.js";
 import { sendDownloadInterruptionAlertEmail } from "./mail.js";
 import { logger } from "./logger.js";
+import { filterEmailsByPref } from "./email-prefs.js";
 
 const SETTING_EVENTS = "installer_download_interruptions";
 const SETTING_ALERT_LAST = "installer_download_interruption_alert_last";
@@ -128,7 +129,8 @@ async function maybeFireAlert(events: DownloadInterruptionEvent[]): Promise<void
   let adminEmails: string[] = [];
   try {
     const admins = await db.select({ email: users.email }).from(users).where(eq(users.role, "admin"));
-    adminEmails = admins.map((u) => u.email).filter((e): e is string => Boolean(e));
+    const raw = admins.map((u) => u.email).filter((e): e is string => Boolean(e));
+    adminEmails = await filterEmailsByPref(raw, "installerAlerts");
   } catch (err) {
     logger.warn({ err }, "download-interruptions: failed to load admin emails");
   }

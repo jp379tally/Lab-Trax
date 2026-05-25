@@ -8,6 +8,7 @@ import AdmZip from "adm-zip";
 import { db } from "@workspace/db";
 import { systemSettings, users, backupRuns } from "@workspace/db";
 import { eq, lt, sql } from "drizzle-orm";
+import { filterEmailsByPref } from "./email-prefs";
 import { uploadToOneDrive, checkOneDriveToken, getOneDriveStatus } from "./onedrive";
 import { logger } from "./logger";
 import {
@@ -878,7 +879,8 @@ async function getAdminEmails(): Promise<string[]> {
       .select({ email: users.email })
       .from(users)
       .where(eq(users.role, "admin"));
-    return admins.map((u) => u.email).filter((e): e is string => Boolean(e));
+    const emails = admins.map((u) => u.email).filter((e): e is string => Boolean(e));
+    return filterEmailsByPref(emails, "backupAlerts");
   } catch (err: unknown) {
     logger.error(
       { err: err instanceof Error ? err.message : String(err) },

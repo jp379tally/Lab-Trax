@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { db } from "@workspace/db";
 import { users } from "@workspace/db";
 import { logger } from "./logger";
@@ -8,6 +8,9 @@ export const EMAIL_PREF_KEYS = [
   "orgInviteNotifications",
   "statementEmails",
   "billingReminders",
+  "installerAlerts",
+  "backupAlerts",
+  "cleanupAlerts",
 ] as const;
 
 export type EmailPrefKey = (typeof EMAIL_PREF_KEYS)[number];
@@ -17,6 +20,9 @@ export const DEFAULT_EMAIL_PREFS: Record<EmailPrefKey, boolean> = {
   orgInviteNotifications: true,
   statementEmails: true,
   billingReminders: true,
+  installerAlerts: true,
+  backupAlerts: true,
+  cleanupAlerts: true,
 };
 
 /**
@@ -83,5 +89,38 @@ export async function checkEmailPrefById(
       "[email-prefs] Failed to load preference — defaulting to send"
     );
     return true;
+  }
+}
+
+/**
+ * Given a list of email addresses, returns only those whose owner has the
+ * given preference enabled. Performs a single batch query.
+ * Fails open: if the query throws, returns the original list unchanged so
+ * alerts are never silently swallowed by a DB hiccup.
+ */
+export async function filterEmailsByPref(
+  emails: string[],
+  key: EmailPrefKey
+): Promise<string[]> {
+  if (emails.length === 0) return [];
+  try {
+    const rows = await db
+      .select({ email: users.email, emailPreferences: users.emailPreferences })
+      .from(users)
+      .where(inArray(users.email, emails));
+    const prefMap = new Map<string, boolean>();
+    for (const row of rows) {
+      if (row.email) {
+        prefMap.set(row.email, mergeEmailPrefs(row.emailPreferences)[key]);
+      }
+    }
+    // Emails not found in the DB are treated as opted-in (fail-open).
+    return emails.filter((email) => prefMap.get(email) !== false);
+  } catch (err: any) {
+    logger.warn(
+      { err: err?.message, key, count: emails.length },
+      "[email-prefs] filterEmailsByPref failed — defaulting to send all"
+    );
+    return emails;
   }
 }

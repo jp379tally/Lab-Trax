@@ -5,6 +5,7 @@ import { and, eq, lt, sql } from "drizzle-orm";
 import { db, caseAttachments, mediaCleanupRuns, systemSettings, users } from "@workspace/db";
 import { logger } from "./logger";
 import { sendCleanupAlertEmail, sendCleanupRecoveryAlertEmail } from "./mail";
+import { filterEmailsByPref } from "./email-prefs";
 
 /**
  * Thrown by runAndPersistCleanup when a concurrent run is already in
@@ -673,9 +674,10 @@ export function startDailyOrphanedMediaCleanup() {
             .select({ email: users.email })
             .from(users)
             .where(eq(users.role, "admin"));
-          const adminEmails = admins
-            .map((u) => u.email)
-            .filter((e): e is string => Boolean(e));
+          const adminEmails = await filterEmailsByPref(
+            admins.map((u) => u.email).filter((e): e is string => Boolean(e)),
+            "cleanupAlerts",
+          );
           await sendCleanupAlertEmail({
             adminEmails,
             triggeredBy: "scheduler",
@@ -708,9 +710,10 @@ export function startDailyOrphanedMediaCleanup() {
           .select({ email: users.email })
           .from(users)
           .where(eq(users.role, "admin"));
-        const adminEmails = admins
-          .map((u) => u.email)
-          .filter((e): e is string => Boolean(e));
+        const adminEmails = await filterEmailsByPref(
+          admins.map((u) => u.email).filter((e): e is string => Boolean(e)),
+          "cleanupAlerts",
+        );
         await sendCleanupAlertEmail({
           adminEmails,
           triggeredBy: "scheduler",
@@ -744,9 +747,10 @@ export function startDailyOrphanedMediaCleanup() {
           .select({ email: users.email })
           .from(users)
           .where(eq(users.role, "admin"));
-        const adminEmails = admins
-          .map((u) => u.email)
-          .filter((e): e is string => Boolean(e));
+        const adminEmails = await filterEmailsByPref(
+          admins.map((u) => u.email).filter((e): e is string => Boolean(e)),
+          "cleanupAlerts",
+        );
         await sendCleanupRecoveryAlertEmail({ adminEmails, recoveredCount: recovered });
       } catch (mailErr: unknown) {
         logger.error(

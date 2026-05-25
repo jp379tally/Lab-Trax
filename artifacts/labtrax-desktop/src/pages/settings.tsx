@@ -158,7 +158,7 @@ export default function SettingsPage() {
           {tab === "itero" && isAdmin && <IteroPanel />}
           {tab === "platform-admin" && isAdmin && <PlatformAdminPanel />}
           {tab === "subscriptions" && isAdmin && <SubscriptionsPanel />}
-          {tab === "notifications" && <NotificationsPanel />}
+          {tab === "notifications" && <NotificationsPanel isAdmin={isAdmin} />}
         </div>
       </div>
     </div>
@@ -7525,14 +7525,20 @@ type EmailPrefsData = {
   orgInviteNotifications: boolean;
   statementEmails: boolean;
   billingReminders: boolean;
+  installerAlerts: boolean;
+  backupAlerts: boolean;
+  cleanupAlerts: boolean;
 };
 
-function NotificationsPanel() {
+function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
   const [prefs, setPrefs] = useState<EmailPrefsData>({
     caseNoteNotifications: true,
     orgInviteNotifications: true,
     statementEmails: true,
     billingReminders: true,
+    installerAlerts: true,
+    backupAlerts: true,
+    cleanupAlerts: true,
   });
   const [saving, setSaving] = useState<Partial<Record<keyof EmailPrefsData, boolean>>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -7581,6 +7587,47 @@ function NotificationsPanel() {
     },
   ];
 
+  const adminRows: Array<{ key: keyof EmailPrefsData; label: string; desc: string }> = [
+    {
+      key: "installerAlerts",
+      label: "Desktop installer alerts",
+      desc: "Publish failures, health-check warnings, and download interruption reports",
+    },
+    {
+      key: "backupAlerts",
+      label: "Backup alerts",
+      desc: "Backup success / failure summaries and OneDrive connection warnings",
+    },
+    {
+      key: "cleanupAlerts",
+      label: "Media cleanup reports",
+      desc: "Nightly orphaned case-media cleanup summaries",
+    },
+  ];
+
+  function ToggleRow({ key, label, desc }: { key: keyof EmailPrefsData; label: string; desc: string }) {
+    return (
+      <div className="flex items-center justify-between px-4 py-3 bg-card">
+        <div className="min-w-0 mr-6">
+          <p className="text-sm font-medium text-foreground">{label}</p>
+          <p className="text-xs text-muted-foreground mt-0.5">{desc}</p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={prefs[key]}
+          disabled={!!saving[key]}
+          onClick={() => toggle(key, !prefs[key])}
+          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${prefs[key] ? "bg-primary" : "bg-input"}`}
+        >
+          <span
+            className={`pointer-events-none block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform ${prefs[key] ? "translate-x-5" : "translate-x-0"}`}
+          />
+        </button>
+      </div>
+    );
+  }
+
   return (
     <PanelShell
       title="Email Notifications"
@@ -7588,27 +7635,23 @@ function NotificationsPanel() {
     >
       {loadError && <Alert tone="danger">{loadError}</Alert>}
       <div className="divide-y divide-border rounded-lg border border-border overflow-hidden">
-        {rows.map(({ key, label, desc }) => (
-          <div key={key} className="flex items-center justify-between px-4 py-3 bg-card">
-            <div className="min-w-0 mr-6">
-              <p className="text-sm font-medium text-foreground">{label}</p>
-              <p className="text-xs text-muted-foreground mt-0.5">{desc}</p>
-            </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={prefs[key]}
-              disabled={!!saving[key]}
-              onClick={() => toggle(key, !prefs[key])}
-              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${prefs[key] ? "bg-primary" : "bg-input"}`}
-            >
-              <span
-                className={`pointer-events-none block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform ${prefs[key] ? "translate-x-5" : "translate-x-0"}`}
-              />
-            </button>
-          </div>
+        {rows.map((row) => (
+          <ToggleRow key={row.key} {...row} />
         ))}
       </div>
+      {isAdmin && (
+        <div className="space-y-2 pt-2">
+          <div>
+            <p className="text-sm font-semibold text-foreground">Admin system alerts</p>
+            <p className="text-xs text-muted-foreground mt-0.5">These alerts are sent only to admin accounts.</p>
+          </div>
+          <div className="divide-y divide-border rounded-lg border border-border overflow-hidden">
+            {adminRows.map((row) => (
+              <ToggleRow key={row.key} {...row} />
+            ))}
+          </div>
+        </div>
+      )}
     </PanelShell>
   );
 }

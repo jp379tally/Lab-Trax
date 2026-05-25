@@ -18,6 +18,7 @@ import { eq } from "drizzle-orm";
 import { runDesktopInstallerHealthCheck } from "./desktop-installer-health.js";
 import { dispatchInstallerAlert } from "./desktop-installer-alerts.js";
 import { logger } from "./logger.js";
+import { filterEmailsByPref } from "./email-prefs.js";
 
 export const DEFAULT_HEALTH_CHECK_HOUR_UTC = 6;
 
@@ -84,7 +85,8 @@ export async function checkAndAlertInstallerHealth(): Promise<void> {
     );
 
     if (!report.ok) {
-      const adminEmails = await loadAdminEmails();
+      const rawAdminEmails = await loadAdminEmails();
+      const adminEmails = await filterEmailsByPref(rawAdminEmails, "installerAlerts");
       const outcome = await dispatchInstallerAlert(
         {
           stage: "health-check",
