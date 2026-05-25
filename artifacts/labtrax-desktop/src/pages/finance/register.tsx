@@ -8,6 +8,19 @@ import { CategorySelect } from "@/components/finance/CategorySelect";
 import type { BankAccount, BankTransaction, Invoice, RecurringRule, TransactionCategory } from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
 import { useColumnWidths } from "@/hooks/useColumnWidths";
+import { toast } from "@/hooks/use-toast";
+import { ToastAction } from "@/components/ui/toast";
+
+type BlankRowValues = {
+  date: string;
+  payee: string;
+  memo: string;
+  categoryId: string;
+  payment: string;
+  deposit: string;
+};
+
+type BlankRowEntry = { key: number; initialValues?: BlankRowValues };
 
 // 9 resizable columns in body order: Date(0)…Deposit(7), then Balance(8) after fixed Clr/Rec
 const FINANCE_COL_DEFAULTS = [100, 90, 80, 160, 130, 180, 100, 100, 110] as const;
@@ -48,7 +61,7 @@ function RegisterTable({
   const [dateTo, setDateTo] = useState("");
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<BankTransaction | null>(null);
-  const [blankRowKeys, setBlankRowKeys] = useState<number[]>([]);
+  const [blankRowKeys, setBlankRowKeys] = useState<BlankRowEntry[]>([]);
   const nextBlankKeyRef = useRef(0);
   const [importing, setImporting] = useState(false);
   const [transferring, setTransferring] = useState(false);
@@ -252,7 +265,7 @@ function RegisterTable({
           <button
             type="button"
             onClick={() =>
-              setBlankRowKeys((prev) => [...prev, nextBlankKeyRef.current++])
+              setBlankRowKeys((prev) => [...prev, { key: nextBlankKeyRef.current++ }])
             }
             className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-1.5"
           >
@@ -500,20 +513,41 @@ function RegisterTable({
                   </tr>
                 );
               })}
-              {blankRowKeys.map((k, i) => (
+              {blankRowKeys.map((entry, i) => (
                 <BlankRow
-                  key={k}
+                  key={entry.key}
                   accountId={accountId}
                   organizationId={organizationId}
                   accounts={accounts}
                   categories={cats.data || []}
                   autoFocus={i === blankRowKeys.length - 1}
+                  initialValues={entry.initialValues}
                   onSaved={() =>
                     qc.invalidateQueries({ queryKey: ["finance"] })
                   }
-                  onDismiss={() =>
-                    setBlankRowKeys((prev) => prev.filter((id) => id !== k))
-                  }
+                  onDismiss={(values) => {
+                    setBlankRowKeys((prev) =>
+                      prev.filter((e) => e.key !== entry.key)
+                    );
+                    const newKey = nextBlankKeyRef.current++;
+                    toast({
+                      title: "Entry dismissed",
+                      duration: 5000,
+                      action: (
+                        <ToastAction
+                          altText="Undo"
+                          onClick={() =>
+                            setBlankRowKeys((prev) => [
+                              ...prev,
+                              { key: newKey, initialValues: values },
+                            ])
+                          }
+                        >
+                          Undo
+                        </ToastAction>
+                      ),
+                    });
+                  }}
                 />
               ))}
             </tbody>
@@ -939,27 +973,47 @@ function InlineBlankRows({
   categories: TransactionCategory[];
   onSaved: () => void;
 }) {
-  const [keys, setKeys] = useState<number[]>(() =>
-    Array.from({ length: Math.max(1, rowCount) }, (_, i) => i)
+  const [entries, setEntries] = useState<BlankRowEntry[]>(() =>
+    Array.from({ length: Math.max(1, rowCount) }, (_, i) => ({ key: i }))
   );
-  const nextKeyRef = useRef(keys.length);
+  const nextKeyRef = useRef(entries.length);
 
   function handleSaved() {
-    setKeys((prev) => [...prev, nextKeyRef.current++]);
+    setEntries((prev) => [...prev, { key: nextKeyRef.current++ }]);
     onSaved();
+  }
+
+  function handleDismiss(key: number, values: BlankRowValues) {
+    setEntries((prev) => prev.filter((e) => e.key !== key));
+    const newKey = nextKeyRef.current++;
+    toast({
+      title: "Entry dismissed",
+      duration: 5000,
+      action: (
+        <ToastAction
+          altText="Undo"
+          onClick={() =>
+            setEntries((prev) => [...prev, { key: newKey, initialValues: values }])
+          }
+        >
+          Undo
+        </ToastAction>
+      ),
+    });
   }
 
   return (
     <>
-      {keys.map((k) => (
+      {entries.map((entry) => (
         <BlankRow
-          key={k}
+          key={entry.key}
           accountId={accountId}
           organizationId={organizationId}
           accounts={accounts}
           categories={categories}
+          initialValues={entry.initialValues}
           onSaved={handleSaved}
-          onDismiss={() => setKeys((prev) => prev.filter((id) => id !== k))}
+          onDismiss={(values) => handleDismiss(entry.key, values)}
         />
       ))}
     </>
@@ -972,6 +1026,7 @@ function BlankRow({
   accounts,
   categories,
   autoFocus,
+  initialValues,
   onSaved,
   onDismiss,
 }: {
@@ -980,17 +1035,18 @@ function BlankRow({
   accounts: BankAccount[];
   categories: TransactionCategory[];
   autoFocus?: boolean;
+  initialValues?: BlankRowValues;
   onSaved: () => void;
-  onDismiss?: () => void;
+  onDismiss?: (values: BlankRowValues) => void;
 }) {
   const qc = useQueryClient();
   const rowRef = useRef<HTMLTableRowElement>(null);
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
-  const [payee, setPayee] = useState("");
-  const [memo, setMemo] = useState("");
-  const [categoryId, setCategoryId] = useState("");
-  const [payment, setPayment] = useState("");
-  const [deposit, setDeposit] = useState("");
+  const [date, setDate] = useState(initialValues?.date ?? new Date().toISOString().slice(0, 10));
+  const [payee, setPayee] = useState(initialValues?.payee ?? "");
+  const [memo, setMemo] = useState(initialValues?.memo ?? "");
+  const [categoryId, setCategoryId] = useState(initialValues?.categoryId ?? "");
+  const [payment, setPayment] = useState(initialValues?.payment ?? "");
+  const [deposit, setDeposit] = useState(initialValues?.deposit ?? "");
   const [saving, setSaving] = useState(false);
   const [savedOnce, setSavedOnce] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1049,11 +1105,15 @@ function BlankRow({
     }
   }
 
+  function currentValues(): BlankRowValues {
+    return { date, payee, memo, categoryId, payment, deposit };
+  }
+
   function onRowKeyDownCapture(e: React.KeyboardEvent<HTMLTableRowElement>) {
     if (e.key === "Escape" && !savedOnce) {
       e.preventDefault();
       e.stopPropagation();
-      onDismiss?.();
+      onDismiss?.(currentValues());
     }
   }
 
@@ -1181,7 +1241,7 @@ function BlankRow({
             {!savedOnce && onDismiss && (
               <button
                 type="button"
-                onClick={onDismiss}
+                onClick={() => onDismiss(currentValues())}
                 className="h-7 w-7 rounded inline-flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-secondary"
                 aria-label="Dismiss row"
                 title="Dismiss"
