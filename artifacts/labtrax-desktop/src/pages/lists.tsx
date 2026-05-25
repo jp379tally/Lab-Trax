@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronsUpDown, ChevronUp, ChevronDown as ChevronDownIcon, Loader2, Pencil, Plus, Search, X } from "lucide-react";
+import { ChevronsUpDown, ChevronUp, ChevronDown as ChevronDownIcon, History, Loader2, Pencil, Plus, Search, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
-import { formatPhone } from "@/lib/format";
+import { formatDate, formatMoney, formatPhone } from "@/lib/format";
+import type { BankTransaction } from "@/lib/types";
 
 type SortDir = "asc" | "desc";
 
@@ -172,6 +173,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
   const [drawerCategory, setDrawerCategory] = useState<Category | null>(null);
   const [vendorForm, setVendorForm] = useState<VendorForm>(emptyVendorForm("vendor"));
   const [categoryForm, setCategoryForm] = useState<CategoryForm>(emptyCategoryForm());
+  const [txnsVendor, setTxnsVendor] = useState<Vendor | null>(null);
 
   const vendorsQuery = useQuery({
     queryKey: ["finance", "vendors", organizationId, "all"],
@@ -479,6 +481,14 @@ function ListsContent({ organizationId }: { organizationId: string }) {
         )}
       </div>
 
+      {txnsVendor && (
+        <VendorTransactionsModal
+          organizationId={organizationId}
+          vendor={txnsVendor}
+          onClose={() => setTxnsVendor(null)}
+        />
+      )}
+
       {showDrawer && (
         <>
           <div
@@ -506,6 +516,13 @@ function ListsContent({ organizationId }: { organizationId: string }) {
             </header>
 
             <div className="flex-1 overflow-y-auto px-5 py-4">
+              {!isCategoriesTab && drawerVendor && (
+                <VendorTransactionSummary
+                  organizationId={organizationId}
+                  vendor={drawerVendor}
+                  onViewAll={() => setTxnsVendor(drawerVendor)}
+                />
+              )}
               {isCategoriesTab ? (
                 <CategoryFormFields form={categoryForm} onChange={setCategoryForm} error={catError} />
               ) : (
@@ -931,6 +948,241 @@ function VendorFormFields({
           />
         </button>
         <span className="text-sm">{form.isActive ? "Active" : "Inactive"}</span>
+      </div>
+    </div>
+  );
+}
+
+function VendorTransactionSummary({
+  organizationId,
+  vendor,
+  onViewAll,
+}: {
+  organizationId: string;
+  vendor: Vendor;
+  onViewAll: () => void;
+}) {
+  const q = useQuery({
+    queryKey: ["finance", "txns", "vendor-summary", organizationId, vendor.name],
+    queryFn: () =>
+      apiFetch<BankTransaction[]>(
+        `/finance/transactions?organizationId=${encodeURIComponent(organizationId)}&payee=${encodeURIComponent(vendor.name)}`
+      ),
+    staleTime: 30_000,
+  });
+
+  const txns = q.data ?? [];
+  const count = txns.length;
+  const totalPayments = txns.reduce((s, t) => s + Number(t.debitAmount), 0);
+  const totalDeposits = txns.reduce((s, t) => s + Number(t.creditAmount), 0);
+
+  return (
+    <div className="mb-5 rounded-lg border border-border bg-secondary/30 px-4 py-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium text-foreground/80">Transaction history</span>
+        <button
+          type="button"
+          onClick={onViewAll}
+          className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+        >
+          <History size={11} />
+          View transactions
+        </button>
+      </div>
+      {q.isLoading ? (
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Loader2 size={11} className="animate-spin" />
+          Loading…
+        </div>
+      ) : q.isError ? (
+        <p className="text-xs text-destructive">Could not load transactions.</p>
+      ) : count === 0 ? (
+        <p className="text-xs text-muted-foreground">No transactions found for this payee.</p>
+      ) : (
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+          <span>
+            <span className="font-medium text-foreground">{count}</span>{" "}
+            {count === 1 ? "transaction" : "transactions"}
+          </span>
+          {totalPayments > 0 && (
+            <span>
+              Payments:{" "}
+              <span className="font-medium text-foreground">{formatMoney(totalPayments)}</span>
+            </span>
+          )}
+          {totalDeposits > 0 && (
+            <span>
+              Deposits:{" "}
+              <span className="font-medium text-foreground">{formatMoney(totalDeposits)}</span>
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const TXN_TYPE_BADGE: Record<string, string> = {
+  payment: "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300",
+  deposit: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+  transfer: "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300",
+};
+
+function VendorTransactionsModal({
+  organizationId,
+  vendor,
+  onClose,
+}: {
+  organizationId: string;
+  vendor: Vendor;
+  onClose: () => void;
+}) {
+  const q = useQuery({
+    queryKey: ["finance", "txns", "vendor-detail", organizationId, vendor.name],
+    queryFn: () =>
+      apiFetch<BankTransaction[]>(
+        `/finance/transactions?organizationId=${encodeURIComponent(organizationId)}&payee=${encodeURIComponent(vendor.name)}`
+      ),
+    staleTime: 30_000,
+  });
+
+  const txns = q.data ?? [];
+  const count = txns.length;
+  const totalPayments = txns.reduce((s, t) => s + Number(t.debitAmount), 0);
+  const totalDeposits = txns.reduce((s, t) => s + Number(t.creditAmount), 0);
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+      <div
+        className="absolute inset-0 bg-foreground/30"
+        onClick={onClose}
+      />
+      <div className="relative w-full max-w-4xl max-h-[85vh] bg-card border border-border rounded-xl shadow-2xl flex flex-col">
+        <header className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
+          <div>
+            <h2 className="text-sm font-semibold">
+              Transactions — {vendor.name}
+            </h2>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              All register entries where payee matches this{" "}
+              {TYPE_LABEL[vendor.vendorType].toLowerCase()}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground"
+          >
+            <X size={15} />
+          </button>
+        </header>
+
+        {!q.isLoading && count > 0 && (
+          <div className="px-5 py-3 border-b border-border shrink-0 flex flex-wrap gap-x-5 gap-y-1 text-sm">
+            <span className="text-muted-foreground">
+              <span className="font-semibold text-foreground">{count}</span>{" "}
+              {count === 1 ? "transaction" : "transactions"}
+            </span>
+            {totalPayments > 0 && (
+              <span className="text-muted-foreground">
+                Total payments:{" "}
+                <span className="font-semibold text-foreground">{formatMoney(totalPayments)}</span>
+              </span>
+            )}
+            {totalDeposits > 0 && (
+              <span className="text-muted-foreground">
+                Total deposits:{" "}
+                <span className="font-semibold text-foreground">{formatMoney(totalDeposits)}</span>
+              </span>
+            )}
+          </div>
+        )}
+
+        <div className="flex-1 overflow-y-auto">
+          {q.isLoading ? (
+            <div className="flex items-center justify-center py-16 text-muted-foreground">
+              <Loader2 size={16} className="animate-spin mr-2" />
+              Loading transactions…
+            </div>
+          ) : q.isError ? (
+            <div className="py-16 text-center text-sm text-destructive">
+              Could not load transactions. Please try again.
+            </div>
+          ) : count === 0 ? (
+            <div className="py-16 text-center text-sm text-muted-foreground">
+              No transactions found for <strong>{vendor.name}</strong>.
+            </div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-secondary/60 backdrop-blur text-[11px] uppercase tracking-wide text-muted-foreground">
+                <tr>
+                  <th className="text-left font-medium px-4 py-2 w-28">Date</th>
+                  <th className="text-left font-medium px-3 py-2 w-24">Type</th>
+                  <th className="text-left font-medium px-3 py-2">Memo</th>
+                  <th className="text-right font-medium px-3 py-2 w-28">Payment</th>
+                  <th className="text-right font-medium px-3 py-2 w-28">Deposit</th>
+                  <th className="text-left font-medium px-3 py-2 w-20">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {txns.map((t) => {
+                  const payment = Number(t.debitAmount);
+                  const deposit = Number(t.creditAmount);
+                  return (
+                    <tr key={t.id} className="border-t border-border hover:bg-secondary/20">
+                      <td className="px-4 py-2.5 tabular-nums text-xs text-muted-foreground whitespace-nowrap">
+                        {formatDate(t.txnDate)}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <span
+                          className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${
+                            TXN_TYPE_BADGE[t.type] ?? "bg-secondary text-muted-foreground"
+                          }`}
+                        >
+                          {t.type}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2.5 text-xs text-muted-foreground truncate max-w-[240px]">
+                        {t.memo || "—"}
+                      </td>
+                      <td className="px-3 py-2.5 text-right tabular-nums text-xs">
+                        {payment > 0 ? (
+                          <span className="text-rose-600 dark:text-rose-400 font-medium">
+                            {formatMoney(payment)}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2.5 text-right tabular-nums text-xs">
+                        {deposit > 0 ? (
+                          <span className="text-emerald-600 dark:text-emerald-400 font-medium">
+                            {formatMoney(deposit)}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <span
+                          className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${
+                            t.status === "void"
+                              ? "bg-muted text-muted-foreground line-through"
+                              : t.status === "projected"
+                              ? "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300"
+                              : "bg-secondary text-muted-foreground"
+                          }`}
+                        >
+                          {t.status}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
       </div>
     </div>
   );
