@@ -1908,6 +1908,17 @@ export function CaseDrawer({
 
   const [generatingInvoice, setGeneratingInvoice] = useState(false);
   const [invError, setInvError] = useState<string | null>(null);
+  const [generatePresetId, setGeneratePresetId] = useState<string>("");
+
+  const generatePresetsQuery = useQuery({
+    queryKey: ["invoice-template-presets", labCase.labOrganizationId],
+    queryFn: () =>
+      apiFetch<{ presets: Array<{ id: string; name: string }> }>(
+        `/organizations/${labCase.labOrganizationId}/invoice-template/presets`,
+      ),
+    staleTime: 60_000,
+  });
+  const generatePresets = generatePresetsQuery.data?.presets ?? [];
 
   const [showAddRest, setShowAddRest] = useState(false);
   const [restForm, setRestForm] = useState({
@@ -2728,7 +2739,10 @@ export function CaseDrawer({
     try {
       const inv = await apiFetch<Invoice>(
         `/invoices/cases/${labCase.id}/generate-invoice`,
-        { method: "POST" }
+        {
+          method: "POST",
+          body: JSON.stringify(generatePresetId ? { layoutPresetId: generatePresetId } : {}),
+        }
       );
       await invoiceQuery.refetch();
       qc.invalidateQueries({ queryKey: ["invoices"] });
@@ -4206,6 +4220,24 @@ export function CaseDrawer({
                   <p className="text-sm text-muted-foreground">
                     No invoice has been generated for this case yet.
                   </p>
+                  {generatePresets.length > 0 && (
+                    <div className="space-y-1">
+                      <label className="text-xs text-muted-foreground font-medium">
+                        Layout preset <span className="font-normal">(optional)</span>
+                      </label>
+                      <select
+                        value={generatePresetId}
+                        onChange={(e) => setGeneratePresetId(e.target.value)}
+                        disabled={generatingInvoice}
+                        className="w-full h-8 rounded-md border border-input bg-background px-2 text-sm disabled:opacity-50"
+                      >
+                        <option value="">Default layout</option>
+                        {generatePresets.map((p) => (
+                          <option key={p.id} value={p.id}>{p.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                   <button
                     type="button"
                     disabled={!hasRestorations || generatingInvoice || isLoading}

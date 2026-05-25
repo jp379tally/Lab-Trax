@@ -936,6 +936,11 @@ router.post(
       noteRows,
     );
 
+    const bodyLayoutPresetId =
+      typeof req.body?.layoutPresetId === "string" && req.body.layoutPresetId.trim()
+        ? req.body.layoutPresetId.trim()
+        : null;
+
     const [invoice] = await db
       .insert(invoices)
       .values({
@@ -945,6 +950,7 @@ router.post(
         providerOrganizationId: found.providerOrganizationId,
         status: "draft",
         displayMetadataJson,
+        ...(bodyLayoutPresetId ? { layoutPresetId: bodyLayoutPresetId } : {}),
         createdByUserId: (req as any).auth.userId,
         updatedByUserId: (req as any).auth.userId,
       })
