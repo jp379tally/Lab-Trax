@@ -64,6 +64,7 @@ function RegisterTable({
   const [showInlineRows, setShowInlineRows] = useState(false);
   const [inlineDateGroup, setInlineDateGroup] = useState<string | null>(null);
   const [inlineDateGroupIsPartial, setInlineDateGroupIsPartial] = useState(false);
+  const pendingGroupInvalidateRef = useRef(false);
   const [importing, setImporting] = useState(false);
   const [transferring, setTransferring] = useState(false);
   const [recurringFor, setRecurringFor] = useState<BankTransaction | null>(null);
@@ -561,10 +562,14 @@ function RegisterTable({
                       rowCount={1}
                       defaultDate={date}
                       showDatePicker
-                      onSaved={() => qc.invalidateQueries({ queryKey: ["finance"] })}
+                      onSaved={() => { pendingGroupInvalidateRef.current = true; }}
                       onAllDismissed={() => {
                         setInlineDateGroup(null);
                         setInlineDateGroupIsPartial(false);
+                        if (pendingGroupInvalidateRef.current) {
+                          pendingGroupInvalidateRef.current = false;
+                          void qc.invalidateQueries({ queryKey: ["finance"] });
+                        }
                       }}
                       onPartialChange={setInlineDateGroupIsPartial}
                     />
@@ -578,6 +583,10 @@ function RegisterTable({
                           onClick={() => {
                             setShowInlineRows(false);
                             setInlineDateGroupIsPartial(false);
+                            if (pendingGroupInvalidateRef.current) {
+                              pendingGroupInvalidateRef.current = false;
+                              void qc.invalidateQueries({ queryKey: ["finance"] });
+                            }
                             setInlineDateGroup(date);
                           }}
                           className="text-xs text-muted-foreground/60 hover:text-primary inline-flex items-center gap-1 py-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-muted-foreground/60"
