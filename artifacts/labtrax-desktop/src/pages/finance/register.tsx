@@ -511,6 +511,9 @@ function RegisterTable({
                   onSaved={() =>
                     qc.invalidateQueries({ queryKey: ["finance"] })
                   }
+                  onDismiss={() =>
+                    setBlankRowKeys((prev) => prev.filter((id) => id !== k))
+                  }
                 />
               ))}
             </tbody>
@@ -956,6 +959,7 @@ function InlineBlankRows({
           accounts={accounts}
           categories={categories}
           onSaved={handleSaved}
+          onDismiss={() => setKeys((prev) => prev.filter((id) => id !== k))}
         />
       ))}
     </>
@@ -969,6 +973,7 @@ function BlankRow({
   categories,
   autoFocus,
   onSaved,
+  onDismiss,
 }: {
   accountId: string;
   organizationId: string;
@@ -976,6 +981,7 @@ function BlankRow({
   categories: TransactionCategory[];
   autoFocus?: boolean;
   onSaved: () => void;
+  onDismiss?: () => void;
 }) {
   const qc = useQueryClient();
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
@@ -1035,6 +1041,14 @@ function BlankRow({
     }
   }
 
+  function onRowKeyDownCapture(e: React.KeyboardEvent<HTMLTableRowElement>) {
+    if (e.key === "Escape" && !savedOnce) {
+      e.preventDefault();
+      e.stopPropagation();
+      onDismiss?.();
+    }
+  }
+
   const inputCls =
     "w-full h-7 px-2 rounded bg-background border border-input text-sm";
 
@@ -1043,6 +1057,7 @@ function BlankRow({
       <tr
         className="border-t border-border bg-secondary/10"
         onBlur={handleBlur}
+        onKeyDownCapture={onRowKeyDownCapture}
       >
         <td className="px-4 py-1.5">
           <input
@@ -1146,6 +1161,17 @@ function BlankRow({
                 <CheckCircle2 size={11} />
               )}
             </button>
+            {!savedOnce && onDismiss && (
+              <button
+                type="button"
+                onClick={onDismiss}
+                className="h-7 w-7 rounded inline-flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-secondary"
+                aria-label="Dismiss row"
+                title="Dismiss"
+              >
+                <X size={13} />
+              </button>
+            )}
           </div>
         </td>
       </tr>
