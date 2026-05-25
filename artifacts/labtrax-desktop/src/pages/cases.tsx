@@ -810,9 +810,9 @@ export default function CasesPage() {
   const [showBulkStatusModal, setShowBulkStatusModal] = useState(false);
   const [bulkStatusValue, setBulkStatusValue] = useState<string>("");
 
-  const CASES_COL_DEFAULTS = [120, 100, 160, 140, 140, 120, 100, 90, 130, 100, 90] as const;
+  const CASES_COL_DEFAULTS = [120, 100, 160, 140, 140, 120, 100, 90, 130, 100, 90, 200] as const;
   const { widths: caseColWidths, resizingCol: resizingCaseCol, startResize: startCaseResize, resetColumn: resetCaseColumn } =
-    useColumnWidths([...CASES_COL_DEFAULTS], "labtrax_cases_col_widths_v1");
+    useColumnWidths([...CASES_COL_DEFAULTS], "labtrax_cases_col_widths_v2");
   const [iteroActiveBatch, setIteroActiveBatch] = useState<{ batchId: string; caseIds: string[]; importedAt: string; label: string } | null>(null);
   const pageRef = useRef<HTMLDivElement>(null);
   const scrollRestoredRef = useRef(false);
@@ -1247,6 +1247,7 @@ export default function CasesPage() {
                   { label: <SortHeader k="status">Status</SortHeader>, align: "left" },
                   { label: <SortHeader k="dueDate">Due</SortHeader>, align: "left" },
                   { label: <SortHeader k="totalPrice">Price</SortHeader>, align: "right" },
+                  { label: "Notes", align: "left" },
                 ] as const).map((col, i) => (
                   <th
                     key={i}
@@ -1283,7 +1284,7 @@ export default function CasesPage() {
             <tbody>
               {isLoading && (
                 <tr>
-                  <td colSpan={12} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={13} className="px-5 py-12 text-center text-muted-foreground">
                     <Loader2 size={16} className="inline animate-spin mr-2" />
                     Loading cases…
                   </td>
@@ -1291,14 +1292,14 @@ export default function CasesPage() {
               )}
               {error && (
                 <tr>
-                  <td colSpan={12} className="px-5 py-12 text-center text-destructive">
+                  <td colSpan={13} className="px-5 py-12 text-center text-destructive">
                     {(error as Error).message}
                   </td>
                 </tr>
               )}
               {!isLoading && filtered.length === 0 && (
                 <tr>
-                  <td colSpan={12} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={13} className="px-5 py-12 text-center text-muted-foreground">
                     No cases match the current filters.
                   </td>
                 </tr>
@@ -1366,6 +1367,12 @@ export default function CasesPage() {
                   <td className="py-3 text-muted-foreground">{formatDate(c.dueDate)}</td>
                   <td className="py-3 text-right tabular-nums">
                     {Number(c.totalPrice ?? 0) > 0 ? formatMoney(c.totalPrice) : "—"}
+                  </td>
+                  <td
+                    className="py-3 text-muted-foreground truncate max-w-[200px] text-xs"
+                    title={c.caseNotes ?? ""}
+                  >
+                    {c.caseNotes || "—"}
                   </td>
                 </tr>
               ))}
@@ -4274,6 +4281,29 @@ export function CaseDrawer({
                                   {(e.metadataJson as any).visibility === "internal_lab_only"
                                     ? "Internal (lab only)"
                                     : "Shared with provider"}
+                                </div>
+                              )}
+                              {isAttachment && metadata.attachmentId && (
+                                <div className="mt-1.5">
+                                  {metadata.fileType && String(metadata.fileType).startsWith("image/") ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => setLightboxUrl(
+                                        `${getApiOrigin()}/api/cases/${labCase.id}/attachments/${String(metadata.attachmentId)}/file`
+                                      )}
+                                      className="block group"
+                                      title={`View ${metadata.fileName ?? "image"}`}
+                                    >
+                                      <img
+                                        src={`${getApiOrigin()}/api/cases/${labCase.id}/attachments/${String(metadata.attachmentId)}/file`}
+                                        alt={String(metadata.fileName ?? "attachment")}
+                                        className="w-16 h-16 object-cover rounded-md border border-border group-hover:border-primary/50 transition-colors"
+                                        onError={(ev) => { (ev.target as HTMLImageElement).style.display = "none"; }}
+                                      />
+                                    </button>
+                                  ) : (
+                                    <span className="text-xs text-muted-foreground">{String(metadata.fileName ?? "")}</span>
+                                  )}
                                 </div>
                               )}
                               {eventType === "remade_by" && metadata.remakeCaseId && (
