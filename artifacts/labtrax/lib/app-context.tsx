@@ -2153,7 +2153,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             updatedAt: now,
             assignedBarcode: newStatus === "COMPLETE" ? undefined : c.assignedBarcode,
             routeHistory: [
-              ...c.routeHistory,
+              ...(c.routeHistory || []),
               { station: newStatus, timestamp: now },
             ],
             activityLog: [...(c.activityLog || []), ...extraEntries],
@@ -2422,7 +2422,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             price,
             notes: updatedNotes,
             updatedAt: Date.now(),
-            activityLog: [...c.activityLog, newActivity],
+            activityLog: [...(c.activityLog || []), newActivity],
           };
         }
         return c;
@@ -3449,7 +3449,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             status: newStatus,
             assignedBarcode: c.assignedBarcode,
             updatedAt: now,
-            routeHistory: [...c.routeHistory, { station: newStatus, timestamp: now }],
+            routeHistory: [...(c.routeHistory || []), { station: newStatus, timestamp: now }],
             activityLog: [...(c.activityLog || []), stationEntry],
           };
         }
