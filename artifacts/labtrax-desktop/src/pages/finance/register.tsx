@@ -1003,6 +1003,9 @@ function BlankRow({
   const hasAmount =
     (Number(payment) || 0) > 0 || (Number(deposit) || 0) > 0;
   const ready = !!date && !!payee.trim() && hasAmount;
+  const hasAnyData =
+    !!payee.trim() || hasAmount || !!memo.trim() || !!categoryId;
+  const isPartial = hasAnyData && !ready && !savedOnce;
 
   async function save() {
     if (!ready || saving || savedOnce) return;
@@ -1061,7 +1064,7 @@ function BlankRow({
     <>
       <tr
         ref={rowRef}
-        className="border-t border-border bg-secondary/10"
+        className={`border-t border-border bg-secondary/10 transition-shadow${isPartial ? " shadow-[inset_3px_0_0_0_#fbbf24]" : ""}`}
         onBlur={handleBlur}
         onKeyDownCapture={onRowKeyDownCapture}
       >
@@ -1077,7 +1080,15 @@ function BlankRow({
           />
         </td>
         <td className="py-1.5 text-xs text-muted-foreground italic">
-          {savedOnce ? "saved" : "new"}
+          <span className="inline-flex items-center gap-1">
+            {savedOnce ? "saved" : "new"}
+            {isPartial && (
+              <span
+                className="inline-block h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse"
+                title="Unsaved — fill in date, payee, and an amount to save"
+              />
+            )}
+          </span>
         </td>
         <td className="py-1.5"></td>
         <td className="py-1.5">
