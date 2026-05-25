@@ -1575,9 +1575,14 @@ export async function registerRoutes(): Promise<IRouter> {
       const DESKTOP_TO_MOBILE_STATUS: Record<string, string> = {
         received: "INTAKE",
         in_design: "DESIGN",
+        scan: "SCAN",
         in_milling: "MILLING",
+        post_mill: "POST_MILL",
+        sintering_furnace: "SINTERING_FURNACE",
+        model_room: "MODEL_ROOM",
         in_porcelain: "PORCELAIN",
         qc: "QC_CHECK",
+        complete: "COMPLETE",
         shipped: "DELIVERY",
         delivered: "COMPLETE",
         on_hold: "ON_HOLD",
@@ -2183,9 +2188,12 @@ export async function registerRoutes(): Promise<IRouter> {
         .where(eq(caseRestorations.caseId, caseId));
 
       const DESKTOP_TO_MOBILE_STATUS: Record<string, string> = {
-        received: "INTAKE", in_design: "DESIGN", in_milling: "MILLING",
-        in_porcelain: "PORCELAIN", qc: "QC_CHECK", shipped: "DELIVERY",
-        delivered: "COMPLETE", on_hold: "ON_HOLD", remake: "REMAKE", cancelled: "COMPLETE",
+        received: "INTAKE", in_design: "DESIGN", scan: "SCAN",
+        in_milling: "MILLING", post_mill: "POST_MILL",
+        sintering_furnace: "SINTERING_FURNACE", model_room: "MODEL_ROOM",
+        in_porcelain: "PORCELAIN", qc: "QC_CHECK", complete: "COMPLETE",
+        shipped: "DELIVERY", delivered: "COMPLETE",
+        on_hold: "ON_HOLD", remake: "REMAKE", cancelled: "COMPLETE",
       };
 
       const createdMs = dc.createdAt ? new Date(dc.createdAt).getTime() : Date.now();
@@ -2200,7 +2208,7 @@ export async function registerRoutes(): Promise<IRouter> {
       const activityLog: any[] = [
         {
           id: `desktop-created-${dc.id}`,
-          type: "status",
+          type: "created",
           timestamp: createdMs,
           description: "Case received",
           user: "Lab",
@@ -2210,9 +2218,10 @@ export async function registerRoutes(): Promise<IRouter> {
       if (dc.status && dc.status !== "received") {
         activityLog.push({
           id: `desktop-status-${dc.id}`,
-          type: "status",
+          type: "station_change",
+          station: mobileStatus,
           timestamp: updatedMs,
-          description: `Status: ${mobileStatus.charAt(0) + mobileStatus.slice(1).toLowerCase().replace(/_/g, " ")}`,
+          description: `Case moved to ${mobileStatus.charAt(0) + mobileStatus.slice(1).toLowerCase().replace(/_/g, " ")}`,
           user: "Lab",
         });
       }

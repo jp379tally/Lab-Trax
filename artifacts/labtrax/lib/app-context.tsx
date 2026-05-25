@@ -411,6 +411,45 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   async function syncCaseToServer(labCase: LabCase): Promise<boolean> {
     try {
+      // Canonical (desktop) cases live in the `cases` table, not `lab_cases`.
+      // Syncing them via the legacy POST endpoint would try to create a
+      // duplicate row in lab_cases and fail with a 403. Use PATCH instead,
+      // converting the mobile status token back to the desktop enum value.
+      if ((labCase as any)._sourceTable === "cases") {
+        const MOBILE_TO_DESKTOP_STATUS: Record<string, string> = {
+          INTAKE: "received",
+          DESIGN: "in_design",
+          SCAN: "scan",
+          MILL: "in_milling",
+          MILLING: "in_milling",
+          POST_MILL: "post_mill",
+          SINTERING_FURNACE: "sintering_furnace",
+          MODEL_ROOM: "model_room",
+          PORCELAIN: "in_porcelain",
+          QC_CHECK: "qc",
+          QC: "qc",
+          COMPLETE: "complete",
+          SHIP: "shipped",
+          DELIVERY: "shipped",
+          HOLD: "on_hold",
+          ON_HOLD: "on_hold",
+          REMAKE: "remake",
+        };
+        const desktopStatus = labCase.status
+          ? MOBILE_TO_DESKTOP_STATUS[labCase.status]
+          : undefined;
+        if (!desktopStatus) return false;
+        const res = await resilientFetch(
+          `/api/cases/${encodeURIComponent(labCase.id)}`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ status: desktopStatus }),
+          }
+        );
+        return !!res?.ok;
+      }
+
       const normalizedCase: LabCase = {
         ...labCase,
         ownerId: labCase.ownerId || currentUserId || undefined,
