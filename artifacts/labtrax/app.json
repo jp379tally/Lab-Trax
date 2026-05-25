@@ -94,8 +94,7 @@
           ],
           "androidMultiIntentFilters": [
             "image/*"
-          ],
-          "disableIOS": true
+          ]
         }
       ]
     ],
