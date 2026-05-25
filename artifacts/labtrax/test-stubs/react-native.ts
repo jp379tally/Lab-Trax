@@ -94,6 +94,7 @@ export const KeyboardAvoidingView = makeHost("KeyboardAvoidingView");
 export const RefreshControl = makeHost("RefreshControl");
 export const Image = makeHost("Image");
 export const ActivityIndicator = nullComponent;
+export const StatusBar = nullComponent;
 
 export const StyleSheet = {
   create: <T extends Record<string, object>>(s: T): T => s,
@@ -166,6 +167,7 @@ const reactNativeStub = {
   RefreshControl,
   Image,
   ActivityIndicator,
+  StatusBar,
   StyleSheet,
   Platform,
   Dimensions,

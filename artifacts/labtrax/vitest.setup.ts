@@ -5,6 +5,27 @@
 // plugin in vitest.config.ts for ESM imports, (2) Node require.cache here
 // for externalised CJS (RNTL's matchers) — the real package's Flow source
 // is unparsable.
+
+// expo-modules-core expects two React Native globals at module-evaluation
+// time. Set them before any expo import so the module-level checks don't
+// throw. `__DEV__` is used by many expo packages; `globalThis.expo` is read
+// by EventEmitter.ts inside expo-modules-core.
+(globalThis as unknown as Record<string, unknown>).__DEV__ = false;
+(globalThis as unknown as Record<string, unknown>).expo = {
+  EventEmitter: class MockEventEmitter {
+    addListener(_: string, __: (...args: unknown[]) => void) {
+      return { remove: () => undefined };
+    }
+    removeAllListeners(_: string) {
+      return undefined;
+    }
+    emit(_: string, ...__: unknown[]) {
+      return undefined;
+    }
+  },
+  modules: {},
+};
+
 import { vi } from "vitest";
 import * as React from "react";
 import { createRequire } from "node:module";
@@ -363,3 +384,8 @@ vi.mock("@/lib/pdfToImages", () => ({
 }));
 
 vi.mock("@/lib/audit", () => ({ logAudit: vi.fn(async () => undefined) }));
+
+vi.mock("react-native-webview", () => ({
+  WebView: passthrough,
+  default: passthrough,
+}));
