@@ -24,6 +24,8 @@ tags:
     description: Backup and schedule operations (LabTrax)
   - name: users
     description: User profile and preference operations (LabTrax)
+  - name: messenger
+    description: Real-time direct-message operations (LabTrax)
 paths:
   /auth/2fa/status:
     get:
@@ -1366,6 +1368,118 @@ paths:
           description: Caller lacks a billing role on the lab.
         "503":
           description: Twilio not configured.
+  /messenger/users/search:
+    get:
+      operationId: searchMessengerUsers
+      tags: [messenger]
+      summary: Search users to start a conversation with
+      parameters:
+        - in: query
+          name: q
+          required: true
+          schema: { type: string }
+          description: Search query (username, first name, last name)
+      responses:
+        "200":
+          description: List of matching users
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessengerUsersResult"
+  /messenger/conversations:
+    get:
+      operationId: listConversations
+      tags: [messenger]
+      summary: List all conversations for the current user
+      responses:
+        "200":
+          description: Conversation list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversationListResult"
+    post:
+      operationId: createConversation
+      tags: [messenger]
+      summary: Find or create a 1-to-1 conversation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateConversationInput"
+      responses:
+        "200":
+          description: Conversation found or created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateConversationResult"
+  /messenger/conversations/{id}/messages:
+    get:
+      operationId: getConversationMessages
+      tags: [messenger]
+      summary: Get paginated message history for a conversation
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: before
+          schema: { type: string }
+          description: Cursor — return messages before this message ID
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        "200":
+          description: Message list (chronological)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageListResult"
+    post:
+      operationId: sendMessage
+      tags: [messenger]
+      summary: Send a message to a conversation
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendMessageInput"
+      responses:
+        "201":
+          description: Message sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatMessageResult"
+  /messenger/conversations/{id}/read:
+    post:
+      operationId: markConversationRead
+      tags: [messenger]
+      summary: Mark conversation as read up to a given message
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MarkReadInput"
+      responses:
+        "200":
+          description: Marked as read
 components:
   schemas:
     ItemLabelsResult:
@@ -2212,6 +2326,121 @@ components:
           required: [twoFactorEnabled]
           properties:
             twoFactorEnabled: { type: boolean }
+    MessengerUser:
+      type: object
+      required: [id, username, initials, displayName, userType, role]
+      properties:
+        id: { type: string }
+        username: { type: string }
+        firstName: { type: string, nullable: true }
+        lastName: { type: string, nullable: true }
+        initials: { type: string }
+        displayName: { type: string }
+        userType: { type: string }
+        role: { type: string }
+        workStatus: { type: string, nullable: true }
+        platformAccountNumber: { type: string, nullable: true }
+    MessengerUsersResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/MessengerUser"
+    ConversationLastMessage:
+      type: object
+      required: [id, body, senderId, createdAt]
+      properties:
+        id: { type: string }
+        body: { type: string }
+        senderId: { type: string }
+        createdAt: { type: string }
+    ConversationSummary:
+      type: object
+      required: [id, unreadCount]
+      properties:
+        id: { type: string }
+        updatedAt: { type: string }
+        unreadCount: { type: integer }
+        lastMessage:
+          nullable: true
+          $ref: "#/components/schemas/ConversationLastMessage"
+        otherUser:
+          nullable: true
+          $ref: "#/components/schemas/MessengerUser"
+    ConversationListResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConversationSummary"
+    CreateConversationInput:
+      type: object
+      required: [otherUserId]
+      properties:
+        otherUserId: { type: string }
+    CreateConversationResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          required: [conversationId]
+          properties:
+            conversationId: { type: string }
+    MessageSender:
+      type: object
+      required: [id, username, initials, displayName]
+      properties:
+        id: { type: string }
+        username: { type: string }
+        firstName: { type: string, nullable: true }
+        lastName: { type: string, nullable: true }
+        initials: { type: string }
+        displayName: { type: string }
+    ChatMessage:
+      type: object
+      required: [id, conversationId, senderId, body, createdAt, sender]
+      properties:
+        id: { type: string }
+        conversationId: { type: string }
+        senderId: { type: string }
+        body: { type: string }
+        createdAt: { type: string }
+        sender:
+          $ref: "#/components/schemas/MessageSender"
+    ChatMessageResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          $ref: "#/components/schemas/ChatMessage"
+    MessageListResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatMessage"
+    SendMessageInput:
+      type: object
+      required: [body]
+      properties:
+        body: { type: string, minLength: 1, maxLength: 4000 }
+    MarkReadInput:
+      type: object
+      required: [lastMessageId]
+      properties:
+        lastMessageId: { type: string }
     TwoFactorChallengeInput:
       type: object
       required: [pendingToken, code]

@@ -1866,9 +1866,110 @@ export const insertUserSchema = createInsertSchema(users).pick({
   password: true,
 });
 
+/**
+ * Messenger conversations (1-on-1 DMs only for now).
+ * Each row represents a unique direct-message thread between two users.
+ * The participants are stored in conversation_participants.
+ */
+export const conversations = pgTable("conversations", {
+  id: varchar("id")
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+/**
+ * Tracks which users belong to a conversation and how far they have read.
+ * Compound PK on (conversationId, userId).
+ */
+export const conversationParticipants = pgTable(
+  "conversation_participants",
+  {
+    conversationId: varchar("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    userId: varchar("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    joinedAt: timestamp("joined_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    lastReadAt: timestamp("last_read_at", { withTimezone: true }),
+  },
+  (table) => ({
+    pk: uniqueIndex("conversation_participants_pk").on(
+      table.conversationId,
+      table.userId
+    ),
+    userIdx: index("conversation_participants_user_idx").on(table.userId),
+  })
+);
+
+/**
+ * Individual chat messages inside a conversation.
+ * deletedAt supports soft-delete (message withdrawn by sender).
+ */
+export const messages = pgTable(
+  "messages",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    conversationId: varchar("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    senderId: varchar("sender_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    body: text("body").notNull(),
+    createdAt: createdAt(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (table) => ({
+    conversationIdx: index("messages_conversation_idx").on(
+      table.conversationId
+    ),
+    createdAtIdx: index("messages_created_at_idx").on(table.createdAt),
+  })
+);
+
+export const conversationsRelations = relations(conversations, ({ many }) => ({
+  participants: many(conversationParticipants),
+  messages: many(messages),
+}));
+
+export const conversationParticipantsRelations = relations(
+  conversationParticipants,
+  ({ one }) => ({
+    conversation: one(conversations, {
+      fields: [conversationParticipants.conversationId],
+      references: [conversations.id],
+    }),
+    user: one(users, {
+      fields: [conversationParticipants.userId],
+      references: [users.id],
+    }),
+  })
+);
+
+export const messagesRelations = relations(messages, ({ one }) => ({
+  conversation: one(conversations, {
+    fields: [messages.conversationId],
+    references: [conversations.id],
+  }),
+  sender: one(users, {
+    fields: [messages.senderId],
+    references: [users.id],
+  }),
+}));
+
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 export type LabCaseRow = typeof labCases.$inferSelect;
 export type Subscription = typeof subscriptions.$inferSelect;
 export type SubscriptionEvent = typeof subscriptionEvents.$inferSelect;
 export type TrustedDevice = typeof trustedDevices.$inferSelect;
+export type Conversation = typeof conversations.$inferSelect;
+export type ConversationParticipant = typeof conversationParticipants.$inferSelect;
+export type Message = typeof messages.$inferSelect;

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { MessengerDock } from "./messenger/MessengerDock";
 import { UpdateBanner } from "./UpdateBanner";
 import { Link, useLocation } from "wouter";
 import {
@@ -611,6 +612,7 @@ export function AppLayout({ children }: Props) {
         <UpdateBanner />
         <main className="flex-1 overflow-y-auto scrollbar-thin">{children}</main>
       </div>
+      <MessengerDock />
     </div>
   );
 }

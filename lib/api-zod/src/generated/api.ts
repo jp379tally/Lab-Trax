@@ -1590,3 +1590,146 @@ export const SmsInvoiceResponse = zod.object({
   sentAt: zod.coerce.date(),
   to: zod.string(),
 });
+
+/**
+ * @summary Search users to start a conversation with
+ */
+export const SearchMessengerUsersQueryParams = zod.object({
+  q: zod.coerce
+    .string()
+    .describe("Search query (username, first name, last name)"),
+});
+
+export const SearchMessengerUsersResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.array(
+    zod.object({
+      id: zod.string(),
+      username: zod.string(),
+      firstName: zod.string().nullish(),
+      lastName: zod.string().nullish(),
+      initials: zod.string(),
+      displayName: zod.string(),
+      userType: zod.string(),
+      role: zod.string(),
+      workStatus: zod.string().nullish(),
+      platformAccountNumber: zod.string().nullish(),
+    }),
+  ),
+});
+
+/**
+ * @summary List all conversations for the current user
+ */
+export const ListConversationsResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.array(
+    zod.object({
+      id: zod.string(),
+      updatedAt: zod.string().optional(),
+      unreadCount: zod.number(),
+      lastMessage: zod
+        .object({
+          id: zod.string(),
+          body: zod.string(),
+          senderId: zod.string(),
+          createdAt: zod.string(),
+        })
+        .nullish(),
+      otherUser: zod
+        .object({
+          id: zod.string(),
+          username: zod.string(),
+          firstName: zod.string().nullish(),
+          lastName: zod.string().nullish(),
+          initials: zod.string(),
+          displayName: zod.string(),
+          userType: zod.string(),
+          role: zod.string(),
+          workStatus: zod.string().nullish(),
+          platformAccountNumber: zod.string().nullish(),
+        })
+        .nullish(),
+    }),
+  ),
+});
+
+/**
+ * @summary Find or create a 1-to-1 conversation
+ */
+export const CreateConversationBody = zod.object({
+  otherUserId: zod.string(),
+});
+
+export const CreateConversationResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.object({
+    conversationId: zod.string(),
+  }),
+});
+
+/**
+ * @summary Get paginated message history for a conversation
+ */
+export const GetConversationMessagesParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const getConversationMessagesQueryLimitMax = 100;
+
+export const GetConversationMessagesQueryParams = zod.object({
+  before: zod.coerce
+    .string()
+    .optional()
+    .describe("Cursor — return messages before this message ID"),
+  limit: zod.coerce
+    .number()
+    .min(1)
+    .max(getConversationMessagesQueryLimitMax)
+    .optional(),
+});
+
+export const GetConversationMessagesResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.array(
+    zod.object({
+      id: zod.string(),
+      conversationId: zod.string(),
+      senderId: zod.string(),
+      body: zod.string(),
+      createdAt: zod.string(),
+      sender: zod.object({
+        id: zod.string(),
+        username: zod.string(),
+        firstName: zod.string().nullish(),
+        lastName: zod.string().nullish(),
+        initials: zod.string(),
+        displayName: zod.string(),
+      }),
+    }),
+  ),
+});
+
+/**
+ * @summary Send a message to a conversation
+ */
+export const SendMessageParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const sendMessageBodyBodyMax = 5000;
+
+export const SendMessageBody = zod.object({
+  body: zod.string().min(1).max(sendMessageBodyBodyMax),
+});
+
+/**
+ * @summary Mark conversation as read up to a given message
+ */
+export const MarkConversationReadParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const MarkConversationReadBody = zod.object({
+  lastMessageId: zod.string(),
+});

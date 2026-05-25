@@ -838,6 +838,97 @@ export interface TwoFactorStatusResult {
   data?: TwoFactorStatusResultData;
 }
 
+export interface MessengerUser {
+  id: string;
+  username: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  initials: string;
+  displayName: string;
+  userType: string;
+  role: string;
+  workStatus?: string | null;
+  platformAccountNumber?: string | null;
+}
+
+export interface MessengerUsersResult {
+  ok: boolean;
+  data: MessengerUser[];
+}
+
+export interface ConversationLastMessage {
+  id: string;
+  body: string;
+  senderId: string;
+  createdAt: string;
+}
+
+export interface ConversationSummary {
+  id: string;
+  updatedAt?: string;
+  unreadCount: number;
+  lastMessage?: ConversationLastMessage | null;
+  otherUser?: MessengerUser | null;
+}
+
+export interface ConversationListResult {
+  ok: boolean;
+  data: ConversationSummary[];
+}
+
+export interface CreateConversationInput {
+  otherUserId: string;
+}
+
+export type CreateConversationResultData = {
+  conversationId: string;
+};
+
+export interface CreateConversationResult {
+  ok: boolean;
+  data: CreateConversationResultData;
+}
+
+export interface MessageSender {
+  id: string;
+  username: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  initials: string;
+  displayName: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  conversationId: string;
+  senderId: string;
+  body: string;
+  createdAt: string;
+  sender: MessageSender;
+}
+
+export interface ChatMessageResult {
+  ok: boolean;
+  data: ChatMessage;
+}
+
+export interface MessageListResult {
+  ok: boolean;
+  data: ChatMessage[];
+}
+
+export interface SendMessageInput {
+  /**
+   * @minLength 1
+   * @maxLength 5000
+   */
+  body: string;
+}
+
+export interface MarkReadInput {
+  lastMessageId: string;
+}
+
 export type TwoFactorChallengeInputClientType =
   (typeof TwoFactorChallengeInputClientType)[keyof typeof TwoFactorChallengeInputClientType];
 
@@ -1089,4 +1180,23 @@ export type SmsInvoiceBody = {
 export type SmsInvoice200 = {
   sentAt: string;
   to: string;
+};
+
+export type SearchMessengerUsersParams = {
+  /**
+   * Search query (username, first name, last name)
+   */
+  q: string;
+};
+
+export type GetConversationMessagesParams = {
+  /**
+   * Cursor — return messages before this message ID
+   */
+  before?: string;
+  /**
+   * @minimum 1
+   * @maximum 100
+   */
+  limit?: number;
 };

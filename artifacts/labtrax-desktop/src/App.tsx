@@ -32,6 +32,7 @@ import CustomerCenterPage from "@/pages/customer-center";
 import NotFound from "@/pages/not-found";
 import { AppLayout } from "@/components/AppLayout";
 import { OfflineBanner } from "@/components/OfflineBanner";
+import { MessengerProvider } from "@/context/MessengerContext";
 
 // Wire the generated react-query hooks (`@workspace/api-client-react`) up
 // to the same bearer-token + base-URL machinery the legacy `apiFetch`
@@ -53,7 +54,9 @@ const queryClient = new QueryClient({
 function AuthedRoutes() {
   return (
     <UploadsProvider>
-      <AppLayoutWithUploads />
+      <MessengerProvider>
+        <AppLayoutWithUploads />
+      </MessengerProvider>
     </UploadsProvider>
   );
 }

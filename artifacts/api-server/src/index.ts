@@ -1,5 +1,6 @@
 import app from "./app";
 import { logger } from "./lib/logger";
+import { setupMessengerWebSocket } from "./lib/messenger-ws";
 
 const rawPort = process.env["PORT"];
 
@@ -23,6 +24,8 @@ const server = app.listen(port, (err) => {
 
   logger.info({ port }, "Server listening");
 });
+
+setupMessengerWebSocket(server);
 
 function shutdown(signal: string) {
   logger.info({ signal }, "Received shutdown signal, closing server");
