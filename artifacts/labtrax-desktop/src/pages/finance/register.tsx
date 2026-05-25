@@ -586,6 +586,7 @@ function RegisterTable({
                   accounts={accounts}
                   categories={cats.data || []}
                   rowCount={1}
+                  showDatePicker
                   onSaved={() => qc.invalidateQueries({ queryKey: ["finance"] })}
                   onAllDismissed={() => setShowInlineRows(false)}
                 />
@@ -1005,6 +1006,7 @@ function InlineBlankRows({
   rowCount,
   categories,
   defaultDate,
+  showDatePicker,
   onSaved,
   onAllDismissed,
   onPartialChange,
@@ -1015,6 +1017,7 @@ function InlineBlankRows({
   rowCount: number;
   categories: TransactionCategory[];
   defaultDate?: string;
+  showDatePicker?: boolean;
   onSaved: () => void;
   onAllDismissed?: () => void;
   onPartialChange?: (hasPartial: boolean) => void;
@@ -1093,6 +1096,7 @@ function InlineBlankRows({
           categories={categories}
           initialValues={entry.initialValues}
           autoFocus={entry.key === latestKey}
+          showDatePicker={showDatePicker}
           onSaved={handleSaved}
           onDismiss={(values) => handleDismiss(entry.key, values)}
           onIsPartialChange={(partial) => handlePartialChange(entry.key, partial)}
@@ -1109,6 +1113,7 @@ function BlankRow({
   categories,
   autoFocus,
   initialValues,
+  showDatePicker,
   onSaved,
   onDismiss,
   onIsPartialChange,
@@ -1119,12 +1124,14 @@ function BlankRow({
   categories: TransactionCategory[];
   autoFocus?: boolean;
   initialValues?: BlankRowValues;
+  showDatePicker?: boolean;
   onSaved: () => void;
   onDismiss?: (values: BlankRowValues) => void;
   onIsPartialChange?: (isPartial: boolean) => void;
 }) {
   const qc = useQueryClient();
   const rowRef = useRef<HTMLTableRowElement>(null);
+  const dateRowRef = useRef<HTMLTableRowElement>(null);
   const [date, setDate] = useState(initialValues?.date ?? new Date().toISOString().slice(0, 10));
   const [payee, setPayee] = useState(initialValues?.payee ?? "");
   const [memo, setMemo] = useState(initialValues?.memo ?? "");
@@ -1188,6 +1195,7 @@ function BlankRow({
   function handleBlur(e: React.FocusEvent<HTMLTableRowElement>) {
     const next = e.relatedTarget as Node | null;
     if (next && e.currentTarget.contains(next)) return;
+    if (showDatePicker && next && dateRowRef.current?.contains(next)) return;
     if (ready) void save();
   }
 
@@ -1215,9 +1223,27 @@ function BlankRow({
 
   return (
     <>
+      {showDatePicker && (
+        <tr ref={dateRowRef} className="border-t border-border bg-secondary/10">
+          <td colSpan={11} className="px-4 pt-1.5 pb-0">
+            <div className="inline-flex items-center gap-2">
+              <span className="text-[11px] text-muted-foreground uppercase tracking-wide font-medium">
+                Date
+              </span>
+              <input
+                type="date"
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+                disabled={savedOnce}
+                className="h-6 px-2 rounded bg-background border border-input text-xs tabular-nums"
+              />
+            </div>
+          </td>
+        </tr>
+      )}
       <tr
         ref={rowRef}
-        className={`border-t border-border bg-secondary/10 transition-shadow${isPartial ? " shadow-[inset_3px_0_0_0_#fbbf24]" : ""}`}
+        className={`${showDatePicker ? "" : "border-t border-border "}bg-secondary/10 transition-shadow${isPartial ? " shadow-[inset_3px_0_0_0_#fbbf24]" : ""}`}
         onBlur={handleBlur}
         onKeyDownCapture={onRowKeyDownCapture}
       >
