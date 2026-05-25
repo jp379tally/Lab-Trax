@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeftRight, Ban, CheckCircle2, Download, Loader2, Plus, Repeat, Search, Trash2, Upload, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
@@ -62,6 +62,7 @@ function RegisterTable({
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<BankTransaction | null>(null);
   const [showInlineRows, setShowInlineRows] = useState(false);
+  const [inlineDateGroup, setInlineDateGroup] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [transferring, setTransferring] = useState(false);
   const [recurringFor, setRecurringFor] = useState<BankTransaction | null>(null);
@@ -103,6 +104,21 @@ function RegisterTable({
     () => new Map((vendorsQuery.data ?? []).map((v) => [v.name, v.vendorType])),
     [vendorsQuery.data]
   );
+
+  const dateGroups = useMemo(() => {
+    const rows = txnsQuery.data || [];
+    const groups: { date: string; rows: typeof rows }[] = [];
+    for (const r of rows) {
+      const d = r.txnDate.slice(0, 10);
+      const last = groups[groups.length - 1];
+      if (last && last.date === d) {
+        last.rows.push(r);
+      } else {
+        groups.push({ date: d, rows: [r] });
+      }
+    }
+    return groups;
+  }, [txnsQuery.data]);
 
   const clearMut = useMutation({
     mutationFn: ({ id, cleared }: { id: string; cleared: boolean }) =>
@@ -399,117 +415,148 @@ function RegisterTable({
                   </td>
                 </tr>
               )}
-              {(txnsQuery.data || []).map((r) => {
-                const debit = Number(r.debitAmount);
-                const credit = Number(r.creditAmount);
-                const isVoid = r.status === "void";
-                const isProjected = r.status === "projected";
-                return (
-                  <tr
-                    key={r.id}
-                    onClick={() => setEditing(r)}
-                    className={`border-t border-border cursor-pointer hover:bg-secondary/30 ${
-                      isVoid ? "text-muted-foreground line-through" : ""
-                    } ${isProjected ? "italic text-muted-foreground" : ""}`}
-                  >
-                    <td className="px-4 py-2.5 whitespace-nowrap">
-                      {formatDate(r.txnDate)}
-                    </td>
-                    <td className="py-2.5 capitalize">{r.type}</td>
-                    <td className="py-2.5 font-mono text-xs">{r.checkNumber || "—"}</td>
-                    <td className="py-2.5">
-                      {r.payee ? (
-                        <span className="flex items-center gap-1.5 min-w-0">
-                          {vendorTypeByName.has(r.payee) && (
-                            <span
-                              className={`shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full ${TYPE_BADGE_CLASS[vendorTypeByName.get(r.payee)!]}`}
-                            >
-                              {TYPE_LABEL[vendorTypeByName.get(r.payee)!]}
+              {dateGroups.map(({ date, rows: groupRows }) => (
+                <Fragment key={date}>
+                  {groupRows.map((r) => {
+                    const debit = Number(r.debitAmount);
+                    const credit = Number(r.creditAmount);
+                    const isVoid = r.status === "void";
+                    const isProjected = r.status === "projected";
+                    return (
+                      <tr
+                        key={r.id}
+                        onClick={() => setEditing(r)}
+                        className={`border-t border-border cursor-pointer hover:bg-secondary/30 ${
+                          isVoid ? "text-muted-foreground line-through" : ""
+                        } ${isProjected ? "italic text-muted-foreground" : ""}`}
+                      >
+                        <td className="px-4 py-2.5 whitespace-nowrap">
+                          {formatDate(r.txnDate)}
+                        </td>
+                        <td className="py-2.5 capitalize">{r.type}</td>
+                        <td className="py-2.5 font-mono text-xs">{r.checkNumber || "—"}</td>
+                        <td className="py-2.5">
+                          {r.payee ? (
+                            <span className="flex items-center gap-1.5 min-w-0">
+                              {vendorTypeByName.has(r.payee) && (
+                                <span
+                                  className={`shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full ${TYPE_BADGE_CLASS[vendorTypeByName.get(r.payee)!]}`}
+                                >
+                                  {TYPE_LABEL[vendorTypeByName.get(r.payee)!]}
+                                </span>
+                              )}
+                              <span className="truncate">{r.payee}</span>
                             </span>
-                          )}
-                          <span className="truncate">{r.payee}</span>
-                        </span>
-                      ) : "—"}
-                    </td>
-                    <td className="py-2.5 text-muted-foreground">
-                      {r.categoryId ? catNameById.get(r.categoryId) || "—" : "—"}
-                    </td>
-                    <td className="py-2.5 text-muted-foreground truncate max-w-[180px]">
-                      {r.memo || ""}
-                    </td>
-                    <td className="py-2.5 text-right tabular-nums">
-                      {debit > 0 ? formatMoney(debit) : ""}
-                    </td>
-                    <td className="py-2.5 text-right tabular-nums text-emerald-600 dark:text-emerald-400">
-                      {credit > 0 ? formatMoney(credit) : ""}
-                    </td>
-                    <td
-                      className="py-2.5 text-center"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (isVoid) return;
-                        clearMut.mutate({ id: r.id, cleared: !r.cleared });
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={r.cleared}
-                        readOnly
-                        className="h-3.5 w-3.5 cursor-pointer"
-                      />
-                    </td>
-                    <td className="py-2.5 text-center text-muted-foreground">
-                      {r.reconciled ? "✓" : ""}
-                    </td>
-                    <td className="px-4 py-2.5 text-right tabular-nums font-medium">
-                      {formatMoney(r.runningBalance ?? 0)}
-                    </td>
-                    <td
-                      className="px-2 py-2.5"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <div className="flex items-center justify-end gap-0.5">
-                        {!isVoid && (
-                          <button
-                            type="button"
-                            onClick={() => setRecurringFor(r)}
-                            className="h-6 w-6 rounded hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center"
-                            aria-label="Make recurring"
-                            title="Make recurring"
-                          >
-                            <Repeat size={12} />
-                          </button>
-                        )}
-                        {!r.reconciled && !isVoid && (
-                          <button
-                            type="button"
-                            onClick={() => voidMut.mutate(r.id)}
-                            className="h-6 w-6 rounded hover:bg-secondary text-muted-foreground hover:text-destructive flex items-center justify-center"
-                            aria-label="Void"
-                            title="Void"
-                          >
-                            <Ban size={12} />
-                          </button>
-                        )}
-                        {!r.reconciled && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (confirm("Delete this transaction?"))
-                                deleteMut.mutate(r.id);
-                            }}
-                            className="h-6 w-6 rounded hover:bg-secondary text-muted-foreground hover:text-destructive flex items-center justify-center"
-                            aria-label="Delete"
-                            title="Delete"
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
+                          ) : "—"}
+                        </td>
+                        <td className="py-2.5 text-muted-foreground">
+                          {r.categoryId ? catNameById.get(r.categoryId) || "—" : "—"}
+                        </td>
+                        <td className="py-2.5 text-muted-foreground truncate max-w-[180px]">
+                          {r.memo || ""}
+                        </td>
+                        <td className="py-2.5 text-right tabular-nums">
+                          {debit > 0 ? formatMoney(debit) : ""}
+                        </td>
+                        <td className="py-2.5 text-right tabular-nums text-emerald-600 dark:text-emerald-400">
+                          {credit > 0 ? formatMoney(credit) : ""}
+                        </td>
+                        <td
+                          className="py-2.5 text-center"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (isVoid) return;
+                            clearMut.mutate({ id: r.id, cleared: !r.cleared });
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={r.cleared}
+                            readOnly
+                            className="h-3.5 w-3.5 cursor-pointer"
+                          />
+                        </td>
+                        <td className="py-2.5 text-center text-muted-foreground">
+                          {r.reconciled ? "✓" : ""}
+                        </td>
+                        <td className="px-4 py-2.5 text-right tabular-nums font-medium">
+                          {formatMoney(r.runningBalance ?? 0)}
+                        </td>
+                        <td
+                          className="px-2 py-2.5"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <div className="flex items-center justify-end gap-0.5">
+                            {!isVoid && (
+                              <button
+                                type="button"
+                                onClick={() => setRecurringFor(r)}
+                                className="h-6 w-6 rounded hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center"
+                                aria-label="Make recurring"
+                                title="Make recurring"
+                              >
+                                <Repeat size={12} />
+                              </button>
+                            )}
+                            {!r.reconciled && !isVoid && (
+                              <button
+                                type="button"
+                                onClick={() => voidMut.mutate(r.id)}
+                                className="h-6 w-6 rounded hover:bg-secondary text-muted-foreground hover:text-destructive flex items-center justify-center"
+                                aria-label="Void"
+                                title="Void"
+                              >
+                                <Ban size={12} />
+                              </button>
+                            )}
+                            {!r.reconciled && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (confirm("Delete this transaction?"))
+                                    deleteMut.mutate(r.id);
+                                }}
+                                className="h-6 w-6 rounded hover:bg-secondary text-muted-foreground hover:text-destructive flex items-center justify-center"
+                                aria-label="Delete"
+                                title="Delete"
+                              >
+                                <Trash2 size={12} />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {inlineDateGroup === date ? (
+                    <InlineBlankRows
+                      accountId={accountId}
+                      organizationId={organizationId}
+                      accounts={accounts}
+                      categories={cats.data || []}
+                      rowCount={1}
+                      defaultDate={date}
+                      onSaved={() => qc.invalidateQueries({ queryKey: ["finance"] })}
+                      onAllDismissed={() => setInlineDateGroup(null)}
+                    />
+                  ) : (
+                    <tr className="border-t border-border/30">
+                      <td colSpan={12} className="px-4 py-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowInlineRows(false);
+                            setInlineDateGroup(date);
+                          }}
+                          className="text-xs text-muted-foreground/60 hover:text-primary inline-flex items-center gap-1 py-1 transition-colors"
+                        >
+                          <Plus size={11} /> Add entry
+                        </button>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              ))}
               {showInlineRows && (
                 <InlineBlankRows
                   accountId={accountId}
@@ -935,6 +982,7 @@ function InlineBlankRows({
   accounts,
   rowCount,
   categories,
+  defaultDate,
   onSaved,
   onAllDismissed,
 }: {
@@ -943,18 +991,32 @@ function InlineBlankRows({
   accounts: BankAccount[];
   rowCount: number;
   categories: TransactionCategory[];
+  defaultDate?: string;
   onSaved: () => void;
   onAllDismissed?: () => void;
 }) {
   const [entries, setEntries] = useState<BlankRowEntry[]>(() =>
-    Array.from({ length: Math.max(1, rowCount) }, (_, i) => ({ key: i }))
+    Array.from({ length: Math.max(1, rowCount) }, (_, i) => ({
+      key: i,
+      initialValues: defaultDate
+        ? { date: defaultDate, payee: "", memo: "", categoryId: "", payment: "", deposit: "" }
+        : undefined,
+    }))
   );
   const nextKeyRef = useRef(entries.length);
   const [latestKey, setLatestKey] = useState<number | null>(null);
 
   function handleSaved() {
     const newKey = nextKeyRef.current++;
-    setEntries((prev) => [...prev, { key: newKey }]);
+    setEntries((prev) => [
+      ...prev,
+      {
+        key: newKey,
+        initialValues: defaultDate
+          ? { date: defaultDate, payee: "", memo: "", categoryId: "", payment: "", deposit: "" }
+          : undefined,
+      },
+    ]);
     setLatestKey(newKey);
     onSaved();
   }
