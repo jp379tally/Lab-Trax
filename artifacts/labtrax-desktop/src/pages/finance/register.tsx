@@ -551,6 +551,7 @@ function RegisterTable({
                       categories={cats.data || []}
                       rowCount={1}
                       defaultDate={date}
+                      showDatePicker
                       onSaved={() => qc.invalidateQueries({ queryKey: ["finance"] })}
                       onAllDismissed={() => {
                         setInlineDateGroup(null);
