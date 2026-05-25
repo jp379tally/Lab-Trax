@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronsUpDown, ChevronUp, ChevronDown as ChevronDownIcon, History, Loader2, Pencil, Plus, Search, X } from "lucide-react";
+import { ChevronsUpDown, ChevronUp, ChevronDown as ChevronDownIcon, Download, History, Loader2, Pencil, Plus, Search, Upload, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { formatDate, formatMoney, formatPhone } from "@/lib/format";
 import type { BankTransaction } from "@/lib/types";
@@ -174,6 +174,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
   const [vendorForm, setVendorForm] = useState<VendorForm>(emptyVendorForm("vendor"));
   const [categoryForm, setCategoryForm] = useState<CategoryForm>(emptyCategoryForm());
   const [txnsVendor, setTxnsVendor] = useState<Vendor | null>(null);
+  const [showImportDialog, setShowImportDialog] = useState(false);
 
   const vendorsQuery = useQuery({
     queryKey: ["finance", "vendors", organizationId, "all"],
@@ -394,6 +395,27 @@ function ListsContent({ organizationId }: { organizationId: string }) {
     (createCatMut.error instanceof Error ? createCatMut.error.message : null) ||
     (updateCatMut.error instanceof Error ? updateCatMut.error.message : null);
 
+  function handleExportCsv() {
+    const type = activeTab as VendorType;
+    const rows = allVendors.filter((v) => v.vendorType === type && v.isActive);
+    const headers = ["Name", "Phone", "Email", "Address", "City", "State", "Zip", "Website", "Notes"];
+    const csvLines = [
+      headers.join(","),
+      ...rows.map((v) =>
+        [v.name, v.phone ?? "", v.email ?? "", v.address ?? "", v.city ?? "", v.state ?? "", v.zip ?? "", v.website ?? "", v.notes ?? ""]
+          .map((val) => `"${String(val).replace(/"/g, '""')}"`)
+          .join(",")
+      ),
+    ];
+    const blob = new Blob([csvLines.join("\r\n")], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${TYPE_LABEL[type].toLowerCase()}s-export.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <div className="space-y-5 relative">
       <div>
@@ -449,6 +471,30 @@ function ListsContent({ organizationId }: { organizationId: string }) {
             />
           </div>
           <div className="flex-1" />
+          {!isCategoriesTab && (
+            <>
+              <button
+                type="button"
+                onClick={handleExportCsv}
+                title="Export CSV"
+                className="h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80 inline-flex items-center gap-1.5"
+              >
+                <Download size={14} />
+                Export CSV
+              </button>
+              {(activeTab === "vendor" || activeTab === "employee") && (
+                <button
+                  type="button"
+                  onClick={() => setShowImportDialog(true)}
+                  title="Import CSV"
+                  className="h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80 inline-flex items-center gap-1.5"
+                >
+                  <Upload size={14} />
+                  Import CSV
+                </button>
+              )}
+            </>
+          )}
           <button
             type="button"
             onClick={() =>
@@ -486,6 +532,18 @@ function ListsContent({ organizationId }: { organizationId: string }) {
           organizationId={organizationId}
           vendor={txnsVendor}
           onClose={() => setTxnsVendor(null)}
+        />
+      )}
+
+      {showImportDialog && (activeTab === "vendor" || activeTab === "employee") && (
+        <ImportCsvDialog
+          organizationId={organizationId}
+          vendorType={activeTab}
+          onClose={() => setShowImportDialog(false)}
+          onSuccess={() => {
+            setShowImportDialog(false);
+            invalidateVendors();
+          }}
         />
       )}
 
@@ -1274,5 +1332,378 @@ function CategoryFormFields({
         <span className="text-sm">{form.isActive ? "Active" : "Inactive"}</span>
       </div>
     </div>
+  );
+}
+
+// ─── CSV utilities ────────────────────────────────────────────────────────────
+
+function parseCsvLine(line: string): string[] {
+  const result: string[] = [];
+  let current = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (ch === "," && !inQuotes) {
+      result.push(current.trim());
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  result.push(current.trim());
+  return result;
+}
+
+function parseCsv(text: string): { headers: string[]; rows: string[][] } {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim());
+  if (lines.length === 0) return { headers: [], rows: [] };
+  const headers = parseCsvLine(lines[0]);
+  const rows = lines.slice(1).map((l) => parseCsvLine(l));
+  return { headers, rows };
+}
+
+const VENDOR_FIELDS: { key: string; label: string; required: boolean }[] = [
+  { key: "name", label: "Name", required: true },
+  { key: "phone", label: "Phone", required: false },
+  { key: "email", label: "Email", required: false },
+  { key: "address", label: "Address", required: false },
+  { key: "city", label: "City", required: false },
+  { key: "state", label: "State", required: false },
+  { key: "zip", label: "Zip", required: false },
+  { key: "website", label: "Website", required: false },
+  { key: "notes", label: "Notes", required: false },
+];
+
+function autoDetectMapping(headers: string[]): Record<string, number> {
+  const mapping: Record<string, number> = {};
+  const normalize = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
+  const aliases: Record<string, string[]> = {
+    name: ["name", "fullname", "vendorname", "employeename", "company", "companyname", "businessname"],
+    phone: ["phone", "telephone", "phonenumber", "mobile", "cell", "fax"],
+    email: ["email", "emailaddress", "mail"],
+    address: ["address", "streetaddress", "street", "addr"],
+    city: ["city", "town"],
+    state: ["state", "province", "region"],
+    zip: ["zip", "zipcode", "postalcode", "postal"],
+    website: ["website", "url", "web", "homepage", "site"],
+    notes: ["notes", "note", "comments", "comment", "description", "memo"],
+  };
+  for (const field of VENDOR_FIELDS) {
+    const fieldAliases = aliases[field.key] ?? [field.key];
+    const idx = headers.findIndex((h) => fieldAliases.includes(normalize(h)));
+    if (idx !== -1) mapping[field.key] = idx;
+  }
+  return mapping;
+}
+
+// ─── ImportCsvDialog ─────────────────────────────────────────────────────────
+
+type ImportStep = "upload" | "mapping" | "done";
+
+function ImportCsvDialog({
+  organizationId,
+  vendorType,
+  onClose,
+  onSuccess,
+}: {
+  organizationId: string;
+  vendorType: "vendor" | "employee";
+  onClose: () => void;
+  onSuccess: (count: number) => void;
+}) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [step, setStep] = useState<ImportStep>("upload");
+  const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
+  const [csvRows, setCsvRows] = useState<string[][]>([]);
+  const [mapping, setMapping] = useState<Record<string, number>>({});
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importedCount, setImportedCount] = useState(0);
+  const [dragOver, setDragOver] = useState(false);
+
+  const typeLabel = TYPE_LABEL[vendorType];
+
+  function handleFile(file: File) {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target?.result as string;
+      const { headers, rows } = parseCsv(text);
+      if (headers.length === 0) {
+        setImportError("The CSV file appears to be empty or invalid.");
+        return;
+      }
+      setCsvHeaders(headers);
+      setCsvRows(rows.filter((r) => r.some((c) => c.trim())));
+      setMapping(autoDetectMapping(headers));
+      setImportError(null);
+      setStep("mapping");
+    };
+    reader.readAsText(file);
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setDragOver(false);
+    const file = e.dataTransfer.files[0];
+    if (file) handleFile(file);
+  }
+
+  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (file) handleFile(file);
+  }
+
+  function setFieldMapping(fieldKey: string, colIndex: number) {
+    setMapping((prev) => ({ ...prev, [fieldKey]: colIndex }));
+  }
+
+  const previewRows = csvRows.slice(0, 5);
+
+  function getMappedValue(row: string[], fieldKey: string): string {
+    const idx = mapping[fieldKey];
+    if (idx === undefined || idx < 0) return "";
+    return row[idx] ?? "";
+  }
+
+  async function handleImport() {
+    setImportError(null);
+    const records = csvRows
+      .map((row) => {
+        const name = getMappedValue(row, "name").trim();
+        if (!name) return null;
+        return {
+          name,
+          phone: getMappedValue(row, "phone") || null,
+          email: getMappedValue(row, "email") || null,
+          address: getMappedValue(row, "address") || null,
+          city: getMappedValue(row, "city") || null,
+          state: getMappedValue(row, "state") || null,
+          zip: getMappedValue(row, "zip") || null,
+          website: getMappedValue(row, "website") || null,
+          notes: getMappedValue(row, "notes") || null,
+        };
+      })
+      .filter(Boolean) as Array<{ name: string } & Record<string, string | null>>;
+
+    if (records.length === 0) {
+      setImportError("No valid records found. Make sure the Name column is mapped correctly.");
+      return;
+    }
+
+    setImporting(true);
+    try {
+      const endpoint =
+        vendorType === "employee"
+          ? "/finance/employees/import"
+          : "/finance/vendors/import";
+      const result = await apiFetch<{ imported: number }>(endpoint, {
+        method: "POST",
+        body: JSON.stringify({ organizationId, records }),
+      });
+      setImportedCount(result.imported);
+      setStep("done");
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : "Import failed.");
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  const validRecordCount = csvRows.filter((row) => getMappedValue(row, "name").trim()).length;
+  const nameIsMapped = mapping["name"] !== undefined && (mapping["name"] as number) >= 0;
+
+  return (
+    <>
+      <div className="fixed inset-0 z-50 bg-foreground/30" onClick={onClose} />
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
+        <div
+          className="pointer-events-auto bg-card border border-border rounded-xl shadow-2xl w-full max-w-2xl flex flex-col max-h-[90vh]"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <header className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
+            <h2 className="text-sm font-semibold">Import {typeLabel}s from CSV</h2>
+            <button
+              type="button"
+              onClick={onClose}
+              className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground"
+            >
+              <X size={15} />
+            </button>
+          </header>
+
+          <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+            {step === "upload" && (
+              <div className="space-y-4">
+                <p className="text-sm text-muted-foreground">
+                  Upload a CSV file with your {typeLabel.toLowerCase()} list. The first row should be column headers.
+                </p>
+                <div
+                  onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                  onDragLeave={() => setDragOver(false)}
+                  onDrop={handleDrop}
+                  onClick={() => fileInputRef.current?.click()}
+                  className={`border-2 border-dashed rounded-lg p-10 text-center cursor-pointer transition-colors ${
+                    dragOver
+                      ? "border-primary bg-primary/5"
+                      : "border-border hover:border-primary/50 hover:bg-secondary/30"
+                  }`}
+                >
+                  <Upload size={24} className="mx-auto mb-3 text-muted-foreground" />
+                  <p className="text-sm font-medium">Drop a CSV file here, or click to browse</p>
+                  <p className="text-xs text-muted-foreground mt-1">Supports .csv files up to 1,000 rows</p>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".csv,text/csv"
+                    className="hidden"
+                    onChange={handleFileChange}
+                  />
+                </div>
+                {importError && (
+                  <p className="text-sm text-destructive">{importError}</p>
+                )}
+              </div>
+            )}
+
+            {step === "mapping" && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm text-muted-foreground">
+                    {csvRows.length} row{csvRows.length !== 1 ? "s" : ""} detected. Map your CSV columns to {typeLabel.toLowerCase()} fields.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => { setStep("upload"); setCsvHeaders([]); setCsvRows([]); }}
+                    className="text-xs text-muted-foreground hover:text-foreground underline"
+                  >
+                    Choose different file
+                  </button>
+                </div>
+
+                <div className="border border-border rounded-lg overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead className="bg-secondary/40">
+                      <tr>
+                        <th className="text-left font-medium px-3 py-2 text-[11px] uppercase tracking-wide text-muted-foreground w-1/3">LabTrax Field</th>
+                        <th className="text-left font-medium px-3 py-2 text-[11px] uppercase tracking-wide text-muted-foreground">CSV Column</th>
+                        <th className="text-left font-medium px-3 py-2 text-[11px] uppercase tracking-wide text-muted-foreground">Preview</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {VENDOR_FIELDS.map((field) => {
+                        const colIdx = mapping[field.key] ?? -1;
+                        const preview = previewRows[0] ? (colIdx >= 0 ? previewRows[0][colIdx] ?? "" : "") : "";
+                        return (
+                          <tr key={field.key} className="border-t border-border">
+                            <td className="px-3 py-2 font-medium text-xs">
+                              {field.label}
+                              {field.required && <span className="text-destructive ml-0.5">*</span>}
+                            </td>
+                            <td className="px-3 py-2">
+                              <select
+                                value={colIdx}
+                                onChange={(e) => setFieldMapping(field.key, Number(e.target.value))}
+                                className="w-full h-7 text-xs rounded border border-border bg-background px-2 focus:outline-none focus:ring-1 focus:ring-primary"
+                              >
+                                <option value={-1}>— ignore —</option>
+                                {csvHeaders.map((h, i) => (
+                                  <option key={i} value={i}>{h || `Column ${i + 1}`}</option>
+                                ))}
+                              </select>
+                            </td>
+                            <td className="px-3 py-2 text-xs text-muted-foreground truncate max-w-[140px]">
+                              {preview || <span className="opacity-40">—</span>}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                {previewRows.length > 0 && (
+                  <div>
+                    <p className="text-xs font-medium text-muted-foreground mb-2 uppercase tracking-wide">
+                      Preview (first {previewRows.length} row{previewRows.length !== 1 ? "s" : ""})
+                    </p>
+                    <div className="border border-border rounded-lg overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead className="bg-secondary/40">
+                          <tr>
+                            {VENDOR_FIELDS.filter((f) => mapping[f.key] !== undefined && (mapping[f.key] as number) >= 0).map((f) => (
+                              <th key={f.key} className="text-left font-medium px-3 py-1.5 text-muted-foreground whitespace-nowrap">{f.label}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {previewRows.map((row, ri) => (
+                            <tr key={ri} className="border-t border-border">
+                              {VENDOR_FIELDS.filter((f) => mapping[f.key] !== undefined && (mapping[f.key] as number) >= 0).map((f) => (
+                                <td key={f.key} className="px-3 py-1.5 text-muted-foreground truncate max-w-[150px]">
+                                  {getMappedValue(row, f.key) || <span className="opacity-40">—</span>}
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {importError && (
+                  <p className="text-sm text-destructive">{importError}</p>
+                )}
+              </div>
+            )}
+
+            {step === "done" && (
+              <div className="py-8 text-center space-y-2">
+                <div className="text-4xl mb-2">✓</div>
+                <p className="text-sm font-semibold">Import complete</p>
+                <p className="text-sm text-muted-foreground">
+                  {importedCount} {typeLabel.toLowerCase()}{importedCount !== 1 ? "s" : ""} imported successfully.
+                </p>
+              </div>
+            )}
+          </div>
+
+          <footer className="px-5 py-4 border-t border-border shrink-0 flex justify-between items-center gap-2">
+            <div className="text-xs text-muted-foreground">
+              {step === "mapping" && nameIsMapped && validRecordCount > 0 && (
+                <span>{validRecordCount} record{validRecordCount !== 1 ? "s" : ""} ready to import</span>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={step === "done" ? () => onSuccess(importedCount) : onClose}
+                className="h-9 px-4 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80"
+              >
+                {step === "done" ? "Close" : "Cancel"}
+              </button>
+              {step === "mapping" && (
+                <button
+                  type="button"
+                  onClick={handleImport}
+                  disabled={!nameIsMapped || validRecordCount === 0 || importing}
+                  className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
+                >
+                  {importing && <Loader2 size={13} className="animate-spin" />}
+                  Import {validRecordCount > 0 ? `${validRecordCount} ` : ""}{typeLabel}{validRecordCount !== 1 ? "s" : ""}
+                </button>
+              )}
+            </div>
+          </footer>
+        </div>
+      </div>
+    </>
   );
 }

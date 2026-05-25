@@ -2095,6 +2095,71 @@ router.post(
   }),
 );
 
+const importRecordSchema = z.object({
+  name: z.string().min(1).max(200),
+  address: z.string().max(500).nullable().optional(),
+  city: z.string().max(100).nullable().optional(),
+  state: z.string().max(100).nullable().optional(),
+  zip: z.string().max(20).nullable().optional(),
+  phone: z.string().max(50).nullable().optional(),
+  email: z.string().max(200).nullable().optional(),
+  website: z.string().max(500).nullable().optional(),
+  notes: z.string().max(2000).nullable().optional(),
+});
+
+async function importVendorRecords(
+  organizationId: string,
+  vendorType: VendorType,
+  records: z.infer<typeof importRecordSchema>[]
+): Promise<number> {
+  const inserted = await db
+    .insert(vendors)
+    .values(
+      records.map((r) => ({
+        labOrganizationId: organizationId,
+        name: r.name.trim(),
+        address: r.address ?? null,
+        city: r.city ?? null,
+        state: r.state ?? null,
+        zip: r.zip ?? null,
+        phone: r.phone ?? null,
+        email: r.email ?? null,
+        website: r.website ?? null,
+        notes: r.notes ?? null,
+        vendorType,
+        isActive: true,
+      }))
+    )
+    .returning({ id: vendors.id });
+  return inserted.length;
+}
+
+router.post(
+  "/vendors/import",
+  asyncHandler(async (req, res) => {
+    const input = z.object({
+      organizationId: z.string().min(1),
+      records: z.array(importRecordSchema).min(1).max(1000),
+    }).parse(req.body);
+    await requireAnyRole(uid(req), input.organizationId, BILLING_ROLES);
+    const imported = await importVendorRecords(input.organizationId, "vendor", input.records);
+    return ok(res, { imported });
+  }),
+);
+
+router.post(
+  "/employees/import",
+  asyncHandler(async (req, res) => {
+    const input = z.object({
+      organizationId: z.string().min(1),
+      records: z.array(importRecordSchema).min(1).max(1000),
+    }).parse(req.body);
+    await requireAnyRole(uid(req), input.organizationId, BILLING_ROLES);
+    const imported = await importVendorRecords(input.organizationId, "employee", input.records);
+    return ok(res, { imported });
+  }),
+);
+
 router.patch(
   "/vendors/:vendorId",
   asyncHandler(async (req, res) => {
