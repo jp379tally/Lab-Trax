@@ -22,13 +22,13 @@ type BlankRowValues = {
 
 type BlankRowEntry = { key: number; initialValues?: BlankRowValues };
 
-// 8 resizable columns in body order: Type(0)…Deposit(6), then Balance(7) after fixed Clr/Rec
-const FINANCE_COL_DEFAULTS = [90, 80, 160, 130, 180, 100, 100, 110] as const;
+// 9 resizable columns in body order: Date(0), Type(1)…Deposit(7), then Balance(8) after fixed Clr/Rec
+const FINANCE_COL_DEFAULTS = [90, 90, 80, 160, 130, 180, 100, 100, 110] as const;
 const FINANCE_FIXED_CLR = 48;
 const FINANCE_FIXED_REC = 48;
 const FINANCE_FIXED_ACTIONS = 80;
-// Labels for the first 7 resizable columns (before Clr/Rec in body order)
-const FINANCE_PRE_LABELS = ["Type", "Check #", "Payee", "Category", "Memo", "Payment", "Deposit"] as const;
+// Labels for the first 8 resizable columns (before Clr/Rec in body order)
+const FINANCE_PRE_LABELS = ["Date", "Type", "Check #", "Payee", "Category", "Memo", "Payment", "Deposit"] as const;
 
 export default function RegisterPage() {
   return (
@@ -71,7 +71,7 @@ function RegisterTable({
   const account = accounts.find((a) => a.id === accountId);
 
   const { widths: colWidths, totalWidth: colTotalWidth, resizingCol, startResize, resetColumn } =
-    useColumnWidths([...FINANCE_COL_DEFAULTS], "labtrax_finance_col_widths_v2");
+    useColumnWidths([...FINANCE_COL_DEFAULTS], "labtrax_finance_col_widths_v3");
 
   const theadRef = useRef<HTMLTableSectionElement>(null);
   const [theadHeight, setTheadHeight] = useState(33);
@@ -301,12 +301,12 @@ function RegisterTable({
               className="bg-primary/50 pointer-events-none absolute top-0 bottom-0 z-10"
               style={{
                 left:
-                  resizingCol <= 6
+                  resizingCol <= 7
                     ? colWidths.slice(0, resizingCol + 1).reduce((a, b) => a + b, 0) - 1
-                    : colWidths.slice(0, 7).reduce((a, b) => a + b, 0) +
+                    : colWidths.slice(0, 8).reduce((a, b) => a + b, 0) +
                       FINANCE_FIXED_CLR +
                       FINANCE_FIXED_REC +
-                      colWidths[7] -
+                      colWidths[8] -
                       1,
                 width: 2,
               }}
@@ -321,24 +321,24 @@ function RegisterTable({
             }}
           >
             <colgroup>
-              {/* cols 0-6: resizable Type→Deposit */}
-              {colWidths.slice(0, 7).map((w, i) => (
+              {/* cols 0-7: resizable Date→Deposit */}
+              {colWidths.slice(0, 8).map((w, i) => (
                 <col key={i} style={{ width: w }} />
               ))}
-              {/* col 7: fixed Clr */}
+              {/* col 8: fixed Clr */}
               <col style={{ width: FINANCE_FIXED_CLR }} />
-              {/* col 8: fixed Rec */}
+              {/* col 9: fixed Rec */}
               <col style={{ width: FINANCE_FIXED_REC }} />
-              {/* col 9: resizable Balance */}
-              <col style={{ width: colWidths[7] }} />
-              {/* col 10: fixed Actions */}
+              {/* col 10: resizable Balance */}
+              <col style={{ width: colWidths[8] }} />
+              {/* col 11: fixed Actions */}
               <col style={{ width: FINANCE_FIXED_ACTIONS }} />
             </colgroup>
             <thead ref={theadRef} style={{ position: "sticky", top: 0, zIndex: 20 }}>
               <tr className="bg-secondary text-[11px] uppercase tracking-wide text-muted-foreground">
-                {/* First 7 resizable columns: Type → Deposit */}
+                {/* First 8 resizable columns: Date → Deposit */}
                 {FINANCE_PRE_LABELS.map((label, i) => {
-                  const isRight = i === 5 || i === 6;
+                  const isRight = i === 6 || i === 7;
                   const isFirst = i === 0;
                   return (
                     <th
@@ -375,15 +375,15 @@ function RegisterTable({
                 {/* Fixed: Clr, Rec */}
                 <th className="text-center font-medium py-2">Clr</th>
                 <th className="text-center font-medium py-2">Rec</th>
-                {/* Resizable: Balance (index 8) */}
+                {/* Resizable: Balance (index 9) */}
                 <th
                   className="font-medium px-4 py-2 relative text-right"
                   style={{ overflow: "hidden" }}
                 >
                   Balance
                   <div
-                    onMouseDown={(e) => startResize(7, e)}
-                    onDoubleClick={() => resetColumn(7)}
+                    onMouseDown={(e) => startResize(8, e)}
+                    onDoubleClick={() => resetColumn(8)}
                     className="group/resize"
                     style={{
                       position: "absolute",
@@ -399,7 +399,7 @@ function RegisterTable({
                     }}
                   >
                     <span
-                      className={`w-0.5 transition-colors duration-100 ${resizingCol === 7 ? "bg-primary" : "bg-border/60 group-hover/resize:bg-primary/50"}`}
+                      className={`w-0.5 transition-colors duration-100 ${resizingCol === 8 ? "bg-primary" : "bg-border/60 group-hover/resize:bg-primary/50"}`}
                       style={{ display: "block", height: "100%" }}
                     />
                   </div>
@@ -411,7 +411,7 @@ function RegisterTable({
             <tbody>
               {txnsQuery.isLoading && (
                 <tr>
-                  <td colSpan={11} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={12} className="px-5 py-12 text-center text-muted-foreground">
                     <Loader2 size={16} className="inline animate-spin mr-2" />
                     Loading register…
                   </td>
@@ -419,7 +419,7 @@ function RegisterTable({
               )}
               {txnsQuery.data?.length === 0 && !txnsQuery.isLoading && (
                 <tr>
-                  <td colSpan={11} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={12} className="px-5 py-12 text-center text-muted-foreground">
                     No transactions match the current filters.
                   </td>
                 </tr>
@@ -428,7 +428,7 @@ function RegisterTable({
                 <Fragment key={date}>
                   <tr className="border-t border-border/60">
                     <td
-                      colSpan={11}
+                      colSpan={12}
                       className="px-4 py-1 text-[11px] font-semibold text-muted-foreground tracking-wide uppercase select-none bg-muted/80"
                       style={{ position: "sticky", top: theadHeight, zIndex: 10 }}
                     >
@@ -448,6 +448,15 @@ function RegisterTable({
                           isVoid ? "text-muted-foreground line-through" : ""
                         } ${isProjected ? "italic text-muted-foreground" : ""}`}
                       >
+                        <td
+                          className="px-4 py-2.5"
+                          onClick={(e) => { if (!r.reconciled) e.stopPropagation(); }}
+                        >
+                          <InlineDateCell
+                            txn={r}
+                            onUpdated={() => qc.invalidateQueries({ queryKey: ["finance"] })}
+                          />
+                        </td>
                         <td className="py-2.5 capitalize">{r.type}</td>
                         <td className="py-2.5 font-mono text-xs">{r.checkNumber || "—"}</td>
                         <td className="py-2.5">
@@ -561,7 +570,7 @@ function RegisterTable({
                     />
                   ) : (
                     <tr className="border-t border-border/30">
-                      <td colSpan={11} className="px-4 py-0">
+                      <td colSpan={12} className="px-4 py-0">
                         <button
                           type="button"
                           disabled={inlineDateGroupIsPartial}
@@ -1226,7 +1235,7 @@ function BlankRow({
     <>
       {showDatePicker && (
         <tr ref={dateRowRef} className="border-t border-border bg-secondary/10">
-          <td colSpan={11} className="px-4 pt-1.5 pb-0">
+          <td colSpan={12} className="px-4 pt-1.5 pb-0">
             <div className="inline-flex items-center gap-2">
               <span className="text-[11px] text-muted-foreground uppercase tracking-wide font-medium">
                 Date
@@ -1248,6 +1257,17 @@ function BlankRow({
         onBlur={handleBlur}
         onKeyDownCapture={onRowKeyDownCapture}
       >
+        <td className="px-4 py-1.5">
+          {!showDatePicker && (
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              disabled={savedOnce}
+              className="h-6 px-1 rounded bg-background border border-input text-xs tabular-nums w-full"
+            />
+          )}
+        </td>
         <td className="py-1.5 text-xs text-muted-foreground italic">
           <span className="inline-flex items-center gap-1">
             {savedOnce ? "saved" : "new"}
@@ -1363,7 +1383,7 @@ function BlankRow({
       </tr>
       {error && (
         <tr>
-          <td colSpan={11} className="px-4 py-1 text-xs text-destructive">
+          <td colSpan={12} className="px-4 py-1 text-xs text-destructive">
             {error}
           </td>
         </tr>
@@ -1390,6 +1410,107 @@ function BlankRow({
         />
       )}
     </>
+  );
+}
+
+function InlineDateCell({
+  txn,
+  onUpdated,
+}: {
+  txn: BankTransaction;
+  onUpdated: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(toInputDate(txn.txnDate));
+  const [saving, setSaving] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setValue(toInputDate(txn.txnDate));
+  }, [txn.txnDate]);
+
+  const canEdit = !txn.reconciled;
+
+  async function commit(newDate: string) {
+    const original = toInputDate(txn.txnDate);
+    setEditing(false);
+    if (!newDate || newDate === original) return;
+    setSaving(true);
+    try {
+      await apiFetch(`/finance/transactions/${txn.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ txnDate: new Date(newDate).toISOString() }),
+      });
+      onUpdated();
+    } catch (e: any) {
+      setValue(original);
+      toast({
+        title: "Date not saved",
+        description: e?.message || "Failed to update the transaction date.",
+        variant: "destructive",
+        duration: 5000,
+      });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function handleClick() {
+    if (!canEdit || saving) return;
+    setEditing(true);
+    setTimeout(() => inputRef.current?.focus(), 0);
+  }
+
+  function handleBlur(e: React.FocusEvent<HTMLInputElement>) {
+    void commit(e.currentTarget.value);
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void commit(e.currentTarget.value);
+    }
+    if (e.key === "Escape") {
+      setValue(toInputDate(txn.txnDate));
+      setEditing(false);
+    }
+  }
+
+  if (saving) {
+    return (
+      <span className="inline-flex items-center gap-1 text-muted-foreground text-xs">
+        <Loader2 size={11} className="animate-spin" />
+        saving…
+      </span>
+    );
+  }
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        type="date"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={handleBlur}
+        onKeyDown={handleKeyDown}
+        className="h-6 px-1 rounded bg-background border border-primary text-xs tabular-nums w-full focus:outline-none"
+      />
+    );
+  }
+
+  return (
+    <span
+      onClick={canEdit ? handleClick : undefined}
+      className={`text-xs tabular-nums block truncate ${
+        canEdit
+          ? "cursor-pointer hover:text-primary transition-colors"
+          : "text-muted-foreground cursor-default"
+      }`}
+      title={canEdit ? "Click to edit date" : "Reconciled — date is locked"}
+    >
+      {formatDate(txn.txnDate)}
+    </span>
   );
 }
 
