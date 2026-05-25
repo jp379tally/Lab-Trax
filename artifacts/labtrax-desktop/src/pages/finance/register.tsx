@@ -417,6 +417,11 @@ function RegisterTable({
               )}
               {dateGroups.map(({ date, rows: groupRows }) => (
                 <Fragment key={date}>
+                  <tr className="border-t border-border/60 bg-muted/40">
+                    <td colSpan={12} className="px-4 py-1 text-[11px] font-semibold text-muted-foreground tracking-wide uppercase select-none">
+                      {formatDate(date)}
+                    </td>
+                  </tr>
                   {groupRows.map((r) => {
                     const debit = Number(r.debitAmount);
                     const credit = Number(r.creditAmount);
@@ -426,11 +431,11 @@ function RegisterTable({
                       <tr
                         key={r.id}
                         onClick={() => setEditing(r)}
-                        className={`border-t border-border cursor-pointer hover:bg-secondary/30 ${
+                        className={`border-t border-border/30 cursor-pointer hover:bg-secondary/30 ${
                           isVoid ? "text-muted-foreground line-through" : ""
                         } ${isProjected ? "italic text-muted-foreground" : ""}`}
                       >
-                        <td className="px-4 py-2.5 whitespace-nowrap">
+                        <td className="px-4 py-2.5 whitespace-nowrap text-muted-foreground/50 text-xs">
                           {formatDate(r.txnDate)}
                         </td>
                         <td className="py-2.5 capitalize">{r.type}</td>
