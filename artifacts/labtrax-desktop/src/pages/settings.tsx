@@ -35,7 +35,7 @@ import { getSessionSecret, clearSessionSecret, useSessionSecretVersion } from "@
 import { formatPhone } from "@/lib/format";
 import { useAuth } from "@/lib/auth-context";
 import type { MeResponse, Organization, OrgMemberRow } from "@/lib/types";
-import { TemplatesPanel } from "@/pages/invoice-layout-panel";
+import { InvoiceLayoutPanel } from "@/pages/invoice-layout-panel";
 import { StatementLayoutPanel } from "@/pages/statement-layout-panel";
 import { CorrespondenceLayoutPanel } from "@/pages/correspondence-layout-panel";
 
@@ -51,9 +51,9 @@ interface AdminUser {
   lastLoginAt?: string | null;
 }
 
-type TabKey = "profile" | "password" | "two-factor" | "sessions" | "organizations" | "users" | "backup" | "desktop" | "mobile" | "itero" | "platform-admin" | "subscriptions" | "notifications" | "templates" | "statement-layout" | "correspondence-layout";
+type TabKey = "profile" | "password" | "two-factor" | "sessions" | "organizations" | "users" | "backup" | "desktop" | "mobile" | "itero" | "platform-admin" | "subscriptions" | "notifications" | "templates" | "statement-layout" | "correspondence-layout" | "invoice-layout";
 
-const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "two-factor", "sessions", "organizations", "users", "backup", "desktop", "mobile", "itero", "platform-admin", "subscriptions", "notifications", "templates", "statement-layout", "correspondence-layout"];
+const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "two-factor", "sessions", "organizations", "users", "backup", "desktop", "mobile", "itero", "platform-admin", "subscriptions", "notifications", "templates", "statement-layout", "correspondence-layout", "invoice-layout"];
 
 function readInitialTab(): TabKey {
   if (typeof window === "undefined") return "profile";
@@ -72,7 +72,7 @@ export default function SettingsPage() {
   const isAdmin = user?.role === "admin";
   const hasPlatformAdminBridge = typeof window !== "undefined" &&
     !!(window as { electronAPI?: { platformAdmin?: unknown } }).electronAPI?.platformAdmin;
-  const tabs: Array<{ key: TabKey; label: string; icon: typeof UserIcon; show: boolean }> = [
+  const tabs: Array<{ key: TabKey; label: string; icon: typeof UserIcon; show: boolean; parentKey?: TabKey }> = [
     { key: "profile", label: "Profile", icon: UserIcon, show: true },
     { key: "password", label: "Password", icon: KeyRound, show: true },
     { key: "two-factor", label: "Two-factor auth", icon: ShieldCheck, show: true },
@@ -82,8 +82,9 @@ export default function SettingsPage() {
     { key: "backup", label: "Backup", icon: ShieldCheck, show: isAdmin },
     { key: "desktop", label: "Desktop app", icon: Download, show: isAdmin },
     { key: "templates", label: "Templates", icon: LayoutList, show: isAdmin },
-    { key: "statement-layout", label: "Statement layout", icon: LayoutList, show: isAdmin },
-    { key: "correspondence-layout", label: "Correspondence layout", icon: LayoutList, show: isAdmin },
+    { key: "invoice-layout", label: "Invoice layout", icon: LayoutList, show: isAdmin, parentKey: "templates" },
+    { key: "statement-layout", label: "Statement layout", icon: LayoutList, show: isAdmin, parentKey: "templates" },
+    { key: "correspondence-layout", label: "Correspondence layout", icon: LayoutList, show: isAdmin, parentKey: "templates" },
     { key: "mobile", label: "Mobile app", icon: Smartphone, show: isAdmin },
     { key: "itero", label: "iTero auto-import", icon: Sparkles, show: isAdmin && typeof window !== "undefined" && !!(window as { electronAPI?: { itero?: unknown } }).electronAPI?.itero },
     { key: "platform-admin", label: "Platform admin", icon: Wrench, show: isAdmin },
@@ -118,17 +119,25 @@ export default function SettingsPage() {
       <div className="flex gap-6">
         <nav className="w-48 shrink-0">
           <ul className="space-y-1">
-            {tabs.filter((t) => t.show).map((t) => {
+            {tabs.filter((t) => t.show && !t.parentKey).map((t) => {
               const Icon = t.icon;
               const active = tab === t.key;
+              const children = tabs.filter((c) => c.show && c.parentKey === t.key);
+              const childActive = children.some((c) => c.key === tab);
               return (
                 <li key={t.key}>
                   <button
                     type="button"
-                    onClick={() => setTab(t.key)}
+                    onClick={() => {
+                      if (children.length > 0) {
+                        setTab(children[0].key);
+                      } else {
+                        setTab(t.key);
+                      }
+                    }}
                     title={t.key === "backup" && backupOverdue ? "Backup overdue — check backup settings" : undefined}
                     className={`w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                      active ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+                      active ? "bg-primary/10 text-primary" : childActive ? "text-foreground" : "text-muted-foreground hover:bg-secondary hover:text-foreground"
                     }`}
                   >
                     <Icon size={14} />
@@ -137,6 +146,26 @@ export default function SettingsPage() {
                       <AlertTriangle size={13} className="shrink-0 text-amber-400" aria-label="Backup overdue" />
                     )}
                   </button>
+                  {children.length > 0 && (
+                    <ul className="mt-0.5 ml-3 border-l border-border/50 space-y-0.5 pl-2">
+                      {children.map((c) => {
+                        const childIsActive = tab === c.key;
+                        return (
+                          <li key={c.key}>
+                            <button
+                              type="button"
+                              onClick={() => setTab(c.key)}
+                              className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                                childIsActive ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+                              }`}
+                            >
+                              <span className="flex-1 text-left">{c.label}</span>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
                 </li>
               );
             })}
@@ -151,7 +180,7 @@ export default function SettingsPage() {
           {tab === "users" && isAdmin && <UsersPanel />}
           {tab === "backup" && isAdmin && <BackupPanel />}
           {tab === "desktop" && isAdmin && <DesktopInstallerPanel />}
-          {tab === "templates" && isAdmin && <TemplatesPanel />}
+          {tab === "invoice-layout" && isAdmin && <InvoiceLayoutPanel />}
           {tab === "statement-layout" && isAdmin && <StatementLayoutPanel />}
           {tab === "correspondence-layout" && isAdmin && <CorrespondenceLayoutPanel />}
           {tab === "mobile" && isAdmin && <MobileBuildPanel />}
