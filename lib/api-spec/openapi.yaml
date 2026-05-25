@@ -585,6 +585,48 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/IteroZipBatchImportResult"
+  /cases/barcode/{code}:
+    get:
+      operationId: getCaseByBarcode
+      tags: [cases]
+      summary: Find a case by its pan barcode
+      description: |
+        Returns the single case whose `casePanBarcode` exactly matches the
+        given code within the specified lab, or 404 if none exists. The
+        caller must be an active member of the lab. Designed for physical
+        barcode scanner workflows that need a precise one-to-one lookup.
+      parameters:
+        - in: path
+          name: code
+          required: true
+          schema: { type: string }
+          description: The exact pan barcode value to look up.
+        - in: query
+          name: labOrganizationId
+          required: true
+          schema: { type: string }
+          description: The lab the barcode belongs to.
+      responses:
+        "200":
+          description: Matching case
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      case:
+                        type: object
+                        description: The matching case row (Drizzle shape)
+        "400":
+          description: Missing labOrganizationId or code
+        "403":
+          description: Caller is not a member of the lab
+        "404":
+          description: No case found with that barcode
   /cases/itero-import-history:
     get:
       operationId: getIteroImportHistory

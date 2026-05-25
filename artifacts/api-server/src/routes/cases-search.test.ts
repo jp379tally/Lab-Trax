@@ -269,6 +269,79 @@ maybe("Cases search and tenant isolation (db integration)", () => {
     await db.delete(cases).where(inArray(cases.id, [barcodeCase, decoyCase]));
   });
 
+  // ── barcode lookup ────────────────────────────────────────────────────────
+
+  it("GET /api/cases/barcode/:code: returns the matching case (happy path)", async () => {
+    const barcode = `BAR${randomBytes(4).toString("hex").toUpperCase()}`;
+    const caseId = await insertCase({ caseNumber: rid("BCD"), panBarcode: barcode });
+
+    const r = await request(appMod.default)
+      .get(`/api/cases/barcode/${barcode}`)
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({ labOrganizationId: labOrgId });
+
+    expect(r.status).toBe(200);
+    expect(r.body.data.case.id).toBe(caseId);
+    expect(r.body.data.case.casePanBarcode).toBe(barcode);
+
+    const { db, cases } = dbMod as any;
+    await db.delete(cases).where(eq(cases.id, caseId));
+  });
+
+  it("GET /api/cases/barcode/:code: returns 404 when no case has that barcode", async () => {
+    const ghost = `GHOST${randomBytes(4).toString("hex").toUpperCase()}`;
+
+    const r = await request(appMod.default)
+      .get(`/api/cases/barcode/${ghost}`)
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({ labOrganizationId: labOrgId });
+
+    expect(r.status).toBe(404);
+  });
+
+  it("GET /api/cases/barcode/:code: does not return a case from a different lab", async () => {
+    const barcode = `XLAB${randomBytes(4).toString("hex").toUpperCase()}`;
+    const otherCaseId = await insertCase({
+      caseNumber: rid("XLABB"),
+      labId: otherLabOrgId,
+      practiceId: otherProviderOrgId,
+      panBarcode: barcode,
+    });
+
+    const r = await request(appMod.default)
+      .get(`/api/cases/barcode/${barcode}`)
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({ labOrganizationId: labOrgId });
+
+    expect(r.status).toBe(404);
+
+    const { db, cases } = dbMod as any;
+    await db.delete(cases).where(eq(cases.id, otherCaseId));
+  });
+
+  it("GET /api/cases/barcode/:code: non-member gets 403", async () => {
+    const barcode = `NMB${randomBytes(4).toString("hex").toUpperCase()}`;
+    const caseId = await insertCase({ caseNumber: rid("NMB"), panBarcode: barcode });
+
+    const r = await request(appMod.default)
+      .get(`/api/cases/barcode/${barcode}`)
+      .set("Authorization", `Bearer ${tokens.outsider}`)
+      .query({ labOrganizationId: labOrgId });
+
+    expect(r.status).toBe(403);
+
+    const { db, cases } = dbMod as any;
+    await db.delete(cases).where(eq(cases.id, caseId));
+  });
+
+  it("GET /api/cases/barcode/:code: missing labOrganizationId returns 400", async () => {
+    const r = await request(appMod.default)
+      .get("/api/cases/barcode/SOMEBARCODE")
+      .set("Authorization", `Bearer ${tokens.admin}`);
+
+    expect(r.status).toBe(400);
+  });
+
   // ── quick-search ──────────────────────────────────────────────────────────
 
   it("GET /api/cases/quick-search: filters by patient last name prefix", async () => {

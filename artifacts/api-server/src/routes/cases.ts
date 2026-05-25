@@ -1740,6 +1740,36 @@ router.get(
   }),
 );
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /cases/barcode/:code
+//
+// Precise barcode lookup: returns the single case whose casePanBarcode equals
+// the given code for the specified lab, or 404 if none exists.
+// Requires lab membership. Intended for physical barcode scanner workflows.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get(
+  "/barcode/:code",
+  asyncHandler(async (req, res) => {
+    const code = String(req.params["code"] ?? "").trim();
+    const labOrganizationId = String(req.query["labOrganizationId"] ?? "").trim();
+    if (!labOrganizationId) throw new HttpError(400, "labOrganizationId is required.");
+    if (!code) throw new HttpError(400, "Barcode code is required.");
+
+    await requireMembership((req as any).auth.userId, labOrganizationId);
+
+    const found = await db.query.cases.findFirst({
+      where: and(
+        eq(cases.labOrganizationId, labOrganizationId),
+        eq(cases.casePanBarcode, code),
+        notDeleted(cases),
+      ),
+    });
+
+    if (!found) throw new HttpError(404, "No case found with that barcode.");
+    return ok(res, { case: found });
+  }),
+);
+
 // GET /cases/itero-import-history
 //
 // Returns iTero batch-import sessions for a lab (newest first). Each session
