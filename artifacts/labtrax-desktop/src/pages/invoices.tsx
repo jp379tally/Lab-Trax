@@ -1591,29 +1591,35 @@ export function InvoiceEditor({
                 className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
               />
             </div>
-            {availablePresets.length > 0 && (
+            {(availablePresets.length > 0 || layoutPresetId != null) && (
               <div>
                 <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
                   Layout preset
                 </label>
-                <select
-                  value={layoutPresetId ?? ""}
-                  onChange={(e) => setLayoutPresetId(e.target.value || null)}
-                  className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
-                >
-                  <option value="">Lab default</option>
-                  {availablePresets.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-                {layoutPresetId != null &&
-                  !availablePresets.some((p) => p.id === layoutPresetId) && (
-                    <p className="mt-1 text-[10px] text-muted-foreground">
-                      Previously selected preset was deleted — using lab default.
-                    </p>
-                  )}
+                {(() => {
+                  const matchedPreset =
+                    layoutPresetId != null
+                      ? availablePresets.find((p) => p.id === layoutPresetId)
+                      : undefined;
+                  const presetsFetched =
+                    !presetsQuery.isLoading && !presetsQuery.isError;
+                  const isDeleted =
+                    layoutPresetId != null &&
+                    presetsFetched &&
+                    matchedPreset == null;
+                  const displayValue = isDeleted
+                    ? "Deleted preset (using lab default)"
+                    : (matchedPreset?.name ?? "Lab default");
+                  return (
+                    <input
+                      type="text"
+                      value={displayValue}
+                      disabled
+                      readOnly
+                      className="w-full h-9 px-2.5 rounded-md bg-secondary/40 border border-input text-sm text-muted-foreground cursor-not-allowed"
+                    />
+                  );
+                })()}
               </div>
             )}
           </section>
