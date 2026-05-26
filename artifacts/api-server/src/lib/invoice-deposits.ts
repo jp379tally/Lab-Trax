@@ -127,6 +127,6 @@ export async function ensureInvoiceDeposit(
       { err, invoiceId: invoice.id },
       "Failed to create invoice deposit"
     );
-    throw err;
+    return { created: false, transactionId: null, reason: "error" };
   }
 }
