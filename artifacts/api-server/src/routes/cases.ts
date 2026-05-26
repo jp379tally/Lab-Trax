@@ -1991,6 +1991,28 @@ router.get(
           ),
         ),
     ]);
+
+    // Fetch events from all canonical remake children so the original case
+    // view can show a unified timeline with each child's entries labeled by
+    // case number (e.g. "26-22B" badge next to the event).
+    const remakeChildrenEvents: Array<{
+      caseId: string;
+      caseNumber: string;
+      events: (typeof events);
+    }> =
+      remakeChildrenRows.length > 0
+        ? await Promise.all(
+            remakeChildrenRows.map(async (child) => ({
+              caseId: child.id,
+              caseNumber: child.caseNumber,
+              events: await db.query.caseEvents.findMany({
+                where: eq(caseEvents.caseId, child.id),
+                orderBy: [desc(caseEvents.occurredAt)],
+              }),
+            }))
+          )
+        : [];
+
     let remakeOriginal: {
       id: string;
       caseNumber: string;
@@ -2097,6 +2119,7 @@ router.get(
       attachments: visibleAttachmentsFor(enrichedAttachments, isLabMember),
       events,
       originalCaseEvents,
+      remakeChildrenEvents,
       locations,
       remakeOriginal,
       remakeChildren,

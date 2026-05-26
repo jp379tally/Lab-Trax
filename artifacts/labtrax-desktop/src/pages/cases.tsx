@@ -1657,6 +1657,8 @@ type DetailedCase = LabCase & {
   events: CaseEvent[];
   /** Events from the original case when this case is a remake. */
   originalCaseEvents?: CaseEvent[];
+  /** Events from each canonical remake child, so viewing the original case shows a unified timeline. */
+  remakeChildrenEvents?: Array<{ caseId: string; caseNumber: string; events: CaseEvent[] }>;
   attachments: CaseAttachment[];
   viewerIsLabMember?: boolean;
   viewerCanManageAttachments?: boolean;
@@ -2664,7 +2666,7 @@ export function CaseDrawer({
     { id: "notes", label: "Notes", count: noteCount },
     { id: "files", label: "Files", count: fileCount },
     { id: "invoice", label: "Invoice" },
-    { id: "history", label: "History", count: (data?.events?.length ?? 0) + (data?.originalCaseEvents?.length ?? 0) || undefined },
+    { id: "history", label: "History", count: (data?.events?.length ?? 0) + (data?.originalCaseEvents?.length ?? 0) + (data?.remakeChildrenEvents?.reduce((s, rc) => s + rc.events.length, 0) ?? 0) || undefined },
   ];
 
   return (
@@ -4152,6 +4154,7 @@ export function CaseDrawer({
                     printCaseHistory(data ?? labCase, [
                       ...(data?.originalCaseEvents ?? []),
                       ...(data?.events ?? []),
+                      ...(data?.remakeChildrenEvents?.flatMap((rc) => rc.events) ?? []),
                     ])
                   }
                   className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
@@ -4162,13 +4165,13 @@ export function CaseDrawer({
                 </button>
               </div>
               {isLoading && <div className="text-sm text-muted-foreground">Loading…</div>}
-              {!isLoading && (data?.events?.length ?? 0) === 0 && (data?.originalCaseEvents?.length ?? 0) === 0 && (
+              {!isLoading && (data?.events?.length ?? 0) === 0 && (data?.originalCaseEvents?.length ?? 0) === 0 && (data?.remakeChildrenEvents?.every((rc) => rc.events.length === 0) ?? true) && (
                 <div className="text-sm text-muted-foreground">No activity logged yet.</div>
               )}
               {(() => {
                 const hasOriginalEvents = (data?.originalCaseEvents?.length ?? 0) > 0;
 
-                type TaggedEvent = CaseEvent & { _source: "original" | "remake" };
+                type TaggedEvent = CaseEvent & { _source: "original" | "remake" | "child"; _sourceCaseNumber?: string };
 
                 const sortByTime = (evts: CaseEvent[]): CaseEvent[] =>
                   [...evts].sort((a, b) => {
@@ -4183,8 +4186,14 @@ export function CaseDrawer({
                 const remakeEvents: TaggedEvent[] = sortByTime(data?.events ?? []).map(
                   (e) => ({ ...e, _source: "remake" as const }),
                 );
+                const childEvents: TaggedEvent[] = (data?.remakeChildrenEvents ?? []).flatMap((rc) =>
+                  rc.events.map((e) => ({ ...e, _source: "child" as const, _sourceCaseNumber: rc.caseNumber }))
+                );
 
-                const allEvents: TaggedEvent[] = [...originalEvents, ...remakeEvents];
+                // Own events and child events are interleaved chronologically so notes
+                // from a remake appear in context alongside the original case's activity.
+                const ownAndChildSorted = sortByTime([...remakeEvents, ...childEvents]) as TaggedEvent[];
+                const allEvents: TaggedEvent[] = [...originalEvents, ...ownAndChildSorted];
 
                 return (
                   <div>
@@ -4216,7 +4225,7 @@ export function CaseDrawer({
 
                       const isFirstRemake =
                         hasOriginalEvents &&
-                        e._source === "remake" &&
+                        (e._source === "remake" || e._source === "child") &&
                         (idx === 0 || allEvents[idx - 1]?._source === "original");
 
                       return (
@@ -4259,6 +4268,11 @@ export function CaseDrawer({
                                   {e._source === "original" && (
                                     <span className="inline-flex items-center rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 ring-1 ring-inset ring-slate-200">
                                       {data?.remakeOriginal?.caseNumber ?? "Original"}
+                                    </span>
+                                  )}
+                                  {e._source === "child" && e._sourceCaseNumber && (
+                                    <span className="inline-flex items-center rounded-full bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 ring-1 ring-inset ring-blue-200">
+                                      {e._sourceCaseNumber}
                                     </span>
                                   )}
                                 </div>
