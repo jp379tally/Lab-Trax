@@ -1754,6 +1754,9 @@ export async function registerRoutes(): Promise<IRouter> {
               (dc as any).remakeCharged === null || (dc as any).remakeCharged === undefined
                 ? null
                 : !!(dc as any).remakeCharged,
+            expectedDeliveryDate: dc.expectedDeliveryDate
+              ? new Date(dc.expectedDeliveryDate).toISOString()
+              : null,
             _sourceTable: "cases",
           };
         });

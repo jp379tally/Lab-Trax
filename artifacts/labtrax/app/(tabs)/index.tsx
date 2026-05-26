@@ -43,6 +43,7 @@ import Colors from "@/constants/colors";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { getStationInfo, STATIONS, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, formatAcctNum, formatInvNum, formatPhone, cleanDoctorDisplay, LabCase, ProviderContact } from "@/lib/data";
 import { LabFileDropZone } from "@/components/LabFileDropZone";
+import { CaseProgressBar } from "@/components/CaseProgressBar";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { apiRequest, getApiUrl, getAccessToken } from "@/lib/query-client";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -7742,13 +7743,22 @@ function ProviderDashboard() {
               >
                 <View style={[provStyles.statusDot, { backgroundColor: getStationInfo(c.status, customStationLabels).color }]} />
                 <View style={{ flex: 1 }}>
-                  <Text style={provStyles.caseName}>{c.patientName}</Text>
-                  <Text style={provStyles.caseSub}>{c.caseType} · {(c as any).toothNumbers?.join(", ") || "N/A"}</Text>
-                  <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.tint, marginTop: 2 }}>{myLabName}</Text>
-                </View>
-                <View style={{ alignItems: "flex-end" }}>
-                  <Text style={[provStyles.caseStatus, { color: getStationInfo(c.status, customStationLabels).color }]}>{getStationInfo(c.status, customStationLabels).label}</Text>
-                  {c.dueDate && <Text style={provStyles.caseDue}>Due: {c.dueDate}</Text>}
+                  <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" }}>
+                    <View style={{ flex: 1, marginRight: 8 }}>
+                      <Text style={provStyles.caseName} numberOfLines={1}>{c.patientName}</Text>
+                      <Text style={provStyles.caseSub} numberOfLines={1}>{c.caseType} · {(c as any).toothNumbers?.join(", ") || "N/A"}</Text>
+                      <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.tint, marginTop: 2 }} numberOfLines={1}>{myLabName}</Text>
+                    </View>
+                    <View style={{ alignItems: "flex-end" }}>
+                      <Text style={[provStyles.caseStatus, { color: getStationInfo(c.status, customStationLabels).color }]}>{getStationInfo(c.status, customStationLabels).label}</Text>
+                      {c.dueDate && <Text style={provStyles.caseDue}>Due: {c.dueDate}</Text>}
+                    </View>
+                  </View>
+                  <CaseProgressBar
+                    status={c.status}
+                    dueDate={c.dueDate}
+                    expectedDeliveryDate={(c as any).expectedDeliveryDate}
+                  />
                 </View>
               </Pressable>
             ))
@@ -7766,11 +7776,20 @@ function ProviderDashboard() {
               >
                 <View style={[provStyles.statusDot, { backgroundColor: Colors.light.success }]} />
                 <View style={{ flex: 1 }}>
-                  <Text style={provStyles.caseName}>{c.patientName}</Text>
-                  <Text style={provStyles.caseSub}>{c.caseType} · {(c as any).toothNumbers?.join(", ") || "N/A"}</Text>
-                  <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.tint, marginTop: 2 }}>{myLabName}</Text>
+                  <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" }}>
+                    <View style={{ flex: 1, marginRight: 8 }}>
+                      <Text style={provStyles.caseName} numberOfLines={1}>{c.patientName}</Text>
+                      <Text style={provStyles.caseSub} numberOfLines={1}>{c.caseType} · {(c as any).toothNumbers?.join(", ") || "N/A"}</Text>
+                      <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.tint, marginTop: 2 }} numberOfLines={1}>{myLabName}</Text>
+                    </View>
+                    <Ionicons name="checkmark-circle" size={20} color={Colors.light.success} />
+                  </View>
+                  <CaseProgressBar
+                    status={c.status}
+                    dueDate={c.dueDate}
+                    expectedDeliveryDate={(c as any).expectedDeliveryDate}
+                  />
                 </View>
-                <Ionicons name="checkmark-circle" size={20} color={Colors.light.success} />
               </Pressable>
             ))}
           </View>

@@ -123,6 +123,7 @@ export interface LabCase {
   remakeOfCaseId?: string;
   assignedBarcode?: string;
   exocadWebviewUrl?: string;
+  expectedDeliveryDate?: string | null;
   restorations?: Array<{
     id?: string;
     toothNumber?: string | null;
