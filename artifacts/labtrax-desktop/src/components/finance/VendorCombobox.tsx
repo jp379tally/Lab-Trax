@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, Loader2, Plus, X } from "lucide-react";
+import { ChevronDown, GitMerge, Loader2, Plus, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import { MergePayeeDialog } from "@/components/finance/MergePayeeDialog";
 
 export type VendorType = "vendor" | "employee" | "item";
 
@@ -28,7 +29,8 @@ export const TYPE_LABEL: Record<VendorType, string> = {
 
 export const TYPE_BADGE_CLASS: Record<VendorType, string> = {
   vendor: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
-  employee: "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300",
+  employee:
+    "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300",
   item: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
 };
 
@@ -48,6 +50,7 @@ interface Props {
   value: string;
   onChange: (value: string) => void;
   onChangeId?: (id: string | null) => void;
+  onMerged?: () => void;
   className?: string;
   placeholder?: string;
   disabled?: boolean;
@@ -58,16 +61,19 @@ export function VendorCombobox({
   value,
   onChange,
   onChangeId,
+  onMerged,
   className = "",
   placeholder = "Payee",
   disabled = false,
 }: Props) {
   const vendorsQuery = useVendors(organizationId);
-  const activeVendors = (vendorsQuery.data ?? []).filter((v) => v.isActive);
+  const allVendors = vendorsQuery.data ?? [];
+  const activeVendors = allVendors.filter((v) => v.isActive);
 
   const [open, setOpen] = useState(false);
   const [inputVal, setInputVal] = useState(value);
   const [showQuickAdd, setShowQuickAdd] = useState(false);
+  const [mergingVendor, setMergingVendor] = useState<Vendor | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -88,6 +94,18 @@ export function VendorCombobox({
     (v) => v.name.toLowerCase() === trimmed.toLowerCase()
   );
   const showAddOption = trimmed.length > 0 && !hasExactMatch;
+
+  const duplicateNames = new Set(
+    [...allVendors
+      .reduce((acc, v) => {
+        const key = v.name.toLowerCase();
+        acc.set(key, (acc.get(key) ?? 0) + 1);
+        return acc;
+      }, new Map<string, number>())
+      .entries()]
+      .filter(([, count]) => count > 1)
+      .map(([name]) => name)
+  );
 
   function select(vendor: Vendor) {
     setInputVal(vendor.name);
@@ -125,31 +143,54 @@ export function VendorCombobox({
   }
 
   function renderItems(items: Vendor[]) {
-    return items.map((v) => (
-      <li key={v.id}>
-        <button
-          type="button"
-          tabIndex={0}
-          className="w-full text-left px-3 py-1.5 hover:bg-secondary flex items-center gap-2 min-w-0"
-          onMouseDown={(e) => {
-            e.preventDefault();
-            select(v);
-          }}
-        >
-          <span
-            className={`shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full ${TYPE_BADGE_CLASS[v.vendorType]}`}
-          >
-            {TYPE_LABEL[v.vendorType]}
-          </span>
-          <span className="font-medium truncate">{v.name}</span>
-          {(v.city || v.address) && (
-            <span className="ml-1 text-xs text-muted-foreground truncate hidden sm:block">
-              {v.city || v.address}
-            </span>
-          )}
-        </button>
-      </li>
-    ));
+    return items.map((v) => {
+      const isDuplicate = duplicateNames.has(v.name.toLowerCase());
+      return (
+        <li key={v.id}>
+          <div className="flex items-center min-w-0 group/vendor-item">
+            <button
+              type="button"
+              tabIndex={0}
+              className="flex-1 min-w-0 text-left px-3 py-1.5 hover:bg-secondary flex items-center gap-2"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                select(v);
+              }}
+            >
+              <span
+                className={`shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full ${TYPE_BADGE_CLASS[v.vendorType]}`}
+              >
+                {TYPE_LABEL[v.vendorType]}
+              </span>
+              <span className="font-medium truncate">{v.name}</span>
+              {(v.city || v.address) && (
+                <span className="ml-1 text-xs text-muted-foreground truncate hidden sm:block">
+                  {v.city || v.address}
+                </span>
+              )}
+            </button>
+            {isDuplicate && (
+              <button
+                type="button"
+                tabIndex={0}
+                title="Merge duplicate payee…"
+                aria-label={`Merge duplicate: ${v.name}`}
+                className="shrink-0 mr-1.5 h-6 px-1.5 rounded text-[10px] font-medium text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-900/40 hover:bg-amber-200 dark:hover:bg-amber-800/60 inline-flex items-center gap-1 opacity-0 group-hover/vendor-item:opacity-100 focus:opacity-100 transition-opacity"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setOpen(false);
+                  setMergingVendor(v);
+                }}
+              >
+                <GitMerge size={10} />
+                Merge
+              </button>
+            )}
+          </div>
+        </li>
+      );
+    });
   }
 
   function renderGrouped() {
@@ -202,7 +243,8 @@ export function VendorCombobox({
         )}
         {dropdownVisible && (
           <ul className="absolute z-50 left-0 top-[calc(100%+2px)] w-full max-h-64 overflow-y-auto bg-card border border-border rounded-md shadow-lg text-sm py-1">
-            {filtered.length > 0 && (isGrouped ? renderGrouped() : renderItems(filtered))}
+            {filtered.length > 0 &&
+              (isGrouped ? renderGrouped() : renderItems(filtered))}
             {showAddOption && (
               <li className="border-t border-border mt-1 pt-1">
                 <button
@@ -230,6 +272,21 @@ export function VendorCombobox({
           initialName={trimmed}
           onClose={() => setShowQuickAdd(false)}
           onSaved={handleQuickAddSaved}
+        />
+      )}
+
+      {mergingVendor && (
+        <MergePayeeDialog
+          source={mergingVendor}
+          allVendors={allVendors.filter((v) => v.id !== mergingVendor.id)}
+          onClose={() => setMergingVendor(null)}
+          onMerged={() => {
+            setMergingVendor(null);
+            setInputVal("");
+            onChange("");
+            onChangeId?.(null);
+            onMerged?.();
+          }}
         />
       )}
     </>
@@ -323,7 +380,9 @@ function QuickAddVendorModal({
             </select>
           </div>
           <div>
-            <label className="block text-xs font-medium mb-1">Phone (optional)</label>
+            <label className="block text-xs font-medium mb-1">
+              Phone (optional)
+            </label>
             <input
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
@@ -332,7 +391,9 @@ function QuickAddVendorModal({
             />
           </div>
           <div>
-            <label className="block text-xs font-medium mb-1">Email (optional)</label>
+            <label className="block text-xs font-medium mb-1">
+              Email (optional)
+            </label>
             <input
               type="email"
               value={email}
@@ -354,7 +415,9 @@ function QuickAddVendorModal({
               disabled={!name.trim() || createMut.isPending}
               className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
             >
-              {createMut.isPending && <Loader2 size={13} className="animate-spin" />}
+              {createMut.isPending && (
+                <Loader2 size={13} className="animate-spin" />
+              )}
               <Plus size={14} />
               Add to list
             </button>

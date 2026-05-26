@@ -701,6 +701,7 @@ function MakeRecurringDialog({
   onComplete: () => void;
 }) {
   const isEdit = !!editRule;
+  const qc = useQueryClient();
 
   const debit = Number(source.debitAmount);
   const credit = Number(source.creditAmount);
@@ -849,6 +850,7 @@ function MakeRecurringDialog({
                   setVendorId(id);
                   setPayeeUserEdited(!id);
                 }}
+                onMerged={() => qc.invalidateQueries({ queryKey: ["finance"] })}
                 className={`${inputCls} w-full`}
               />
             </div>
@@ -1327,6 +1329,7 @@ function BlankRow({
             value={payee}
             onChange={setPayee}
             onChangeId={setVendorId}
+            onMerged={() => qc.invalidateQueries({ queryKey: ["finance"] })}
             placeholder="Payee"
             disabled={savedOnce}
             className={inputCls}
@@ -1901,6 +1904,7 @@ function TxnEditor({
               value={payee}
               onChange={setPayee}
               onChangeId={setVendorId}
+              onMerged={() => qc.invalidateQueries({ queryKey: ["finance"] })}
               className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
             />
           </Field>
