@@ -825,7 +825,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                   ))}
                   {editMode && (
                     <Pressable
-                      onPress={() => { setSubItemParentIdx(idx); resetItemForm(); setSubItemParentIdx(idx); setShowAddItem(true); }}
+                      onPress={() => { resetItemForm(); setSubItemParentIdx(idx); setShowAddItem(true); }}
                       style={{ flexDirection: "row", alignItems: "center", paddingLeft: 24, paddingVertical: 5, backgroundColor: "#F8FAFC", borderTopWidth: 1, borderTopColor: "#E5E7EB" }}
                     >
                       <Ionicons name="add-circle-outline" size={14} color="#2563EB" />
