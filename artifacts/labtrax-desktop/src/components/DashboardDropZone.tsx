@@ -2072,7 +2072,7 @@ export function DashboardDropZone() {
           </div>
           <div className="text-center">
             <p className="text-sm font-medium">
-              Drop a prescription or file here
+              Rx Drop Zone
             </p>
             <p className="text-xs text-muted-foreground mt-0.5 inline-flex items-center gap-1">
               <Sparkles size={11} className="text-primary" />
