@@ -1,4 +1,8 @@
+import fs from "node:fs";
+import path from "node:path";
+import { randomBytes } from "node:crypto";
 import { Router } from "express";
+import multer from "multer";
 import { and, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
@@ -15,6 +19,47 @@ import { fanOutMessage } from "../lib/messenger-ws";
 
 const router = Router();
 router.use(requireAuth);
+
+const messengerMediaDir = path.resolve(process.cwd(), "uploads", "messenger-media");
+
+const messengerMediaStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    fs.mkdirSync(messengerMediaDir, { recursive: true });
+    cb(null, messengerMediaDir);
+  },
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname || "") || ".bin";
+    const safeBase = path
+      .basename(file.originalname || "file", ext)
+      .replace(/[^a-zA-Z0-9\-_]+/g, "-")
+      .slice(0, 60) || "file";
+    cb(null, `${Date.now()}-${randomBytes(4).toString("hex")}-${safeBase}${ext}`);
+  },
+});
+
+const ALLOWED_MIME_TYPES = new Set([
+  "image/jpeg", "image/png", "image/gif", "image/webp", "image/heic",
+  "image/bmp", "image/tiff", "image/svg+xml",
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "text/plain",
+]);
+
+const messengerMediaUpload = multer({
+  storage: messengerMediaStorage,
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (
+      ALLOWED_MIME_TYPES.has(file.mimetype) ||
+      file.mimetype.startsWith("image/")
+    ) {
+      cb(null, true);
+    } else {
+      cb(new Error(`File type "${file.mimetype}" is not allowed. Accepted types: images, PDF, Word documents, and plain text.`));
+    }
+  },
+});
 
 function getInitials(firstName?: string | null, lastName?: string | null, username?: string | null) {
   const f = firstName?.[0] ?? username?.[0] ?? "?";
@@ -98,6 +143,7 @@ router.get(
             body: messages.body,
             senderId: messages.senderId,
             createdAt: messages.createdAt,
+            attachmentName: messages.attachmentName,
           })
           .from(messages)
           .where(
@@ -163,7 +209,7 @@ router.get(
           lastMessage: lastMsg
             ? {
                 id: lastMsg.id,
-                body: lastMsg.body,
+                body: lastMsg.body || (lastMsg.attachmentName ? `📎 ${lastMsg.attachmentName}` : ""),
                 senderId: lastMsg.senderId,
                 createdAt: lastMsg.createdAt,
               }
@@ -285,6 +331,9 @@ router.get(
         conversationId: messages.conversationId,
         senderId: messages.senderId,
         body: messages.body,
+        attachmentUrl: messages.attachmentUrl,
+        attachmentName: messages.attachmentName,
+        attachmentMimeType: messages.attachmentMimeType,
         createdAt: messages.createdAt,
         deletedAt: messages.deletedAt,
         senderUsername: users.username,
@@ -315,6 +364,9 @@ router.get(
         conversationId: r.conversationId,
         senderId: r.senderId,
         body: r.body,
+        attachmentUrl: r.attachmentUrl ?? undefined,
+        attachmentName: r.attachmentName ?? undefined,
+        attachmentMimeType: r.attachmentMimeType ?? undefined,
         createdAt: r.createdAt,
         sender: {
           id: r.senderId,
@@ -378,7 +430,7 @@ router.post(
   })
 );
 
-const sendMessageSchema = z.object({ body: z.string().min(1).max(4000) });
+const sendMessageSchema = z.object({ body: z.string().max(4000) });
 
 router.post(
   "/conversations/:id/messages",
@@ -399,6 +451,7 @@ router.post(
     if (!participation[0]) throw new HttpError(403, "Not a participant.");
 
     const { body } = sendMessageSchema.parse(req.body);
+    if (!body.trim()) throw new HttpError(400, "Message body cannot be empty.");
 
     const [msg] = await db
       .insert(messages)
@@ -468,6 +521,165 @@ router.post(
       },
       201
     );
+  })
+);
+
+router.post(
+  "/conversations/:id/attachments",
+  messengerMediaUpload.single("file"),
+  asyncHandler(async (req, res) => {
+    const myUserId = (req as any).auth.userId as string;
+    const convId = req.params.id;
+
+    const participation = await db
+      .select({ userId: conversationParticipants.userId })
+      .from(conversationParticipants)
+      .where(
+        and(
+          eq(conversationParticipants.conversationId, convId),
+          eq(conversationParticipants.userId, myUserId)
+        )
+      )
+      .limit(1);
+    if (!participation[0]) throw new HttpError(403, "Not a participant.");
+
+    const file = req.file;
+    if (!file) throw new HttpError(400, "No file uploaded.");
+
+    const attachmentUrl = `/api/messenger/media/${encodeURIComponent(file.filename)}`;
+    const attachmentName = file.originalname || file.filename;
+    const attachmentMimeType = file.mimetype;
+    const caption = typeof req.body?.caption === "string" ? req.body.caption.trim().slice(0, 500) : "";
+
+    const [msg] = await db
+      .insert(messages)
+      .values({
+        conversationId: convId,
+        senderId: myUserId,
+        body: caption,
+        attachmentUrl,
+        attachmentName,
+        attachmentMimeType,
+      })
+      .returning();
+
+    await db
+      .update(conversations)
+      .set({ updatedAt: new Date() })
+      .where(eq(conversations.id, convId));
+
+    const sender = await db
+      .select({
+        username: users.username,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        initials: users.initials,
+      })
+      .from(users)
+      .where(eq(users.id, myUserId))
+      .limit(1);
+
+    const participantIds = await db
+      .select({ userId: conversationParticipants.userId })
+      .from(conversationParticipants)
+      .where(eq(conversationParticipants.conversationId, convId));
+
+    const s = sender[0];
+    const senderName = s
+      ? getUserDisplayName({
+          firstName: s.firstName,
+          lastName: s.lastName,
+          username: s.username,
+        })
+      : "Unknown";
+
+    fanOutMessage(
+      participantIds.map((p) => p.userId),
+      {
+        id: msg.id,
+        conversationId: convId,
+        senderId: myUserId,
+        senderName,
+        body: msg.body,
+        attachmentUrl,
+        attachmentName,
+        attachmentMimeType,
+        createdAt: msg.createdAt.toISOString(),
+      }
+    );
+
+    return ok(
+      res,
+      {
+        id: msg.id,
+        conversationId: msg.conversationId,
+        senderId: msg.senderId,
+        body: msg.body,
+        attachmentUrl,
+        attachmentName,
+        attachmentMimeType,
+        createdAt: msg.createdAt,
+        sender: {
+          id: myUserId,
+          username: s?.username ?? "",
+          firstName: s?.firstName,
+          lastName: s?.lastName,
+          initials:
+            s?.initials ??
+            getInitials(s?.firstName, s?.lastName, s?.username ?? ""),
+          displayName: senderName,
+        },
+      },
+      201
+    );
+  })
+);
+
+router.get(
+  "/media/:filename",
+  asyncHandler(async (req, res) => {
+    const myUserId = (req as any).auth.userId as string;
+    const filename = req.params.filename;
+
+    if (!filename || filename.includes("..") || filename.includes("/")) {
+      throw new HttpError(400, "Invalid filename.");
+    }
+
+    const attachmentUrl = `/api/messenger/media/${encodeURIComponent(filename)}`;
+
+    const [msgRow] = await db
+      .select({ conversationId: messages.conversationId })
+      .from(messages)
+      .where(eq(messages.attachmentUrl, attachmentUrl))
+      .limit(1);
+
+    if (!msgRow) {
+      throw new HttpError(404, "File not found.");
+    }
+
+    const [participant] = await db
+      .select({ userId: conversationParticipants.userId })
+      .from(conversationParticipants)
+      .where(
+        and(
+          eq(conversationParticipants.conversationId, msgRow.conversationId),
+          eq(conversationParticipants.userId, myUserId)
+        )
+      )
+      .limit(1);
+
+    if (!participant) {
+      throw new HttpError(403, "Access denied.");
+    }
+
+    const filePath = path.join(messengerMediaDir, filename);
+    if (!fs.existsSync(filePath)) {
+      throw new HttpError(404, "File not found.");
+    }
+
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Content-Security-Policy", "default-src 'none'");
+    res.sendFile(filePath);
   })
 );
 

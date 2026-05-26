@@ -1909,6 +1909,9 @@ export const conversationParticipants = pgTable(
 /**
  * Individual chat messages inside a conversation.
  * deletedAt supports soft-delete (message withdrawn by sender).
+ * attachmentUrl/attachmentName/attachmentMimeType are set for file/image
+ * attachments uploaded via the messenger attachment endpoint; body may be
+ * an empty string when an attachment is the sole content of the message.
  */
 export const messages = pgTable(
   "messages",
@@ -1923,6 +1926,9 @@ export const messages = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     body: text("body").notNull(),
+    attachmentUrl: text("attachment_url"),
+    attachmentName: text("attachment_name"),
+    attachmentMimeType: text("attachment_mime_type"),
     createdAt: createdAt(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },

@@ -40,6 +40,9 @@ export interface ChatMessage {
   conversationId: string;
   senderId: string;
   body: string;
+  attachmentUrl?: string;
+  attachmentName?: string;
+  attachmentMimeType?: string;
   createdAt: string | Date;
   sender: {
     id: string;
@@ -129,6 +132,9 @@ export function MessengerProvider({ children }: { children: ReactNode }) {
         senderId: string;
         senderName: string;
         body: string;
+        attachmentUrl?: string;
+        attachmentName?: string;
+        attachmentMimeType?: string;
         createdAt: string;
       };
 
@@ -138,6 +144,9 @@ export function MessengerProvider({ children }: { children: ReactNode }) {
           conversationId: msg.conversationId,
           senderId: msg.senderId,
           body: msg.body,
+          attachmentUrl: msg.attachmentUrl,
+          attachmentName: msg.attachmentName,
+          attachmentMimeType: msg.attachmentMimeType,
           createdAt: msg.createdAt,
           sender: {
             id: msg.senderId,
@@ -160,7 +169,7 @@ export function MessengerProvider({ children }: { children: ReactNode }) {
         const conv = { ...updated[idx]! };
         conv.lastMessage = {
           id: msg.id,
-          body: msg.body,
+          body: msg.body || (msg.attachmentName ? `📎 ${msg.attachmentName}` : ""),
           senderId: msg.senderId,
           createdAt: msg.createdAt,
         };

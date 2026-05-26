@@ -8,9 +8,9 @@ import {
   type KeyboardEvent,
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ChevronDown, Minus, Send, Smile, X } from "lucide-react";
+import { ChevronDown, Minus, Paperclip, Send, Smile, X } from "lucide-react";
 import { useMessenger, type ChatMessage } from "@/context/MessengerContext";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, getApiOrigin } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 
 interface Props {
@@ -54,6 +54,59 @@ function TypingDots() {
   );
 }
 
+function isImage(mimeType?: string, name?: string): boolean {
+  if (mimeType && mimeType.startsWith("image/")) return true;
+  if (name) {
+    const ext = name.split(".").pop()?.toLowerCase() ?? "";
+    return ["jpg", "jpeg", "png", "gif", "webp", "heic", "bmp", "svg"].includes(ext);
+  }
+  return false;
+}
+
+interface AttachmentBubbleProps {
+  attachmentUrl: string;
+  attachmentName?: string;
+  attachmentMimeType?: string;
+  isMe: boolean;
+}
+
+function AttachmentBubble({ attachmentUrl, attachmentName, attachmentMimeType, isMe }: AttachmentBubbleProps) {
+  const resolvedUrl = attachmentUrl.startsWith("http")
+    ? attachmentUrl
+    : `${getApiOrigin()}${attachmentUrl}`;
+  const image = isImage(attachmentMimeType, attachmentName);
+
+  if (image) {
+    return (
+      <a href={resolvedUrl} target="_blank" rel="noopener noreferrer" className="block">
+        <img
+          src={resolvedUrl}
+          alt={attachmentName ?? "image"}
+          className="max-w-full max-h-40 rounded-xl object-contain"
+          style={{ background: "rgba(0,0,0,0.2)" }}
+        />
+      </a>
+    );
+  }
+
+  return (
+    <a
+      href={resolvedUrl}
+      target="_blank"
+      rel="noopener noreferrer"
+      download={attachmentName}
+      className={`flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium transition-colors ${
+        isMe
+          ? "bg-blue-700 hover:bg-blue-600 text-white"
+          : "bg-white/20 hover:bg-white/30 text-white"
+      }`}
+    >
+      <Paperclip size={14} className="flex-shrink-0" />
+      <span className="truncate max-w-[160px]">{attachmentName ?? "Download file"}</span>
+    </a>
+  );
+}
+
 export function ChatPanel({ conversationId, minimized }: Props) {
   const { user } = useAuth();
   const {
@@ -83,7 +136,9 @@ export function ChatPanel({ conversationId, minimized }: Props) {
   const [body, setBody] = useState("");
   const [sending, setSending] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollParentRef = useRef<HTMLDivElement>(null);
   const userScrolledUp = useRef(false);
@@ -151,7 +206,11 @@ export function ChatPanel({ conversationId, minimized }: Props) {
       if (someoneTyping && index === flatItems.length) return 40;
       const item = flatItems[index];
       if (!item) return 40;
-      return item.kind === "day-header" ? 28 : 56;
+      if (item.kind === "day-header") return 28;
+      const msg = item.msg;
+      if (msg.attachmentUrl && isImage(msg.attachmentMimeType, msg.attachmentName)) return 170;
+      if (msg.attachmentUrl) return 60;
+      return 56;
     },
     overscan: 5,
   });
@@ -210,6 +269,33 @@ export function ChatPanel({ conversationId, minimized }: Props) {
       setBody(trimmed);
     } finally {
       setSending(false);
+    }
+  }
+
+  async function handleFileSelected(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+
+    setSending(true);
+    setUploadProgress(0);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const msg = await apiFetch<ChatMessage>(
+        `/messenger/conversations/${conversationId}/attachments`,
+        { method: "POST", body: formData }
+      );
+      setMessages((prev) =>
+        prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]
+      );
+    } catch {
+      // ignore upload errors silently; could add toast here
+    } finally {
+      setSending(false);
+      setUploadProgress(null);
     }
   }
 
@@ -432,18 +518,40 @@ export function ChatPanel({ conversationId, minimized }: Props) {
                 >
                   <div className="max-w-[80%]">
                     {isMe ? (
-                      <div
-                        className="px-3 py-1.5 rounded-2xl rounded-br-sm text-sm leading-snug break-words bg-blue-600 text-white"
-                      >
-                        {msg.body}
+                      <div className="flex flex-col items-end gap-1">
+                        {msg.attachmentUrl && (
+                          <AttachmentBubble
+                            attachmentUrl={msg.attachmentUrl}
+                            attachmentName={msg.attachmentName}
+                            attachmentMimeType={msg.attachmentMimeType}
+                            isMe={true}
+                          />
+                        )}
+                        {msg.body && (
+                          <div className="px-3 py-1.5 rounded-2xl rounded-br-sm text-sm leading-snug break-words bg-blue-600 text-white">
+                            {msg.body}
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div className="flex items-end gap-1.5">
                         <div className="w-6 h-6 rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-[9px] font-bold flex-shrink-0 mb-1">
                           {msg.sender.initials.slice(0, 2)}
                         </div>
-                        <div className="px-3 py-1.5 rounded-2xl rounded-bl-sm text-sm leading-snug break-words bg-white/15 text-white">
-                          {msg.body}
+                        <div className="flex flex-col gap-1">
+                          {msg.attachmentUrl && (
+                            <AttachmentBubble
+                              attachmentUrl={msg.attachmentUrl}
+                              attachmentName={msg.attachmentName}
+                              attachmentMimeType={msg.attachmentMimeType}
+                              isMe={false}
+                            />
+                          )}
+                          {msg.body && (
+                            <div className="px-3 py-1.5 rounded-2xl rounded-bl-sm text-sm leading-snug break-words bg-white/15 text-white">
+                              {msg.body}
+                            </div>
+                          )}
                         </div>
                       </div>
                     )}
@@ -465,6 +573,18 @@ export function ChatPanel({ conversationId, minimized }: Props) {
         )}
       </div>
 
+      {uploadProgress !== null && (
+        <div className="flex-shrink-0 px-3 py-1 bg-white/5">
+          <div className="h-1 rounded-full bg-white/10 overflow-hidden">
+            <div
+              className="h-full bg-blue-500 transition-all duration-200"
+              style={{ width: `${uploadProgress}%` }}
+            />
+          </div>
+          <div className="text-[10px] text-white/40 mt-0.5">Uploading…</div>
+        </div>
+      )}
+
       <div className="flex-shrink-0 px-2 py-2 border-t border-white/10 relative">
         {emojiOpen && (
           <div className="absolute bottom-full left-2 mb-1 bg-[#2a3447] border border-white/10 rounded-xl p-2 grid grid-cols-10 gap-0.5 shadow-2xl z-10">
@@ -480,6 +600,13 @@ export function ChatPanel({ conversationId, minimized }: Props) {
             ))}
           </div>
         )}
+        <input
+          ref={fileInputRef}
+          type="file"
+          className="hidden"
+          accept="image/*,.pdf,.doc,.docx,.txt"
+          onChange={handleFileSelected}
+        />
         <div className="flex items-end gap-1.5">
           <button
             type="button"
@@ -488,6 +615,15 @@ export function ChatPanel({ conversationId, minimized }: Props) {
             title="Emoji"
           >
             <Smile size={15} />
+          </button>
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={sending}
+            className="w-7 h-7 rounded-full hover:bg-white/15 flex items-center justify-center flex-shrink-0 mb-0.5 transition-colors text-white/60 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed"
+            title="Attach file or photo"
+          >
+            <Paperclip size={15} />
           </button>
           <textarea
             ref={textareaRef}

@@ -29,6 +29,9 @@ export interface ChatMessagePayload {
   senderId: string;
   senderName: string;
   body: string;
+  attachmentUrl?: string;
+  attachmentName?: string;
+  attachmentMimeType?: string;
   createdAt: string;
 }
 
