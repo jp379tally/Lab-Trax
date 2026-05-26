@@ -1213,12 +1213,33 @@ export function AppProvider({ children }: { children: ReactNode }) {
           : qty * rate;
       const meta = metaItems[idx];
       const description = String(it.description ?? "");
+      const metaSubItems = Array.isArray((meta as any)?.subItems) ? (meta as any).subItems as any[] : [];
+      const subItems: InvoiceLineItem[] = Array.isArray((it as any).subItems)
+        ? (it as any).subItems.map((sub: any, sidx: number) => {
+            const subQty = Math.max(0, Math.round(Number(sub.quantity ?? 0)));
+            const subRate = Number(sub.unitPrice ?? 0) || 0;
+            const subAmount =
+              sub.lineTotal !== null && sub.lineTotal !== undefined
+                ? Number(sub.lineTotal) || 0
+                : subQty * subRate;
+            const subDesc = String(sub.description ?? "");
+            const subMeta = metaSubItems[sidx];
+            return {
+              qty: subQty,
+              item: subMeta?.item || subDesc || "Item",
+              description: subMeta?.description ?? subDesc,
+              rate: subRate,
+              amount: subAmount,
+            };
+          })
+        : [];
       return {
         qty,
         item: meta?.item || description || "Item",
         description: meta?.description ?? description,
         rate,
         amount,
+        subItems: subItems.length ? subItems : undefined,
       };
     });
   }
@@ -1254,6 +1275,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       lineItems: (inv.lineItems || []).map((li) => ({
         item: li.item,
         description: li.description,
+        subItems: (li.subItems ?? []).map((sub) => ({
+          item: sub.item,
+          description: sub.description,
+        })),
       })),
     };
   }
@@ -2850,6 +2875,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
             quantity: Math.max(0, Math.round(Number(li.qty) || 0)),
             unitPrice: Number(li.rate) || 0,
             sortOrder: idx,
+            subItems: (li.subItems ?? []).map((sub, sidx) => ({
+              description:
+                (sub.description && sub.description.trim()) ||
+                sub.item ||
+                "Item",
+              quantity: Math.max(0, Math.round(Number(sub.qty) || 0)),
+              unitPrice: Number(sub.rate) || 0,
+              sortOrder: sidx,
+            })),
           }));
         }
         const metaTouchKeys = [

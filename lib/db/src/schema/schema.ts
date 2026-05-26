@@ -11,6 +11,7 @@ import {
   timestamp,
   uniqueIndex,
   varchar,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
@@ -972,6 +973,10 @@ export const invoiceLineItems = pgTable("invoice_line_items", {
   caseRestorationId: varchar("case_restoration_id").references(
     () => caseRestorations.id,
     { onDelete: "set null" }
+  ),
+  parentLineItemId: varchar("parent_line_item_id").references(
+    (): AnyPgColumn => invoiceLineItems.id,
+    { onDelete: "cascade" }
   ),
   toothNumber: integer("tooth_number"),
   toothLabel: varchar("tooth_label"),

@@ -193,6 +193,8 @@ export interface InvoiceLineItem {
   unitPrice: string | number;
   lineTotal: string | number;
   sortOrder: number;
+  parentLineItemId?: string | null;
+  subItems?: InvoiceLineItem[];
 }
 
 export interface InvoiceDisplayMetadata {
@@ -204,7 +206,11 @@ export interface InvoiceDisplayMetadata {
   caseType?: string | null;
   clientName?: string | null;
   credits?: number | null;
-  lineItems?: Array<{ item?: string | null; description?: string | null }> | null;
+  lineItems?: Array<{
+    item?: string | null;
+    description?: string | null;
+    subItems?: Array<{ item?: string | null; description?: string | null }> | null;
+  }> | null;
 }
 
 export interface Payment {

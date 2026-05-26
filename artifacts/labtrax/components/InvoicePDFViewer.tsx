@@ -109,6 +109,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
   const [newItemQty, setNewItemQty] = useState("1");
   const [newItemRate, setNewItemRate] = useState("");
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
+  const [subItemParentIdx, setSubItemParentIdx] = useState<number | null>(null);
   const [showItemDropdown, setShowItemDropdown] = useState(false);
   const [showDiscount, setShowDiscount] = useState(false);
   const [discountIdx, setDiscountIdx] = useState<number | null>(null);
@@ -166,7 +167,9 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
   );
 
   const displayItems = editMode ? editLineItems : invoice.lineItems;
-  const subtotal = displayItems.reduce((sum, li) => sum + li.amount, 0);
+  const subtotal = displayItems.reduce((sum, li) => {
+    return sum + li.amount + (li.subItems ?? []).reduce((s, sub) => s + sub.amount, 0);
+  }, 0);
   const credits = editMode ? editCredits : (invoice.credits || 0);
   const total = subtotal - credits;
 
@@ -226,7 +229,15 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
       amount: qty * rate,
     };
 
-    if (editingIdx !== null) {
+    if (subItemParentIdx !== null) {
+      setEditLineItems((prev) =>
+        prev.map((li, i) =>
+          i === subItemParentIdx
+            ? { ...li, subItems: [...(li.subItems ?? []), item] }
+            : li,
+        ),
+      );
+    } else if (editingIdx !== null) {
       const updated = [...editLineItems];
       updated[editingIdx] = item;
       setEditLineItems(updated);
@@ -238,9 +249,30 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
     resetItemForm();
   }
 
+  function handleRemoveSubItem(parentIdx: number, subIdx: number) {
+    Alert.alert("Remove Sub-item", `Remove this sub-item?`, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Remove",
+        style: "destructive",
+        onPress: () => {
+          setEditLineItems((prev) =>
+            prev.map((li, i) =>
+              i === parentIdx
+                ? { ...li, subItems: (li.subItems ?? []).filter((_, si) => si !== subIdx) }
+                : li,
+            ),
+          );
+          setHasChanges(true);
+        },
+      },
+    ]);
+  }
+
   function resetItemForm() {
     setShowAddItem(false);
     setEditingIdx(null);
+    setSubItemParentIdx(null);
     setNewItemName("");
     setNewItemDesc("");
     setNewItemQty("1");
@@ -305,7 +337,9 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
 
   function handleSaveAll() {
     if (!onSave || !invoice) return;
-    const newTotal = editLineItems.reduce((s, li) => s + li.amount, 0);
+    const newTotal = editLineItems.reduce((s, li) => {
+      return s + li.amount + (li.subItems ?? []).reduce((ss, sub) => ss + sub.amount, 0);
+    }, 0);
     onSave({
       ...invoice,
       lineItems: editLineItems,
@@ -323,7 +357,9 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
   function buildInvoiceHtml(): string {
     if (!invoice) return "";
     const items = invoice.lineItems || [];
-    const sub = items.reduce((s, li) => s + li.amount, 0);
+    const sub = items.reduce((s, li) => {
+      return s + li.amount + (li.subItems ?? []).reduce((ss, si) => ss + si.amount, 0);
+    }, 0);
     const cr = invoice.credits || 0;
     const tot = sub - cr;
     const esc = (v: unknown) =>
@@ -334,7 +370,8 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
         .replace(/"/g, "&quot;");
     const rows = items
       .map(
-        (li) => `
+        (li) => {
+          const parentRow = `
           <tr>
             <td style="padding:10px 8px;border-bottom:1px solid #E5E7EB;text-align:center;width:50px;">${esc(li.qty)}</td>
             <td style="padding:10px 8px;border-bottom:1px solid #E5E7EB;">
@@ -343,7 +380,19 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
             </td>
             <td style="padding:10px 8px;border-bottom:1px solid #E5E7EB;text-align:right;width:90px;color:#334155;">${formatCurrency(li.rate)}</td>
             <td style="padding:10px 8px;border-bottom:1px solid #E5E7EB;text-align:right;width:100px;font-weight:600;color:#0F172A;">${formatCurrency(li.amount)}</td>
-          </tr>`,
+          </tr>`;
+          const subRows = (li.subItems ?? []).map((sub) => `
+          <tr style="background:#F8FAFC;">
+            <td style="padding:6px 8px;border-bottom:1px solid #E5E7EB;text-align:center;width:50px;color:#64748B;font-size:11px;">${esc(sub.qty)}</td>
+            <td style="padding:6px 8px 6px 24px;border-bottom:1px solid #E5E7EB;">
+              <div style="font-size:11px;color:#334155;">↳ ${esc(sub.item)}</div>
+              ${sub.description && sub.description !== sub.item ? `<div style="font-size:10px;color:#64748B;margin-top:2px;">${esc(sub.description)}</div>` : ""}
+            </td>
+            <td style="padding:6px 8px;border-bottom:1px solid #E5E7EB;text-align:right;width:90px;color:#64748B;font-size:11px;">${formatCurrency(sub.rate)}</td>
+            <td style="padding:6px 8px;border-bottom:1px solid #E5E7EB;text-align:right;width:100px;color:#334155;font-size:11px;">${formatCurrency(sub.amount)}</td>
+          </tr>`).join("");
+          return parentRow + subRows;
+        },
       )
       .join("");
     const logoHtml = companyLogo
@@ -725,7 +774,8 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                 </View>
 
                 {displayItems.map((li, idx) => (
-                  <View key={idx} style={[s.tableRow, idx % 2 === 0 && s.tableRowAlt]}>
+                  <React.Fragment key={idx}>
+                  <View style={[s.tableRow, idx % 2 === 0 && s.tableRowAlt]}>
                     <View style={s.colItem2}>
                       <Text style={s.tableCellBold} numberOfLines={1}>
                         {li.toothNumber != null ? `#${li.toothNumber} ` : ""}{li.item}
@@ -751,6 +801,38 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                       </View>
                     )}
                   </View>
+                  {(li.subItems ?? []).map((sub, sidx) => (
+                    <View key={`sub-${sidx}`} style={{ flexDirection: "row", alignItems: "center", paddingVertical: 4, paddingLeft: 20, backgroundColor: "#F8FAFC", borderTopWidth: 1, borderTopColor: "#E5E7EB" }}>
+                      <View style={s.colItem2}>
+                        <Text style={[s.tableCell, { color: "#475569", fontSize: 11 }]} numberOfLines={1}>
+                          ↳ {sub.toothNumber != null ? `#${sub.toothNumber} ` : ""}{sub.item}
+                        </Text>
+                        {sub.description && sub.description !== sub.item ? (
+                          <Text style={[s.tableCellDesc, { fontSize: 10 }]} numberOfLines={1}>{sub.description}</Text>
+                        ) : null}
+                      </View>
+                      <Text style={[s.tableCell, s.colQty2, { color: "#64748B", fontSize: 11 }]}>{sub.qty}</Text>
+                      <Text style={[s.tableCell, s.colRate2, { color: "#64748B", fontSize: 11 }]}>{formatCurrency(sub.rate)}</Text>
+                      <Text style={[s.tableCell, s.colAmount2, { color: "#334155", fontSize: 11 }]}>{formatCurrency(sub.amount)}</Text>
+                      {editMode && (
+                        <View style={[s.rowActions, { width: 32 }]}>
+                          <Pressable onPress={() => handleRemoveSubItem(idx, sidx)} hitSlop={8}>
+                            <Ionicons name="trash" size={13} color="#EF4444" />
+                          </Pressable>
+                        </View>
+                      )}
+                    </View>
+                  ))}
+                  {editMode && (
+                    <Pressable
+                      onPress={() => { setSubItemParentIdx(idx); resetItemForm(); setSubItemParentIdx(idx); setShowAddItem(true); }}
+                      style={{ flexDirection: "row", alignItems: "center", paddingLeft: 24, paddingVertical: 5, backgroundColor: "#F8FAFC", borderTopWidth: 1, borderTopColor: "#E5E7EB" }}
+                    >
+                      <Ionicons name="add-circle-outline" size={14} color="#2563EB" />
+                      <Text style={{ fontSize: 11, color: "#2563EB", marginLeft: 4 }}>Add Sub-item</Text>
+                    </Pressable>
+                  )}
+                  </React.Fragment>
                 ))}
 
                 {editMode && (
@@ -867,7 +949,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
           <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={0}>
             <Pressable style={s.modalOverlay} onPress={resetItemForm}>
               <Pressable style={s.modalCard} onPress={(e) => { e.stopPropagation(); setShowItemDropdown(false); }}>
-                <Text style={s.modalTitle}>{editingIdx !== null ? "Edit Item" : "Add Item"}</Text>
+                <Text style={s.modalTitle}>{editingIdx !== null ? "Edit Item" : subItemParentIdx !== null ? "Add Sub-item" : "Add Item"}</Text>
 
                 <Text style={s.fieldLabel}>Item Name</Text>
                 <View>

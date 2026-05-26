@@ -649,6 +649,7 @@ export interface InvoiceLineItem {
   rate: number;
   amount: number;
   toothNumber?: number | null;
+  subItems?: InvoiceLineItem[];
 }
 
 export interface Invoice {

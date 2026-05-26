@@ -137,6 +137,7 @@ export interface InvoicePdfLineItem {
   quantity: number | string;
   unitPrice: number | string;
   lineTotal: number | string;
+  subItems?: InvoicePdfLineItem[];
 }
 
 export interface InvoicePdfOptions {
@@ -565,17 +566,34 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
   const it = boxes.items;
   const itemsStartY = Math.max(it.y, postNotesY);
   const pageWidth = doc.internal.pageSize.getWidth();
-  autoTable(doc, {
-    startY: itemsStartY,
-    head: [["Item", "Tooth #", "Description", "Qty", "Unit price", "Total"]],
-    body: opts.items.map((row) => [
+  const tableBody: string[][] = [];
+  const isSubItemRow: boolean[] = [];
+  for (const row of opts.items) {
+    tableBody.push([
       (row.item && String(row.item).trim()) || "—",
       row.toothLabel != null ? row.toothLabel : row.toothNumber != null ? String(row.toothNumber) : "—",
       row.description,
       String(row.quantity),
       fmtMoney(row.unitPrice as number | string),
       fmtMoney(row.lineTotal as number | string),
-    ]),
+    ]);
+    isSubItemRow.push(false);
+    for (const sub of (row.subItems ?? [])) {
+      tableBody.push([
+        (sub.item && String(sub.item).trim()) ? `↳ ${String(sub.item).trim()}` : "↳",
+        sub.toothNumber != null ? String(sub.toothNumber) : "—",
+        sub.description,
+        String(sub.quantity),
+        fmtMoney(sub.unitPrice as number | string),
+        fmtMoney(sub.lineTotal as number | string),
+      ]);
+      isSubItemRow.push(true);
+    }
+  }
+  autoTable(doc, {
+    startY: itemsStartY,
+    head: [["Item", "Tooth #", "Description", "Qty", "Unit price", "Total"]],
+    body: tableBody,
     styles: { fontSize: 9, cellPadding: 6 },
     headStyles: { fillColor: [40, 44, 52], textColor: 255 },
     columnStyles: {
@@ -586,6 +604,16 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
       5: { halign: "right", cellWidth: 76 },
     },
     margin: { left: it.x, right: pageWidth - (it.x + it.w) },
+    didParseCell: (data) => {
+      if (data.section === "body" && isSubItemRow[data.row.index]) {
+        data.cell.styles.textColor = [100, 100, 100];
+        data.cell.styles.fontSize = 8;
+        data.cell.styles.fillColor = [248, 250, 252];
+        if (data.column.index === 0) {
+          data.cell.styles.cellPadding = { top: 3, bottom: 3, right: 4, left: 16 };
+        }
+      }
+    },
   });
 
   // ── Totals block ─────────────────────────────────────────────────────

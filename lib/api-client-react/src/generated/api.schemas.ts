@@ -394,6 +394,37 @@ export interface IteroZipImportResult {
   data?: IteroZipImportResultData;
 }
 
+export interface InvoiceLineItem {
+  id?: string;
+  toothNumber?: number | null;
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  lineTotal?: number;
+  sortOrder?: number;
+  /** ID of the parent line item; null for top-level items */
+  parentLineItemId?: string | null;
+  /** Nested sub-items (one level only). Present only on top-level items in GET responses. */
+  subItems?: InvoiceLineItem[];
+}
+
+export type PatchInvoiceItemSubItemsItem = {
+  toothNumber?: number | null;
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  sortOrder?: number;
+};
+
+export interface PatchInvoiceItem {
+  toothNumber?: number | null;
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  sortOrder?: number;
+  subItems?: PatchInvoiceItemSubItemsItem[];
+}
+
 export interface OpenInvoice {
   id: string;
   invoiceNumber: string;

@@ -1984,9 +1984,23 @@ router.get(
       where: eq(organizations.id, invoice.providerOrganizationId),
     }).catch(() => null);
 
+    const topLevelItems = items.filter((it) => it.parentLineItemId == null);
+    const subItemsByParent = new Map<string, typeof items>();
+    for (const it of items) {
+      if (it.parentLineItemId) {
+        const arr = subItemsByParent.get(it.parentLineItemId) ?? [];
+        arr.push(it);
+        subItemsByParent.set(it.parentLineItemId, arr);
+      }
+    }
+    const nestedItems = topLevelItems.map((it) => ({
+      ...it,
+      subItems: subItemsByParent.get(it.id) ?? [],
+    }));
+
     return ok(res, {
       ...invoice,
-      items,
+      items: nestedItems,
       payments: safePaymentRows,
       linkedTransactions: labMember ? linkedTxns : [],
       caseCompletedAt,
@@ -2031,6 +2045,18 @@ router.patch(
               quantity: z.coerce.number().min(0),
               unitPrice: z.coerce.number().min(0),
               sortOrder: z.coerce.number().int().optional(),
+              subItems: z
+                .array(
+                  z.object({
+                    id: z.string().optional(),
+                    toothNumber: z.coerce.number().int().min(1).max(32).nullable().optional(),
+                    description: z.string().min(1),
+                    quantity: z.coerce.number().min(0),
+                    unitPrice: z.coerce.number().min(0),
+                    sortOrder: z.coerce.number().int().optional(),
+                  })
+                )
+                .optional(),
             })
           )
           .optional(),
@@ -2070,21 +2096,55 @@ router.patch(
           .delete(invoiceLineItems)
           .where(eq(invoiceLineItems.invoiceId, invoice.id));
         if (input.items.length) {
-          await tx.insert(invoiceLineItems).values(
-            input.items.map((it, idx) => ({
-              invoiceId: invoice.id,
-              toothNumber: it.toothNumber ?? null,
-              toothLabel: it.toothLabel ?? null,
-              description: it.description,
-              quantity: Math.max(0, Math.round(Number(it.quantity))),
-              unitPrice: Number(it.unitPrice).toFixed(2),
-              lineTotal: calculateLineTotal(
-                Math.max(0, Math.round(Number(it.quantity))),
-                Number(it.unitPrice).toFixed(2)
-              ),
-              sortOrder: it.sortOrder ?? idx,
-            }))
-          );
+          const topLevelValues = input.items.map((it, idx) => ({
+            invoiceId: invoice.id,
+            toothNumber: it.toothNumber ?? null,
+            toothLabel: it.toothLabel ?? null,
+            description: it.description,
+            quantity: Math.max(0, Math.round(Number(it.quantity))),
+            unitPrice: Number(it.unitPrice).toFixed(2),
+            lineTotal: calculateLineTotal(
+              Math.max(0, Math.round(Number(it.quantity))),
+              Number(it.unitPrice).toFixed(2)
+            ),
+            sortOrder: it.sortOrder ?? idx,
+          }));
+          const inserted = await tx
+            .insert(invoiceLineItems)
+            .values(topLevelValues)
+            .returning();
+          const subValues: Array<{
+            invoiceId: string;
+            toothNumber: number | null;
+            description: string;
+            quantity: number;
+            unitPrice: string;
+            lineTotal: string;
+            sortOrder: number;
+            parentLineItemId: string;
+          }> = [];
+          for (let i = 0; i < input.items.length; i++) {
+            const parent = input.items[i];
+            const parentId = inserted[i].id;
+            for (const sub of (parent.subItems ?? [])) {
+              subValues.push({
+                invoiceId: invoice.id,
+                toothNumber: sub.toothNumber ?? null,
+                description: sub.description,
+                quantity: Math.max(0, Math.round(Number(sub.quantity))),
+                unitPrice: Number(sub.unitPrice).toFixed(2),
+                lineTotal: calculateLineTotal(
+                  Math.max(0, Math.round(Number(sub.quantity))),
+                  Number(sub.unitPrice).toFixed(2)
+                ),
+                sortOrder: sub.sortOrder ?? 0,
+                parentLineItemId: parentId,
+              });
+            }
+          }
+          if (subValues.length) {
+            await tx.insert(invoiceLineItems).values(subValues);
+          }
         }
       }
 
@@ -2724,19 +2784,44 @@ router.post(
         })
         .returning();
       if (items.length) {
-        await tx.insert(invoiceLineItems).values(
-          items.map((it: any, idx: number) => ({
-            invoiceId: newInvoice.id,
-            caseRestorationId: it.caseRestorationId,
-            toothNumber: it.toothNumber ?? null,
-            toothLabel: it.toothLabel ?? null,
-            description: it.description,
-            quantity: it.quantity,
-            unitPrice: it.unitPrice,
-            lineTotal: it.lineTotal,
-            sortOrder: it.sortOrder ?? idx,
-          })),
-        );
+        const topLevel = items.filter((it: any) => !it.parentLineItemId);
+        const children = items.filter((it: any) => !!it.parentLineItemId);
+        const insertedParents = await tx
+          .insert(invoiceLineItems)
+          .values(
+            topLevel.map((it: any, idx: number) => ({
+              invoiceId: newInvoice.id,
+              caseRestorationId: it.caseRestorationId,
+              toothNumber: it.toothNumber ?? null,
+              toothLabel: it.toothLabel ?? null,
+              description: it.description,
+              quantity: it.quantity,
+              unitPrice: it.unitPrice,
+              lineTotal: it.lineTotal,
+              sortOrder: it.sortOrder ?? idx,
+            })),
+          )
+          .returning();
+        const oldToNew = new Map<string, string>();
+        topLevel.forEach((it: any, idx: number) => {
+          oldToNew.set(it.id, insertedParents[idx].id);
+        });
+        if (children.length) {
+          await tx.insert(invoiceLineItems).values(
+            children.map((it: any, idx: number) => ({
+              invoiceId: newInvoice.id,
+              caseRestorationId: it.caseRestorationId,
+              toothNumber: it.toothNumber ?? null,
+              toothLabel: it.toothLabel ?? null,
+              description: it.description,
+              quantity: it.quantity,
+              unitPrice: it.unitPrice,
+              lineTotal: it.lineTotal,
+              sortOrder: it.sortOrder ?? idx,
+              parentLineItemId: oldToNew.get(it.parentLineItemId) ?? null,
+            })),
+          );
+        }
       }
       return newInvoice;
     });

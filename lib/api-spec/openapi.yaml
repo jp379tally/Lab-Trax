@@ -1962,6 +1962,42 @@ components:
             suggestedProviderOrgId:
               type: string
               nullable: true
+    InvoiceLineItem:
+      type: object
+      required: [description, quantity, unitPrice]
+      properties:
+        id: { type: string }
+        toothNumber: { type: integer, nullable: true }
+        description: { type: string }
+        quantity: { type: number }
+        unitPrice: { type: number }
+        lineTotal: { type: number }
+        sortOrder: { type: integer }
+        parentLineItemId: { type: string, nullable: true, description: "ID of the parent line item; null for top-level items" }
+        subItems:
+          type: array
+          items: { $ref: "#/components/schemas/InvoiceLineItem" }
+          description: "Nested sub-items (one level only). Present only on top-level items in GET responses."
+    PatchInvoiceItem:
+      type: object
+      required: [description, quantity, unitPrice]
+      properties:
+        toothNumber: { type: integer, nullable: true }
+        description: { type: string }
+        quantity: { type: number }
+        unitPrice: { type: number }
+        sortOrder: { type: integer }
+        subItems:
+          type: array
+          items:
+            type: object
+            required: [description, quantity, unitPrice]
+            properties:
+              toothNumber: { type: integer, nullable: true }
+              description: { type: string }
+              quantity: { type: number }
+              unitPrice: { type: number }
+              sortOrder: { type: integer }
     OpenInvoice:
       type: object
       required:

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useColumnWidths } from "@/hooks/useColumnWidths";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
@@ -74,6 +74,7 @@ type DraftLine = {
   unitPrice: number;
   toothNumber?: number | null;
   toothLabel?: string | null;
+  subItems?: DraftLine[];
 };
 
 function readDisplayMetadata(inv: Invoice | undefined | null): InvoiceDisplayMetadata {
@@ -1117,18 +1118,30 @@ export function InvoiceEditor({
         description: it.description,
         quantity: Number(it.quantity ?? 0),
         unitPrice: Number(it.unitPrice ?? 0),
-        toothNumber: it.toothNumber ?? null,
-        toothLabel: it.toothLabel ?? null,
+        toothNumber: (it as any).toothNumber ?? null,
+        toothLabel: (it as any).toothLabel ?? null,
+        subItems: ((it as any).subItems ?? []).map((sub: any, sidx: number) => ({
+          id: sub.id,
+          item: (metaItems[idx]?.subItems as any[])?.[sidx]?.item ?? "",
+          description: sub.description,
+          quantity: Number(sub.quantity ?? 0),
+          unitPrice: Number(sub.unitPrice ?? 0),
+          toothNumber: sub.toothNumber ?? null,
+        })),
       })),
     );
   }, [detailQuery.data]);
 
   const subtotal = useMemo(
     () =>
-      items.reduce(
-        (sum, it) => sum + Number(it.quantity || 0) * Number(it.unitPrice || 0),
-        0,
-      ),
+      items.reduce((sum, it) => {
+        const lineAmt = Number(it.quantity || 0) * Number(it.unitPrice || 0);
+        const subAmt = (it.subItems ?? []).reduce(
+          (s, sub) => s + Number(sub.quantity || 0) * Number(sub.unitPrice || 0),
+          0,
+        );
+        return sum + lineAmt + subAmt;
+      }, 0),
     [items],
   );
   // Credits behave like a discount applied to the invoice (e.g. a
@@ -1151,8 +1164,19 @@ export function InvoiceEditor({
         ...it,
         item: it.item.trim(),
         description: it.description.trim(),
+        subItems: (it.subItems ?? []).map((sub) => ({
+          ...sub,
+          item: sub.item.trim(),
+          description: sub.description.trim(),
+        })),
       }));
-      if (trimmedItems.some((it) => !it.description)) {
+      if (
+        trimmedItems.some(
+          (it) =>
+            !it.description ||
+            (it.subItems ?? []).some((sub) => !sub.description),
+        )
+      ) {
         throw new Error("Each line item needs a description.");
       }
       const existingMeta = readDisplayMetadata(detailQuery.data) as Record<
@@ -1170,6 +1194,10 @@ export function InvoiceEditor({
         lineItems: trimmedItems.map((it) => ({
           item: it.item,
           description: it.description,
+          subItems: (it.subItems ?? []).map((sub) => ({
+            item: sub.item,
+            description: sub.description,
+          })),
         })),
       };
       const payload: Record<string, unknown> = {
@@ -1187,6 +1215,13 @@ export function InvoiceEditor({
           quantity: it.quantity,
           unitPrice: it.unitPrice,
           sortOrder: idx,
+          subItems: (it.subItems ?? []).map((sub, sidx) => ({
+            toothNumber: sub.toothNumber ?? null,
+            description: sub.description,
+            quantity: sub.quantity,
+            unitPrice: sub.unitPrice,
+            sortOrder: sidx,
+          })),
         })),
       };
       payload.dueAt = dueAt ? new Date(dueAt).toISOString() : null;
@@ -1227,6 +1262,47 @@ export function InvoiceEditor({
       ...prev,
       { item: "", description: "", quantity: 1, unitPrice: 0 },
     ]);
+  }
+
+  function addSubItem(parentIdx: number) {
+    setItems((prev) =>
+      prev.map((it, i) =>
+        i === parentIdx
+          ? {
+              ...it,
+              subItems: [
+                ...(it.subItems ?? []),
+                { item: "", description: "", quantity: 1, unitPrice: 0 },
+              ],
+            }
+          : it,
+      ),
+    );
+  }
+
+  function removeSubItem(parentIdx: number, subIdx: number) {
+    setItems((prev) =>
+      prev.map((it, i) =>
+        i === parentIdx
+          ? { ...it, subItems: (it.subItems ?? []).filter((_, si) => si !== subIdx) }
+          : it,
+      ),
+    );
+  }
+
+  function updateSubItem(parentIdx: number, subIdx: number, patch: Partial<DraftLine>) {
+    setItems((prev) =>
+      prev.map((it, i) =>
+        i === parentIdx
+          ? {
+              ...it,
+              subItems: (it.subItems ?? []).map((sub, si) =>
+                si === subIdx ? { ...sub, ...patch } : sub,
+              ),
+            }
+          : it,
+      ),
+    );
   }
 
   const reassignMutation = useMutation({
@@ -1364,6 +1440,14 @@ export function InvoiceEditor({
         quantity: it.quantity,
         unitPrice: it.unitPrice,
         lineTotal: Number(it.quantity || 0) * Number(it.unitPrice || 0),
+        subItems: (it.subItems ?? []).map((sub) => ({
+          item: sub.item,
+          toothNumber: sub.toothNumber ?? null,
+          description: sub.description,
+          quantity: sub.quantity,
+          unitPrice: sub.unitPrice,
+          lineTotal: Number(sub.quantity || 0) * Number(sub.unitPrice || 0),
+        })),
       })),
       subtotal,
       tax,
@@ -1959,7 +2043,8 @@ export function InvoiceEditor({
                     </tr>
                   )}
                   {items.map((it, idx) => (
-                    <tr key={idx} className="border-t border-border">
+                    <Fragment key={idx}>
+                    <tr className="border-t border-border">
                       <td className="px-3 py-1.5 align-top">
                         {(() => {
                           // No priced catalog (case-less invoice or no
@@ -2177,6 +2262,90 @@ export function InvoiceEditor({
                         </div>
                       </td>
                     </tr>
+                    {(it.subItems ?? []).map((sub, sidx) => (
+                      <tr key={`sub-${sidx}`} className="border-t border-border/50 bg-muted/20">
+                        <td className="py-1.5 pl-8 pr-3 align-top">
+                          <input
+                            type="text"
+                            value={sub.item}
+                            onChange={(e) => updateSubItem(idx, sidx, { item: e.target.value })}
+                            placeholder="Sub-item"
+                            className="w-full h-7 px-2 rounded bg-background border border-input text-xs"
+                          />
+                        </td>
+                        <td className="px-3 py-1.5">
+                          <input
+                            type="number"
+                            min={1}
+                            max={32}
+                            step={1}
+                            value={sub.toothNumber ?? ""}
+                            onChange={(e) =>
+                              updateSubItem(idx, sidx, {
+                                toothNumber: e.target.value === "" ? null : Number(e.target.value),
+                              })
+                            }
+                            placeholder="—"
+                            className="w-full h-7 px-2 rounded bg-background border border-input text-xs text-right tabular-nums"
+                          />
+                        </td>
+                        <td className="px-3 py-1.5 align-top">
+                          <input
+                            type="text"
+                            value={sub.description}
+                            onChange={(e) => updateSubItem(idx, sidx, { description: e.target.value })}
+                            placeholder="Description"
+                            className="w-full h-7 px-2 rounded bg-background border border-input text-xs"
+                          />
+                        </td>
+                        <td className="px-3 py-1.5">
+                          <input
+                            type="number"
+                            min={0}
+                            step={1}
+                            value={sub.quantity}
+                            onChange={(e) => updateSubItem(idx, sidx, { quantity: Number(e.target.value) || 0 })}
+                            className="w-full h-7 px-2 rounded bg-background border border-input text-xs text-right tabular-nums"
+                          />
+                        </td>
+                        <td className="px-3 py-1.5">
+                          <input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            value={sub.unitPrice}
+                            onChange={(e) => updateSubItem(idx, sidx, { unitPrice: Number(e.target.value) || 0 })}
+                            className="w-full h-7 px-2 rounded bg-background border border-input text-xs text-right tabular-nums"
+                          />
+                        </td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-xs text-muted-foreground">
+                          {formatMoney(Number(sub.quantity || 0) * Number(sub.unitPrice || 0))}
+                        </td>
+                        <td className="px-2 py-1.5 align-top">
+                          <button
+                            type="button"
+                            onClick={() => removeSubItem(idx, sidx)}
+                            className="h-6 w-6 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive flex items-center justify-center"
+                            aria-label="Remove sub-item"
+                          >
+                            <Trash2 size={11} />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                    <tr className="border-t border-border/30">
+                      <td colSpan={7} className="px-3 py-1">
+                        <button
+                          type="button"
+                          onClick={() => addSubItem(idx)}
+                          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                        >
+                          <Plus size={10} />
+                          Sub-item
+                        </button>
+                      </td>
+                    </tr>
+                    </Fragment>
                   ))}
                 </tbody>
                 <tfoot>
