@@ -1071,6 +1071,11 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
                   color={Colors.light.textTertiary}
                 />
               </View>
+              <CaseProgressBar
+                status={c.status}
+                dueDate={c.dueDate}
+                expectedDeliveryDate={c.expectedDeliveryDate}
+              />
             </Pressable>
           );
         })}
