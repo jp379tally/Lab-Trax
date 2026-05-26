@@ -1,11 +1,19 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Pause, Play, Plus, RotateCcw, Send, Sparkles, Trash2, X } from "lucide-react";
+import { Check, Link2, Pause, Play, Plus, RotateCcw, Send, Sparkles, Trash2, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { FinanceShell } from "@/components/finance/FinanceShell";
 import type { BankAccount, RecurringRule, TransactionCategory } from "@/lib/types";
+
 import { formatDate, formatMoney } from "@/lib/format";
 import { useColumnWidths } from "@/hooks/useColumnWidths";
+
+interface VendorLite {
+  id: string;
+  name: string;
+  vendorType: "vendor" | "employee" | "item";
+  isActive: boolean;
+}
 
 // 10 resizable columns: Name, Account, Payee, Category, Direction, Day, Amount, Last gen., Next run, Status
 const RECURRING_COL_DEFAULTS = [160, 140, 140, 120, 90, 70, 90, 100, 100, 90] as const;
@@ -43,6 +51,7 @@ function Recurring({
   const qc = useQueryClient();
   const [editing, setEditing] = useState<RecurringRule | "new" | null>(null);
   const [genResult, setGenResult] = useState<string | null>(null);
+  const [linkOpen, setLinkOpen] = useState(false);
 
   const { widths: colWidths, totalWidth: colTotalWidth, resizingCol, startResize, resetColumn, resetAll } =
     useColumnWidths([...RECURRING_COL_DEFAULTS], "labtrax_recurring_col_widths_v1");
@@ -139,6 +148,15 @@ function Recurring({
               Reset columns
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => setLinkOpen(true)}
+            className="h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80 inline-flex items-center gap-1.5"
+            title="Link existing free-text payee rules to vendor records"
+          >
+            <Link2 size={14} />
+            Link vendors
+          </button>
           <button
             type="button"
             onClick={() => generate.mutate()}
@@ -310,6 +328,14 @@ function Recurring({
           </table>
         </div>
       </div>
+
+      {linkOpen && (
+        <BulkLinkVendorsDialog
+          organizationId={organizationId}
+          rules={rules.data || []}
+          onClose={() => setLinkOpen(false)}
+        />
+      )}
 
       {editing && (
         <RuleEditor
@@ -636,6 +662,382 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
         {label}
       </div>
       {children}
+    </div>
+  );
+}
+
+function normalizeName(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+interface MatchRow {
+  rule: RecurringRule;
+  suggestions: VendorLite[];
+  selectedVendorId: string;
+}
+
+function BulkLinkVendorsDialog({
+  organizationId,
+  rules,
+  onClose,
+}: {
+  organizationId: string;
+  rules: RecurringRule[];
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+
+  const vendorsQuery = useQuery({
+    queryKey: ["finance", "vendors", organizationId, "all"],
+    queryFn: () =>
+      apiFetch<VendorLite[]>(
+        `/finance/vendors?organizationId=${organizationId}&includeInactive=true`
+      ),
+  });
+
+  const linkedIds = useMemo(() => {
+    const m = new Set<string>();
+    for (const r of rules) if (r.vendorId) m.add(r.id);
+    return m;
+  }, [rules]);
+
+  const candidateRules = useMemo(
+    () =>
+      rules.filter(
+        (r) => !r.vendorId && (r.payee || "").trim().length > 0
+      ),
+    [rules]
+  );
+
+  const vendors = vendorsQuery.data || [];
+  const vendorsByNorm = useMemo(() => {
+    const m = new Map<string, VendorLite[]>();
+    for (const v of vendors) {
+      const k = normalizeName(v.name);
+      if (!k) continue;
+      const arr = m.get(k) || [];
+      arr.push(v);
+      m.set(k, arr);
+    }
+    return m;
+  }, [vendors]);
+
+  const suggestionsByRule = useMemo(() => {
+    const m = new Map<string, VendorLite[]>();
+    for (const rule of candidateRules) {
+      const norm = normalizeName(rule.payee || "");
+      let suggestions: VendorLite[] = [];
+      if (norm) {
+        const exact = vendorsByNorm.get(norm);
+        if (exact) suggestions = exact.slice();
+        if (!suggestions.length) {
+          suggestions = vendors.filter((v) => {
+            const vn = normalizeName(v.name);
+            return vn && (vn.includes(norm) || norm.includes(vn));
+          });
+        }
+      }
+      suggestions = [...suggestions].sort((a, b) => {
+        if (a.isActive !== b.isActive) return a.isActive ? -1 : 1;
+        if (a.vendorType !== b.vendorType) {
+          if (a.vendorType === "vendor") return -1;
+          if (b.vendorType === "vendor") return 1;
+        }
+        return a.name.localeCompare(b.name);
+      });
+      m.set(rule.id, suggestions);
+    }
+    return m;
+  }, [candidateRules, vendors, vendorsByNorm]);
+
+  const [selections, setSelections] = useState<Record<string, string>>({});
+  const [skipped, setSkipped] = useState<Set<string>>(new Set());
+  const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
+  const [errorByRule, setErrorByRule] = useState<Record<string, string>>({});
+
+  // Auto-seed selections with the top suggestion as soon as suggestions are
+  // computed. Re-runs when vendors finish loading, so a cold-cache open of
+  // the dialog still ends up with pre-filled "Accept" picks.
+  useEffect(() => {
+    setSelections((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const rule of candidateRules) {
+        if (next[rule.id] !== undefined) continue;
+        const top = suggestionsByRule.get(rule.id)?.[0];
+        if (top) {
+          next[rule.id] = top.id;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [candidateRules, suggestionsByRule]);
+
+  const rows: MatchRow[] = candidateRules.map((rule) => {
+    const suggestions = suggestionsByRule.get(rule.id) || [];
+    const selectedVendorId =
+      selections[rule.id] !== undefined ? selections[rule.id] : "";
+    return { rule, suggestions, selectedVendorId };
+  });
+
+  const setSelectedVendorId = (ruleId: string, vendorId: string) => {
+    setSelections((prev) => ({ ...prev, [ruleId]: vendorId }));
+  };
+
+  const linkOne = useMutation({
+    mutationFn: ({ ruleId, vendorId }: { ruleId: string; vendorId: string }) =>
+      apiFetch(`/finance/recurring/${ruleId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ vendorId }),
+      }),
+    onSuccess: (_data, vars) => {
+      setSavedIds((s) => new Set(s).add(vars.ruleId));
+      setErrorByRule((e) => {
+        const { [vars.ruleId]: _omit, ...rest } = e;
+        return rest;
+      });
+      qc.invalidateQueries({ queryKey: ["finance", "recurring"] });
+    },
+    onError: (err: Error, vars) => {
+      setErrorByRule((e) => ({ ...e, [vars.ruleId]: err.message }));
+    },
+  });
+
+  const linkAllAuto = async () => {
+    const toLink = rows.filter(
+      (r) =>
+        r.selectedVendorId &&
+        !savedIds.has(r.rule.id) &&
+        !skipped.has(r.rule.id)
+    );
+    for (const row of toLink) {
+      try {
+        await linkOne.mutateAsync({
+          ruleId: row.rule.id,
+          vendorId: row.selectedVendorId,
+        });
+      } catch {
+        // error already recorded by onError
+      }
+    }
+  };
+
+  const totalLinkedAlready = linkedIds.size;
+  const pending = rows.filter(
+    (r) => !savedIds.has(r.rule.id) && !skipped.has(r.rule.id)
+  );
+  const pendingWithSuggestion = pending.filter((r) => !!r.selectedVendorId);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-stretch justify-end bg-foreground/30">
+      <div className="w-full max-w-2xl bg-card border-l border-border h-full overflow-y-auto scrollbar-thin">
+        <header className="sticky top-0 z-10 bg-card border-b border-border px-6 py-4 flex items-center justify-between">
+          <div>
+            <h2 className="text-base font-semibold">Link recurring rules to vendors</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Existing rules with free-text payees are matched by name to your
+              vendor list. Linked rules pick up vendor renames automatically.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-9 w-9 rounded-md hover:bg-secondary flex items-center justify-center"
+          >
+            <X size={16} />
+          </button>
+        </header>
+
+        <div className="px-6 py-4 space-y-4">
+          <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+            <span>
+              <strong className="text-foreground">{totalLinkedAlready}</strong>{" "}
+              already linked
+            </span>
+            <span>
+              <strong className="text-foreground">{candidateRules.length}</strong>{" "}
+              free-text payees
+            </span>
+            <span>
+              <strong className="text-foreground">{pendingWithSuggestion.length}</strong>{" "}
+              with suggestions
+            </span>
+            <span>
+              <strong className="text-foreground">{savedIds.size}</strong> linked
+              this session
+            </span>
+          </div>
+
+          {vendorsQuery.isLoading && (
+            <div className="text-sm text-muted-foreground">Loading vendors…</div>
+          )}
+
+          {!vendorsQuery.isLoading && candidateRules.length === 0 && (
+            <div className="text-sm text-muted-foreground py-8 text-center border border-dashed border-border rounded-lg">
+              No free-text payee rules to link. Every rule with a payee is
+              already linked to a vendor record.
+            </div>
+          )}
+
+          {!vendorsQuery.isLoading && candidateRules.length > 0 && vendors.length === 0 && (
+            <div className="text-sm text-muted-foreground py-6 text-center border border-dashed border-border rounded-lg">
+              No vendor records exist yet. Add vendors on the Payees page first.
+            </div>
+          )}
+
+          {rows.length > 0 && pendingWithSuggestion.length > 0 && (
+            <div className="flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => linkAllAuto()}
+                disabled={linkOne.isPending}
+                className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
+              >
+                <Check size={14} />
+                {linkOne.isPending
+                  ? "Linking…"
+                  : `Accept all ${pendingWithSuggestion.length} suggestions`}
+              </button>
+            </div>
+          )}
+
+          <div className="space-y-2">
+            {rows.map((row) => {
+              const ruleId = row.rule.id;
+              const isSaved = savedIds.has(ruleId);
+              const isSkipped = skipped.has(ruleId);
+              const err = errorByRule[ruleId];
+              return (
+                <div
+                  key={ruleId}
+                  className={`border rounded-lg px-3 py-2.5 ${
+                    isSaved
+                      ? "border-emerald-500/40 bg-emerald-500/5"
+                      : isSkipped
+                        ? "border-border bg-secondary/30 opacity-60"
+                        : "border-border bg-background"
+                  }`}
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium truncate">
+                        {row.rule.name}
+                      </div>
+                      <div className="text-xs text-muted-foreground mt-0.5">
+                        Payee: <span className="font-medium text-foreground">{row.rule.payee}</span>
+                      </div>
+                      {!isSaved && !isSkipped && (
+                        <div className="mt-2">
+                          {row.suggestions.length > 0 ? (
+                            <select
+                              value={row.selectedVendorId}
+                              onChange={(e) =>
+                                setSelectedVendorId(ruleId, e.target.value)
+                              }
+                              className="w-full h-8 px-2 rounded-md bg-background border border-input text-sm"
+                            >
+                              <option value="">— Pick a vendor —</option>
+                              {row.suggestions.map((v) => (
+                                <option key={v.id} value={v.id}>
+                                  {v.name}
+                                  {!v.isActive ? " (inactive)" : ""}
+                                  {v.vendorType !== "vendor"
+                                    ? ` · ${v.vendorType}`
+                                    : ""}
+                                </option>
+                              ))}
+                              {vendors.length > row.suggestions.length && (
+                                <optgroup label="Other vendors">
+                                  {vendors
+                                    .filter(
+                                      (v) =>
+                                        !row.suggestions.some(
+                                          (s) => s.id === v.id
+                                        )
+                                    )
+                                    .map((v) => (
+                                      <option key={v.id} value={v.id}>
+                                        {v.name}
+                                        {!v.isActive ? " (inactive)" : ""}
+                                      </option>
+                                    ))}
+                                </optgroup>
+                              )}
+                            </select>
+                          ) : (
+                            <select
+                              value={row.selectedVendorId}
+                              onChange={(e) =>
+                                setSelectedVendorId(ruleId, e.target.value)
+                              }
+                              className="w-full h-8 px-2 rounded-md bg-background border border-input text-sm"
+                            >
+                              <option value="">— No suggestion — pick a vendor —</option>
+                              {vendors.map((v) => (
+                                <option key={v.id} value={v.id}>
+                                  {v.name}
+                                  {!v.isActive ? " (inactive)" : ""}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                          {err && (
+                            <div className="text-xs text-destructive mt-1">
+                              {err}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {isSaved && (
+                        <div className="text-xs text-emerald-700 dark:text-emerald-400 mt-1 inline-flex items-center gap-1">
+                          <Check size={12} /> Linked
+                        </div>
+                      )}
+                      {isSkipped && (
+                        <div className="text-xs text-muted-foreground mt-1">
+                          Skipped
+                        </div>
+                      )}
+                    </div>
+                    {!isSaved && !isSkipped && (
+                      <div className="flex items-center gap-1.5 pt-0.5">
+                        <button
+                          type="button"
+                          disabled={
+                            !row.selectedVendorId || linkOne.isPending
+                          }
+                          onClick={() =>
+                            linkOne.mutate({
+                              ruleId,
+                              vendorId: row.selectedVendorId,
+                            })
+                          }
+                          className="h-8 px-2.5 rounded-md bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 disabled:opacity-50 inline-flex items-center gap-1"
+                        >
+                          <Check size={12} /> Accept
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setSkipped((s) => new Set(s).add(ruleId))
+                          }
+                          className="h-8 px-2.5 rounded-md text-xs hover:bg-secondary text-muted-foreground hover:text-foreground"
+                        >
+                          Skip
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
