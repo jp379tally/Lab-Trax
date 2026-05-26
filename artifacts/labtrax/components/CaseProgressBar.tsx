@@ -82,15 +82,38 @@ type Props = {
   expectedDeliveryDate?: string | null;
 };
 
+/**
+ * Returns whole-day difference between today and refDateStr (positive = future,
+ * negative = past). Date-only strings (YYYY-MM-DD) are parsed as local time to
+ * avoid timezone off-by-one errors. Returns null for unparseable strings.
+ */
+function getDayDelta(refDateStr: string): number | null {
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  // Date-only strings are parsed as UTC by the JS engine; appending T00:00:00
+  // forces local-time parsing to avoid off-by-one in negative-offset timezones.
+  const normalised = /^\d{4}-\d{2}-\d{2}$/.test(refDateStr)
+    ? refDateStr + "T00:00:00"
+    : refDateStr;
+  const ref = new Date(normalised);
+  if (Number.isNaN(ref.getTime())) return null;
+  ref.setHours(0, 0, 0, 0);
+  return Math.round((ref.getTime() - now.getTime()) / MS_PER_DAY);
+}
+
 export function CaseProgressBar({ status, dueDate, expectedDeliveryDate }: Props) {
   const rawProgress = STATUS_PROGRESS[status] ?? 0.05;
   const isComplete = status === "COMPLETE";
 
   const refDateStr = expectedDeliveryDate || dueDate || null;
-  const isOverdue =
-    !isComplete &&
-    refDateStr !== null &&
-    new Date(refDateStr).getTime() < Date.now();
+
+  let dayDelta: number | null = null;
+  let isOverdue = false;
+
+  if (!isComplete && refDateStr) {
+    dayDelta = getDayDelta(refDateStr);
+    isOverdue = dayDelta !== null && dayDelta < 0;
+  }
 
   const fillColor = isComplete
     ? Colors.light.success
@@ -100,18 +123,27 @@ export function CaseProgressBar({ status, dueDate, expectedDeliveryDate }: Props
 
   const fillPercent = Math.round(rawProgress * 100);
 
-  const dueDateLabel = getDueDateLabel(refDateStr, isComplete);
+  let labelText: string | null = null;
+  if (!isComplete && dayDelta !== null) {
+    if (dayDelta < 0) {
+      labelText = `${Math.abs(dayDelta)}d late`;
+    } else if (dayDelta === 0) {
+      labelText = "due today";
+    } else {
+      labelText = `${dayDelta}d left`;
+    }
+  }
 
   return (
-    <View>
+    <View style={styles.row}>
       <View style={styles.track}>
         <View
           style={[styles.fill, { width: `${fillPercent}%` as any, backgroundColor: fillColor }]}
         />
       </View>
-      {dueDateLabel && (
-        <Text style={[styles.label, { color: dueDateLabel.color }]}>
-          {dueDateLabel.text}
+      {labelText !== null && (
+        <Text style={[styles.label, isOverdue ? styles.labelOverdue : styles.labelOnTrack]}>
+          {labelText}
         </Text>
       )}
     </View>
@@ -119,11 +151,17 @@ export function CaseProgressBar({ status, dueDate, expectedDeliveryDate }: Props
 }
 
 const styles = StyleSheet.create({
+  row: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 7,
+    gap: 6,
+  },
   track: {
+    flex: 1,
     height: 3,
     backgroundColor: "#E2E8F0",
     borderRadius: 2,
-    marginTop: 7,
     overflow: "hidden",
   },
   fill: {
@@ -133,6 +171,13 @@ const styles = StyleSheet.create({
   label: {
     fontSize: 11,
     fontFamily: "Inter_600SemiBold",
-    marginTop: 4,
+    minWidth: 42,
+    textAlign: "right",
+  },
+  labelOnTrack: {
+    color: "#94A3B8",
+  },
+  labelOverdue: {
+    color: "#EF4444",
   },
 });
