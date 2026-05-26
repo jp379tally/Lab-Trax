@@ -468,7 +468,28 @@ async function buildProviderContext(userId: string): Promise<string> {
   return ctx;
 }
 
-async function buildSingleCaseContext(caseId: string): Promise<string> {
+/**
+ * Builds a focused context block for a single case.
+ *
+ * When `userId` and `userType` are supplied the function enforces access
+ * control before returning any case data:
+ *  - provider users: the case's providerOrganizationId must belong to one
+ *    of the caller's linked provider orgs — enforced here.
+ *  - lab users: no additional per-case ownership check is applied here;
+ *    the caller is expected to be an authenticated lab member, but the
+ *    caseId is not validated against the user's active lab org(s).
+ *    TODO: add lab-side ownership enforcement analogous to the provider
+ *    path (require caseRow.labOrganizationId ∈ getActiveLabIds(userId)).
+ *
+ * Returns an empty string (instead of throwing) when access is denied so
+ * the caller can silently omit the single-case block rather than fail the
+ * whole request.
+ */
+async function buildSingleCaseContext(
+  caseId: string,
+  userId?: string,
+  userType?: string,
+): Promise<string> {
   const [caseRow] = await db
     .select()
     .from(cases)
@@ -477,20 +498,41 @@ async function buildSingleCaseContext(caseId: string): Promise<string> {
 
   if (!caseRow) return "Case not found.";
 
-  const restRows = await db
-    .select()
-    .from(caseRestorations)
-    .where(eq(caseRestorations.caseId, caseId));
+  // --- provider access check -------------------------------------------
+  if (userId && userType === "provider") {
+    const { providerOrgIds } = await getProviderOrgIdsForUserAndLinks(userId);
+    const caseProviderOrgId = caseRow.providerOrganizationId ?? null;
+    if (!caseProviderOrgId || !providerOrgIds.includes(caseProviderOrgId)) {
+      return "";
+    }
+  }
+  // ---------------------------------------------------------------------
 
-  const noteRows = await db
-    .select()
-    .from(caseNotes)
-    .where(eq(caseNotes.caseId, caseId));
+  const [restRows, noteRows, attachmentRows] = await Promise.all([
+    db
+      .select()
+      .from(caseRestorations)
+      .where(eq(caseRestorations.caseId, caseId)),
+    db
+      .select()
+      .from(caseNotes)
+      .where(eq(caseNotes.caseId, caseId)),
+    db
+      .select()
+      .from(caseAttachments)
+      .where(eq(caseAttachments.caseId, caseId)),
+  ]);
 
-  const attachmentRows = await db
-    .select()
-    .from(caseAttachments)
-    .where(eq(caseAttachments.caseId, caseId));
+  // Resolve the lab name so providers can see which lab is handling the case
+  let labName: string | null = null;
+  if (caseRow.labOrganizationId) {
+    const [labOrg] = await db
+      .select({ displayName: organizations.displayName, name: organizations.name })
+      .from(organizations)
+      .where(eq(organizations.id, caseRow.labOrganizationId))
+      .limit(1);
+    labName = labOrg?.displayName || labOrg?.name || null;
+  }
 
   const dueStr = caseRow.dueDate
     ? new Date(caseRow.dueDate).toLocaleDateString()
@@ -526,7 +568,7 @@ Patient: ${caseRow.patientFirstName || ""} ${caseRow.patientLastName || ""}
 Doctor: ${caseRow.doctorName || "Unknown"}
 Status: ${caseRow.status || "Unknown"}
 Due Date: ${dueStr}
-Priority: ${caseRow.priority || "normal"}
+Priority: ${caseRow.priority || "normal"}${labName ? `\nLab: ${labName}` : ""}
 
 RESTORATIONS (${restRows.length} total):
 ${restRows.length > 0 ? `  - ${resStr}` : "  None recorded."}
@@ -618,7 +660,7 @@ export function registerAiChatRoutes(router: IRouter): void {
         contextBlock = await buildProviderContext(userId);
         let singleCaseCtx = "";
         if (requestedCaseId) {
-          singleCaseCtx = await buildSingleCaseContext(requestedCaseId);
+          singleCaseCtx = await buildSingleCaseContext(requestedCaseId, userId, "provider");
         }
         systemPrompt = `You are LabTrax AI, a helpful assistant for dental providers (doctors and practices).
 You have access to the provider's real-time case data and pricing from all their linked dental labs.
@@ -636,7 +678,7 @@ ${singleCaseCtx ? `${singleCaseCtx}\n` : ""}${contextBlock}`;
         }
         let singleCaseCtx = "";
         if (requestedCaseId) {
-          singleCaseCtx = await buildSingleCaseContext(requestedCaseId);
+          singleCaseCtx = await buildSingleCaseContext(requestedCaseId, userId, "lab");
         }
         systemPrompt = `You are LabTrax AI, a helpful assistant for dental lab staff.
 You have access to real-time data about this lab's cases, pricing tiers, and lab profile.

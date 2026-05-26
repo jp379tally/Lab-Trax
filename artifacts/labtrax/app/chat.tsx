@@ -53,6 +53,15 @@ function buildCasePrompts(caseNumber: string, patientName: string): string[] {
   ];
 }
 
+function buildProviderCasePrompts(caseNumber: string, patientName: string): string[] {
+  return [
+    `When will this case be ready?`,
+    patientName ? `What restorations are on ${patientName}'s case?` : `What restorations are on case ${caseNumber}?`,
+    `Which lab is handling case ${caseNumber}?`,
+    `What is the current status of case ${caseNumber}?`,
+  ];
+}
+
 export default function ChatScreen() {
   const insets = useSafeAreaInsets();
   const { userType } = useAuth();
@@ -85,7 +94,9 @@ export default function ChatScreen() {
   const flatListRef = useRef<FlatList>(null);
 
   const suggestedPrompts = hasCaseContext
-    ? buildCasePrompts(caseNumber!, patientName || "")
+    ? isProvider
+      ? buildProviderCasePrompts(caseNumber!, patientName || "")
+      : buildCasePrompts(caseNumber!, patientName || "")
     : isProvider
     ? PROVIDER_SUGGESTED_PROMPTS
     : LAB_SUGGESTED_PROMPTS;
