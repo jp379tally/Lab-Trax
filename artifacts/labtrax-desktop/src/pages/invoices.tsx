@@ -2333,6 +2333,23 @@ export function InvoiceEditor({
                         </td>
                       </tr>
                     ))}
+                    {(it.subItems ?? []).length > 0 && (
+                      <tr className="border-t border-border/50 bg-muted/30">
+                        <td colSpan={5} className="py-1.5 pr-3 text-right text-xs italic text-muted-foreground">
+                          — Subtotal
+                        </td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-xs font-semibold text-foreground">
+                          {formatMoney(
+                            Number(it.quantity || 0) * Number(it.unitPrice || 0) +
+                            (it.subItems ?? []).reduce(
+                              (s, sub) => s + Number(sub.quantity || 0) * Number(sub.unitPrice || 0),
+                              0,
+                            ),
+                          )}
+                        </td>
+                        <td />
+                      </tr>
+                    )}
                     <tr className="border-t border-border/30">
                       <td colSpan={7} className="px-3 py-1">
                         <button
