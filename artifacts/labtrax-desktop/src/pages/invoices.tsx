@@ -73,6 +73,7 @@ type DraftLine = {
   quantity: number;
   unitPrice: number;
   toothNumber?: number | null;
+  toothLabel?: string | null;
 };
 
 function readDisplayMetadata(inv: Invoice | undefined | null): InvoiceDisplayMetadata {
@@ -652,6 +653,7 @@ function BulkSendDialog({
       items: (inv.items ?? []).map((it) => ({
         item: null,
         toothNumber: it.toothNumber ?? null,
+        toothLabel: it.toothLabel ?? null,
         description: it.description,
         quantity: it.quantity,
         unitPrice: it.unitPrice,
@@ -1115,7 +1117,8 @@ export function InvoiceEditor({
         description: it.description,
         quantity: Number(it.quantity ?? 0),
         unitPrice: Number(it.unitPrice ?? 0),
-        toothNumber: (it as any).toothNumber ?? null,
+        toothNumber: it.toothNumber ?? null,
+        toothLabel: it.toothLabel ?? null,
       })),
     );
   }, [detailQuery.data]);
@@ -1179,6 +1182,7 @@ export function InvoiceEditor({
         layoutPresetId: layoutPresetId ?? null,
         items: trimmedItems.map((it, idx) => ({
           toothNumber: it.toothNumber ?? null,
+          toothLabel: it.toothLabel ?? null,
           description: it.description,
           quantity: it.quantity,
           unitPrice: it.unitPrice,
@@ -1355,6 +1359,7 @@ export function InvoiceEditor({
       items: items.map((it) => ({
         item: it.item,
         toothNumber: it.toothNumber ?? null,
+        toothLabel: it.toothLabel ?? null,
         description: it.description,
         quantity: it.quantity,
         unitPrice: it.unitPrice,
@@ -2071,20 +2076,26 @@ export function InvoiceEditor({
                         })()}
                       </td>
                       <td className="px-3 py-1.5">
-                        <input
-                          type="number"
-                          min={1}
-                          max={32}
-                          step={1}
-                          value={it.toothNumber ?? ""}
-                          onChange={(e) =>
-                            updateItem(idx, {
-                              toothNumber: e.target.value === "" ? null : Number(e.target.value),
-                            })
-                          }
-                          placeholder="—"
-                          className="w-full h-8 px-2 rounded bg-background border border-input text-sm text-right tabular-nums"
-                        />
+                        {it.toothLabel ? (
+                          <div className="w-full h-8 px-2 flex items-center justify-end rounded bg-secondary/30 border border-input/50 text-sm tabular-nums text-muted-foreground select-none">
+                            {it.toothLabel}
+                          </div>
+                        ) : (
+                          <input
+                            type="number"
+                            min={1}
+                            max={32}
+                            step={1}
+                            value={it.toothNumber ?? ""}
+                            onChange={(e) =>
+                              updateItem(idx, {
+                                toothNumber: e.target.value === "" ? null : Number(e.target.value),
+                              })
+                            }
+                            placeholder="—"
+                            className="w-full h-8 px-2 rounded bg-background border border-input text-sm text-right tabular-nums"
+                          />
+                        )}
                       </td>
                       <td className="px-3 py-1.5 align-top">
                         <textarea

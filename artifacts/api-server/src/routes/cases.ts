@@ -31,7 +31,7 @@ import OpenAI, { toFile } from "openai";
 import AdmZip from "adm-zip";
 import { writeAuditLog } from "../lib/audit";
 import { calculateLineTotal, sumMoney } from "../lib/case";
-import { syncInvoiceFromRestorations } from "../lib/invoice-sync";
+import { syncInvoiceFromRestorations, buildGroupedLineItemsForInvoice } from "../lib/invoice-sync";
 import {
   classifyMatch,
   splitDisplayName,
@@ -3744,7 +3744,15 @@ const ITERO_RX_SYSTEM_PROMPT = `You are a dental laboratory prescription reader.
   "dueDate": "YYYY-MM-DD or null",
   "isRush": false,
   "notes": "free-text special instructions",
-  "practiceName": "dental practice or office name"
+  "practiceName": "dental practice or office name",
+  "restorations": [
+    {
+      "teeth": "comma-separated tooth numbers for individual crowns of the same material (e.g. \\"3, 4, 5\\") OR a dash range for a bridge (e.g. \\"8-10\\")",
+      "material": "same material values as above, or null",
+      "type": "Crown, Bridge, Pontic, Veneer, Inlay, Onlay, Implant Crown, etc.",
+      "isBridge": false
+    }
+  ]
 }
 
 iTero-specific field mappings (IMPORTANT — iTero uses different field names than a paper Rx):
@@ -3769,6 +3777,13 @@ teeth field rules:
 - For full-arch Removable cases: emit ONE of the literal arch tokens "Upper", "Lower", "U/D", "U/P", "L/D", "L/P" (NOT a numeric range).
 - For partial dentures listing specific teeth being replaced, emit the arch token (e.g. "U/P").
 - Convert FDI to Universal if needed.
+
+restorations array rules:
+- Populate this array for Crown & Bridge cases to describe each restoration group.
+- Group same-material, same-type individual restorations (e.g. all PFM Crowns) into one element using a comma-separated teeth list: "3, 4, 5, 6, 7, 8".
+- For a connected bridge span (abutments + pontics), use a dash range: "8-10" and set isBridge: true.
+- Mixed materials produce separate elements: one per (material, type) combination.
+- For Removable / Appliance / Other cases, omit this field or emit an empty array.
 
 Other rules:
 - If a name appears in "Last, First" form, swap to "First Last" and remove the comma.
@@ -3868,6 +3883,12 @@ interface ExtractedRxFields {
   isRush?: boolean | null;
   notes?: string | null;
   practiceName?: string | null;
+  restorations?: Array<{
+    teeth: string;
+    material: string | null;
+    type: string;
+    isBridge: boolean;
+  }> | null;
 }
 
 async function extractRxFieldsFromBuffer(
@@ -4493,32 +4514,21 @@ router.post(
             ? await fetchLabItemLabels(createdCase.labOrganizationId)
             : ({} as Record<string, string>);
           const itemsToInsert = hasRestorations
-            ? restorationRowsForInvoice.map(
-                (restoration: any, index: number) => {
-                  const qty = Number(restoration.quantity ?? 1);
-                  const unit = Number(restoration.unitPrice ?? 0);
-                  const pk =
-                    materialToPriceKey(restoration.material, restoration.restorationType) ??
-                    restoration.restorationType;
-                  const label = resolveItemLabelFromMap(iteroLabelCache, pk);
-                  return {
-                    invoiceId: autoInvoice.id,
-                    caseRestorationId: restoration.id,
-                    description: buildLineItemDescription(restoration.toothNumber, label),
-                    quantity: restoration.quantity,
-                    unitPrice: restoration.unitPrice,
-                    lineTotal: (qty * unit).toFixed(2),
-                    sortOrder: index,
-                  };
-                },
+            ? buildGroupedLineItemsForInvoice(
+                restorationRowsForInvoice as any[],
+                iteroLabelCache,
+                autoInvoice.id,
+                extracted.restorations,
               )
             : [
                 {
                   invoiceId: autoInvoice.id,
                   caseRestorationId: null,
+                  toothNumber: null,
+                  toothLabel: null,
                   description:
                     "[AI placeholder] Restorations could not be extracted — replace with actual line items.",
-                  quantity: "1",
+                  quantity: 1,
                   unitPrice: "0.00",
                   lineTotal: "0.00",
                   sortOrder: 0,
@@ -5373,37 +5383,21 @@ router.post(
             ? await fetchLabItemLabels(createdCase.labOrganizationId)
             : ({} as Record<string, string>);
           const itemsToInsert = hasRestorations
-            ? restorationRowsForInvoice.map(
-                (restoration: any, index: number) => {
-                  const qty = Number(restoration.quantity ?? 1);
-                  const unit = Number(restoration.unitPrice ?? 0);
-                  const pk =
-                    materialToPriceKey(
-                      restoration.material,
-                      restoration.restorationType
-                    ) ?? restoration.restorationType;
-                  const label = resolveItemLabelFromMap(labelCache, pk);
-                  return {
-                    invoiceId: autoInvoice.id,
-                    caseRestorationId: restoration.id,
-                    description: buildLineItemDescription(
-                      restoration.toothNumber,
-                      label
-                    ),
-                    quantity: restoration.quantity,
-                    unitPrice: restoration.unitPrice,
-                    lineTotal: (qty * unit).toFixed(2),
-                    sortOrder: index,
-                  };
-                }
+            ? buildGroupedLineItemsForInvoice(
+                restorationRowsForInvoice as any[],
+                labelCache,
+                autoInvoice.id,
+                extracted.restorations,
               )
             : [
                 {
                   invoiceId: autoInvoice.id,
                   caseRestorationId: null,
+                  toothNumber: null,
+                  toothLabel: null,
                   description:
                     "[AI placeholder] Restorations could not be extracted — replace with actual line items.",
-                  quantity: "1",
+                  quantity: 1,
                   unitPrice: "0.00",
                   lineTotal: "0.00",
                   sortOrder: 0,
@@ -5956,14 +5950,13 @@ async function processOneIteroZipFile(
           ? await fetchLabItemLabels(createdCase.labOrganizationId)
           : ({} as Record<string, string>);
         const itemsToInsert = hasRestorations
-          ? restorationRowsForInvoice.map((restoration: any, index: number) => {
-              const qty = Number(restoration.quantity ?? 1);
-              const unit = Number(restoration.unitPrice ?? 0);
-              const pk = materialToPriceKey(restoration.material, restoration.restorationType) ?? restoration.restorationType;
-              const label = resolveItemLabelFromMap(labelCache, pk);
-              return { invoiceId: autoInvoice.id, caseRestorationId: restoration.id, description: buildLineItemDescription(restoration.toothNumber, label), quantity: restoration.quantity, unitPrice: restoration.unitPrice, lineTotal: (qty * unit).toFixed(2), sortOrder: index };
-            })
-          : [{ invoiceId: autoInvoice.id, caseRestorationId: null, description: "[AI placeholder] Restorations could not be extracted — replace with actual line items.", quantity: "1", unitPrice: "0.00", lineTotal: "0.00", sortOrder: 0 }];
+          ? buildGroupedLineItemsForInvoice(
+              restorationRowsForInvoice as any[],
+              labelCache,
+              autoInvoice.id,
+              extracted.restorations,
+            )
+          : [{ invoiceId: autoInvoice.id, caseRestorationId: null, toothNumber: null, toothLabel: null, description: "[AI placeholder] Restorations could not be extracted — replace with actual line items.", quantity: 1, unitPrice: "0.00", lineTotal: "0.00", sortOrder: 0 }];
         await tx.insert(invoiceLineItems).values(itemsToInsert);
         const subtotal = itemsToInsert.reduce((acc, it) => acc + Number(it.lineTotal), 0).toFixed(2);
         await tx.update(invoices).set({ subtotal, total: subtotal, balanceDue: subtotal }).where(eq(invoices.id, autoInvoice.id));

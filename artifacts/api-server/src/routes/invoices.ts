@@ -2026,6 +2026,7 @@ router.patch(
             z.object({
               id: z.string().optional(),
               toothNumber: z.coerce.number().int().min(1).max(32).nullable().optional(),
+              toothLabel: z.string().nullable().optional(),
               description: z.string().min(1),
               quantity: z.coerce.number().min(0),
               unitPrice: z.coerce.number().min(0),
@@ -2073,6 +2074,7 @@ router.patch(
             input.items.map((it, idx) => ({
               invoiceId: invoice.id,
               toothNumber: it.toothNumber ?? null,
+              toothLabel: it.toothLabel ?? null,
               description: it.description,
               quantity: Math.max(0, Math.round(Number(it.quantity))),
               unitPrice: Number(it.unitPrice).toFixed(2),
@@ -2727,6 +2729,7 @@ router.post(
             invoiceId: newInvoice.id,
             caseRestorationId: it.caseRestorationId,
             toothNumber: it.toothNumber ?? null,
+            toothLabel: it.toothLabel ?? null,
             description: it.description,
             quantity: it.quantity,
             unitPrice: it.unitPrice,

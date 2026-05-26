@@ -132,6 +132,7 @@ export function downloadStatementPdf(opts: StatementPdfOptions) {
 export interface InvoicePdfLineItem {
   item?: string | null;
   toothNumber?: number | null;
+  toothLabel?: string | null;
   description: string;
   quantity: number | string;
   unitPrice: number | string;
@@ -569,7 +570,7 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
     head: [["Item", "Tooth #", "Description", "Qty", "Unit price", "Total"]],
     body: opts.items.map((row) => [
       (row.item && String(row.item).trim()) || "—",
-      row.toothNumber != null ? String(row.toothNumber) : "—",
+      row.toothLabel != null ? row.toothLabel : row.toothNumber != null ? String(row.toothNumber) : "—",
       row.description,
       String(row.quantity),
       fmtMoney(row.unitPrice as number | string),

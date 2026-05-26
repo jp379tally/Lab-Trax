@@ -8,6 +8,7 @@ import {
   payments,
 } from "@workspace/db";
 import { calculateLineTotal, sumMoney } from "./case";
+import { materialToPriceKey, resolveItemLabelFromMap } from "./pricing";
 
 /**
  * Re-sync the invoice attached to a case from its current restoration rows.
@@ -103,6 +104,7 @@ export async function syncInvoiceFromRestorations(args: {
           invoiceId: invoice.id,
           caseRestorationId: item.caseRestorationId,
           toothNumber: item.toothNumber,
+          toothLabel: item.toothLabel ?? null,
           description: item.description,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
@@ -166,10 +168,313 @@ export async function syncInvoiceFromRestorations(args: {
 interface SyncLineItem {
   caseRestorationId: string | null;
   toothNumber: number | null;
+  toothLabel: string | null;
   description: string;
   quantity: number;
   unitPrice: string;
   lineTotal: string;
+}
+
+// ── Grouped line items for AI-import invoice builders ─────────────────────
+
+export interface GroupedLineItemInsert {
+  invoiceId: string;
+  caseRestorationId: string | null;
+  toothNumber: number | null;
+  toothLabel: string | null;
+  description: string;
+  quantity: number;
+  unitPrice: string;
+  lineTotal: string;
+  sortOrder: number;
+}
+
+type AiRestoration = {
+  teeth: string;
+  material: string | null;
+  type: string;
+  isBridge: boolean;
+};
+
+type RestorationRow = {
+  id: string;
+  toothNumber: string | null;
+  restorationType: string;
+  material: string | null;
+  quantity: number;
+  unitPrice: string;
+};
+
+/**
+ * Count teeth represented by an AI restoration `teeth` string.
+ *  - Comma list "3, 4, 5" → 3
+ *  - Dash range "8-10"    → 3 (10 - 8 + 1)
+ *  - Single "3"           → 1
+ */
+function countAiTeeth(teeth: string): number {
+  const t = teeth.trim();
+  if (t.includes(",")) {
+    return t.split(",").filter((s) => s.trim()).length;
+  }
+  const dashMatch = t.match(/^(\d+)-(\d+)$/);
+  if (dashMatch) {
+    const lo = parseInt(dashMatch[1]!, 10);
+    const hi = parseInt(dashMatch[2]!, 10);
+    return Math.abs(hi - lo) + 1;
+  }
+  return 1;
+}
+
+/**
+ * Loose match between a DB restoration row and an AI restorations element.
+ * Checks material (case-insensitive, null-tolerant) and that the
+ * restorationType / AI type share a meaningful substring.
+ */
+function rowMatchesAiRestoration(r: RestorationRow, ai: AiRestoration): boolean {
+  const rMat = (r.material ?? "").toLowerCase().trim();
+  const aiMat = (ai.material ?? "").toLowerCase().trim();
+  const matMatch = rMat === aiMat;
+  const rType = r.restorationType.toLowerCase().trim();
+  const aiType = ai.type.toLowerCase().trim();
+  const typeMatch =
+    rType.includes(aiType) ||
+    aiType.includes(rType) ||
+    rType.split(/\s+/).some((word) => aiType.includes(word)) ||
+    aiType.split(/\s+/).some((word) => rType.includes(word));
+  return matMatch && typeMatch;
+}
+
+/**
+ * Build ready-to-insert invoice line items from DB restoration rows, grouping
+ * same-material/same-type restorations into a single row with a combined
+ * `toothLabel`. Called by the three AI-import invoice-creation blocks in
+ * `cases.ts`.
+ *
+ * When `aiRestorations` is provided and non-empty it is used as the primary
+ * grouping source (preserving bridge dash notation such as "8-10"). Each AI
+ * element is matched against the DB rows to obtain the unit price.
+ *
+ * When `aiRestorations` is absent/empty the function falls back to grouping
+ * `restorations` by `(restorationType, material)`.
+ *
+ * Single-tooth groups preserve the existing `toothNumber` integer column so
+ * they are unaffected by this change.
+ */
+export function buildGroupedLineItemsForInvoice(
+  restorations: RestorationRow[],
+  labelCache: Record<string, string>,
+  invoiceId: string,
+  aiRestorations?: AiRestoration[] | null,
+): GroupedLineItemInsert[] {
+  if (restorations.length === 0) return [];
+
+  if (aiRestorations && aiRestorations.length > 0) {
+    // AI-guided grouping: each AI element becomes one line item.
+    // We limit consumption to countAiTeeth(ai.teeth) rows per element so that
+    // two AI groups with the same material/type (e.g. two separate bridge spans)
+    // each claim their own distinct DB rows rather than the first element
+    // greedily consuming all matching rows.
+    const used = new Set<string>();
+    const items: GroupedLineItemInsert[] = [];
+
+    for (let i = 0; i < aiRestorations.length; i++) {
+      const ai = aiRestorations[i]!;
+      const qty = countAiTeeth(ai.teeth);
+      // Take only as many matching rows as this AI element's tooth count.
+      const allMatched = restorations.filter(
+        (r) => !used.has(r.id) && rowMatchesAiRestoration(r, ai),
+      );
+      const toUse = allMatched.slice(0, qty);
+
+      if (toUse.length === 0) continue;
+
+      const pk = materialToPriceKey(toUse[0]!.material, toUse[0]!.restorationType)
+        ?? toUse[0]!.restorationType;
+      const label = resolveItemLabelFromMap(labelCache, pk);
+      const unitPrice = toUse[0]!.unitPrice;
+      const lineTotal = (qty * Number(unitPrice)).toFixed(2);
+      const isSingle = qty === 1;
+
+      items.push({
+        invoiceId,
+        caseRestorationId: toUse[0]!.id,
+        toothNumber: isSingle ? parseToothInt(ai.teeth.trim()) : null,
+        toothLabel: isSingle ? null : ai.teeth.trim(),
+        description: isSingle
+          ? buildLabelWithTooth(ai.teeth.trim(), label)
+          : label,
+        quantity: qty,
+        unitPrice,
+        lineTotal,
+        sortOrder: i,
+      });
+
+      for (const r of toUse) used.add(r.id);
+    }
+
+    // Any DB rows not consumed by the AI array fall back to per-row items.
+    const unconsumed = restorations.filter((r) => !used.has(r.id));
+    const fallback = buildGroupedFromRows(unconsumed, labelCache, items.length)
+      .map((it) => ({ ...it, invoiceId }));
+    return [...items, ...fallback];
+  }
+
+  // Fallback: group DB rows by (restorationType, material).
+  return buildGroupedFromRows(restorations, labelCache, 0)
+    .map((it) => ({ ...it, invoiceId }));
+}
+
+/**
+ * Group an array of restoration rows by (restorationType, material) and
+ * produce one line item per group, with a comma-joined `toothLabel` for
+ * multi-tooth groups. `invoiceId` is set to an empty string placeholder;
+ * callers set the real value on each item after calling.
+ */
+function buildGroupedFromRows(
+  restorations: RestorationRow[],
+  labelCache: Record<string, string>,
+  sortOffset: number,
+): GroupedLineItemInsert[] {
+  if (restorations.length === 0) return [];
+
+  type Group = { rows: RestorationRow[] };
+  const groupMap = new Map<string, Group>();
+  const order: string[] = [];
+
+  for (const r of restorations) {
+    const key = `${(r.material ?? "").toLowerCase()}::${r.restorationType.toLowerCase()}`;
+    if (!groupMap.has(key)) {
+      groupMap.set(key, { rows: [] });
+      order.push(key);
+    }
+    groupMap.get(key)!.rows.push(r);
+  }
+
+  const items: GroupedLineItemInsert[] = [];
+  let idx = sortOffset;
+
+  for (const key of order) {
+    const { rows } = groupMap.get(key)!;
+    const first = rows[0]!;
+    const pk = materialToPriceKey(first.material, first.restorationType) ?? first.restorationType;
+    const label = resolveItemLabelFromMap(labelCache, pk);
+    const unitPrice = first.unitPrice;
+
+    if (rows.length === 1) {
+      const qty = Number(first.quantity ?? 1);
+      items.push({
+        invoiceId: "",
+        caseRestorationId: first.id,
+        toothNumber: parseToothInt(first.toothNumber ?? ""),
+        toothLabel: null,
+        description: buildLabelWithTooth(first.toothNumber ?? "", label),
+        quantity: qty,
+        unitPrice,
+        lineTotal: (qty * Number(unitPrice)).toFixed(2),
+        sortOrder: idx++,
+      });
+    } else {
+      const qty = rows.reduce((s, r) => s + Number(r.quantity ?? 1), 0);
+      const teeth = rows
+        .map((r) => parseInt(r.toothNumber ?? "", 10))
+        .filter((n) => Number.isFinite(n) && n >= 1 && n <= 32)
+        .sort((a, b) => a - b);
+      const toothLabel = teeth.length > 0 ? teeth.join(", ") : null;
+      items.push({
+        invoiceId: "",
+        caseRestorationId: first.id,
+        toothNumber: null,
+        toothLabel,
+        description: label,
+        quantity: qty,
+        unitPrice,
+        lineTotal: (qty * Number(unitPrice)).toFixed(2),
+        sortOrder: idx++,
+      });
+    }
+  }
+
+  return items;
+}
+
+function buildLabelWithTooth(toothStr: string, label: string): string {
+  const t = (toothStr ?? "").trim();
+  if (!t) return label;
+  if (/^\d+$/.test(t)) return `#${t} ${label}`;
+  return `${t} ${label}`;
+}
+
+/**
+ * Group restoration rows by (restorationType, material) for the
+ * `syncInvoiceFromRestorations` path where no label cache is available.
+ * Produces SyncLineItems with toothLabel populated for multi-tooth groups.
+ */
+function buildGroupedSyncItems(
+  restorations: Array<{
+    id: string;
+    toothNumber: string;
+    restorationType: string;
+    material: string | null;
+    quantity: number;
+    unitPrice: string;
+  }>,
+  noChargeRemake: boolean,
+): SyncLineItem[] {
+  type Group = { rows: typeof restorations };
+  const groupMap = new Map<string, Group>();
+  const order: string[] = [];
+
+  for (const r of restorations) {
+    const key = `${(r.material ?? "").toLowerCase()}::${r.restorationType.toLowerCase()}`;
+    if (!groupMap.has(key)) {
+      groupMap.set(key, { rows: [] });
+      order.push(key);
+    }
+    groupMap.get(key)!.rows.push(r);
+  }
+
+  const items: SyncLineItem[] = [];
+
+  for (const key of order) {
+    const { rows } = groupMap.get(key)!;
+    const first = rows[0]!;
+
+    if (rows.length === 1) {
+      items.push({
+        caseRestorationId: first.id,
+        toothNumber: parseToothInt(first.toothNumber),
+        toothLabel: null,
+        description: buildBasicDescription(first, noChargeRemake),
+        quantity: first.quantity,
+        unitPrice: noChargeRemake ? "0.00" : first.unitPrice,
+        lineTotal: noChargeRemake
+          ? "0.00"
+          : calculateLineTotal(first.quantity, first.unitPrice),
+      });
+    } else {
+      const qty = rows.reduce((s, r) => s + r.quantity, 0);
+      const teeth = rows
+        .map((r) => parseInt(r.toothNumber, 10))
+        .filter((n) => Number.isFinite(n) && n >= 1 && n <= 32)
+        .sort((a, b) => a - b);
+      const toothLabel = teeth.length > 0 ? teeth.join(", ") : null;
+      const matLabel = first.material ? `${first.material} ` : "";
+      const baseDesc = `${matLabel}${first.restorationType}`;
+      const description = noChargeRemake ? `${baseDesc} (no-charge remake)` : baseDesc;
+      const unitPrice = noChargeRemake ? "0.00" : first.unitPrice;
+      items.push({
+        caseRestorationId: first.id,
+        toothNumber: null,
+        toothLabel,
+        description,
+        quantity: qty,
+        unitPrice,
+        lineTotal: noChargeRemake ? "0.00" : calculateLineTotal(qty, first.unitPrice),
+      });
+    }
+  }
+
+  return items;
 }
 
 /**
@@ -236,7 +541,7 @@ function findConnectedComponents(
 
 /**
  * Build invoice line items, collapsing bridge spans into single items when
- * the case has connector data. Falls back to one-item-per-restoration when
+ * the case has connector data. Falls back to same-material grouping when
  * there are no connectors or no bridge patterns are found.
  */
 function buildBridgeAwareLineItems(
@@ -253,19 +558,10 @@ function buildBridgeAwareLineItems(
 ): SyncLineItem[] {
   const connectors = parseConnectors(bridgeConnectors);
 
-  // Only apply bridge grouping when we have connector data and adult numeric
-  // teeth are involved (1–32).
+  // No connector data: group same-material/same-type restorations so that
+  // e.g. 6 individual PFM Crowns collapse into one line item.
   if (connectors.size === 0) {
-    return restorations.map((r) => ({
-      caseRestorationId: r.id,
-      toothNumber: parseToothInt(r.toothNumber),
-      description: buildBasicDescription(r, noChargeRemake),
-      quantity: r.quantity,
-      unitPrice: noChargeRemake ? "0.00" : r.unitPrice,
-      lineTotal: noChargeRemake
-        ? "0.00"
-        : calculateLineTotal(r.quantity, r.unitPrice),
-    }));
+    return buildGroupedSyncItems(restorations, noChargeRemake);
   }
 
   // Map restoration by numeric tooth number for quick lookup.
@@ -327,6 +623,7 @@ function buildBridgeAwareLineItems(
     items.push({
       caseRestorationId: abutment?.id ?? groupRestorations[0]?.id ?? null,
       toothNumber: null,
+      toothLabel: null,
       description: finalDesc,
       quantity: units,
       unitPrice: perUnitStr,
@@ -336,20 +633,11 @@ function buildBridgeAwareLineItems(
     for (const r of groupRestorations) usedRestorationIds.add(r.id);
   }
 
-  // Any restoration not consumed by a bridge span becomes its own line item.
-  for (const r of restorations) {
-    if (usedRestorationIds.has(r.id)) continue;
-    items.push({
-      caseRestorationId: r.id,
-      toothNumber: parseToothInt(r.toothNumber),
-      description: buildBasicDescription(r, noChargeRemake),
-      quantity: r.quantity,
-      unitPrice: noChargeRemake ? "0.00" : r.unitPrice,
-      lineTotal: noChargeRemake
-        ? "0.00"
-        : calculateLineTotal(r.quantity, r.unitPrice),
-    });
-  }
+  // Any restoration not consumed by a bridge span: apply same-material
+  // grouping so individual crowns of the same material collapse too.
+  const unconsumedBridge = restorations.filter((r) => !usedRestorationIds.has(r.id));
+  const ungrouped = buildGroupedSyncItems(unconsumedBridge, noChargeRemake);
+  items.push(...ungrouped);
 
   return items;
 }
