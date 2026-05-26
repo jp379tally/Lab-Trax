@@ -3458,16 +3458,27 @@ Important rules:
   router.post("/smile-process", requireAuth, async (req, res) => {
     try {
       const openai = getOpenAIClient();
-      if (!openai) return res.status(503).json({ error: "AI integrations are not configured." });
+      if (!openai) return res.status(503).json({ error: "AI integrations are not configured on this server. Please contact your administrator." });
 
-      const { imageBase64, mode } = req.body;
+      const { imageBase64, mode, whiten, straighten } = req.body;
       if (!imageBase64) return res.status(400).json({ error: "No image provided" });
 
+      // Resolve enhancement flags from either the new boolean fields or the legacy mode string.
+      const doWhiten: boolean = typeof whiten === "boolean" ? whiten : (mode === "whiten" || mode === "both");
+      const doStraighten: boolean = typeof straighten === "boolean" ? straighten : (mode === "symmetry" || mode === "both");
+
+      if (!doWhiten && !doStraighten) {
+        return res.status(400).json({ error: "At least one enhancement must be selected (whiten or straighten)." });
+      }
+
       let prompt = "";
-      if (mode === "whiten") prompt = "Edit this photo to whiten and brighten the person's teeth to a natural, beautiful Hollywood-white shade. Keep everything else the same.";
-      else if (mode === "symmetry") prompt = "Edit this photo to make the person's visible teeth perfectly symmetrical and even. Keep everything else the same.";
-      else if (mode === "both") prompt = "Edit this photo to whiten teeth AND make them perfectly symmetrical. Keep everything else the same.";
-      else return res.status(400).json({ error: "Invalid mode." });
+      if (doWhiten && doStraighten) {
+        prompt = "Edit this dental photo to both whiten the person's teeth to a natural, beautiful shade AND correct minor misalignment so the teeth appear straighter and more symmetrical. Make only the requested dental enhancements — keep skin tone, background, and all other features completely unchanged.";
+      } else if (doWhiten) {
+        prompt = "Edit this dental photo to whiten and brighten the person's teeth to a natural, beautiful shade. Only whiten the teeth — keep skin tone, background, and all other features completely unchanged.";
+      } else {
+        prompt = "Edit this dental photo to gently straighten and align the person's teeth so they appear more even and symmetrical. Only adjust the tooth alignment — keep skin tone, background, and all other features completely unchanged.";
+      }
 
       const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
       const imgBuffer = Buffer.from(base64Data, "base64");

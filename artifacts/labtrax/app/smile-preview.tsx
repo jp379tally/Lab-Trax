@@ -1,33 +1,71 @@
-import React, { useRef, useState } from "react";
+import React, { useRef, useState, useCallback } from "react";
 import {
   View,
   Text,
   StyleSheet,
   Platform,
   Pressable,
-  Image,
   Alert,
   ActivityIndicator,
+  PanResponder,
+  Animated,
+  ScrollView,
 } from "react-native";
+import { Image } from "expo-image";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { CameraView, useCameraPermissions } from "expo-camera";
+import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from "expo-file-system";
+import * as Sharing from "expo-sharing";
+import * as MediaLibrary from "expo-media-library";
 import { resilientFetch } from "@/lib/query-client";
+
+type Step = "capture" | "options" | "result";
 
 export default function SmilePreviewScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const cameraRef = useRef<any>(null);
-  const [permission, requestPermission] = useCameraPermissions();
-  const [capturedPhoto, setCapturedPhoto] = useState<string | null>(null);
-  const [processedPhoto, setProcessedPhoto] = useState<string | null>(null);
-  const [capturing, setCapturing] = useState(false);
-  const [processing, setProcessing] = useState(false);
-  const [processingMode, setProcessingMode] = useState<string | null>(null);
+
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  const [step, setStep] = useState<Step>("capture");
   const [facing, setFacing] = useState<"front" | "back">("front");
-  const [activeEffect, setActiveEffect] = useState<string | null>(null);
+  const [capturing, setCapturing] = useState(false);
+
+  const [originalUri, setOriginalUri] = useState<string | null>(null);
+  const [enhancedUri, setEnhancedUri] = useState<string | null>(null);
+
+  const [whitenOn, setWhitenOn] = useState(true);
+  const [straightenOn, setStraightenOn] = useState(false);
+
+  const [processing, setProcessing] = useState(false);
+
+  const sliderXAnim = useRef(new Animated.Value(0.5)).current;
+  const sliderXRaw = useRef(0.5);
+  const containerWidthRef = useRef(300);
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: () => {},
+      onPanResponderMove: (_, gs) => {
+        const w = containerWidthRef.current;
+        const rawX = sliderXRaw.current * w + gs.dx;
+        const clamped = Math.min(Math.max(rawX / w, 0.05), 0.95);
+        sliderXAnim.setValue(clamped);
+      },
+      onPanResponderRelease: (_, gs) => {
+        const w = containerWidthRef.current;
+        const rawX = sliderXRaw.current * w + gs.dx;
+        const clamped = Math.min(Math.max(rawX / w, 0.05), 0.95);
+        sliderXRaw.current = clamped;
+        sliderXAnim.setValue(clamped);
+      },
+    })
+  ).current;
 
   async function takePhoto() {
     if (!cameraRef.current || capturing) return;
@@ -37,9 +75,11 @@ export default function SmilePreviewScreen() {
         quality: 0.85,
         skipProcessing: false,
       });
-      setCapturedPhoto(photo.uri);
-      setProcessedPhoto(null);
-      setActiveEffect(null);
+      setOriginalUri(photo.uri);
+      setEnhancedUri(null);
+      sliderXRaw.current = 0.5;
+      sliderXAnim.setValue(0.5);
+      setStep("options");
     } catch {
       Alert.alert("Error", "Failed to take photo. Please try again.");
     } finally {
@@ -47,14 +87,41 @@ export default function SmilePreviewScreen() {
     }
   }
 
-  async function processImage(mode: "whiten" | "symmetry" | "both") {
-    if (!capturedPhoto || processing) return;
+  async function pickFromGallery() {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert(
+        "Permission Needed",
+        "Allow access to your photo library to pick an image.",
+        [{ text: "OK" }]
+      );
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: "images",
+      quality: 0.85,
+      allowsEditing: false,
+    });
+    if (!result.canceled && result.assets.length > 0) {
+      setOriginalUri(result.assets[0].uri);
+      setEnhancedUri(null);
+      sliderXRaw.current = 0.5;
+      sliderXAnim.setValue(0.5);
+      setStep("options");
+    }
+  }
+
+  async function generatePreview() {
+    if (!originalUri || processing) return;
+    if (!whitenOn && !straightenOn) {
+      Alert.alert("Select Enhancement", "Please choose at least one enhancement option.");
+      return;
+    }
     setProcessing(true);
-    setProcessingMode(mode);
     try {
       let base64: string;
       if (Platform.OS === "web") {
-        const resp = await fetch(capturedPhoto);
+        const resp = await fetch(originalUri);
         const blob = await resp.blob();
         base64 = await new Promise<string>((resolve, reject) => {
           const reader = new FileReader();
@@ -63,8 +130,8 @@ export default function SmilePreviewScreen() {
           reader.readAsDataURL(blob);
         });
       } else {
-        const b64 = await FileSystem.readAsStringAsync(capturedPhoto, {
-          encoding: "base64" as any,
+        const b64 = await FileSystem.readAsStringAsync(originalUri, {
+          encoding: (FileSystem as any).EncodingType?.Base64 ?? "base64",
         });
         base64 = `data:image/jpeg;base64,${b64}`;
       }
@@ -72,156 +139,316 @@ export default function SmilePreviewScreen() {
       const resp = await resilientFetch("/api/smile-process", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageBase64: base64, mode }),
+        body: JSON.stringify({
+          imageBase64: base64,
+          whiten: whitenOn,
+          straighten: straightenOn,
+        }),
       });
 
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
-        throw new Error(err.error || "Processing failed");
+        throw new Error((err as any).error || "Processing failed");
       }
 
       const data = await resp.json();
-      setProcessedPhoto(data.imageBase64);
-      setActiveEffect(mode);
+      setEnhancedUri(data.imageBase64);
+      setStep("result");
     } catch (e: any) {
-      Alert.alert("Processing Error", e?.message || "Failed to process image. Please try again.");
+      Alert.alert(
+        "Enhancement Failed",
+        e?.message || "Unable to process image. Check your connection and try again.",
+        [{ text: "Try Again", onPress: () => {} }, { text: "Cancel" }]
+      );
     } finally {
       setProcessing(false);
-      setProcessingMode(null);
     }
   }
 
-  if (!permission) {
+  async function saveToPhotos() {
+    if (!enhancedUri) return;
+    try {
+      const { status } = await MediaLibrary.requestPermissionsAsync();
+      if (status !== "granted") {
+        Alert.alert("Permission Needed", "Allow access to save photos to your library.");
+        return;
+      }
+      let fileUri = enhancedUri;
+      if (enhancedUri.startsWith("data:")) {
+        const base64Data = enhancedUri.replace(/^data:image\/\w+;base64,/, "");
+        fileUri = ((FileSystem as any).cacheDirectory ?? "") + `smile-enhanced-${Date.now()}.png`;
+        await FileSystem.writeAsStringAsync(fileUri, base64Data, {
+          encoding: (FileSystem as any).EncodingType?.Base64 ?? "base64",
+        });
+      }
+      await MediaLibrary.saveToLibraryAsync(fileUri);
+      Alert.alert("Saved!", "Enhanced smile photo saved to your camera roll.");
+    } catch (e: any) {
+      Alert.alert("Save Failed", e?.message || "Could not save the photo.");
+    }
+  }
+
+  async function sharePhoto() {
+    if (!enhancedUri) return;
+    try {
+      const canShare = await Sharing.isAvailableAsync();
+      if (!canShare) {
+        Alert.alert("Sharing Not Available", "Sharing is not supported on this device.");
+        return;
+      }
+      let fileUri = enhancedUri;
+      if (enhancedUri.startsWith("data:")) {
+        const base64Data = enhancedUri.replace(/^data:image\/\w+;base64,/, "");
+        fileUri = ((FileSystem as any).cacheDirectory ?? "") + `smile-enhanced-${Date.now()}.png`;
+        await FileSystem.writeAsStringAsync(fileUri, base64Data, {
+          encoding: (FileSystem as any).EncodingType?.Base64 ?? "base64",
+        });
+      }
+      await Sharing.shareAsync(fileUri, {
+        mimeType: "image/png",
+        dialogTitle: "Share Smile Preview",
+      });
+    } catch (e: any) {
+      Alert.alert("Share Failed", e?.message || "Could not share the photo.");
+    }
+  }
+
+  const topPad = Platform.OS === "web" ? 67 + 8 : insets.top + 8;
+  const botPad = Platform.OS === "web" ? 34 + 12 : Math.max(insets.bottom, 16) + 12;
+
+  if (!cameraPermission) {
     return (
       <View style={styles.container}>
-        <ActivityIndicator size="large" color="#2563EB" />
+        <ActivityIndicator size="large" color="#7C3AED" />
       </View>
     );
   }
 
-  if (!permission.granted) {
+  if (step === "result" && originalUri && enhancedUri) {
     return (
       <View style={styles.container}>
-        <View style={[styles.header, { paddingTop: Platform.OS === "web" ? 67 + 8 : insets.top + 8 }]}>
-          <Pressable onPress={() => router.back()} style={styles.backBtn}>
+        <View style={[styles.header, { paddingTop: topPad }]}>
+          <Pressable onPress={() => { setStep("options"); setEnhancedUri(null); sliderXRaw.current = 0.5; sliderXAnim.setValue(0.5); }} style={styles.iconBtn}>
+            <Ionicons name="arrow-back" size={24} color="#FFF" />
+          </Pressable>
+          <Text style={styles.headerTitle}>Before / After</Text>
+          <View style={{ width: 40 }} />
+        </View>
+
+        <View
+          style={styles.compareContainer}
+          onLayout={(e) => { containerWidthRef.current = e.nativeEvent.layout.width; }}
+        >
+          <Image source={{ uri: enhancedUri }} style={StyleSheet.absoluteFillObject} contentFit="cover" />
+
+          <Animated.View
+            style={[
+              styles.originalOverlay,
+              {
+                width: sliderXAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: ["0%", "100%"],
+                }),
+              },
+            ]}
+            pointerEvents="none"
+          >
+            <Image source={{ uri: originalUri }} style={styles.originalImage} contentFit="cover" />
+          </Animated.View>
+
+          <Animated.View
+            style={[
+              styles.dividerLine,
+              {
+                left: sliderXAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: ["0%", "100%"],
+                }),
+              },
+            ]}
+            {...panResponder.panHandlers}
+          >
+            <View style={styles.dividerHandle}>
+              <Ionicons name="chevron-back" size={14} color="#FFF" />
+              <Ionicons name="chevron-forward" size={14} color="#FFF" />
+            </View>
+          </Animated.View>
+
+          <View style={styles.compareLabels} pointerEvents="none">
+            <View style={styles.compareLabel}>
+              <Text style={styles.compareLabelText}>Before</Text>
+            </View>
+            <View style={[styles.compareLabel, styles.compareLabelRight]}>
+              <Ionicons name="sparkles" size={11} color="#FFF" style={{ marginRight: 3 }} />
+              <Text style={styles.compareLabelText}>Enhanced</Text>
+            </View>
+          </View>
+        </View>
+
+        <View style={[styles.resultControls, { paddingBottom: botPad }]}>
+          <Text style={styles.resultHint}>Drag the slider to compare</Text>
+          <View style={styles.resultBtnRow}>
+            <Pressable
+              onPress={saveToPhotos}
+              style={({ pressed }) => [styles.resultBtn, pressed && { opacity: 0.8 }]}
+            >
+              <Ionicons name="download-outline" size={20} color="#FFF" />
+              <Text style={styles.resultBtnText}>Save to Photos</Text>
+            </Pressable>
+            <Pressable
+              onPress={sharePhoto}
+              style={({ pressed }) => [styles.resultBtn, styles.resultBtnShare, pressed && { opacity: 0.8 }]}
+            >
+              <Ionicons name="share-outline" size={20} color="#FFF" />
+              <Text style={styles.resultBtnText}>Share</Text>
+            </Pressable>
+          </View>
+          <Pressable
+            onPress={() => { setStep("capture"); setOriginalUri(null); setEnhancedUri(null); }}
+            style={({ pressed }) => [styles.retakeBtn, pressed && { opacity: 0.75 }]}
+          >
+            <Ionicons name="camera-outline" size={16} color="rgba(255,255,255,0.6)" />
+            <Text style={styles.retakeBtnText}>New Photo</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
+  if (step === "options" && originalUri) {
+    return (
+      <View style={styles.container}>
+        <View style={[styles.header, { paddingTop: topPad }]}>
+          <Pressable onPress={() => { setStep("capture"); setOriginalUri(null); }} style={styles.iconBtn}>
+            <Ionicons name="arrow-back" size={24} color="#FFF" />
+          </Pressable>
+          <Text style={styles.headerTitle}>Choose Enhancements</Text>
+          <View style={{ width: 40 }} />
+        </View>
+
+        <ScrollView contentContainerStyle={{ flexGrow: 1 }} scrollEnabled={false}>
+          <View style={styles.thumbContainer}>
+            <Image source={{ uri: originalUri }} style={styles.thumbnail} contentFit="cover" />
+            <View style={styles.thumbLabel}>
+              <Ionicons name="image-outline" size={12} color="#FFF" />
+              <Text style={styles.thumbLabelText}>Original</Text>
+            </View>
+          </View>
+
+          <View style={[styles.optionsPanel, { paddingBottom: botPad }]}>
+            <Text style={styles.optionsSectionTitle}>Select Enhancements</Text>
+
+            <Pressable
+              onPress={() => setWhitenOn((v) => !v)}
+              style={({ pressed }) => [
+                styles.optionRow,
+                whitenOn && styles.optionRowActive,
+                pressed && { opacity: 0.85 },
+              ]}
+            >
+              <View style={[styles.optionIcon, whitenOn && styles.optionIconActive]}>
+                <Ionicons name="sunny" size={22} color={whitenOn ? "#FFF" : "rgba(255,255,255,0.4)"} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.optionTitle}>Whiten Smile</Text>
+                <Text style={styles.optionSubtitle}>AI brightens and whitens teeth naturally</Text>
+              </View>
+              <View style={[styles.checkBox, whitenOn && styles.checkBoxActive]}>
+                {whitenOn && <Ionicons name="checkmark" size={16} color="#FFF" />}
+              </View>
+            </Pressable>
+
+            <Pressable
+              onPress={() => setStraightenOn((v) => !v)}
+              style={({ pressed }) => [
+                styles.optionRow,
+                straightenOn && styles.optionRowActive,
+                straightenOn && styles.optionRowActivePurple,
+                pressed && { opacity: 0.85 },
+              ]}
+            >
+              <View style={[styles.optionIcon, straightenOn && styles.optionIconActive, straightenOn && styles.optionIconActivePurple]}>
+                <Ionicons name="git-compare-outline" size={22} color={straightenOn ? "#FFF" : "rgba(255,255,255,0.4)"} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.optionTitle}>Straighten Smile</Text>
+                <Text style={styles.optionSubtitle}>Corrects minor alignment and symmetry</Text>
+              </View>
+              <View style={[styles.checkBox, straightenOn && styles.checkBoxActive, straightenOn && styles.checkBoxActivePurple]}>
+                {straightenOn && <Ionicons name="checkmark" size={16} color="#FFF" />}
+              </View>
+            </Pressable>
+
+            {whitenOn && straightenOn && (
+              <View style={styles.bothBadge}>
+                <Ionicons name="sparkles" size={14} color="#F59E0B" />
+                <Text style={styles.bothBadgeText}>Both enhancements selected — full AI smile makeover</Text>
+              </View>
+            )}
+
+            <Pressable
+              onPress={generatePreview}
+              disabled={processing || (!whitenOn && !straightenOn)}
+              style={({ pressed }) => [
+                styles.generateBtn,
+                (processing || (!whitenOn && !straightenOn)) && styles.generateBtnDisabled,
+                pressed && { opacity: 0.85 },
+              ]}
+            >
+              {processing ? (
+                <>
+                  <ActivityIndicator size="small" color="#FFF" />
+                  <Text style={styles.generateBtnText}>
+                    {whitenOn && straightenOn
+                      ? "AI is enhancing the smile…"
+                      : whitenOn
+                      ? "Whitening smile…"
+                      : "Straightening smile…"}
+                  </Text>
+                </>
+              ) : (
+                <>
+                  <Ionicons name="sparkles" size={20} color="#FFF" />
+                  <Text style={styles.generateBtnText}>Generate Preview</Text>
+                </>
+              )}
+            </Pressable>
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
+
+  if (!cameraPermission.granted) {
+    return (
+      <View style={styles.container}>
+        <View style={[styles.header, { paddingTop: topPad }]}>
+          <Pressable onPress={() => router.back()} style={styles.iconBtn}>
             <Ionicons name="arrow-back" size={24} color="#FFF" />
           </Pressable>
           <Text style={styles.headerTitle}>Smile Preview</Text>
           <View style={{ width: 40 }} />
         </View>
-        <View style={styles.permissionContainer}>
-          <Ionicons name="camera-outline" size={64} color="rgba(255,255,255,0.3)" />
+        <View style={styles.centeredBox}>
+          <Ionicons name="camera-outline" size={56} color="rgba(255,255,255,0.3)" />
           <Text style={styles.permissionTitle}>Camera Access Needed</Text>
           <Text style={styles.permissionText}>
-            This feature uses your camera to capture dental case photos.
+            Grant camera access to take a smile photo, or pick one from your gallery.
           </Text>
           <Pressable
-            onPress={() => {
-              Alert.alert(
-                "Camera Access",
-                "This feature uses your camera to capture dental case photos.",
-                [{ text: "Continue", onPress: () => requestPermission() }]
-              );
-            }}
-            style={({ pressed }) => [styles.permissionBtn, pressed && { opacity: 0.8 }]}
+            onPress={() => requestCameraPermission()}
+            style={({ pressed }) => [styles.purpleBtn, pressed && { opacity: 0.8 }]}
           >
-            <Text style={styles.permissionBtnText}>Allow Camera</Text>
+            <Ionicons name="camera" size={18} color="#FFF" />
+            <Text style={styles.purpleBtnText}>Allow Camera</Text>
           </Pressable>
-        </View>
-      </View>
-    );
-  }
-
-  if (capturedPhoto) {
-    const displayPhoto = processedPhoto || capturedPhoto;
-    const isOriginal = !processedPhoto;
-
-    return (
-      <View style={styles.container}>
-        <View style={[styles.header, { paddingTop: Platform.OS === "web" ? 67 + 8 : insets.top + 8 }]}>
-          <Pressable onPress={() => { setCapturedPhoto(null); setProcessedPhoto(null); setActiveEffect(null); }} style={styles.backBtn}>
-            <Ionicons name="arrow-back" size={24} color="#FFF" />
+          <Pressable
+            onPress={pickFromGallery}
+            style={({ pressed }) => [styles.outlineBtn, pressed && { opacity: 0.8 }]}
+          >
+            <Ionicons name="images-outline" size={18} color="rgba(255,255,255,0.8)" />
+            <Text style={styles.outlineBtnText}>Pick from Gallery</Text>
           </Pressable>
-          <Text style={styles.headerTitle}>Preview</Text>
-          <View style={{ width: 40 }} />
-        </View>
-
-        <View style={styles.photoContainer}>
-          <Image source={{ uri: displayPhoto }} style={styles.capturedImage} resizeMode="cover" />
-
-          {processing && (
-            <View style={styles.processingOverlay}>
-              <View style={styles.processingCard}>
-                <ActivityIndicator size="large" color="#2563EB" />
-                <Text style={styles.processingTitle}>
-                  {processingMode === "whiten" ? "Whitening Teeth..." : processingMode === "symmetry" ? "Restoring Symmetry..." : "Enhancing Smile..."}
-                </Text>
-                <Text style={styles.processingSubtitle}>AI is processing your photo</Text>
-              </View>
-            </View>
-          )}
-
-          {activeEffect && !processing && (
-            <View style={styles.effectBadge}>
-              <Ionicons name="sparkles" size={12} color="#FFF" />
-              <Text style={styles.effectBadgeText}>
-                {activeEffect === "whiten" ? "Whitened" : activeEffect === "symmetry" ? "Symmetry" : "Whitened + Symmetry"}
-              </Text>
-            </View>
-          )}
-        </View>
-
-        <View style={[styles.controls, { paddingBottom: Platform.OS === "web" ? 34 + 12 : Math.max(insets.bottom, 16) + 12 }]}>
-          {!processing && (
-            <>
-              <Text style={styles.sectionLabel}>AI Enhancements</Text>
-              <View style={styles.enhancementRow}>
-                <Pressable
-                  onPress={() => processImage("whiten")}
-                  disabled={processing}
-                  style={({ pressed }) => [styles.enhanceBtn, activeEffect === "whiten" && styles.enhanceBtnDone, pressed && { opacity: 0.8 }]}
-                >
-                  <Ionicons name="sunny-outline" size={20} color="#FFF" />
-                  <Text style={styles.enhanceBtnText}>Whiten</Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => processImage("symmetry")}
-                  disabled={processing}
-                  style={({ pressed }) => [styles.enhanceBtn, styles.enhanceBtnSymmetry, activeEffect === "symmetry" && styles.enhanceBtnDone, pressed && { opacity: 0.8 }]}
-                >
-                  <Ionicons name="git-compare-outline" size={20} color="#FFF" />
-                  <Text style={styles.enhanceBtnText}>Symmetry</Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => processImage("both")}
-                  disabled={processing}
-                  style={({ pressed }) => [styles.enhanceBtn, styles.enhanceBtnBoth, activeEffect === "both" && styles.enhanceBtnDone, pressed && { opacity: 0.8 }]}
-                >
-                  <Ionicons name="sparkles" size={20} color="#FFF" />
-                  <Text style={styles.enhanceBtnText}>Both</Text>
-                </Pressable>
-              </View>
-
-              <View style={styles.actionRow}>
-                {processedPhoto && (
-                  <Pressable
-                    onPress={() => { setProcessedPhoto(null); setActiveEffect(null); }}
-                    style={({ pressed }) => [styles.actionBtn, styles.actionBtnSecondary, pressed && { opacity: 0.8 }]}
-                  >
-                    <Ionicons name="eye-outline" size={16} color="#FFF" />
-                    <Text style={styles.actionBtnText}>Original</Text>
-                  </Pressable>
-                )}
-                <Pressable
-                  onPress={() => { setCapturedPhoto(null); setProcessedPhoto(null); setActiveEffect(null); }}
-                  style={({ pressed }) => [styles.actionBtn, styles.actionBtnSecondary, pressed && { opacity: 0.8 }]}
-                >
-                  <Ionicons name="camera-reverse-outline" size={16} color="#FFF" />
-                  <Text style={styles.actionBtnText}>Retake</Text>
-                </Pressable>
-              </View>
-            </>
-          )}
         </View>
       </View>
     );
@@ -229,12 +456,12 @@ export default function SmilePreviewScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={[styles.header, { paddingTop: Platform.OS === "web" ? 67 + 8 : insets.top + 8 }]}>
-        <Pressable onPress={() => router.back()} style={styles.backBtn}>
+      <View style={[styles.header, { paddingTop: topPad }]}>
+        <Pressable onPress={() => router.back()} style={styles.iconBtn}>
           <Ionicons name="arrow-back" size={24} color="#FFF" />
         </Pressable>
         <Text style={styles.headerTitle}>Smile Preview</Text>
-        <Pressable onPress={() => setFacing(f => (f === "front" ? "back" : "front"))} style={styles.backBtn}>
+        <Pressable onPress={() => setFacing((f) => (f === "front" ? "back" : "front"))} style={styles.iconBtn}>
           <Ionicons name="camera-reverse-outline" size={24} color="#FFF" />
         </Pressable>
       </View>
@@ -243,147 +470,325 @@ export default function SmilePreviewScreen() {
         <CameraView ref={cameraRef} style={styles.camera} facing={facing} mirror={facing === "front"} />
         <View style={styles.guideOverlay} pointerEvents="none">
           <View style={styles.guideOval} />
-          <Text style={styles.guideText}>Position face within the guide</Text>
+          <Text style={styles.guideText}>Position smile within the guide</Text>
         </View>
       </View>
 
-      <View style={[styles.captureBar, { paddingBottom: Platform.OS === "web" ? 34 + 16 : Math.max(insets.bottom, 16) + 16 }]}>
-        <Text style={styles.captureHint}>Take a photo to preview AI smile enhancements</Text>
-        <Pressable
-          onPress={takePhoto}
-          disabled={capturing}
-          style={({ pressed }) => [styles.captureBtn, pressed && { opacity: 0.8 }, capturing && { opacity: 0.5 }]}
-        >
-          {capturing ? (
-            <ActivityIndicator size="small" color="#FFF" />
-          ) : (
-            <View style={styles.captureBtnInner} />
-          )}
-        </Pressable>
+      <View style={[styles.captureBar, { paddingBottom: botPad }]}>
+        <View style={styles.captureRow}>
+          <Pressable
+            onPress={pickFromGallery}
+            style={({ pressed }) => [styles.galleryBtn, pressed && { opacity: 0.7 }]}
+          >
+            <Ionicons name="images-outline" size={28} color="#FFF" />
+            <Text style={styles.galleryBtnLabel}>Gallery</Text>
+          </Pressable>
+
+          <Pressable
+            onPress={takePhoto}
+            disabled={capturing}
+            style={({ pressed }) => [styles.captureBtn, pressed && { opacity: 0.8 }, capturing && { opacity: 0.5 }]}
+          >
+            {capturing ? (
+              <ActivityIndicator size="small" color="#FFF" />
+            ) : (
+              <View style={styles.captureBtnInner} />
+            )}
+          </Pressable>
+
+          <View style={{ width: 64 }} />
+        </View>
+        <Text style={styles.captureHint}>Take a photo or pick from gallery</Text>
       </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#000" },
+  container: { flex: 1, backgroundColor: "#0A0A0A" },
   header: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 16,
     paddingBottom: 10,
-    backgroundColor: "rgba(0,0,0,0.85)",
+    backgroundColor: "rgba(0,0,0,0.9)",
     zIndex: 10,
   },
-  backBtn: { width: 40, height: 40, alignItems: "center", justifyContent: "center" },
+  iconBtn: { width: 40, height: 40, alignItems: "center", justifyContent: "center" },
   headerTitle: { fontSize: 17, fontFamily: "Inter_600SemiBold", color: "#FFF" },
-  permissionContainer: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 40, gap: 16 },
-  permissionTitle: { fontSize: 20, fontFamily: "Inter_700Bold", color: "#FFF" },
-  permissionText: { fontSize: 15, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.6)", textAlign: "center", lineHeight: 22 },
-  permissionBtn: { backgroundColor: "#2563EB", paddingHorizontal: 28, paddingVertical: 14, borderRadius: 12, marginTop: 8 },
-  permissionBtnText: { color: "#FFF", fontSize: 16, fontFamily: "Inter_600SemiBold" },
+  centeredBox: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 40, gap: 16 },
+  permissionTitle: { fontSize: 20, fontFamily: "Inter_700Bold", color: "#FFF", textAlign: "center" },
+  permissionText: { fontSize: 14, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.55)", textAlign: "center", lineHeight: 20 },
+  purpleBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#7C3AED",
+    paddingHorizontal: 24,
+    paddingVertical: 14,
+    borderRadius: 12,
+    marginTop: 4,
+  },
+  purpleBtnText: { color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  outlineBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderWidth: 1.5,
+    borderColor: "rgba(255,255,255,0.3)",
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+  outlineBtnText: { color: "rgba(255,255,255,0.8)", fontSize: 15, fontFamily: "Inter_500Medium" },
   cameraContainer: { flex: 1, position: "relative" },
   camera: { flex: 1 },
-  guideOverlay: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, alignItems: "center", justifyContent: "center" },
-  guideOval: { width: 240, height: 320, borderRadius: 120, borderWidth: 2, borderColor: "rgba(255,255,255,0.35)", borderStyle: "dashed" },
-  guideText: { color: "rgba(255,255,255,0.5)", fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 16 },
-  captureBar: { alignItems: "center", paddingTop: 16, backgroundColor: "rgba(0,0,0,0.85)", gap: 12 },
-  captureHint: { color: "rgba(255,255,255,0.5)", fontSize: 13, fontFamily: "Inter_400Regular" },
-  captureBtn: { width: 72, height: 72, borderRadius: 36, borderWidth: 4, borderColor: "#FFF", alignItems: "center", justifyContent: "center" },
-  captureBtnInner: { width: 58, height: 58, borderRadius: 29, backgroundColor: "#FFF" },
-  photoContainer: { flex: 1, position: "relative", overflow: "hidden" },
-  capturedImage: { flex: 1, width: "100%" },
-  processingOverlay: {
+  guideOverlay: {
     position: "absolute",
     top: 0, left: 0, right: 0, bottom: 0,
-    backgroundColor: "rgba(0,0,0,0.6)",
     alignItems: "center",
     justifyContent: "center",
   },
-  processingCard: {
-    backgroundColor: "rgba(30,30,30,0.95)",
-    borderRadius: 20,
-    paddingHorizontal: 36,
-    paddingVertical: 28,
-    alignItems: "center",
-    gap: 12,
+  guideOval: {
+    width: 260,
+    height: 200,
+    borderRadius: 130,
+    borderWidth: 2,
+    borderColor: "rgba(124,58,237,0.6)",
+    borderStyle: "dashed",
   },
-  processingTitle: { fontSize: 17, fontFamily: "Inter_600SemiBold", color: "#FFF" },
-  processingSubtitle: { fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.5)" },
-  effectBadge: {
+  guideText: {
+    color: "rgba(255,255,255,0.5)",
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    marginTop: 14,
+  },
+  captureBar: {
+    backgroundColor: "rgba(0,0,0,0.9)",
+    paddingTop: 16,
+    paddingHorizontal: 24,
+    alignItems: "center",
+    gap: 10,
+  },
+  captureRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", width: "100%" },
+  galleryBtn: { width: 64, alignItems: "center", gap: 4 },
+  galleryBtnLabel: { fontSize: 11, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.6)" },
+  captureBtn: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    borderWidth: 4,
+    borderColor: "#7C3AED",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  captureBtnInner: { width: 58, height: 58, borderRadius: 29, backgroundColor: "#FFF" },
+  captureHint: { color: "rgba(255,255,255,0.4)", fontSize: 12, fontFamily: "Inter_400Regular" },
+
+  thumbContainer: {
+    flex: 1,
+    minHeight: 220,
+    position: "relative",
+    overflow: "hidden",
+    backgroundColor: "#111",
+  },
+  thumbnail: { flex: 1, width: "100%" },
+  thumbLabel: {
     position: "absolute",
-    top: 16,
-    right: 16,
-    backgroundColor: "rgba(16,185,129,0.9)",
-    borderRadius: 20,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    top: 12,
+    left: 12,
+    backgroundColor: "rgba(0,0,0,0.55)",
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 20,
   },
-  effectBadgeText: { fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#FFF" },
-  controls: {
+  thumbLabelText: { fontSize: 12, fontFamily: "Inter_500Medium", color: "#FFF" },
+
+  optionsPanel: {
+    backgroundColor: "rgba(0,0,0,0.92)",
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    gap: 10,
+  },
+  optionsSectionTitle: {
+    fontSize: 11,
+    fontFamily: "Inter_600SemiBold",
+    color: "rgba(255,255,255,0.45)",
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+    marginBottom: 2,
+  },
+  optionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1.5,
+    borderColor: "transparent",
+  },
+  optionRowActive: {
+    backgroundColor: "rgba(37,99,235,0.15)",
+    borderColor: "#2563EB",
+  },
+  optionRowActivePurple: {
+    backgroundColor: "rgba(124,58,237,0.15)",
+    borderColor: "#7C3AED",
+  },
+  optionIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  optionIconActive: { backgroundColor: "#2563EB" },
+  optionIconActivePurple: { backgroundColor: "#7C3AED" },
+  optionTitle: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#FFF" },
+  optionSubtitle: { fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.5)", marginTop: 2 },
+  checkBox: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.25)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  checkBoxActive: { backgroundColor: "#2563EB", borderColor: "#2563EB" },
+  checkBoxActivePurple: { backgroundColor: "#7C3AED", borderColor: "#7C3AED" },
+  bothBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "rgba(245,158,11,0.12)",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: "rgba(245,158,11,0.3)",
+  },
+  bothBadgeText: { fontSize: 12, fontFamily: "Inter_500Medium", color: "#F59E0B", flex: 1 },
+  generateBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    backgroundColor: "#7C3AED",
+    borderRadius: 14,
+    paddingVertical: 16,
+    marginTop: 4,
+  },
+  generateBtnDisabled: { backgroundColor: "rgba(124,58,237,0.4)" },
+  generateBtnText: { fontSize: 16, fontFamily: "Inter_700Bold", color: "#FFF" },
+
+  compareContainer: {
+    flex: 1,
+    overflow: "hidden",
+    backgroundColor: "#000",
+    position: "relative",
+  },
+  originalOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    bottom: 0,
+    overflow: "hidden",
+  },
+  originalImage: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    bottom: 0,
+    width: 9999,
+  },
+  dividerLine: {
+    position: "absolute",
+    top: 0,
+    bottom: 0,
+    width: 3,
+    marginLeft: -1.5,
+    backgroundColor: "#FFF",
+    zIndex: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  dividerHandle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#FFF",
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  compareLabels: {
+    position: "absolute",
+    bottom: 16,
+    left: 0,
+    right: 0,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    pointerEvents: "none",
+  },
+  compareLabel: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(0,0,0,0.55)",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 20,
+  },
+  compareLabelRight: { backgroundColor: "rgba(124,58,237,0.7)" },
+  compareLabelText: { fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#FFF" },
+
+  resultControls: {
     backgroundColor: "rgba(0,0,0,0.92)",
     paddingHorizontal: 16,
     paddingTop: 14,
     gap: 12,
+    alignItems: "center",
   },
-  sectionLabel: {
+  resultHint: {
     fontSize: 12,
-    fontFamily: "Inter_600SemiBold",
-    color: "rgba(255,255,255,0.5)",
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
+    fontFamily: "Inter_400Regular",
+    color: "rgba(255,255,255,0.4)",
+    textAlign: "center",
   },
-  enhancementRow: {
-    flexDirection: "row" as const,
-    gap: 10,
-  },
-  enhanceBtn: {
+  resultBtnRow: { flexDirection: "row", gap: 10, width: "100%" },
+  resultBtn: {
     flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
     backgroundColor: "#2563EB",
     borderRadius: 14,
     paddingVertical: 14,
-    alignItems: "center" as const,
-    justifyContent: "center" as const,
-    gap: 4,
   },
-  enhanceBtnSymmetry: {
-    backgroundColor: "#7C3AED",
-  },
-  enhanceBtnBoth: {
-    backgroundColor: "#D97706",
-  },
-  enhanceBtnDone: {
-    borderWidth: 2,
-    borderColor: "#10B981",
-  },
-  enhanceBtnText: {
-    fontSize: 13,
-    fontFamily: "Inter_600SemiBold",
-    color: "#FFF",
-  },
-  actionRow: {
-    flexDirection: "row" as const,
-    gap: 10,
-    justifyContent: "center" as const,
-  },
-  actionBtn: {
-    flexDirection: "row" as const,
-    alignItems: "center" as const,
+  resultBtnShare: { backgroundColor: "#7C3AED" },
+  resultBtnText: { fontSize: 14, fontFamily: "Inter_600SemiBold", color: "#FFF" },
+  retakeBtn: {
+    flexDirection: "row",
+    alignItems: "center",
     gap: 6,
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-    borderRadius: 22,
+    paddingVertical: 8,
   },
-  actionBtnSecondary: {
-    backgroundColor: "rgba(255,255,255,0.15)",
-  },
-  actionBtnText: {
+  retakeBtnText: {
     fontSize: 13,
-    fontFamily: "Inter_600SemiBold",
-    color: "#FFF",
+    fontFamily: "Inter_500Medium",
+    color: "rgba(255,255,255,0.45)",
   },
 });
