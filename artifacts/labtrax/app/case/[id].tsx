@@ -1753,6 +1753,91 @@ export default function CaseDetailScreen() {
           )}
         </Pressable>
 
+        {userType === "provider" && (() => {
+          const deliveryDate = canonicalCaseData?.expectedDeliveryDate;
+          const isComplete = caseItem.status === "COMPLETE" || caseItem.status === "SHIP";
+          if (deliveryDate) {
+            const dateObj = new Date(deliveryDate.includes("T") ? deliveryDate : deliveryDate + "T00:00:00");
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const isPast = dateObj < today && !isComplete;
+            return (
+              <View style={{
+                marginHorizontal: 16,
+                marginBottom: 14,
+                padding: 14,
+                borderRadius: 14,
+                backgroundColor: isPast ? "#FFF7ED" : "#F0FDF4",
+                borderWidth: 1,
+                borderColor: isPast ? "#FED7AA" : "#86EFAC",
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 12,
+              }}>
+                <View style={{
+                  width: 42,
+                  height: 42,
+                  borderRadius: 10,
+                  backgroundColor: isPast ? "#FFEDD5" : "#DCFCE7",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}>
+                  <Ionicons name="calendar" size={22} color={isPast ? "#EA580C" : "#16A34A"} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: isPast ? "#9A3412" : "#15803D", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2 }}>
+                    Est. Ready Date
+                  </Text>
+                  <Text style={{ fontSize: 17, fontFamily: "Inter_700Bold", color: isPast ? "#7C2D12" : "#14532D" }}>
+                    {dateObj.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}
+                  </Text>
+                  {isPast && (
+                    <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#C2410C", marginTop: 2 }}>
+                      Past estimated date — contact your lab for an update
+                    </Text>
+                  )}
+                </View>
+              </View>
+            );
+          }
+          return (
+            <View style={{
+              marginHorizontal: 16,
+              marginBottom: 14,
+              padding: 14,
+              borderRadius: 14,
+              backgroundColor: "#F8FAFC",
+              borderWidth: 1,
+              borderColor: "#E2E8F0",
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 12,
+            }}>
+              <View style={{
+                width: 42,
+                height: 42,
+                borderRadius: 10,
+                backgroundColor: "#F1F5F9",
+                alignItems: "center",
+                justifyContent: "center",
+              }}>
+                <Ionicons name="calendar-outline" size={22} color="#94A3B8" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#64748B", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2 }}>
+                  Est. Ready Date
+                </Text>
+                <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#94A3B8" }}>
+                  Not yet set
+                </Text>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#94A3B8", marginTop: 2 }}>
+                  Contact your lab for a delivery estimate
+                </Text>
+              </View>
+            </View>
+          );
+        })()}
+
         {(() => {
           const summary = caseToRxSummary(caseItem);
           const hasAny =
