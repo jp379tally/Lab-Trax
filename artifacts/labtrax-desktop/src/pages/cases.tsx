@@ -4823,6 +4823,27 @@ function PriceHistoryPanel({
   );
 }
 
+async function openFileAuthenticated(url: string): Promise<void> {
+  const token = getAccessToken();
+  const res = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) {
+    window.alert("Could not open file. Please try again.");
+    return;
+  }
+  const blob = await res.blob();
+  const blobUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = blobUrl;
+  a.target = "_blank";
+  a.rel = "noreferrer";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 30_000);
+}
+
 async function previewAttachmentInElectron(
   caseId: string,
   attachment: CaseAttachment,
@@ -4944,7 +4965,7 @@ function AttachmentRow({
     try {
       await previewAttachmentInElectron(caseId, attachment);
     } catch {
-      if (href) window.open(href, "_blank", "noopener,noreferrer");
+      if (href) await openFileAuthenticated(href);
     } finally {
       setIsPreviewing(false);
     }
@@ -4958,11 +4979,11 @@ function AttachmentRow({
         try {
           await previewAttachmentInElectron(caseId, attachment);
         } catch {
-          if (href) window.open(href, "_blank", "noopener,noreferrer");
+          if (href) await openFileAuthenticated(href);
         }
       })();
     } else if (href) {
-      window.open(href, "_blank", "noopener,noreferrer");
+      void openFileAuthenticated(href);
     }
   }
 
@@ -5042,15 +5063,14 @@ function AttachmentRow({
             {rowBody}
           </button>
         ) : (
-          <a
-            href={href}
-            target="_blank"
-            rel="noreferrer"
-            className="flex items-start gap-3 flex-1 min-w-0 -mx-1 -my-0.5 px-1 py-0.5 rounded hover:bg-secondary/60 transition-colors cursor-pointer"
+          <button
+            type="button"
+            onClick={() => void openFileAuthenticated(href)}
+            className="flex items-start gap-3 flex-1 min-w-0 -mx-1 -my-0.5 px-1 py-0.5 rounded hover:bg-secondary/60 transition-colors cursor-pointer text-left"
             title={`Open "${attachment.fileName}"`}
           >
             {rowBody}
-          </a>
+          </button>
         )
       ) : (
         <div className="flex items-start gap-3 flex-1 min-w-0">{rowBody}</div>
