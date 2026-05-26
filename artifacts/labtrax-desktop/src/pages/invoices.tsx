@@ -45,7 +45,6 @@ import {
   type InvoicePdfOptions,
 } from "@/lib/export";
 import { useInvoiceTemplate } from "@/lib/use-invoice-template";
-import { parseToothField } from "@/components/ToothChart";
 
 const STATUS_FILTERS = [
   { value: "all", label: "All" },
@@ -1894,12 +1893,10 @@ export function InvoiceEditor({
                                   (p) => p.label === v,
                                 );
                                 if (!picked) return;
-                                const toothCount = parseToothField(teeth).size;
                                 updateItem(idx, {
                                   item: picked.label,
                                   description: picked.label,
                                   unitPrice: picked.unitPrice,
-                                  quantity: toothCount > 1 ? toothCount : 1,
                                 });
                               }}
                               className="w-full h-8 px-2 rounded bg-background border border-input text-sm"
