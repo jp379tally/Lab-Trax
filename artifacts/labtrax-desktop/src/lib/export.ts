@@ -568,6 +568,7 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
   const pageWidth = doc.internal.pageSize.getWidth();
   const tableBody: string[][] = [];
   const isSubItemRow: boolean[] = [];
+  const isSubtotalRow: boolean[] = [];
   for (const row of opts.items) {
     tableBody.push([
       (row.item && String(row.item).trim()) || "—",
@@ -578,7 +579,9 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
       fmtMoney(row.lineTotal as number | string),
     ]);
     isSubItemRow.push(false);
-    for (const sub of (row.subItems ?? [])) {
+    isSubtotalRow.push(false);
+    const subs = row.subItems ?? [];
+    for (const sub of subs) {
       tableBody.push([
         (sub.item && String(sub.item).trim()) ? `↳ ${String(sub.item).trim()}` : "↳",
         sub.toothNumber != null ? String(sub.toothNumber) : "—",
@@ -588,6 +591,13 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
         fmtMoney(sub.lineTotal as number | string),
       ]);
       isSubItemRow.push(true);
+      isSubtotalRow.push(false);
+    }
+    if (subs.length > 0) {
+      const groupTotal = Number(row.lineTotal) + subs.reduce((s, sub) => s + Number(sub.lineTotal), 0);
+      tableBody.push(["", "", "— Subtotal", "", "", fmtMoney(groupTotal)]);
+      isSubItemRow.push(false);
+      isSubtotalRow.push(true);
     }
   }
   autoTable(doc, {
@@ -605,12 +615,26 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
     },
     margin: { left: it.x, right: pageWidth - (it.x + it.w) },
     didParseCell: (data) => {
-      if (data.section === "body" && isSubItemRow[data.row.index]) {
-        data.cell.styles.textColor = [100, 100, 100];
-        data.cell.styles.fontSize = 8;
-        data.cell.styles.fillColor = [248, 250, 252];
-        if (data.column.index === 0) {
-          data.cell.styles.cellPadding = { top: 3, bottom: 3, right: 4, left: 16 };
+      if (data.section === "body") {
+        if (isSubItemRow[data.row.index]) {
+          data.cell.styles.textColor = [100, 100, 100];
+          data.cell.styles.fontSize = 8;
+          data.cell.styles.fillColor = [248, 250, 252];
+          if (data.column.index === 0) {
+            data.cell.styles.cellPadding = { top: 3, bottom: 3, right: 4, left: 16 };
+          }
+        } else if (isSubtotalRow[data.row.index]) {
+          data.cell.styles.fillColor = [230, 232, 235];
+          data.cell.styles.textColor = [80, 80, 80];
+          data.cell.styles.fontSize = 8;
+          data.cell.styles.cellPadding = { top: 4, bottom: 4, right: 6, left: 6 };
+          if (data.column.index === 2) {
+            data.cell.styles.fontStyle = "italic";
+          }
+          if (data.column.index === 5) {
+            data.cell.styles.fontStyle = "bold";
+            data.cell.styles.halign = "right";
+          }
         }
       }
     },

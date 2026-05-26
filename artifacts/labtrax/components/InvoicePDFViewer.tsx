@@ -381,7 +381,8 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
             <td style="padding:10px 8px;border-bottom:1px solid #E5E7EB;text-align:right;width:90px;color:#334155;">${formatCurrency(li.rate)}</td>
             <td style="padding:10px 8px;border-bottom:1px solid #E5E7EB;text-align:right;width:100px;font-weight:600;color:#0F172A;">${formatCurrency(li.amount)}</td>
           </tr>`;
-          const subRows = (li.subItems ?? []).map((sub) => `
+          const liSubItems = li.subItems ?? [];
+          const subRows = liSubItems.map((sub) => `
           <tr style="background:#F8FAFC;">
             <td style="padding:6px 8px;border-bottom:1px solid #E5E7EB;text-align:center;width:50px;color:#64748B;font-size:11px;">${esc(sub.qty)}</td>
             <td style="padding:6px 8px 6px 24px;border-bottom:1px solid #E5E7EB;">
@@ -391,7 +392,15 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
             <td style="padding:6px 8px;border-bottom:1px solid #E5E7EB;text-align:right;width:90px;color:#64748B;font-size:11px;">${formatCurrency(sub.rate)}</td>
             <td style="padding:6px 8px;border-bottom:1px solid #E5E7EB;text-align:right;width:100px;color:#334155;font-size:11px;">${formatCurrency(sub.amount)}</td>
           </tr>`).join("");
-          return parentRow + subRows;
+          const subtotalRow = liSubItems.length > 0 ? (() => {
+            const groupTotal = li.amount + liSubItems.reduce((s, sub) => s + sub.amount, 0);
+            return `
+          <tr style="background:#E8EAED;">
+            <td colspan="3" style="padding:5px 8px;border-bottom:1px solid #D1D5DB;font-size:11px;color:#64748B;font-style:italic;text-align:right;">— Subtotal</td>
+            <td style="padding:5px 8px;border-bottom:1px solid #D1D5DB;text-align:right;width:100px;color:#374151;font-size:11px;font-weight:700;">${formatCurrency(groupTotal)}</td>
+          </tr>`;
+          })() : "";
+          return parentRow + subRows + subtotalRow;
         },
       )
       .join("");
