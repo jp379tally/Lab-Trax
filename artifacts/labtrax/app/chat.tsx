@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import {
   StyleSheet,
   View,
@@ -12,6 +12,7 @@ import {
   Alert,
   Modal,
 } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -40,6 +41,41 @@ interface CaseSearchResult {
   patientLastName?: string | null;
   doctorName?: string | null;
   status?: string | null;
+}
+
+interface StoredSession {
+  id: string;
+  key: string;
+  pinnedCases: PinnedCase[];
+  messages: ChatMsg[];
+  createdAt: number;
+  lastActive: number;
+}
+
+const STORAGE_KEY = "labtrax_chat_sessions_v1";
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_SESSIONS_PER_KEY = 10;
+
+async function readStoredSessions(): Promise<StoredSession[]> {
+  try {
+    const raw = await AsyncStorage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    const now = Date.now();
+    return (parsed.sessions ?? []).filter(
+      (s: StoredSession) => now - s.lastActive < SESSION_TTL_MS,
+    );
+  } catch {
+    return [];
+  }
+}
+
+async function writeStoredSessions(sessions: StoredSession[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ sessions }));
+  } catch {
+    // ignore — storage errors are non-fatal
+  }
 }
 
 const LAB_SUGGESTED_PROMPTS = [
@@ -87,17 +123,47 @@ function buildCasePrompts(pinnedCases: PinnedCase[]): string[] {
 function buildProviderCasePrompts(caseNumber: string, patientName: string): string[] {
   return [
     `When will this case be ready?`,
-    patientName ? `What restorations are on ${patientName}'s case?` : `What restorations are on case ${caseNumber}?`,
+    patientName
+      ? `What restorations are on ${patientName}'s case?`
+      : `What restorations are on case ${caseNumber}?`,
     `Which lab is handling case ${caseNumber}?`,
     `What is the current status of case ${caseNumber}?`,
   ];
+}
+
+function formatRelativeTime(ms: number): string {
+  const diff = Date.now() - ms;
+  const mins = Math.floor(diff / 60000);
+  const hours = Math.floor(diff / 3600000);
+  const days = Math.floor(diff / 86400000);
+  if (mins < 1) return "Just now";
+  if (mins < 60) return `${mins}m ago`;
+  if (hours < 24) return `${hours}h ago`;
+  return `${days}d ago`;
+}
+
+function getSessionPreview(session: StoredSession): string {
+  const first = session.messages.find((m) => m.role === "user");
+  if (!first) {
+    if (session.pinnedCases.length > 0) {
+      return `Cases: ${session.pinnedCases.map((c) => c.caseNumber).join(", ")}`;
+    }
+    return "Empty session";
+  }
+  return first.content.length > 55
+    ? first.content.slice(0, 52) + "…"
+    : first.content;
 }
 
 export default function ChatScreen() {
   const insets = useSafeAreaInsets();
   const { userType } = useAuth();
   const isProvider = userType === "provider";
-  const params = useLocalSearchParams<{ caseId?: string; caseNumber?: string; patientName?: string }>();
+  const params = useLocalSearchParams<{
+    caseId?: string;
+    caseNumber?: string;
+    patientName?: string;
+  }>();
 
   // Build initial pinned case from route params
   const initialPinnedCases: PinnedCase[] = [];
@@ -108,6 +174,15 @@ export default function ChatScreen() {
       patientName: params.patientName || "",
     });
   }
+
+  // sessionKey is stable for the lifetime of this screen instance
+  const sessionKey =
+    initialPinnedCases.length > 0
+      ? [...initialPinnedCases]
+          .map((c) => c.caseId)
+          .sort()
+          .join("_")
+      : "general";
 
   const [pinnedCases, setPinnedCases] = useState<PinnedCase[]>(initialPinnedCases);
   const hasCaseContext = pinnedCases.length > 0;
@@ -137,8 +212,10 @@ export default function ChatScreen() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [promptsDismissed, setPromptsDismissed] = useState(false);
-  const [clearing, setClearing] = useState(false);
-  const flatListRef = useRef<FlatList>(null);
+
+  const [allSessions, setAllSessions] = useState<StoredSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [showSessionsModal, setShowSessionsModal] = useState(false);
 
   // Case picker modal state
   const [pickerVisible, setPickerVisible] = useState(false);
@@ -147,9 +224,26 @@ export default function ChatScreen() {
   const [caseSearchLoading, setCaseSearchLoading] = useState(false);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // The user's lab org ID for case quick-search (fetched from /api/auth/me)
+  // The user's lab org ID for case quick-search
   const [labOrganizationId, setLabOrganizationId] = useState<string | null>(null);
 
+  const currentSessionIdRef = useRef<string | null>(null);
+  const flatListRef = useRef<FlatList>(null);
+
+  const sessionsForKey = allSessions
+    .filter((s) => s.key === sessionKey)
+    .sort((a, b) => b.lastActive - a.lastActive);
+
+  const suggestedPrompts = hasCaseContext
+    ? buildCasePrompts(pinnedCases)
+    : isProvider
+    ? PROVIDER_SUGGESTED_PROMPTS
+    : LAB_SUGGESTED_PROMPTS;
+
+  const showPrompts = !promptsDismissed && messages.length === 1;
+  const hasHistory = messages.some((m) => m.id !== "welcome");
+
+  // Fetch lab org ID for case search (lab users only)
   useEffect(() => {
     if (isProvider) return;
     resilientFetch("/api/auth/me")
@@ -160,43 +254,82 @@ export default function ChatScreen() {
       .catch(() => {});
   }, [isProvider]);
 
-  const suggestedPrompts = hasCaseContext
-    ? buildCasePrompts(pinnedCases)
-    : isProvider
-    ? PROVIDER_SUGGESTED_PROMPTS
-    : LAB_SUGGESTED_PROMPTS;
+  // Uses the functional-update form of setAllSessions so it always reads the
+  // latest state — safe even if called before the initial load resolves.
+  const persistSession = useCallback(
+    async (msgs: ChatMsg[], sessionId: string, currentPinnedCases: PinnedCase[]) => {
+      const userMsgs = msgs.filter((m) => m.id !== "welcome");
+      if (userMsgs.length === 0) return;
 
-  const showPrompts = !promptsDismissed && messages.length === 1;
+      const now = Date.now();
+      let persisted: StoredSession[] = [];
 
-  // Load chat history on mount (only when no initial case context)
-  useEffect(() => {
-    if (initialPinnedCases.length > 0) return;
-    let cancelled = false;
-    async function loadHistory() {
-      try {
-        const response = await resilientFetch("/api/ai-chat/history");
-        if (response.ok) {
-          const data = await response.json();
-          const historyMsgs: ChatMsg[] = (data.messages ?? []).map((m: any) => ({
-            id: m.id,
-            role: m.role as "user" | "assistant",
-            content: m.content,
-            timestamp: m.createdAt ? new Date(m.createdAt).getTime() : Date.now(),
-          }));
-          if (!cancelled && historyMsgs.length > 0) {
-            setMessages((prev) => {
-              const welcomeMsg = prev.find((m) => m.id === "welcome");
-              return welcomeMsg ? [welcomeMsg, ...historyMsgs] : historyMsgs;
-            });
-            setPromptsDismissed(true);
-          }
+      setAllSessions((prev) => {
+        const existing = prev.find((s) => s.id === sessionId);
+        let updated: StoredSession[];
+        if (existing) {
+          updated = prev.map((s) =>
+            s.id === sessionId
+              ? { ...s, messages: userMsgs, lastActive: now }
+              : s,
+          );
+        } else {
+          const newSession: StoredSession = {
+            id: sessionId,
+            key: sessionKey,
+            pinnedCases: currentPinnedCases,
+            messages: userMsgs,
+            createdAt: now,
+            lastActive: now,
+          };
+          const keyedSessions = prev.filter((s) => s.key === sessionKey);
+          const otherSessions = prev.filter((s) => s.key !== sessionKey);
+          const trimmed = [newSession, ...keyedSessions].slice(0, MAX_SESSIONS_PER_KEY);
+          updated = [...otherSessions, ...trimmed];
         }
-      } catch {
-        // silently ignore — history is a best-effort enhancement
+        persisted = updated;
+        return updated;
+      });
+
+      // Write outside the updater to avoid async inside setState
+      await writeStoredSessions(persisted);
+    },
+    [sessionKey],
+  );
+
+  // Load sessions from storage on mount
+  useEffect(() => {
+    let cancelled = false;
+    async function init() {
+      const sessions = await readStoredSessions();
+      if (cancelled) return;
+      setAllSessions(sessions);
+      const forKey = sessions
+        .filter((s) => s.key === sessionKey)
+        .sort((a, b) => b.lastActive - a.lastActive);
+      if (forKey.length > 0) {
+        const latest = forKey[0]!;
+        setCurrentSessionId(latest.id);
+        currentSessionIdRef.current = latest.id;
+        const cases = latest.pinnedCases.length > 0 ? latest.pinnedCases : initialPinnedCases;
+        setPinnedCases(cases);
+        setMessages([
+          {
+            id: "welcome",
+            role: "assistant",
+            content: buildWelcomeContent(cases),
+            timestamp: Date.now(),
+          },
+          ...latest.messages,
+        ]);
+        setPromptsDismissed(latest.messages.some((m) => m.role === "user"));
       }
     }
-    loadHistory();
-    return () => { cancelled = true; };
+    init();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Debounced case search
@@ -235,11 +368,21 @@ export default function ChatScreen() {
     const patientName = [result.patientFirstName, result.patientLastName]
       .filter(Boolean)
       .join(" ");
-    const updated = [...pinnedCases, { caseId: result.id, caseNumber: result.caseNumber, patientName }];
+    const updated = [
+      ...pinnedCases,
+      { caseId: result.id, caseNumber: result.caseNumber, patientName },
+    ];
     setPinnedCases(updated);
     setMessages((prev) => {
       if (prev.length === 1 && prev[0]!.id === "welcome") {
-        return [{ id: "welcome", role: "assistant", content: buildWelcomeContent(updated), timestamp: Date.now() }];
+        return [
+          {
+            id: "welcome",
+            role: "assistant",
+            content: buildWelcomeContent(updated),
+            timestamp: Date.now(),
+          },
+        ];
       }
       return prev;
     });
@@ -253,9 +396,53 @@ export default function ChatScreen() {
     setPinnedCases(updated);
   }
 
+  function startNewChat() {
+    const newId = generateId();
+    setCurrentSessionId(newId);
+    currentSessionIdRef.current = newId;
+    setPinnedCases(initialPinnedCases);
+    setMessages([
+      {
+        id: "welcome",
+        role: "assistant",
+        content: buildWelcomeContent(initialPinnedCases),
+        timestamp: Date.now(),
+      },
+    ]);
+    setPromptsDismissed(false);
+    setInput("");
+  }
+
+  function loadSession(session: StoredSession) {
+    const cases = session.pinnedCases.length > 0 ? session.pinnedCases : initialPinnedCases;
+    setCurrentSessionId(session.id);
+    currentSessionIdRef.current = session.id;
+    setPinnedCases(cases);
+    setMessages([
+      {
+        id: "welcome",
+        role: "assistant",
+        content: buildWelcomeContent(cases),
+        timestamp: Date.now(),
+      },
+      ...session.messages,
+    ]);
+    setPromptsDismissed(session.messages.some((m) => m.role === "user"));
+    setShowSessionsModal(false);
+  }
+
   async function sendMessage(text: string) {
     if (!text.trim() || sending) return;
     setPromptsDismissed(true);
+
+    let sessionId = currentSessionIdRef.current;
+    if (!sessionId) {
+      sessionId = generateId();
+      setCurrentSessionId(sessionId);
+      currentSessionIdRef.current = sessionId;
+    }
+
+    const snapshotPinnedCases = pinnedCases;
 
     const userMsg: ChatMsg = {
       id: generateId(),
@@ -274,10 +461,10 @@ export default function ChatScreen() {
         .map((m) => ({ role: m.role, content: m.content }));
 
       const body: Record<string, unknown> = { messages: apiMessages };
-      if (pinnedCases.length === 1) {
-        body.caseId = pinnedCases[0]!.caseId;
-      } else if (pinnedCases.length > 1) {
-        body.caseIds = pinnedCases.map((c) => c.caseId);
+      if (snapshotPinnedCases.length === 1) {
+        body.caseId = snapshotPinnedCases[0]!.caseId;
+      } else if (snapshotPinnedCases.length > 1) {
+        body.caseIds = snapshotPinnedCases.map((c) => c.caseId);
       }
 
       const response = await resilientFetch("/api/ai-chat", {
@@ -286,56 +473,36 @@ export default function ChatScreen() {
         body: JSON.stringify(body),
       });
 
+      let assistantContent = "Sorry, I'm having trouble connecting right now. Please try again.";
       if (response.ok) {
         const data = await response.json();
-        const assistantMsg: ChatMsg = {
-          id: generateId(),
-          role: "assistant",
-          content: data.reply || "I couldn't process that request.",
-          timestamp: Date.now(),
-        };
-        setMessages((prev) => [...prev, assistantMsg]);
+        assistantContent = data.reply || "I couldn't process that request.";
       } else if (response.status === 429) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: generateId(),
-            role: "assistant",
-            content: "Please slow down — try again in a moment.",
-            timestamp: Date.now(),
-          },
-        ]);
+        assistantContent = "Please slow down — try again in a moment.";
       } else if (response.status === 503) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: generateId(),
-            role: "assistant",
-            content: "AI assistant is not configured on this server. Please contact your administrator.",
-            timestamp: Date.now(),
-          },
-        ]);
-      } else {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: generateId(),
-            role: "assistant",
-            content: "Sorry, I'm having trouble connecting right now. Please try again.",
-            timestamp: Date.now(),
-          },
-        ]);
+        assistantContent =
+          "AI assistant is not configured on this server. Please contact your administrator.";
       }
+
+      const assistantMsg: ChatMsg = {
+        id: generateId(),
+        role: "assistant",
+        content: assistantContent,
+        timestamp: Date.now(),
+      };
+      const finalMessages = [...nextMessages, assistantMsg];
+      setMessages(finalMessages);
+      persistSession(finalMessages, sessionId, snapshotPinnedCases);
     } catch {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: generateId(),
-          role: "assistant",
-          content: "Connection error. Please check your network and try again.",
-          timestamp: Date.now(),
-        },
-      ]);
+      const errMsg: ChatMsg = {
+        id: generateId(),
+        role: "assistant",
+        content: "Connection error. Please check your network and try again.",
+        timestamp: Date.now(),
+      };
+      const finalMessages = [...nextMessages, errMsg];
+      setMessages(finalMessages);
+      persistSession(finalMessages, sessionId, snapshotPinnedCases);
     } finally {
       setSending(false);
     }
@@ -349,36 +516,21 @@ export default function ChatScreen() {
     sendMessage(prompt);
   }
 
-  function handleClearHistory() {
+  function handleDeleteSession(sessionId: string) {
     Alert.alert(
-      "Clear History",
-      "This will permanently delete your AI chat history. Are you sure?",
+      "Delete Session",
+      "Remove this conversation from history?",
       [
         { text: "Cancel", style: "cancel" },
         {
-          text: "Clear",
+          text: "Delete",
           style: "destructive",
           onPress: async () => {
-            setClearing(true);
-            try {
-              const resp = await resilientFetch("/api/ai-chat/history", { method: "DELETE" });
-              if (resp.ok) {
-                setMessages([
-                  {
-                    id: "welcome",
-                    role: "assistant",
-                    content: buildWelcomeContent(pinnedCases),
-                    timestamp: Date.now(),
-                  },
-                ]);
-                setPromptsDismissed(false);
-              } else {
-                Alert.alert("Error", "Failed to clear history. Please try again.");
-              }
-            } catch {
-              Alert.alert("Error", "Failed to clear history. Please try again.");
-            } finally {
-              setClearing(false);
+            const updated = allSessions.filter((s) => s.id !== sessionId);
+            setAllSessions(updated);
+            await writeStoredSessions(updated);
+            if (sessionId === currentSessionIdRef.current) {
+              startNewChat();
             }
           },
         },
@@ -389,24 +541,71 @@ export default function ChatScreen() {
   function renderMessage({ item }: { item: ChatMsg }) {
     const isUser = item.role === "user";
     return (
-      <View style={[styles.messageBubbleWrap, isUser ? styles.userWrap : styles.assistantWrap]}>
+      <View
+        style={[
+          styles.messageBubbleWrap,
+          isUser ? styles.userWrap : styles.assistantWrap,
+        ]}
+      >
         {!isUser && (
           <View style={styles.aiAvatar}>
             <Ionicons name="sparkles" size={14} color={Colors.light.tint} />
           </View>
         )}
-        <View style={[styles.messageBubble, isUser ? styles.userBubble : styles.assistantBubble]}>
-          <Text style={[styles.messageText, isUser && styles.userText]}>{item.content}</Text>
+        <View
+          style={[
+            styles.messageBubble,
+            isUser ? styles.userBubble : styles.assistantBubble,
+          ]}
+        >
+          <Text style={[styles.messageText, isUser && styles.userText]}>
+            {item.content}
+          </Text>
         </View>
       </View>
     );
   }
 
-  const hasHistory = messages.some((m) => m.id !== "welcome");
+  function renderSessionItem({ item }: { item: StoredSession }) {
+    const isActive = item.id === currentSessionId;
+    return (
+      <Pressable
+        onPress={() => loadSession(item)}
+        style={({ pressed }) => [
+          styles.sessionItem,
+          isActive && styles.sessionItemActive,
+          pressed && { opacity: 0.7 },
+        ]}
+      >
+        <View style={{ flex: 1 }}>
+          <Text style={styles.sessionPreview} numberOfLines={2}>
+            {getSessionPreview(item)}
+          </Text>
+          <Text style={styles.sessionTime}>
+            {formatRelativeTime(item.lastActive)} ·{" "}
+            {item.messages.filter((m) => m.role === "user").length} message
+            {item.messages.filter((m) => m.role === "user").length !== 1 ? "s" : ""}
+          </Text>
+        </View>
+        <Pressable
+          onPress={() => handleDeleteSession(item.id)}
+          hitSlop={12}
+          style={({ pressed }) => [{ opacity: pressed ? 0.5 : 1, padding: 4 }]}
+        >
+          <Ionicons name="trash-outline" size={16} color={Colors.light.textTertiary} />
+        </Pressable>
+      </Pressable>
+    );
+  }
 
   return (
     <View style={styles.container}>
-      <View style={[styles.header, { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 }]}>
+      <View
+        style={[
+          styles.header,
+          { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 },
+        ]}
+      >
         <Pressable onPress={() => router.back()} hitSlop={12}>
           <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
         </Pressable>
@@ -437,18 +636,26 @@ export default function ChatScreen() {
               <Ionicons name="add-circle-outline" size={22} color={Colors.light.tint} />
             </Pressable>
           )}
-          {hasHistory ? (
+          {sessionsForKey.length > 0 && (
             <Pressable
-              onPress={handleClearHistory}
-              disabled={clearing}
+              onPress={() => setShowSessionsModal(true)}
               hitSlop={12}
-              style={({ pressed }) => [{ opacity: pressed || clearing ? 0.5 : 1 }]}
+              style={({ pressed }) => [{ opacity: pressed ? 0.5 : 1 }]}
             >
-              <Ionicons name="trash-outline" size={20} color={Colors.light.textSecondary} />
+              <Ionicons name="time-outline" size={20} color={Colors.light.textSecondary} />
             </Pressable>
-          ) : (
-            <View style={{ width: 20 }} />
           )}
+          <Pressable
+            onPress={startNewChat}
+            hitSlop={12}
+            style={({ pressed }) => [{ opacity: pressed ? 0.5 : 1 }]}
+          >
+            <Ionicons
+              name="create-outline"
+              size={20}
+              color={hasHistory ? Colors.light.tint : Colors.light.textSecondary}
+            />
+          </Pressable>
         </View>
       </View>
 
@@ -477,6 +684,52 @@ export default function ChatScreen() {
           ))}
         </ScrollView>
       )}
+
+      {/* Past sessions modal */}
+      <Modal
+        visible={showSessionsModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowSessionsModal(false)}
+      >
+        <View style={[styles.sessionsModalContainer, { paddingTop: insets.top + 16 }]}>
+          <View style={styles.sessionsModalHeader}>
+            <Text style={styles.sessionsModalTitle}>Past Conversations</Text>
+            <Pressable onPress={() => setShowSessionsModal(false)} hitSlop={12}>
+              <Ionicons name="close" size={22} color={Colors.light.textSecondary} />
+            </Pressable>
+          </View>
+          {pinnedCases.length > 0 && (
+            <Text style={styles.sessionsModalSubtitle}>
+              {pinnedCases.length === 1
+                ? `Case ${pinnedCases[0]!.caseNumber}`
+                : `${pinnedCases.length} cases pinned`}
+            </Text>
+          )}
+          <FlatList
+            data={sessionsForKey}
+            keyExtractor={(s) => s.id}
+            renderItem={renderSessionItem}
+            contentContainerStyle={styles.sessionsList}
+            ItemSeparatorComponent={() => <View style={styles.sessionSeparator} />}
+            ListEmptyComponent={
+              <Text style={styles.emptyText}>No past conversations</Text>
+            }
+          />
+          <View style={[styles.newChatFooter, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+            <Pressable
+              onPress={() => {
+                setShowSessionsModal(false);
+                startNewChat();
+              }}
+              style={({ pressed }) => [styles.newChatBtn, pressed && { opacity: 0.8 }]}
+            >
+              <Ionicons name="create-outline" size={16} color="#FFF" />
+              <Text style={styles.newChatBtnText}>New Chat</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
 
       <KeyboardAvoidingView
         style={{ flex: 1 }}
@@ -508,7 +761,10 @@ export default function ChatScreen() {
                     <Pressable
                       key={p}
                       onPress={() => handleSuggestedPrompt(p)}
-                      style={({ pressed }) => [styles.promptChip, pressed && { opacity: 0.7 }]}
+                      style={({ pressed }) => [
+                        styles.promptChip,
+                        pressed && { opacity: 0.7 },
+                      ]}
                     >
                       <Text style={styles.promptChipText}>{p}</Text>
                     </Pressable>
@@ -529,7 +785,10 @@ export default function ChatScreen() {
         <View
           style={[
             styles.inputBar,
-            { paddingBottom: Platform.OS === "web" ? 34 + 8 : Math.max(insets.bottom, 8) + 8 },
+            {
+              paddingBottom:
+                Platform.OS === "web" ? 34 + 8 : Math.max(insets.bottom, 8) + 8,
+            },
           ]}
         >
           <TextInput
@@ -691,6 +950,11 @@ const styles = StyleSheet.create({
     flex: 1,
     marginHorizontal: 8,
   },
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
   headerIcon: {
     width: 28,
     height: 28,
@@ -709,11 +973,6 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_500Medium",
     color: Colors.light.tint,
     marginTop: 1,
-  },
-  headerActions: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
   },
   chipsRow: {
     backgroundColor: Colors.light.surface,
@@ -879,7 +1138,91 @@ const styles = StyleSheet.create({
   sendBtnDisabled: {
     backgroundColor: Colors.light.surfaceSecondary,
   },
-  // Modal styles
+  // Sessions modal (full-screen page sheet)
+  sessionsModalContainer: {
+    flex: 1,
+    backgroundColor: Colors.light.background,
+  },
+  sessionsModalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 20,
+    paddingBottom: 4,
+  },
+  sessionsModalTitle: {
+    fontSize: 20,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+  },
+  sessionsModalSubtitle: {
+    fontSize: 13,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.tint,
+    paddingHorizontal: 20,
+    marginBottom: 12,
+    marginTop: 2,
+  },
+  sessionsList: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  sessionItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    backgroundColor: Colors.light.surface,
+    borderRadius: 12,
+    gap: 12,
+  },
+  sessionItemActive: {
+    borderWidth: 1.5,
+    borderColor: Colors.light.tint,
+  },
+  sessionPreview: {
+    fontSize: 14,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.text,
+    lineHeight: 20,
+    marginBottom: 4,
+  },
+  sessionTime: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textSecondary,
+  },
+  sessionSeparator: {
+    height: 8,
+  },
+  emptyText: {
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textSecondary,
+    textAlign: "center",
+    marginTop: 40,
+  },
+  newChatFooter: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: Colors.light.borderLight,
+  },
+  newChatBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: Colors.light.tint,
+    borderRadius: 12,
+    paddingVertical: 14,
+  },
+  newChatBtnText: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: "#FFF",
+  },
+  // Case picker modal (bottom sheet)
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.45)",

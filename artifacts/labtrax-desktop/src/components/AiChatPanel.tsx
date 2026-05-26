@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { apiFetch } from "@/lib/api";
-import { Loader2, Plus, Send, Sparkles, Trash2, X } from "lucide-react";
+import { Clock, Loader2, PenSquare, Plus, Send, Sparkles, Trash2, X } from "lucide-react";
 import type { AiCaseContext } from "@/lib/ai-panel-context";
 
 interface ChatMsg {
@@ -16,6 +16,65 @@ interface CaseSearchResult {
   patientLastName?: string | null;
   doctorName?: string | null;
   status?: string | null;
+}
+
+interface StoredSession {
+  id: string;
+  key: string;
+  pinnedCases: AiCaseContext[];
+  messages: ChatMsg[];
+  createdAt: number;
+  lastActive: number;
+}
+
+const STORAGE_KEY = "labtrax_chat_sessions_v1";
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_SESSIONS_PER_KEY = 10;
+
+function readStoredSessions(): StoredSession[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    const now = Date.now();
+    return (parsed.sessions ?? []).filter(
+      (s: StoredSession) => now - s.lastActive < SESSION_TTL_MS,
+    );
+  } catch {
+    return [];
+  }
+}
+
+function writeStoredSessions(sessions: StoredSession[]): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ sessions }));
+  } catch {
+    // ignore — storage errors are non-fatal
+  }
+}
+
+function formatRelativeTime(ms: number): string {
+  const diff = Date.now() - ms;
+  const mins = Math.floor(diff / 60000);
+  const hours = Math.floor(diff / 3600000);
+  const days = Math.floor(diff / 86400000);
+  if (mins < 1) return "Just now";
+  if (mins < 60) return `${mins}m ago`;
+  if (hours < 24) return `${hours}h ago`;
+  return `${days}d ago`;
+}
+
+function getSessionPreview(session: StoredSession): string {
+  const first = session.messages.find((m) => m.role === "user");
+  if (!first) {
+    if (session.pinnedCases.length > 0) {
+      return `Cases: ${session.pinnedCases.map((c) => c.caseNumber).join(", ")}`;
+    }
+    return "Empty session";
+  }
+  return first.content.length > 60
+    ? first.content.slice(0, 57) + "…"
+    : first.content;
 }
 
 const DEFAULT_SUGGESTED_PROMPTS = [
@@ -83,50 +142,102 @@ interface Props {
 }
 
 export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: Props) {
+  // sessionKey is stable for the lifetime of this panel instance
+  const sessionKey =
+    initialCases.length > 0
+      ? [...initialCases]
+          .map((c) => c.caseId)
+          .sort()
+          .join("_")
+      : "general";
+
   const [pinnedCases, setPinnedCases] = useState<AiCaseContext[]>(initialCases);
   const [messages, setMessages] = useState<ChatMsg[]>([buildWelcome(initialCases)]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [promptsDismissed, setPromptsDismissed] = useState(false);
-  const [clearing, setClearing] = useState(false);
-  const [confirmingClear, setConfirmingClear] = useState(false);
+
   const [showCasePicker, setShowCasePicker] = useState(false);
   const [caseSearchQuery, setCaseSearchQuery] = useState("");
   const [caseSearchResults, setCaseSearchResults] = useState<CaseSearchResult[]>([]);
   const [caseSearchLoading, setCaseSearchLoading] = useState(false);
+
+  const [allSessions, setAllSessions] = useState<StoredSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [showSessionsList, setShowSessionsList] = useState(false);
+  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
+
+  const currentSessionIdRef = useRef<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const caseSearchRef = useRef<HTMLInputElement>(null);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sessionsDropdownRef = useRef<HTMLDivElement>(null);
+
+  const sessionsForKey = allSessions
+    .filter((s) => s.key === sessionKey)
+    .sort((a, b) => b.lastActive - a.lastActive);
 
   const suggestedPrompts = buildCasePrompts(pinnedCases);
   const showPrompts = !promptsDismissed && messages.length === 1;
   const hasHistory = messages.some((m) => m.id !== "welcome");
 
-  // Load chat history on mount (only when no initial cases)
-  useEffect(() => {
-    if (initialCases.length > 0) return;
-    let cancelled = false;
-    async function loadHistory() {
-      try {
-        const data = await apiFetch<{ messages: Array<{ id: string; role: string; content: string; createdAt: string }> }>(
-          "/ai-chat/history",
-        );
-        const historyMsgs: ChatMsg[] = (data.messages ?? []).map((m) => ({
-          id: m.id,
-          role: m.role as "user" | "assistant",
-          content: m.content,
-        }));
-        if (!cancelled && historyMsgs.length > 0) {
-          setMessages([WELCOME_MSG, ...historyMsgs]);
-          setPromptsDismissed(true);
+  // Uses the functional-update form of setAllSessions so it always reads the
+  // latest state — safe even if called before the initial load resolves.
+  const persistSession = useCallback(
+    (msgs: ChatMsg[], sessionId: string, currentPinnedCases: AiCaseContext[]) => {
+      const userMsgs = msgs.filter((m) => m.id !== "welcome");
+      if (userMsgs.length === 0) return;
+
+      const now = Date.now();
+
+      setAllSessions((prev) => {
+        const existing = prev.find((s) => s.id === sessionId);
+        let updated: StoredSession[];
+        if (existing) {
+          updated = prev.map((s) =>
+            s.id === sessionId
+              ? { ...s, messages: userMsgs, lastActive: now }
+              : s,
+          );
+        } else {
+          const newSession: StoredSession = {
+            id: sessionId,
+            key: sessionKey,
+            pinnedCases: currentPinnedCases,
+            messages: userMsgs,
+            createdAt: now,
+            lastActive: now,
+          };
+          const keyedSessions = prev.filter((s) => s.key === sessionKey);
+          const otherSessions = prev.filter((s) => s.key !== sessionKey);
+          const trimmed = [newSession, ...keyedSessions].slice(0, MAX_SESSIONS_PER_KEY);
+          updated = [...otherSessions, ...trimmed];
         }
-      } catch {
-        // silently ignore — history is a best-effort enhancement
-      }
+        writeStoredSessions(updated);
+        return updated;
+      });
+    },
+    [sessionKey],
+  );
+
+  // Load from localStorage on mount
+  useEffect(() => {
+    const sessions = readStoredSessions();
+    setAllSessions(sessions);
+    const forKey = sessions
+      .filter((s) => s.key === sessionKey)
+      .sort((a, b) => b.lastActive - a.lastActive);
+    if (forKey.length > 0) {
+      const latest = forKey[0]!;
+      setCurrentSessionId(latest.id);
+      currentSessionIdRef.current = latest.id;
+      const cases = latest.pinnedCases.length > 0 ? latest.pinnedCases : initialCases;
+      setPinnedCases(cases);
+      setMessages([buildWelcome(cases), ...latest.messages]);
+      setPromptsDismissed(latest.messages.some((m) => m.role === "user"));
     }
-    loadHistory();
-    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Scroll to bottom on new messages
@@ -172,6 +283,21 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
     };
   }, [caseSearchQuery, labOrganizationId]);
 
+  // Close sessions dropdown on outside click
+  useEffect(() => {
+    if (!showSessionsList) return;
+    function handleClick(e: MouseEvent) {
+      if (
+        sessionsDropdownRef.current &&
+        !sessionsDropdownRef.current.contains(e.target as Node)
+      ) {
+        setShowSessionsList(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [showSessionsList]);
+
   function pinCase(result: CaseSearchResult) {
     const alreadyPinned = pinnedCases.some((c) => c.caseId === result.id);
     if (alreadyPinned) return;
@@ -185,7 +311,6 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
     };
     const updated = [...pinnedCases, newCase];
     setPinnedCases(updated);
-    // Update welcome if this is the very first message shown
     setMessages((prev) => {
       if (prev.length === 1 && prev[0]!.id === "welcome") {
         return [buildWelcome(updated)];
@@ -202,9 +327,54 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
     setPinnedCases(updated);
   }
 
+  function startNewChat() {
+    const newId = generateId();
+    setCurrentSessionId(newId);
+    currentSessionIdRef.current = newId;
+    setPinnedCases(initialCases);
+    setMessages([buildWelcome(initialCases)]);
+    setPromptsDismissed(false);
+    setInput("");
+    setShowSessionsList(false);
+    setTimeout(() => inputRef.current?.focus(), 50);
+  }
+
+  function loadSession(session: StoredSession) {
+    setCurrentSessionId(session.id);
+    currentSessionIdRef.current = session.id;
+    const cases = session.pinnedCases.length > 0 ? session.pinnedCases : initialCases;
+    setPinnedCases(cases);
+    setMessages([buildWelcome(cases), ...session.messages]);
+    setPromptsDismissed(session.messages.some((m) => m.role === "user"));
+    setShowSessionsList(false);
+    setTimeout(() => inputRef.current?.focus(), 50);
+  }
+
+  function handleDeleteSession(sessionId: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    if (deletingSessionId === sessionId) {
+      const updated = allSessions.filter((s) => s.id !== sessionId);
+      setAllSessions(updated);
+      writeStoredSessions(updated);
+      setDeletingSessionId(null);
+      if (sessionId === currentSessionIdRef.current) {
+        startNewChat();
+      }
+    } else {
+      setDeletingSessionId(sessionId);
+    }
+  }
+
   async function sendMessage(text: string) {
     const trimmed = text.trim();
     if (!trimmed || sending) return;
+
+    let sessionId = currentSessionIdRef.current;
+    if (!sessionId) {
+      sessionId = generateId();
+      setCurrentSessionId(sessionId);
+      currentSessionIdRef.current = sessionId;
+    }
 
     setPromptsDismissed(true);
     const userMsg: ChatMsg = { id: generateId(), role: "user", content: trimmed };
@@ -213,16 +383,18 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
     setInput("");
     setSending(true);
 
+    const snapshotPinnedCases = pinnedCases;
+
     try {
       const apiMessages = nextMessages
         .filter((m) => m.id !== "welcome")
         .map((m) => ({ role: m.role, content: m.content }));
 
       const body: Record<string, unknown> = { messages: apiMessages };
-      if (pinnedCases.length === 1) {
-        body.caseId = pinnedCases[0]!.caseId;
-      } else if (pinnedCases.length > 1) {
-        body.caseIds = pinnedCases.map((c) => c.caseId);
+      if (snapshotPinnedCases.length === 1) {
+        body.caseId = snapshotPinnedCases[0]!.caseId;
+      } else if (snapshotPinnedCases.length > 1) {
+        body.caseIds = snapshotPinnedCases.map((c) => c.caseId);
       }
 
       const data = await apiFetch<{ reply: string; error?: string }>("/ai-chat", {
@@ -230,14 +402,14 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
         body: JSON.stringify(body),
       });
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: generateId(),
-          role: "assistant",
-          content: data.reply || "I couldn't generate a response. Please try again.",
-        },
-      ]);
+      const assistantMsg: ChatMsg = {
+        id: generateId(),
+        role: "assistant",
+        content: data.reply || "I couldn't generate a response. Please try again.",
+      };
+      const finalMessages = [...nextMessages, assistantMsg];
+      setMessages(finalMessages);
+      persistSession(finalMessages, sessionId, snapshotPinnedCases);
     } catch (err: any) {
       const msg =
         err?.status === 429
@@ -245,30 +417,12 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
           : err?.status === 503
           ? "AI assistant is not configured on this server. Please contact your administrator."
           : "Sorry, I'm having trouble connecting right now. Please try again.";
-      setMessages((prev) => [
-        ...prev,
-        { id: generateId(), role: "assistant", content: msg },
-      ]);
+      const errMsg: ChatMsg = { id: generateId(), role: "assistant", content: msg };
+      const finalMessages = [...nextMessages, errMsg];
+      setMessages(finalMessages);
+      persistSession(finalMessages, sessionId, snapshotPinnedCases);
     } finally {
       setSending(false);
-    }
-  }
-
-  async function handleClearHistory() {
-    if (!confirmingClear) {
-      setConfirmingClear(true);
-      return;
-    }
-    setClearing(true);
-    setConfirmingClear(false);
-    try {
-      await apiFetch("/ai-chat/history", { method: "DELETE" });
-      setMessages([buildWelcome(pinnedCases)]);
-      setPromptsDismissed(false);
-    } catch {
-      // ignore
-    } finally {
-      setClearing(false);
     }
   }
 
@@ -277,11 +431,13 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
       e.preventDefault();
       sendMessage(input);
     }
-    if (e.key === "Escape" && confirmingClear) {
-      setConfirmingClear(false);
-    }
-    if (e.key === "Escape" && showCasePicker) {
-      setShowCasePicker(false);
+    if (e.key === "Escape") {
+      setShowSessionsList(false);
+      setDeletingSessionId(null);
+      if (showCasePicker) {
+        setShowCasePicker(false);
+        setCaseSearchQuery("");
+      }
     }
   }
 
@@ -313,26 +469,104 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
             )}
           </div>
           <div className="flex items-center gap-1">
-            {hasHistory && (
-              <button
-                type="button"
-                onClick={handleClearHistory}
-                disabled={clearing}
-                title={confirmingClear ? "Click again to confirm" : "Clear chat history"}
-                className={`h-8 px-2 rounded-md flex items-center gap-1.5 text-xs transition-colors disabled:opacity-50 ${
-                  confirmingClear
-                    ? "bg-destructive/10 text-destructive hover:bg-destructive/20"
-                    : "text-muted-foreground hover:bg-secondary hover:text-foreground"
-                }`}
-              >
-                {clearing ? (
-                  <Loader2 size={13} className="animate-spin" />
-                ) : (
-                  <Trash2 size={13} />
+            {/* Sessions history button */}
+            {sessionsForKey.length > 0 && (
+              <div className="relative" ref={sessionsDropdownRef}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowSessionsList((v) => !v);
+                    setDeletingSessionId(null);
+                  }}
+                  title="Past conversations"
+                  className="h-8 w-8 rounded-md flex items-center justify-center text-muted-foreground hover:bg-secondary hover:text-foreground"
+                >
+                  <Clock size={15} />
+                </button>
+
+                {/* Sessions dropdown */}
+                {showSessionsList && (
+                  <div className="absolute right-0 top-10 w-72 bg-card border border-border rounded-xl shadow-xl z-50 overflow-hidden">
+                    <div className="px-3 py-2.5 border-b border-border flex items-center justify-between">
+                      <span className="text-xs font-semibold text-foreground">
+                        Past Conversations
+                      </span>
+                      <button
+                        type="button"
+                        onClick={startNewChat}
+                        className="text-xs text-primary hover:underline flex items-center gap-1"
+                      >
+                        <PenSquare size={11} />
+                        New chat
+                      </button>
+                    </div>
+                    <div className="max-h-72 overflow-y-auto scrollbar-thin">
+                      {sessionsForKey.map((session) => {
+                        const isActive = session.id === currentSessionId;
+                        const isDeleting = session.id === deletingSessionId;
+                        return (
+                          <button
+                            key={session.id}
+                            type="button"
+                            onClick={() => loadSession(session)}
+                            className={`w-full text-left px-3 py-2.5 hover:bg-secondary transition-colors border-b border-border/50 last:border-0 flex items-start gap-2 group ${
+                              isActive ? "bg-primary/5" : ""
+                            }`}
+                          >
+                            <div className="flex-1 min-w-0">
+                              <div
+                                className={`text-xs font-medium truncate leading-4 ${
+                                  isActive ? "text-primary" : "text-foreground"
+                                }`}
+                              >
+                                {getSessionPreview(session)}
+                              </div>
+                              <div className="text-[10px] text-muted-foreground mt-0.5">
+                                {formatRelativeTime(session.lastActive)} ·{" "}
+                                {session.messages.filter((m) => m.role === "user").length}{" "}
+                                message
+                                {session.messages.filter((m) => m.role === "user").length !== 1
+                                  ? "s"
+                                  : ""}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={(e) => handleDeleteSession(session.id, e)}
+                              title={isDeleting ? "Click again to confirm" : "Delete"}
+                              className={`shrink-0 h-5 px-1.5 rounded flex items-center gap-1 text-[10px] transition-colors mt-0.5 ${
+                                isDeleting
+                                  ? "bg-destructive/10 text-destructive"
+                                  : "opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive"
+                              }`}
+                            >
+                              <Trash2 size={10} />
+                              {isDeleting ? "Sure?" : ""}
+                            </button>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
                 )}
-                {confirmingClear ? "Confirm?" : ""}
-              </button>
+              </div>
             )}
+
+            {/* New chat button */}
+            <button
+              type="button"
+              onClick={startNewChat}
+              title="New chat"
+              className={`h-8 w-8 rounded-md flex items-center justify-center transition-colors ${
+                hasHistory
+                  ? "text-primary hover:bg-primary/10"
+                  : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+              }`}
+            >
+              <PenSquare size={15} />
+            </button>
+
+            {/* Close button */}
             <button
               type="button"
               onClick={onClose}
@@ -422,14 +656,18 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
                               <div className="text-xs font-medium">
                                 {result.caseNumber}
                                 {alreadyPinned && (
-                                  <span className="ml-1.5 text-[10px] text-muted-foreground">(pinned)</span>
+                                  <span className="ml-1.5 text-[10px] text-muted-foreground">
+                                    (pinned)
+                                  </span>
                                 )}
                               </div>
                               {patientName && (
                                 <div className="text-[11px] text-muted-foreground">{patientName}</div>
                               )}
                               {result.status && (
-                                <div className="text-[10px] text-muted-foreground/70 capitalize">{result.status}</div>
+                                <div className="text-[10px] text-muted-foreground/70 capitalize">
+                                  {result.status}
+                                </div>
                               )}
                             </button>
                           );
@@ -500,7 +738,9 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
                             <div className="text-[11px] text-muted-foreground">{patientName}</div>
                           )}
                           {result.status && (
-                            <div className="text-[10px] text-muted-foreground/70 capitalize">{result.status}</div>
+                            <div className="text-[10px] text-muted-foreground/70 capitalize">
+                              {result.status}
+                            </div>
                           )}
                         </button>
                       );
@@ -517,7 +757,8 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
       <div
         className="flex-1 overflow-y-auto scrollbar-thin px-4 py-4 space-y-4"
         onClick={() => {
-          if (confirmingClear) setConfirmingClear(false);
+          setShowSessionsList(false);
+          setDeletingSessionId(null);
           if (showCasePicker) {
             setShowCasePicker(false);
             setCaseSearchQuery("");
