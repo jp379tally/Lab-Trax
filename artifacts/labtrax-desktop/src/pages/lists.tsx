@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronsUpDown, ChevronUp, ChevronDown as ChevronDownIcon, Download, History, Loader2, Pencil, Plus, Search, Upload, X } from "lucide-react";
+import { toast } from "sonner";
 import { apiFetch } from "@/lib/api";
 import { formatDate, formatMoney, formatPhone } from "@/lib/format";
 import type { BankTransaction } from "@/lib/types";
@@ -414,6 +415,9 @@ function ListsContent({ organizationId }: { organizationId: string }) {
     a.download = `${TYPE_LABEL[type].toLowerCase()}s-export.csv`;
     a.click();
     URL.revokeObjectURL(url);
+    toast.success(`${TYPE_LABEL[type]}s exported`, {
+      description: `${rows.length} record${rows.length !== 1 ? "s" : ""} downloaded as CSV.`,
+    });
   }
 
   return (
@@ -540,9 +544,11 @@ function ListsContent({ organizationId }: { organizationId: string }) {
           organizationId={organizationId}
           vendorType={activeTab}
           onClose={() => setShowImportDialog(false)}
-          onSuccess={() => {
+          onSuccess={(count) => {
             setShowImportDialog(false);
             invalidateVendors();
+            const typeLabel = TYPE_LABEL[activeTab as VendorType];
+            toast.success(`${count} ${typeLabel.toLowerCase()}${count !== 1 ? "s" : ""} imported successfully`);
           }}
         />
       )}
@@ -1512,7 +1518,9 @@ function ImportCsvDialog({
       setSkippedCount(result.skipped ?? 0);
       setStep("done");
     } catch (err) {
-      setImportError(err instanceof Error ? err.message : "Import failed.");
+      const message = err instanceof Error ? err.message : "Import failed.";
+      setImportError(message);
+      toast.error("Import failed", { description: message });
     } finally {
       setImporting(false);
     }
