@@ -8,7 +8,7 @@
  * All external dependencies of app.ts are mocked so no DB connection or
  * cloud credentials are needed.
  */
-import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vitest";
 import { Readable } from "node:stream";
 import http from "node:http";
 import type { Server } from "node:http";
