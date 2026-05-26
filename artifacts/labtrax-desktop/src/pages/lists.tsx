@@ -1695,8 +1695,8 @@ function ImportCsvDialog({
                 <div className="text-4xl mb-2">✓</div>
                 <p className="text-sm font-semibold">Import complete</p>
                 <p className="text-sm text-muted-foreground">
-                  {importedCount} {typeLabel.toLowerCase()}{importedCount !== 1 ? "s" : ""} imported successfully
-                  {skippedCount > 0 ? `, ${skippedCount} skipped (already exist)` : ""}.
+                  {importedCount} created
+                  {skippedCount > 0 ? `, ${skippedCount} skipped (duplicate name)` : ""}.
                 </p>
               </div>
             )}
