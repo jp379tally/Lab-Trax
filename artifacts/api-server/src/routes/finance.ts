@@ -498,14 +498,29 @@ router.get(
       linksByTxn.set(l.bankTransactionId, arr);
     }
 
+    const vendorIds = Array.from(
+      new Set(rows.map((r: any) => r.vendorId).filter(Boolean) as string[])
+    );
+    const vendorRows = vendorIds.length
+      ? await db
+          .select({ id: vendors.id, name: vendors.name })
+          .from(vendors)
+          .where(inArray(vendors.id, vendorIds))
+      : [];
+    const vendorNameById = new Map(vendorRows.map((v) => [v.id, v.name]));
+
     // Compute running balance per-account.
     const running = new Map<string, number>();
     const enriched = rows.map((r: any) => {
       const cur = running.get(r.bankAccountId) ?? 0;
       const next = r.status === "void" ? cur : cur + Number(r.netAmount || 0);
       running.set(r.bankAccountId, next);
+      const liveVendorName = r.vendorId
+        ? vendorNameById.get(r.vendorId)
+        : undefined;
       return {
         ...r,
+        payee: liveVendorName ?? r.payee,
         runningBalance: next.toFixed(2),
         invoices: linksByTxn.get(r.id) ?? [],
       };
@@ -523,6 +538,7 @@ const txnSchema = z.object({
     .default("other"),
   checkNumber: z.string().nullable().optional(),
   payee: z.string().nullable().optional(),
+  vendorId: z.string().nullable().optional(),
   memo: z.string().nullable().optional(),
   categoryId: z.string().nullable().optional(),
   payment: z.coerce.number().min(0).default(0),
@@ -531,6 +547,26 @@ const txnSchema = z.object({
   status: z.enum(["posted", "projected", "void"]).default("posted"),
   invoiceIds: z.array(z.string().min(1)).optional(),
 });
+
+async function assertVendorBelongsToOrg(
+  vendorId: string,
+  labOrganizationId: string
+) {
+  const vendor = await db.query.vendors.findFirst({
+    where: eq(vendors.id, vendorId),
+    columns: { id: true, labOrganizationId: true, deletedAt: true },
+  });
+  if (
+    !vendor ||
+    vendor.deletedAt ||
+    vendor.labOrganizationId !== labOrganizationId
+  ) {
+    throw new HttpError(
+      400,
+      "Vendor not found or does not belong to this organization."
+    );
+  }
+}
 
 async function syncTxnInvoiceLinks(
   txnId: string,
@@ -574,6 +610,9 @@ router.post(
     const input = txnSchema.parse(req.body);
     const acct = await loadAccountOrThrow(uid(req), input.bankAccountId);
     await requireAnyRole(uid(req), acct.labOrganizationId, BILLING_ROLES);
+    if (input.vendorId) {
+      await assertVendorBelongsToOrg(input.vendorId, acct.labOrganizationId);
+    }
     const debit = Number(input.payment || 0);
     const credit = Number(input.deposit || 0);
     const net = credit - debit;
@@ -587,6 +626,7 @@ router.post(
         type: input.type,
         checkNumber: input.checkNumber || null,
         payee: input.payee || null,
+        vendorId: input.vendorId || null,
         memo: input.memo || null,
         categoryId: input.categoryId || null,
         debitAmount: debit.toFixed(2),
@@ -622,11 +662,15 @@ router.patch(
     await requireAnyRole(uid(req), txn.labOrganizationId, BILLING_ROLES);
     if (txn.reconciled) throw new HttpError(400, "Reconciled entries cannot be edited.");
     const input = txnSchema.partial().parse(req.body);
+    if (input.vendorId) {
+      await assertVendorBelongsToOrg(input.vendorId, txn.labOrganizationId);
+    }
     const updates: any = { updatedAt: new Date() };
     if (input.txnDate) updates.txnDate = new Date(input.txnDate);
     if (input.type) updates.type = input.type;
     if (input.checkNumber !== undefined) updates.checkNumber = input.checkNumber;
     if (input.payee !== undefined) updates.payee = input.payee;
+    if (input.vendorId !== undefined) updates.vendorId = input.vendorId;
     if (input.memo !== undefined) updates.memo = input.memo;
     if (input.categoryId !== undefined) updates.categoryId = input.categoryId;
     if (input.status) updates.status = input.status;

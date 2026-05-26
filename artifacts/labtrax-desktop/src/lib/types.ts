@@ -389,6 +389,7 @@ export interface BankTransaction {
   type: string;
   checkNumber?: string | null;
   payee?: string | null;
+  vendorId?: string | null;
   memo?: string | null;
   categoryId?: string | null;
   debitAmount: string;

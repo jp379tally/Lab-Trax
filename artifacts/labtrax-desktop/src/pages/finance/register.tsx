@@ -1183,6 +1183,7 @@ function BlankRow({
   const dateRowRef = useRef<HTMLTableRowElement>(null);
   const [date, setDate] = useState(initialValues?.date ?? new Date().toISOString().slice(0, 10));
   const [payee, setPayee] = useState(initialValues?.payee ?? "");
+  const [vendorId, setVendorId] = useState<string | null>(null);
   const [memo, setMemo] = useState(initialValues?.memo ?? "");
   const [categoryId, setCategoryId] = useState(initialValues?.categoryId ?? "");
   const [payment, setPayment] = useState(initialValues?.payment ?? "");
@@ -1224,6 +1225,7 @@ function BlankRow({
           txnDate: new Date(date).toISOString(),
           type: Number(deposit) > 0 ? "deposit" : "other",
           payee: payee.trim(),
+          vendorId: vendorId || null,
           memo: memo.trim() || null,
           categoryId: categoryId || null,
           payment: Number(payment) || 0,
@@ -1324,6 +1326,7 @@ function BlankRow({
             organizationId={organizationId}
             value={payee}
             onChange={setPayee}
+            onChangeId={setVendorId}
             placeholder="Payee"
             disabled={savedOnce}
             className={inputCls}
@@ -1770,6 +1773,7 @@ function TxnEditor({
   const [type, setType] = useState(existing?.type || "other");
   const [checkNumber, setCheckNumber] = useState(existing?.checkNumber || "");
   const [payee, setPayee] = useState(existing?.payee || "");
+  const [vendorId, setVendorId] = useState<string | null>(existing?.vendorId ?? null);
   const [memo, setMemo] = useState(existing?.memo || "");
   const [categoryId, setCategoryId] = useState(existing?.categoryId || "");
   const [payment, setPayment] = useState<string>(
@@ -1808,6 +1812,7 @@ function TxnEditor({
         type,
         checkNumber: checkNumber || null,
         payee: payee || null,
+        vendorId: vendorId || null,
         memo: memo || null,
         categoryId: categoryId || null,
         payment: Number(payment) || 0,
@@ -1895,6 +1900,7 @@ function TxnEditor({
               organizationId={organizationId}
               value={payee}
               onChange={setPayee}
+              onChangeId={setVendorId}
               className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
             />
           </Field>

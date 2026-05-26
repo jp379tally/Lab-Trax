@@ -1363,6 +1363,9 @@ export const bankTransactions = pgTable(
       () => recurringTransactions.id,
       { onDelete: "set null" }
     ),
+    vendorId: varchar("vendor_id").references(() => vendors.id, {
+      onDelete: "set null",
+    }),
     importBatchId: text("import_batch_id"),
     transferGroupId: varchar("transfer_group_id"),
     createdByUserId: varchar("created_by_user_id").references(() => users.id, {
