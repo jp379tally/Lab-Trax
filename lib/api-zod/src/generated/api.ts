@@ -8,6 +8,27 @@
 import * as zod from "zod";
 
 /**
+ * @summary Fetch recent AI chat history for the authenticated user
+ */
+export const GetAiChatHistoryResponse = zod.object({
+  messages: zod.array(
+    zod.object({
+      id: zod.string(),
+      role: zod.enum(["user", "assistant"]),
+      content: zod.string(),
+      createdAt: zod.coerce.date(),
+    }),
+  ),
+});
+
+/**
+ * @summary Clear all AI chat history for the authenticated user
+ */
+export const DeleteAiChatHistoryResponse = zod.object({
+  success: zod.boolean(),
+});
+
+/**
  * @summary Send a message to the context-aware AI assistant
  */
 export const postAiChatBodyMessagesItemContentMax = 2000;

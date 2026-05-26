@@ -9,11 +9,13 @@ import {
   pricingTiers,
   pricingOverrides,
   caseRestorations,
+  aiChatHistory,
 } from "@workspace/db";
-import { eq, and, inArray, isNull } from "drizzle-orm";
+import { eq, and, inArray, isNull, desc, sql } from "drizzle-orm";
 import { getProviderOrgIdsForUserAndLinks } from "../lib/cross-lab-doctor";
 import { requireAuth } from "../middlewares/auth";
 import { normalizeDoctor } from "../lib/pricing";
+import { randomBytes } from "node:crypto";
 
 // Per-user sliding-window rate limiter (in-memory)
 const _parsedLimit = parseInt(process.env.AI_CHAT_RATE_LIMIT_PER_MINUTE ?? "", 10);
@@ -55,6 +57,77 @@ function getAiClient(): OpenAI | null {
   const baseURL = process.env.AI_INTEGRATIONS_OPENAI_BASE_URL;
   _cachedOpenAI = new OpenAI({ apiKey, ...(baseURL ? { baseURL } : {}) });
   return _cachedOpenAI;
+}
+
+/** Max stored messages per user (50 turns = 100 messages) */
+const MAX_HISTORY_ROWS = 100;
+
+/** Number of recent messages to load and send to the AI as context */
+const HISTORY_LOAD_LIMIT = 50;
+
+function generateHistoryId(): string {
+  return randomBytes(16).toString("hex");
+}
+
+/** Persist a user+assistant exchange and trim old rows */
+async function persistExchange(
+  userId: string,
+  userContent: string,
+  assistantContent: string,
+): Promise<void> {
+  const now = new Date();
+  await db.insert(aiChatHistory).values([
+    {
+      id: generateHistoryId(),
+      userId,
+      role: "user",
+      content: userContent,
+      createdAt: now,
+    },
+    {
+      id: generateHistoryId(),
+      userId,
+      role: "assistant",
+      content: assistantContent,
+      createdAt: new Date(now.getTime() + 1),
+    },
+  ]);
+
+  // Keep only the most recent MAX_HISTORY_ROWS rows per user
+  const subq = db
+    .select({ id: aiChatHistory.id })
+    .from(aiChatHistory)
+    .where(eq(aiChatHistory.userId, userId))
+    .orderBy(desc(aiChatHistory.createdAt))
+    .limit(MAX_HISTORY_ROWS);
+
+  await db
+    .delete(aiChatHistory)
+    .where(
+      and(
+        eq(aiChatHistory.userId, userId),
+        sql`${aiChatHistory.id} NOT IN (${subq})`,
+      ),
+    );
+}
+
+/** Load recent history for a user, oldest-first for chat display */
+async function loadHistory(
+  userId: string,
+): Promise<Array<{ id: string; role: string; content: string; createdAt: Date }>> {
+  const rows = await db
+    .select({
+      id: aiChatHistory.id,
+      role: aiChatHistory.role,
+      content: aiChatHistory.content,
+      createdAt: aiChatHistory.createdAt,
+    })
+    .from(aiChatHistory)
+    .where(eq(aiChatHistory.userId, userId))
+    .orderBy(desc(aiChatHistory.createdAt))
+    .limit(HISTORY_LOAD_LIMIT);
+
+  return rows.reverse();
 }
 
 /** Canonical terminal/completed statuses in LabTrax */
@@ -123,7 +196,6 @@ async function buildLabContext(labId: string): Promise<string> {
       ),
     );
 
-  // Terminal statuses: "complete", "shipped", "delivered"
   const completedCases = caseRows.filter((c) =>
     TERMINAL_STATUSES.has((c.status ?? "").toLowerCase()),
   );
@@ -146,7 +218,6 @@ async function buildLabContext(labId: string): Promise<string> {
     .filter(Boolean)
     .join(", ");
 
-  // Active cases = not in a terminal status
   const activeCases = caseRows.filter(
     (c) => !TERMINAL_STATUSES.has((c.status ?? "").toLowerCase()),
   );
@@ -248,7 +319,6 @@ async function buildProviderContext(userId: string): Promise<string> {
       : [];
   const labById = new Map(labOrgs.map((o) => [o.id, o]));
 
-  // Active cases = not in a terminal status
   const activeCases = caseRows.filter(
     (c) => !TERMINAL_STATUSES.has((c.status ?? "").toLowerCase()),
   );
@@ -277,13 +347,9 @@ async function buildProviderContext(userId: string): Promise<string> {
     ctx += `- Case ${c.caseNumber}: ${c.patientFirstName} ${c.patientLastName}, Status: ${c.status}, Lab: ${lab?.displayName || lab?.name || "Unknown"}, Due: ${dueStr}${c.priority === "rush" ? " (RUSH)" : ""}${resStr ? `, Restorations: ${resStr}` : ""}\n`;
   }
 
-  // --- Provider pricing per lab ---
-  // For each lab: find the connection tier, doctor overrides for doctors
-  // who appear in this provider's cases, and the lab's tier price lists.
   if (labOrgIds.length > 0) {
     ctx += `\nPRICING BY LAB:\n`;
 
-    // Pull all relevant pricing data in bulk
     const allTiers = await db
       .select()
       .from(pricingTiers)
@@ -295,7 +361,6 @@ async function buildProviderContext(userId: string): Promise<string> {
       tiersByLab.get(t.labOrganizationId)!.push(t);
     }
 
-    // Connection tiers: which tier is this provider assigned at each lab?
     const connections =
       providerOrgIds.length > 0
         ? await db
@@ -313,13 +378,11 @@ async function buildProviderContext(userId: string): Promise<string> {
             )
         : [];
 
-    // Map: labId → tierName for this provider
     const connectionTierByLab = new Map<string, string | null>();
     for (const conn of connections) {
       connectionTierByLab.set(conn.labOrganizationId, conn.tierName ?? null);
     }
 
-    // Doctor overrides: pull per lab for any doctor names appearing in cases
     const doctorNamesByLab = new Map<string, Set<string>>();
     for (const c of caseRows) {
       if (!c.doctorName) continue;
@@ -340,7 +403,6 @@ async function buildProviderContext(userId: string): Promise<string> {
             )
         : [];
 
-    // Map: labId → list of overrides
     const overridesByLab = new Map<string, typeof allOverrides>();
     for (const o of allOverrides) {
       if (!overridesByLab.has(o.labOrganizationId)) overridesByLab.set(o.labOrganizationId, []);
@@ -357,14 +419,12 @@ async function buildProviderContext(userId: string): Promise<string> {
       const overrides = overridesByLab.get(labId) ?? [];
       const doctorNames = doctorNamesByLab.get(labId) ?? new Set();
 
-      // Sort tiers oldest-first (mirrors resolveServerPriceWithSource)
       const sortedTiers = [...tiers].sort((a, b) => {
         const at = a.createdAt ? new Date(a.createdAt).getTime() : 0;
         const bt = b.createdAt ? new Date(b.createdAt).getTime() : 0;
         return at - bt;
       });
 
-      // Find the effective tier for this provider at this lab
       let effectiveTier = connectionTier
         ? sortedTiers.find((t) => t.name.trim().toLowerCase() === connectionTier.trim().toLowerCase())
         : null;
@@ -384,7 +444,6 @@ async function buildProviderContext(userId: string): Promise<string> {
         ctx += `  No pricing tiers configured at this lab.\n`;
       }
 
-      // Per-doctor overrides for doctors in this provider's cases
       for (const doctorName of doctorNames) {
         const normalized = normalizeDoctor(doctorName);
         const override = overrides.find(
@@ -408,6 +467,31 @@ async function buildProviderContext(userId: string): Promise<string> {
 }
 
 export function registerAiChatRoutes(router: IRouter): void {
+  /** GET /ai-chat/history — returns the last N stored messages for this user */
+  router.get("/ai-chat/history", requireAuth, async (req: any, res: any) => {
+    const userId: string = req.user.id;
+    try {
+      const rows = await loadHistory(userId);
+      return res.json({ messages: rows });
+    } catch (err: any) {
+      req.log?.error({ err }, "AI chat history fetch error");
+      return res.status(500).json({ error: "Failed to load chat history." });
+    }
+  });
+
+  /** DELETE /ai-chat/history — clears all stored messages for this user */
+  router.delete("/ai-chat/history", requireAuth, async (req: any, res: any) => {
+    const userId: string = req.user.id;
+    try {
+      await db.delete(aiChatHistory).where(eq(aiChatHistory.userId, userId));
+      return res.json({ success: true });
+    } catch (err: any) {
+      req.log?.error({ err }, "AI chat history clear error");
+      return res.status(500).json({ error: "Failed to clear chat history." });
+    }
+  });
+
+  /** POST /ai-chat — send a message and get a reply; persists the exchange */
   router.post("/ai-chat", requireAuth, async (req: any, res: any) => {
     const userId: string = req.user.id;
 
@@ -496,6 +580,13 @@ ${contextBlock}`;
       const reply =
         completion.choices[0]?.message?.content ||
         "I couldn't generate a response. Please try again.";
+
+      // Persist the exchange in the background; don't block the response
+      const userContent = String(lastMsg.content || "").slice(0, 2000);
+      persistExchange(userId, userContent, reply).catch((err) => {
+        req.log?.error({ err }, "AI chat history persist error");
+      });
+
       return res.json({ reply });
     } catch (err: any) {
       req.log?.error({ err }, "AI chat OpenAI error");

@@ -29,6 +29,33 @@ tags:
   - name: messenger
     description: Real-time direct-message operations (LabTrax)
 paths:
+  /ai-chat/history:
+    get:
+      operationId: getAiChatHistory
+      tags: [ai]
+      summary: Fetch recent AI chat history for the authenticated user
+      responses:
+        "200":
+          description: Chat history messages
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiChatHistoryResult"
+        "401":
+          description: Not authenticated
+    delete:
+      operationId: deleteAiChatHistory
+      tags: [ai]
+      summary: Clear all AI chat history for the authenticated user
+      responses:
+        "200":
+          description: History cleared
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResult"
+        "401":
+          description: Not authenticated
   /ai-chat:
     post:
       operationId: postAiChat
@@ -2653,6 +2680,34 @@ components:
             $ref: "#/components/schemas/AiChatMessage"
           minItems: 1
           maxItems: 20
+    AiChatHistoryMessage:
+      type: object
+      required: [id, role, content, createdAt]
+      properties:
+        id:
+          type: string
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    AiChatHistoryResult:
+      type: object
+      required: [messages]
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/AiChatHistoryMessage"
+    SuccessResult:
+      type: object
+      required: [success]
+      properties:
+        success:
+          type: boolean
     AiChatResult:
       type: object
       required: [reply]

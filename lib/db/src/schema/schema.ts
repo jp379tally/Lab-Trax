@@ -1983,6 +1983,31 @@ export const messagesRelations = relations(messages, ({ one }) => ({
   }),
 }));
 
+/**
+ * AI chat history — persists recent AI assistant conversations per user.
+ * Each row is one message (role: "user" | "assistant").
+ * Trimmed to the most recent 100 rows per user to cap storage.
+ */
+export const aiChatHistory = pgTable(
+  "ai_chat_history",
+  {
+    id: varchar("id").primaryKey(),
+    userId: varchar("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    role: text("role").notNull(), // "user" | "assistant"
+    content: text("content").notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => ({
+    userIdx: index("ai_chat_history_user_idx").on(table.userId),
+    userCreatedIdx: index("ai_chat_history_user_created_idx").on(
+      table.userId,
+      table.createdAt,
+    ),
+  }),
+);
+
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 export type LabCaseRow = typeof labCases.$inferSelect;
@@ -1992,3 +2017,4 @@ export type TrustedDevice = typeof trustedDevices.$inferSelect;
 export type Conversation = typeof conversations.$inferSelect;
 export type ConversationParticipant = typeof conversationParticipants.$inferSelect;
 export type Message = typeof messages.$inferSelect;
+export type AiChatHistoryRow = typeof aiChatHistory.$inferSelect;

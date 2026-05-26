@@ -1044,6 +1044,29 @@ export interface AiChatInput {
   messages: AiChatMessage[];
 }
 
+export type AiChatHistoryMessageRole =
+  (typeof AiChatHistoryMessageRole)[keyof typeof AiChatHistoryMessageRole];
+
+export const AiChatHistoryMessageRole = {
+  user: "user",
+  assistant: "assistant",
+} as const;
+
+export interface AiChatHistoryMessage {
+  id: string;
+  role: AiChatHistoryMessageRole;
+  content: string;
+  createdAt: string;
+}
+
+export interface AiChatHistoryResult {
+  messages: AiChatHistoryMessage[];
+}
+
+export interface SuccessResult {
+  success: boolean;
+}
+
 export interface AiChatResult {
   reply: string;
 }

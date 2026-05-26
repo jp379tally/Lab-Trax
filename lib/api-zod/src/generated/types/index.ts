@@ -8,6 +8,9 @@
 
 export * from "./acknowledgeAiReview200";
 export * from "./acknowledgeAiReview200Data";
+export * from "./aiChatHistoryMessage";
+export * from "./aiChatHistoryMessageRole";
+export * from "./aiChatHistoryResult";
 export * from "./aiChatInput";
 export * from "./aiChatMessage";
 export * from "./aiChatMessageRole";
@@ -134,6 +137,7 @@ export * from "./smsInvoiceBody";
 export * from "./statementSchedule";
 export * from "./statementScheduleInput";
 export * from "./statementScheduleResult";
+export * from "./successResult";
 export * from "./transactionCategory";
 export * from "./transactionCategoryKind";
 export * from "./transactionCategoryListResult";

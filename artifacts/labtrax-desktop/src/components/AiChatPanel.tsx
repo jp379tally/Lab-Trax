@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api";
-import { Loader2, Send, Sparkles, X } from "lucide-react";
+import { Loader2, Send, Sparkles, Trash2, X } from "lucide-react";
 
 interface ChatMsg {
   id: string;
@@ -19,26 +19,54 @@ function generateId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2);
 }
 
+const WELCOME_MSG: ChatMsg = {
+  id: "welcome",
+  role: "assistant",
+  content:
+    "Hi! I'm LabTrax AI. I can help you with case status, pricing, turnaround times, and lab info. How can I help?",
+};
+
 interface Props {
   onClose: () => void;
 }
 
 export function AiChatPanel({ onClose }: Props) {
-  const [messages, setMessages] = useState<ChatMsg[]>([
-    {
-      id: "welcome",
-      role: "assistant",
-      content:
-        "Hi! I'm LabTrax AI. I can help you with case status, pricing, turnaround times, and lab info. How can I help?",
-    },
-  ]);
+  const [messages, setMessages] = useState<ChatMsg[]>([WELCOME_MSG]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [promptsDismissed, setPromptsDismissed] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [confirmingClear, setConfirmingClear] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const showPrompts = !promptsDismissed && messages.length === 1;
+  const hasHistory = messages.some((m) => m.id !== "welcome");
+
+  // Load chat history on mount
+  useEffect(() => {
+    let cancelled = false;
+    async function loadHistory() {
+      try {
+        const data = await apiFetch<{ messages: Array<{ id: string; role: string; content: string; createdAt: string }> }>(
+          "/ai-chat/history",
+        );
+        const historyMsgs: ChatMsg[] = (data.messages ?? []).map((m) => ({
+          id: m.id,
+          role: m.role as "user" | "assistant",
+          content: m.content,
+        }));
+        if (!cancelled && historyMsgs.length > 0) {
+          setMessages([WELCOME_MSG, ...historyMsgs]);
+          setPromptsDismissed(true);
+        }
+      } catch {
+        // silently ignore — history is a best-effort enhancement
+      }
+    }
+    loadHistory();
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -93,10 +121,31 @@ export function AiChatPanel({ onClose }: Props) {
     }
   }
 
+  async function handleClearHistory() {
+    if (!confirmingClear) {
+      setConfirmingClear(true);
+      return;
+    }
+    setClearing(true);
+    setConfirmingClear(false);
+    try {
+      await apiFetch("/ai-chat/history", { method: "DELETE" });
+      setMessages([WELCOME_MSG]);
+      setPromptsDismissed(false);
+    } catch {
+      // ignore
+    } finally {
+      setClearing(false);
+    }
+  }
+
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       sendMessage(input);
+    }
+    if (e.key === "Escape" && confirmingClear) {
+      setConfirmingClear(false);
     }
   }
 
@@ -111,18 +160,43 @@ export function AiChatPanel({ onClose }: Props) {
           <div className="text-sm font-semibold">AI Assistant</div>
           <div className="text-[11px] text-muted-foreground">Powered by your live data</div>
         </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="h-8 w-8 rounded-md flex items-center justify-center text-muted-foreground hover:bg-secondary hover:text-foreground"
-          aria-label="Close AI panel"
-        >
-          <X size={16} />
-        </button>
+        <div className="flex items-center gap-1">
+          {hasHistory && (
+            <button
+              type="button"
+              onClick={handleClearHistory}
+              disabled={clearing}
+              title={confirmingClear ? "Click again to confirm" : "Clear chat history"}
+              className={`h-8 px-2 rounded-md flex items-center gap-1.5 text-xs transition-colors disabled:opacity-50 ${
+                confirmingClear
+                  ? "bg-destructive/10 text-destructive hover:bg-destructive/20"
+                  : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+              }`}
+            >
+              {clearing ? (
+                <Loader2 size={13} className="animate-spin" />
+              ) : (
+                <Trash2 size={13} />
+              )}
+              {confirmingClear ? "Confirm?" : ""}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 w-8 rounded-md flex items-center justify-center text-muted-foreground hover:bg-secondary hover:text-foreground"
+            aria-label="Close AI panel"
+          >
+            <X size={16} />
+          </button>
+        </div>
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto scrollbar-thin px-4 py-4 space-y-4">
+      <div
+        className="flex-1 overflow-y-auto scrollbar-thin px-4 py-4 space-y-4"
+        onClick={() => confirmingClear && setConfirmingClear(false)}
+      >
         {messages.map((msg) => {
           const isUser = msg.role === "user";
           return (

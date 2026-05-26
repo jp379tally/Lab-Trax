@@ -18,6 +18,7 @@ import type {
 
 import type {
   AcknowledgeAiReview200,
+  AiChatHistoryResult,
   AiChatInput,
   AiChatResult,
   BackupRunRequest,
@@ -88,6 +89,7 @@ import type {
   SmsInvoiceBody,
   StatementScheduleInput,
   StatementScheduleResult,
+  SuccessResult,
   TransactionCategoryListResult,
   TransactionCategoryResult,
   TwoFactorChallengeInput,
@@ -117,6 +119,162 @@ type AwaitedInput<T> = PromiseLike<T> | T;
 type Awaited<O> = O extends AwaitedInput<infer T> ? T : never;
 
 type SecondParameter<T extends (...args: never) => unknown> = Parameters<T>[1];
+
+/**
+ * @summary Fetch recent AI chat history for the authenticated user
+ */
+export const getGetAiChatHistoryUrl = () => {
+  return `/api/ai-chat/history`;
+};
+
+export const getAiChatHistory = async (
+  options?: RequestInit,
+): Promise<AiChatHistoryResult> => {
+  return customFetch<AiChatHistoryResult>(getGetAiChatHistoryUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetAiChatHistoryQueryKey = () => {
+  return [`/api/ai-chat/history`] as const;
+};
+
+export const getGetAiChatHistoryQueryOptions = <
+  TData = Awaited<ReturnType<typeof getAiChatHistory>>,
+  TError = ErrorType<void>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getAiChatHistory>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetAiChatHistoryQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getAiChatHistory>>
+  > = ({ signal }) => getAiChatHistory({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getAiChatHistory>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetAiChatHistoryQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getAiChatHistory>>
+>;
+export type GetAiChatHistoryQueryError = ErrorType<void>;
+
+/**
+ * @summary Fetch recent AI chat history for the authenticated user
+ */
+
+export function useGetAiChatHistory<
+  TData = Awaited<ReturnType<typeof getAiChatHistory>>,
+  TError = ErrorType<void>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getAiChatHistory>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetAiChatHistoryQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Clear all AI chat history for the authenticated user
+ */
+export const getDeleteAiChatHistoryUrl = () => {
+  return `/api/ai-chat/history`;
+};
+
+export const deleteAiChatHistory = async (
+  options?: RequestInit,
+): Promise<SuccessResult> => {
+  return customFetch<SuccessResult>(getDeleteAiChatHistoryUrl(), {
+    ...options,
+    method: "DELETE",
+  });
+};
+
+export const getDeleteAiChatHistoryMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof deleteAiChatHistory>>,
+    TError,
+    void,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof deleteAiChatHistory>>,
+  TError,
+  void,
+  TContext
+> => {
+  const mutationKey = ["deleteAiChatHistory"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof deleteAiChatHistory>>,
+    void
+  > = () => {
+    return deleteAiChatHistory(requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type DeleteAiChatHistoryMutationResult = NonNullable<
+  Awaited<ReturnType<typeof deleteAiChatHistory>>
+>;
+
+export type DeleteAiChatHistoryMutationError = ErrorType<void>;
+
+/**
+ * @summary Clear all AI chat history for the authenticated user
+ */
+export const useDeleteAiChatHistory = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof deleteAiChatHistory>>,
+    TError,
+    void,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof deleteAiChatHistory>>,
+  TError,
+  void,
+  TContext
+> => {
+  return useMutation(getDeleteAiChatHistoryMutationOptions(options));
+};
 
 /**
  * @summary Send a message to the context-aware AI assistant

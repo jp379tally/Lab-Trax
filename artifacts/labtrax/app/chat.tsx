@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import {
   StyleSheet,
   View,
@@ -9,6 +9,7 @@ import {
   Platform,
   ActivityIndicator,
   ScrollView,
+  Alert,
 } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -39,6 +40,10 @@ const PROVIDER_SUGGESTED_PROMPTS = [
   "What's the status of my recent cases?",
 ];
 
+function generateId() {
+  return Date.now().toString() + Math.random().toString(36).substr(2, 9);
+}
+
 export default function ChatScreen() {
   const insets = useSafeAreaInsets();
   const { userType } = useAuth();
@@ -59,14 +64,41 @@ export default function ChatScreen() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [promptsDismissed, setPromptsDismissed] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const flatListRef = useRef<FlatList>(null);
 
   const suggestedPrompts = isProvider ? PROVIDER_SUGGESTED_PROMPTS : LAB_SUGGESTED_PROMPTS;
   const showPrompts = !promptsDismissed && messages.length === 1;
 
-  function generateId() {
-    return Date.now().toString() + Math.random().toString(36).substr(2, 9);
-  }
+  // Load chat history on mount
+  useEffect(() => {
+    let cancelled = false;
+    async function loadHistory() {
+      try {
+        const response = await resilientFetch("/api/ai-chat/history");
+        if (response.ok) {
+          const data = await response.json();
+          const historyMsgs: ChatMsg[] = (data.messages ?? []).map((m: any) => ({
+            id: m.id,
+            role: m.role as "user" | "assistant",
+            content: m.content,
+            timestamp: m.createdAt ? new Date(m.createdAt).getTime() : Date.now(),
+          }));
+          if (!cancelled && historyMsgs.length > 0) {
+            setMessages((prev) => {
+              const welcomeMsg = prev.find((m) => m.id === "welcome");
+              return welcomeMsg ? [welcomeMsg, ...historyMsgs] : historyMsgs;
+            });
+            setPromptsDismissed(true);
+          }
+        }
+      } catch {
+        // silently ignore — history is a best-effort enhancement
+      }
+    }
+    loadHistory();
+    return () => { cancelled = true; };
+  }, []);
 
   async function sendMessage(text: string) {
     if (!text.trim() || sending) return;
@@ -157,6 +189,43 @@ export default function ChatScreen() {
     sendMessage(prompt);
   }
 
+  function handleClearHistory() {
+    Alert.alert(
+      "Clear History",
+      "This will permanently delete your AI chat history. Are you sure?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Clear",
+          style: "destructive",
+          onPress: async () => {
+            setClearing(true);
+            try {
+              const resp = await resilientFetch("/api/ai-chat/history", { method: "DELETE" });
+              if (resp.ok) {
+                setMessages([
+                  {
+                    id: "welcome",
+                    role: "assistant",
+                    content: welcomeMessage,
+                    timestamp: Date.now(),
+                  },
+                ]);
+                setPromptsDismissed(false);
+              } else {
+                Alert.alert("Error", "Failed to clear history. Please try again.");
+              }
+            } catch {
+              Alert.alert("Error", "Failed to clear history. Please try again.");
+            } finally {
+              setClearing(false);
+            }
+          },
+        },
+      ],
+    );
+  }
+
   function renderMessage({ item }: { item: ChatMsg }) {
     const isUser = item.role === "user";
     return (
@@ -173,6 +242,8 @@ export default function ChatScreen() {
     );
   }
 
+  const hasHistory = messages.some((m) => m.id !== "welcome");
+
   return (
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 }]}>
@@ -185,7 +256,18 @@ export default function ChatScreen() {
           </View>
           <Text style={styles.headerTitle}>AI Assistant</Text>
         </View>
-        <View style={{ width: 24 }} />
+        {hasHistory ? (
+          <Pressable
+            onPress={handleClearHistory}
+            disabled={clearing}
+            hitSlop={12}
+            style={({ pressed }) => [{ opacity: pressed || clearing ? 0.5 : 1 }]}
+          >
+            <Ionicons name="trash-outline" size={20} color={Colors.light.textSecondary} />
+          </Pressable>
+        ) : (
+          <View style={{ width: 24 }} />
+        )}
       </View>
 
       <KeyboardAvoidingView
