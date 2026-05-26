@@ -527,6 +527,9 @@ const createCaseSchema = z.object({
   // Visibility defaults to shared_with_provider so the doctor sees the
   // note on their end too.
   notes: z.string().min(1).max(8000).optional(),
+  // Optional barcode to assign to the case pan at creation time.
+  // Empty strings are treated as omitted (no barcode assigned).
+  casePanBarcode: z.string().optional().transform((v) => (v && v.trim().length > 0 ? v.trim() : undefined)),
 }).refine(
   // caseNumber is required for non-remake cases; server assigns it for remakes.
   (v) => !!v.remakeOfCaseId || (typeof v.caseNumber === "string" && v.caseNumber.trim().length > 0),
@@ -1157,6 +1160,7 @@ router.post(
           remakeCharged: remakeOriginal
             ? input.remakeCharged ?? null
             : null,
+          casePanBarcode: input.casePanBarcode ?? null,
         })
         .returning();
 

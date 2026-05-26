@@ -4,6 +4,7 @@ import { useLocation } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
+  Barcode,
   Box,
   Check,
   ChevronDown,
@@ -112,6 +113,7 @@ interface NewCaseFormData {
   doctorName: string;
   dueDate: string;
   priority: "normal" | "rush";
+  casePanBarcode?: string;
 }
 
 interface ProviderPickerProps {
@@ -685,6 +687,20 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
                 ))}
               </div>
             </div>
+
+            <div className="col-span-2">
+              <label className="block text-xs font-medium text-muted-foreground mb-1">
+                Case pan barcode{" "}
+                <span className="font-normal text-muted-foreground/70">(optional)</span>
+              </label>
+              <input
+                className="w-full h-9 px-3 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary font-mono"
+                value={form.casePanBarcode ?? ""}
+                onChange={(e) => set("casePanBarcode", e.target.value || undefined)}
+                placeholder="Scan or type barcode…"
+                autoComplete="off"
+              />
+            </div>
           </div>
 
           {error && (
@@ -868,6 +884,55 @@ export default function CasesPage() {
 
   const [bulkToast, setBulkToast] = useState<string | null>(null);
   const [bulkToastError, setBulkToastError] = useState<string | null>(null);
+
+  const [barcodeInput, setBarcodeInput] = useState("");
+  const [barcodeLookupError, setBarcodeLookupError] = useState<string | null>(null);
+  const [barcodeLookupLoading, setBarcodeLookupLoading] = useState(false);
+
+  async function handleBarcodeLookup(code: string) {
+    const trimmed = code.trim();
+    if (!trimmed) return;
+    setBarcodeLookupError(null);
+
+    // Search loaded data first — instant, no extra round-trip needed.
+    const local = (data ?? []).find((c) => c.casePanBarcode === trimmed);
+    if (local) {
+      setSelected(local);
+      setBarcodeInput("");
+      return;
+    }
+
+    // Fall back to API lookup across all lab orgs the user belongs to.
+    const labOrgs = (orgsQuery.data ?? []).filter((o) => o.type === "lab");
+    if (!labOrgs.length) {
+      setBarcodeLookupError("No case found for that barcode.");
+      return;
+    }
+    setBarcodeLookupLoading(true);
+    try {
+      for (const lab of labOrgs) {
+        try {
+          const result = await apiFetch<{ case: LabCase }>(
+            `/cases/barcode/${encodeURIComponent(trimmed)}?labOrganizationId=${encodeURIComponent(lab.id)}`,
+          );
+          if (result.case) {
+            setSelected(result.case);
+            setBarcodeInput("");
+            qc.invalidateQueries({ queryKey: ["cases"] });
+            return;
+          }
+        } catch (e: any) {
+          // 404 just means this lab doesn't have it — try the next one.
+          if (e?.status !== 404 && e?.message !== "No case found with that barcode.") throw e;
+        }
+      }
+      setBarcodeLookupError("No case found for that barcode.");
+    } catch {
+      setBarcodeLookupError("Lookup failed. Please try again.");
+    } finally {
+      setBarcodeLookupLoading(false);
+    }
+  }
 
   // Deep-link: if the URL contains ?caseId=<id>, auto-open that case in the drawer.
   useEffect(() => {
@@ -1158,6 +1223,46 @@ export default function CasesPage() {
               />
             </div>
           )}
+
+          <div className="ml-auto flex items-center gap-1.5 shrink-0">
+            <div className="relative">
+              <Barcode
+                size={14}
+                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
+              />
+              <input
+                type="search"
+                value={barcodeInput}
+                onChange={(e) => {
+                  setBarcodeInput(e.target.value);
+                  setBarcodeLookupError(null);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleBarcodeLookup(barcodeInput);
+                }}
+                placeholder="Find by barcode…"
+                className="h-9 pl-8 pr-2.5 w-44 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
+                aria-label="Find case by barcode"
+              />
+            </div>
+            <button
+              type="button"
+              disabled={!barcodeInput.trim() || barcodeLookupLoading}
+              onClick={() => handleBarcodeLookup(barcodeInput)}
+              className="h-9 px-3 rounded-md bg-secondary text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-secondary/80 disabled:opacity-50 inline-flex items-center gap-1"
+            >
+              {barcodeLookupLoading ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : (
+                "Find"
+              )}
+            </button>
+            {barcodeLookupError && (
+              <span className="text-xs text-destructive whitespace-nowrap">
+                {barcodeLookupError}
+              </span>
+            )}
+          </div>
         </div>
         {selectedIds.size > 0 && (
           <div className="sticky top-0 z-10 px-4 py-2.5 border-b border-border bg-card/95 backdrop-blur-sm flex items-center gap-3 shadow-sm">
