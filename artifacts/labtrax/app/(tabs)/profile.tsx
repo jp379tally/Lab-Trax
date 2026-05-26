@@ -13,6 +13,8 @@ import {
   RefreshControl,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { AppHeader } from "@/components/ui/AppHeader";
+import { useTheme } from "@/lib/theme-context";
 import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useApp } from "@/lib/app-context";
@@ -153,30 +155,30 @@ export default function ProfileScreen() {
     { key: "out_of_office", label: "Out of Office", icon: "airplane", color: Colors.light.textSecondary, bg: Colors.light.surfaceSecondary },
   ];
 
+  const { colors } = useTheme();
+
   return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={{
-        paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-        paddingBottom: Platform.OS === "web" ? 84 + 40 : 120,
-      }}
-      showsVerticalScrollIndicator={false}
-      refreshControl={
-        Platform.OS !== "web" ? (
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={async () => {
-              setRefreshing(true);
-              await hardRefresh();
-              setRefreshing(false);
-            }}
-          />
-        ) : undefined
-      }
-    >
-      <View style={{ flexDirection: "row", justifyContent: "flex-end", paddingHorizontal: 20, marginBottom: 4 }}>
-        <ChatButton />
-      </View>
+    <View style={{ flex: 1, backgroundColor: colors.backgroundSolid }}>
+      <AppHeader title="Profile" />
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{
+          paddingBottom: Platform.OS === "web" ? 84 + 40 : 120,
+        }}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          Platform.OS !== "web" ? (
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={async () => {
+                setRefreshing(true);
+                await hardRefresh();
+                setRefreshing(false);
+              }}
+            />
+          ) : undefined
+        }
+      >
       <View style={styles.profileCard}>
         <View style={styles.avatarContainer}>
           {profilePicUri ? (
@@ -532,6 +534,7 @@ export default function ProfileScreen() {
         </View>
       </Modal>
     </ScrollView>
+    </View>
   );
 }
 

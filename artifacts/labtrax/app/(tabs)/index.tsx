@@ -38,6 +38,7 @@ import { useApp } from "@/lib/app-context";
 import { ChatButton } from "@/components/ChatButton";
 import { useAuth } from "@/lib/auth-context";
 import { useTheme } from "@/lib/theme-context";
+import { useDrawer } from "@/lib/drawer-context";
 import Colors from "@/constants/colors";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { getStationInfo, STATIONS, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, formatAcctNum, formatInvNum, formatPhone, cleanDoctorDisplay, LabCase, ProviderContact } from "@/lib/data";
@@ -316,6 +317,7 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
   const [refreshing, setRefreshing] = useState(false);
   const { logout, profilePicUri, setProfilePicUri, currentUser, registeredUsers } = useAuth();
   const { colors: themeColors, isDark: isDarkMode } = useTheme();
+  const { openDrawer } = useDrawer();
   const insets = useSafeAreaInsets();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [picModalVisible, setPicModalVisible] = useState(false);
@@ -574,7 +576,7 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
     <View style={[styles.container, { backgroundColor: themeColors.backgroundSolid }]}>
       <View style={[styles.topBar, { position: "absolute", top: Platform.OS === "web" ? 67 : insets.top, left: 0, right: 0, zIndex: 100, backgroundColor: "transparent" }]}>
         <Pressable
-          onPress={() => setDrawerOpen(true)}
+          onPress={() => openDrawer()}
           style={({ pressed }) => [styles.hamburgerBtn, pressed && { opacity: 0.6 }]}
           testID="hamburger-menu"
         >

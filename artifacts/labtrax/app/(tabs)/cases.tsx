@@ -14,6 +14,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, Feather } from "@expo/vector-icons";
+import { AppHeader } from "@/components/ui/AppHeader";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
@@ -307,18 +308,7 @@ export default function CasesScreen() {
 
   return (
     <View style={styles.container}>
-      <View
-        style={[
-          styles.header,
-          {
-            paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12,
-          },
-        ]}
-      >
-        <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-          <Text style={styles.title}>Cases</Text>
-          <ChatButton />
-        </View>
+      <AppHeader title="Cases" />
         <View style={styles.searchRow}>
           <View style={styles.searchBox}>
             <Feather
@@ -428,7 +418,6 @@ export default function CasesScreen() {
             </Pressable>
           )}
         />
-      </View>
 
       <FlatList
         data={filteredCases}

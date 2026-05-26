@@ -22,6 +22,7 @@ import { useAuth } from "@/lib/auth-context";
 import { useTheme } from "@/lib/theme-context";
 import Colors from "@/constants/colors";
 import { resilientFetch } from "@/lib/query-client";
+import { AppHeader } from "@/components/ui/AppHeader";
 
 function formatCurrency(amount: number): string {
   return new Intl.NumberFormat("en-US", {
@@ -259,42 +260,29 @@ export default function StatementsScreen() {
     return `Sends on ${day} of each month`;
   }, [schedule]);
 
-  const paddingTop = Platform.OS === "web" ? 67 + 16 : insets.top + 16;
   const paddingBottom = Platform.OS === "web" ? 84 + 24 : insets.bottom + 90;
 
   return (
     <View style={{ flex: 1, backgroundColor: themeColors.background }}>
-      <ScrollView
-        style={{ flex: 1 }}
-        contentContainerStyle={{ paddingTop, paddingBottom }}
-        showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
-        }
-      >
-        {/* Header */}
-        <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 20 }}>
-          <Pressable
-            onPress={() => router.back()}
-            style={{ marginRight: 12, width: 44, height: 44, alignItems: "center", justifyContent: "center" }}
-          >
-            <Ionicons name="arrow-back" size={24} color={themeColors.text} />
-          </Pressable>
-          <View style={{ flex: 1 }}>
-            <Text style={{ fontSize: 24, fontFamily: "Inter_700Bold", color: themeColors.text }}>
-              Statements
-            </Text>
-            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: themeColors.textSecondary, marginTop: 2 }}>
-              Billing statements for your practices
-            </Text>
-          </View>
+      <AppHeader
+        title="Statements"
+        rightActions={
           <Pressable
             onPress={handleRefresh}
             style={{ width: 40, height: 40, alignItems: "center", justifyContent: "center" }}
           >
             <Ionicons name="refresh" size={20} color={themeColors.textSecondary} />
           </Pressable>
-        </View>
+        }
+      />
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{ paddingBottom }}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
+        }
+      >
 
         {!orgId && (
           <View style={{ marginHorizontal: 20, padding: 20, backgroundColor: Colors.light.tintLight, borderRadius: 14, alignItems: "center" }}>

@@ -23,6 +23,8 @@ import { queryClient } from "@/lib/query-client";
 import { AppProvider } from "@/lib/app-context";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { ThemeProvider } from "@/lib/theme-context";
+import { DrawerProvider } from "@/lib/drawer-context";
+import { AppDrawer } from "@/components/AppDrawer";
 import { RevenueCatProvider } from "@/lib/revenuecat";
 import LoginScreen from "@/components/LoginScreen";
 import LockScreen from "@/components/LockScreen";
@@ -75,6 +77,26 @@ function RootLayoutNav() {
         />
         <Stack.Screen
           name="messenger/[id]"
+          options={{ headerShown: false, presentation: "card" }}
+        />
+        <Stack.Screen
+          name="invoices"
+          options={{ headerShown: false, presentation: "card" }}
+        />
+        <Stack.Screen
+          name="bank-register"
+          options={{ headerShown: false, presentation: "card" }}
+        />
+        <Stack.Screen
+          name="statements"
+          options={{ headerShown: false, presentation: "card" }}
+        />
+        <Stack.Screen
+          name="pricing"
+          options={{ headerShown: false, presentation: "card" }}
+        />
+        <Stack.Screen
+          name="download"
           options={{ headerShown: false, presentation: "card" }}
         />
         <Stack.Screen
@@ -134,31 +156,34 @@ function AuthGate() {
   return (
     <RevenueCatProvider userId={currentUserId}>
       <ThemeProvider>
-        <AppProvider>
-          <InactivityWrapper>
-          <View style={{ flex: 1, backgroundColor: Colors.light.backgroundSolid }}>
-            <LinearGradient
-              colors={["rgba(20,93,160,0.14)", "rgba(20,93,160,0.03)", "rgba(244,247,251,0)"]}
-              locations={[0, 0.35, 1]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={StyleSheet.absoluteFill}
-              pointerEvents="none"
-            />
-            <LinearGradient
-              colors={["rgba(15,118,110,0.08)", "rgba(15,118,110,0)", "rgba(8,17,29,0.06)"]}
-              locations={[0, 0.45, 1]}
-              start={{ x: 1, y: 0 }}
-              end={{ x: 0, y: 1 }}
-              style={StyleSheet.absoluteFill}
-              pointerEvents="none"
-            />
-            <MessengerProvider>
-              <RootLayoutNav />
-            </MessengerProvider>
-          </View>
-          </InactivityWrapper>
-        </AppProvider>
+        <DrawerProvider>
+          <AppProvider>
+            <InactivityWrapper>
+              <View style={{ flex: 1, backgroundColor: Colors.light.backgroundSolid }}>
+                <LinearGradient
+                  colors={["rgba(20,93,160,0.14)", "rgba(20,93,160,0.03)", "rgba(244,247,251,0)"]}
+                  locations={[0, 0.35, 1]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={StyleSheet.absoluteFill}
+                  pointerEvents="none"
+                />
+                <LinearGradient
+                  colors={["rgba(15,118,110,0.08)", "rgba(15,118,110,0)", "rgba(8,17,29,0.06)"]}
+                  locations={[0, 0.45, 1]}
+                  start={{ x: 1, y: 0 }}
+                  end={{ x: 0, y: 1 }}
+                  style={StyleSheet.absoluteFill}
+                  pointerEvents="none"
+                />
+                <MessengerProvider>
+                  <RootLayoutNav />
+                </MessengerProvider>
+                <AppDrawer />
+              </View>
+            </InactivityWrapper>
+          </AppProvider>
+        </DrawerProvider>
       </ThemeProvider>
     </RevenueCatProvider>
   );

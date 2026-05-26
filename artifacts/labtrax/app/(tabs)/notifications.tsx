@@ -23,6 +23,7 @@ import { useProviderFilteredNotifications } from "@/lib/useFilteredNotifications
 import Colors from "@/constants/colors";
 import { Notification, GroupJoinRequest, LabInvitation } from "@/lib/data";
 import { ChatButton } from "@/components/ChatButton";
+import { AppHeader } from "@/components/ui/AppHeader";
 
 function getNotifIcon(type: Notification["type"] | string | undefined) {
   switch (type) {
@@ -257,17 +258,7 @@ export default function NotificationsScreen() {
 
   return (
     <View style={styles.container}>
-      <View
-        style={[
-          styles.header,
-          { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 },
-        ]}
-      >
-        <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-          <Text style={styles.title}>Notifications</Text>
-          <ChatButton />
-        </View>
-      </View>
+      <AppHeader title="Notifications" />
       <FlatList
         data={filteredNotifications}
         keyExtractor={(item) => item.id}
