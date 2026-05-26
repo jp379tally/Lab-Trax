@@ -65,6 +65,16 @@ function RegisterTable({
   const [inlineDateGroup, setInlineDateGroup] = useState<string | null>(null);
   const [inlineDateGroupIsPartial, setInlineDateGroupIsPartial] = useState(false);
   const pendingGroupInvalidateRef = useRef(false);
+  const qcRef = useRef(qc);
+  qcRef.current = qc;
+  useEffect(() => {
+    return () => {
+      if (pendingGroupInvalidateRef.current) {
+        pendingGroupInvalidateRef.current = false;
+        void qcRef.current.invalidateQueries({ queryKey: ["finance"] });
+      }
+    };
+  }, [accountId, organizationId]);
   const [importing, setImporting] = useState(false);
   const [transferring, setTransferring] = useState(false);
   const [recurringFor, setRecurringFor] = useState<BankTransaction | null>(null);
