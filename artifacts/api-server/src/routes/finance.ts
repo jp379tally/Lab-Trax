@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { and, asc, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, inArray, lte, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import {
@@ -2179,6 +2179,19 @@ router.post(
   asyncHandler(async (req, res) => {
     const input = vendorBodySchema.required({ organizationId: true, name: true }).parse(req.body);
     await requireAnyRole(uid(req), input.organizationId, BILLING_ROLES);
+    const trimmedName = input.name.trim();
+    const [dupe] = await db
+      .select({ id: vendors.id })
+      .from(vendors)
+      .where(
+        and(
+          eq(vendors.labOrganizationId, input.organizationId),
+          sql`lower(${vendors.name}) = lower(${trimmedName})`,
+          sql`${vendors.deletedAt} IS NULL`
+        )
+      )
+      .limit(1);
+    if (dupe) throw new HttpError(409, "A payee with this name already exists in this lab.");
     const [row] = await db
       .insert(vendors)
       .values({
@@ -2321,6 +2334,22 @@ router.patch(
       .limit(1);
     if (!existing || existing.deletedAt) throw new HttpError(404, "Vendor not found");
     await requireAnyRole(uid(req), existing.labOrganizationId, BILLING_ROLES);
+    if (input.name !== undefined) {
+      const trimmedName = input.name.trim();
+      const [dupe] = await db
+        .select({ id: vendors.id })
+        .from(vendors)
+        .where(
+          and(
+            eq(vendors.labOrganizationId, existing.labOrganizationId),
+            sql`lower(${vendors.name}) = lower(${trimmedName})`,
+            sql`${vendors.deletedAt} IS NULL`,
+            ne(vendors.id, vendorId)
+          )
+        )
+        .limit(1);
+      if (dupe) throw new HttpError(409, "A payee with this name already exists in this lab.");
+    }
     const updates: Partial<typeof vendors.$inferInsert> = { updatedAt: new Date() };
     if (input.name !== undefined) updates.name = input.name.trim();
     if (input.address !== undefined) updates.address = input.address;

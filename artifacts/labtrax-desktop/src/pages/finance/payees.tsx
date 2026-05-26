@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Pencil, Plus, Search, Trash2, X } from "lucide-react";
+import { AlertTriangle, Loader2, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { FinanceShell } from "@/components/finance/FinanceShell";
 import { formatPhone } from "@/lib/format";
@@ -71,6 +71,18 @@ function PayeesContent({ organizationId }: { organizationId: string }) {
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm());
+
+  const duplicateNames = new Set(
+    [...allVendors
+      .reduce((acc, v) => {
+        const key = v.name.toLowerCase();
+        acc.set(key, (acc.get(key) ?? 0) + 1);
+        return acc;
+      }, new Map<string, number>())
+      .entries()]
+      .filter(([, count]) => count > 1)
+      .map(([name]) => name)
+  );
 
   const tabVendors = allVendors
     .filter((v) => v.vendorType === activeTab)
@@ -327,22 +339,29 @@ function PayeesContent({ organizationId }: { organizationId: string }) {
                         />
                       </td>
                       <td className="px-2 py-2">
-                        <div className="flex items-center justify-end gap-1">
-                          <button
-                            type="button"
-                            onClick={() => updateMut.mutate({ id: v.id, input: form })}
-                            disabled={!form.name.trim() || updateMut.isPending}
-                            className="h-7 px-2.5 rounded-md bg-primary text-primary-foreground text-xs font-medium disabled:opacity-60"
-                          >
-                            Save
-                          </button>
-                          <button
-                            type="button"
-                            onClick={cancelEdit}
-                            className="h-7 w-7 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground"
-                          >
-                            <X size={13} />
-                          </button>
+                        <div className="flex flex-col items-end gap-1">
+                          {updateMut.error instanceof Error && editingId === v.id && (
+                            <p className="text-[11px] text-destructive text-right max-w-[140px]">
+                              {updateMut.error.message}
+                            </p>
+                          )}
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => updateMut.mutate({ id: v.id, input: form })}
+                              disabled={!form.name.trim() || updateMut.isPending}
+                              className="h-7 px-2.5 rounded-md bg-primary text-primary-foreground text-xs font-medium disabled:opacity-60"
+                            >
+                              Save
+                            </button>
+                            <button
+                              type="button"
+                              onClick={cancelEdit}
+                              className="h-7 w-7 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground"
+                            >
+                              <X size={13} />
+                            </button>
+                          </div>
                         </div>
                       </td>
                     </tr>
@@ -352,12 +371,23 @@ function PayeesContent({ organizationId }: { organizationId: string }) {
                       className={`border-t border-border ${!v.isActive ? "opacity-50" : ""}`}
                     >
                       <td className="px-4 py-2.5 font-medium">
-                        {v.name}
-                        {!v.isActive && (
-                          <span className="ml-2 text-[10px] uppercase tracking-wide text-muted-foreground font-normal">
-                            inactive
-                          </span>
-                        )}
+                        <span className="inline-flex items-center gap-1.5">
+                          {v.name}
+                          {duplicateNames.has(v.name.toLowerCase()) && (
+                            <span
+                              title="Duplicate name — another payee in this lab shares this name. Rename or remove one to prevent ambiguity."
+                              className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                            >
+                              <AlertTriangle size={10} />
+                              duplicate
+                            </span>
+                          )}
+                          {!v.isActive && (
+                            <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-normal">
+                              inactive
+                            </span>
+                          )}
+                        </span>
                       </td>
                       <td className="px-3 py-2.5 text-muted-foreground text-xs">
                         {v.phone ? formatPhone(v.phone) : "—"}
