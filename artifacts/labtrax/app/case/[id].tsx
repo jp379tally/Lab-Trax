@@ -277,6 +277,8 @@ export default function CaseDetailScreen() {
   const [editShade, setEditShade] = useState("");
   const [editMaterial, setEditMaterial] = useState("");
   const [editDueDate, setEditDueDate] = useState("");
+  const [editExpectedDeliveryDate, setEditExpectedDeliveryDate] = useState("");
+  const editExpectedDeliveryDateBaselineRef = useRef("");
   const [editNotes, setEditNotes] = useState("");
 
   function requestCameraWithPrompt(onGranted: () => void) {
@@ -625,11 +627,15 @@ export default function CaseDetailScreen() {
     setEditShade(caseItem.shade);
     setEditMaterial(caseItem.material);
     setEditDueDate(caseItem.dueDate || "");
+    const rawEdd = canonicalCaseData?.expectedDeliveryDate;
+    const baselineEdd = rawEdd ? rawEdd.slice(0, 10) : "";
+    editExpectedDeliveryDateBaselineRef.current = baselineEdd;
+    setEditExpectedDeliveryDate(baselineEdd);
     setEditNotes(caseItem.notes || "");
     setShowEditCase(true);
   }
 
-  function handleSaveEditCase() {
+  async function handleSaveEditCase() {
     if (!caseItem) return;
     const { updates, changes, providerChanged } = computeCaseEditDiff(caseItem, {
       doctor: editDoctor,
@@ -642,15 +648,57 @@ export default function CaseDetailScreen() {
     });
     const newDoctor = editDoctor.trim();
 
-    if (changes.length === 0) {
+    const newEdd = editExpectedDeliveryDate.trim();
+    const baselineEdd = editExpectedDeliveryDateBaselineRef.current;
+    const eddChanged = newEdd !== baselineEdd;
+
+    // Validate the date input before proceeding (YYYY-MM-DD only)
+    if (eddChanged && newEdd) {
+      const ymdRe = /^\d{4}-\d{2}-\d{2}$/;
+      if (!ymdRe.test(newEdd) || isNaN(new Date(newEdd + "T00:00:00").getTime())) {
+        Alert.alert("Invalid Date", "Expected delivery must be in YYYY-MM-DD format (e.g. 2025-12-31).");
+        return;
+      }
+    }
+
+    if (changes.length === 0 && !eddChanged) {
       setShowEditCase(false);
       return;
     }
 
-    updateCase(caseItem.id, updates);
-
     if (changes.length > 0) {
-      addCaseNote(caseItem.id, `Case edited: ${changes.join("; ")}`, userInitials);
+      updateCase(caseItem.id, updates);
+    }
+
+    let eddSaved = false;
+    let isoDate: string | null = null;
+    if (eddChanged) {
+      isoDate = newEdd ? new Date(newEdd + "T00:00:00").toISOString() : null;
+      try {
+        const res = await resilientFetch(`/api/cases/${encodeURIComponent(caseItem.id)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ expectedDeliveryDate: isoDate }),
+        });
+        if (res.ok) {
+          eddSaved = true;
+          setCanonicalCaseData((prev) =>
+            prev ? { ...prev, expectedDeliveryDate: isoDate } : prev
+          );
+        } else {
+          Alert.alert("Save Failed", "Could not update expected delivery date. Please try again.");
+        }
+      } catch {
+        Alert.alert("Save Failed", "Could not update expected delivery date. Please try again.");
+      }
+    }
+
+    const allChanges = [
+      ...changes,
+      ...(eddSaved ? [`expected delivery: ${newEdd || "cleared"}`] : []),
+    ];
+    if (allChanges.length > 0) {
+      addCaseNote(caseItem.id, `Case edited: ${allChanges.join("; ")}`, userInitials);
     }
 
     const targetInvId = caseItem.invoiceId || (caseInvoice && caseInvoice.id !== caseItem.id + "-inv" ? caseInvoice.id : null);
@@ -677,6 +725,11 @@ export default function CaseDetailScreen() {
         });
         addCaseNote(caseItem.id, `Invoice transferred to ${matchClient.practiceName || matchClient.leadDoctor}`, userInitials);
       }
+    }
+
+    // If the only intended change was the EDD and it failed, don't show success.
+    if (changes.length === 0 && eddChanged && !eddSaved) {
+      return;
     }
 
     const savedCase = { ...caseItem, ...updates };
@@ -1735,6 +1788,18 @@ export default function CaseDetailScreen() {
             <Text style={styles.infoValue}>{(() => {
               if (!caseItem.dueDate) return "—";
               const d = new Date(caseItem.dueDate + "T00:00:00");
+              return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
+            })()}</Text>
+          </View>
+          <View style={styles.infoItem}>
+            <Text style={styles.infoLabel}>Exp. Delivery</Text>
+            <Text style={styles.infoValue}>{(() => {
+              const edd = canonicalCaseData?.expectedDeliveryDate;
+              if (!edd) return "—";
+              // Slice to YYYY-MM-DD and parse as local date to avoid UTC off-by-one
+              const ymd = edd.slice(0, 10);
+              const d = new Date(ymd + "T00:00:00");
+              if (isNaN(d.getTime())) return ymd;
               return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
             })()}</Text>
           </View>
@@ -4160,6 +4225,7 @@ export default function CaseDetailScreen() {
         shade={editShade}
         material={editMaterial}
         dueDate={editDueDate}
+        expectedDeliveryDate={editExpectedDeliveryDate}
         notes={editNotes}
         onChangeDoctor={setEditDoctor}
         onChangePatient={setEditPatient}
@@ -4167,6 +4233,7 @@ export default function CaseDetailScreen() {
         onChangeShade={setEditShade}
         onChangeMaterial={setEditMaterial}
         onChangeDueDate={setEditDueDate}
+        onChangeExpectedDeliveryDate={setEditExpectedDeliveryDate}
         onChangeNotes={setEditNotes}
         onSave={handleSaveEditCase}
       />

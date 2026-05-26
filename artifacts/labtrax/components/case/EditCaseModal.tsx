@@ -43,6 +43,7 @@ export type EditCaseModalProps = {
   shade: string;
   material: string;
   dueDate: string;
+  expectedDeliveryDate: string;
   notes: string;
   onChangeDoctor: (v: string) => void;
   onChangePatient: (v: string) => void;
@@ -50,6 +51,7 @@ export type EditCaseModalProps = {
   onChangeShade: (v: string) => void;
   onChangeMaterial: (v: string) => void;
   onChangeDueDate: (v: string) => void;
+  onChangeExpectedDeliveryDate: (v: string) => void;
   onChangeNotes: (v: string) => void;
   onSave: () => void;
 };
@@ -66,6 +68,7 @@ export function EditCaseModal(props: EditCaseModalProps) {
     shade,
     material,
     dueDate,
+    expectedDeliveryDate,
     notes,
     onChangeDoctor,
     onChangePatient,
@@ -73,6 +76,7 @@ export function EditCaseModal(props: EditCaseModalProps) {
     onChangeShade,
     onChangeMaterial,
     onChangeDueDate,
+    onChangeExpectedDeliveryDate,
     onChangeNotes,
     onSave,
   } = props;
@@ -125,6 +129,11 @@ export function EditCaseModal(props: EditCaseModalProps) {
                   <Text style={editFieldStyles.label}>Due Date (YYYY-MM-DD)</Text>
                   <TextInput style={editFieldStyles.input} value={dueDate} onChangeText={onChangeDueDate} placeholder="2025-12-31" placeholderTextColor="#94A3B8" />
                 </View>
+              </View>
+
+              <View>
+                <Text style={editFieldStyles.label}>Expected Delivery (YYYY-MM-DD)</Text>
+                <TextInput style={editFieldStyles.input} value={expectedDeliveryDate} onChangeText={onChangeExpectedDeliveryDate} placeholder="2025-12-31" placeholderTextColor="#94A3B8" keyboardType="numbers-and-punctuation" />
               </View>
 
               <View>
