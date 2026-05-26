@@ -414,6 +414,8 @@ export interface RecurringRule {
   name: string;
   payee?: string | null;
   vendorId?: string | null;
+  vendorName?: string | null;
+  vendorType?: "vendor" | "employee" | "item" | null;
   memo?: string | null;
   categoryId?: string | null;
   direction: "debit" | "credit";

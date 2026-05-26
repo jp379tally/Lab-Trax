@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronsUpDown, ChevronUp, ChevronDown as ChevronDownIcon, Download, History, Loader2, Pencil, Plus, Search, Upload, X } from "lucide-react";
 import { toast } from "sonner";
@@ -195,6 +195,25 @@ function ListsContent({ organizationId }: { organizationId: string }) {
 
   const allVendors = vendorsQuery.data ?? [];
   const allCategories = catsQuery.data ?? [];
+
+  // Support deep-linking to a specific vendor via ?vendor=<id>
+  // (e.g. from the recurring rules list badge).
+  const [autoOpenedVendorId, setAutoOpenedVendorId] = useState<string | null>(null);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const vendorId = params.get("vendor");
+    if (!vendorId || vendorId === autoOpenedVendorId) return;
+    const v = allVendors.find((x) => x.id === vendorId);
+    if (!v) return;
+    setActiveTab(v.vendorType as Tab);
+    openEditVendor(v);
+    setAutoOpenedVendorId(vendorId);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("vendor");
+    window.history.replaceState({}, "", url.toString());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allVendors]);
 
   function invalidateVendors() {
     qc.invalidateQueries({ queryKey: ["finance", "vendors", organizationId] });

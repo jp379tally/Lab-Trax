@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useLocation } from "wouter";
 import { Check, Link2, Pause, Play, Plus, RotateCcw, Send, Sparkles, Trash2, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { FinanceShell } from "@/components/finance/FinanceShell";
+import { TYPE_BADGE_CLASS, TYPE_LABEL } from "@/components/finance/VendorCombobox";
 import type { BankAccount, RecurringRule, TransactionCategory } from "@/lib/types";
 
 import { formatDate, formatMoney } from "@/lib/format";
@@ -49,6 +51,7 @@ function Recurring({
   accounts: BankAccount[];
 }) {
   const qc = useQueryClient();
+  const [, setLocation] = useLocation();
   const [editing, setEditing] = useState<RecurringRule | "new" | null>(null);
   const [genResult, setGenResult] = useState<string | null>(null);
   const [linkOpen, setLinkOpen] = useState(false);
@@ -250,7 +253,36 @@ function Recurring({
                 >
                   <td className="pl-4 pr-3 py-2.5 font-medium truncate">{r.name}</td>
                   <td className="px-3 py-2.5 truncate">{acctNameById.get(r.bankAccountId) || "—"}</td>
-                  <td className="px-3 py-2.5 truncate">{r.payee || "—"}</td>
+                  <td className="px-3 py-2.5 truncate">
+                    {r.vendorId && r.vendorType ? (
+                      <span className="inline-flex items-center gap-1.5 min-w-0">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setLocation(`/lists?vendor=${r.vendorId}`);
+                          }}
+                          title={`Open ${TYPE_LABEL[r.vendorType]} "${r.vendorName || r.payee || ""}"`}
+                          className={`shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full hover:opacity-80 ${TYPE_BADGE_CLASS[r.vendorType]}`}
+                        >
+                          {TYPE_LABEL[r.vendorType]}
+                        </button>
+                        <span className="truncate">{r.vendorName || r.payee || "—"}</span>
+                      </span>
+                    ) : r.payee ? (
+                      <span className="inline-flex items-center gap-1.5 min-w-0">
+                        <span
+                          title="Not linked to a vendor record"
+                          className="shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-secondary text-muted-foreground"
+                        >
+                          Unlinked
+                        </span>
+                        <span className="truncate">{r.payee}</span>
+                      </span>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
                   <td className="px-3 py-2.5 text-muted-foreground truncate">
                     {r.categoryId ? catNameById.get(r.categoryId) || "—" : "—"}
                   </td>

@@ -1135,7 +1135,33 @@ router.get(
       where: eq(recurringTransactions.labOrganizationId, organizationId),
       orderBy: [asc(recurringTransactions.name)],
     });
-    return ok(res, rows);
+    const vendorIds = Array.from(
+      new Set(rows.map((r) => r.vendorId).filter((v): v is string => !!v))
+    );
+    const vendorMap = new Map<
+      string,
+      { id: string; name: string; vendorType: string }
+    >();
+    if (vendorIds.length > 0) {
+      const vendorRows = await db
+        .select({
+          id: vendors.id,
+          name: vendors.name,
+          vendorType: vendors.vendorType,
+        })
+        .from(vendors)
+        .where(inArray(vendors.id, vendorIds));
+      for (const v of vendorRows) vendorMap.set(v.id, v);
+    }
+    const enriched = rows.map((r) => {
+      const v = r.vendorId ? vendorMap.get(r.vendorId) : null;
+      return {
+        ...r,
+        vendorName: v?.name ?? null,
+        vendorType: v?.vendorType ?? null,
+      };
+    });
+    return ok(res, enriched);
   })
 );
 
