@@ -2344,6 +2344,81 @@ router.post(
   }),
 );
 
+router.post(
+  "/vendors/:vendorId/merge",
+  asyncHandler(async (req, res) => {
+    const { vendorId } = req.params;
+    const { canonicalVendorId, dryRun } = z.object({
+      canonicalVendorId: z.string().min(1),
+      dryRun: z.boolean().optional().default(false),
+    }).parse(req.body);
+
+    if (vendorId === canonicalVendorId) {
+      throw new HttpError(400, "Cannot merge a vendor into itself.");
+    }
+
+    const [source] = await db
+      .select()
+      .from(vendors)
+      .where(eq(vendors.id, vendorId))
+      .limit(1);
+    if (!source || source.deletedAt) throw new HttpError(404, "Vendor not found");
+
+    const [canonical] = await db
+      .select()
+      .from(vendors)
+      .where(eq(vendors.id, canonicalVendorId))
+      .limit(1);
+    if (!canonical || canonical.deletedAt) throw new HttpError(404, "Canonical vendor not found");
+
+    if (source.labOrganizationId !== canonical.labOrganizationId) {
+      throw new HttpError(400, "Both vendors must belong to the same lab.");
+    }
+
+    await requireAnyRole(uid(req), source.labOrganizationId, BILLING_ROLES);
+
+    const [txRow] = await db
+      .select({ count: sql<string>`count(*)` })
+      .from(bankTransactions)
+      .where(and(eq(bankTransactions.vendorId, vendorId), sql`${bankTransactions.deletedAt} IS NULL`));
+    const transactionsRelinked = Number(txRow?.count ?? 0);
+
+    const [recurRow] = await db
+      .select({ count: sql<string>`count(*)` })
+      .from(recurringTransactions)
+      .where(eq(recurringTransactions.vendorId, vendorId));
+    const recurringRelinked = Number(recurRow?.count ?? 0);
+
+    if (dryRun) {
+      return ok(res, { transactionsRelinked, recurringRelinked, dryRun: true });
+    }
+
+    const now = new Date();
+    await db.transaction(async (tx) => {
+      if (transactionsRelinked > 0) {
+        await tx
+          .update(bankTransactions)
+          .set({ vendorId: canonicalVendorId, updatedAt: now })
+          .where(and(eq(bankTransactions.vendorId, vendorId), sql`${bankTransactions.deletedAt} IS NULL`));
+      }
+
+      if (recurringRelinked > 0) {
+        await tx
+          .update(recurringTransactions)
+          .set({ vendorId: canonicalVendorId, updatedAt: now })
+          .where(eq(recurringTransactions.vendorId, vendorId));
+      }
+
+      await tx
+        .update(vendors)
+        .set({ deletedAt: now, updatedAt: now })
+        .where(eq(vendors.id, vendorId));
+    });
+
+    return ok(res, { transactionsRelinked, recurringRelinked, dryRun: false });
+  }),
+);
+
 router.patch(
   "/vendors/:vendorId",
   asyncHandler(async (req, res) => {
