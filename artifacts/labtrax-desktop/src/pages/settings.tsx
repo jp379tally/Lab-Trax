@@ -7582,12 +7582,26 @@ function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
   });
   const [saving, setSaving] = useState<Partial<Record<keyof EmailPrefsData, boolean>>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveStatus, setSaveStatus] = useState<{ tone: "success" | "danger"; message: string } | null>(null);
+  const saveStatusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     apiFetch("/users/me/email-preferences")
       .then((data: EmailPrefsData) => setPrefs(data))
       .catch((err: Error) => setLoadError(err.message || "Could not load preferences."));
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (saveStatusTimer.current) clearTimeout(saveStatusTimer.current);
+    };
+  }, []);
+
+  function showSaveStatus(tone: "success" | "danger", message: string) {
+    if (saveStatusTimer.current) clearTimeout(saveStatusTimer.current);
+    setSaveStatus({ tone, message });
+    saveStatusTimer.current = setTimeout(() => setSaveStatus(null), 2500);
+  }
 
   async function toggle(key: keyof EmailPrefsData, value: boolean) {
     setPrefs((p) => ({ ...p, [key]: value }));
@@ -7597,23 +7611,25 @@ function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
         method: "PATCH",
         body: JSON.stringify({ [key]: value }),
       });
-    } catch {
+      showSaveStatus("success", "Preference saved.");
+    } catch (err) {
       setPrefs((p) => ({ ...p, [key]: !value }));
+      showSaveStatus("danger", (err instanceof Error ? err.message : null) || "Could not save preference.");
     } finally {
       setSaving((s) => ({ ...s, [key]: false }));
     }
   }
 
-  const rows: Array<{ prefKey: keyof EmailPrefsData; label: string; desc: string }> = [
+  const accountRows: Array<{ prefKey: keyof EmailPrefsData; label: string; desc: string }> = [
     {
       prefKey: "caseNoteNotifications",
       label: "Case note alerts",
-      desc: "Receive an email when a note is sent on a case",
+      desc: "Receive an email when a note is added to one of your cases",
     },
     {
       prefKey: "orgInviteNotifications",
       label: "Lab invitations",
-      desc: "Receive invitation emails when you are added to a lab",
+      desc: "Receive invitation emails when you are added to a lab or organization",
     },
     {
       prefKey: "statementEmails",
@@ -7622,26 +7638,26 @@ function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
     },
     {
       prefKey: "billingReminders",
-      label: "Billing reminders",
-      desc: "Trial expiry, payment due, and account status alerts",
+      label: "Billing & subscription reminders",
+      desc: "Trial expiry countdowns, payment-due notices, and account lock warnings",
     },
   ];
 
-  const adminRows: Array<{ prefKey: keyof EmailPrefsData; label: string; desc: string }> = [
-    {
-      prefKey: "installerAlerts",
-      label: "Desktop installer alerts",
-      desc: "Publish failures, health-check warnings, and download interruption reports",
-    },
+  const systemAlertRows: Array<{ prefKey: keyof EmailPrefsData; label: string; desc: string }> = [
     {
       prefKey: "backupAlerts",
-      label: "Backup alerts",
-      desc: "Backup success / failure summaries and OneDrive connection warnings",
+      label: "Backup reports",
+      desc: "Backup success and failure summaries, plus OneDrive connection disconnect / reconnect notices",
     },
     {
       prefKey: "cleanupAlerts",
       label: "Media cleanup reports",
-      desc: "Nightly orphaned case-media cleanup summaries",
+      desc: "Nightly orphaned case-media cleanup summaries and interrupted-run recovery notices",
+    },
+    {
+      prefKey: "installerAlerts",
+      label: "Desktop installer alerts",
+      desc: "Auto-publish failures, nightly health-check warnings, and download-reachability errors",
     },
   ];
 
@@ -7674,19 +7690,25 @@ function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
       subtitle="Choose which emails LabTrax sends to you. Transactional emails (password resets, verification codes) are always sent."
     >
       {loadError && <Alert tone="danger">{loadError}</Alert>}
+      {saveStatus && <Alert tone={saveStatus.tone}>{saveStatus.message}</Alert>}
+
+      <div className="space-y-1">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground px-0.5">Account</p>
+      </div>
       <div className="divide-y divide-border rounded-lg border border-border overflow-hidden">
-        {rows.map((row) => (
+        {accountRows.map((row) => (
           <ToggleRow key={row.prefKey} {...row} />
         ))}
       </div>
+
       {isAdmin && (
         <div className="space-y-2 pt-2">
-          <div>
-            <p className="text-sm font-semibold text-foreground">Admin system alerts</p>
-            <p className="text-xs text-muted-foreground mt-0.5">These alerts are sent only to admin accounts.</p>
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground px-0.5">System alerts</p>
+            <p className="text-xs text-muted-foreground">These alerts are only sent to admin accounts.</p>
           </div>
           <div className="divide-y divide-border rounded-lg border border-border overflow-hidden">
-            {adminRows.map((row) => (
+            {systemAlertRows.map((row) => (
               <ToggleRow key={row.prefKey} {...row} />
             ))}
           </div>

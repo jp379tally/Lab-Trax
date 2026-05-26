@@ -16,6 +16,9 @@ const emailPrefsInputSchema = z
     orgInviteNotifications: z.boolean().optional(),
     statementEmails: z.boolean().optional(),
     billingReminders: z.boolean().optional(),
+    installerAlerts: z.boolean().optional(),
+    backupAlerts: z.boolean().optional(),
+    cleanupAlerts: z.boolean().optional(),
   })
   .strict();
 
