@@ -103,6 +103,16 @@ export default function ChatScreen() {
           timestamp: Date.now(),
         };
         setMessages((prev) => [...prev, assistantMsg]);
+      } else if (response.status === 429) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: generateId(),
+            role: "assistant",
+            content: "Please slow down — try again in a moment.",
+            timestamp: Date.now(),
+          },
+        ]);
       } else if (response.status === 503) {
         setMessages((prev) => [
           ...prev,

@@ -79,7 +79,9 @@ export function AiChatPanel({ onClose }: Props) {
       ]);
     } catch (err: any) {
       const msg =
-        err?.status === 503
+        err?.status === 429
+          ? "Please slow down — try again in a moment."
+          : err?.status === 503
           ? "AI assistant is not configured on this server. Please contact your administrator."
           : "Sorry, I'm having trouble connecting right now. Please try again.";
       setMessages((prev) => [

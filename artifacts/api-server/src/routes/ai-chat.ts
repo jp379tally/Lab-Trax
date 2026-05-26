@@ -15,6 +15,34 @@ import { getProviderOrgIdsForUserAndLinks } from "../lib/cross-lab-doctor";
 import { requireAuth } from "../middlewares/auth";
 import { normalizeDoctor } from "../lib/pricing";
 
+// Per-user sliding-window rate limiter (in-memory)
+const _parsedLimit = parseInt(process.env.AI_CHAT_RATE_LIMIT_PER_MINUTE ?? "", 10);
+const AI_CHAT_RATE_LIMIT_PER_MINUTE =
+  Number.isFinite(_parsedLimit) && _parsedLimit > 0 ? _parsedLimit : 20;
+const RATE_WINDOW_MS = 60_000;
+const userRequestTimestamps = new Map<string, number[]>();
+
+function checkRateLimit(userId: string): {
+  allowed: boolean;
+  retryAfterSeconds: number;
+} {
+  const now = Date.now();
+  const windowStart = now - RATE_WINDOW_MS;
+  const timestamps = (userRequestTimestamps.get(userId) ?? []).filter(
+    (t) => t > windowStart,
+  );
+
+  if (timestamps.length >= AI_CHAT_RATE_LIMIT_PER_MINUTE) {
+    const oldest = timestamps[0]!;
+    const retryAfterMs = oldest + RATE_WINDOW_MS - now;
+    return { allowed: false, retryAfterSeconds: Math.ceil(retryAfterMs / 1000) };
+  }
+
+  timestamps.push(now);
+  userRequestTimestamps.set(userId, timestamps);
+  return { allowed: true, retryAfterSeconds: 0 };
+}
+
 let _cachedOpenAI: OpenAI | null | undefined;
 
 function getAiClient(): OpenAI | null {
@@ -381,6 +409,17 @@ async function buildProviderContext(userId: string): Promise<string> {
 
 export function registerAiChatRoutes(router: IRouter): void {
   router.post("/ai-chat", requireAuth, async (req: any, res: any) => {
+    const userId: string = req.user.id;
+
+    const rateCheck = checkRateLimit(userId);
+    if (!rateCheck.allowed) {
+      res.set("Retry-After", String(rateCheck.retryAfterSeconds));
+      return res.status(429).json({
+        error: "Too many requests. Please slow down and try again in a moment.",
+        retryAfterSeconds: rateCheck.retryAfterSeconds,
+      });
+    }
+
     const openai = getAiClient();
     if (!openai) {
       return res.status(503).json({
@@ -409,7 +448,6 @@ export function registerAiChatRoutes(router: IRouter): void {
       content: String(m.content || "").slice(0, 2000),
     }));
 
-    const userId: string = req.user.id;
     const userType: string = req.user.userType || "lab";
 
     let contextBlock: string;
