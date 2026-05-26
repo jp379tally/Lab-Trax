@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { and, asc, desc, eq, gte, ilike, inArray, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import {
@@ -2390,5 +2390,136 @@ router.delete(
     return ok(res, updated);
   }),
 );
+
+// ─────────────────── Vendor-link backfill helper ───────────────────
+// Shared logic used by the admin preview/run endpoints in labtrax-routes.ts.
+// Mirrors the matching rules in scripts/src/backfill-vendor-links.ts.
+
+function normalisePayee(s: string): string {
+  return s.trim().toLowerCase();
+}
+
+export interface BackfillLabSummary {
+  labId: string;
+  matched: number;
+  ambiguous: number;
+  noMatch: number;
+}
+
+export interface BackfillReport {
+  labs: BackfillLabSummary[];
+  totals: { matched: number; ambiguous: number; noMatch: number };
+}
+
+/**
+ * Scan unlinked bank_transactions for every supplied labId and match them
+ * against each lab's active vendor names (case-insensitive, exact).
+ *
+ * When `applyChanges` is false the function is a pure dry-run: it counts
+ * what would change but writes nothing.  When `applyChanges` is true each
+ * unambiguously matched row is updated (vendorId set) with a re-run guard.
+ */
+export async function runVendorLinkBackfill(
+  labIds: string[],
+  applyChanges: boolean
+): Promise<BackfillReport> {
+  const labs: BackfillLabSummary[] = [];
+  let totalMatched = 0;
+  let totalAmbiguous = 0;
+  let totalNoMatch = 0;
+
+  for (const labId of labIds) {
+    const rows = await db
+      .select({ id: bankTransactions.id, payee: bankTransactions.payee })
+      .from(bankTransactions)
+      .where(
+        and(
+          eq(bankTransactions.labOrganizationId, labId),
+          isNotNull(bankTransactions.payee),
+          isNull(bankTransactions.vendorId),
+          isNull(bankTransactions.deletedAt)
+        )
+      );
+
+    const summary: BackfillLabSummary = {
+      labId,
+      matched: 0,
+      ambiguous: 0,
+      noMatch: 0,
+    };
+
+    if (rows.length === 0) {
+      labs.push(summary);
+      continue;
+    }
+
+    const labVendors = await db
+      .select({ id: vendors.id, name: vendors.name })
+      .from(vendors)
+      .where(
+        and(
+          eq(vendors.labOrganizationId, labId),
+          eq(vendors.isActive, true),
+          isNull(vendors.deletedAt)
+        )
+      );
+
+    if (labVendors.length === 0) {
+      summary.noMatch = rows.length;
+      labs.push(summary);
+      totalNoMatch += rows.length;
+      continue;
+    }
+
+    // Build normalised-name → vendor-id map.
+    // null value = two or more vendors share the same normalised name (ambiguous).
+    const nameMap = new Map<string, string | null>();
+    for (const v of labVendors) {
+      const key = normalisePayee(v.name);
+      if (nameMap.has(key)) {
+        nameMap.set(key, null);
+      } else {
+        nameMap.set(key, v.id);
+      }
+    }
+
+    for (const row of rows) {
+      if (!row.payee) continue;
+      const key = normalisePayee(row.payee);
+      if (!nameMap.has(key)) {
+        summary.noMatch++;
+        continue;
+      }
+      const vendorId = nameMap.get(key)!;
+      if (vendorId === null) {
+        summary.ambiguous++;
+        continue;
+      }
+      if (applyChanges) {
+        // Re-run guard: only write if vendor_id is still null
+        await db
+          .update(bankTransactions)
+          .set({ vendorId, updatedAt: sql`now()` })
+          .where(
+            and(
+              eq(bankTransactions.id, row.id),
+              isNull(bankTransactions.vendorId)
+            )
+          );
+      }
+      summary.matched++;
+    }
+
+    labs.push(summary);
+    totalMatched += summary.matched;
+    totalAmbiguous += summary.ambiguous;
+    totalNoMatch += summary.noMatch;
+  }
+
+  return {
+    labs,
+    totals: { matched: totalMatched, ambiguous: totalAmbiguous, noMatch: totalNoMatch },
+  };
+}
 
 export default router;

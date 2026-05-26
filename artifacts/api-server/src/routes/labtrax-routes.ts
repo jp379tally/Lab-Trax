@@ -26,7 +26,7 @@ import OpenAI, { toFile } from "openai";
 import nodemailer from "nodemailer";
 import sharp from "sharp";
 import { db } from "@workspace/db";
-import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, caseEvents, caseRestorations, mediaCleanupRuns, systemSettings, installerChangelog, installerUploads, subscriptions, backupRuns, rxPracticeNameAliases } from "@workspace/db";
+import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, caseEvents, caseRestorations, mediaCleanupRuns, systemSettings, installerChangelog, installerUploads, subscriptions, backupRuns, rxPracticeNameAliases, bankTransactions } from "@workspace/db";
 import { notDeleted } from "../lib/soft-delete";
 import { eq, and, inArray, or, isNull, sql, desc, count, type SQL } from "drizzle-orm";
 import { hashPassword } from "../lib/crypto";
@@ -64,7 +64,7 @@ import doctorRoutes from "./doctors";
 import practiceRoutes from "./practices";
 import invoiceRoutes from "./invoices";
 import accountLinksRoutes, { smsInboundRouter } from "./account-links";
-import financeRoutes, { generateForOrganization } from "./finance";
+import financeRoutes, { generateForOrganization, runVendorLinkBackfill } from "./finance";
 import pricingRoutes from "./pricing";
 import statementRoutes from "./statements";
 import billingRoutes from "./billing";
@@ -1071,6 +1071,75 @@ export async function registerRoutes(): Promise<IRouter> {
       return res.status(500).json({ error: "Generation failed." });
     }
   });
+
+  // ── Admin: vendor-link backfill preview (dry-run, no writes) ──────────────
+  // Mounted BEFORE the auth-wrapped finance router so the X-Platform-Admin-Secret
+  // service path can bypass the JWT requirement.
+  //
+  // Access rule: X-Platform-Admin-Secret header matches env var (CI/automation),
+  // OR the signed-in user carries role:"admin".  This is intentionally looser
+  // than isPlatformAdmin(), which also requires the secret/PIN even for human
+  // admins.
+  function isBackfillAdmin(r: any): boolean {
+    const secret = process.env.PLATFORM_ADMIN_SECRET;
+    if (secret && r.headers["x-platform-admin-secret"] === secret) return true;
+    return r.user?.role === "admin";
+  }
+
+  router.get(
+    "/admin/finance/vendor-link-backfill/preview",
+    platformAdminUserOrSecret,
+    async (req, res) => {
+      if (!isBackfillAdmin(req)) {
+        return res.status(403).json({ error: "Admin access required." });
+      }
+      try {
+        const labFilter = req.query.labId as string | undefined;
+        let labIds: string[];
+        if (labFilter) {
+          labIds = [labFilter];
+        } else {
+          const rows = await db
+            .selectDistinct({ labOrganizationId: bankTransactions.labOrganizationId })
+            .from(bankTransactions)
+            .where(isNull(bankTransactions.deletedAt));
+          labIds = rows.map((r) => r.labOrganizationId);
+        }
+        const report = await runVendorLinkBackfill(labIds, false);
+        return res.json({ ok: true, dryRun: true, ...report });
+      } catch (err: any) {
+        return res.status(500).json({ error: err?.message || "Preview failed." });
+      }
+    }
+  );
+
+  // ── Admin: vendor-link backfill run (applies changes) ──────────────────────
+  router.post(
+    "/admin/finance/vendor-link-backfill/run",
+    platformAdminUserOrSecret,
+    async (req, res) => {
+      if (!isBackfillAdmin(req)) {
+        return res.status(403).json({ error: "Admin access required." });
+      }
+      try {
+        const labFilter = (req.body as any)?.labId as string | undefined;
+        let labIds: string[];
+        if (labFilter) {
+          labIds = [labFilter];
+        } else {
+          const rows = await db
+            .selectDistinct({ labOrganizationId: bankTransactions.labOrganizationId })
+            .from(bankTransactions)
+            .where(isNull(bankTransactions.deletedAt));
+          labIds = rows.map((r) => r.labOrganizationId);
+        }
+        const report = await runVendorLinkBackfill(labIds, true);
+        return res.json({ ok: true, dryRun: false, ...report });
+      } catch (err: any) {
+        return res.status(500).json({ error: err?.message || "Backfill failed." });
+      }
+    }
+  );
 
   router.use("/finance", financeRoutes);
   router.use("/pricing", pricingRoutes);
