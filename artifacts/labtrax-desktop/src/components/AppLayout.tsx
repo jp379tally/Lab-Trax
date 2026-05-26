@@ -136,11 +136,15 @@ export function AppLayout({ children }: Props) {
   const [uploadsOpen, setUploadsOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
-  const [aiPanelCaseContext, setAiPanelCaseContext] = useState<AiCaseContext | null>(null);
+  const [aiPanelCases, setAiPanelCases] = useState<AiCaseContext[]>([]);
 
   const openAiPanel = useCallback(
-    (ctx?: AiCaseContext) => {
-      setAiPanelCaseContext(ctx ?? null);
+    (ctx?: AiCaseContext | AiCaseContext[]) => {
+      if (Array.isArray(ctx)) {
+        setAiPanelCases(ctx);
+      } else {
+        setAiPanelCases(ctx ? [ctx] : []);
+      }
       setAiPanelOpen(true);
     },
     [],
@@ -644,10 +648,11 @@ export function AppLayout({ children }: Props) {
       <MessengerDock />
       {aiPanelOpen && (
         <AiChatPanel
-          caseContext={aiPanelCaseContext}
+          initialCases={aiPanelCases}
+          labOrganizationId={user?.practiceOrganizationId}
           onClose={() => {
             setAiPanelOpen(false);
-            setAiPanelCaseContext(null);
+            setAiPanelCases([]);
           }}
         />
       )}

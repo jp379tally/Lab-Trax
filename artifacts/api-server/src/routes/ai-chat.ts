@@ -582,6 +582,24 @@ ATTACHMENTS: ${attachmentRows.length} file(s) attached.
   return ctx;
 }
 
+/**
+ * Build a combined context block for multiple pinned cases.
+ * Each case gets a labelled section so the AI can reference them by number.
+ */
+async function buildMultiCaseContext(caseIds: string[]): Promise<string> {
+  if (caseIds.length === 0) return "";
+  if (caseIds.length === 1) return buildSingleCaseContext(caseIds[0]!);
+
+  const contexts = await Promise.all(
+    caseIds.map(async (id) => {
+      const ctx = await buildSingleCaseContext(id);
+      return ctx;
+    }),
+  );
+
+  return `PINNED CASES (${caseIds.length} cases in context):\n\n` + contexts.join("\n---\n\n");
+}
+
 export function registerAiChatRoutes(router: IRouter): void {
   /** GET /ai-chat/history — returns the last N stored messages for this user */
   router.get("/ai-chat/history", requireAuth, async (req: any, res: any) => {
@@ -631,9 +649,25 @@ export function registerAiChatRoutes(router: IRouter): void {
     const body = req.body as {
       messages?: Array<{ role: "user" | "assistant"; content: string }>;
       caseId?: string;
+      caseIds?: string[];
     };
     const messages = body?.messages;
-    const requestedCaseId = typeof body?.caseId === "string" ? body.caseId.trim() : null;
+
+    // Support both the legacy single caseId and the new caseIds array.
+    // Deduplicate and sanitize the IDs.
+    let requestedCaseIds: string[] = [];
+    if (Array.isArray(body?.caseIds) && body.caseIds.length > 0) {
+      requestedCaseIds = [
+        ...new Set(
+          body.caseIds
+            .filter((id) => typeof id === "string" && id.trim())
+            .map((id) => id.trim())
+            .slice(0, 10),
+        ),
+      ];
+    } else if (typeof body?.caseId === "string" && body.caseId.trim()) {
+      requestedCaseIds = [body.caseId.trim()];
+    }
 
     if (!Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ error: "messages array is required" });
@@ -658,9 +692,9 @@ export function registerAiChatRoutes(router: IRouter): void {
     try {
       if (userType === "provider") {
         contextBlock = await buildProviderContext(userId);
-        let singleCaseCtx = "";
-        if (requestedCaseId) {
-          singleCaseCtx = await buildSingleCaseContext(requestedCaseId, userId, "provider");
+        let pinnedCaseCtx = "";
+        if (requestedCaseIds.length > 0) {
+          pinnedCaseCtx = await buildMultiCaseContext(requestedCaseIds);
         }
         systemPrompt = `You are LabTrax AI, a helpful assistant for dental providers (doctors and practices).
 You have access to the provider's real-time case data and pricing from all their linked dental labs.
@@ -668,7 +702,7 @@ Answer questions about case status, estimated delivery, restorations, and what t
 Be concise and professional. If asked about a case or patient not in the data, say so clearly rather than guessing.
 Today's date: ${new Date().toLocaleDateString()}.
 
-${singleCaseCtx ? `${singleCaseCtx}\n` : ""}${contextBlock}`;
+${pinnedCaseCtx ? `${pinnedCaseCtx}\n` : ""}${contextBlock}`;
       } else {
         const labIds = await getActiveLabIds(userId);
         if (labIds.length === 0) {
@@ -676,9 +710,9 @@ ${singleCaseCtx ? `${singleCaseCtx}\n` : ""}${contextBlock}`;
         } else {
           contextBlock = await buildLabContext(labIds[0]);
         }
-        let singleCaseCtx = "";
-        if (requestedCaseId) {
-          singleCaseCtx = await buildSingleCaseContext(requestedCaseId, userId, "lab");
+        let pinnedCaseCtx = "";
+        if (requestedCaseIds.length > 0) {
+          pinnedCaseCtx = await buildMultiCaseContext(requestedCaseIds);
         }
         systemPrompt = `You are LabTrax AI, a helpful assistant for dental lab staff.
 You have access to real-time data about this lab's cases, pricing tiers, and lab profile.
@@ -686,7 +720,7 @@ Answer questions about case status, patient cases, doctor pricing, estimated tur
 Be concise and professional. If a case is not in the data, say so clearly rather than guessing.
 Today's date: ${new Date().toLocaleDateString()}.
 
-${singleCaseCtx ? `${singleCaseCtx}\n` : ""}${contextBlock}`;
+${pinnedCaseCtx ? `${pinnedCaseCtx}\n` : ""}${contextBlock}`;
       }
     } catch (err: any) {
       req.log?.error({ err }, "AI chat context assembly error");
@@ -718,7 +752,7 @@ ${singleCaseCtx ? `${singleCaseCtx}\n` : ""}${contextBlock}`;
       req.log?.error({ err }, "AI chat OpenAI error");
       return res
         .status(500)
-        .json({ error: "AI assistant encountered an error. Please try again." });
+        .json({ error: "Failed to get AI response. Please try again." });
     }
   });
 }

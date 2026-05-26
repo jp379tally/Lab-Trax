@@ -7,7 +7,7 @@ export interface AiCaseContext {
 }
 
 export interface AiPanelContextValue {
-  openPanel: (ctx?: AiCaseContext) => void;
+  openPanel: (ctx?: AiCaseContext | AiCaseContext[]) => void;
 }
 
 export const AiPanelContext = createContext<AiPanelContextValue | null>(null);

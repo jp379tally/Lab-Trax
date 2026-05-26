@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   ScrollView,
   Alert,
+  Modal,
 } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -24,6 +25,21 @@ interface ChatMsg {
   role: "user" | "assistant";
   content: string;
   timestamp: number;
+}
+
+interface PinnedCase {
+  caseId: string;
+  caseNumber: string;
+  patientName: string;
+}
+
+interface CaseSearchResult {
+  id: string;
+  caseNumber: string;
+  patientFirstName?: string | null;
+  patientLastName?: string | null;
+  doctorName?: string | null;
+  status?: string | null;
 }
 
 const LAB_SUGGESTED_PROMPTS = [
@@ -44,13 +60,28 @@ function generateId() {
   return Date.now().toString() + Math.random().toString(36).substr(2, 9);
 }
 
-function buildCasePrompts(caseNumber: string, patientName: string): string[] {
-  return [
-    `Summarize case ${caseNumber}`,
-    patientName ? `What restorations are on ${patientName}'s case?` : `What restorations are on case ${caseNumber}?`,
-    `When is case ${caseNumber} due?`,
-    `What materials are on case ${caseNumber}?`,
-  ];
+function buildCasePrompts(pinnedCases: PinnedCase[]): string[] {
+  if (pinnedCases.length === 1) {
+    const c = pinnedCases[0]!;
+    return [
+      `Summarize case ${c.caseNumber}`,
+      c.patientName
+        ? `What restorations are on ${c.patientName}'s case?`
+        : `What restorations are on case ${c.caseNumber}?`,
+      `When is case ${c.caseNumber} due?`,
+      `What materials are on case ${c.caseNumber}?`,
+    ];
+  }
+  if (pinnedCases.length > 1) {
+    const nums = pinnedCases.map((c) => c.caseNumber).join(", ");
+    return [
+      `Compare the status of these cases: ${nums}`,
+      "Which of these cases is most urgent?",
+      "Summarize all pinned cases",
+      "What are the due dates for these cases?",
+    ];
+  }
+  return [];
 }
 
 function buildProviderCasePrompts(caseNumber: string, patientName: string): string[] {
@@ -68,22 +99,38 @@ export default function ChatScreen() {
   const isProvider = userType === "provider";
   const params = useLocalSearchParams<{ caseId?: string; caseNumber?: string; patientName?: string }>();
 
-  const caseId = params.caseId || null;
-  const caseNumber = params.caseNumber || null;
-  const patientName = params.patientName || null;
-  const hasCaseContext = !!caseId && !!caseNumber;
+  // Build initial pinned case from route params
+  const initialPinnedCases: PinnedCase[] = [];
+  if (params.caseId && params.caseNumber) {
+    initialPinnedCases.push({
+      caseId: params.caseId,
+      caseNumber: params.caseNumber,
+      patientName: params.patientName || "",
+    });
+  }
 
-  const welcomeMessage = hasCaseContext
-    ? `Hi! I'm LabTrax's AI assistant. I'm ready to help you with case ${caseNumber}${patientName ? ` (${patientName})` : ""}. What would you like to know?`
-    : isProvider
-    ? "Hi! I'm LabTrax's AI assistant. I can look up your cases across all your linked labs and answer pricing questions. How can I help?"
-    : "Hi! I'm LabTrax's AI assistant. I can help you with case status, pricing, turnaround times, and lab info. How can I help?";
+  const [pinnedCases, setPinnedCases] = useState<PinnedCase[]>(initialPinnedCases);
+  const hasCaseContext = pinnedCases.length > 0;
+
+  function buildWelcomeContent(cases: PinnedCase[]): string {
+    if (cases.length === 0) {
+      return isProvider
+        ? "Hi! I'm LabTrax's AI assistant. I can look up your cases across all your linked labs and answer pricing questions. How can I help?"
+        : "Hi! I'm LabTrax's AI assistant. I can help you with case status, pricing, turnaround times, and lab info. How can I help?";
+    }
+    if (cases.length === 1) {
+      const c = cases[0]!;
+      return `Hi! I'm LabTrax's AI assistant. I'm ready to help you with case ${c.caseNumber}${c.patientName ? ` (${c.patientName})` : ""}. What would you like to know?`;
+    }
+    const nums = cases.map((c) => c.caseNumber).join(", ");
+    return `Hi! I'm LabTrax's AI assistant. I have ${cases.length} cases pinned: ${nums}. Ask me anything about these cases or your lab.`;
+  }
 
   const [messages, setMessages] = useState<ChatMsg[]>([
     {
       id: "welcome",
       role: "assistant",
-      content: welcomeMessage,
+      content: buildWelcomeContent(initialPinnedCases),
       timestamp: Date.now(),
     },
   ]);
@@ -93,22 +140,39 @@ export default function ChatScreen() {
   const [clearing, setClearing] = useState(false);
   const flatListRef = useRef<FlatList>(null);
 
+  // Case picker modal state
+  const [pickerVisible, setPickerVisible] = useState(false);
+  const [caseSearchQuery, setCaseSearchQuery] = useState("");
+  const [caseSearchResults, setCaseSearchResults] = useState<CaseSearchResult[]>([]);
+  const [caseSearchLoading, setCaseSearchLoading] = useState(false);
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // The user's lab org ID for case quick-search (fetched from /api/auth/me)
+  const [labOrganizationId, setLabOrganizationId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isProvider) return;
+    resilientFetch("/api/auth/me")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data?.practiceOrganizationId) setLabOrganizationId(data.practiceOrganizationId);
+      })
+      .catch(() => {});
+  }, [isProvider]);
+
   const suggestedPrompts = hasCaseContext
-    ? isProvider
-      ? buildProviderCasePrompts(caseNumber!, patientName || "")
-      : buildCasePrompts(caseNumber!, patientName || "")
+    ? buildCasePrompts(pinnedCases)
     : isProvider
     ? PROVIDER_SUGGESTED_PROMPTS
     : LAB_SUGGESTED_PROMPTS;
 
   const showPrompts = !promptsDismissed && messages.length === 1;
 
-  // Load chat history on mount
+  // Load chat history on mount (only when no initial case context)
   useEffect(() => {
+    if (initialPinnedCases.length > 0) return;
     let cancelled = false;
     async function loadHistory() {
-      // If we have a caseId, we might want to skip global history or load case-specific history
-      // For now, following instructions to load from /api/ai-chat/history but keeping it compatible
       try {
         const response = await resilientFetch("/api/ai-chat/history");
         if (response.ok) {
@@ -135,18 +199,59 @@ export default function ChatScreen() {
     return () => { cancelled = true; };
   }, []);
 
-  // Reset chat when caseId changes
+  // Debounced case search
   useEffect(() => {
-    setMessages([
-      {
-        id: "welcome",
-        role: "assistant",
-        content: welcomeMessage,
-        timestamp: Date.now(),
-      },
-    ]);
-    setPromptsDismissed(false);
-  }, [caseId]);
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    if (!caseSearchQuery.trim() || caseSearchQuery.trim().length < 2) {
+      setCaseSearchResults([]);
+      setCaseSearchLoading(false);
+      return;
+    }
+    if (!labOrganizationId) return;
+    setCaseSearchLoading(true);
+    searchDebounceRef.current = setTimeout(async () => {
+      try {
+        const resp = await resilientFetch(
+          `/api/cases/quick-search?labOrganizationId=${encodeURIComponent(labOrganizationId)}&q=${encodeURIComponent(caseSearchQuery.trim())}`,
+        );
+        if (resp.ok) {
+          const data = await resp.json();
+          setCaseSearchResults(data.cases ?? []);
+        }
+      } catch {
+        setCaseSearchResults([]);
+      } finally {
+        setCaseSearchLoading(false);
+      }
+    }, 300);
+    return () => {
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    };
+  }, [caseSearchQuery, labOrganizationId]);
+
+  function pinCase(result: CaseSearchResult) {
+    const alreadyPinned = pinnedCases.some((c) => c.caseId === result.id);
+    if (alreadyPinned) return;
+    const patientName = [result.patientFirstName, result.patientLastName]
+      .filter(Boolean)
+      .join(" ");
+    const updated = [...pinnedCases, { caseId: result.id, caseNumber: result.caseNumber, patientName }];
+    setPinnedCases(updated);
+    setMessages((prev) => {
+      if (prev.length === 1 && prev[0]!.id === "welcome") {
+        return [{ id: "welcome", role: "assistant", content: buildWelcomeContent(updated), timestamp: Date.now() }];
+      }
+      return prev;
+    });
+    setPickerVisible(false);
+    setCaseSearchQuery("");
+    setCaseSearchResults([]);
+  }
+
+  function unpinCase(caseId: string) {
+    const updated = pinnedCases.filter((c) => c.caseId !== caseId);
+    setPinnedCases(updated);
+  }
 
   async function sendMessage(text: string) {
     if (!text.trim() || sending) return;
@@ -169,7 +274,11 @@ export default function ChatScreen() {
         .map((m) => ({ role: m.role, content: m.content }));
 
       const body: Record<string, unknown> = { messages: apiMessages };
-      if (caseId) body.caseId = caseId;
+      if (pinnedCases.length === 1) {
+        body.caseId = pinnedCases[0]!.caseId;
+      } else if (pinnedCases.length > 1) {
+        body.caseIds = pinnedCases.map((c) => c.caseId);
+      }
 
       const response = await resilientFetch("/api/ai-chat", {
         method: "POST",
@@ -258,7 +367,7 @@ export default function ChatScreen() {
                   {
                     id: "welcome",
                     role: "assistant",
-                    content: welcomeMessage,
+                    content: buildWelcomeContent(pinnedCases),
                     timestamp: Date.now(),
                   },
                 ]);
@@ -307,24 +416,67 @@ export default function ChatScreen() {
           </View>
           <View>
             <Text style={styles.headerTitle}>AI Assistant</Text>
-            {hasCaseContext && (
-              <Text style={styles.headerSubtitle}>Case {caseNumber}</Text>
+            {pinnedCases.length === 1 && (
+              <Text style={styles.headerSubtitle}>
+                Case {pinnedCases[0]!.caseNumber}
+                {pinnedCases[0]!.patientName ? ` · ${pinnedCases[0]!.patientName}` : ""}
+              </Text>
+            )}
+            {pinnedCases.length > 1 && (
+              <Text style={styles.headerSubtitle}>{pinnedCases.length} cases pinned</Text>
             )}
           </View>
         </View>
-        {hasHistory ? (
-          <Pressable
-            onPress={handleClearHistory}
-            disabled={clearing}
-            hitSlop={12}
-            style={({ pressed }) => [{ opacity: pressed || clearing ? 0.5 : 1 }]}
-          >
-            <Ionicons name="trash-outline" size={20} color={Colors.light.textSecondary} />
-          </Pressable>
-        ) : (
-          <View style={{ width: 24 }} />
-        )}
+        <View style={styles.headerActions}>
+          {labOrganizationId && (
+            <Pressable
+              onPress={() => setPickerVisible(true)}
+              hitSlop={12}
+              style={({ pressed }) => [{ opacity: pressed ? 0.5 : 1 }]}
+            >
+              <Ionicons name="add-circle-outline" size={22} color={Colors.light.tint} />
+            </Pressable>
+          )}
+          {hasHistory ? (
+            <Pressable
+              onPress={handleClearHistory}
+              disabled={clearing}
+              hitSlop={12}
+              style={({ pressed }) => [{ opacity: pressed || clearing ? 0.5 : 1 }]}
+            >
+              <Ionicons name="trash-outline" size={20} color={Colors.light.textSecondary} />
+            </Pressable>
+          ) : (
+            <View style={{ width: 20 }} />
+          )}
+        </View>
       </View>
+
+      {/* Pinned case chips */}
+      {pinnedCases.length > 0 && (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.chipsRow}
+          contentContainerStyle={styles.chipsContent}
+        >
+          {pinnedCases.map((c) => (
+            <View key={c.caseId} style={styles.chip}>
+              <Text style={styles.chipText} numberOfLines={1}>
+                {c.caseNumber}
+                {c.patientName ? ` · ${c.patientName}` : ""}
+              </Text>
+              <Pressable
+                onPress={() => unpinCase(c.caseId)}
+                hitSlop={8}
+                style={({ pressed }) => [styles.chipRemove, { opacity: pressed ? 0.5 : 1 }]}
+              >
+                <Ionicons name="close" size={12} color={Colors.light.tint} />
+              </Pressable>
+            </View>
+          ))}
+        </ScrollView>
+      )}
 
       <KeyboardAvoidingView
         style={{ flex: 1 }}
@@ -344,7 +496,7 @@ export default function ChatScreen() {
             flatListRef.current?.scrollToEnd({ animated: true })
           }
           ListFooterComponent={
-            showPrompts ? (
+            showPrompts && suggestedPrompts.length > 0 ? (
               <View style={styles.promptsContainer}>
                 <Text style={styles.promptsLabel}>Try asking:</Text>
                 <ScrollView
@@ -385,8 +537,10 @@ export default function ChatScreen() {
             value={input}
             onChangeText={setInput}
             placeholder={
-              hasCaseContext
-                ? `Ask about case ${caseNumber}…`
+              pinnedCases.length === 1
+                ? `Ask about case ${pinnedCases[0]!.caseNumber}…`
+                : pinnedCases.length > 1
+                ? `Ask about these ${pinnedCases.length} cases…`
                 : isProvider
                 ? "Ask about a case or pricing…"
                 : "Ask about a case, pricing, or lab…"
@@ -415,6 +569,102 @@ export default function ChatScreen() {
           </Pressable>
         </View>
       </KeyboardAvoidingView>
+
+      {/* Case picker modal */}
+      <Modal
+        visible={pickerVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          setPickerVisible(false);
+          setCaseSearchQuery("");
+          setCaseSearchResults([]);
+        }}
+      >
+        <Pressable
+          style={styles.modalOverlay}
+          onPress={() => {
+            setPickerVisible(false);
+            setCaseSearchQuery("");
+            setCaseSearchResults([]);
+          }}
+        >
+          <Pressable style={styles.modalSheet} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Pin a Case</Text>
+              <Pressable
+                onPress={() => {
+                  setPickerVisible(false);
+                  setCaseSearchQuery("");
+                  setCaseSearchResults([]);
+                }}
+                hitSlop={12}
+              >
+                <Ionicons name="close" size={22} color={Colors.light.text} />
+              </Pressable>
+            </View>
+            <View style={styles.modalSearchBar}>
+              <Ionicons name="search" size={16} color={Colors.light.textSecondary} />
+              <TextInput
+                style={styles.modalSearchInput}
+                value={caseSearchQuery}
+                onChangeText={setCaseSearchQuery}
+                placeholder="Search by case # or patient name…"
+                placeholderTextColor={Colors.light.textTertiary}
+                autoFocus
+                returnKeyType="search"
+              />
+              {caseSearchLoading && (
+                <ActivityIndicator size="small" color={Colors.light.tint} />
+              )}
+            </View>
+            <ScrollView style={styles.modalResults} keyboardShouldPersistTaps="handled">
+              {caseSearchQuery.trim().length < 2 ? (
+                <Text style={styles.modalHint}>Type at least 2 characters to search</Text>
+              ) : caseSearchResults.length === 0 && !caseSearchLoading ? (
+                <Text style={styles.modalHint}>No cases found</Text>
+              ) : (
+                caseSearchResults.map((result) => {
+                  const alreadyPinned = pinnedCases.some((c) => c.caseId === result.id);
+                  const patientName = [result.patientFirstName, result.patientLastName]
+                    .filter(Boolean)
+                    .join(" ");
+                  return (
+                    <Pressable
+                      key={result.id}
+                      onPress={() => pinCase(result)}
+                      disabled={alreadyPinned}
+                      style={({ pressed }) => [
+                        styles.modalResultItem,
+                        alreadyPinned && styles.modalResultItemDisabled,
+                        pressed && !alreadyPinned && { opacity: 0.7 },
+                      ]}
+                    >
+                      <View style={styles.modalResultInfo}>
+                        <Text style={styles.modalResultCaseNum}>
+                          {result.caseNumber}
+                          {alreadyPinned && (
+                            <Text style={styles.modalResultPinnedLabel}> (pinned)</Text>
+                          )}
+                        </Text>
+                        {patientName ? (
+                          <Text style={styles.modalResultPatient}>{patientName}</Text>
+                        ) : null}
+                        {result.status ? (
+                          <Text style={styles.modalResultStatus}>{result.status}</Text>
+                        ) : null}
+                      </View>
+                      {!alreadyPinned && (
+                        <Ionicons name="add-circle" size={22} color={Colors.light.tint} />
+                      )}
+                    </Pressable>
+                  );
+                })
+              )}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -438,6 +688,8 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+    flex: 1,
+    marginHorizontal: 8,
   },
   headerIcon: {
     width: 28,
@@ -457,6 +709,51 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_500Medium",
     color: Colors.light.tint,
     marginTop: 1,
+  },
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  chipsRow: {
+    backgroundColor: Colors.light.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.light.borderLight,
+    maxHeight: 44,
+  },
+  chipsContent: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 6,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  chip: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: Colors.light.tintLight,
+    borderRadius: 20,
+    paddingLeft: 10,
+    paddingRight: 6,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: Colors.light.tint + "33",
+    gap: 4,
+    maxWidth: 200,
+  },
+  chipText: {
+    fontSize: 12,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.tint,
+    flexShrink: 1,
+  },
+  chipRemove: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: Colors.light.tint + "22",
+    justifyContent: "center",
+    alignItems: "center",
   },
   messagesList: {
     paddingHorizontal: 16,
@@ -581,5 +878,98 @@ const styles = StyleSheet.create({
   },
   sendBtnDisabled: {
     backgroundColor: Colors.light.surfaceSecondary,
+  },
+  // Modal styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    justifyContent: "flex-end",
+  },
+  modalSheet: {
+    backgroundColor: Colors.light.surface,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: "75%",
+    paddingBottom: 24,
+  },
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 12,
+  },
+  modalTitle: {
+    fontSize: 17,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+  },
+  modalSearchBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    backgroundColor: Colors.light.surfaceSecondary,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+  },
+  modalSearchInput: {
+    flex: 1,
+    fontSize: 15,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.text,
+  },
+  modalResults: {
+    maxHeight: 360,
+  },
+  modalHint: {
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textSecondary,
+    textAlign: "center",
+    paddingVertical: 24,
+    paddingHorizontal: 20,
+  },
+  modalResultItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.light.borderLight,
+  },
+  modalResultItemDisabled: {
+    opacity: 0.5,
+  },
+  modalResultInfo: {
+    flex: 1,
+    gap: 2,
+  },
+  modalResultCaseNum: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
+  },
+  modalResultPinnedLabel: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textSecondary,
+  },
+  modalResultPatient: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textSecondary,
+  },
+  modalResultStatus: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textTertiary,
+    textTransform: "capitalize",
   },
 });
