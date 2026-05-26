@@ -720,6 +720,41 @@ export interface UpdateVendorInput {
   isActive?: boolean;
 }
 
+export interface VendorImportRecord {
+  /**
+   * @minLength 1
+   * @maxLength 200
+   */
+  name: string;
+  address?: string | null;
+  city?: string | null;
+  state?: string | null;
+  zip?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  website?: string | null;
+  notes?: string | null;
+}
+
+export interface VendorEmployeeImportInput {
+  organizationId: string;
+  /**
+   * @minItems 1
+   * @maxItems 1000
+   */
+  records: VendorImportRecord[];
+}
+
+export type VendorImportResultData = {
+  imported: number;
+  skipped: number;
+};
+
+export interface VendorImportResult {
+  ok?: boolean;
+  data?: VendorImportResultData;
+}
+
 export type TransactionCategoryKind =
   (typeof TransactionCategoryKind)[keyof typeof TransactionCategoryKind];
 
@@ -920,7 +955,7 @@ export interface MessageListResult {
 export interface SendMessageInput {
   /**
    * @minLength 1
-   * @maxLength 5000
+   * @maxLength 4000
    */
   body: string;
 }
@@ -1015,6 +1050,28 @@ export type ImportCasesFromIteroZipBatchBody = {
   doctorNameHint?: string;
   patientFirstNameHint?: string;
   patientLastNameHint?: string;
+};
+
+export type GetCaseByBarcodeParams = {
+  /**
+   * The lab the barcode belongs to.
+   */
+  labOrganizationId: string;
+};
+
+/**
+ * The matching case row (Drizzle shape)
+ */
+export type GetCaseByBarcode200DataCase = { [key: string]: unknown };
+
+export type GetCaseByBarcode200Data = {
+  /** The matching case row (Drizzle shape) */
+  case?: GetCaseByBarcode200DataCase;
+};
+
+export type GetCaseByBarcode200 = {
+  ok?: boolean;
+  data?: GetCaseByBarcode200Data;
 };
 
 export type GetIteroImportHistoryParams = {

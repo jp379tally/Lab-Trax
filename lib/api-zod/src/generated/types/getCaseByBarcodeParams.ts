@@ -6,10 +6,9 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface SendMessageInput {
+export type GetCaseByBarcodeParams = {
   /**
-   * @minLength 1
-   * @maxLength 4000
+   * The lab the barcode belongs to.
    */
-  body: string;
-}
+  labOrganizationId: string;
+};

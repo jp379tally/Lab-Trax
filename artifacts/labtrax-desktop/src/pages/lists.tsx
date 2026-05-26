@@ -1426,6 +1426,7 @@ function ImportCsvDialog({
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
   const [importedCount, setImportedCount] = useState(0);
+  const [skippedCount, setSkippedCount] = useState(0);
   const [dragOver, setDragOver] = useState(false);
 
   const typeLabel = TYPE_LABEL[vendorType];
@@ -1503,11 +1504,12 @@ function ImportCsvDialog({
         vendorType === "employee"
           ? "/finance/employees/import"
           : "/finance/vendors/import";
-      const result = await apiFetch<{ imported: number }>(endpoint, {
+      const result = await apiFetch<{ imported: number; skipped: number }>(endpoint, {
         method: "POST",
         body: JSON.stringify({ organizationId, records }),
       });
       setImportedCount(result.imported);
+      setSkippedCount(result.skipped ?? 0);
       setStep("done");
     } catch (err) {
       setImportError(err instanceof Error ? err.message : "Import failed.");
@@ -1669,7 +1671,8 @@ function ImportCsvDialog({
                 <div className="text-4xl mb-2">✓</div>
                 <p className="text-sm font-semibold">Import complete</p>
                 <p className="text-sm text-muted-foreground">
-                  {importedCount} {typeLabel.toLowerCase()}{importedCount !== 1 ? "s" : ""} imported successfully.
+                  {importedCount} {typeLabel.toLowerCase()}{importedCount !== 1 ? "s" : ""} imported successfully
+                  {skippedCount > 0 ? `, ${skippedCount} skipped (already exist)` : ""}.
                 </p>
               </div>
             )}

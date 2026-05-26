@@ -6,10 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface SendMessageInput {
-  /**
-   * @minLength 1
-   * @maxLength 4000
-   */
-  body: string;
-}
+export type VendorImportResultData = {
+  imported: number;
+  skipped: number;
+};

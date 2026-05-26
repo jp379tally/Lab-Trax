@@ -196,6 +196,80 @@ export const CreateVendorResponse = zod.object({
 });
 
 /**
+ * @summary Bulk-import vendors from CSV data
+ */
+export const importVendorsBodyRecordsItemNameMax = 200;
+
+export const importVendorsBodyRecordsMax = 1000;
+
+export const ImportVendorsBody = zod.object({
+  organizationId: zod.string(),
+  records: zod
+    .array(
+      zod.object({
+        name: zod.string().min(1).max(importVendorsBodyRecordsItemNameMax),
+        address: zod.string().nullish(),
+        city: zod.string().nullish(),
+        state: zod.string().nullish(),
+        zip: zod.string().nullish(),
+        phone: zod.string().nullish(),
+        email: zod.string().nullish(),
+        website: zod.string().nullish(),
+        notes: zod.string().nullish(),
+      }),
+    )
+    .min(1)
+    .max(importVendorsBodyRecordsMax),
+});
+
+export const ImportVendorsResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      imported: zod.number(),
+      skipped: zod.number(),
+    })
+    .optional(),
+});
+
+/**
+ * @summary Bulk-import employees from CSV data
+ */
+export const importEmployeesBodyRecordsItemNameMax = 200;
+
+export const importEmployeesBodyRecordsMax = 1000;
+
+export const ImportEmployeesBody = zod.object({
+  organizationId: zod.string(),
+  records: zod
+    .array(
+      zod.object({
+        name: zod.string().min(1).max(importEmployeesBodyRecordsItemNameMax),
+        address: zod.string().nullish(),
+        city: zod.string().nullish(),
+        state: zod.string().nullish(),
+        zip: zod.string().nullish(),
+        phone: zod.string().nullish(),
+        email: zod.string().nullish(),
+        website: zod.string().nullish(),
+        notes: zod.string().nullish(),
+      }),
+    )
+    .min(1)
+    .max(importEmployeesBodyRecordsMax),
+});
+
+export const ImportEmployeesResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      imported: zod.number(),
+      skipped: zod.number(),
+    })
+    .optional(),
+});
+
+/**
  * @summary Update a vendor / employee / item
  */
 export const UpdateVendorParams = zod.object({
@@ -703,6 +777,37 @@ export const ImportCasesFromIteroZipBatchBody = zod.object({
   doctorNameHint: zod.string().optional(),
   patientFirstNameHint: zod.string().optional(),
   patientLastNameHint: zod.string().optional(),
+});
+
+/**
+ * Returns the single case whose `casePanBarcode` exactly matches the
+given code within the specified lab, or 404 if none exists. The
+caller must be an active member of the lab. Designed for physical
+barcode scanner workflows that need a precise one-to-one lookup.
+
+ * @summary Find a case by its pan barcode
+ */
+export const GetCaseByBarcodeParams = zod.object({
+  code: zod.coerce.string().describe("The exact pan barcode value to look up."),
+});
+
+export const GetCaseByBarcodeQueryParams = zod.object({
+  labOrganizationId: zod.coerce
+    .string()
+    .describe("The lab the barcode belongs to."),
+});
+
+export const GetCaseByBarcodeResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      case: zod
+        .object({})
+        .passthrough()
+        .optional()
+        .describe("The matching case row (Drizzle shape)"),
+    })
+    .optional(),
 });
 
 /**
@@ -1717,7 +1822,7 @@ export const SendMessageParams = zod.object({
   id: zod.coerce.string(),
 });
 
-export const sendMessageBodyBodyMax = 5000;
+export const sendMessageBodyBodyMax = 4000;
 
 export const SendMessageBody = zod.object({
   body: zod.string().min(1).max(sendMessageBodyBodyMax),

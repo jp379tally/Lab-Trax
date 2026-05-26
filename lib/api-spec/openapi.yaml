@@ -2326,8 +2326,10 @@ components:
         ok: { type: boolean }
         data:
           type: object
+          required: [imported, skipped]
           properties:
             imported: { type: integer }
+            skipped: { type: integer }
     TransactionCategory:
       type: object
       required: [id, labOrganizationId, name, kind, isArchived, createdAt, updatedAt]

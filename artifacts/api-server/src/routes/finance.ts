@@ -2111,11 +2111,31 @@ async function importVendorRecords(
   organizationId: string,
   vendorType: VendorType,
   records: z.infer<typeof importRecordSchema>[]
-): Promise<number> {
+): Promise<{ imported: number; skipped: number }> {
+  const existing = await db
+    .select({ name: vendors.name })
+    .from(vendors)
+    .where(
+      and(
+        eq(vendors.labOrganizationId, organizationId),
+        eq(vendors.vendorType, vendorType),
+        eq(vendors.isActive, true),
+        sql`${vendors.deletedAt} IS NULL`
+      )
+    );
+  const existingNames = new Set(existing.map((r) => r.name.toLowerCase()));
+
+  const toInsert = records.filter((r) => !existingNames.has(r.name.trim().toLowerCase()));
+  const skipped = records.length - toInsert.length;
+
+  if (toInsert.length === 0) {
+    return { imported: 0, skipped };
+  }
+
   const inserted = await db
     .insert(vendors)
     .values(
-      records.map((r) => ({
+      toInsert.map((r) => ({
         labOrganizationId: organizationId,
         name: r.name.trim(),
         address: r.address ?? null,
@@ -2131,7 +2151,7 @@ async function importVendorRecords(
       }))
     )
     .returning({ id: vendors.id });
-  return inserted.length;
+  return { imported: inserted.length, skipped };
 }
 
 router.post(
@@ -2142,8 +2162,8 @@ router.post(
       records: z.array(importRecordSchema).min(1).max(1000),
     }).parse(req.body);
     await requireAnyRole(uid(req), input.organizationId, BILLING_ROLES);
-    const imported = await importVendorRecords(input.organizationId, "vendor", input.records);
-    return ok(res, { imported });
+    const result = await importVendorRecords(input.organizationId, "vendor", input.records);
+    return ok(res, result);
   }),
 );
 
@@ -2155,8 +2175,8 @@ router.post(
       records: z.array(importRecordSchema).min(1).max(1000),
     }).parse(req.body);
     await requireAnyRole(uid(req), input.organizationId, BILLING_ROLES);
-    const imported = await importVendorRecords(input.organizationId, "employee", input.records);
-    return ok(res, { imported });
+    const result = await importVendorRecords(input.organizationId, "employee", input.records);
+    return ok(res, result);
   }),
 );
 

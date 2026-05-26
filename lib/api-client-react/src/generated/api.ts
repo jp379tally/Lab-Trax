@@ -43,6 +43,8 @@ import type {
   EmailInvoiceBody,
   EmailPreferencesInput,
   EmailPreferencesResult,
+  GetCaseByBarcode200,
+  GetCaseByBarcodeParams,
   GetConversationMessagesParams,
   GetItemLabelsParams,
   GetIteroImportHistoryParams,
@@ -99,6 +101,8 @@ import type {
   UpdateOrganizationLogoPlacements200,
   UpdateOrganizationLogoPlacementsBody,
   UpdateVendorInput,
+  VendorEmployeeImportInput,
+  VendorImportResult,
   VendorListResult,
   VendorResult,
 } from "./api.schemas";
@@ -794,6 +798,178 @@ export const useCreateVendor = <
   TContext
 > => {
   return useMutation(getCreateVendorMutationOptions(options));
+};
+
+/**
+ * @summary Bulk-import vendors from CSV data
+ */
+export const getImportVendorsUrl = () => {
+  return `/api/finance/vendors/import`;
+};
+
+export const importVendors = async (
+  vendorEmployeeImportInput: VendorEmployeeImportInput,
+  options?: RequestInit,
+): Promise<VendorImportResult> => {
+  return customFetch<VendorImportResult>(getImportVendorsUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(vendorEmployeeImportInput),
+  });
+};
+
+export const getImportVendorsMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof importVendors>>,
+    TError,
+    { data: BodyType<VendorEmployeeImportInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof importVendors>>,
+  TError,
+  { data: BodyType<VendorEmployeeImportInput> },
+  TContext
+> => {
+  const mutationKey = ["importVendors"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof importVendors>>,
+    { data: BodyType<VendorEmployeeImportInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return importVendors(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ImportVendorsMutationResult = NonNullable<
+  Awaited<ReturnType<typeof importVendors>>
+>;
+export type ImportVendorsMutationBody = BodyType<VendorEmployeeImportInput>;
+export type ImportVendorsMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Bulk-import vendors from CSV data
+ */
+export const useImportVendors = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof importVendors>>,
+    TError,
+    { data: BodyType<VendorEmployeeImportInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof importVendors>>,
+  TError,
+  { data: BodyType<VendorEmployeeImportInput> },
+  TContext
+> => {
+  return useMutation(getImportVendorsMutationOptions(options));
+};
+
+/**
+ * @summary Bulk-import employees from CSV data
+ */
+export const getImportEmployeesUrl = () => {
+  return `/api/finance/employees/import`;
+};
+
+export const importEmployees = async (
+  vendorEmployeeImportInput: VendorEmployeeImportInput,
+  options?: RequestInit,
+): Promise<VendorImportResult> => {
+  return customFetch<VendorImportResult>(getImportEmployeesUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(vendorEmployeeImportInput),
+  });
+};
+
+export const getImportEmployeesMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof importEmployees>>,
+    TError,
+    { data: BodyType<VendorEmployeeImportInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof importEmployees>>,
+  TError,
+  { data: BodyType<VendorEmployeeImportInput> },
+  TContext
+> => {
+  const mutationKey = ["importEmployees"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof importEmployees>>,
+    { data: BodyType<VendorEmployeeImportInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return importEmployees(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ImportEmployeesMutationResult = NonNullable<
+  Awaited<ReturnType<typeof importEmployees>>
+>;
+export type ImportEmployeesMutationBody = BodyType<VendorEmployeeImportInput>;
+export type ImportEmployeesMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Bulk-import employees from CSV data
+ */
+export const useImportEmployees = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof importEmployees>>,
+    TError,
+    { data: BodyType<VendorEmployeeImportInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof importEmployees>>,
+  TError,
+  { data: BodyType<VendorEmployeeImportInput> },
+  TContext
+> => {
+  return useMutation(getImportEmployeesMutationOptions(options));
 };
 
 /**
@@ -2273,6 +2449,124 @@ export const useImportCasesFromIteroZipBatch = <
 > => {
   return useMutation(getImportCasesFromIteroZipBatchMutationOptions(options));
 };
+
+/**
+ * Returns the single case whose `casePanBarcode` exactly matches the
+given code within the specified lab, or 404 if none exists. The
+caller must be an active member of the lab. Designed for physical
+barcode scanner workflows that need a precise one-to-one lookup.
+
+ * @summary Find a case by its pan barcode
+ */
+export const getGetCaseByBarcodeUrl = (
+  code: string,
+  params: GetCaseByBarcodeParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/cases/barcode/${code}?${stringifiedParams}`
+    : `/api/cases/barcode/${code}`;
+};
+
+export const getCaseByBarcode = async (
+  code: string,
+  params: GetCaseByBarcodeParams,
+  options?: RequestInit,
+): Promise<GetCaseByBarcode200> => {
+  return customFetch<GetCaseByBarcode200>(
+    getGetCaseByBarcodeUrl(code, params),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetCaseByBarcodeQueryKey = (
+  code: string,
+  params?: GetCaseByBarcodeParams,
+) => {
+  return [`/api/cases/barcode/${code}`, ...(params ? [params] : [])] as const;
+};
+
+export const getGetCaseByBarcodeQueryOptions = <
+  TData = Awaited<ReturnType<typeof getCaseByBarcode>>,
+  TError = ErrorType<void>,
+>(
+  code: string,
+  params: GetCaseByBarcodeParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getCaseByBarcode>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetCaseByBarcodeQueryKey(code, params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getCaseByBarcode>>
+  > = ({ signal }) =>
+    getCaseByBarcode(code, params, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!code,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getCaseByBarcode>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetCaseByBarcodeQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getCaseByBarcode>>
+>;
+export type GetCaseByBarcodeQueryError = ErrorType<void>;
+
+/**
+ * @summary Find a case by its pan barcode
+ */
+
+export function useGetCaseByBarcode<
+  TData = Awaited<ReturnType<typeof getCaseByBarcode>>,
+  TError = ErrorType<void>,
+>(
+  code: string,
+  params: GetCaseByBarcodeParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getCaseByBarcode>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetCaseByBarcodeQueryOptions(code, params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
 
 /**
  * Returns import sessions grouped by batchId (newest first). Each session
