@@ -53,4 +53,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
       return () => ipcRenderer.removeListener("itero:status", listener);
     },
   },
+  messenger: {
+    notify: (payload) => ipcRenderer.invoke("messenger:notify", payload),
+    onOpenConversation: (callback) => {
+      const listener = (_event, conversationId) => callback(conversationId);
+      ipcRenderer.on("messenger:open-conversation", listener);
+      return () => ipcRenderer.removeListener("messenger:open-conversation", listener);
+    },
+  },
 });

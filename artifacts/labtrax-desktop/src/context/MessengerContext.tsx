@@ -99,6 +99,9 @@ export function MessengerProvider({ children }: { children: ReactNode }) {
   const [seenMap, setSeenMap] = useState<Map<string, string>>(new Map());
   const [inboxOpen, setInboxOpen] = useState(false);
   const typingTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  // Stable ref so the notification-click subscription (registered once) always
+  // calls the current version of openConversation without needing to re-subscribe.
+  const openConversationRef = useRef<(id: string) => void>(() => {});
 
   const refreshConversations = useCallback(async () => {
     try {
@@ -173,8 +176,19 @@ export function MessengerProvider({ children }: { children: ReactNode }) {
           senderId: msg.senderId,
           createdAt: msg.createdAt,
         };
-        // only increment unread for messages from others
+        // only increment unread and notify for messages from others
         if (msg.senderId !== (user?.id ?? "")) {
+          // Fire an OS desktop notification whenever the window is not focused,
+          // regardless of whether the conversation panel is open. This covers the
+          // case where the panel is open but the user has switched to another app.
+          if (!document.hasFocus()) {
+            const api = (window as { electronAPI?: { messenger?: { notify: (p: unknown) => void } } }).electronAPI;
+            api?.messenger?.notify({
+              conversationId: msg.conversationId,
+              senderName: msg.senderName,
+              body: msg.body,
+            });
+          }
           setOpenPanels((panels) => {
             const isOpen = panels.some(
               (p) => p.conversationId === msg.conversationId && !p.minimized
@@ -257,6 +271,19 @@ export function MessengerProvider({ children }: { children: ReactNode }) {
 
   const { send: socketSend } = useMessengerSocket(handleWsMessage, !!user);
 
+  // Listen for notification-click events sent from the Electron main process.
+  // When the user clicks an OS desktop notification, main brings the window to
+  // front and fires this so we open the right conversation panel.
+  useEffect(() => {
+    const api = (window as { electronAPI?: { messenger?: { onOpenConversation?: (cb: (id: string) => void) => (() => void) } } }).electronAPI;
+    if (!api?.messenger?.onOpenConversation) return;
+    const unsub = api.messenger.onOpenConversation((conversationId) => {
+      openConversationRef.current(conversationId);
+    });
+    return unsub;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const openConversation = useCallback((conversationId: string) => {
     setOpenPanels((prev) => {
       if (prev.some((p) => p.conversationId === conversationId)) {
@@ -277,6 +304,9 @@ export function MessengerProvider({ children }: { children: ReactNode }) {
     );
     setInboxOpen(false);
   }, []);
+  // Keep the ref current on every render so the notification-click handler
+  // (registered once on mount) always delegates to the latest callback.
+  openConversationRef.current = openConversation;
 
   const closePanel = useCallback((conversationId: string) => {
     setOpenPanels((prev) =>

@@ -172,6 +172,11 @@ function setupAutoUpdater() {
   }, FOUR_HOURS_MS);
 }
 
+// Stable reference to the primary application window used for IPC routing,
+// focus-on-click, and notification delivery. Avoids relying on getAllWindows()[0]
+// which may return a preview window or be ordered non-deterministically.
+let mainWindow = null;
+
 app.whenReady().then(() => {
   if (!isDev) {
     protocol.handle("app", (req) => {
@@ -225,6 +230,11 @@ function createWindow() {
     },
   });
 
+  mainWindow = win;
+  win.on("closed", () => {
+    if (mainWindow === win) mainWindow = null;
+  });
+
   win.setMenuBarVisibility(false);
 
   if (isDev) {
@@ -237,6 +247,29 @@ function createWindow() {
 }
 
 ipcMain.handle("get-app-version", () => app.getVersion());
+
+ipcMain.handle("messenger:notify", (_event, payload) => {
+  const { conversationId, senderName, body } = payload ?? {};
+  if (!conversationId || !Notification.isSupported()) return;
+
+  const title = senderName ? `New message from ${senderName}` : "New message";
+  const notif = new Notification({
+    title,
+    body: body ?? "",
+    silent: false,
+  });
+
+  notif.on("click", () => {
+    const win = mainWindow;
+    if (!win || win.isDestroyed()) return;
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    win.webContents.send("messenger:open-conversation", conversationId);
+  });
+
+  notif.show();
+});
 
 // Map from file path → BrowserWindow so we can focus instead of stacking duplicates.
 const previewWindows = new Map();
