@@ -4,6 +4,8 @@ import { useLocation } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
   Barcode,
   Box,
   Check,
@@ -1862,6 +1864,7 @@ export function CaseDrawer({
   const fileDragCounterRef = useRef(0);
 
   const [activeTab, setActiveTab] = useState<CaseTab>("overview");
+  const [historySortOrder, setHistorySortOrder] = useState<"asc" | "desc">("asc");
   const [viewingInvoice, setViewingInvoice] = useState<Invoice | null>(null);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const [confirmDeleteCase, setConfirmDeleteCase] = useState(false);
@@ -4306,21 +4309,42 @@ export function CaseDrawer({
                 <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
                   Activity Log
                 </h3>
-                <button
-                  type="button"
-                  onClick={() =>
-                    printCaseHistory(data ?? labCase, [
-                      ...(data?.originalCaseEvents ?? []),
-                      ...(data?.events ?? []),
-                      ...(data?.remakeChildrenEvents?.flatMap((rc) => rc.events) ?? []),
-                    ])
-                  }
-                  className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
-                  title="Print case history"
-                >
-                  <Printer size={12} />
-                  Print history
-                </button>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setHistorySortOrder((o) => (o === "asc" ? "desc" : "asc"))
+                    }
+                    className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+                    title={
+                      historySortOrder === "asc"
+                        ? "Showing oldest first — click for newest first"
+                        : "Showing newest first — click for oldest first"
+                    }
+                  >
+                    {historySortOrder === "asc" ? (
+                      <ArrowUp size={12} />
+                    ) : (
+                      <ArrowDown size={12} />
+                    )}
+                    {historySortOrder === "asc" ? "Oldest first" : "Newest first"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      printCaseHistory(data ?? labCase, [
+                        ...(data?.originalCaseEvents ?? []),
+                        ...(data?.events ?? []),
+                        ...(data?.remakeChildrenEvents?.flatMap((rc) => rc.events) ?? []),
+                      ])
+                    }
+                    className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+                    title="Print case history"
+                  >
+                    <Printer size={12} />
+                    Print history
+                  </button>
+                </div>
               </div>
               {isLoading && <div className="text-sm text-muted-foreground">Loading…</div>}
               {!isLoading && (data?.events?.length ?? 0) === 0 && (data?.originalCaseEvents?.length ?? 0) === 0 && (data?.remakeChildrenEvents?.every((rc) => rc.events.length === 0) ?? true) && (
@@ -4331,27 +4355,23 @@ export function CaseDrawer({
 
                 type TaggedEvent = CaseEvent & { _source: "original" | "remake" | "child"; _sourceCaseNumber?: string };
 
-                const sortByTime = (evts: CaseEvent[]): CaseEvent[] =>
-                  [...evts].sort((a, b) => {
-                    const ta = new Date(a.occurredAt || a.createdAt || 0).getTime();
-                    const tb = new Date(b.occurredAt || b.createdAt || 0).getTime();
-                    return ta - tb;
-                  });
-
-                const originalEvents: TaggedEvent[] = sortByTime(data?.originalCaseEvents ?? []).map(
+                const taggedOriginal: TaggedEvent[] = (data?.originalCaseEvents ?? []).map(
                   (e) => ({ ...e, _source: "original" as const }),
                 );
-                const remakeEvents: TaggedEvent[] = sortByTime(data?.events ?? []).map(
+                const taggedRemake: TaggedEvent[] = (data?.events ?? []).map(
                   (e) => ({ ...e, _source: "remake" as const }),
                 );
                 const childEvents: TaggedEvent[] = (data?.remakeChildrenEvents ?? []).flatMap((rc) =>
                   rc.events.map((e) => ({ ...e, _source: "child" as const, _sourceCaseNumber: rc.caseNumber }))
                 );
 
-                // Own events and child events are interleaved chronologically so notes
-                // from a remake appear in context alongside the original case's activity.
-                const ownAndChildSorted = sortByTime([...remakeEvents, ...childEvents]) as TaggedEvent[];
-                const allEvents: TaggedEvent[] = [...originalEvents, ...ownAndChildSorted];
+                const allEvents: TaggedEvent[] = [...originalEvents, ...remakeEvents, ...childEvents].sort(
+                  (a, b) => {
+                    const ta = new Date(a.occurredAt || a.createdAt || 0).getTime();
+                    const tb = new Date(b.occurredAt || b.createdAt || 0).getTime();
+                    return historySortOrder === "asc" ? ta - tb : tb - ta;
+                  },
+                );
 
                 return (
                   <div>
