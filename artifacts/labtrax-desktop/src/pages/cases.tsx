@@ -3995,7 +3995,15 @@ export function CaseDrawer({
               {uploadError && <p className="text-xs text-destructive">{uploadError}</p>}
               {isLoading && <div className="text-sm text-muted-foreground">Loading…</div>}
               {!isLoading && fileCount === 0 && !uploadingFile && (
-                <div className="text-sm text-muted-foreground">No files attached yet.</div>
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="w-full flex flex-col items-center justify-center gap-2 py-10 rounded-lg border-2 border-dashed border-muted-foreground/30 hover:border-primary/50 hover:bg-primary/5 transition-colors cursor-pointer text-center"
+                >
+                  <FileUp size={28} className="text-muted-foreground/50" />
+                  <p className="text-sm font-medium text-muted-foreground">Drop files here or click to attach</p>
+                  <p className="text-xs text-muted-foreground/60">Any file type supported</p>
+                </button>
               )}
               {(() => {
                 const images = data?.attachments?.filter((a) => (a.fileType || "").startsWith("image/")) ?? [];

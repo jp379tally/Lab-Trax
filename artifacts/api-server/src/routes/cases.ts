@@ -2240,14 +2240,44 @@ function removeAttachmentFile(
 router.post(
   "/:caseId/attachments",
   asyncHandler(async (req, res) => {
-    const found = await assertCaseAccess(
-      (req as any).auth.userId,
-      req.params.caseId
-    );
-    await requireMembership(
-      (req as any).auth.userId,
-      found.labOrganizationId
-    );
+    let found: Awaited<ReturnType<typeof assertCaseAccess>> | null = null;
+    let mobileOrgId: string | null = null;
+
+    try {
+      found = await assertCaseAccess(
+        (req as any).auth.userId,
+        req.params.caseId
+      );
+    } catch (e: any) {
+      if (e.status !== 404) throw e;
+    }
+
+    if (!found) {
+      // Mobile case path: verify membership against the lab_cases row.
+      const mobileRow = await db.query.labCases.findFirst({
+        where: and(
+          eq(labCases.id, req.params.caseId),
+          isNull(labCases.deletedAt)
+        ),
+      });
+      if (!mobileRow) throw new HttpError(404, "Case not found.");
+      if (!mobileRow.organizationId) {
+        throw new HttpError(422, "Case has no associated organization.");
+      }
+      await requireMembership(
+        (req as any).auth.userId,
+        mobileRow.organizationId
+      );
+      mobileOrgId = mobileRow.organizationId;
+    } else {
+      await requireMembership(
+        (req as any).auth.userId,
+        found.labOrganizationId
+      );
+    }
+
+    const orgId = found ? found.labOrganizationId : (mobileOrgId as string);
+
     const input = z
       .object({
         storageKey: z.string().min(1),
@@ -2262,9 +2292,9 @@ router.post(
     const [attachment] = await db
       .insert(caseAttachments)
       .values({
-        caseId: found.id,
+        caseId: req.params.caseId,
         uploadedByUserId: (req as any).auth.userId,
-        uploadedByOrganizationId: found.labOrganizationId,
+        uploadedByOrganizationId: orgId,
         fileName: input.fileName,
         storageKey: input.storageKey,
         fileType: input.fileType,
@@ -2274,10 +2304,10 @@ router.post(
 
     const attachmentActor = (req as any).user;
     await db.insert(caseEvents).values({
-      caseId: found.id,
+      caseId: req.params.caseId,
       eventType: "case_attachment_added",
       actorUserId: (req as any).auth.userId,
-      actorOrganizationId: found.labOrganizationId,
+      actorOrganizationId: orgId,
       actorInitials: attachmentActor?.initials || "SYS",
       metadataJson: {
         attachmentId: attachment.id,
@@ -2289,7 +2319,7 @@ router.post(
 
     await writeAuditLog({
       req,
-      organizationId: found.labOrganizationId,
+      organizationId: orgId,
       action: "case_attachment_created",
       entityType: "case_attachment",
       entityId: attachment.id,
