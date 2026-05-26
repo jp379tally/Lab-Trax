@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useRef, useEffect } from "react";
 import { Modal, View, Text, Pressable, Platform, Alert } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { CameraView } from "expo-camera";
@@ -32,6 +32,14 @@ export function CaseBarcodeScannerModal(props: CaseBarcodeScannerModalProps) {
     onScan,
   } = props;
 
+  const firedRef = useRef(false);
+
+  useEffect(() => {
+    if (!visible) {
+      firedRef.current = false;
+    }
+  }, [visible]);
+
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
       <View style={{ flex: 1, backgroundColor: "#000" }}>
@@ -47,8 +55,11 @@ export function CaseBarcodeScannerModal(props: CaseBarcodeScannerModalProps) {
               <CameraView
                 style={{ flex: 1 }}
                 facing="back"
+                autofocus="on"
                 barcodeScannerSettings={{ barcodeTypes: ["code128", "code39", "ean13", "ean8", "upc_a", "upc_e", "qr", "pdf417", "itf14", "codabar"] }}
                 onBarcodeScanned={scanned ? undefined : (result) => {
+                  if (firedRef.current) return;
+                  firedRef.current = true;
                   onSetScanned(true);
                   onScan(result.data);
                 }}
@@ -79,8 +90,11 @@ export function CaseBarcodeScannerModal(props: CaseBarcodeScannerModalProps) {
           )}
         </View>
         <View style={{ paddingHorizontal: 20, paddingBottom: Platform.OS === "web" ? 34 : insetsBottom + 10, paddingTop: 16, alignItems: "center" }}>
-          <Text style={{ color: "rgba(255,255,255,0.7)", fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" }}>
-            Point camera at a barcode to assign it to case {caseNumber}
+          <Text style={{ color: "rgba(255,255,255,0.55)", fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center" }}>
+            Point camera at a barcode to assign it to:
+          </Text>
+          <Text style={{ color: "#FFF", fontSize: 18, fontFamily: "Inter_700Bold", textAlign: "center", marginTop: 4 }}>
+            Case {caseNumber}
           </Text>
         </View>
       </View>

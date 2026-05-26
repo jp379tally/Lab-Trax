@@ -3651,7 +3651,7 @@ export default function CaseDetailScreen() {
 
       <CaseBarcodeScannerModal
         visible={showBarcodeScanner}
-        onClose={() => setShowBarcodeScanner(false)}
+        onClose={() => { setShowBarcodeScanner(false); setBarcodeScanned(false); }}
         insetsTop={insets.top}
         insetsBottom={insets.bottom}
         caseNumber={caseItem?.caseNumber}
@@ -3673,7 +3673,7 @@ export default function CaseDetailScreen() {
             Alert.alert(
               "Barcode Assigned",
               `Barcode ${scannedBarcode} has been assigned to this case.`,
-              [{ text: "OK", onPress: () => setShowBarcodeScanner(false) }]
+              [{ text: "OK", onPress: () => { setShowBarcodeScanner(false); setBarcodeScanned(false); } }]
             );
           }
         }}
