@@ -1,6 +1,7 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Stack, router } from "expo-router";
 import { ThemeProvider as NavThemeProvider } from "@react-navigation/native";
+import { MessengerProvider } from "@/lib/messenger-context";
 import * as SplashScreen from "expo-splash-screen";
 import * as Linking from "expo-linking";
 import React, { useEffect, useMemo } from "react";
@@ -70,6 +71,10 @@ function RootLayoutNav() {
         />
         <Stack.Screen
           name="customers"
+          options={{ headerShown: false, presentation: "card" }}
+        />
+        <Stack.Screen
+          name="messenger/[id]"
           options={{ headerShown: false, presentation: "card" }}
         />
         <Stack.Screen
@@ -148,7 +153,9 @@ function AuthGate() {
               style={StyleSheet.absoluteFill}
               pointerEvents="none"
             />
-            <RootLayoutNav />
+            <MessengerProvider>
+              <RootLayoutNav />
+            </MessengerProvider>
           </View>
           </InactivityWrapper>
         </AppProvider>

@@ -10,6 +10,7 @@ import { useProviderFilteredNotifications } from "@/lib/useFilteredNotifications
 import { useEntitlement } from "@/lib/useEntitlement";
 import { SubscriptionPaywall } from "@/components/SubscriptionPaywall";
 import { GracePeriodBanner } from "@/components/GracePeriodBanner";
+import { useMessenger } from "@/lib/messenger-context";
 
 function ClassicTabLayout() {
   const { isDark, colors } = useTheme();
@@ -20,6 +21,7 @@ function ClassicTabLayout() {
   const isProvider = userType === "provider";
   const filteredNotifs = useProviderFilteredNotifications();
   const unreadCount = filteredNotifs.filter(n => !n.read).length;
+  const { totalUnread: messengerUnread } = useMessenger();
 
   const { entitlement, startAggressivePoll } = useEntitlement(isAuthenticated);
   const [paywallDismissed, setPaywallDismissed] = useState(false);
@@ -173,6 +175,20 @@ function ClassicTabLayout() {
             tabBarIcon: ({ color, focused }) => (
               <Ionicons
                 name={focused ? "notifications" : "notifications-outline"}
+                size={22}
+                color={color}
+              />
+            ),
+          }}
+        />
+        <Tabs.Screen
+          name="messages"
+          options={{
+            title: "Messages",
+            tabBarBadge: messengerUnread > 0 ? messengerUnread : undefined,
+            tabBarIcon: ({ color, focused }) => (
+              <Ionicons
+                name={focused ? "chatbubble-ellipses" : "chatbubble-ellipses-outline"}
                 size={22}
                 color={color}
               />
