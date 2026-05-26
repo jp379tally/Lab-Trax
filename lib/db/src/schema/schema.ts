@@ -1249,6 +1249,9 @@ export const recurringTransactions = pgTable(
       .references(() => bankAccounts.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     payee: text("payee"),
+    vendorId: varchar("vendor_id").references(() => vendors.id, {
+      onDelete: "set null",
+    }),
     memo: text("memo"),
     categoryId: varchar("category_id").references(
       () => transactionCategories.id,

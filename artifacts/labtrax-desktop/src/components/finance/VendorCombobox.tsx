@@ -47,6 +47,7 @@ interface Props {
   organizationId: string;
   value: string;
   onChange: (value: string) => void;
+  onChangeId?: (id: string | null) => void;
   className?: string;
   placeholder?: string;
   disabled?: boolean;
@@ -56,6 +57,7 @@ export function VendorCombobox({
   organizationId,
   value,
   onChange,
+  onChangeId,
   className = "",
   placeholder = "Payee",
   disabled = false,
@@ -87,15 +89,17 @@ export function VendorCombobox({
   );
   const showAddOption = trimmed.length > 0 && !hasExactMatch;
 
-  function select(name: string) {
-    setInputVal(name);
-    onChange(name);
+  function select(vendor: Vendor) {
+    setInputVal(vendor.name);
+    onChange(vendor.name);
+    onChangeId?.(vendor.id);
     setOpen(false);
   }
 
   function handleInput(e: React.ChangeEvent<HTMLInputElement>) {
     setInputVal(e.target.value);
     onChange(e.target.value);
+    onChangeId?.(null);
     setOpen(true);
   }
 
@@ -112,9 +116,10 @@ export function VendorCombobox({
     }
   }
 
-  function handleQuickAddSaved(name: string) {
-    setInputVal(name);
-    onChange(name);
+  function handleQuickAddSaved(vendor: Vendor) {
+    setInputVal(vendor.name);
+    onChange(vendor.name);
+    onChangeId?.(vendor.id);
     setShowQuickAdd(false);
     setOpen(false);
   }
@@ -128,7 +133,7 @@ export function VendorCombobox({
           className="w-full text-left px-3 py-1.5 hover:bg-secondary flex items-center gap-2 min-w-0"
           onMouseDown={(e) => {
             e.preventDefault();
-            select(v.name);
+            select(v);
           }}
         >
           <span
@@ -240,7 +245,7 @@ function QuickAddVendorModal({
   organizationId: string;
   initialName: string;
   onClose: () => void;
-  onSaved: (name: string) => void;
+  onSaved: (vendor: Vendor) => void;
 }) {
   const qc = useQueryClient();
   const [name, setName] = useState(initialName);
@@ -263,7 +268,7 @@ function QuickAddVendorModal({
       }),
     onSuccess: (row) => {
       qc.invalidateQueries({ queryKey: ["finance", "vendors", organizationId] });
-      onSaved(row.name);
+      onSaved(row);
     },
     onError: (e: Error) => setError(e.message || "Failed to create."),
   });

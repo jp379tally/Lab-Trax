@@ -412,6 +412,7 @@ export interface RecurringRule {
   bankAccountId: string;
   name: string;
   payee?: string | null;
+  vendorId?: string | null;
   memo?: string | null;
   categoryId?: string | null;
   direction: "debit" | "credit";

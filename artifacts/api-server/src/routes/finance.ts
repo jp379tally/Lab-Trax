@@ -1100,6 +1100,7 @@ const recurringSchema = z.object({
   bankAccountId: z.string().min(1),
   name: z.string().min(1),
   payee: z.string().nullable().optional(),
+  vendorId: z.string().nullable().optional(),
   memo: z.string().nullable().optional(),
   categoryId: z.string().nullable().optional(),
   direction: z.enum(["debit", "credit"]),
@@ -1123,6 +1124,14 @@ router.post(
     const acct = await loadAccountOrThrow(uid(req), input.bankAccountId);
     if (acct.labOrganizationId !== input.organizationId)
       throw new HttpError(400, "Account does not belong to this organization.");
+    if (input.vendorId) {
+      const vendor = await db.query.vendors.findFirst({
+        where: eq(vendors.id, input.vendorId),
+        columns: { id: true, labOrganizationId: true, deletedAt: true },
+      });
+      if (!vendor || vendor.deletedAt || vendor.labOrganizationId !== input.organizationId)
+        throw new HttpError(400, "Vendor not found or does not belong to this organization.");
+    }
     const [row] = await db
       .insert(recurringTransactions)
       .values({
@@ -1130,6 +1139,7 @@ router.post(
         bankAccountId: input.bankAccountId,
         name: input.name,
         payee: input.payee || null,
+        vendorId: input.vendorId || null,
         memo: input.memo || null,
         categoryId: input.categoryId || null,
         direction: input.direction,
@@ -1169,10 +1179,19 @@ router.patch(
     if (!rule) throw new HttpError(404, "Recurring rule not found.");
     await requireAnyRole(uid(req), rule.labOrganizationId, BILLING_ROLES);
     const input = recurringSchema.partial().parse(req.body);
+    if (input.vendorId) {
+      const vendor = await db.query.vendors.findFirst({
+        where: eq(vendors.id, input.vendorId),
+        columns: { id: true, labOrganizationId: true, deletedAt: true },
+      });
+      if (!vendor || vendor.deletedAt || vendor.labOrganizationId !== rule.labOrganizationId)
+        throw new HttpError(400, "Vendor not found or does not belong to this organization.");
+    }
     const updates: any = { updatedAt: new Date() };
     for (const k of [
       "name",
       "payee",
+      "vendorId",
       "memo",
       "categoryId",
       "direction",
@@ -1384,11 +1403,19 @@ export async function generateForOrganization(
         lastGen = occDate;
         continue;
       }
+      let resolvedPayee = rule.payee || rule.name;
+      if (rule.vendorId) {
+        const vendor = await db.query.vendors.findFirst({
+          where: eq(vendors.id, rule.vendorId),
+          columns: { name: true },
+        });
+        if (vendor) resolvedPayee = vendor.name;
+      }
       const existing = await findPostedNear(
         rule.bankAccountId,
         occDate,
         amount,
-        rule.payee || rule.name
+        resolvedPayee
       );
       if (existing) {
         lastGen = occDate;
@@ -1402,7 +1429,7 @@ export async function generateForOrganization(
         bankAccountId: rule.bankAccountId,
         txnDate: occDate,
         type: rule.direction === "credit" ? "deposit" : "payment",
-        payee: rule.payee || rule.name,
+        payee: resolvedPayee,
         memo: rule.memo || `Projected: ${rule.name}`,
         categoryId: rule.categoryId,
         debitAmount: debit.toFixed(2),
@@ -1452,11 +1479,19 @@ router.post(
     if (!amount)
       throw new HttpError(400, "Rule has no amount to post.");
     const occDate = new Date();
+    let resolvedPostPayee = rule.payee || rule.name;
+    if (rule.vendorId) {
+      const vendor = await db.query.vendors.findFirst({
+        where: eq(vendors.id, rule.vendorId),
+        columns: { name: true },
+      });
+      if (vendor) resolvedPostPayee = vendor.name;
+    }
     const dup = await findPostedNear(
       rule.bankAccountId,
       occDate,
       amount,
-      rule.payee || rule.name
+      resolvedPostPayee
     );
     if (dup)
       return ok(res, { posted: false, bankTransactionId: dup.id });
@@ -1470,7 +1505,7 @@ router.post(
         bankAccountId: rule.bankAccountId,
         txnDate: occDate,
         type: rule.direction === "credit" ? "deposit" : "payment",
-        payee: rule.payee || rule.name,
+        payee: resolvedPostPayee,
         memo: rule.memo || rule.name,
         categoryId: rule.categoryId,
         debitAmount: debit.toFixed(2),

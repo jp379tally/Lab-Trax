@@ -712,12 +712,27 @@ function MakeRecurringDialog({
     : (initialDirection === "credit" ? credit : debit || 0).toFixed(2);
   const today = new Date().toISOString().slice(0, 10);
 
+  const vendorsQuery = useVendors(organizationId);
+  const vendorById = useMemo(
+    () => new Map((vendorsQuery.data ?? []).map((v) => [v.id, v])),
+    [vendorsQuery.data]
+  );
+
   const [name, setName] = useState(
     isEdit
       ? editRule!.name
       : source.payee || `Recurring ${initialDirection === "credit" ? "deposit" : "payment"}`
   );
   const [payee, setPayee] = useState(isEdit ? (editRule!.payee || "") : (source.payee || ""));
+  const [vendorId, setVendorId] = useState(isEdit ? (editRule!.vendorId || null) : null);
+  const [payeeUserEdited, setPayeeUserEdited] = useState(false);
+
+  useEffect(() => {
+    if (isEdit && editRule!.vendorId && !payeeUserEdited) {
+      const v = vendorById.get(editRule!.vendorId);
+      if (v) setPayee(v.name);
+    }
+  }, [vendorById, isEdit, editRule, payeeUserEdited]);
   const [memo, setMemo] = useState(isEdit ? (editRule!.memo || "") : (source.memo || ""));
   const [categoryId, setCategoryId] = useState(isEdit ? (editRule!.categoryId || "") : (source.categoryId || ""));
   const [bankAccountId, setBankAccountId] = useState(isEdit ? editRule!.bankAccountId : source.bankAccountId);
@@ -756,6 +771,7 @@ function MakeRecurringDialog({
         bankAccountId,
         name: name.trim(),
         payee: payee.trim() || null,
+        vendorId: vendorId || null,
         memo: memo.trim() || null,
         categoryId: categoryId || null,
         direction,
@@ -829,6 +845,10 @@ function MakeRecurringDialog({
                 organizationId={organizationId}
                 value={payee}
                 onChange={setPayee}
+                onChangeId={(id) => {
+                  setVendorId(id);
+                  setPayeeUserEdited(!id);
+                }}
                 className={`${inputCls} w-full`}
               />
             </div>
