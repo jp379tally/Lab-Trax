@@ -5,6 +5,7 @@ import nodemailer from "nodemailer";
 import { and, asc, eq, gte, inArray, lt, or, isNull, ne, lte } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
+  invoiceLineItems,
   invoices,
   organizations,
   statementSchedules,
@@ -35,6 +36,18 @@ function nextAttemptDelayMs(justCompletedAttempt: number): number | null {
 
 export type SendTrigger = "schedule" | "manual";
 
+export interface LineItemEntry {
+  id: string;
+  description: string;
+  quantity: number;
+  unitPrice: string;
+  lineTotal: string;
+  parentLineItemId: string | null;
+  toothLabel: string | null;
+  toothNumber: number | null;
+  sortOrder: number;
+}
+
 export interface PracticeStatementData {
   practiceId: string;
   practiceName: string;
@@ -54,6 +67,8 @@ export interface PracticeStatementData {
     balanceDue: string;
     patientName: string | null;
     billTo: string | null;
+    /** Line items for this invoice, used to render group subtotals in the PDF. */
+    lineItems?: LineItemEntry[];
   }>;
 }
 
@@ -137,6 +152,49 @@ export function priorMonthRange(asOf: Date): {
   return { start, end, periodMonth: periodMonthFor(start) };
 }
 
+/**
+ * Batch-fetches invoice line items for every invoice in the given statements
+ * and attaches them to the matching invoice entries in-place. The caller
+ * passes a Map from invoiceId → {practiceId, invoiceIndex} so this helper
+ * can look up the right slot without re-scanning the statements array.
+ */
+async function attachLineItems(
+  statements: Map<string, PracticeStatementData>,
+  invoiceIdMap: Map<string, { practiceId: string; index: number }>
+): Promise<void> {
+  const allIds = Array.from(invoiceIdMap.keys());
+  if (!allIds.length) return;
+
+  const liRows = await db.query.invoiceLineItems.findMany({
+    where: inArray(invoiceLineItems.invoiceId, allIds),
+    orderBy: [asc(invoiceLineItems.sortOrder)],
+  });
+
+  const liByInvoice = new Map<string, typeof liRows>();
+  for (const li of liRows) {
+    if (!liByInvoice.has(li.invoiceId)) liByInvoice.set(li.invoiceId, []);
+    liByInvoice.get(li.invoiceId)!.push(li);
+  }
+
+  for (const [invoiceId, { practiceId, index }] of invoiceIdMap) {
+    const pData = statements.get(practiceId);
+    if (!pData) continue;
+    const entry = pData.invoices[index];
+    if (!entry) continue;
+    entry.lineItems = (liByInvoice.get(invoiceId) ?? []).map((li) => ({
+      id: li.id,
+      description: li.description,
+      quantity: li.quantity,
+      unitPrice: String(li.unitPrice),
+      lineTotal: String(li.lineTotal),
+      parentLineItemId: li.parentLineItemId ?? null,
+      toothLabel: li.toothLabel ?? null,
+      toothNumber: li.toothNumber ?? null,
+      sortOrder: li.sortOrder,
+    }));
+  }
+}
+
 export async function buildPracticeStatements(
   labOrganizationId: string,
   periodStart: Date,
@@ -181,6 +239,8 @@ export async function buildPracticeStatements(
   );
 
   const grouped = new Map<string, PracticeStatementData>();
+  const invoiceIdMap = new Map<string, { practiceId: string; index: number }>();
+
   for (const inv of rows) {
     const id = inv.providerOrganizationId;
     // Skip invoices for practices that aren't in the inclusion filter.
@@ -209,6 +269,7 @@ export async function buildPracticeStatements(
     const meta = (inv.displayMetadataJson ?? null) as
       | { patientName?: string | null; billTo?: string | null }
       | null;
+    invoiceIdMap.set(inv.id, { practiceId: id, index: cur.invoices.length });
     cur.invoices.push({
       invoiceNumber: inv.invoiceNumber,
       issuedAt: inv.issuedAt ?? inv.createdAt ?? null,
@@ -221,6 +282,8 @@ export async function buildPracticeStatements(
     });
     grouped.set(id, cur);
   }
+
+  await attachLineItems(grouped, invoiceIdMap);
   return Array.from(grouped.values());
 }
 
@@ -317,6 +380,8 @@ export async function generateStatementPdfBuffer(
       .strokeColor("#ccc")
       .stroke();
 
+    const tableWidth = colWidths.reduce((a, b) => a + b, 0);
+
     doc.font("Helvetica").fontSize(9);
     for (const inv of data.invoices) {
       const billTo = inv.billTo && inv.billTo.trim() ? inv.billTo.trim() : "";
@@ -350,11 +415,113 @@ export async function generateStatementPdfBuffer(
           .fontSize(8)
           .fillColor("#666")
           .text(`Bill to: ${billTo}`, startX, y + 12, {
-            width: colWidths[0],
+            width: colWidths[0]!,
           });
         doc.fontSize(9).fillColor("#000");
       }
       y += rowHeight;
+
+      // ── Grouped line items ──────────────────────────────────────────────
+      const lineItems = inv.lineItems;
+      if (lineItems && lineItems.length > 0) {
+        const LI_INDENT = 16;
+        const LI_AMT_W = 70;
+        const LI_DESC_W = tableWidth - LI_INDENT - LI_AMT_W;
+        const liX = startX + LI_INDENT;
+        const liAmtX = liX + LI_DESC_W;
+
+        // Separate top-level items from children.
+        const parents = lineItems.filter((li) => !li.parentLineItemId);
+        const childrenByParent = new Map<string, LineItemEntry[]>();
+        for (const li of lineItems) {
+          if (li.parentLineItemId) {
+            if (!childrenByParent.has(li.parentLineItemId)) {
+              childrenByParent.set(li.parentLineItemId, []);
+            }
+            childrenByParent.get(li.parentLineItemId)!.push(li);
+          }
+        }
+
+        for (const parent of parents) {
+          const children = childrenByParent.get(parent.id) ?? [];
+          const hasChildren = children.length > 0;
+          const LI_ROW_H = 13;
+
+          // Parent / group-header row
+          if (y + LI_ROW_H > doc.page.height - 60) {
+            doc.addPage();
+            y = doc.y;
+          }
+          doc
+            .font(hasChildren ? "Helvetica-Bold" : "Helvetica")
+            .fontSize(8)
+            .fillColor("#333");
+          doc.text(parent.description, liX, y, { width: LI_DESC_W, lineBreak: false });
+          doc.text(fmtMoney(Number(parent.lineTotal)), liAmtX, y, {
+            width: LI_AMT_W,
+            align: "right",
+            lineBreak: false,
+          });
+          doc.fillColor("#000");
+          y += LI_ROW_H;
+
+          // Child rows (sub-items)
+          const SUB_EXTRA = 10;
+          const subX = liX + SUB_EXTRA;
+          const subDescW = LI_DESC_W - SUB_EXTRA;
+          for (const child of children) {
+            if (y + LI_ROW_H > doc.page.height - 60) {
+              doc.addPage();
+              y = doc.y;
+            }
+            doc.font("Helvetica").fontSize(8).fillColor("#666");
+            doc.text(`↳ ${child.description}`, subX, y, {
+              width: subDescW,
+              lineBreak: false,
+            });
+            doc.text(fmtMoney(Number(child.lineTotal)), liAmtX, y, {
+              width: LI_AMT_W,
+              align: "right",
+              lineBreak: false,
+            });
+            doc.fillColor("#000");
+            y += LI_ROW_H;
+          }
+
+          // Subtotal row when parent has children
+          if (hasChildren) {
+            const groupTotal =
+              Number(parent.lineTotal) +
+              children.reduce((s, c) => s + Number(c.lineTotal), 0);
+            const ST_ROW_H = 14;
+            if (y + ST_ROW_H > doc.page.height - 60) {
+              doc.addPage();
+              y = doc.y;
+            }
+            // Light-gray background strip
+            doc.save();
+            doc
+              .rect(startX + LI_INDENT - 4, y - 2, tableWidth - LI_INDENT + 4, ST_ROW_H + 1)
+              .fillColor("#e6e8eb")
+              .fill();
+            doc.restore();
+            // "— Subtotal" label (italic) + bold amount
+            doc.font("Helvetica-Oblique").fontSize(8).fillColor("#505050");
+            doc.text("— Subtotal", liX, y, { width: LI_DESC_W, lineBreak: false });
+            doc.font("Helvetica-Bold").fillColor("#505050");
+            doc.text(fmtMoney(groupTotal), liAmtX, y, {
+              width: LI_AMT_W,
+              align: "right",
+              lineBreak: false,
+            });
+            doc.fillColor("#000");
+            y += ST_ROW_H;
+          }
+        }
+        // Small visual gap after the line-items block
+        y += 4;
+      }
+      // ── End grouped line items ──────────────────────────────────────────
     }
 
     doc.end();
@@ -873,6 +1040,8 @@ export async function buildPracticeStatementsForScope(
   const byId = new Map(practiceRows.map((o) => [o.id, o]));
 
   const grouped = new Map<string, PracticeStatementData>();
+  const invoiceIdMap = new Map<string, { practiceId: string; index: number }>();
+
   for (const inv of rows) {
     const id = inv.providerOrganizationId;
     if (filterIds && !filterIds.has(id)) continue;
@@ -900,6 +1069,7 @@ export async function buildPracticeStatementsForScope(
     const meta = (inv.displayMetadataJson ?? null) as
       | { patientName?: string | null; billTo?: string | null }
       | null;
+    invoiceIdMap.set(inv.id, { practiceId: id, index: cur.invoices.length });
     cur.invoices.push({
       invoiceNumber: inv.invoiceNumber,
       issuedAt: inv.issuedAt ?? inv.createdAt ?? null,
@@ -913,6 +1083,7 @@ export async function buildPracticeStatementsForScope(
     grouped.set(id, cur);
   }
 
+  await attachLineItems(grouped, invoiceIdMap);
   const all = Array.from(grouped.values());
   return scope === "all" ? all : all.filter((s) => s.openBalance > 0);
 }

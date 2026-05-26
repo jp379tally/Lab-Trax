@@ -3158,6 +3158,22 @@ async function buildAndPersistStatementPdf(opts: {
   const labName = labOrg?.displayName || labOrg?.name || "LabTrax";
   const practiceName =
     practice?.displayName || practice?.name || "Practice";
+  // Batch-fetch line items for all invoices in this statement so the PDF
+  // can render per-invoice group subtotals.
+  const invoiceIds = opts.invoicesList.map((inv: any) => inv.id as string).filter(Boolean);
+  const liRows =
+    invoiceIds.length > 0
+      ? await db.query.invoiceLineItems.findMany({
+          where: inArray(invoiceLineItems.invoiceId, invoiceIds),
+          orderBy: [asc(invoiceLineItems.sortOrder)],
+        })
+      : [];
+  const liByInvoiceId = new Map<string, typeof liRows>();
+  for (const li of liRows) {
+    if (!liByInvoiceId.has(li.invoiceId)) liByInvoiceId.set(li.invoiceId, []);
+    liByInvoiceId.get(li.invoiceId)!.push(li);
+  }
+
   const data: PracticeStatementData = {
     practiceId: opts.providerOrganizationId,
     practiceName,
@@ -3171,6 +3187,7 @@ async function buildAndPersistStatementPdf(opts: {
       const meta = (inv.displayMetadataJson ?? null) as
         | { patientName?: string | null; billTo?: string | null }
         | null;
+      const items = liByInvoiceId.get(inv.id) ?? [];
       return {
         invoiceNumber: inv.invoiceNumber,
         issuedAt: inv.issuedAt ?? inv.createdAt ?? null,
@@ -3180,6 +3197,17 @@ async function buildAndPersistStatementPdf(opts: {
         balanceDue: String(inv.balanceDue ?? "0"),
         patientName: meta?.patientName ?? null,
         billTo: meta?.billTo ?? null,
+        lineItems: items.map((li) => ({
+          id: li.id,
+          description: li.description,
+          quantity: li.quantity,
+          unitPrice: String(li.unitPrice),
+          lineTotal: String(li.lineTotal),
+          parentLineItemId: li.parentLineItemId ?? null,
+          toothLabel: li.toothLabel ?? null,
+          toothNumber: li.toothNumber ?? null,
+          sortOrder: li.sortOrder,
+        })),
       };
     }),
   };

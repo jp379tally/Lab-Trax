@@ -54,6 +54,7 @@ vi.mock("@workspace/db", () => {
       statementSchedules: { findMany: mockFindManySchedules },
       organizations: { findFirst: vi.fn().mockResolvedValue(null) },
       invoices: { findMany: mockFindManyInvoices },
+      invoiceLineItems: { findMany: vi.fn().mockResolvedValue([]) },
     },
     update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue(setChain) }),
     select: vi.fn().mockReturnValue(selectChain),
@@ -65,6 +66,7 @@ vi.mock("@workspace/db", () => {
   return {
     db,
     invoices: { labOrganizationId: {}, createdAt: {}, providerOrganizationId: {} },
+    invoiceLineItems: { invoiceId: {}, sortOrder: {} },
     organizations: { id: {}, name: {}, displayName: {}, billingEmail: {} },
     statementSchedules: {
       id: {},
