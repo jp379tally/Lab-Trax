@@ -34,9 +34,9 @@ const LAB_SUGGESTED_PROMPTS = [
 ];
 
 const PROVIDER_SUGGESTED_PROMPTS = [
-  "Where is my patient's case?",
-  "What cases are due this week?",
-  "What do you charge me for PFM crowns?",
+  "Which cases are overdue?",
+  "How many active cases do I have?",
+  "Are any of my cases rush priority?",
   "What's the status of my recent cases?",
 ];
 

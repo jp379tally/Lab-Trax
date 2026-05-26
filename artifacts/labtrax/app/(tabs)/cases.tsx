@@ -350,6 +350,15 @@ export default function CasesScreen() {
               <Text style={styles.barcodeLocateBtnText}>Sync Cases</Text>
             </Pressable>
           )}
+          {userType === "provider" && (
+            <Pressable
+              style={({ pressed }) => [styles.askAiBtn, pressed && { opacity: 0.7 }]}
+              onPress={() => router.push("/chat")}
+            >
+              <Ionicons name="sparkles" size={18} color="#7C3AED" />
+              <Text style={styles.askAiBtnText}>Ask AI about all my cases</Text>
+            </Pressable>
+          )}
           {userType !== "provider" && (
             <Pressable
               style={({ pressed }) => [styles.barcodeLocateBtn, pressed && { opacity: 0.7 }]}
@@ -866,5 +875,20 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
     color: Colors.light.tint,
+  },
+  askAiBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "#F5F3FF",
+    borderRadius: 12,
+    paddingVertical: 10,
+    marginTop: 8,
+  },
+  askAiBtnText: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: "#7C3AED",
   },
 });
