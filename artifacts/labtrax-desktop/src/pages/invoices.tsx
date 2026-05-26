@@ -1905,9 +1905,6 @@ export function InvoiceEditor({
                               {pricedItems.map((p) => (
                                 <option key={p.key} value={p.label}>
                                   {p.label}
-                                  {p.unitPrice > 0
-                                    ? ` — ${formatMoney(p.unitPrice)}`
-                                    : " — no price set"}
                                 </option>
                               ))}
                               <option value="__custom__">Custom…</option>
