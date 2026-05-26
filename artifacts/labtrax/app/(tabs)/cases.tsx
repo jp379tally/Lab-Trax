@@ -25,6 +25,7 @@ import Colors from "@/constants/colors";
 import { getStationInfo, STATIONS, CaseStatus, LabCase, cleanDoctorDisplay, Invoice } from "@/lib/data";
 import { ChatButton } from "@/components/ChatButton";
 import InvoicePDFViewer from "@/components/InvoicePDFViewer";
+import { CaseProgressBar } from "@/components/CaseProgressBar";
 import { deriveDisplayInitials } from "@/lib/display-initials";
 import { getCaseInvoice as getCaseInvoiceFromLib } from "@/lib/case-invoice";
 
@@ -211,6 +212,11 @@ export default function CasesScreen() {
             )}
           </View>
         </View>
+        <CaseProgressBar
+          status={item.status}
+          dueDate={item.dueDate}
+          expectedDeliveryDate={item.expectedDeliveryDate}
+        />
         <View style={styles.caseBottom}>
           <Text style={styles.caseDue}>{item.caseNumber} · Due: {item.dueDate}</Text>
           {showChartBtn && (
