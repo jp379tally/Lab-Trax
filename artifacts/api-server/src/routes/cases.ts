@@ -1796,6 +1796,56 @@ router.get(
   }),
 );
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /cases/by-number/:caseNumber
+//
+// Resolves a case number (as encoded in QR codes and labels) to its record ID
+// and lab. Searches across all labs the authenticated caller belongs to.
+// Returns 404 when no matching case is found.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get(
+  "/by-number/:caseNumber",
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId as string;
+    const caseNumber = String(req.params["caseNumber"] ?? "").trim();
+    if (!caseNumber) throw new HttpError(400, "caseNumber is required.");
+
+    const memberships = await db.query.organizationMemberships.findMany({
+      where: and(
+        eq(organizationMemberships.userId, userId),
+        eq(organizationMemberships.status, "active"),
+      ),
+    });
+    const orgIds = memberships
+      .map((m: any) => m.labId)
+      .filter(Boolean) as string[];
+    if (orgIds.length === 0) throw new HttpError(404, "Case not found.");
+
+    const rows = await db
+      .select({
+        id: cases.id,
+        caseNumber: cases.caseNumber,
+        labOrganizationId: cases.labOrganizationId,
+      })
+      .from(cases)
+      .where(
+        and(
+          inArray(cases.labOrganizationId, orgIds),
+          sql`lower(${cases.caseNumber}) = lower(${caseNumber})`,
+          notDeleted(cases),
+        ),
+      )
+      .limit(1);
+
+    if (!rows.length) throw new HttpError(404, "Case not found.");
+    return ok(res, {
+      id: rows[0].id,
+      caseNumber: rows[0].caseNumber,
+      labOrganizationId: rows[0].labOrganizationId,
+    });
+  }),
+);
+
 // GET /cases/itero-import-history
 //
 // Returns iTero batch-import sessions for a lab (newest first). Each session

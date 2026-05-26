@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, type ComponentProps } from "react";
+import QRCode from "react-native-qrcode-svg";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import {
@@ -85,6 +86,72 @@ const SCAN_MIME_TYPES = new Set([
   "application/dicom",
 ]);
 const SCAN_EXTENSIONS = new Set(["stl", "obj", "ply", "dcm", "3ds", "dae"]);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// QrCard — compact card with the case QR code. Tap the QR to expand it
+// full-screen so it's easy to scan with any barcode reader.
+// ─────────────────────────────────────────────────────────────────────────────
+function QrCard({ caseQrUrl, caseNumber }: { caseQrUrl: string; caseNumber: string }) {
+  const [expanded, setExpanded] = React.useState(false);
+  return (
+    <>
+      <Pressable
+        onPress={() => setExpanded(true)}
+        style={{
+          marginHorizontal: 16,
+          marginTop: 12,
+          padding: 14,
+          borderRadius: 12,
+          backgroundColor: "#F8FAFC",
+          borderWidth: 1,
+          borderColor: "#E2E8F0",
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 14,
+        }}
+      >
+        <QRCode value={caseQrUrl} size={72} />
+        <View style={{ flex: 1 }}>
+          <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#1E293B" }}>
+            Case QR Code
+          </Text>
+          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#64748B", marginTop: 2, lineHeight: 16 }}>
+            Scan to open case {caseNumber} in LabTrax or a browser.
+          </Text>
+          <Text style={{ fontSize: 10, fontFamily: "Inter_500Medium", color: "#94A3B8", marginTop: 4 }}>
+            Tap QR to expand
+          </Text>
+        </View>
+      </Pressable>
+
+      {/* Full-screen QR modal for easy scanning */}
+      <Modal visible={expanded} transparent animationType="fade" onRequestClose={() => setExpanded(false)}>
+        <Pressable
+          style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.85)", justifyContent: "center", alignItems: "center" }}
+          onPress={() => setExpanded(false)}
+        >
+          <View style={{ backgroundColor: "#FFFFFF", borderRadius: 20, padding: 32, alignItems: "center", gap: 16 }}>
+            <QRCode value={caseQrUrl} size={240} />
+            <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: "#1E293B" }}>
+              Case {caseNumber}
+            </Text>
+            <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#64748B", textAlign: "center" }}>
+              Scan with any camera or barcode app
+            </Text>
+            <Pressable
+              onPress={() => Linking.openURL(caseQrUrl).catch(() => {})}
+              style={{ paddingVertical: 8, paddingHorizontal: 16, backgroundColor: "#EFF6FF", borderRadius: 8 }}
+            >
+              <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: "#2563EB" }}>
+                Open in browser
+              </Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
+    </>
+  );
+}
 
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -1530,6 +1597,17 @@ export default function CaseDetailScreen() {
             </Pressable>
           </View>
         )}
+        {/* QR code card — tap the QR to expand full-screen for easy scanning */}
+        {Platform.OS !== "web" && (() => {
+          const domain = process.env.EXPO_PUBLIC_DOMAIN;
+          const baseUrl = domain ? `https://${domain.replace(/:\d+$/, "")}` : "";
+          const caseQrUrl = `${baseUrl}/cases/${caseItem.caseNumber}`;
+          if (!baseUrl) return null;
+          return (
+            <QrCard caseQrUrl={caseQrUrl} caseNumber={caseItem.caseNumber} />
+          );
+        })()}
+
         {isAdmin && (
         <Pressable
           style={[styles.statusCard, (caseItem.status === "COMPLETE" || caseItem.status === "SHIP") && styles.statusCardTappable]}

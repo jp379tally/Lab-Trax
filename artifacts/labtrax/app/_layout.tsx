@@ -7,6 +7,7 @@ import * as Linking from "expo-linking";
 import React, { useEffect, useMemo } from "react";
 import { View, ActivityIndicator, StyleSheet, PanResponder, Platform } from "react-native";
 import { pushSharedFile } from "@/lib/shared-file-inbox";
+import { resilientFetch } from "@/lib/query-client";
 import { useShareIntent } from "expo-share-intent";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
@@ -49,6 +50,29 @@ const TransparentNavTheme = {
 };
 
 SplashScreen.preventAutoHideAsync();
+
+// Module-level storage for a QR-scan deep-link that arrives before the user
+// is authenticated. AuthGate drains this once login completes.
+let pendingCaseNumber: string | null = null;
+
+async function resolveCaseAndNavigate(caseNumber: string): Promise<boolean> {
+  try {
+    const res = await resilientFetch(
+      `/api/cases/by-number/${encodeURIComponent(caseNumber)}`,
+    );
+    if (res.ok) {
+      const body = (await res.json()) as { data?: { id?: string } };
+      const caseId = body?.data?.id;
+      if (caseId) {
+        router.push(`/case/${caseId}` as any);
+        return true;
+      }
+    }
+  } catch {
+    // Network error or not authenticated — fall through
+  }
+  return false;
+}
 
 function RootLayoutNav() {
   return (
@@ -136,6 +160,14 @@ function InactivityWrapper({ children }: { children: React.ReactNode }) {
 
 function AuthGate() {
   const { isAuthenticated, isAuthLoading, isLocked, currentUserId } = useAuth();
+
+  // After login, drain any QR-scan deep-link that arrived before auth.
+  useEffect(() => {
+    if (!isAuthenticated || !pendingCaseNumber) return;
+    const cn = pendingCaseNumber;
+    pendingCaseNumber = null;
+    resolveCaseAndNavigate(cn).catch(() => {});
+  }, [isAuthenticated]);
 
   if (isAuthLoading) {
     return (
@@ -270,12 +302,34 @@ export default function RootLayout() {
             pushSharedFile(fileParam).catch(() => {});
           }
         } catch {}
+      } else {
+        // Handle case deep-links: https://<domain>/cases/<caseNumber>
+        // Produced by QR codes embedded in case drawers and invoice PDFs.
+        try {
+          const parsed = new URL(url);
+          const caseMatch = parsed.pathname.match(/^\/cases\/([^/?#]+)/);
+          if (caseMatch) {
+            const caseNumber = decodeURIComponent(caseMatch[1]);
+            // Try to resolve caseNumber → case ID and navigate immediately.
+            // This succeeds when the user is already authenticated.
+            resolveCaseAndNavigate(caseNumber)
+              .then((resolved) => {
+                if (!resolved) {
+                  // Not authenticated yet — store for AuthGate to handle after login.
+                  pendingCaseNumber = caseNumber;
+                }
+              })
+              .catch(() => {
+                pendingCaseNumber = caseNumber;
+              });
+          }
+        } catch {}
       }
     }
 
     // Incoming URL while app is running
     const sub = Linking.addEventListener("url", handleUrl);
-    // File opened while app was closed
+    // File opened while app was closed or via QR scan
     Linking.getInitialURL().then((url) => {
       if (url) handleUrl({ url });
     }).catch(() => {});

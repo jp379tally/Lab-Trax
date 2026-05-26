@@ -23,6 +23,10 @@ import {
 } from "./lib/desktop-installer-storage";
 import { parseRangeHeader } from "./lib/range-parser";
 import { recordDownloadInterruption } from "./lib/download-interruptions";
+import { db } from "@workspace/db";
+import { cases as casesTable } from "@workspace/db";
+import { eq, and } from "drizzle-orm";
+import { notDeleted } from "./lib/soft-delete";
 
 const app: Express = express();
 app.set("trust proxy", 1);
@@ -296,6 +300,29 @@ app.get(
 // Reject any other /downloads/* path with a clear 404 (legacy static mount removed).
 app.get("/downloads/{*rest}", (_req: Request, res: Response) => {
   res.status(404).json({ ok: false, message: "Not found." });
+});
+
+// Web fallback for QR-code scans: redirect to the desktop app with the case
+// pre-selected. No authentication required — the desktop app enforces auth
+// before revealing any case data.
+app.get("/cases/:caseNumber", async (req: Request, res: Response) => {
+  const { caseNumber } = req.params;
+  if (!caseNumber || typeof caseNumber !== "string") {
+    return res.redirect(302, "/desktop/");
+  }
+  try {
+    const rows = await db
+      .select({ id: casesTable.id })
+      .from(casesTable)
+      .where(and(eq(casesTable.caseNumber, caseNumber), notDeleted(casesTable)))
+      .limit(1);
+    if (rows.length > 0) {
+      return res.redirect(302, `/desktop/?caseId=${encodeURIComponent(rows[0].id)}`);
+    }
+  } catch (err) {
+    logger.warn({ err, caseNumber }, "QR web fallback case lookup failed");
+  }
+  return res.redirect(302, "/desktop/");
 });
 
 // ─── Stripe webhook — MUST be registered before express.json() ───────────────

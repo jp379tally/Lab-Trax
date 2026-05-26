@@ -9,6 +9,7 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  Copy,
   ExternalLink,
   Eye,
   EyeOff,
@@ -21,12 +22,14 @@ import {
   Pencil,
   Plus,
   Printer,
+  QrCode,
   ReceiptText,
   Search,
   Sparkles,
   Trash2,
   X,
 } from "lucide-react";
+import QRCodeSVG from "react-qr-code";
 import { apiFetch, getAccessToken, getApiOrigin } from "@/lib/api";
 import type {
   CaseAttachment,
@@ -1878,6 +1881,7 @@ export function CaseDrawer({
   const [routeStatus, setRouteStatus] = useState("");
   const [routeError, setRouteError] = useState<string | null>(null);
   const [routeSuccessMsg, setRouteSuccessMsg] = useState<string | null>(null);
+  const [qrLinkCopied, setQrLinkCopied] = useState(false);
 
   const [noteText, setNoteText] = useState("");
   const [shareWithProvider, setShareWithProvider] = useState(false);
@@ -3581,6 +3585,47 @@ export function CaseDrawer({
                   <p className="mt-1.5 text-xs text-green-600">{routeSuccessMsg}</p>
                 )}
               </section>
+
+              {/* ── QR code ── */}
+              {(() => {
+                const caseQrUrl = `${window.location.origin}/cases/${labCase.caseNumber}`;
+                return (
+                  <section className="border border-border rounded-lg p-4 flex items-start gap-4">
+                    <div className="shrink-0 bg-white p-1.5 rounded border border-border">
+                      <QRCodeSVG value={caseQrUrl} size={96} level="M" />
+                    </div>
+                    <div className="flex flex-col gap-2 min-w-0">
+                      <div>
+                        <div className="text-xs font-medium text-foreground flex items-center gap-1.5">
+                          <QrCode size={12} className="text-muted-foreground" />
+                          Case QR Code
+                        </div>
+                        <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
+                          Scan to open this case in LabTrax. Works with the mobile app or any camera.
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <code className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded font-mono truncate max-w-[220px]">
+                          {caseQrUrl}
+                        </code>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard.writeText(caseQrUrl).catch(() => {});
+                            setQrLinkCopied(true);
+                            setTimeout(() => setQrLinkCopied(false), 2000);
+                          }}
+                          className="h-6 px-2 rounded text-[11px] font-medium inline-flex items-center gap-1 border border-border bg-card hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors shrink-0"
+                          title="Copy case link"
+                        >
+                          {qrLinkCopied ? <Check size={11} className="text-green-600" /> : <Copy size={11} />}
+                          {qrLinkCopied ? "Copied" : "Copy"}
+                        </button>
+                      </div>
+                    </div>
+                  </section>
+                );
+              })()}
             </div>
             );
           })()}

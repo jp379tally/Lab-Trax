@@ -28,6 +28,7 @@ import {
   TrendingUp,
   X,
 } from "lucide-react";
+import QRCodeLib from "qrcode";
 import { apiFetch, ApiError, getApiOrigin, getAccessToken } from "@/lib/api";
 import type {
   CaseAttachment,
@@ -915,6 +916,7 @@ export function InvoiceEditor({
     selectedPresetTemplate ?? user?.practiceInvoiceTemplate,
   );
 
+
   // Pre-fetch lab logo as a data-URL for invoice PDFs (only when placement is active)
   const [logoDataUrl, setLogoDataUrl] = useState<string | null>(null);
   const invoicePlacementActive = !!(user?.practiceLogoplacements?.includes("invoices"));
@@ -976,6 +978,43 @@ export function InvoiceEditor({
   // case (caseId is required by the server endpoint).
   const caseIdForPricing =
     detailQuery.data?.caseId ?? invoice.caseId ?? null;
+
+  // Fetch the linked case to get its canonical caseNumber for the QR URL.
+  // Declared after caseIdForPricing so the query key is known at render time.
+  const linkedCaseQuery = useQuery({
+    queryKey: ["case-number-for-invoice", caseIdForPricing],
+    queryFn: () =>
+      apiFetch<{ caseNumber: string; id: string }>(`/cases/${caseIdForPricing}`),
+    enabled: !!caseIdForPricing,
+    staleTime: 300_000,
+  });
+  const linkedCaseNumber = linkedCaseQuery.data?.caseNumber ?? null;
+
+  // Pre-generate a QR code data URL for the invoice PDF. The QR encodes the
+  // case deep-link URL so recipients can scan to open the case in LabTrax.
+  // Uses the linked case's caseNumber so the URL resolves correctly even when
+  // the invoice number diverges from the case number.
+  const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string | null>(null);
+  useEffect(() => {
+    const caseNum = linkedCaseNumber ?? invoice.invoiceNumber;
+    if (!caseNum) {
+      setQrCodeDataUrl(null);
+      return;
+    }
+    const qrUrl = `${window.location.origin}/cases/${encodeURIComponent(caseNum)}`;
+    let cancelled = false;
+    QRCodeLib.toDataURL(qrUrl, { margin: 1, width: 120 })
+      .then((dataUrl) => {
+        if (!cancelled) setQrCodeDataUrl(dataUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setQrCodeDataUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [linkedCaseNumber, invoice.invoiceNumber]);
+
   const pricedItemsQuery = useQuery({
     queryKey: ["pricing-resolve-items", caseIdForPricing],
     queryFn: () =>
@@ -1333,6 +1372,8 @@ export function InvoiceEditor({
       logoPdfSize: (user?.practiceLogoSize as "small" | "medium" | "large" | null) ?? null,
       template: invoiceTemplate,
       extraImageDataUrls,
+      caseNumber: linkedCaseNumber ?? undefined,
+      qrCodeDataUrl,
     };
   }
 

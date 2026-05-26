@@ -176,6 +176,18 @@ export interface InvoicePdfOptions {
    * fails on a missing image.
    */
   extraImageDataUrls?: Record<string, string>;
+  /**
+   * The linked case's caseNumber (e.g. "25-001"). Used to build the QR URL
+   * embedded in the invoice PDF so the code resolves to the correct case even
+   * when the invoice number diverges from the case number.
+   */
+  caseNumber?: string | null;
+  /**
+   * PNG data URL of the QR code image to embed in the bottom-right corner
+   * of the invoice PDF. Encodes the case deep-link URL so recipients can
+   * scan to open the case directly in LabTrax.
+   */
+  qrCodeDataUrl?: string | null;
 }
 
 export interface BuiltInvoicePdf {
@@ -617,6 +629,27 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
     doc.setTextColor(0);
     const wrapped = doc.splitTextToSize(opts.notes.trim(), notesW);
     doc.text(wrapped, notesX, totalsY + 26);
+  }
+
+  // ── QR code ──────────────────────────────────────────────────────────
+  if (opts.qrCodeDataUrl) {
+    const qrSize = 60;
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const margin = boxes.items.x;
+    const qrX = pageWidth - margin - qrSize;
+    const qrY = pageHeight - margin - qrSize - 10;
+    try {
+      doc.addImage(opts.qrCodeDataUrl, "PNG", qrX, qrY, qrSize, qrSize);
+      doc.setFontSize(7);
+      doc.setTextColor(130);
+      const qrLabel = opts.caseNumber
+        ? `Scan to open case ${opts.caseNumber}`
+        : "Scan to open case";
+      doc.text(qrLabel, qrX + qrSize / 2, qrY + qrSize + 8, { align: "center" });
+    } catch {
+      // silently skip if image embedding fails
+    }
   }
 
   return doc;
