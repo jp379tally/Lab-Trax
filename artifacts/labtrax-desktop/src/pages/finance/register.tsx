@@ -120,8 +120,8 @@ function RegisterTable({
   const catNameById = new Map((cats.data || []).map((c) => [c.id, c.name]));
 
   const vendorsQuery = useVendors(organizationId);
-  const vendorTypeByName = useMemo(
-    () => new Map((vendorsQuery.data ?? []).map((v) => [v.name, v.vendorType])),
+  const vendorTypeById = useMemo(
+    () => new Map((vendorsQuery.data ?? []).map((v) => [v.id, v.vendorType])),
     [vendorsQuery.data]
   );
 
@@ -473,11 +473,11 @@ function RegisterTable({
                         <td className="py-2.5">
                           {r.payee ? (
                             <span className="flex items-center gap-1.5 min-w-0">
-                              {vendorTypeByName.has(r.payee) && (
+                              {r.vendorId && vendorTypeById.has(r.vendorId) && (
                                 <span
-                                  className={`shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full ${TYPE_BADGE_CLASS[vendorTypeByName.get(r.payee)!]}`}
+                                  className={`shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full ${TYPE_BADGE_CLASS[vendorTypeById.get(r.vendorId)!]}`}
                                 >
-                                  {TYPE_LABEL[vendorTypeByName.get(r.payee)!]}
+                                  {TYPE_LABEL[vendorTypeById.get(r.vendorId)!]}
                                 </span>
                               )}
                               <span className="truncate">{r.payee}</span>
