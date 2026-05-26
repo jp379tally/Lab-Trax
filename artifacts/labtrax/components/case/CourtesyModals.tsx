@@ -277,6 +277,87 @@ export function DeclineDateModal({ visible, onClose, note, onChangeNote, onDecli
   );
 }
 
+export type ProviderDateRequestModalProps = {
+  visible: boolean;
+  onClose: () => void;
+  date: string;
+  note: string;
+  onChangeDate: (v: string) => void;
+  onChangeNote: (v: string) => void;
+  onSubmit: (date: string, note: string) => void;
+  submitting?: boolean;
+};
+
+export function ProviderDateRequestModal({
+  visible,
+  onClose,
+  date,
+  note,
+  onChangeDate,
+  onChangeNote,
+  onSubmit,
+  submitting = false,
+}: ProviderDateRequestModalProps) {
+  return (
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        style={ctStyles.modalOverlay}
+      >
+        <View style={ctStyles.modalCard}>
+          <View style={ctStyles.modalHeader}>
+            <Text style={ctStyles.modalTitle}>Request Delivery Date Change</Text>
+            <Pressable onPress={onClose}>
+              <Ionicons name="close" size={24} color={Colors.light.textSecondary} />
+            </Pressable>
+          </View>
+          <Text style={ctStyles.modalSubtitle}>
+            Enter your preferred delivery date. The lab will accept, counter, or contact you.
+          </Text>
+          <Text style={ctStyles.inputLabel}>Preferred Date (MM/DD/YYYY)</Text>
+          <TextInput
+            style={ctStyles.dateInput}
+            value={date}
+            onChangeText={onChangeDate}
+            placeholder="03/15/2026"
+            placeholderTextColor="#94A3B8"
+            keyboardType="numbers-and-punctuation"
+          />
+          <Text style={ctStyles.inputLabel}>Note (optional)</Text>
+          <TextInput
+            style={ctStyles.messageInput}
+            value={note}
+            onChangeText={onChangeNote}
+            multiline
+            textAlignVertical="top"
+            placeholder="e.g. Patient appointment moved to next week"
+            placeholderTextColor="#94A3B8"
+          />
+          <Pressable
+            onPress={() => {
+              if (!submitting && date.trim()) {
+                onSubmit(date.trim(), note.trim());
+                if (Platform.OS !== "web") {
+                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                }
+              }
+            }}
+            style={({ pressed }) => [
+              ctStyles.sendBtn,
+              { backgroundColor: "#8B5CF6" },
+              pressed && { opacity: 0.85 },
+              (submitting || !date.trim()) && { opacity: 0.45 },
+            ]}
+          >
+            <Ionicons name="calendar-outline" size={20} color="#FFF" />
+            <Text style={ctStyles.sendBtnText}>{submitting ? "Sending…" : "Send Request"}</Text>
+          </Pressable>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
 const ctStyles = StyleSheet.create({
   modalOverlay: {
     flex: 1,

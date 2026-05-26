@@ -525,6 +525,8 @@ export const cases = pgTable(
     ),
     casePanBarcode: text("case_pan_barcode"),
     bridgeConnectors: text("bridge_connectors"),
+    deliveryDateProposalDate: timestamp("delivery_date_proposal_date", { withTimezone: true }),
+    deliveryDateProposalNote: text("delivery_date_proposal_note"),
   },
   (table) => ({
     caseNumberUnique: uniqueIndex("cases_case_number_unique").on(

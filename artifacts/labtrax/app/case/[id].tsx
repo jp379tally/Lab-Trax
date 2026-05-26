@@ -61,6 +61,7 @@ import {
   ExocadLinkModal,
   ProposeDateModal,
   DeclineDateModal,
+  ProviderDateRequestModal,
 } from "@/components/case/CourtesyModals";
 import { computeQuickEditPlan } from "@/lib/case-detail/quick-edit";
 import {
@@ -226,7 +227,14 @@ export default function CaseDetailScreen() {
     statusHistory?: TimelineEntry[];
     expectedDeliveryDate?: string | null;
     status?: string;
+    deliveryDateProposalDate?: string | null;
+    deliveryDateProposalNote?: string | null;
   } | null>(null);
+  const [showProviderDateRequestModal, setShowProviderDateRequestModal] = useState(false);
+  const [providerProposalDate, setProviderProposalDate] = useState("");
+  const [providerProposalNote, setProviderProposalNote] = useState("");
+  const [submittingProviderDateRequest, setSubmittingProviderDateRequest] = useState(false);
+  const [submittingLabResponse, setSubmittingLabResponse] = useState(false);
   const [showRouting, setShowRouting] = useState(false);
   const [showNoteModal, setShowNoteModal] = useState(false);
   const [showAddSomethingModal, setShowAddSomethingModal] = useState(false);
@@ -561,6 +569,8 @@ export default function CaseDetailScreen() {
           statusHistory: Array.isArray(json.statusHistory) ? json.statusHistory : [],
           expectedDeliveryDate: json.expectedDeliveryDate ?? null,
           status: json.status ?? null,
+          deliveryDateProposalDate: json.deliveryDateProposalDate ?? null,
+          deliveryDateProposalNote: json.deliveryDateProposalNote ?? null,
         });
       } catch {
         // Non-critical: canonical endpoint may not exist for legacy cases
@@ -1852,10 +1862,242 @@ export default function CaseDetailScreen() {
               expectedDeliveryDate={canonicalCaseData.expectedDeliveryDate ?? null}
             />
             {canonicalCaseData.expectedDeliveryDate && (
-              <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 8 }}>
-                Expected delivery: {new Date(canonicalCaseData.expectedDeliveryDate).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}
-              </Text>
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 8 }}>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, flex: 1 }}>
+                  Expected delivery: {new Date(canonicalCaseData.expectedDeliveryDate).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}
+                </Text>
+                {!canonicalCaseData.deliveryDateProposalDate && (
+                  <Pressable
+                    onPress={() => {
+                      setProviderProposalDate("");
+                      setProviderProposalNote("");
+                      setShowProviderDateRequestModal(true);
+                    }}
+                    style={({ pressed }) => [
+                      {
+                        flexDirection: "row" as const,
+                        alignItems: "center" as const,
+                        gap: 4,
+                        paddingVertical: 5,
+                        paddingHorizontal: 10,
+                        borderRadius: 8,
+                        backgroundColor: "#EDE9FE",
+                      },
+                      pressed && { opacity: 0.75 },
+                    ]}
+                  >
+                    <Ionicons name="calendar-outline" size={13} color="#7C3AED" />
+                    <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#7C3AED" }}>
+                      Request change
+                    </Text>
+                  </Pressable>
+                )}
+              </View>
             )}
+            {!canonicalCaseData.expectedDeliveryDate && (
+              <Pressable
+                onPress={() => {
+                  setProviderProposalDate("");
+                  setProviderProposalNote("");
+                  setShowProviderDateRequestModal(true);
+                }}
+                style={({ pressed }) => [
+                  {
+                    flexDirection: "row" as const,
+                    alignItems: "center" as const,
+                    gap: 6,
+                    paddingVertical: 8,
+                    paddingHorizontal: 12,
+                    borderRadius: 10,
+                    backgroundColor: "#EDE9FE",
+                    alignSelf: "flex-start" as const,
+                    marginTop: 10,
+                  },
+                  pressed && { opacity: 0.75 },
+                ]}
+              >
+                <Ionicons name="calendar-outline" size={15} color="#7C3AED" />
+                <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#7C3AED" }}>
+                  Request delivery date
+                </Text>
+              </Pressable>
+            )}
+            {canonicalCaseData.deliveryDateProposalDate && (
+              <View style={{
+                marginTop: 10,
+                padding: 10,
+                borderRadius: 10,
+                backgroundColor: "#FEF3C7",
+                borderWidth: 1,
+                borderColor: "#F59E0B",
+                flexDirection: "row",
+                alignItems: "flex-start",
+                gap: 8,
+              }}>
+                <Ionicons name="time-outline" size={16} color="#D97706" style={{ marginTop: 1 }} />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#92400E" }}>
+                    Date change requested
+                  </Text>
+                  <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#92400E", marginTop: 2 }}>
+                    Preferred: {new Date(canonicalCaseData.deliveryDateProposalDate).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}
+                  </Text>
+                  {canonicalCaseData.deliveryDateProposalNote ? (
+                    <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#78350F", marginTop: 2 }}>
+                      Note: {canonicalCaseData.deliveryDateProposalNote}
+                    </Text>
+                  ) : null}
+                </View>
+              </View>
+            )}
+          </View>
+        )}
+
+        {isAdmin && canonicalCaseData?.deliveryDateProposalDate && (
+          <View style={{
+            marginHorizontal: 16,
+            marginBottom: 12,
+            padding: 14,
+            borderRadius: 12,
+            backgroundColor: "#EDE9FE",
+            borderWidth: 1,
+            borderColor: "#C4B5FD",
+          }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 6 }}>
+              <Ionicons name="calendar-outline" size={18} color="#7C3AED" />
+              <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: "#5B21B6" }}>
+                Provider requested a date change
+              </Text>
+            </View>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "#5B21B6", marginBottom: 2 }}>
+              Preferred: {new Date(canonicalCaseData.deliveryDateProposalDate).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}
+            </Text>
+            {canonicalCaseData.deliveryDateProposalNote ? (
+              <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#6D28D9", marginBottom: 8 }}>
+                Note: {canonicalCaseData.deliveryDateProposalNote}
+              </Text>
+            ) : <View style={{ marginBottom: 8 }} />}
+            <View style={{ flexDirection: "row", gap: 8 }}>
+              <Pressable
+                disabled={submittingLabResponse}
+                onPress={async () => {
+                  if (submittingLabResponse) return;
+                  setSubmittingLabResponse(true);
+                  try {
+                    const proposedDate = canonicalCaseData.deliveryDateProposalDate!;
+                    await resilientFetch(`/api/cases/${encodeURIComponent(id as string)}`, {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        expectedDeliveryDate: proposedDate,
+                        clearDeliveryDateProposal: true,
+                      }),
+                    });
+                    setCanonicalCaseData((prev) =>
+                      prev ? {
+                        ...prev,
+                        expectedDeliveryDate: proposedDate,
+                        deliveryDateProposalDate: null,
+                        deliveryDateProposalNote: null,
+                      } : prev
+                    );
+                    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  } catch {
+                    // ignore
+                  } finally {
+                    setSubmittingLabResponse(false);
+                  }
+                }}
+                style={({ pressed }) => [
+                  {
+                    flex: 1,
+                    flexDirection: "row" as const,
+                    alignItems: "center" as const,
+                    justifyContent: "center" as const,
+                    gap: 6,
+                    paddingVertical: 10,
+                    borderRadius: 10,
+                    backgroundColor: "#7C3AED",
+                  },
+                  pressed && { opacity: 0.85 },
+                  submittingLabResponse && { opacity: 0.6 },
+                ]}
+              >
+                <Ionicons name="checkmark-circle-outline" size={16} color="#FFF" />
+                <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>
+                  {submittingLabResponse ? "Saving…" : "Accept"}
+                </Text>
+              </Pressable>
+              <Pressable
+                disabled={submittingLabResponse}
+                onPress={() => {
+                  setProposalDate(
+                    canonicalCaseData.deliveryDateProposalDate
+                      ? (() => {
+                          const d = new Date(canonicalCaseData.deliveryDateProposalDate!);
+                          return `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}/${d.getFullYear()}`;
+                        })()
+                      : ""
+                  );
+                  setProposalTime("");
+                  setActiveCourtesyId("lab_counter");
+                  setShowDateProposalModal(true);
+                }}
+                style={({ pressed }) => [
+                  {
+                    flex: 1,
+                    flexDirection: "row" as const,
+                    alignItems: "center" as const,
+                    justifyContent: "center" as const,
+                    gap: 6,
+                    paddingVertical: 10,
+                    borderRadius: 10,
+                    backgroundColor: "#F5F3FF",
+                    borderWidth: 1,
+                    borderColor: "#C4B5FD",
+                  },
+                  pressed && { opacity: 0.85 },
+                ]}
+              >
+                <Ionicons name="swap-horizontal-outline" size={16} color="#7C3AED" />
+                <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#7C3AED" }}>Counter</Text>
+              </Pressable>
+              <Pressable
+                disabled={submittingLabResponse}
+                onPress={async () => {
+                  if (submittingLabResponse) return;
+                  setSubmittingLabResponse(true);
+                  try {
+                    await resilientFetch(`/api/cases/${encodeURIComponent(id as string)}`, {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ clearDeliveryDateProposal: true }),
+                    });
+                    setCanonicalCaseData((prev) =>
+                      prev ? { ...prev, deliveryDateProposalDate: null, deliveryDateProposalNote: null } : prev
+                    );
+                    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  } catch {
+                    // ignore
+                  } finally {
+                    setSubmittingLabResponse(false);
+                  }
+                }}
+                style={({ pressed }) => [
+                  {
+                    paddingVertical: 10,
+                    paddingHorizontal: 14,
+                    borderRadius: 10,
+                    backgroundColor: "#F5F3FF",
+                    borderWidth: 1,
+                    borderColor: "#C4B5FD",
+                  },
+                  pressed && { opacity: 0.85 },
+                ]}
+              >
+                <Ionicons name="close-outline" size={18} color="#7C3AED" />
+              </Pressable>
+            </View>
           </View>
         )}
 
@@ -3702,8 +3944,48 @@ export default function CaseDetailScreen() {
         time={proposalTime}
         onChangeDate={setProposalDate}
         onChangeTime={setProposalTime}
-        onPropose={(d, t) => {
-          if (activeCourtesyId) {
+        onPropose={async (d, t) => {
+          if (activeCourtesyId === "lab_counter") {
+            // Counter-propose: set delivery date + clear the provider proposal
+            setSubmittingLabResponse(true);
+            try {
+              let isoDate: string | undefined;
+              if (d) {
+                const parts = d.split("/");
+                if (parts.length === 3) {
+                  isoDate = new Date(
+                    parseInt(parts[2], 10),
+                    parseInt(parts[0], 10) - 1,
+                    parseInt(parts[1], 10)
+                  ).toISOString();
+                }
+              }
+              await resilientFetch(`/api/cases/${encodeURIComponent(id as string)}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  expectedDeliveryDate: isoDate ?? null,
+                  clearDeliveryDateProposal: true,
+                }),
+              });
+              setCanonicalCaseData((prev) =>
+                prev ? {
+                  ...prev,
+                  expectedDeliveryDate: isoDate ?? prev.expectedDeliveryDate,
+                  deliveryDateProposalDate: null,
+                  deliveryDateProposalNote: null,
+                } : prev
+              );
+            } catch {
+              // ignore
+            } finally {
+              setSubmittingLabResponse(false);
+            }
+            setShowDateProposalModal(false);
+            setProposalDate("");
+            setProposalTime("");
+            setActiveCourtesyId("");
+          } else if (activeCourtesyId) {
             proposeDeliveryDate(caseItem.id, activeCourtesyId, d, t, currentUser || "lab");
             setShowDateProposalModal(false);
             setProposalDate("");
@@ -3724,6 +4006,59 @@ export default function CaseDetailScreen() {
             setShowDeclineModal(false);
             setDeclineNote("");
             setActiveCourtesyId("");
+          }
+        }}
+      />
+
+      <ProviderDateRequestModal
+        visible={showProviderDateRequestModal}
+        onClose={() => setShowProviderDateRequestModal(false)}
+        date={providerProposalDate}
+        note={providerProposalNote}
+        onChangeDate={setProviderProposalDate}
+        onChangeNote={setProviderProposalNote}
+        submitting={submittingProviderDateRequest}
+        onSubmit={async (dateStr, noteStr) => {
+          setSubmittingProviderDateRequest(true);
+          try {
+            let isoDate: string | undefined;
+            if (dateStr) {
+              const parts = dateStr.split("/");
+              if (parts.length === 3) {
+                isoDate = new Date(
+                  parseInt(parts[2], 10),
+                  parseInt(parts[0], 10) - 1,
+                  parseInt(parts[1], 10)
+                ).toISOString();
+              }
+            }
+            await resilientFetch(`/api/cases/${encodeURIComponent(id as string)}/delivery-date-request`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                proposedDate: isoDate,
+                note: noteStr || undefined,
+              }),
+            });
+            if (isoDate) {
+              setCanonicalCaseData((prev) =>
+                prev ? {
+                  ...prev,
+                  deliveryDateProposalDate: isoDate,
+                  deliveryDateProposalNote: noteStr || null,
+                } : prev
+              );
+            }
+            setShowProviderDateRequestModal(false);
+            setProviderProposalDate("");
+            setProviderProposalNote("");
+            if (Platform.OS !== "web") {
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            }
+          } catch {
+            // ignore — resilientFetch already handles auth errors
+          } finally {
+            setSubmittingProviderDateRequest(false);
           }
         }}
       />

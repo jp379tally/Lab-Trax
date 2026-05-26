@@ -2545,6 +2545,7 @@ const updateCaseSchema = z.object({
   providerLinkSource: z.enum(["ai_suggestion", "manual"]).optional(),
   bridgeConnectors: z.string().optional(),
   expectedDeliveryDate: z.union([z.string(), z.null()]).optional(),
+  clearDeliveryDateProposal: z.boolean().optional(),
 });
 
 router.patch(
@@ -2676,6 +2677,10 @@ router.patch(
       updates.expectedDeliveryDate = input.expectedDeliveryDate
         ? new Date(input.expectedDeliveryDate)
         : null;
+    if (input.clearDeliveryDateProposal) {
+      updates.deliveryDateProposalDate = null;
+      updates.deliveryDateProposalNote = null;
+    }
 
     const [updated] = await db
       .update(cases)
@@ -2767,6 +2772,75 @@ router.patch(
         caseId: found.id,
         actorUserId: (req as any).auth.userId,
       });
+    }
+
+    return ok(res, updated);
+  })
+);
+
+const deliveryDateRequestSchema = z.object({
+  proposedDate: z.string(),
+  note: z.string().max(500).optional(),
+});
+
+router.post(
+  "/:caseId/delivery-date-request",
+  asyncHandler(async (req, res) => {
+    const input = deliveryDateRequestSchema.parse(req.body);
+
+    const access = await assertCaseAccessWithMemberships(
+      (req as any).auth.userId,
+      req.params.caseId
+    );
+    const found = access.case;
+
+    if (!access.providerMembership) {
+      throw new HttpError(403, "Only provider members can request a delivery date change.");
+    }
+
+    const proposalDate = input.proposedDate ? new Date(input.proposedDate) : null;
+
+    const [updated] = await db
+      .update(cases)
+      .set({
+        deliveryDateProposalDate: proposalDate,
+        deliveryDateProposalNote: input.note ?? null,
+        updatedAt: new Date(),
+      })
+      .where(eq(cases.id, found.id))
+      .returning();
+
+    try {
+      const adminMembers = await db
+        .select({ userId: organizationMemberships.userId })
+        .from(organizationMemberships)
+        .where(
+          and(
+            eq(organizationMemberships.labId, found.labOrganizationId),
+            eq(organizationMemberships.status, "active"),
+            inArray(organizationMemberships.role, ["owner", "admin"])
+          )
+        );
+
+      if (adminMembers.length > 0) {
+        const dateStr = proposalDate
+          ? proposalDate.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
+          : null;
+        const patientName = `${found.patientFirstName} ${found.patientLastName}`.trim();
+        await db.insert(notifications).values(
+          adminMembers.map((m) => ({
+            userId: m.userId,
+            type: "delivery_date_request",
+            title: "Delivery Date Change Requested",
+            body: dateStr
+              ? `Provider requested ${dateStr} for ${patientName} (Case ${found.caseNumber})`
+              : `Provider requested a delivery date change for ${patientName} (Case ${found.caseNumber})`,
+            dataJson: { caseId: found.id, caseNumber: found.caseNumber },
+          }))
+        );
+      }
+    } catch {
+      // Best-effort — do not fail the response if notification insert fails.
     }
 
     return ok(res, updated);
