@@ -1,5 +1,5 @@
 import React from "react";
-import { View, StyleSheet } from "react-native";
+import { View, Text, StyleSheet } from "react-native";
 import Colors from "@/constants/colors";
 
 /**
@@ -34,6 +34,48 @@ const STATUS_PROGRESS: Record<string, number> = {
   ON_HOLD: 0.05,
 };
 
+const MS_PER_DAY = 1000 * 60 * 60 * 24;
+
+/**
+ * Returns a short due-date label and its color, or null when no label
+ * should be shown (no due date, complete case, or plenty of time remaining).
+ *
+ * Rules:
+ *  • Overdue by < 1 day  → "Due today"   red
+ *  • Overdue by ≥ 1 day  → "Xd overdue"  red
+ *  • Due within  0–24 h  → "Due today"   amber
+ *  • Due within 24–48 h  → "Due tomorrow" amber
+ *  • Otherwise           → null
+ */
+export function getDueDateLabel(
+  refDateStr: string | null | undefined,
+  isComplete: boolean,
+): { text: string; color: string } | null {
+  if (isComplete || !refDateStr) return null;
+
+  const refMs = new Date(refDateStr).getTime();
+  if (isNaN(refMs)) return null;
+
+  const diffMs = refMs - Date.now();
+
+  if (diffMs < 0) {
+    // Past due
+    const overdueDays = Math.floor(-diffMs / MS_PER_DAY);
+    const text = overdueDays === 0 ? "Due today" : `${overdueDays}d overdue`;
+    return { text, color: "#EF4444" };
+  }
+
+  if (diffMs < MS_PER_DAY) {
+    return { text: "Due today", color: Colors.light.warning };
+  }
+
+  if (diffMs < 2 * MS_PER_DAY) {
+    return { text: "Due tomorrow", color: Colors.light.warning };
+  }
+
+  return null;
+}
+
 type Props = {
   status: string;
   dueDate?: string | null;
@@ -58,11 +100,20 @@ export function CaseProgressBar({ status, dueDate, expectedDeliveryDate }: Props
 
   const fillPercent = Math.round(rawProgress * 100);
 
+  const dueDateLabel = getDueDateLabel(refDateStr, isComplete);
+
   return (
-    <View style={styles.track}>
-      <View
-        style={[styles.fill, { width: `${fillPercent}%` as any, backgroundColor: fillColor }]}
-      />
+    <View>
+      <View style={styles.track}>
+        <View
+          style={[styles.fill, { width: `${fillPercent}%` as any, backgroundColor: fillColor }]}
+        />
+      </View>
+      {dueDateLabel && (
+        <Text style={[styles.label, { color: dueDateLabel.color }]}>
+          {dueDateLabel.text}
+        </Text>
+      )}
     </View>
   );
 }
@@ -78,5 +129,10 @@ const styles = StyleSheet.create({
   fill: {
     height: "100%",
     borderRadius: 2,
+  },
+  label: {
+    fontSize: 11,
+    fontFamily: "Inter_600SemiBold",
+    marginTop: 4,
   },
 });
