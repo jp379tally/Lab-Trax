@@ -20,6 +20,7 @@ import {
   MoreHorizontal,
   Plus,
   Printer,
+  ScrollText,
   Search,
   Send,
   Sparkles,
@@ -27,8 +28,9 @@ import {
   TrendingUp,
   X,
 } from "lucide-react";
-import { apiFetch, ApiError } from "@/lib/api";
+import { apiFetch, ApiError, getApiOrigin, getAccessToken } from "@/lib/api";
 import type {
+  CaseAttachment,
   Invoice,
   InvoiceDisplayMetadata,
   InvoiceLineItem,
@@ -962,6 +964,32 @@ export function InvoiceEditor({
   });
   const pricedItems = pricedItemsQuery.data?.items ?? [];
 
+  const caseAttachmentsQuery = useQuery({
+    queryKey: ["case-attachments-for-invoice", caseIdForPricing],
+    queryFn: () =>
+      apiFetch<{ attachments: CaseAttachment[] }>(
+        `/cases/${caseIdForPricing}/attachments`,
+      ).then((r) => r.attachments),
+    enabled: !!caseIdForPricing,
+  });
+  const rxAttachments = caseAttachmentsQuery.data ?? [];
+  const [rxDropdownOpen, setRxDropdownOpen] = useState(false);
+
+  async function openAttachmentFile(att: CaseAttachment) {
+    const url = `${getApiOrigin()}/api/cases/${att.caseId}/attachments/${att.id}/file`;
+    const token = getAccessToken();
+    const res = await fetch(url, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) { window.alert("Could not open file."); return; }
+    const blob = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = blobUrl; a.target = "_blank"; a.rel = "noreferrer";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 30_000);
+  }
+
   const [invoiceNumber, setInvoiceNumber] = useState(invoice.invoiceNumber);
   const [statusValue, setStatusValue] = useState<string>(
     EDITABLE_STATUSES.includes(invoice.status as (typeof EDITABLE_STATUSES)[number])
@@ -1348,6 +1376,47 @@ export function InvoiceEditor({
             >
               <CreditCard size={14} /> Record Payment
             </button>
+            {rxAttachments.length === 1 && (
+              <button
+                type="button"
+                onClick={() => void openAttachmentFile(rxAttachments[0]!)}
+                title={`Preview Rx: ${rxAttachments[0]!.fileName}`}
+                className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary"
+              >
+                <ScrollText size={14} /> Rx
+              </button>
+            )}
+            {rxAttachments.length > 1 && (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setRxDropdownOpen((v) => !v)}
+                  title="Preview a case Rx file"
+                  className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary"
+                >
+                  <ScrollText size={14} /> Rx ({rxAttachments.length})
+                </button>
+                {rxDropdownOpen && (
+                  <div
+                    className="absolute right-0 mt-1 z-50 w-64 bg-card border border-border rounded-md shadow-lg py-1 text-sm"
+                    onMouseLeave={() => setRxDropdownOpen(false)}
+                  >
+                    {rxAttachments.map((att) => (
+                      <button
+                        key={att.id}
+                        type="button"
+                        onClick={() => { setRxDropdownOpen(false); void openAttachmentFile(att); }}
+                        className="w-full text-left px-3 py-1.5 hover:bg-secondary truncate flex items-center gap-2"
+                        title={att.fileName}
+                      >
+                        <ScrollText size={13} className="shrink-0 text-muted-foreground" />
+                        <span className="truncate">{att.fileName}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             <button
               type="button"
               onClick={() => {
