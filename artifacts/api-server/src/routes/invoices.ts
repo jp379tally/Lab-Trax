@@ -47,6 +47,7 @@ import {
   materialToPriceKey,
   resolveItemLabel,
 } from "../lib/pricing";
+import { invoiceDueDate } from "../lib/invoice-due-date";
 
 const router = Router();
 router.use(requireAuth);
@@ -620,7 +621,9 @@ router.post(
         providerOrganizationId: input.providerOrganizationId,
         status: "draft",
         issuedAt: input.issuedAt ? new Date(input.issuedAt) : new Date(),
-        dueAt: input.dueAt ? new Date(input.dueAt) : null,
+        dueAt: input.dueAt
+          ? new Date(input.dueAt)
+          : invoiceDueDate(input.issuedAt ? new Date(input.issuedAt) : new Date()),
         createdByUserId: (req as any).auth.userId,
         updatedByUserId: (req as any).auth.userId,
       })
@@ -1128,8 +1131,15 @@ router.post(
         updatedByUserId: (req as any).auth.userId,
         // Empty drafts stay in "draft" with no issuedAt; only invoices
         // with at least one line item are auto-issued to "open".
+        // Preserve an existing dueAt when re-generating (onConflictDoNothing
+        // may have returned the pre-existing invoice row); only default to
+        // 10th-of-next-month when dueAt is not already set.
         ...(hasRestorations
-          ? { issuedAt: new Date(), status: "open" as const }
+          ? {
+              issuedAt: new Date(),
+              status: "open" as const,
+              dueAt: targetInvoice.dueAt ?? invoiceDueDate(new Date()),
+            }
           : {}),
       })
       .where(eq(invoices.id, targetInvoice.id))

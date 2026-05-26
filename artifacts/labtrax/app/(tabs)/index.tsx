@@ -3163,6 +3163,11 @@ function AdminDashboard() {
             <View style={{ marginTop: 6, borderWidth: 2, borderColor: "#333", paddingVertical: 8, paddingHorizontal: 24, borderRadius: 2 }}>
               <Text style={{ fontSize: 28, fontFamily: "Inter_700Bold", color: "#333" }}>{dueDateStr}</Text>
             </View>
+            {!!inv.issuedAt && (
+              <Text style={{ marginTop: 8, fontSize: 11, fontFamily: "Inter_400Regular", color: "#888", textAlign: "center" }}>
+                {`Will be included on your ${new Date(inv.issuedAt).toLocaleString("en-US", { month: "long", year: "numeric", timeZone: "UTC" })} statement, generated at end of month.`}
+              </Text>
+            )}
           </View>
 
           <View style={{ borderBottomWidth: 1, borderBottomColor: "#333" }}>

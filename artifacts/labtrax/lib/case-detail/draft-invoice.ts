@@ -5,6 +5,7 @@
 
 import { Invoice, LabCase, Client, PricingTier } from "../data";
 import { resolvePriceForCase } from "../pricing";
+import { invoiceDueDate } from "../invoice-due-date";
 
 export function findExistingInvoice(
   caseItem: Pick<LabCase, "id" | "invoiceId" | "patientName" | "doctorName">,
@@ -72,9 +73,7 @@ export function buildDraftInvoice(input: {
     credits: caseItem.isRemake && caseItem.price === 0 ? total : 0,
     status: caseItem.status === "COMPLETE" ? ("paid" as const) : ("open" as const),
     issuedAt: caseItem.createdAt,
-    dueAt: caseItem.dueDate
-      ? new Date(caseItem.dueDate + "T00:00:00").getTime()
-      : caseItem.createdAt + 30 * 86400000,
+    dueAt: invoiceDueDate(new Date(caseItem.createdAt)).getTime(),
     billTo: safeDoctorName,
     patientName: safePatientName || caseItem.patientInitials,
     caseType: caseItem.caseType || "Restoration",

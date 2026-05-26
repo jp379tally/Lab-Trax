@@ -2,6 +2,7 @@
 // the cases tab + case detail screen so they're unit-testable.
 import type { Client, Invoice, LabCase, PricingTier } from "./data";
 import { resolvePriceForCase } from "./pricing";
+import { invoiceDueDate } from "./invoice-due-date";
 
 // Prefer explicit case.invoiceId; otherwise legacy "same patient + same
 // doctor surname" heuristic.
@@ -74,9 +75,7 @@ export function buildSyntheticInvoice(
     credits: caseItem.isRemake && caseItem.price === 0 ? total : 0,
     status: caseItem.status === "COMPLETE" ? "paid" : "open",
     issuedAt: caseItem.createdAt,
-    dueAt: caseItem.dueDate
-      ? new Date(caseItem.dueDate + "T00:00:00").getTime()
-      : caseItem.createdAt + 30 * 86400000,
+    dueAt: invoiceDueDate(new Date(caseItem.createdAt)).getTime(),
     billTo: caseItem.doctorName,
     patientName: caseItem.patientName || caseItem.patientInitials,
     caseType: caseItem.caseType || "Restoration",

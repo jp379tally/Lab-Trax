@@ -5,6 +5,7 @@ import {
   DEFAULT_INVOICE_TEMPLATE,
   type InvoiceTemplate,
 } from "./invoice-template";
+import { statementPeriodLabel } from "./invoice-due-date";
 import {
   coerceStatementTemplate,
   DEFAULT_STATEMENT_TEMPLATE,
@@ -518,6 +519,20 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
     doc.setTextColor(0);
     doc.text(value, x, m.y + 14);
   });
+
+  // ── Statement period note (below meta row) ───────────────────────────
+  if (opts.issuedAt) {
+    const period = statementPeriodLabel(opts.issuedAt);
+    doc.setFontSize(7.5);
+    doc.setTextColor(100);
+    doc.text(
+      `Will be included on your ${period} statement, generated at end of month.`,
+      m.x,
+      m.y + 28,
+      { maxWidth: m.w },
+    );
+    doc.setTextColor(0);
+  }
 
   // ── Case notes (above items) ─────────────────────────────────────────
   let postNotesY = boxes.items.y;

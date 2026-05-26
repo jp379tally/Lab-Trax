@@ -1695,6 +1695,17 @@ export function InvoiceEditor({
                 onChange={(e) => setDueAt(e.target.value)}
                 className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
               />
+              {issuedAt && (
+                <p className="mt-1 text-[11px] text-muted-foreground leading-snug">
+                  Will be included on the{" "}
+                  {new Date(issuedAt).toLocaleString("en-US", {
+                    month: "long",
+                    year: "numeric",
+                    timeZone: "UTC",
+                  })}{" "}
+                  statement, generated at end of month.
+                </p>
+              )}
             </div>
             {(availablePresets.length > 0 || layoutPresetId != null) && (
               <div>
