@@ -2180,6 +2180,19 @@ router.post(
   }),
 );
 
+router.post(
+  "/items/import",
+  asyncHandler(async (req, res) => {
+    const input = z.object({
+      organizationId: z.string().min(1),
+      records: z.array(importRecordSchema).min(1).max(1000),
+    }).parse(req.body);
+    await requireAnyRole(uid(req), input.organizationId, BILLING_ROLES);
+    const imported = await importVendorRecords(input.organizationId, "item", input.records);
+    return ok(res, { imported });
+  }),
+);
+
 router.patch(
   "/vendors/:vendorId",
   asyncHandler(async (req, res) => {

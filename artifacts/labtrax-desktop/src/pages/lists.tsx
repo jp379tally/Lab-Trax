@@ -486,7 +486,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
                 <Download size={14} />
                 Export CSV
               </button>
-              {(activeTab === "vendor" || activeTab === "employee") && (
+              {(activeTab === "vendor" || activeTab === "employee" || activeTab === "item") && (
                 <button
                   type="button"
                   onClick={() => setShowImportDialog(true)}
@@ -539,7 +539,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
         />
       )}
 
-      {showImportDialog && (activeTab === "vendor" || activeTab === "employee") && (
+      {showImportDialog && (activeTab === "vendor" || activeTab === "employee" || activeTab === "item") && (
         <ImportCsvDialog
           organizationId={organizationId}
           vendorType={activeTab}
@@ -1420,7 +1420,7 @@ function ImportCsvDialog({
   onSuccess,
 }: {
   organizationId: string;
-  vendorType: "vendor" | "employee";
+  vendorType: VendorType;
   onClose: () => void;
   onSuccess: (count: number) => void;
 }) {
@@ -1509,7 +1509,9 @@ function ImportCsvDialog({
       const endpoint =
         vendorType === "employee"
           ? "/finance/employees/import"
-          : "/finance/vendors/import";
+          : vendorType === "item"
+            ? "/finance/items/import"
+            : "/finance/vendors/import";
       const result = await apiFetch<{ imported: number; skipped: number }>(endpoint, {
         method: "POST",
         body: JSON.stringify({ organizationId, records }),
