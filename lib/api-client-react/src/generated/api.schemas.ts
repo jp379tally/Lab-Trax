@@ -1022,6 +1022,32 @@ export interface TwoFactorChallengeResult {
   data?: TwoFactorChallengeResultData;
 }
 
+export type AiChatMessageRole =
+  (typeof AiChatMessageRole)[keyof typeof AiChatMessageRole];
+
+export const AiChatMessageRole = {
+  user: "user",
+  assistant: "assistant",
+} as const;
+
+export interface AiChatMessage {
+  role: AiChatMessageRole;
+  /** @maxLength 2000 */
+  content: string;
+}
+
+export interface AiChatInput {
+  /**
+   * @minItems 1
+   * @maxItems 20
+   */
+  messages: AiChatMessage[];
+}
+
+export interface AiChatResult {
+  reply: string;
+}
+
 export type DisableTwoFactor200Data = {
   disabled?: boolean;
 };

@@ -8,6 +8,29 @@
 import * as zod from "zod";
 
 /**
+ * @summary Send a message to the context-aware AI assistant
+ */
+export const postAiChatBodyMessagesItemContentMax = 2000;
+
+export const postAiChatBodyMessagesMax = 20;
+
+export const PostAiChatBody = zod.object({
+  messages: zod
+    .array(
+      zod.object({
+        role: zod.enum(["user", "assistant"]),
+        content: zod.string().max(postAiChatBodyMessagesItemContentMax),
+      }),
+    )
+    .min(1)
+    .max(postAiChatBodyMessagesMax),
+});
+
+export const PostAiChatResponse = zod.object({
+  reply: zod.string(),
+});
+
+/**
  * @summary Get current 2FA status for the authenticated user
  */
 export const GetTwoFactorStatusResponse = zod.object({

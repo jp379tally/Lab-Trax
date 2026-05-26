@@ -8,14 +8,15 @@ import {
   Pressable,
   Platform,
   ActivityIndicator,
+  ScrollView,
 } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { useApp } from "@/lib/app-context";
+import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
-import { getApiUrl } from "@/lib/query-client";
+import { resilientFetch } from "@/lib/query-client";
 
 interface ChatMsg {
   id: string;
@@ -24,47 +25,73 @@ interface ChatMsg {
   timestamp: number;
 }
 
+const LAB_SUGGESTED_PROMPTS = [
+  "What cases are due this week?",
+  "What's our average turnaround time?",
+  "What's Dr. Smith's price for zirconia?",
+  "Show me all rush cases",
+];
+
+const PROVIDER_SUGGESTED_PROMPTS = [
+  "Where is my patient's case?",
+  "What cases are due this week?",
+  "What do you charge me for PFM crowns?",
+  "What's the status of my recent cases?",
+];
+
 export default function ChatScreen() {
   const insets = useSafeAreaInsets();
-  const { cases } = useApp();
+  const { userType } = useAuth();
+  const isProvider = userType === "provider";
+
+  const welcomeMessage = isProvider
+    ? "Hi! I'm LabTrax's AI assistant. I can look up your cases across all your linked labs and answer pricing questions. How can I help?"
+    : "Hi! I'm LabTrax's AI assistant. I can help you with case status, pricing, turnaround times, and lab info. How can I help?";
+
   const [messages, setMessages] = useState<ChatMsg[]>([
     {
       id: "welcome",
       role: "assistant",
-      content: "Hi! I'm LabTrax's AI assistant. I can help you with case inquiries, material information, and lab workflow questions. How can I help you today?",
+      content: welcomeMessage,
       timestamp: Date.now(),
     },
   ]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [promptsDismissed, setPromptsDismissed] = useState(false);
   const flatListRef = useRef<FlatList>(null);
+
+  const suggestedPrompts = isProvider ? PROVIDER_SUGGESTED_PROMPTS : LAB_SUGGESTED_PROMPTS;
+  const showPrompts = !promptsDismissed && messages.length === 1;
 
   function generateId() {
     return Date.now().toString() + Math.random().toString(36).substr(2, 9);
   }
 
-  async function handleSend() {
-    if (!input.trim() || sending) return;
+  async function sendMessage(text: string) {
+    if (!text.trim() || sending) return;
+    setPromptsDismissed(true);
+
     const userMsg: ChatMsg = {
       id: generateId(),
       role: "user",
-      content: input.trim(),
+      content: text.trim(),
       timestamp: Date.now(),
     };
-    setMessages((prev) => [userMsg, ...prev]);
+    const nextMessages = [...messages, userMsg];
+    setMessages(nextMessages);
     setInput("");
     setSending(true);
 
     try {
-      const caseContext = cases.slice(0, 10).map((c) =>
-        `Case ${c.caseNumber}: Patient ${c.patientName}, Dr. ${c.doctorName}, Status: ${c.status}, Material: ${c.material}, Teeth: ${c.toothIndices}, Shade: ${c.shade}, Due: ${c.dueDate}${c.isRush ? " (RUSH)" : ""}`
-      ).join("\n");
+      const apiMessages = nextMessages
+        .filter((m) => m.id !== "welcome")
+        .map((m) => ({ role: m.role, content: m.content }));
 
-      const { resilientFetch } = await import("@/lib/query-client");
       const response = await resilientFetch("/api/ai-chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: userMsg.content, caseContext }),
+        body: JSON.stringify({ messages: apiMessages }),
       });
 
       if (response.ok) {
@@ -75,27 +102,49 @@ export default function ChatScreen() {
           content: data.reply || "I couldn't process that request.",
           timestamp: Date.now(),
         };
-        setMessages((prev) => [assistantMsg, ...prev]);
+        setMessages((prev) => [...prev, assistantMsg]);
+      } else if (response.status === 503) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: generateId(),
+            role: "assistant",
+            content: "AI assistant is not configured on this server. Please contact your administrator.",
+            timestamp: Date.now(),
+          },
+        ]);
       } else {
-        const errorMsg: ChatMsg = {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: generateId(),
+            role: "assistant",
+            content: "Sorry, I'm having trouble connecting right now. Please try again.",
+            timestamp: Date.now(),
+          },
+        ]);
+      }
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        {
           id: generateId(),
           role: "assistant",
-          content: "Sorry, I'm having trouble connecting right now. Please try again.",
+          content: "Connection error. Please check your network and try again.",
           timestamp: Date.now(),
-        };
-        setMessages((prev) => [errorMsg, ...prev]);
-      }
-    } catch (err) {
-      const errorMsg: ChatMsg = {
-        id: generateId(),
-        role: "assistant",
-        content: "Connection error. Please check your network and try again.",
-        timestamp: Date.now(),
-      };
-      setMessages((prev) => [errorMsg, ...prev]);
+        },
+      ]);
     } finally {
       setSending(false);
     }
+  }
+
+  function handleSend() {
+    sendMessage(input);
+  }
+
+  function handleSuggestedPrompt(prompt: string) {
+    sendMessage(prompt);
   }
 
   function renderMessage({ item }: { item: ChatMsg }) {
@@ -139,29 +188,58 @@ export default function ChatScreen() {
           data={messages}
           keyExtractor={(item) => item.id}
           renderItem={renderMessage}
-          inverted
           contentContainerStyle={styles.messagesList}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="interactive"
+          onContentSizeChange={() =>
+            flatListRef.current?.scrollToEnd({ animated: true })
+          }
+          ListFooterComponent={
+            showPrompts ? (
+              <View style={styles.promptsContainer}>
+                <Text style={styles.promptsLabel}>Try asking:</Text>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.promptsScroll}
+                >
+                  {suggestedPrompts.map((p) => (
+                    <Pressable
+                      key={p}
+                      onPress={() => handleSuggestedPrompt(p)}
+                      style={({ pressed }) => [styles.promptChip, pressed && { opacity: 0.7 }]}
+                    >
+                      <Text style={styles.promptChipText}>{p}</Text>
+                    </Pressable>
+                  ))}
+                </ScrollView>
+              </View>
+            ) : null
+          }
         />
 
         {sending && (
           <View style={styles.typingIndicator}>
             <ActivityIndicator size="small" color={Colors.light.tint} />
-            <Text style={styles.typingText}>AI is thinking...</Text>
+            <Text style={styles.typingText}>AI is thinking…</Text>
           </View>
         )}
 
-        <View style={[styles.inputBar, { paddingBottom: Platform.OS === "web" ? 34 + 8 : Math.max(insets.bottom, 8) + 8 }]}>
+        <View
+          style={[
+            styles.inputBar,
+            { paddingBottom: Platform.OS === "web" ? 34 + 8 : Math.max(insets.bottom, 8) + 8 },
+          ]}
+        >
           <TextInput
             style={styles.textInput}
             value={input}
             onChangeText={setInput}
-            placeholder="Ask about a case..."
+            placeholder={isProvider ? "Ask about a case or pricing…" : "Ask about a case, pricing, or lab…"}
             placeholderTextColor={Colors.light.textTertiary}
             multiline
-            maxLength={500}
+            maxLength={1000}
             returnKeyType="send"
             onSubmitEditing={handleSend}
             blurOnSubmit={false}
@@ -175,7 +253,11 @@ export default function ChatScreen() {
               pressed && { opacity: 0.7 },
             ]}
           >
-            <Ionicons name="send" size={18} color={!input.trim() || sending ? Colors.light.textTertiary : "#FFF"} />
+            <Ionicons
+              name="send"
+              size={18}
+              color={!input.trim() || sending ? Colors.light.textTertiary : "#FFF"}
+            />
           </Pressable>
         </View>
       </KeyboardAvoidingView>
@@ -219,6 +301,7 @@ const styles = StyleSheet.create({
   messagesList: {
     paddingHorizontal: 16,
     paddingVertical: 12,
+    flexGrow: 1,
   },
   messageBubbleWrap: {
     flexDirection: "row",
@@ -263,6 +346,34 @@ const styles = StyleSheet.create({
   },
   userText: {
     color: "#FFF",
+  },
+  promptsContainer: {
+    paddingVertical: 12,
+    gap: 8,
+  },
+  promptsLabel: {
+    fontSize: 12,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.textSecondary,
+    paddingHorizontal: 4,
+    marginBottom: 4,
+  },
+  promptsScroll: {
+    gap: 8,
+    paddingBottom: 4,
+  },
+  promptChip: {
+    backgroundColor: Colors.light.tintLight,
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: Colors.light.tint + "33",
+  },
+  promptChipText: {
+    fontSize: 13,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.tint,
   },
   typingIndicator: {
     flexDirection: "row",

@@ -20,6 +20,7 @@ import {
   Receipt,
   Search,
   Settings,
+  Sparkles,
   Tag,
   Upload,
   Users,
@@ -29,6 +30,7 @@ import {
   HardDrive,
   Zap,
 } from "lucide-react";
+import { AiChatPanel } from "./AiChatPanel";
 import { useAuth } from "@/lib/auth-context";
 import { useUploads } from "@/lib/uploads-context";
 import { Logo } from "./Logo";
@@ -132,6 +134,7 @@ export function AppLayout({ children }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [uploadsOpen, setUploadsOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [aiPanelOpen, setAiPanelOpen] = useState(false);
   const [notificationItems, setNotificationItems] = useState<Notification[]>([]);
   const [notifLoading, setNotifLoading] = useState(false);
   const [hasUnread, setHasUnread] = useState(false);
@@ -496,6 +499,21 @@ export function AppLayout({ children }: Props) {
             )}
           </div>
 
+          {/* AI Assistant */}
+          <button
+            type="button"
+            onClick={() => setAiPanelOpen((v) => !v)}
+            className={`relative h-9 w-9 rounded-md flex items-center justify-center transition-colors ${
+              aiPanelOpen
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+            }`}
+            aria-label="AI Assistant"
+            title="AI Assistant"
+          >
+            <Sparkles size={17} />
+          </button>
+
           {/* Notification Bell */}
           <div className="relative">
             <button
@@ -613,6 +631,7 @@ export function AppLayout({ children }: Props) {
         <main className="flex-1 overflow-y-auto scrollbar-thin">{children}</main>
       </div>
       <MessengerDock />
+      {aiPanelOpen && <AiChatPanel onClose={() => setAiPanelOpen(false)} />}
     </div>
   );
 }

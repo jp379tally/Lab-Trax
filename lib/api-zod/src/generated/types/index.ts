@@ -8,6 +8,10 @@
 
 export * from "./acknowledgeAiReview200";
 export * from "./acknowledgeAiReview200Data";
+export * from "./aiChatInput";
+export * from "./aiChatMessage";
+export * from "./aiChatMessageRole";
+export * from "./aiChatResult";
 export * from "./backupRunRequest";
 export * from "./backupRunRequestDestination";
 export * from "./backupRunResult";

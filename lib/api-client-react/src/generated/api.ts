@@ -18,6 +18,8 @@ import type {
 
 import type {
   AcknowledgeAiReview200,
+  AiChatInput,
+  AiChatResult,
   BackupRunRequest,
   BackupRunResult,
   BackupScheduleInput,
@@ -115,6 +117,92 @@ type AwaitedInput<T> = PromiseLike<T> | T;
 type Awaited<O> = O extends AwaitedInput<infer T> ? T : never;
 
 type SecondParameter<T extends (...args: never) => unknown> = Parameters<T>[1];
+
+/**
+ * @summary Send a message to the context-aware AI assistant
+ */
+export const getPostAiChatUrl = () => {
+  return `/api/ai-chat`;
+};
+
+export const postAiChat = async (
+  aiChatInput: AiChatInput,
+  options?: RequestInit,
+): Promise<AiChatResult> => {
+  return customFetch<AiChatResult>(getPostAiChatUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(aiChatInput),
+  });
+};
+
+export const getPostAiChatMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof postAiChat>>,
+    TError,
+    { data: BodyType<AiChatInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof postAiChat>>,
+  TError,
+  { data: BodyType<AiChatInput> },
+  TContext
+> => {
+  const mutationKey = ["postAiChat"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof postAiChat>>,
+    { data: BodyType<AiChatInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return postAiChat(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type PostAiChatMutationResult = NonNullable<
+  Awaited<ReturnType<typeof postAiChat>>
+>;
+export type PostAiChatMutationBody = BodyType<AiChatInput>;
+export type PostAiChatMutationError = ErrorType<void>;
+
+/**
+ * @summary Send a message to the context-aware AI assistant
+ */
+export const usePostAiChat = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof postAiChat>>,
+    TError,
+    { data: BodyType<AiChatInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof postAiChat>>,
+  TError,
+  { data: BodyType<AiChatInput> },
+  TContext
+> => {
+  return useMutation(getPostAiChatMutationOptions(options));
+};
 
 /**
  * @summary Get current 2FA status for the authenticated user

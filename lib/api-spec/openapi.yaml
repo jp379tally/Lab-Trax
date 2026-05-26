@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: ai
+    description: AI assistant operations (LabTrax)
   - name: cases
     description: Case operations (LabTrax)
   - name: doctors
@@ -27,6 +29,28 @@ tags:
   - name: messenger
     description: Real-time direct-message operations (LabTrax)
 paths:
+  /ai-chat:
+    post:
+      operationId: postAiChat
+      tags: [ai]
+      summary: Send a message to the context-aware AI assistant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AiChatInput"
+      responses:
+        "200":
+          description: AI assistant reply
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiChatResult"
+        "400":
+          description: Bad request
+        "503":
+          description: AI not configured
   /auth/2fa/status:
     get:
       operationId: getTwoFactorStatus
@@ -2609,4 +2633,30 @@ components:
             success: { type: boolean }
             accessToken: { type: string }
             refreshToken: { type: string }
+    AiChatMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+          maxLength: 2000
+    AiChatInput:
+      type: object
+      required: [messages]
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/AiChatMessage"
+          minItems: 1
+          maxItems: 20
+    AiChatResult:
+      type: object
+      required: [reply]
+      properties:
+        reply:
+          type: string
 
