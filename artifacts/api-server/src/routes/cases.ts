@@ -1689,8 +1689,30 @@ router.get(
       }
     }
 
-    if (!enriched.length) return ok(res, []);
-    return ok(res, enriched);
+    // Apply optional query filters (search, status, barcode)
+    const rawSearch = String(req.query.search ?? "").trim().toLowerCase();
+    const rawStatus = String(req.query.status ?? "").trim().toLowerCase();
+    const rawBarcode = String(req.query.barcode ?? "").trim();
+
+    let filtered = enriched;
+    if (rawSearch) {
+      filtered = filtered.filter((c) => {
+        const fn = String(c.patientFirstName ?? "").toLowerCase();
+        const ln = String(c.patientLastName ?? "").toLowerCase();
+        const dr = String(c.doctorName ?? "").toLowerCase();
+        const cn = String(c.caseNumber ?? "").toLowerCase();
+        return fn.includes(rawSearch) || ln.includes(rawSearch) || dr.includes(rawSearch) || cn.includes(rawSearch);
+      });
+    }
+    if (rawStatus) {
+      filtered = filtered.filter((c) => String(c.status ?? "").toLowerCase() === rawStatus);
+    }
+    if (rawBarcode) {
+      filtered = filtered.filter((c) => String(c.casePanBarcode ?? "") === rawBarcode);
+    }
+
+    if (!filtered.length) return ok(res, []);
+    return ok(res, filtered);
   })
 );
 
