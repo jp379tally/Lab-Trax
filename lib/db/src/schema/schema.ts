@@ -1763,6 +1763,7 @@ export const vendors = pgTable(
     email: text("email"),
     website: text("website"),
     notes: text("notes"),
+    unitPrice: decimal("unit_price", { precision: 10, scale: 2 }),
     vendorType: text("vendor_type", { enum: ["vendor", "employee", "item"] }).notNull().default("vendor"),
     isActive: boolean("is_active").default(true).notNull(),
     createdAt: createdAt(),

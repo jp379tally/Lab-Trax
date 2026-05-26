@@ -1387,11 +1387,20 @@ const VENDOR_FIELDS: { key: string; label: string; required: boolean }[] = [
   { key: "notes", label: "Notes", required: false },
 ];
 
-function autoDetectMapping(headers: string[]): Record<string, number> {
+const ITEM_FIELDS: { key: string; label: string; required: boolean }[] = [
+  ...VENDOR_FIELDS,
+  { key: "unitPrice", label: "Unit Price", required: false },
+];
+
+function getFieldsForType(vendorType: VendorType) {
+  return vendorType === "item" ? ITEM_FIELDS : VENDOR_FIELDS;
+}
+
+function autoDetectMapping(headers: string[], vendorType: VendorType): Record<string, number> {
   const mapping: Record<string, number> = {};
   const normalize = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
   const aliases: Record<string, string[]> = {
-    name: ["name", "fullname", "vendorname", "employeename", "company", "companyname", "businessname"],
+    name: ["name", "fullname", "vendorname", "employeename", "itemname", "product", "productname", "company", "companyname", "businessname"],
     phone: ["phone", "telephone", "phonenumber", "mobile", "cell", "fax"],
     email: ["email", "emailaddress", "mail"],
     address: ["address", "streetaddress", "street", "addr"],
@@ -1400,8 +1409,9 @@ function autoDetectMapping(headers: string[]): Record<string, number> {
     zip: ["zip", "zipcode", "postalcode", "postal"],
     website: ["website", "url", "web", "homepage", "site"],
     notes: ["notes", "note", "comments", "comment", "description", "memo"],
+    unitPrice: ["unitprice", "price", "cost", "unitcost", "rate", "amount", "unitamount", "priceeach", "costeach"],
   };
-  for (const field of VENDOR_FIELDS) {
+  for (const field of getFieldsForType(vendorType)) {
     const fieldAliases = aliases[field.key] ?? [field.key];
     const idx = headers.findIndex((h) => fieldAliases.includes(normalize(h)));
     if (idx !== -1) mapping[field.key] = idx;
@@ -1448,7 +1458,7 @@ function ImportCsvDialog({
       }
       setCsvHeaders(headers);
       setCsvRows(rows.filter((r) => r.some((c) => c.trim())));
-      setMapping(autoDetectMapping(headers));
+      setMapping(autoDetectMapping(headers, vendorType));
       setImportError(null);
       setStep("mapping");
     };
@@ -1485,7 +1495,7 @@ function ImportCsvDialog({
       .map((row) => {
         const name = getMappedValue(row, "name").trim();
         if (!name) return null;
-        return {
+        const record: Record<string, string | null> & { name: string } = {
           name,
           phone: getMappedValue(row, "phone") || null,
           email: getMappedValue(row, "email") || null,
@@ -1496,6 +1506,10 @@ function ImportCsvDialog({
           website: getMappedValue(row, "website") || null,
           notes: getMappedValue(row, "notes") || null,
         };
+        if (vendorType === "item") {
+          record.unitPrice = getMappedValue(row, "unitPrice") || null;
+        }
+        return record;
       })
       .filter(Boolean) as Array<{ name: string } & Record<string, string | null>>;
 
@@ -1609,7 +1623,7 @@ function ImportCsvDialog({
                       </tr>
                     </thead>
                     <tbody>
-                      {VENDOR_FIELDS.map((field) => {
+                      {getFieldsForType(vendorType).map((field) => {
                         const colIdx = mapping[field.key] ?? -1;
                         const preview = previewRows[0] ? (colIdx >= 0 ? previewRows[0][colIdx] ?? "" : "") : "";
                         return (
@@ -1649,7 +1663,7 @@ function ImportCsvDialog({
                       <table className="w-full text-xs">
                         <thead className="bg-secondary/40">
                           <tr>
-                            {VENDOR_FIELDS.filter((f) => mapping[f.key] !== undefined && (mapping[f.key] as number) >= 0).map((f) => (
+                            {getFieldsForType(vendorType).filter((f) => mapping[f.key] !== undefined && (mapping[f.key] as number) >= 0).map((f) => (
                               <th key={f.key} className="text-left font-medium px-3 py-1.5 text-muted-foreground whitespace-nowrap">{f.label}</th>
                             ))}
                           </tr>
@@ -1657,7 +1671,7 @@ function ImportCsvDialog({
                         <tbody>
                           {previewRows.map((row, ri) => (
                             <tr key={ri} className="border-t border-border">
-                              {VENDOR_FIELDS.filter((f) => mapping[f.key] !== undefined && (mapping[f.key] as number) >= 0).map((f) => (
+                              {getFieldsForType(vendorType).filter((f) => mapping[f.key] !== undefined && (mapping[f.key] as number) >= 0).map((f) => (
                                 <td key={f.key} className="px-3 py-1.5 text-muted-foreground truncate max-w-[150px]">
                                   {getMappedValue(row, f.key) || <span className="opacity-40">—</span>}
                                 </td>

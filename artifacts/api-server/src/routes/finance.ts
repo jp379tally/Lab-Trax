@@ -2140,6 +2140,7 @@ const importRecordSchema = z.object({
   email: z.string().max(200).nullable().optional(),
   website: z.string().max(500).nullable().optional(),
   notes: z.string().max(2000).nullable().optional(),
+  unitPrice: z.string().max(20).nullable().optional(),
 });
 
 async function importVendorRecords(
@@ -2167,6 +2168,15 @@ async function importVendorRecords(
     return { imported: 0, skipped };
   }
 
+  const normalizePrice = (raw: string | null | undefined): string | null => {
+    if (raw == null) return null;
+    const cleaned = String(raw).replace(/[$,\s]/g, "").trim();
+    if (!cleaned) return null;
+    const n = Number(cleaned);
+    if (!Number.isFinite(n)) return null;
+    return n.toFixed(2);
+  };
+
   const inserted = await db
     .insert(vendors)
     .values(
@@ -2181,6 +2191,7 @@ async function importVendorRecords(
         email: r.email ?? null,
         website: r.website ?? null,
         notes: r.notes ?? null,
+        unitPrice: vendorType === "item" ? normalizePrice(r.unitPrice) : null,
         vendorType,
         isActive: true,
       }))
