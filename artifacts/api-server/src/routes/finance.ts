@@ -2230,25 +2230,47 @@ async function importVendorRecords(
   organizationId: string,
   vendorType: VendorType,
   records: z.infer<typeof importRecordSchema>[]
-): Promise<{ imported: number; skipped: number }> {
-  const existing = await db
-    .select({ name: vendors.name })
+): Promise<{ imported: number; skipped: number; skippedSameType: number; skippedCrossType: number }> {
+  const allExisting = await db
+    .select({ name: vendors.name, vendorType: vendors.vendorType })
     .from(vendors)
     .where(
       and(
         eq(vendors.labOrganizationId, organizationId),
-        eq(vendors.vendorType, vendorType),
         eq(vendors.isActive, true),
         sql`${vendors.deletedAt} IS NULL`
       )
     );
-  const existingNames = new Set(existing.map((r) => r.name.toLowerCase()));
 
-  const toInsert = records.filter((r) => !existingNames.has(r.name.trim().toLowerCase()));
-  const skipped = records.length - toInsert.length;
+  const sameTypeNames = new Set(
+    allExisting
+      .filter((r) => r.vendorType === vendorType)
+      .map((r) => r.name.toLowerCase())
+  );
+  const crossTypeNames = new Set(
+    allExisting
+      .filter((r) => r.vendorType !== vendorType)
+      .map((r) => r.name.toLowerCase())
+  );
+
+  let skippedSameType = 0;
+  let skippedCrossType = 0;
+  const toInsert = records.filter((r) => {
+    const lower = r.name.trim().toLowerCase();
+    if (sameTypeNames.has(lower)) {
+      skippedSameType++;
+      return false;
+    }
+    if (crossTypeNames.has(lower)) {
+      skippedCrossType++;
+      return false;
+    }
+    return true;
+  });
+  const skipped = skippedSameType + skippedCrossType;
 
   if (toInsert.length === 0) {
-    return { imported: 0, skipped };
+    return { imported: 0, skipped, skippedSameType, skippedCrossType };
   }
 
   const normalizePrice = (raw: string | null | undefined): string | null => {
@@ -2280,7 +2302,7 @@ async function importVendorRecords(
       }))
     )
     .returning({ id: vendors.id });
-  return { imported: inserted.length, skipped };
+  return { imported: inserted.length, skipped, skippedSameType, skippedCrossType };
 }
 
 router.post(
