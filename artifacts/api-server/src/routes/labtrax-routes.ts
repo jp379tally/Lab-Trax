@@ -3045,7 +3045,7 @@ export async function registerRoutes(): Promise<IRouter> {
     try {
       await writeFile(pdfPath, Buffer.from(rawPdfBase64, "base64"));
       await new Promise<void>((resolve, reject) => {
-        const proc = spawn("pdftoppm", ["-jpeg", "-r", "150", "-f", "1", "-l", "3", pdfPath, outputPrefix]);
+        const proc = spawn("pdftoppm", ["-jpeg", "-r", "250", "-f", "1", "-l", "3", pdfPath, outputPrefix]);
         let stderr = "";
         proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString().slice(0, 500); });
         proc.on("close", (code: number) => {
@@ -3097,7 +3097,7 @@ export async function registerRoutes(): Promise<IRouter> {
       const isHEIC = imageBase64.includes("data:image/heic") || imageBase64.includes("data:image/heif");
       if (isHEIC) return res.status(400).json({ success: false, error: "HEIC format is not supported. Please convert to JPEG or PNG first." });
 
-      const imageContents: Array<{ type: "image_url"; image_url: { url: string; detail: "auto" } }> = [];
+      const imageContents: Array<{ type: "image_url"; image_url: { url: string; detail: "high" } }> = [];
 
       // PDF detection: raw base64 of any PDF starts with 'JVBERi' (base64 of '%PDF-').
       // On iOS, PDFs picked from the document picker arrive here with raw PDF bytes
@@ -3124,14 +3124,14 @@ export async function registerRoutes(): Promise<IRouter> {
         }
         console.log("AI analyze-prescription: PDF converted to", pdfImages.length, "page(s)");
         for (const img of pdfImages) {
-          imageContents.push({ type: "image_url", image_url: { url: img, detail: "auto" } });
+          imageContents.push({ type: "image_url", image_url: { url: img, detail: "high" } });
         }
       } else {
         let primaryUrl = imageBase64;
         if (!primaryUrl.startsWith("data:")) {
           primaryUrl = `data:image/jpeg;base64,${primaryUrl}`;
         }
-        imageContents.push({ type: "image_url", image_url: { url: primaryUrl, detail: "auto" } });
+        imageContents.push({ type: "image_url", image_url: { url: primaryUrl, detail: "high" } });
 
         if (additionalImages && Array.isArray(additionalImages)) {
           for (const img of additionalImages) {
@@ -3140,13 +3140,13 @@ export async function registerRoutes(): Promise<IRouter> {
               if (!imgUrl.startsWith("data:")) {
                 imgUrl = `data:image/jpeg;base64,${imgUrl}`;
               }
-              imageContents.push({ type: "image_url", image_url: { url: imgUrl, detail: "auto" } });
+              imageContents.push({ type: "image_url", image_url: { url: imgUrl, detail: "high" } });
             }
           }
         }
       }
 
-      const systemPrompt = `You are a dental laboratory prescription reader. Analyze the dental prescription image(s) and extract all available information. Return ONLY valid JSON with these fields (use null for any field you cannot determine):
+      const systemPrompt = `You are a dental laboratory prescription reader with expertise in reading BOTH printed and handwritten prescriptions. Analyze the dental prescription image(s) carefully — the prescription may be entirely handwritten, a mix of handwritten and printed fields, or a pre-printed form. Extract all available information. Return ONLY valid JSON with these fields (use null for any field you cannot determine):
 
 {
   "doctorName": "Dr. Full Name",
@@ -3165,16 +3165,18 @@ export async function registerRoutes(): Promise<IRouter> {
 }
 
 Important rules:
+- HANDWRITING: Many dental prescriptions are fully or partially handwritten. Examine every area of the image carefully, including margins, boxes, check marks, and stamps. Do not skip fields just because they are handwritten or hard to read — make your best effort to decipher handwritten text.
 - Read ALL pages if multiple images are provided
-- For tooth numbers, use Universal Numbering System (1-32)
+- For tooth numbers, use Universal Numbering System (1-32). Accept handwritten tooth numbers, circled teeth on diagrams, and tooth charts.
 - If you see FDI notation, convert to Universal
-- Only set isRush to true if explicitly marked as rush/urgent
-- For caseType, match to the closest category listed above
-- Extract the shade exactly as written on the prescription
-- NAME FORMAT: If a patient name or doctor name contains a comma (e.g. "Kidder, Daniel" or "Sharpstein, Daniel"), the prescription is using Last, First format. You MUST swap it to First Last order and remove the comma. Examples: "Kidder, Daniel" → "Daniel Kidder", "Dr. Sharpstein, Daniel" → "Dr. Daniel Sharpstein". Always output names in natural First Last order with no commas.
+- Only set isRush to true if explicitly marked as rush/urgent/STAT — including handwritten "rush" notes or red stamps
+- For caseType, match to the closest category listed above. Accept handwritten abbreviations (e.g. "PFM", "Zirc", "E.max", "BU", "CB", "FPD", "RPD")
+- Extract the shade exactly as written on the prescription, including handwritten shade values
+- MATERIAL: Common handwritten abbreviations — "PFM" = PFM, "Zirc" or "Zr" = Zirconia, "GC" or "Gold" = Gold, "Emax" or "E.max" = E max
+- NAME FORMAT: If a patient name or doctor name contains a comma (e.g. "Kidder, Daniel"), it is Last, First format. Swap to First Last and remove the comma.
 - Return ONLY the JSON object, no other text`;
 
-      const userContent: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail: "auto" } }> = [
+      const userContent: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail: "high" } }> = [
         { type: "text", text: `Analyze this dental prescription (${imageContents.length} page${imageContents.length > 1 ? "s" : ""}).` },
         ...imageContents,
       ];
