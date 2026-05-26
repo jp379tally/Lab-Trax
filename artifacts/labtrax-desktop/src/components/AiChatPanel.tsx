@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import { Loader2, Send, Sparkles, Trash2, X } from "lucide-react";
+import type { AiCaseContext } from "@/lib/ai-panel-context";
 
 interface ChatMsg {
   id: string;
@@ -8,12 +9,21 @@ interface ChatMsg {
   content: string;
 }
 
-const SUGGESTED_PROMPTS = [
+const DEFAULT_SUGGESTED_PROMPTS = [
   "What cases are due this week?",
   "What's our average turnaround time?",
   "Show me all rush cases",
   "What's Dr. Smith's price for zirconia?",
 ];
+
+function buildCasePrompts(caseNumber: string, patientName: string): string[] {
+  return [
+    `Summarize case ${caseNumber}`,
+    patientName ? `What restorations are on ${patientName}'s case?` : `What restorations are on case ${caseNumber}?`,
+    `When is case ${caseNumber} due?`,
+    `What materials are on case ${caseNumber}?`,
+  ];
+}
 
 function generateId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2);
@@ -28,10 +38,19 @@ const WELCOME_MSG: ChatMsg = {
 
 interface Props {
   onClose: () => void;
+  caseContext?: AiCaseContext | null;
 }
 
-export function AiChatPanel({ onClose }: Props) {
-  const [messages, setMessages] = useState<ChatMsg[]>([WELCOME_MSG]);
+export function AiChatPanel({ onClose, caseContext }: Props) {
+  const buildWelcome = (ctx: AiCaseContext | null | undefined): ChatMsg => ({
+    id: "welcome",
+    role: "assistant",
+    content: ctx
+      ? `Hi! I'm LabTrax AI. I'm ready to help you with case ${ctx.caseNumber}${ctx.patientName ? ` (${ctx.patientName})` : ""}. What would you like to know?`
+      : "Hi! I'm LabTrax AI. I can help you with case status, pricing, turnaround times, and lab info. How can I help?",
+  });
+
+  const [messages, setMessages] = useState<ChatMsg[]>([buildWelcome(caseContext)]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [promptsDismissed, setPromptsDismissed] = useState(false);
@@ -40,6 +59,9 @@ export function AiChatPanel({ onClose }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
+  const suggestedPrompts = caseContext
+    ? buildCasePrompts(caseContext.caseNumber, caseContext.patientName)
+    : DEFAULT_SUGGESTED_PROMPTS;
   const showPrompts = !promptsDismissed && messages.length === 1;
   const hasHistory = messages.some((m) => m.id !== "welcome");
 
@@ -57,8 +79,13 @@ export function AiChatPanel({ onClose }: Props) {
           content: m.content,
         }));
         if (!cancelled && historyMsgs.length > 0) {
-          setMessages([WELCOME_MSG, ...historyMsgs]);
-          setPromptsDismissed(true);
+          // If we have a case context, we only show history if we're not starting a fresh case-specific chat
+          // or if the user actually wants to see general history. 
+          // Per instructions: "useEffect that loads history from the server on mount (from HEAD) — BUT only when there's no caseContext"
+          if (!caseContext) {
+            setMessages([WELCOME_MSG, ...historyMsgs]);
+            setPromptsDismissed(true);
+          }
         }
       } catch {
         // silently ignore — history is a best-effort enhancement
@@ -67,6 +94,12 @@ export function AiChatPanel({ onClose }: Props) {
     loadHistory();
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    setMessages([buildWelcome(caseContext)]);
+    setPromptsDismissed(false);
+    setInput("");
+  }, [caseContext?.caseId]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -92,9 +125,12 @@ export function AiChatPanel({ onClose }: Props) {
         .filter((m) => m.id !== "welcome")
         .map((m) => ({ role: m.role, content: m.content }));
 
+      const body: Record<string, unknown> = { messages: apiMessages };
+      if (caseContext?.caseId) body.caseId = caseContext.caseId;
+
       const data = await apiFetch<{ reply: string; error?: string }>("/ai-chat", {
         method: "POST",
-        body: JSON.stringify({ messages: apiMessages }),
+        body: JSON.stringify(body),
       });
 
       setMessages((prev) => [
@@ -130,7 +166,7 @@ export function AiChatPanel({ onClose }: Props) {
     setConfirmingClear(false);
     try {
       await apiFetch("/ai-chat/history", { method: "DELETE" });
-      setMessages([WELCOME_MSG]);
+      setMessages([buildWelcome(caseContext)]);
       setPromptsDismissed(false);
     } catch {
       // ignore
@@ -158,7 +194,13 @@ export function AiChatPanel({ onClose }: Props) {
         </div>
         <div className="flex-1 min-w-0">
           <div className="text-sm font-semibold">AI Assistant</div>
-          <div className="text-[11px] text-muted-foreground">Powered by your live data</div>
+          {caseContext ? (
+            <div className="text-[11px] text-primary font-medium truncate">
+              Case {caseContext.caseNumber}{caseContext.patientName ? ` · ${caseContext.patientName}` : ""}
+            </div>
+          ) : (
+            <div className="text-[11px] text-muted-foreground">Powered by your live data</div>
+          )}
         </div>
         <div className="flex items-center gap-1">
           {hasHistory && (
@@ -227,7 +269,7 @@ export function AiChatPanel({ onClose }: Props) {
           <div className="pt-2">
             <p className="text-[11px] text-muted-foreground mb-2">Try asking:</p>
             <div className="flex flex-wrap gap-2">
-              {SUGGESTED_PROMPTS.map((p) => (
+              {suggestedPrompts.map((p) => (
                 <button
                   key={p}
                   type="button"
@@ -265,7 +307,7 @@ export function AiChatPanel({ onClose }: Props) {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask about a case, pricing, or lab…"
+            placeholder={caseContext ? `Ask about case ${caseContext.caseNumber}…` : "Ask about a case, pricing, or lab…"}
             rows={1}
             maxLength={1000}
             disabled={sending}

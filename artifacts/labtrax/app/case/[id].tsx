@@ -1426,7 +1426,21 @@ export default function CaseDetailScreen() {
           <Text style={styles.headerTitle}>{caseItem.caseNumber}</Text>
           <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, textAlign: "center" }}>Case & Invoice #{caseItem.caseNumber}</Text>
         </View>
-        <ChatButton />
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+          <Pressable
+            onPress={() => {
+              const patientName = (caseItem as any).patientName || caseItem.patientInitials || "";
+              router.push(
+                `/chat?caseId=${encodeURIComponent(String(id))}&caseNumber=${encodeURIComponent(caseItem.caseNumber)}&patientName=${encodeURIComponent(patientName)}` as any,
+              );
+            }}
+            style={[styles.headerBtn, { width: 36, height: 36 }]}
+            hitSlop={4}
+          >
+            <Ionicons name="sparkles" size={20} color={Colors.light.tint} />
+          </Pressable>
+          <ChatButton />
+        </View>
       </View>
 
       <KeyboardAwareScrollViewCompat

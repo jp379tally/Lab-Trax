@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { useAiPanel } from "@/lib/ai-panel-context";
 import { useColumnWidths } from "@/hooks/useColumnWidths";
 import { useLocation } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -1997,6 +1998,7 @@ export function CaseDrawer({
   onOpenCaseId?: (id: string) => void;
 }) {
   const qc = useQueryClient();
+  const { openPanel: openAiPanel } = useAiPanel();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [fileDragOver, setFileDragOver] = useState(false);
   const fileDragCounterRef = useRef(0);
@@ -2950,6 +2952,21 @@ export function CaseDrawer({
             </div>
           </div>
           <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() =>
+                openAiPanel({
+                  caseId: labCase.id,
+                  caseNumber: labCase.caseNumber ?? "",
+                  patientName: [labCase.patientFirstName, labCase.patientLastName].filter(Boolean).join(" "),
+                })
+              }
+              className="h-8 px-2.5 rounded-md hover:bg-primary/10 text-muted-foreground hover:text-primary inline-flex items-center gap-1.5 text-xs font-medium transition-colors"
+              title="Ask AI about this case"
+            >
+              <Sparkles size={14} />
+              Ask AI
+            </button>
             <button
               type="button"
               onClick={() =>

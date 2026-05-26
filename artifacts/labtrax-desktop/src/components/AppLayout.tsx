@@ -31,6 +31,7 @@ import {
   Zap,
 } from "lucide-react";
 import { AiChatPanel } from "./AiChatPanel";
+import { AiPanelContext, type AiCaseContext } from "@/lib/ai-panel-context";
 import { useAuth } from "@/lib/auth-context";
 import { useUploads } from "@/lib/uploads-context";
 import { Logo } from "./Logo";
@@ -135,6 +136,15 @@ export function AppLayout({ children }: Props) {
   const [uploadsOpen, setUploadsOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  const [aiPanelCaseContext, setAiPanelCaseContext] = useState<AiCaseContext | null>(null);
+
+  const openAiPanel = useCallback(
+    (ctx?: AiCaseContext) => {
+      setAiPanelCaseContext(ctx ?? null);
+      setAiPanelOpen(true);
+    },
+    [],
+  );
   const [notificationItems, setNotificationItems] = useState<Notification[]>([]);
   const [notifLoading, setNotifLoading] = useState(false);
   const [hasUnread, setHasUnread] = useState(false);
@@ -273,6 +283,7 @@ export function AppLayout({ children }: Props) {
   }
 
   return (
+    <AiPanelContext.Provider value={{ openPanel: openAiPanel }}>
     <div className="flex h-screen w-full overflow-hidden bg-background text-foreground">
       {/* Sidebar */}
       <aside className="w-[240px] shrink-0 bg-sidebar text-sidebar-foreground flex flex-col border-r border-sidebar-border">
@@ -502,7 +513,7 @@ export function AppLayout({ children }: Props) {
           {/* AI Assistant */}
           <button
             type="button"
-            onClick={() => setAiPanelOpen((v) => !v)}
+            onClick={() => openAiPanel()}
             className={`relative h-9 w-9 rounded-md flex items-center justify-center transition-colors ${
               aiPanelOpen
                 ? "bg-primary text-primary-foreground"
@@ -631,7 +642,16 @@ export function AppLayout({ children }: Props) {
         <main className="flex-1 overflow-y-auto scrollbar-thin">{children}</main>
       </div>
       <MessengerDock />
-      {aiPanelOpen && <AiChatPanel onClose={() => setAiPanelOpen(false)} />}
+      {aiPanelOpen && (
+        <AiChatPanel
+          caseContext={aiPanelCaseContext}
+          onClose={() => {
+            setAiPanelOpen(false);
+            setAiPanelCaseContext(null);
+          }}
+        />
+      )}
     </div>
+    </AiPanelContext.Provider>
   );
 }

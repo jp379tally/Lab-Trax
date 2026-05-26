@@ -14,7 +14,7 @@ import {
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 import { resilientFetch } from "@/lib/query-client";
@@ -44,12 +44,29 @@ function generateId() {
   return Date.now().toString() + Math.random().toString(36).substr(2, 9);
 }
 
+function buildCasePrompts(caseNumber: string, patientName: string): string[] {
+  return [
+    `Summarize case ${caseNumber}`,
+    patientName ? `What restorations are on ${patientName}'s case?` : `What restorations are on case ${caseNumber}?`,
+    `When is case ${caseNumber} due?`,
+    `What materials are on case ${caseNumber}?`,
+  ];
+}
+
 export default function ChatScreen() {
   const insets = useSafeAreaInsets();
   const { userType } = useAuth();
   const isProvider = userType === "provider";
+  const params = useLocalSearchParams<{ caseId?: string; caseNumber?: string; patientName?: string }>();
 
-  const welcomeMessage = isProvider
+  const caseId = params.caseId || null;
+  const caseNumber = params.caseNumber || null;
+  const patientName = params.patientName || null;
+  const hasCaseContext = !!caseId && !!caseNumber;
+
+  const welcomeMessage = hasCaseContext
+    ? `Hi! I'm LabTrax's AI assistant. I'm ready to help you with case ${caseNumber}${patientName ? ` (${patientName})` : ""}. What would you like to know?`
+    : isProvider
     ? "Hi! I'm LabTrax's AI assistant. I can look up your cases across all your linked labs and answer pricing questions. How can I help?"
     : "Hi! I'm LabTrax's AI assistant. I can help you with case status, pricing, turnaround times, and lab info. How can I help?";
 
@@ -67,13 +84,20 @@ export default function ChatScreen() {
   const [clearing, setClearing] = useState(false);
   const flatListRef = useRef<FlatList>(null);
 
-  const suggestedPrompts = isProvider ? PROVIDER_SUGGESTED_PROMPTS : LAB_SUGGESTED_PROMPTS;
+  const suggestedPrompts = hasCaseContext
+    ? buildCasePrompts(caseNumber!, patientName || "")
+    : isProvider
+    ? PROVIDER_SUGGESTED_PROMPTS
+    : LAB_SUGGESTED_PROMPTS;
+
   const showPrompts = !promptsDismissed && messages.length === 1;
 
   // Load chat history on mount
   useEffect(() => {
     let cancelled = false;
     async function loadHistory() {
+      // If we have a caseId, we might want to skip global history or load case-specific history
+      // For now, following instructions to load from /api/ai-chat/history but keeping it compatible
       try {
         const response = await resilientFetch("/api/ai-chat/history");
         if (response.ok) {
@@ -100,6 +124,19 @@ export default function ChatScreen() {
     return () => { cancelled = true; };
   }, []);
 
+  // Reset chat when caseId changes
+  useEffect(() => {
+    setMessages([
+      {
+        id: "welcome",
+        role: "assistant",
+        content: welcomeMessage,
+        timestamp: Date.now(),
+      },
+    ]);
+    setPromptsDismissed(false);
+  }, [caseId]);
+
   async function sendMessage(text: string) {
     if (!text.trim() || sending) return;
     setPromptsDismissed(true);
@@ -120,10 +157,13 @@ export default function ChatScreen() {
         .filter((m) => m.id !== "welcome")
         .map((m) => ({ role: m.role, content: m.content }));
 
+      const body: Record<string, unknown> = { messages: apiMessages };
+      if (caseId) body.caseId = caseId;
+
       const response = await resilientFetch("/api/ai-chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: apiMessages }),
+        body: JSON.stringify(body),
       });
 
       if (response.ok) {
@@ -254,7 +294,12 @@ export default function ChatScreen() {
           <View style={styles.headerIcon}>
             <Ionicons name="sparkles" size={16} color={Colors.light.tint} />
           </View>
-          <Text style={styles.headerTitle}>AI Assistant</Text>
+          <View>
+            <Text style={styles.headerTitle}>AI Assistant</Text>
+            {hasCaseContext && (
+              <Text style={styles.headerSubtitle}>Case {caseNumber}</Text>
+            )}
+          </View>
         </View>
         {hasHistory ? (
           <Pressable
@@ -328,7 +373,13 @@ export default function ChatScreen() {
             style={styles.textInput}
             value={input}
             onChangeText={setInput}
-            placeholder={isProvider ? "Ask about a case or pricing…" : "Ask about a case, pricing, or lab…"}
+            placeholder={
+              hasCaseContext
+                ? `Ask about case ${caseNumber}…`
+                : isProvider
+                ? "Ask about a case or pricing…"
+                : "Ask about a case, pricing, or lab…"
+            }
             placeholderTextColor={Colors.light.textTertiary}
             multiline
             maxLength={1000}
@@ -389,6 +440,12 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontFamily: "Inter_700Bold",
     color: Colors.light.text,
+  },
+  headerSubtitle: {
+    fontSize: 11,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.tint,
+    marginTop: 1,
   },
   messagesList: {
     paddingHorizontal: 16,
