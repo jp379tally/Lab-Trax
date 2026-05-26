@@ -1774,6 +1774,8 @@ type DetailedCase = LabCase & {
   viewerCanManageAttachments?: boolean;
   /** Serialized bridge connector pairs, e.g. "13-14,14-15". Null when none. */
   bridgeConnectors?: string | null;
+  expectedDeliveryDate?: string | null;
+  statusHistory?: Array<{ status: string; occurredAt: string }>;
   remakeOriginal?: {
     id: string;
     caseNumber: string;
@@ -1843,6 +1845,142 @@ const SHADES = [
   "BL1", "BL2", "BL3", "BL4",
 ];
 
+const TIMELINE_STATUS_LABELS: Record<string, string> = {
+  received: "Received",
+  in_design: "Design",
+  scan: "Scan",
+  in_milling: "Milling",
+  post_mill: "Post Mill",
+  sintering_furnace: "Sintering",
+  model_room: "Model Room",
+  in_porcelain: "Porcelain",
+  qc: "QC",
+  complete: "Complete",
+  shipped: "Shipped",
+  delivered: "Delivered",
+  on_hold: "On Hold",
+  remake: "Remake",
+  cancelled: "Cancelled",
+};
+
+function CaseTimelineBar({
+  statusHistory,
+  currentStatus,
+  expectedDeliveryDate,
+}: {
+  statusHistory: Array<{ status: string; label?: string; occurredAt: string }>;
+  currentStatus: string;
+  expectedDeliveryDate?: string | null;
+}) {
+  function fmtDate(s: string) {
+    try {
+      return new Date(s).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    } catch {
+      return "";
+    }
+  }
+
+  // Overall progress across the full received→expected window (0–1, capped).
+  const progressFill = (() => {
+    if (!expectedDeliveryDate || statusHistory.length === 0) return 0;
+    const startMs = new Date(statusHistory[0].occurredAt).getTime();
+    const endMs = new Date(expectedDeliveryDate).getTime();
+    const nowMs = Date.now();
+    if (endMs <= startMs) return 1;
+    return Math.min(1, Math.max(0, (nowMs - startMs) / (endMs - startMs)));
+  })();
+
+  const isOverdue = progressFill >= 1;
+
+  // Total connectors = history nodes + (optional expected-date node) - 1
+  const totalConnectors = expectedDeliveryDate ? statusHistory.length : statusHistory.length - 1;
+
+  // Continuous proportional fill: connector i gets fill fraction such that
+  // the filled region is a single unbroken track proportional to progressFill.
+  function segFill(i: number) {
+    if (totalConnectors <= 0) return progressFill;
+    const segPos = progressFill * totalConnectors;
+    return Math.min(1, Math.max(0, segPos - i));
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <div className="overflow-x-auto pb-1">
+        <div className="flex items-center min-w-max">
+          {statusHistory.map((entry, idx) => {
+            const isLast = idx === statusHistory.length - 1;
+            const isCurrent = entry.status === currentStatus && idx === statusHistory.length - 1;
+            const label = entry.label ?? TIMELINE_STATUS_LABELS[entry.status] ?? entry.status;
+            const fill = segFill(idx);
+            return (
+              <div key={idx} className="flex items-center">
+                <div className="flex flex-col items-center gap-1.5 w-[70px]">
+                  <span className="text-[9px] font-semibold text-muted-foreground text-center leading-tight line-clamp-2 h-[22px] flex items-end justify-center">
+                    {label}
+                  </span>
+                  <div
+                    className={[
+                      "rounded-full border-2 border-background",
+                      isCurrent
+                        ? "w-3.5 h-3.5 bg-primary ring-2 ring-primary/30"
+                        : "w-2.5 h-2.5 bg-primary/70",
+                    ].join(" ")}
+                  />
+                  <span className="text-[9px] text-muted-foreground text-center">
+                    {fmtDate(entry.occurredAt)}
+                  </span>
+                </div>
+                {/* Connector: continuous proportional fill */}
+                {(!isLast || expectedDeliveryDate) && (
+                  <div className="relative h-0.5 w-7 bg-border shrink-0 overflow-hidden rounded-full">
+                    {fill > 0 && (
+                      <div
+                        className={[
+                          "absolute inset-y-0 left-0 rounded-full",
+                          isLast && isOverdue ? "bg-destructive/70" : "bg-primary/60",
+                        ].join(" ")}
+                        style={{ width: `${Math.round(fill * 100)}%` }}
+                      />
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {expectedDeliveryDate && (
+            <div className="flex flex-col items-center gap-1.5 w-[70px]">
+              <span
+                className={[
+                  "text-[9px] font-semibold text-center leading-tight h-[22px] flex items-end justify-center",
+                  isOverdue ? "text-destructive" : "text-sky-500",
+                ].join(" ")}
+              >
+                Expected
+              </span>
+              <div
+                className={[
+                  "w-2.5 h-2.5 rounded-full border-2 bg-transparent",
+                  isOverdue ? "border-destructive" : "border-sky-500",
+                ].join(" ")}
+              />
+              <span className={["text-[9px] text-center", isOverdue ? "text-destructive" : "text-sky-500"].join(" ")}>
+                {fmtDate(expectedDeliveryDate)}
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
+      {expectedDeliveryDate && (
+        <p className={["text-[10px]", isOverdue ? "text-destructive" : "text-muted-foreground"].join(" ")}>
+          {isOverdue
+            ? "Past expected delivery date"
+            : `${Math.round(progressFill * 100)}% of expected window elapsed`}
+        </p>
+      )}
+    </div>
+  );
+}
+
 type CaseTab = "overview" | "restorations" | "notes" | "files" | "invoice" | "history";
 
 export function CaseDrawer({
@@ -1876,6 +2014,9 @@ export function CaseDrawer({
     doctorName: labCase.doctorName || "",
     dueDate: labCase.dueDate
       ? new Date(labCase.dueDate).toISOString().split("T")[0]
+      : "",
+    expectedDeliveryDate: (labCase as any).expectedDeliveryDate
+      ? new Date((labCase as any).expectedDeliveryDate).toISOString().split("T")[0]
       : "",
     priority: (labCase.priority || "normal") as "normal" | "rush",
   });
@@ -1952,6 +2093,7 @@ export function CaseDrawer({
     patientLastName: string;
     doctorName: string;
     dueDate: string;
+    expectedDeliveryDate: string;
     priority: "normal" | "rush";
   };
 
@@ -2093,6 +2235,9 @@ export function CaseDrawer({
           doctorName: updates.doctorName,
           priority: updates.priority,
           ...(updates.dueDate ? { dueDate: updates.dueDate } : {}),
+          ...(updates.expectedDeliveryDate !== undefined
+            ? { expectedDeliveryDate: updates.expectedDeliveryDate || null }
+            : {}),
         }),
       }),
     onSuccess: () => {
@@ -2758,6 +2903,9 @@ export function CaseDrawer({
       dueDate: src.dueDate
         ? new Date(src.dueDate).toISOString().split("T")[0]
         : "",
+      expectedDeliveryDate: (src as any).expectedDeliveryDate
+        ? new Date((src as any).expectedDeliveryDate).toISOString().split("T")[0]
+        : "",
       priority: (src.priority || "normal") as "normal" | "rush",
     });
     setEditError(null);
@@ -3248,6 +3396,18 @@ export function CaseDrawer({
             const shadeLabel = summary.shades.length > 0 ? summary.shades.join(", ") : "—";
             return (
             <div className="px-5 py-5 space-y-6">
+              {!data?.viewerIsLabMember && data?.statusHistory && data.statusHistory.length > 0 && (
+                <section>
+                  <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-3">
+                    Progress
+                  </h3>
+                  <CaseTimelineBar
+                    statusHistory={data.statusHistory}
+                    currentStatus={currentStatus}
+                    expectedDeliveryDate={data?.expectedDeliveryDate}
+                  />
+                </section>
+              )}
               <section>
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
@@ -3298,6 +3458,7 @@ export function CaseDrawer({
                       value={(pendingCaseEdit?.priority ?? data?.priority ?? labCase.priority) === "rush" ? "Rush" : "Normal"}
                     />
                     <Field label="Due date" value={formatDate(pendingCaseEdit?.dueDate ?? data?.dueDate ?? labCase.dueDate)} />
+                    <Field label="Expected delivery" value={formatDate(pendingCaseEdit?.expectedDeliveryDate ?? data?.expectedDeliveryDate ?? (labCase as any).expectedDeliveryDate)} />
                     <Field label="Created" value={formatDate(data?.createdAt ?? labCase.createdAt)} />
                     <Field label="Tooth #" value={toothLabel} />
                     <Field label="Shade" value={shadeLabel} />
@@ -3386,22 +3547,36 @@ export function CaseDrawer({
                       </div>
                       <div>
                         <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
-                          Priority
+                          Expected Delivery
                         </label>
-                        <select
-                          value={editForm.priority}
-                          onChange={(e) =>
-                            setEditForm((f) => ({
-                              ...f,
-                              priority: e.target.value as "normal" | "rush",
-                            }))
-                          }
+                        <input
+                          type="date"
+                          value={editForm.expectedDeliveryDate}
+                          onChange={(e) => {
+                            setEditForm((f) => ({ ...f, expectedDeliveryDate: e.target.value }));
+                            setEditError(null);
+                          }}
                           className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
-                        >
-                          <option value="normal">Normal</option>
-                          <option value="rush">Rush</option>
-                        </select>
+                        />
                       </div>
+                    </div>
+                    <div>
+                      <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                        Priority
+                      </label>
+                      <select
+                        value={editForm.priority}
+                        onChange={(e) =>
+                          setEditForm((f) => ({
+                            ...f,
+                            priority: e.target.value as "normal" | "rush",
+                          }))
+                        }
+                        className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                      >
+                        <option value="normal">Normal</option>
+                        <option value="rush">Rush</option>
+                      </select>
                     </div>
                     {editError && <p className="text-xs text-destructive">{editError}</p>}
                     <div className="flex gap-2 pt-1">
@@ -4365,7 +4540,7 @@ export function CaseDrawer({
                   rc.events.map((e) => ({ ...e, _source: "child" as const, _sourceCaseNumber: rc.caseNumber }))
                 );
 
-                const allEvents: TaggedEvent[] = [...originalEvents, ...remakeEvents, ...childEvents].sort(
+                const allEvents: TaggedEvent[] = [...taggedOriginal, ...taggedRemake, ...childEvents].sort(
                   (a, b) => {
                     const ta = new Date(a.occurredAt || a.createdAt || 0).getTime();
                     const tb = new Date(b.occurredAt || b.createdAt || 0).getTime();

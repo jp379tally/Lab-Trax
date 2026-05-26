@@ -389,3 +389,32 @@ vi.mock("react-native-webview", () => ({
   WebView: passthrough,
   default: passthrough,
 }));
+
+vi.mock("react-native-qrcode-svg", () => ({
+  default: nullComponent,
+}));
+
+vi.mock("@/lib/theme-context", () => {
+  const Colors = {
+    text: "#0F172A",
+    textSecondary: "#64748B",
+    textTertiary: "#8FA1B5",
+    background: "transparent",
+    backgroundSolid: "#F4F7FB",
+    tint: "#145DA0",
+    tintLight: "#D9E9F7",
+    tintDark: "#0F4C81",
+    border: "#E2E8F0",
+    icon: "#64748B",
+    tabIconDefault: "#94A3B8",
+    tabIconSelected: "#145DA0",
+    card: "#FFFFFF",
+    shadow: "rgba(0,0,0,0.08)",
+  };
+  const ctx = { mode: "light" as const, colors: Colors, isDark: false, setMode: vi.fn() };
+  const React = require("react");
+  return {
+    useTheme: () => ctx,
+    ThemeProvider: ({ children }: { children: React.ReactNode }) => children,
+  };
+});

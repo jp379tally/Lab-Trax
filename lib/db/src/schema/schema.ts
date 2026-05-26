@@ -500,6 +500,7 @@ export const cases = pgTable(
     status: text("status").default("received").notNull(),
     priority: text("priority").default("normal").notNull(),
     dueDate: timestamp("due_date", { withTimezone: true }),
+    expectedDeliveryDate: timestamp("expected_delivery_date", { withTimezone: true }),
     receivedAt: timestamp("received_at", { withTimezone: true })
       .defaultNow()
       .notNull(),

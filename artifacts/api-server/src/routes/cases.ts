@@ -1154,6 +1154,11 @@ router.post(
           status: input.status,
           priority: input.priority,
           dueDate: input.dueDate ? new Date(input.dueDate) : null,
+          expectedDeliveryDate: (() => {
+            const d = new Date();
+            d.setDate(d.getDate() + 7);
+            return d;
+          })(),
           createdByUserId: (req as any).auth.userId,
           remakeOfCaseId: remakeOriginal?.id ?? null,
           remakeReason: remakeOriginal ? input.remakeReason ?? null : null,
@@ -2165,6 +2170,40 @@ router.get(
       suggestedPracticeName = suggestedOrg?.name ?? null;
     }
 
+    const STATUS_LABELS: Record<string, string> = {
+      received: "Received",
+      in_design: "Design",
+      scan: "Scan",
+      in_milling: "Milling",
+      post_mill: "Post Mill",
+      sintering_furnace: "Sintering",
+      model_room: "Model Room",
+      in_porcelain: "Porcelain",
+      qc: "QC",
+      complete: "Complete",
+      shipped: "Shipped",
+      delivered: "Delivered",
+      on_hold: "On Hold",
+      remake: "Remake",
+      cancelled: "Cancelled",
+      draft: "Draft",
+    };
+    const statusHistory: Array<{ status: string; label: string; occurredAt: Date }> = [
+      { status: "received", label: STATUS_LABELS["received"] ?? "Received", occurredAt: found.receivedAt },
+      ...(events as any[])
+        .filter((e: any) => e.eventType === "status_changed")
+        .sort(
+          (a: any, b: any) =>
+            new Date(a.occurredAt).getTime() - new Date(b.occurredAt).getTime()
+        )
+        .map((e: any) => {
+          const s = (e.metadataJson as any)?.toStatus ?? null;
+          if (!s) return null;
+          return { status: s as string, label: (STATUS_LABELS[s] ?? s) as string, occurredAt: e.occurredAt as Date };
+        })
+        .filter((e): e is { status: string; label: string; occurredAt: Date } => e !== null),
+    ];
+
     return ok(res, {
       ...found,
       suggestedPracticeName,
@@ -2179,6 +2218,7 @@ router.get(
       remakeChildren,
       viewerIsLabMember: isLabMember,
       viewerCanManageAttachments,
+      statusHistory,
     });
   })
 );
@@ -2504,6 +2544,7 @@ const updateCaseSchema = z.object({
    */
   providerLinkSource: z.enum(["ai_suggestion", "manual"]).optional(),
   bridgeConnectors: z.string().optional(),
+  expectedDeliveryDate: z.union([z.string(), z.null()]).optional(),
 });
 
 router.patch(
@@ -2631,6 +2672,10 @@ router.patch(
     }
     if (input.bridgeConnectors !== undefined)
       updates.bridgeConnectors = input.bridgeConnectors || null;
+    if (input.expectedDeliveryDate !== undefined)
+      updates.expectedDeliveryDate = input.expectedDeliveryDate
+        ? new Date(input.expectedDeliveryDate)
+        : null;
 
     const [updated] = await db
       .update(cases)
@@ -3852,8 +3897,10 @@ function buildIteroAttachmentUrl(
 }
 
 async function generateIteroCaseNumber(
-  labOrganizationId: string
+  _labOrganizationId: string
 ): Promise<string> {
+  // case_number has a GLOBAL unique constraint, so we must find the global max
+  // for this year — not just within one lab — to avoid cross-lab collisions.
   const year = String(new Date().getFullYear()).slice(2);
   const [row] = await db
     .select({
@@ -3865,8 +3912,7 @@ async function generateIteroCaseNumber(
         end
       )`,
     })
-    .from(cases)
-    .where(eq(cases.labOrganizationId, labOrganizationId));
+    .from(cases);
   const next = (Number(row?.maxCaseNumber ?? 0) || 0) + 1;
   return `${year}-${next}`;
 }
@@ -4354,6 +4400,7 @@ router.post(
           status: "received",
           priority: extracted.isRush ? "rush" : "normal",
           dueDate,
+          expectedDeliveryDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
           createdByUserId: userId,
           needsAiReview: true,
           aiImportSource: "itero",
@@ -5248,6 +5295,7 @@ router.post(
           status: "received",
           priority: extracted.isRush ? "rush" : "normal",
           dueDate,
+          expectedDeliveryDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
           createdByUserId: userId,
           needsAiReview: true,
           aiImportSource: "itero",
@@ -5865,7 +5913,8 @@ async function processOneIteroZipFile(
       patientFirstName, patientLastName, doctorName,
       status: "received",
       priority: extracted.isRush ? "rush" : "normal",
-      dueDate, createdByUserId: userId, needsAiReview: true, aiImportSource: "itero",
+      dueDate, expectedDeliveryDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      createdByUserId: userId, needsAiReview: true, aiImportSource: "itero",
       externalPatientId: iteroOrderId,
       ...({
         suggestedDoctorName,

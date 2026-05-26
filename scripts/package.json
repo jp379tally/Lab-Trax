@@ -14,6 +14,7 @@
     "backfill-platform-account-numbers": "tsx ./src/backfill-platform-account-numbers.ts",
     "backfill-restoration-buckets": "tsx ./src/backfill-restoration-buckets.ts",
     "backfill-vendor-links": "tsx ./src/backfill-vendor-links.ts",
+    "backfill-expected-delivery-dates": "tsx ./src/backfill-expected-delivery-dates.ts",
     "seed-stripe-products": "tsx ./src/seedStripeProducts.ts",
     "seed-revenuecat": "tsx ./src/seedRevenueCat.ts",
     "bump-build-number": "tsx ./src/bump-build-number.ts",

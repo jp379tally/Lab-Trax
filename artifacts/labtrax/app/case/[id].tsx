@@ -54,6 +54,7 @@ import ScanViewerModal, { type ScanFormat } from "@/components/ScanViewerModal";
 import ScanThumbnail from "@/components/ScanThumbnail";
 import { QuickEditModal } from "@/components/case/QuickEditModal";
 import { CaseBarcodeScannerModal } from "@/components/case/CaseBarcodeScannerModal";
+import { CaseTimeline, type TimelineEntry } from "@/components/CaseTimeline";
 import { AddItemModal } from "@/components/case/AddItemModal";
 import {
   CourtesyTextModal,
@@ -221,6 +222,11 @@ export default function CaseDetailScreen() {
   const [pausedAttachments, setPausedAttachments] = useState<Map<string, { resumable: DownloadResumable; progress: number }>>(new Map());
   const activeDownloadResumableRef = useRef<Map<string, DownloadResumable>>(new Map());
   const [attachmentsFetchError, setAttachmentsFetchError] = useState(false);
+  const [canonicalCaseData, setCanonicalCaseData] = useState<{
+    statusHistory?: TimelineEntry[];
+    expectedDeliveryDate?: string | null;
+    status?: string;
+  } | null>(null);
   const [showRouting, setShowRouting] = useState(false);
   const [showNoteModal, setShowNoteModal] = useState(false);
   const [showAddSomethingModal, setShowAddSomethingModal] = useState(false);
@@ -540,6 +546,28 @@ export default function CaseDetailScreen() {
   React.useEffect(() => {
     if (!id) return;
     void fetchServerAttachments();
+  }, [id]);
+
+  React.useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    async function fetchCanonicalCase() {
+      try {
+        const res = await resilientFetch(`/api/cases/${encodeURIComponent(id as string)}`);
+        if (cancelled || !res || !res.ok) return;
+        const json = await res.json().catch(() => null);
+        if (cancelled || !json) return;
+        setCanonicalCaseData({
+          statusHistory: Array.isArray(json.statusHistory) ? json.statusHistory : [],
+          expectedDeliveryDate: json.expectedDeliveryDate ?? null,
+          status: json.status ?? null,
+        });
+      } catch {
+        // Non-critical: canonical endpoint may not exist for legacy cases
+      }
+    }
+    void fetchCanonicalCase();
+    return () => { cancelled = true; };
   }, [id]);
 
   if (!caseItem) {
@@ -1799,6 +1827,24 @@ export default function CaseDetailScreen() {
           );
         })()}
 
+        {userType === "provider" && canonicalCaseData?.statusHistory && canonicalCaseData.statusHistory.length > 0 && (
+          <View style={{ marginHorizontal: 16, marginBottom: 20 }}>
+            <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: Colors.light.textTertiary, textTransform: "uppercase", letterSpacing: 0.6, marginBottom: 10 }}>
+              Progress
+            </Text>
+            <CaseTimeline
+              statusHistory={canonicalCaseData.statusHistory}
+              currentStatus={caseItem.status}
+              expectedDeliveryDate={canonicalCaseData.expectedDeliveryDate ?? null}
+            />
+            {canonicalCaseData.expectedDeliveryDate && (
+              <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 8 }}>
+                Expected delivery: {new Date(canonicalCaseData.expectedDeliveryDate).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}
+              </Text>
+            )}
+          </View>
+        )}
+
         {isAdmin && (
           <View style={{ flexDirection: "row", gap: 8, marginHorizontal: 16, marginBottom: 16 }}>
             <Pressable
@@ -1947,7 +1993,7 @@ export default function CaseDetailScreen() {
             <View style={[styles.sectionHeader, { flexDirection: "row", alignItems: "center", justifyContent: "space-between" }]}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
                 <Text style={styles.sectionTitle}>
-                  Attachments{serverAttachments.length > 0 ? ` (${serverAttachments.length})` : ""}
+                  {userType === "provider" ? "Files from Lab" : "Attachments"}{serverAttachments.length > 0 ? ` (${serverAttachments.length})` : ""}
                 </Text>
                 {attachmentsFetchError && (
                   <Pressable
@@ -1960,28 +2006,166 @@ export default function CaseDetailScreen() {
                   </Pressable>
                 )}
               </View>
-              <Pressable
-                onPress={handleAttachFile}
-                disabled={uploadingAttachment}
-                style={({ pressed }) => ({
-                  flexDirection: "row" as const,
-                  alignItems: "center" as const,
-                  gap: 4,
-                  paddingVertical: 6,
-                  paddingHorizontal: 10,
-                  borderRadius: 8,
-                  backgroundColor: pressed || uploadingAttachment ? "rgba(0,0,0,0.06)" : "transparent",
-                  borderWidth: 1,
-                  borderColor: Colors.light.border,
-                })}
-              >
-                <Ionicons name="attach-outline" size={16} color={Colors.light.tint} />
-                <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.tint }}>
-                  {uploadingAttachment ? "Uploading…" : "Attach file"}
-                </Text>
-              </Pressable>
+              {userType !== "provider" && (
+                <Pressable
+                  onPress={handleAttachFile}
+                  disabled={uploadingAttachment}
+                  style={({ pressed }) => ({
+                    flexDirection: "row" as const,
+                    alignItems: "center" as const,
+                    gap: 4,
+                    paddingVertical: 6,
+                    paddingHorizontal: 10,
+                    borderRadius: 8,
+                    backgroundColor: pressed || uploadingAttachment ? "rgba(0,0,0,0.06)" : "transparent",
+                    borderWidth: 1,
+                    borderColor: Colors.light.border,
+                  })}
+                >
+                  <Ionicons name="attach-outline" size={16} color={Colors.light.tint} />
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.tint }}>
+                    {uploadingAttachment ? "Uploading…" : "Attach file"}
+                  </Text>
+                </Pressable>
+              )}
             </View>
-            {serverAttachments.map((att) => {
+            {userType === "provider" && (() => {
+              const photoAtts = serverAttachments.filter(a => (a.fileType || "").startsWith("image/"));
+              const videoAtts = serverAttachments.filter(a => (a.fileType || "").startsWith("video/"));
+              const otherAtts = serverAttachments.filter(a => !(a.fileType || "").startsWith("image/") && !(a.fileType || "").startsWith("video/"));
+              if (serverAttachments.length === 0) {
+                return (
+                  <View style={{ alignItems: "center", paddingVertical: 24 }}>
+                    <Ionicons name="folder-open-outline" size={32} color={Colors.light.textTertiary} />
+                    <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 8 }}>
+                      No files shared yet
+                    </Text>
+                  </View>
+                );
+              }
+              return (
+                <View style={{ gap: 16, marginTop: 8 }}>
+                  {photoAtts.length > 0 && (
+                    <View>
+                      <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: Colors.light.textTertiary, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
+                        Photos ({photoAtts.length})
+                      </Text>
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginHorizontal: -4 }} contentContainerStyle={{ paddingHorizontal: 4, gap: 8 }}>
+                        {photoAtts.map((att) => {
+                          const fileUrl = att.storageKey;
+                          const fullUrl = fileUrl.startsWith("http") ? fileUrl : new URL(fileUrl, getApiUrl()).toString();
+                          return (
+                            <Pressable
+                              key={att.id}
+                              onPress={() => setFullScreenPhoto(fullUrl)}
+                              style={({ pressed }) => ({ opacity: pressed ? 0.85 : 1 })}
+                            >
+                              <Image
+                                source={{ uri: fullUrl }}
+                                style={{ width: 88, height: 88, borderRadius: 8, backgroundColor: Colors.light.border }}
+                              />
+                            </Pressable>
+                          );
+                        })}
+                      </ScrollView>
+                    </View>
+                  )}
+                  {videoAtts.length > 0 && (
+                    <View>
+                      <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: Colors.light.textTertiary, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
+                        Videos ({videoAtts.length})
+                      </Text>
+                      {videoAtts.map((att) => {
+                        const ext2 = att.fileName.split(".").pop()?.toLowerCase() ?? "";
+                        const fullUrl2 = att.storageKey.startsWith("http") ? att.storageKey : new URL(att.storageKey, getApiUrl()).toString();
+                        return (
+                          <Pressable key={att.id} onPress={async () => {
+                            if (downloadingAttachmentId === att.id) return;
+                            const mimeType = att.fileType || "video/mp4";
+                            const cacheDir = FileSystem.Paths.cache.uri;
+                            const localUri = cacheDir.endsWith("/") ? cacheDir + att.fileName : cacheDir + "/" + att.fileName;
+                            setDownloadingAttachmentId(att.id);
+                            try {
+                              const token = getAccessToken();
+                              const downloadResumable = LegacyFileSystem.createDownloadResumable(fullUrl2, localUri, token ? { headers: { Authorization: `Bearer ${token}` } } : {});
+                              const downloadRes = await downloadResumable.downloadAsync();
+                              if (!downloadRes || downloadRes.status !== 200) { Alert.alert("Download failed", "Could not download this file."); return; }
+                              const canShare = await Sharing.isAvailableAsync();
+                              if (canShare) { await Sharing.shareAsync(downloadRes.uri, { mimeType, dialogTitle: att.fileName }); }
+                              else { await Linking.openURL(downloadRes.uri).catch(() => Alert.alert("Unable to open", "Could not open this file.")); }
+                            } catch { Alert.alert("Unable to open", "Could not download or open this file."); }
+                            finally { setDownloadingAttachmentId(null); }
+                          }} style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8, paddingHorizontal: 10, backgroundColor: pressed ? "rgba(0,0,0,0.04)" : "#F8FAFC", borderRadius: 10, marginBottom: 6, borderWidth: 1, borderColor: Colors.light.border })}>
+                            <View style={{ width: 40, height: 40, borderRadius: 8, backgroundColor: "#E2E8F0", alignItems: "center", justifyContent: "center" }}>
+                              {downloadingAttachmentId === att.id
+                                ? <ActivityIndicator size="small" color={Colors.light.tint} />
+                                : <Ionicons name="play-circle-outline" size={24} color={Colors.light.tint} />}
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.text }} numberOfLines={1}>{att.fileName}</Text>
+                              <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 1 }}>
+                                {ext2.toUpperCase()} · {att.createdAt ? new Date(att.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : ""}
+                              </Text>
+                            </View>
+                            <Ionicons name="open-outline" size={16} color={Colors.light.textTertiary} />
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  )}
+                  {otherAtts.length > 0 && (
+                    <View>
+                      <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: Colors.light.textTertiary, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
+                        Documents ({otherAtts.length})
+                      </Text>
+                      {otherAtts.map((att) => {
+                        const ext2 = att.fileName.split(".").pop()?.toLowerCase() ?? "";
+                        const iconName2: ComponentProps<typeof Ionicons>["name"] = att.fileType === "application/pdf"
+                          ? "document-text-outline"
+                          : SCAN_EXTENSIONS.has(ext2)
+                          ? "cube-outline"
+                          : "document-outline";
+                        const fullUrl2 = att.storageKey.startsWith("http") ? att.storageKey : new URL(att.storageKey, getApiUrl()).toString();
+                        return (
+                          <Pressable key={att.id} onPress={async () => {
+                            if (downloadingAttachmentId === att.id) return;
+                            const mimeType = att.fileType || "application/octet-stream";
+                            const cacheDir = FileSystem.Paths.cache.uri;
+                            const localUri = cacheDir.endsWith("/") ? cacheDir + att.fileName : cacheDir + "/" + att.fileName;
+                            setDownloadingAttachmentId(att.id);
+                            try {
+                              const token = getAccessToken();
+                              const downloadResumable = LegacyFileSystem.createDownloadResumable(fullUrl2, localUri, token ? { headers: { Authorization: `Bearer ${token}` } } : {});
+                              const downloadRes = await downloadResumable.downloadAsync();
+                              if (!downloadRes || downloadRes.status !== 200) { Alert.alert("Download failed", "Could not download this file."); return; }
+                              const canShare = await Sharing.isAvailableAsync();
+                              if (canShare) { await Sharing.shareAsync(downloadRes.uri, { mimeType, dialogTitle: att.fileName }); }
+                              else { await Linking.openURL(downloadRes.uri).catch(() => Alert.alert("Unable to open", "Could not open this file.")); }
+                            } catch { Alert.alert("Unable to open", "Could not download or open this file."); }
+                            finally { setDownloadingAttachmentId(null); }
+                          }} style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8, paddingHorizontal: 10, backgroundColor: pressed ? "rgba(0,0,0,0.04)" : "#F8FAFC", borderRadius: 10, marginBottom: 6, borderWidth: 1, borderColor: Colors.light.border })}>
+                            <View style={{ width: 40, height: 40, borderRadius: 8, backgroundColor: "#E2E8F0", alignItems: "center", justifyContent: "center" }}>
+                              {downloadingAttachmentId === att.id
+                                ? <ActivityIndicator size="small" color={Colors.light.tint} />
+                                : <Ionicons name={iconName2} size={22} color={Colors.light.tint} />}
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.text }} numberOfLines={1}>{att.fileName}</Text>
+                              <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 1 }}>
+                                {ext2.toUpperCase()} · {att.createdAt ? new Date(att.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : ""}
+                              </Text>
+                            </View>
+                            <Ionicons name="open-outline" size={16} color={Colors.light.textTertiary} />
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  )}
+                </View>
+              );
+            })()}
+
+            {userType !== "provider" && serverAttachments.map((att) => {
               const isImage = (att.fileType || "").startsWith("image/");
               const ext = att.fileName.split(".").pop()?.toLowerCase() ?? "";
               const is3D = SCAN_MIME_TYPES.has(att.fileType || "") || SCAN_EXTENSIONS.has(ext);
@@ -2286,7 +2470,7 @@ export default function CaseDetailScreen() {
                 </Pressable>
               );
             })}
-            {uploadingAttachment && (
+            {uploadingAttachment && userType !== "provider" && (
               <View style={{
                 flexDirection: "row",
                 alignItems: "center",

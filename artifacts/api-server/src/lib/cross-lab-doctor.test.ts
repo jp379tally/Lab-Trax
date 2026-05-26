@@ -15,16 +15,36 @@ maybe("cross-lab doctor + allocator (db integration)", () => {
   let allocator: typeof import("./platform-account-number.js");
   let crossLab: typeof import("./cross-lab-doctor.js");
 
+  const SENTINEL_YEAR = 2999; // won't collide with real data
+
   beforeAll(async () => {
     dbMod = await import("@workspace/db");
     allocator = await import("./platform-account-number.js");
     crossLab = await import("./cross-lab-doctor.js");
+
+    // Drain any leftover rows from a previous run that may have crashed before
+    // afterAll could clean up. Must run before any allocation in this suite.
+    const { db, platformAccountSequences } = dbMod as any;
+    await db
+      .delete(platformAccountSequences)
+      .where(eq(platformAccountSequences.year, SENTINEL_YEAR));
+  });
+
+  afterAll(async () => {
+    // Always clean up, even when an assertion fails mid-test, so that
+    // subsequent runs start from a clean slate on the shared dev DB.
+    const { db, platformAccountSequences } = dbMod as any;
+    await db
+      .delete(platformAccountSequences)
+      .where(eq(platformAccountSequences.year, SENTINEL_YEAR));
   });
 
   it("allocator increments sequence per (year, entity)", async () => {
-    const year = 2999; // sentinel year that won't collide with real data
-    // Drain any existing row so this test is hermetic.
+    const year = SENTINEL_YEAR;
     const { db, platformAccountSequences } = dbMod as any;
+
+    // Re-drain at test start in case a concurrent worker left rows since
+    // beforeAll ran (unlikely but makes the assertion deterministic).
     await db
       .delete(platformAccountSequences)
       .where(eq(platformAccountSequences.year, year));
@@ -61,11 +81,6 @@ maybe("cross-lab doctor + allocator (db integration)", () => {
       )
     );
     expect(new Set(concurrent).size).toBe(concurrent.length);
-
-    // Cleanup so re-runs are idempotent.
-    await db
-      .delete(platformAccountSequences)
-      .where(eq(platformAccountSequences.year, year));
   });
 
   it("canonicalLinkPair orders user ids deterministically", () => {
