@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useColumnWidths } from "@/hooks/useColumnWidths";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
@@ -859,6 +859,34 @@ export function InvoiceEditor({
   } =
     useColumnWidths([...COL_DEFAULTS], user?.id);
 
+  // Resizable panel width — drag the left edge to expand/shrink.
+  const PANEL_WIDTH_KEY = "labtrax_invoice_panel_width_v1";
+  const PANEL_MIN = 480;
+  const PANEL_MAX = Math.round(window.innerWidth * 0.95);
+  const [panelWidth, setPanelWidth] = useState<number>(() => {
+    const stored = parseInt(localStorage.getItem(PANEL_WIDTH_KEY) ?? "", 10);
+    return isNaN(stored) ? 768 : Math.min(Math.max(stored, PANEL_MIN), PANEL_MAX);
+  });
+  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const onResizeMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dragRef.current = { startX: e.clientX, startWidth: panelWidth };
+    function onMove(ev: MouseEvent) {
+      if (!dragRef.current) return;
+      const delta = dragRef.current.startX - ev.clientX;
+      const next = Math.min(Math.max(dragRef.current.startWidth + delta, PANEL_MIN), Math.round(window.innerWidth * 0.95));
+      setPanelWidth(next);
+    }
+    function onUp() {
+      setPanelWidth((w) => { localStorage.setItem(PANEL_WIDTH_KEY, String(w)); return w; });
+      dragRef.current = null;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [panelWidth, PANEL_MIN]);
+
   // Layout preset selection (per-invoice override of the lab's default template).
   const [layoutPresetId, setLayoutPresetId] = useState<string | null>(
     invoice.layoutPresetId ?? null,
@@ -1327,7 +1355,16 @@ export function InvoiceEditor({
 
   return (
     <div className="fixed inset-0 z-50 flex items-stretch justify-end bg-foreground/30">
-      <div className="w-full max-w-3xl bg-card border-l border-border h-full overflow-y-auto scrollbar-thin">
+      <div
+        className="relative bg-card border-l border-border h-full overflow-y-auto scrollbar-thin"
+        style={{ width: panelWidth, maxWidth: "95vw", minWidth: PANEL_MIN }}
+      >
+        {/* Drag handle on the left edge */}
+        <div
+          onMouseDown={onResizeMouseDown}
+          className="absolute left-0 top-0 h-full w-1.5 cursor-col-resize z-20 hover:bg-primary/30 active:bg-primary/50 transition-colors"
+          title="Drag to resize"
+        />
         <header className="sticky top-0 z-10 bg-card border-b border-border px-6 py-4 flex items-center justify-between">
           <div>
             <div className="text-xs text-muted-foreground">Invoice</div>
