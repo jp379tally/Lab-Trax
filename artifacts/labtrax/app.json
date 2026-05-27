@@ -89,6 +89,7 @@
             "NSExtensionActivationSupportsFileWithMaxCount": 10
           },
           "iosShareExtensionName": "LabTraxShare",
+          "iosAppGroupIdentifier": "group.app.replit.labtrax.sdr",
           "androidIntentFilters": [
             "image/*"
           ],
