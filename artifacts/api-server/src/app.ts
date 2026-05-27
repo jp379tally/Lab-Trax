@@ -11,7 +11,7 @@ import { logger } from "./lib/logger";
 import { HttpError } from "./lib/http";
 import { startStatementScheduler } from "./lib/statements";
 import { startDailyOrphanedMediaCleanup } from "./lib/case-media";
-import { startDailyOneDriveBackup, start15MinRollingBackup, restartScheduledBackupJob } from "./lib/backup";
+import { restartScheduledBackupJob } from "./lib/backup";
 import { startBillingJobs } from "./lib/billing-jobs";
 import { handleStripeWebhook } from "./routes/billing";
 import {
@@ -380,11 +380,6 @@ app.use("/api", requireCsrf, router);
 startStatementScheduler();
 startDailyOrphanedMediaCleanup();
 startBillingJobs();
-// OneDrive backup schedulers — only active when the connector is available.
-if (process.env.REPLIT_CONNECTORS_HOSTNAME) {
-  startDailyOneDriveBackup();
-  start15MinRollingBackup();
-}
 // Dynamic recurring backup scheduler — reads persisted settings from DB and
 // starts the interval timer. Runs at startup so saved schedules survive restarts.
 restartScheduledBackupJob().catch((err: unknown) => {

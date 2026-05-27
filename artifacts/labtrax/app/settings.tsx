@@ -71,26 +71,6 @@ export default function SettingsScreen() {
   const [addUserSelected, setAddUserSelected] = useState<{ username: string; email: string } | null>(null);
   const [addUserRole, setAddUserRole] = useState<"user" | "admin">("user");
 
-  const [rollingBackupStatus, setRollingBackupStatus] = useState<{
-    rollingBackupEnabled: boolean;
-    rollingBackupLastRunAt: string | null;
-    rollingBackupLastError: string | null;
-  } | null>(null);
-  const [rollingBackupLoading, setRollingBackupLoading] = useState(false);
-
-  type OneDriveStatus = {
-    connected: boolean;
-    accountName?: string;
-    accountEmail?: string;
-    lastCheckedAt?: string;
-    error?: string;
-  };
-  const [oneDriveStatus, setOneDriveStatus] = useState<OneDriveStatus | null>(null);
-  const [oneDriveStatusLoading, setOneDriveStatusLoading] = useState(false);
-  const [oneDriveReconnecting, setOneDriveReconnecting] = useState(false);
-  const [oneDriveReconnectPending, setOneDriveReconnectPending] = useState(false);
-  const [oneDriveReconnectError, setOneDriveReconnectError] = useState<string | null>(null);
-  const oneDriveReconnectPollRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   type BackupRun = {
     id: number;
@@ -137,10 +117,8 @@ export default function SettingsScreen() {
   const [restoreError, setRestoreError] = useState<string | null>(null);
   const [restoreSuccess, setRestoreSuccess] = useState(false);
   const [restorePickedFile, setRestorePickedFile] = useState<{ name: string; uri: string } | null>(null);
-  const [restoreUseOneDrive, setRestoreUseOneDrive] = useState(false);
   const [showRestoreModal, setShowRestoreModal] = useState(false);
   const [restoreConfirmStep, setRestoreConfirmStep] = useState<1 | 2>(1);
-  const [hasOneDriveBackup, setHasOneDriveBackup] = useState(false);
   const restorePollRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
 
   const stopRestorePolling = React.useCallback(() => {
@@ -178,7 +156,6 @@ export default function SettingsScreen() {
     if (result.canceled || !result.assets?.[0]) return;
     const asset = result.assets[0];
     setRestorePickedFile({ name: asset.name, uri: asset.uri });
-    setRestoreUseOneDrive(false);
   }
 
   async function runMobileRestore() {
@@ -189,9 +166,7 @@ export default function SettingsScreen() {
     setRestoreSuccess(false);
     startRestorePolling();
     try {
-      if (restoreUseOneDrive) {
-        await resilientFetch("/api/admin/backup/restore/from-onedrive", { method: "POST" });
-      } else if (restorePickedFile) {
+      if (restorePickedFile) {
         const fd = new FormData();
         fd.append("file", { uri: restorePickedFile.uri, name: restorePickedFile.name, type: "application/octet-stream" } as unknown as Blob);
         await resilientFetch("/api/admin/backup/restore", { method: "POST", body: fd });
@@ -335,116 +310,6 @@ export default function SettingsScreen() {
   );
   const isLabAdminForEffect =
     userType === "lab" && currentUserDataForEffect?.role === "admin";
-
-  useEffect(() => {
-    if (!isLabAdminForEffect) return;
-    let cancelled = false;
-    async function fetchRollingBackup() {
-      setRollingBackupLoading(true);
-      try {
-        const res = await resilientFetch("/api/admin/settings/backup-schedule");
-        if (!res.ok || cancelled) return;
-        const data = await res.json();
-        if (!cancelled) {
-          setRollingBackupStatus({
-            rollingBackupEnabled: data.rollingBackupEnabled ?? true,
-            rollingBackupLastRunAt: data.rollingBackupLastRunAt ?? null,
-            rollingBackupLastError: data.rollingBackupLastError ?? null,
-          });
-        }
-      } catch {
-        // gracefully ignore — OneDrive may not be configured
-      } finally {
-        if (!cancelled) setRollingBackupLoading(false);
-      }
-    }
-    void fetchRollingBackup();
-    return () => { cancelled = true; };
-  }, [isLabAdminForEffect]);
-
-  const fetchOneDriveStatus = React.useCallback(async (refresh: boolean = false): Promise<OneDriveStatus | null> => {
-    try {
-      const res = await resilientFetch(`/api/admin/backup/onedrive-status${refresh ? "?refresh=1" : ""}`);
-      if (!res.ok) return null;
-      const data = await res.json();
-      const next: OneDriveStatus = {
-        connected: data.connected === true,
-        accountName: data.accountName,
-        accountEmail: data.accountEmail,
-        lastCheckedAt: data.lastCheckedAt,
-        error: data.error,
-      };
-      setOneDriveStatus(next);
-      return next;
-    } catch {
-      return null;
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!isLabAdminForEffect) return;
-    let cancelled = false;
-    setOneDriveStatusLoading(true);
-    void fetchOneDriveStatus().finally(() => {
-      if (!cancelled) setOneDriveStatusLoading(false);
-    });
-    const intervalId = setInterval(() => {
-      void fetchOneDriveStatus();
-    }, 60_000);
-    return () => {
-      cancelled = true;
-      clearInterval(intervalId);
-    };
-  }, [isLabAdminForEffect, fetchOneDriveStatus]);
-
-  React.useEffect(() => () => {
-    if (oneDriveReconnectPollRef.current) {
-      clearTimeout(oneDriveReconnectPollRef.current);
-      oneDriveReconnectPollRef.current = null;
-    }
-  }, []);
-
-  const handleOneDriveReconnect = React.useCallback(async () => {
-    setOneDriveReconnectError(null);
-    setOneDriveReconnecting(true);
-    try {
-      const res = await resilientFetch("/api/admin/backup/onedrive-reconnect", { method: "POST" });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body?.error || body?.message || "Failed to start OneDrive reconnect.");
-      }
-      const data = await res.json();
-      const url: string | undefined = data?.reconnectUrl;
-      if (!url) throw new Error("Server did not return a reconnect URL.");
-      try {
-        await WebBrowser.openBrowserAsync(url);
-      } catch {
-        const { Linking } = await import("react-native");
-        await Linking.openURL(url).catch(() => {});
-      }
-      setOneDriveReconnectPending(true);
-      const start = Date.now();
-      const TIMEOUT_MS = 5 * 60_000;
-      const POLL_MS = 5_000;
-      const tick = async () => {
-        const status = await fetchOneDriveStatus(true);
-        if (status?.connected) {
-          setOneDriveReconnectPending(false);
-          return;
-        }
-        if (Date.now() - start < TIMEOUT_MS) {
-          oneDriveReconnectPollRef.current = setTimeout(tick, POLL_MS);
-        } else {
-          setOneDriveReconnectPending(false);
-        }
-      };
-      oneDriveReconnectPollRef.current = setTimeout(tick, POLL_MS);
-    } catch (err) {
-      setOneDriveReconnectError(err instanceof Error ? err.message : "Failed to start OneDrive reconnect.");
-    } finally {
-      setOneDriveReconnecting(false);
-    }
-  }, [fetchOneDriveStatus]);
 
   useEffect(() => {
     if (!isLabAdminForEffect) return;
@@ -1543,196 +1408,6 @@ export default function SettingsScreen() {
           </View>
         )}
 
-        {isLabAdmin && oneDriveStatus && !oneDriveStatus.connected && (
-          <View style={styles.section}>
-            <View
-              style={{
-                flexDirection: "row",
-                alignItems: "flex-start",
-                gap: 10,
-                padding: 14,
-                borderRadius: 10,
-                borderWidth: 1,
-                borderColor: "#FCA5A5",
-                backgroundColor: isDark ? "#450A0A" : "#FEF2F2",
-              }}
-            >
-              <Ionicons name="alert-circle" size={20} color="#DC2626" style={{ marginTop: 1 }} />
-              <View style={{ flex: 1, gap: 4 }}>
-                <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: isDark ? "#FCA5A5" : "#991B1B" }}>
-                  OneDrive disconnected — backups are paused
-                </Text>
-                <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: isDark ? "#FCA5A5" : "#B91C1C" }}>
-                  {oneDriveStatus.error
-                    ? `Last check: ${oneDriveStatus.error}`
-                    : "Reconnect to resume OneDrive backups."}
-                </Text>
-                {oneDriveReconnectError && (
-                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: isDark ? "#FCA5A5" : "#B91C1C" }}>
-                    {oneDriveReconnectError}
-                  </Text>
-                )}
-                {oneDriveReconnectPending && (
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 2 }}>
-                    <ActivityIndicator size="small" color="#DC2626" />
-                    <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: isDark ? "#FCA5A5" : "#B91C1C" }}>
-                      Waiting for sign-in to complete…
-                    </Text>
-                  </View>
-                )}
-                <Pressable
-                  onPress={() => { void handleOneDriveReconnect(); }}
-                  disabled={oneDriveReconnecting}
-                  style={({ pressed }) => [
-                    {
-                      alignSelf: "flex-start",
-                      marginTop: 8,
-                      paddingHorizontal: 12,
-                      paddingVertical: 7,
-                      borderRadius: 6,
-                      backgroundColor: isDark ? "#7F1D1D" : "#FECACA",
-                      opacity: oneDriveReconnecting ? 0.6 : pressed ? 0.8 : 1,
-                      flexDirection: "row",
-                      alignItems: "center",
-                      gap: 6,
-                    },
-                  ]}
-                >
-                  {oneDriveReconnecting && <ActivityIndicator size="small" color={isDark ? "#FCA5A5" : "#991B1B"} />}
-                  <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: isDark ? "#FCA5A5" : "#991B1B" }}>
-                    Reconnect OneDrive
-                  </Text>
-                </Pressable>
-              </View>
-            </View>
-          </View>
-        )}
-
-        {isLabAdmin && oneDriveStatus?.connected && (
-          <View style={[styles.section, { paddingTop: 4 }]}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 4 }}>
-              <Ionicons name="checkmark-circle" size={14} color="#16A34A" />
-              <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textSecondary, flex: 1 }} numberOfLines={2}>
-                OneDrive connected
-                {oneDriveStatus.accountName || oneDriveStatus.accountEmail
-                  ? ` as ${oneDriveStatus.accountName ?? ""}${
-                      oneDriveStatus.accountEmail ? ` (${oneDriveStatus.accountEmail})` : ""
-                    }`
-                  : ""}
-                {oneDriveStatus.lastCheckedAt
-                  ? ` · checked ${new Date(oneDriveStatus.lastCheckedAt).toLocaleTimeString()}`
-                  : ""}
-              </Text>
-            </View>
-          </View>
-        )}
-
-        {isLabAdmin && oneDriveStatusLoading && !oneDriveStatus && (
-          <View style={[styles.section, { paddingTop: 4 }]}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 4 }}>
-              <ActivityIndicator size="small" color={colors.textTertiary} />
-              <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textTertiary }}>
-                Checking OneDrive connection…
-              </Text>
-            </View>
-          </View>
-        )}
-
-        {isLabAdmin && (rollingBackupLoading || rollingBackupStatus) && (
-          <View style={styles.section}>
-            <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>ONEDRIVE BACKUP</Text>
-            <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-              {rollingBackupLoading && !rollingBackupStatus ? (
-                <View style={{ padding: 20, alignItems: "center" }}>
-                  <ActivityIndicator size="small" color={colors.tint} />
-                </View>
-              ) : rollingBackupStatus ? (
-                <>
-                  {/* Toggle row */}
-                  <Pressable
-                    style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
-                    onPress={async () => {
-                      const next = !rollingBackupStatus.rollingBackupEnabled;
-                      setRollingBackupStatus((prev) => prev ? { ...prev, rollingBackupEnabled: next } : prev);
-                      try {
-                        const res = await resilientFetch("/api/admin/settings/backup-schedule", {
-                          method: "PATCH",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ rollingBackupEnabled: next }),
-                        });
-                        if (!res.ok) {
-                          setRollingBackupStatus((prev) => prev ? { ...prev, rollingBackupEnabled: !next } : prev);
-                          Alert.alert("Error", "Could not update rolling backup setting.");
-                        }
-                      } catch {
-                        setRollingBackupStatus((prev) => prev ? { ...prev, rollingBackupEnabled: !next } : prev);
-                        Alert.alert("Error", "Could not reach the server.");
-                      }
-                    }}
-                  >
-                    <View style={[styles.menuIcon, { backgroundColor: rollingBackupStatus.rollingBackupEnabled ? "#DCFCE7" : colors.surfaceSecondary }]}>
-                      <Ionicons
-                        name={rollingBackupStatus.rollingBackupEnabled ? "refresh-circle" : "pause-circle"}
-                        size={18}
-                        color={rollingBackupStatus.rollingBackupEnabled ? "#16A34A" : colors.textSecondary}
-                      />
-                    </View>
-                    <View style={styles.menuInfo}>
-                      <Text style={[styles.menuTitle, { color: colors.text }]}>15-min Rolling Backup</Text>
-                      <Text style={[styles.menuSub, { color: rollingBackupStatus.rollingBackupEnabled ? "#16A34A" : colors.textSecondary }]}>
-                        {rollingBackupStatus.rollingBackupEnabled
-                          ? "Active — overwrites LabTrax-Rolling-Backup.zip every 15 min"
-                          : "Paused — tap to enable"}
-                      </Text>
-                    </View>
-                    {/* Native-style toggle indicator */}
-                    <View
-                      style={{
-                        width: 44,
-                        height: 26,
-                        borderRadius: 13,
-                        backgroundColor: rollingBackupStatus.rollingBackupEnabled ? "#16A34A" : colors.borderLight,
-                        justifyContent: "center",
-                        padding: 3,
-                      }}
-                    >
-                      <View
-                        style={{
-                          width: 20,
-                          height: 20,
-                          borderRadius: 10,
-                          backgroundColor: "#ffffff",
-                          alignSelf: rollingBackupStatus.rollingBackupEnabled ? "flex-end" : "flex-start",
-                          shadowColor: "#000",
-                          shadowOpacity: 0.15,
-                          shadowRadius: 2,
-                          shadowOffset: { width: 0, height: 1 },
-                          elevation: 2,
-                        }}
-                      />
-                    </View>
-                  </Pressable>
-
-                  {/* Last-run / error status — always rendered */}
-                  <View style={[styles.menuDivider, { backgroundColor: colors.borderLight, marginLeft: 0 }]} />
-                  <View style={[styles.menuItem, { flexDirection: "column", alignItems: "flex-start", gap: 4 }]}>
-                    <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textSecondary }}>
-                      {rollingBackupStatus.rollingBackupLastRunAt
-                        ? `Last run: ${new Date(rollingBackupStatus.rollingBackupLastRunAt).toLocaleString()}`
-                        : "Last run: Not yet run"}
-                    </Text>
-                    {rollingBackupStatus.rollingBackupLastError && (
-                      <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#DC2626" }} numberOfLines={2}>
-                        Error: {rollingBackupStatus.rollingBackupLastError}
-                      </Text>
-                    )}
-                  </View>
-                </>
-              ) : null}
-            </View>
-          </View>
-        )}
-
         {isLabAdmin && (
           <View style={styles.section}>
             <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
@@ -1863,17 +1538,10 @@ export default function SettingsScreen() {
                   </Text>
 
                   {/* Picked file name */}
-                  {restorePickedFile && !restoreUseOneDrive ? (
+                  {restorePickedFile ? (
                     <View style={{ flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.border ?? "#f3f4f6", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6 }}>
                       <Ionicons name="document-outline" size={14} color={colors.textSecondary} />
                       <Text style={{ flex: 1, fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textSecondary }} numberOfLines={1}>{restorePickedFile.name}</Text>
-                    </View>
-                  ) : null}
-
-                  {restoreUseOneDrive ? (
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.border ?? "#f3f4f6", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6 }}>
-                      <Ionicons name="cloud-outline" size={14} color={colors.textSecondary} />
-                      <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: colors.textSecondary }}>Latest file in OneDrive (LabTrax Backups)</Text>
                     </View>
                   ) : null}
 
@@ -1887,21 +1555,11 @@ export default function SettingsScreen() {
                       <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.tint }}>Choose backup file…</Text>
                     </Pressable>
 
-                    {rollingBackupStatus?.rollingBackupEnabled ? (
-                      <Pressable
-                        style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 9, paddingHorizontal: 14, borderRadius: 8, borderWidth: 1, borderColor: restoreUseOneDrive ? colors.tint : (colors.border ?? "#e5e7eb"), backgroundColor: restoreUseOneDrive ? (colors.tintLight ?? "#f0f0ff") : colors.surface }}
-                        onPress={() => { setRestoreUseOneDrive(true); setRestorePickedFile(null); }}
-                      >
-                        <Ionicons name="refresh-outline" size={15} color={colors.tint} />
-                        <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.tint }}>Restore from OneDrive (latest)</Text>
-                      </Pressable>
-                    ) : null}
-
                     <Pressable
-                      disabled={!restorePickedFile && !restoreUseOneDrive}
-                      style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 8, backgroundColor: (!restorePickedFile && !restoreUseOneDrive) ? (colors.border ?? "#e5e7eb") : "#dc2626", opacity: pressed ? 0.8 : 1 })}
+                      disabled={!restorePickedFile}
+                      style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 8, backgroundColor: !restorePickedFile ? (colors.border ?? "#e5e7eb") : "#dc2626", opacity: pressed ? 0.8 : 1 })}
                       onPress={() => {
-                        if (!restorePickedFile && !restoreUseOneDrive) return;
+                        if (!restorePickedFile) return;
                         setRestoreConfirmStep(1);
                         setShowRestoreModal(true);
                       }}
@@ -1928,7 +1586,7 @@ export default function SettingsScreen() {
                   </Text>
                   <View style={{ backgroundColor: "#fef3c7", borderRadius: 8, padding: 10 }}>
                     <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: "#92400e" }}>
-                      Source: {restoreUseOneDrive ? "Latest file in OneDrive" : (restorePickedFile?.name ?? "selected file")}
+                      Source: {restorePickedFile?.name ?? "selected file"}
                     </Text>
                   </View>
                   <View style={{ flexDirection: "row", gap: 10 }}>

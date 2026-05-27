@@ -27,8 +27,6 @@ import * as fs from "node:fs";
 const TEST_MEDIA_DIR = path.join(os.tmpdir(), "labtrax-test-media-search");
 
 vi.mock("../lib/backup.js", () => ({
-  startDailyOneDriveBackup: vi.fn(),
-  start15MinRollingBackup: vi.fn(),
   restartScheduledBackupJob: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));

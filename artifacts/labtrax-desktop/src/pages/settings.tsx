@@ -2512,7 +2512,7 @@ function UsersPanel() {
   );
 }
 
-type BackupDestinationType = "onedrive" | "local" | "network";
+type BackupDestinationType = "local" | "network";
 type BackupIntervalUnit = "minutes" | "hours";
 
 interface BackupScheduleData {
@@ -2578,13 +2578,13 @@ interface BackupRunRow {
 
 function BackupPanel() {
   const queryClient = useQueryClient();
-  const [nowDest, setNowDest] = useState<BackupDestinationType>("onedrive");
+  const [nowDest, setNowDest] = useState<BackupDestinationType>("local");
   const [nowPath, setNowPath] = useState("");
   const [backupResult, setBackupResult] = useState<{ size: number; completedAt: string; fileName: string } | null>(null);
   const [backupError, setBackupError] = useState<string | null>(null);
 
   const [schedIntervalKey, setSchedIntervalKey] = useState<string>(intervalKey(1, "hours"));
-  const [schedDest, setSchedDest] = useState<BackupDestinationType>("onedrive");
+  const [schedDest, setSchedDest] = useState<BackupDestinationType>("local");
   const [schedPath, setSchedPath] = useState("");
   const [schedEnabled, setSchedEnabled] = useState(false);
   const [staleThresholdDays, setStaleThresholdDays] = useState(7);
@@ -2651,7 +2651,7 @@ function BackupPanel() {
       if (interval !== null && unit !== null) {
         setSchedIntervalKey(intervalKey(interval, unit));
       }
-      setSchedDest((scheduleQuery.data.destination as BackupDestinationType | null) ?? "onedrive");
+      setSchedDest((scheduleQuery.data.destination as BackupDestinationType | null) ?? "local");
       setSchedPath(scheduleQuery.data.path ?? "");
       setSchedEnabled(scheduleQuery.data.enabled);
       setStaleThresholdDays(scheduleQuery.data.staleAlertThresholdDays ?? 7);
@@ -2730,88 +2730,12 @@ function BackupPanel() {
     }
   }
 
-  // ── OneDrive connection status ─────────────────────────────────────────────
-  const oneDriveStatusQuery = useQuery<{
-    ok: boolean;
-    connected: boolean;
-    accountName?: string;
-    accountEmail?: string;
-    lastCheckedAt: string;
-    error?: string;
-  }>({
-    queryKey: ["admin", "backup-onedrive-status"],
-    queryFn: () => apiFetch("/admin/backup/onedrive-status"),
-    refetchInterval: 60_000,
-    refetchOnWindowFocus: true,
-    staleTime: 30_000,
-  });
-
-  const [reconnectPending, setReconnectPending] = useState(false);
-  const [reconnectError, setReconnectError] = useState<string | null>(null);
-  const reconnectMutation = useMutation({
-    mutationFn: () =>
-      apiFetch<{ ok: boolean; reconnectUrl: string; instructions: string }>(
-        "/admin/backup/onedrive-reconnect",
-        { method: "POST" },
-      ),
-    onSuccess: async (data) => {
-      setReconnectError(null);
-      if (electron?.openExternal) {
-        await electron.openExternal(data.reconnectUrl).catch(() => {});
-      } else if (typeof window !== "undefined") {
-        window.open(data.reconnectUrl, "_blank", "noopener,noreferrer");
-      }
-      setReconnectPending(true);
-      const start = Date.now();
-      const TIMEOUT_MS = 5 * 60_000;
-      const POLL_MS = 5_000;
-      const tick = async () => {
-        try {
-          const status = await apiFetch<{ connected: boolean; error?: string }>(
-            "/admin/backup/onedrive-status?refresh=1",
-          );
-          queryClient.setQueryData(["admin", "backup-onedrive-status"], { ok: true, ...status });
-          if (status.connected) {
-            setReconnectPending(false);
-            queryClient.invalidateQueries({ queryKey: ["admin", "backup-schedule-v2"] });
-            queryClient.invalidateQueries({ queryKey: ["admin", "backup-history"] });
-            return;
-          }
-        } catch {
-          // keep polling
-        }
-        if (Date.now() - start < TIMEOUT_MS) {
-          setTimeout(tick, POLL_MS);
-        } else {
-          setReconnectPending(false);
-        }
-      };
-      setTimeout(tick, POLL_MS);
-    },
-    onError: (err: Error) => {
-      setReconnectError(err.message || "Failed to start OneDrive reconnect.");
-    },
-  });
-
-  const oneDriveConnected = oneDriveStatusQuery.data?.connected === true;
-  const oneDriveDisconnected = oneDriveStatusQuery.data && !oneDriveStatusQuery.data.connected;
-
   const gate = usePlatformAdminGate([
     scheduleQuery.error,
     backupNowMutation.error,
     saveScheduleMutation.error,
     disableScheduleMutation.error,
   ]);
-
-  // If a backup run fails with what looks like a OneDrive auth error, flip
-  // the status banner on immediately instead of waiting for the next poll.
-  useEffect(() => {
-    if (!backupError) return;
-    if (nowDest !== "onedrive") return;
-    if (/onedrive|token|unauthor|401|403/i.test(backupError)) {
-      queryClient.invalidateQueries({ queryKey: ["admin", "backup-onedrive-status"] });
-    }
-  }, [backupError, nowDest, queryClient]);
 
   const needsPath = (d: BackupDestinationType) => d === "local" || d === "network";
 
@@ -2848,55 +2772,6 @@ function BackupPanel() {
         </div>
       )}
 
-      {/* ── OneDrive connection status ─────────────────────────────────── */}
-      {!gate.blocked && oneDriveDisconnected && (
-        <div className="flex items-start gap-2.5 rounded-md border border-red-400/50 bg-red-50 dark:bg-red-950/30 px-3.5 py-3 text-red-800 dark:text-red-300">
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-          <div className="flex-1 text-xs leading-snug space-y-1">
-            <p className="font-semibold">OneDrive disconnected — backups are paused</p>
-            <p className="text-red-700 dark:text-red-400">
-              {oneDriveStatusQuery.data?.error
-                ? `Last check: ${oneDriveStatusQuery.data.error}`
-                : "Reconnect to resume OneDrive backups."}
-            </p>
-            {reconnectError && <p className="text-red-700 dark:text-red-400">{reconnectError}</p>}
-            {reconnectPending && (
-              <p className="text-red-700 dark:text-red-400 inline-flex items-center gap-1.5">
-                <Loader2 size={11} className="animate-spin" />
-                Waiting for sign-in to complete…
-              </p>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={() => reconnectMutation.mutate()}
-            disabled={reconnectMutation.isPending}
-            className="shrink-0 inline-flex items-center gap-1.5 h-7 px-2.5 rounded text-xs font-semibold bg-red-200 hover:bg-red-300 text-red-900 dark:bg-red-800 dark:hover:bg-red-700 dark:text-red-100 disabled:opacity-60 transition-colors"
-          >
-            {reconnectMutation.isPending ? <Loader2 size={11} className="animate-spin" /> : null}
-            Reconnect OneDrive
-          </button>
-        </div>
-      )}
-      {!gate.blocked && oneDriveConnected && (
-        <div className="flex items-center gap-2 px-1 text-[11px] text-muted-foreground">
-          <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-success"><path d="M20 6 9 17l-5-5"/></svg>
-          <span>
-            OneDrive connected
-            {oneDriveStatusQuery.data?.accountName || oneDriveStatusQuery.data?.accountEmail
-              ? ` as ${oneDriveStatusQuery.data?.accountName ?? ""}${
-                  oneDriveStatusQuery.data?.accountEmail
-                    ? ` (${oneDriveStatusQuery.data.accountEmail})`
-                    : ""
-                }`
-              : ""}
-            {oneDriveStatusQuery.data?.lastCheckedAt
-              ? ` · checked ${new Date(oneDriveStatusQuery.data.lastCheckedAt).toLocaleTimeString()}`
-              : ""}
-          </span>
-        </div>
-      )}
-
       {/* ── Back up now ── */}
       <div className="border border-border rounded-lg p-4 space-y-4">
         <div className="flex items-center gap-2">
@@ -2920,7 +2795,7 @@ function BackupPanel() {
           <div>
             <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-2">Destination</div>
             <div className="flex flex-wrap gap-4">
-              {(["onedrive", "local", "network"] as const).map((d) => (
+              {(["local", "network"] as const).map((d) => (
                 <label key={d} className="flex items-center gap-1.5 text-sm cursor-pointer">
                   <input
                     type="radio"
@@ -2930,23 +2805,10 @@ function BackupPanel() {
                     onChange={() => { setNowDest(d); setBackupResult(null); setBackupError(null); }}
                     className="accent-primary"
                   />
-                  {d === "onedrive" ? "OneDrive" : d === "local" ? "Local folder / USB" : "Network server"}
+                  {d === "local" ? "Local folder / USB" : "Network server"}
                 </label>
               ))}
             </div>
-            {nowDest === "onedrive" && oneDriveDisconnected && (
-              <div className="mt-2 flex items-center gap-2 text-[11px] text-red-700 dark:text-red-400">
-                <span>OneDrive is disconnected.</span>
-                <button
-                  type="button"
-                  onClick={() => reconnectMutation.mutate()}
-                  disabled={reconnectMutation.isPending}
-                  className="underline font-medium hover:no-underline disabled:opacity-60"
-                >
-                  Reconnect
-                </button>
-              </div>
-            )}
           </div>
 
           {needsPath(nowDest) && (
@@ -3037,23 +2899,9 @@ function BackupPanel() {
                   onChange={(e) => setSchedDest(e.target.value as BackupDestinationType)}
                   className={inputCls}
                 >
-                  <option value="onedrive">OneDrive</option>
                   <option value="local">Local folder / USB</option>
                   <option value="network">Network server</option>
                 </select>
-                {schedDest === "onedrive" && oneDriveDisconnected && (
-                  <div className="mt-1 flex items-center gap-2 text-[11px] text-red-700 dark:text-red-400">
-                    <span>OneDrive is disconnected.</span>
-                    <button
-                      type="button"
-                      onClick={() => reconnectMutation.mutate()}
-                      disabled={reconnectMutation.isPending}
-                      className="underline font-medium hover:no-underline disabled:opacity-60"
-                    >
-                      Reconnect
-                    </button>
-                  </div>
-                )}
               </Field>
             </div>
 
@@ -3361,7 +3209,6 @@ function RestoreSection({
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [showConfirm, setShowConfirm] = useState(false);
   const [confirmStep, setConfirmStep] = useState<1 | 2>(1);
-  const [useOneDrive, setUseOneDrive] = useState(false);
   const [restorePhase, setRestorePhase] = useState<RestorePhase>("idle");
   const [restoreMessage, setRestoreMessage] = useState<string | null>(null);
   const [restoreError, setRestoreError] = useState<string | null>(null);
@@ -3370,8 +3217,6 @@ function RestoreSection({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const countdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const hasOneDrive = !!scheduleData?.destination;
 
   const stopPolling = useCallback(() => {
     if (pollRef.current !== null) {
@@ -3447,7 +3292,6 @@ function RestoreSection({
       const blob = await resp.blob();
       const file = new File([blob], filePaths[0].split("/").pop() ?? "backup.zip.enc");
       setSelectedFile(file);
-      setUseOneDrive(false);
     }
   }
 
@@ -3455,13 +3299,11 @@ function RestoreSection({
     const f = e.target.files?.[0] ?? null;
     if (f) {
       setSelectedFile(f);
-      setUseOneDrive(false);
     }
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
-  function openConfirm(fromOneDrive: boolean) {
-    setUseOneDrive(fromOneDrive);
+  function openConfirm() {
     setConfirmStep(1);
     setRestoreError(null);
     setRestoreSuccess(false);
@@ -3476,9 +3318,7 @@ function RestoreSection({
     setRestoreSuccess(false);
     startPolling();
     try {
-      if (useOneDrive) {
-        await apiFetch("/admin/backup/restore/from-onedrive", { method: "POST" });
-      } else if (selectedFile) {
+      if (selectedFile) {
         const fd = new FormData();
         fd.append("file", selectedFile, selectedFile.name);
         await apiFetch("/admin/backup/restore", { method: "POST", body: fd, headers: {} as any });
@@ -3599,34 +3439,18 @@ function RestoreSection({
                       <Upload size={12} />
                       Choose backup file…
                     </button>
-                    {selectedFile && !useOneDrive && (
+                    {selectedFile && (
                       <span className="text-xs text-muted-foreground font-mono truncate max-w-[180px]" title={selectedFile.name}>
                         {selectedFile.name}
                       </span>
                     )}
                   </div>
-
-                  {/* OneDrive option */}
-                  {hasOneDrive && (
-                    <button
-                      type="button"
-                      disabled={gate.blocked}
-                      onClick={() => {
-                        setSelectedFile(null);
-                        setUseOneDrive(true);
-                      }}
-                      className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-md border text-xs font-medium transition-colors disabled:opacity-60 ${useOneDrive ? "border-primary bg-primary/10 text-primary" : "border-border bg-background hover:bg-secondary"}`}
-                    >
-                      <RefreshCcw size={12} />
-                      Restore from OneDrive (latest)
-                    </button>
-                  )}
                 </div>
 
                 <button
                   type="button"
-                  disabled={gate.blocked || (!selectedFile && !useOneDrive)}
-                  onClick={() => openConfirm(useOneDrive)}
+                  disabled={gate.blocked || !selectedFile}
+                  onClick={() => openConfirm()}
                   className="h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 disabled:opacity-60 inline-flex items-center gap-2"
                 >
                   <RotateCcw size={13} />
@@ -3663,7 +3487,7 @@ function RestoreSection({
                   <li>All users and organization settings</li>
                 </ul>
                 <p className="text-xs text-muted-foreground border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 rounded px-2 py-1.5">
-                  Source: <strong>{useOneDrive ? "Latest file in OneDrive (LabTrax Backups folder)" : (selectedFile?.name ?? "selected file")}</strong>
+                  Source: <strong>{selectedFile?.name ?? "selected file"}</strong>
                 </p>
                 <div className="flex justify-end gap-2 pt-1">
                   <button
@@ -7647,7 +7471,7 @@ function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
     {
       prefKey: "backupAlerts",
       label: "Backup reports",
-      desc: "Backup success and failure summaries, plus OneDrive connection disconnect / reconnect notices",
+      desc: "Backup success and failure summaries",
     },
     {
       prefKey: "cleanupAlerts",

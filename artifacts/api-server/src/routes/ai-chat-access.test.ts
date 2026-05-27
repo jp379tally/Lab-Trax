@@ -42,8 +42,6 @@ vi.mock("openai", () => {
 
 // ── Standard background-job mocks (same pattern as other route tests) ────────
 vi.mock("../lib/backup.js", () => ({
-  startDailyOneDriveBackup: vi.fn(),
-  start15MinRollingBackup: vi.fn(),
   restartScheduledBackupJob: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));

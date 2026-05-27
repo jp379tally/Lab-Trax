@@ -43,7 +43,6 @@ import {
   openCaseMediaObjectStream,
   writeCaseMediaToObjectStorage,
 } from "../lib/case-media-object-storage";
-import { deleteFromOneDrive } from "../lib/onedrive";
 import { HttpError, ok } from "../lib/http";
 import {
   buildLineItemDescription,
@@ -2429,29 +2428,6 @@ router.post(
   })
 );
 
-async function removeAttachmentFromOneDrive(
-  req: any,
-  storageKey: string | null | undefined
-): Promise<void> {
-  if (!storageKey) return;
-  try {
-    const fileName = extractMediaFileName(storageKey);
-    if (!fileName) return;
-    const result = await deleteFromOneDrive(fileName);
-    if (result === "deleted" || result === "missing") {
-      req.log?.info?.(
-        { fileName, result },
-        "Removed mirrored attachment from OneDrive"
-      );
-    }
-  } catch (err: any) {
-    req.log?.warn?.(
-      { err: err?.message || String(err), storageKey },
-      "Failed to remove mirrored attachment from OneDrive"
-    );
-  }
-}
-
 router.delete(
   "/:caseId/attachments/:attachmentId",
   asyncHandler(async (req, res) => {
@@ -2479,11 +2455,6 @@ router.delete(
     // logged but don't surface to the caller — the DB delete already
     // succeeded and a stray file is preferable to an inconsistent state.
     removeAttachmentFile(req, attachment.storageKey);
-
-    // If a OneDrive backup mirror is configured, also remove the
-    // mirrored copy. Same best-effort policy: log and continue on any
-    // failure so the DB delete is never reverted.
-    void removeAttachmentFromOneDrive(req, attachment.storageKey);
 
     const attachmentDeleter = (req as any).user;
     await db.insert(caseEvents).values({

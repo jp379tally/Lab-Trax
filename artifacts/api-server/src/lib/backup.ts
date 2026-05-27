@@ -9,13 +9,10 @@ import { db } from "@workspace/db";
 import { systemSettings, users, backupRuns } from "@workspace/db";
 import { eq, lt, sql } from "drizzle-orm";
 import { filterEmailsByPref } from "./email-prefs";
-import { uploadToOneDrive, checkOneDriveToken, getOneDriveStatus } from "./onedrive";
 import { logger } from "./logger";
 import {
   sendBackupNotificationEmail,
   sendBackupStaleAlertEmail,
-  sendOneDriveDisconnectedAlertEmail,
-  sendOneDriveReconnectedAlertEmail,
 } from "./mail";
 
 export interface BackupCounts {
@@ -45,7 +42,7 @@ export interface BackupRunResult {
   path?: string;
 }
 
-export type BackupDestination = "onedrive" | "local" | "network";
+export type BackupDestination = "local" | "network";
 
 export const SETTING_BACKUP_HOUR_UTC = "backup_hour_utc";
 export const SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES = "backup_schedule_interval_minutes";
@@ -55,25 +52,11 @@ export const SETTING_BACKUP_SCHEDULE_ENABLED = "backup_schedule_enabled";
 export const SETTING_BACKUP_LAST_SUCCESSFUL_AT = "backup_last_successful_at";
 export const SETTING_BACKUP_HISTORY_RETENTION_DAYS = "backup_history_retention_days";
 export const SETTING_BACKUP_HISTORY_MAX_ROWS = "backup_history_max_rows";
-export const SETTING_ROLLING_BACKUP_ENABLED = "rolling_backup_enabled";
-export const SETTING_ROLLING_BACKUP_LAST_RUN_AT = "rolling_backup_last_run_at";
-export const SETTING_ROLLING_BACKUP_LAST_ERROR = "rolling_backup_last_error";
 export const SETTING_BACKUP_STALE_ALERT_LAST_SENT_AT = "backup_stale_alert_last_sent_at";
 export const SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS = "backup_stale_alert_threshold_days";
 export const SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS = "backup_stale_alert_rate_limit_days";
 export const SETTING_BACKUP_STALE_DAYS = "backup_stale_days";
 export const DEFAULT_BACKUP_STALE_DAYS = 7;
-/**
- * Records the last known OneDrive connection state ("connected" or
- * "disconnected") seen by the scheduled checker. Used to detect state
- * transitions so the disconnect/reconnect alert email is sent exactly once
- * per transition rather than on every poll.
- */
-export const SETTING_ONEDRIVE_CONNECTION_LAST_STATE = "onedrive_connection_last_state";
-/** ISO timestamp of the last sent OneDrive disconnect alert (for debugging). */
-export const SETTING_ONEDRIVE_DISCONNECT_ALERT_LAST_SENT_AT =
-  "onedrive_disconnect_alert_last_sent_at";
-
 export const ALL_SCHEDULE_SETTINGS = [
   SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES,
   SETTING_BACKUP_SCHEDULE_DESTINATION,
@@ -465,32 +448,6 @@ export async function buildBackupZipBuffer(triggeredBy: string): Promise<{
   return { buffer, fileName };
 }
 
-export async function runOneDriveBackup(
-  triggeredBy: string,
-  options?: {
-    conflictBehavior?: "replace" | "rename" | "fail";
-    fileName?: string;
-  },
-): Promise<BackupResult> {
-  // Pre-flight: validate the OneDrive token with a cheap GET /me/drive call
-  // BEFORE building the (potentially large) zip buffer. This prevents the
-  // server from allocating hundreds of MB of zip data only to have the upload
-  // fail immediately due to an expired or malformed token — which, repeated
-  // every 15 minutes, exhausts heap and causes OOM crashes.
-  await checkOneDriveToken();
-
-  const { buffer, fileName: generatedFileName } = await buildBackupZipBuffer(triggeredBy);
-  const targetFileName = options?.fileName ?? generatedFileName;
-  const conflictBehavior = options?.conflictBehavior ?? "rename";
-  const result = await uploadToOneDrive(buffer, targetFileName, "LabTrax Backups", conflictBehavior);
-  return {
-    fileName: result.name,
-    size: result.size,
-    webUrl: result.webUrl,
-    folder: "LabTrax Backups",
-  };
-}
-
 /**
  * Write an encrypted backup to a local filesystem path.
  * On Linux, UNC/SMB paths must be pre-mounted (e.g. via cifs-utils) so they
@@ -754,16 +711,7 @@ export async function runBackup(
 ): Promise<BackupRunResult> {
   let result: BackupRunResult;
   try {
-    if (destination === "onedrive") {
-      const { buffer, fileName } = await buildBackupZipBuffer(triggeredBy);
-      const uploaded = await uploadToOneDrive(buffer, fileName, "LabTrax Backups");
-      result = {
-        size: uploaded.size,
-        completedAt: new Date().toISOString(),
-        fileName: uploaded.name,
-        destination: "onedrive",
-      };
-    } else if (destination === "local") {
+    if (destination === "local") {
       if (!destPath) throw new Error("A destination path is required for local backups.");
       result = await runLocalBackup(triggeredBy, destPath);
     } else if (destination === "network") {
@@ -779,36 +727,10 @@ export async function runBackup(
     const failedAt = await recordBackupError(triggeredBy, destination, destPath, errMsg);
     const outErr = err instanceof Error ? err : new Error(errMsg);
     (outErr as Error & { backupRunFailedAt?: string }).backupRunFailedAt = failedAt;
-    // If a OneDrive backup just failed, the most likely cause is a disconnected
-    // connector — run the state check now so admins get the alert immediately
-    // rather than waiting for the next daily cron tick.
-    if (destination === "onedrive") {
-      try {
-        await checkAndAlertOneDriveConnectionStatus();
-      } catch (checkErr: unknown) {
-        logger.warn(
-          { err: checkErr instanceof Error ? checkErr.message : String(checkErr) },
-          "[backup] Post-failure OneDrive connection check failed",
-        );
-      }
-    }
     throw outErr;
   }
   await recordSuccessfulBackup();
   await recordBackupRun({ ...result, triggeredBy });
-  // After a successful OneDrive backup, run the state check so the
-  // "reconnected" follow-up email fires as soon as OneDrive starts working
-  // again — without waiting for the next daily cron tick.
-  if (destination === "onedrive") {
-    try {
-      await checkAndAlertOneDriveConnectionStatus();
-    } catch (checkErr: unknown) {
-      logger.warn(
-        { err: checkErr instanceof Error ? checkErr.message : String(checkErr) },
-        "[backup] Post-success OneDrive connection check failed",
-      );
-    }
-  }
   return result;
 }
 
@@ -861,7 +783,7 @@ export async function getBackupScheduleConfig(): Promise<BackupScheduleConfig> {
       intervalRaw !== null ? (parseInt(intervalRaw, 10) || null) : null;
     const destinationRaw = byKey[SETTING_BACKUP_SCHEDULE_DESTINATION] ?? null;
     const destination =
-      destinationRaw === "onedrive" || destinationRaw === "local" || destinationRaw === "network"
+      destinationRaw === "local" || destinationRaw === "network"
         ? destinationRaw
         : null;
     const schedulePath = byKey[SETTING_BACKUP_SCHEDULE_PATH] ?? null;
@@ -1104,83 +1026,6 @@ function msUntilNext(hourUtc: number): number {
   return next.getTime() - now.getTime();
 }
 
-export async function startDailyOneDriveBackup() {
-  if (scheduled) return;
-  scheduled = true;
-
-  const hourUtc = await getBackupHourUtc();
-
-  const tick = async () => {
-    try {
-      logger.info(
-        { startedAt: new Date().toISOString() },
-        "Daily OneDrive backup starting",
-      );
-      const result = await runOneDriveBackup("scheduler:daily");
-      logger.info(
-        {
-          fileName: result.fileName,
-          size: result.size,
-        },
-        "Daily OneDrive backup OK",
-      );
-      try {
-        const adminEmails = await getAdminEmails();
-        await sendBackupNotificationEmail({
-          adminEmails,
-          triggeredBy: "scheduler:daily",
-          success: true,
-          result: {
-            destination: "onedrive",
-            fileName: result.fileName,
-            size: result.size,
-            completedAt: new Date().toISOString(),
-          },
-        });
-      } catch (mailErr: unknown) {
-        logger.error(
-          { err: mailErr instanceof Error ? mailErr.message : String(mailErr) },
-          "Daily OneDrive backup: success notification email failed",
-        );
-      }
-    } catch (err: unknown) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      logger.error(
-        { err: errMsg },
-        "Daily OneDrive backup FAILED",
-      );
-      try {
-        const adminEmails = await getAdminEmails();
-        await sendBackupNotificationEmail({
-          adminEmails,
-          triggeredBy: "scheduler:daily",
-          success: false,
-          errorMessage: errMsg,
-          destination: "onedrive",
-        });
-      } catch (mailErr: unknown) {
-        logger.error(
-          { err: mailErr instanceof Error ? mailErr.message : String(mailErr) },
-          "Daily OneDrive backup: failure notification email failed",
-        );
-      }
-    } finally {
-      // Re-schedule for the next day even if this run failed.
-      setTimeout(tick, msUntilNext(hourUtc));
-    }
-  };
-
-  const initialDelay = msUntilNext(hourUtc);
-  logger.info(
-    {
-      hourUtc,
-      firstRunInMinutes: Math.round(initialDelay / 60000),
-    },
-    "Daily OneDrive backup scheduled",
-  );
-  setTimeout(tick, initialDelay);
-}
-
 // ── Dynamic recurring backup scheduler ──────────────────────────────────────
 // Driven by system_settings rows written by PUT /api/admin/backup/schedule.
 // The interval timer is replaced each time the schedule is updated.
@@ -1267,269 +1112,3 @@ export async function restartScheduledBackupJob(): Promise<void> {
   _scheduledIntervalTimer = setInterval(fireScheduledBackup, intervalMs);
 }
 
-// ── 15-minute rolling OneDrive backup scheduler ──────────────────────────────
-// Keeps a single rolling backup on OneDrive by uploading every 15 minutes,
-// replacing the previous file each time. Skips ticks when disabled via the
-// rolling_backup_enabled system_settings row. Outcomes are written to
-// rolling_backup_last_run_at and rolling_backup_last_error.
-
-let _rollingBackupScheduled = false;
-let _rollingBackupRunning = false;
-
-const ROLLING_BACKUP_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
-
-export function start15MinRollingBackup(): void {
-  if (_rollingBackupScheduled) return;
-  _rollingBackupScheduled = true;
-
-  logger.info("[backup] 15-minute rolling OneDrive backup scheduler armed");
-
-  const tick = async () => {
-    // Concurrency guard: skip if a previous tick is still running (e.g. large
-    // zip build overlapping the 15-min interval). Without this, ticks stack up
-    // and allocate multiple in-flight zip buffers simultaneously.
-    if (_rollingBackupRunning) {
-      logger.info("[backup] Rolling backup tick skipped — previous run still in progress");
-      return;
-    }
-    _rollingBackupRunning = true;
-    try {
-      // Check whether the rolling backup is enabled before doing any work.
-      try {
-        const rows = await db
-          .select()
-          .from(systemSettings)
-          .where(eq(systemSettings.key, SETTING_ROLLING_BACKUP_ENABLED));
-        const enabledRaw = rows[0]?.value ?? null;
-        const enabled = enabledRaw === null ? true : enabledRaw !== "false";
-        if (!enabled) {
-          return;
-        }
-      } catch (dbErr: unknown) {
-        logger.warn(
-          { err: dbErr instanceof Error ? dbErr.message : String(dbErr) },
-          "[backup] Rolling backup: failed to read enabled setting; skipping tick",
-        );
-        return;
-      }
-
-      const runAt = new Date().toISOString();
-      try {
-        logger.info({ startedAt: runAt }, "[backup] Rolling OneDrive backup starting");
-        const result = await runOneDriveBackup("scheduler:rolling", {
-          conflictBehavior: "replace",
-          fileName: "labtrax-rolling-backup.zip.enc",
-        });
-        logger.info(
-          { fileName: result.fileName, size: result.size },
-          "[backup] Rolling OneDrive backup OK",
-        );
-        await db
-          .insert(systemSettings)
-          .values({ key: SETTING_ROLLING_BACKUP_LAST_RUN_AT, value: runAt })
-          .onConflictDoUpdate({
-            target: systemSettings.key,
-            set: { value: runAt, updatedAt: new Date() },
-          });
-        await db
-          .insert(systemSettings)
-          .values({ key: SETTING_ROLLING_BACKUP_LAST_ERROR, value: "" })
-          .onConflictDoUpdate({
-            target: systemSettings.key,
-            set: { value: "", updatedAt: new Date() },
-          });
-      } catch (err: unknown) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        logger.error({ err: errMsg }, "[backup] Rolling OneDrive backup FAILED");
-        try {
-          await db
-            .insert(systemSettings)
-            .values({ key: SETTING_ROLLING_BACKUP_LAST_RUN_AT, value: runAt })
-            .onConflictDoUpdate({
-              target: systemSettings.key,
-              set: { value: runAt, updatedAt: new Date() },
-            });
-          await db
-            .insert(systemSettings)
-            .values({ key: SETTING_ROLLING_BACKUP_LAST_ERROR, value: errMsg })
-            .onConflictDoUpdate({
-              target: systemSettings.key,
-              set: { value: errMsg, updatedAt: new Date() },
-            });
-        } catch (writeErr: unknown) {
-          logger.warn(
-            { err: writeErr instanceof Error ? writeErr.message : String(writeErr) },
-            "[backup] Rolling backup: failed to write error to settings",
-          );
-        }
-      }
-    } finally {
-      _rollingBackupRunning = false;
-    }
-  };
-
-  setInterval(() => {
-    tick().catch((err: unknown) => {
-      logger.error(
-        { err: err instanceof Error ? err.message : String(err) },
-        "[backup] Rolling backup tick threw unexpectedly",
-      );
-    });
-  }, ROLLING_BACKUP_INTERVAL_MS);
-}
-
-/**
- * Check the OneDrive connection state and notify admins on state transitions.
- *
- * - Reads the persisted last-known state from system_settings.
- * - Calls getOneDriveStatus (force-refreshed) to get the current state.
- * - On connected → disconnected: atomically updates state via CAS and sends
- *   `sendOneDriveDisconnectedAlertEmail` exactly once. The CAS guard ensures
- *   only one server instance / poller tick sends the alert if multiple run
- *   concurrently.
- * - On disconnected → connected: atomically updates state via CAS and sends
- *   `sendOneDriveReconnectedAlertEmail` exactly once.
- * - On no transition: silently records the current state if no state has
- *   ever been persisted (so the very first observation doesn't trigger a
- *   spurious "disconnected" alert on an installation that never had OneDrive
- *   configured).
- *
- * Designed to be called from the daily billing/maintenance cron and from
- * the scheduled OneDrive backup runner.
- */
-export async function checkAndAlertOneDriveConnectionStatus(): Promise<void> {
-  try {
-    // Skip entirely if OneDrive isn't configured for this installation —
-    // we don't want to alert admins about an integration they never set up.
-    if (!process.env.REPLIT_CONNECTORS_HOSTNAME) {
-      return;
-    }
-
-    const status = await getOneDriveStatus({ forceRefresh: true });
-    const newState: "connected" | "disconnected" = status.connected
-      ? "connected"
-      : "disconnected";
-
-    const rows = await db
-      .select()
-      .from(systemSettings)
-      .where(eq(systemSettings.key, SETTING_ONEDRIVE_CONNECTION_LAST_STATE));
-    const previousStateRaw = rows[0]?.value ?? null;
-    const previousState: "connected" | "disconnected" | null =
-      previousStateRaw === "connected" || previousStateRaw === "disconnected"
-        ? previousStateRaw
-        : null;
-
-    if (previousState === newState) {
-      return;
-    }
-
-    // First observation ever: just record state without alerting. We can't
-    // know whether OneDrive was "ever" connected before this code shipped,
-    // so the safe default is to seed the baseline silently.
-    if (previousState === null) {
-      try {
-        await db
-          .insert(systemSettings)
-          .values({ key: SETTING_ONEDRIVE_CONNECTION_LAST_STATE, value: newState })
-          .onConflictDoNothing();
-      } catch (err: unknown) {
-        logger.warn(
-          { err: err instanceof Error ? err.message : String(err) },
-          "[onedrive] Failed to seed initial connection state",
-        );
-      }
-      return;
-    }
-
-    // Transition: try to claim the state update via compare-and-swap so only
-    // one instance sends the email.
-    const now = new Date();
-    const updateResult = await db
-      .update(systemSettings)
-      .set({ value: newState, updatedAt: now })
-      .where(
-        sql`${systemSettings.key} = ${SETTING_ONEDRIVE_CONNECTION_LAST_STATE} AND ${systemSettings.value} = ${previousState}`,
-      );
-    const claimed = (updateResult.rowCount ?? 0) > 0;
-    if (!claimed) {
-      logger.info(
-        { previousState, newState },
-        "[onedrive] Connection state transition claim lost to a concurrent instance; skipping duplicate alert",
-      );
-      return;
-    }
-
-    const adminEmails = await getAdminEmails();
-    if (adminEmails.length === 0) {
-      logger.warn(
-        { newState },
-        "[onedrive] Connection state changed but no admin emails found; skipping alert",
-      );
-      return;
-    }
-
-    try {
-      if (newState === "disconnected") {
-        await sendOneDriveDisconnectedAlertEmail({
-          adminEmails,
-          errorMessage: status.error ?? null,
-          detectedAt: status.lastCheckedAt,
-        });
-        // Best-effort: record the sent-at for ops visibility.
-        try {
-          await db
-            .insert(systemSettings)
-            .values({
-              key: SETTING_ONEDRIVE_DISCONNECT_ALERT_LAST_SENT_AT,
-              value: now.toISOString(),
-            })
-            .onConflictDoUpdate({
-              target: systemSettings.key,
-              set: { value: now.toISOString(), updatedAt: now },
-            });
-        } catch {
-          // Non-fatal: alert was sent; this is only a debug breadcrumb.
-        }
-        logger.warn(
-          { recipients: adminEmails.length, error: status.error },
-          "[onedrive] Sent disconnect alert email to admins",
-        );
-      } else {
-        await sendOneDriveReconnectedAlertEmail({
-          adminEmails,
-          reconnectedAt: status.lastCheckedAt,
-        });
-        logger.info(
-          { recipients: adminEmails.length },
-          "[onedrive] Sent reconnect alert email to admins",
-        );
-      }
-    } catch (sendErr: unknown) {
-      // Roll back the state change so the next invocation retries instead of
-      // staying silent for the rest of the outage.
-      logger.error(
-        { err: sendErr instanceof Error ? sendErr.message : String(sendErr), newState },
-        "[onedrive] Failed to send connection-state alert email; rolling back state",
-      );
-      try {
-        await db
-          .update(systemSettings)
-          .set({ value: previousState, updatedAt: new Date() })
-          .where(
-            sql`${systemSettings.key} = ${SETTING_ONEDRIVE_CONNECTION_LAST_STATE} AND ${systemSettings.value} = ${newState}`,
-          );
-      } catch (rollbackErr: unknown) {
-        logger.warn(
-          { err: rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr) },
-          "[onedrive] Connection-state rollback failed; alert may be suppressed until state flips again",
-        );
-      }
-    }
-  } catch (err: unknown) {
-    logger.error(
-      { err: err instanceof Error ? err.message : String(err) },
-      "[onedrive] checkAndAlertOneDriveConnectionStatus failed",
-    );
-  }
-}

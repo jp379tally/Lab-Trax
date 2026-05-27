@@ -20,8 +20,6 @@ import { randomBytes, createHash } from "node:crypto";
 import request from "supertest";
 
 vi.mock("../lib/backup.js", () => ({
-  startDailyOneDriveBackup: vi.fn(),
-  start15MinRollingBackup: vi.fn(),
   restartScheduledBackupJob: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));

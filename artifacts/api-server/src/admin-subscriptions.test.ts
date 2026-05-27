@@ -260,10 +260,7 @@ vi.mock("./lib/case-media.js", () => ({
   SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES: "cleanup_stuck_timeout_minutes",
 }));
 vi.mock("./lib/backup.js", () => ({
-  startDailyOneDriveBackup: vi.fn(),
-  start15MinRollingBackup: vi.fn(),
   restartScheduledBackupJob: vi.fn().mockResolvedValue(undefined),
-  runOneDriveBackup: vi.fn(),
   runBackup: vi.fn(),
   getBackupHourUtc: vi.fn(),
   getBackupScheduleConfig: vi.fn(),
@@ -272,20 +269,12 @@ vi.mock("./lib/backup.js", () => ({
   SETTING_BACKUP_SCHEDULE_DESTINATION: "backup_schedule_destination",
   SETTING_BACKUP_SCHEDULE_PATH: "backup_schedule_path",
   SETTING_BACKUP_SCHEDULE_ENABLED: "backup_schedule_enabled",
-  SETTING_ROLLING_BACKUP_ENABLED: "rolling_backup_enabled",
-  SETTING_ROLLING_BACKUP_LAST_RUN_AT: "rolling_backup_last_run_at",
-  SETTING_ROLLING_BACKUP_LAST_ERROR: "rolling_backup_last_error",
   ALL_SCHEDULE_SETTINGS: [
     "backup_schedule_interval_minutes",
     "backup_schedule_destination",
     "backup_schedule_path",
     "backup_schedule_enabled",
   ],
-}));
-vi.mock("./lib/onedrive.js", () => ({
-  uploadToOneDrive: vi.fn(),
-  deleteFromOneDrive: vi.fn(),
-  getOneDriveSettings: vi.fn(),
 }));
 vi.mock("./lib/mail.js", () => ({
   sendInstallerPublishFailureAlertEmail: vi.fn(),

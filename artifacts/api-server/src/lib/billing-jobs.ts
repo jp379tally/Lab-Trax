@@ -6,7 +6,6 @@ import { sendMail } from "./mail";
 import { logger } from "./logger";
 import {
   checkAndAlertBackupStaleness,
-  checkAndAlertOneDriveConnectionStatus,
 } from "./backup";
 import { checkEmailPref } from "./email-prefs";
 import {
@@ -268,14 +267,6 @@ async function runBillingJobOnce() {
     await checkAndAlertBackupStaleness();
   } catch (err: any) {
     logger.error({ err: err?.message }, "[billing] Backup staleness check failed");
-  }
-  try {
-    await checkAndAlertOneDriveConnectionStatus();
-  } catch (err: any) {
-    logger.error(
-      { err: err?.message },
-      "[billing] OneDrive connection state check failed",
-    );
   }
   try {
     await checkAndAlertInstallerHealth();

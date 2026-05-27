@@ -441,10 +441,9 @@ export async function getCleanupHourUtc(): Promise<number> {
 }
 
 // ── Daily orphaned-media cleanup scheduler ──────────────────────────────────
-// Mirrors the daily OneDrive backup scheduler in lib/backup.ts. Runs once per
-// day at the configured UTC hour (default 08:00 UTC, an hour after the
-// backup so we don't compete for IO). Override with CLEANUP_HOUR_UTC env var
-// or the cleanup_hour_utc system_settings row.
+// Runs once per day at the configured UTC hour (default 08:00 UTC, an hour
+// after the backup so we don't compete for IO). Override with CLEANUP_HOUR_UTC
+// env var or the cleanup_hour_utc system_settings row.
 
 let scheduled = false;
 

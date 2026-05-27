@@ -23,8 +23,6 @@ import * as path from "node:path";
 import * as os from "node:os";
 
 vi.mock("../lib/backup.js", () => ({
-  startDailyOneDriveBackup: vi.fn(),
-  start15MinRollingBackup: vi.fn(),
   restartScheduledBackupJob: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));

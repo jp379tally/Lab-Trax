@@ -1900,8 +1900,6 @@ function AdminDashboard() {
   const [iteroImportResults, setIteroImportResults] = useState<{ doctor: string; teeth: string; shade: string; material: string; notes: string }[]>([]);
   const [isBackingUp, setIsBackingUp] = useState(false);
   const [lastBackupTime, setLastBackupTime] = useState<string | null>(null);
-  const [isOneDriving, setIsOneDriving] = useState(false);
-  const [oneDriveResult, setOneDriveResult] = useState<{ fileName: string; webUrl: string; size: number; folder: string } | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -7243,39 +7241,6 @@ function AdminDashboard() {
       setIsBackingUp(false);
     }
 
-    async function handleOneDriveBackup() {
-      if (isOneDriving || isBackingUp) return;
-      setIsOneDriving(true);
-      setOneDriveResult(null);
-      try {
-        const token = getAccessToken();
-        const apiBase = getApiUrl();
-        const url = new URL("/api/admin/backup/onedrive", apiBase).toString();
-        const resp = await fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
-        });
-        const data = await resp.json();
-        if (!resp.ok || !data.success) throw new Error(data.error || "Upload failed.");
-        setOneDriveResult(data);
-        Alert.alert(
-          "Saved to OneDrive ✓",
-          `"${data.fileName}" saved to your OneDrive folder "${data.folder}".\n\nSize: ${(data.size / 1024).toFixed(0)} KB`,
-          [
-            { text: "Open in OneDrive", onPress: () => data.webUrl && Linking.openURL(data.webUrl) },
-            { text: "OK", style: "cancel" },
-          ]
-        );
-      } catch (e: any) {
-        console.error("OneDrive backup error:", e?.message);
-        Alert.alert("OneDrive Upload Failed", e?.message || "Could not upload to OneDrive. Please try again.");
-      }
-      setIsOneDriving(false);
-    }
-
     const included = [
       { icon: "people-outline", label: "All user accounts", sub: `${users.length} registered users` },
       { icon: "folder-open-outline", label: "All case records", sub: `${cases.length} cases with full data` },
@@ -7354,9 +7319,9 @@ function AdminDashboard() {
 
           <Pressable
             onPress={handleDownloadBackup}
-            disabled={isBackingUp || isOneDriving}
+            disabled={isBackingUp}
             style={({ pressed }) => [{
-              backgroundColor: (isBackingUp || isOneDriving) ? "#A7F3D0" : "#059669",
+              backgroundColor: isBackingUp ? "#A7F3D0" : "#059669",
               borderRadius: 14,
               paddingVertical: 16,
               alignItems: "center",
@@ -7375,51 +7340,14 @@ function AdminDashboard() {
             </Text>
           </Pressable>
 
-          <Pressable
-            onPress={handleOneDriveBackup}
-            disabled={isOneDriving || isBackingUp}
-            style={({ pressed }) => [{
-              backgroundColor: (isOneDriving || isBackingUp) ? "#BFDBFE" : "#0078D4",
-              borderRadius: 14,
-              paddingVertical: 16,
-              alignItems: "center",
-              justifyContent: "center",
-              flexDirection: "row",
-              gap: 10,
-              opacity: pressed ? 0.85 : 1,
-              marginBottom: 8,
-            }]}
-          >
-            {isOneDriving
-              ? <ActivityIndicator color="#fff" size="small" />
-              : <Ionicons name="cloud-upload-outline" size={22} color="#fff" />}
-            <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#fff" }}>
-              {isOneDriving ? "Uploading to OneDrive…" : "Save to OneDrive"}
-            </Text>
-          </Pressable>
-
-          {oneDriveResult && (
-            <Pressable
-              onPress={() => oneDriveResult.webUrl && Linking.openURL(oneDriveResult.webUrl)}
-              style={({ pressed }) => [{ backgroundColor: "#EFF6FF", borderRadius: 12, padding: 14, marginBottom: 8, borderWidth: 1, borderColor: "#BFDBFE", flexDirection: "row", alignItems: "center", gap: 10, opacity: pressed ? 0.8 : 1 }]}
-            >
-              <Ionicons name="checkmark-circle" size={20} color="#0078D4" />
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#1D4ED8" }}>Saved to OneDrive</Text>
-                <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#3B82F6", marginTop: 2 }}>{oneDriveResult.folder} / {oneDriveResult.fileName}</Text>
-              </View>
-              <Ionicons name="open-outline" size={16} color="#3B82F6" />
-            </Pressable>
-          )}
-
           {Platform.OS !== "web" && (
             <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, textAlign: "center", marginTop: 8 }}>
-              Local backup opens the share sheet · OneDrive saves directly to your account
+              Backup opens the share sheet so you can save it anywhere
             </Text>
           )}
           {Platform.OS === "web" && (
             <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, textAlign: "center", marginTop: 8 }}>
-              Local downloads to your computer · OneDrive saves to your Microsoft account
+              Downloads directly to your computer
             </Text>
           )}
         </View>

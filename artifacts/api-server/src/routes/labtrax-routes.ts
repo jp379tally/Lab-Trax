@@ -7,7 +7,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
 import archiver from "archiver";
-import { uploadToOneDrive, getOneDriveStatus, clearOneDriveTokenCache } from "../lib/onedrive";
 import {
   getDesktopInstallerMetadata,
   uploadDesktopInstaller,
@@ -18,7 +17,7 @@ import {
 import { dispatchInstallerAlert } from "../lib/desktop-installer-alerts";
 import { runDesktopInstallerHealthCheck } from "../lib/desktop-installer-health";
 import { getDownloadInterruptionStats } from "../lib/download-interruptions";
-import { runOneDriveBackup, runBackup, getBackupHourUtc, getBackupScheduleConfig, getLastSuccessfulBackupAt, getBackupStaleAlertSettings, getBackupHistoryRetentionDays, restartScheduledBackupJob, executeRestore, getRestoreState, SETTING_BACKUP_HOUR_UTC, SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, SETTING_BACKUP_SCHEDULE_DESTINATION, SETTING_BACKUP_SCHEDULE_PATH, SETTING_BACKUP_SCHEDULE_ENABLED, SETTING_BACKUP_LAST_SUCCESSFUL_AT, SETTING_BACKUP_HISTORY_RETENTION_DAYS, SETTING_BACKUP_HISTORY_MAX_ROWS, SETTING_ROLLING_BACKUP_ENABLED, SETTING_ROLLING_BACKUP_LAST_RUN_AT, SETTING_ROLLING_BACKUP_LAST_ERROR, ALL_SCHEDULE_SETTINGS, SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS, SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS, SETTING_BACKUP_STALE_DAYS, DEFAULT_BACKUP_STALE_DAYS, type BackupDestination } from "../lib/backup";
+import { runBackup, getBackupHourUtc, getBackupScheduleConfig, getLastSuccessfulBackupAt, getBackupStaleAlertSettings, getBackupHistoryRetentionDays, restartScheduledBackupJob, executeRestore, getRestoreState, SETTING_BACKUP_HOUR_UTC, SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, SETTING_BACKUP_SCHEDULE_DESTINATION, SETTING_BACKUP_SCHEDULE_PATH, SETTING_BACKUP_SCHEDULE_ENABLED, SETTING_BACKUP_LAST_SUCCESSFUL_AT, SETTING_BACKUP_HISTORY_RETENTION_DAYS, SETTING_BACKUP_HISTORY_MAX_ROWS, ALL_SCHEDULE_SETTINGS, SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS, SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS, SETTING_BACKUP_STALE_DAYS, DEFAULT_BACKUP_STALE_DAYS, type BackupDestination } from "../lib/backup";
 import { sendInstallerPublishFailureAlertEmail, sendMail, getAppBaseUrl } from "../lib/mail";
 import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, getCleanupProgress, getCleanupStuckTimeoutMinutes, cancelCleanup, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC, SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES } from "../lib/case-media";
 import multer from "multer";
@@ -3979,9 +3978,6 @@ Important rules:
       );
       const settingKeys = [
         SETTING_BACKUP_HOUR_UTC,
-        SETTING_ROLLING_BACKUP_ENABLED,
-        SETTING_ROLLING_BACKUP_LAST_RUN_AT,
-        SETTING_ROLLING_BACKUP_LAST_ERROR,
         SETTING_BACKUP_LAST_SUCCESSFUL_AT,
         SETTING_BACKUP_STALE_DAYS,
       ];
@@ -3997,10 +3993,6 @@ Important rules:
           ? Math.max(0, Math.min(23, parseInt(dbHourRaw, 10) || 0))
           : null;
 
-      const rollingEnabledRaw = rowMap[SETTING_ROLLING_BACKUP_ENABLED] ?? null;
-      const rollingBackupEnabled = rollingEnabledRaw === null ? true : rollingEnabledRaw !== "false";
-      const rollingBackupLastRunAt = rowMap[SETTING_ROLLING_BACKUP_LAST_RUN_AT] ?? null;
-      const rollingBackupLastError = rowMap[SETTING_ROLLING_BACKUP_LAST_ERROR] ?? null;
       const lastSuccessfulBackupAt = rowMap[SETTING_BACKUP_LAST_SUCCESSFUL_AT] ?? null;
       const staleDaysRaw = rowMap[SETTING_BACKUP_STALE_DAYS] ?? null;
       const staleAfterDays =
@@ -4012,39 +4004,11 @@ Important rules:
         hourUtc,
         dbHourUtc,
         envHourUtc,
-        rollingBackupEnabled,
-        rollingBackupLastRunAt,
-        rollingBackupLastError,
         lastSuccessfulBackupAt,
         staleAfterDays,
       });
     } catch (e: any) {
       return res.status(500).json({ error: e?.message || "Failed to fetch backup schedule settings." });
-    }
-  });
-
-  router.patch("/admin/settings/backup-schedule", requireAuth, async (req, res) => {
-    const reqUser = (req as any).user;
-    // Toggle access only requires admin role — same policy as GET.
-    if (!reqUser || reqUser.role !== "admin") {
-      return res.status(403).json({ error: "Admin access required." });
-    }
-    try {
-      const body = req.body as any;
-      if (typeof body?.rollingBackupEnabled !== "boolean") {
-        return res.status(400).json({ error: "rollingBackupEnabled (boolean) is required." });
-      }
-      const value = body.rollingBackupEnabled ? "true" : "false";
-      await db
-        .insert(systemSettings)
-        .values({ key: SETTING_ROLLING_BACKUP_ENABLED, value })
-        .onConflictDoUpdate({
-          target: systemSettings.key,
-          set: { value, updatedAt: new Date() },
-        });
-      return res.json({ success: true, rollingBackupEnabled: body.rollingBackupEnabled });
-    } catch (e: any) {
-      return res.status(500).json({ error: e?.message || "Failed to update rolling backup setting." });
     }
   });
 
@@ -5533,76 +5497,6 @@ Important rules:
     }
   });
 
-  // ── Admin Backup → OneDrive (legacy) ─────────────────────────────────────
-  router.post("/admin/backup/onedrive", requireAuth, async (req, res) => {
-    try {
-      const reqUser = (req as any).user;
-      if (!isPlatformAdmin(req)) {
-        return res.status(403).json({ error: "Admin access required." });
-      }
-      const result = await runOneDriveBackup(
-        `manual:${reqUser.username || reqUser.id}`,
-      );
-      return res.json({ success: true, ...result });
-    } catch (e: any) {
-      console.error("OneDrive backup error:", e?.message);
-      return res
-        .status(500)
-        .json({ error: e?.message || "OneDrive backup failed." });
-    }
-  });
-
-  // ── Admin Backup: OneDrive connection status ─────────────────────────────
-  router.get("/admin/backup/onedrive-status", platformAdminUserOrSecret, async (req, res) => {
-    if (!isPlatformAdmin(req)) {
-      return res.status(403).json({ error: "Admin access required." });
-    }
-    const forceRefresh = req.query.refresh === "1" || req.query.refresh === "true";
-    try {
-      const status = await getOneDriveStatus({ forceRefresh });
-      return res.json({ ok: true, ...status });
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Failed to fetch OneDrive status.";
-      return res.json({
-        ok: true,
-        connected: false,
-        lastCheckedAt: new Date().toISOString(),
-        error: msg,
-      });
-    }
-  });
-
-  // ── Admin Backup: reconnect OneDrive ──────────────────────────────────────
-  // Replit-managed connectors are (re)authorized from the workspace
-  // Integrations panel. There is no public OAuth URL we can hand the admin —
-  // they must open the workspace's Integrations panel and click "Reconnect"
-  // on the OneDrive tile. We return that URL plus instructions, and clear the
-  // in-memory token cache so the next OneDrive call refetches credentials
-  // (picking up the freshly-rotated access token from the connector proxy).
-  router.post("/admin/backup/onedrive-reconnect", platformAdminUserOrSecret, async (req, res) => {
-    if (!isPlatformAdmin(req)) {
-      return res.status(403).json({ error: "Admin access required." });
-    }
-    try {
-      clearOneDriveTokenCache();
-      const owner = process.env.REPL_OWNER;
-      const slug = process.env.REPL_SLUG;
-      const reconnectUrl =
-        owner && slug
-          ? `https://replit.com/@${owner}/${slug}?tab=integrations`
-          : "https://replit.com/integrations";
-      return res.json({
-        ok: true,
-        reconnectUrl,
-        instructions:
-          "Open your Replit workspace's Integrations panel and click 'Reconnect' on the OneDrive integration, then sign in with the lab's Microsoft account. After you finish, this page will refresh automatically.",
-      });
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Failed to start OneDrive reconnect.";
-      return res.status(500).json({ error: msg });
-    }
-  });
-
   // ── Admin Backup: run now ─────────────────────────────────────────────────
   router.post("/admin/backup/run", platformAdminUserOrSecret, async (req, res) => {
     if (!isPlatformAdmin(req)) {
@@ -5611,8 +5505,8 @@ Important rules:
     const reqUser = (req as any).user;
     const body = (req.body ?? {}) as Record<string, unknown>;
     const destination = body.destination as BackupDestination | undefined;
-    if (destination !== "onedrive" && destination !== "local" && destination !== "network") {
-      return res.status(400).json({ error: "destination must be one of: onedrive, local, network." });
+    if (destination !== "local" && destination !== "network") {
+      return res.status(400).json({ error: "destination must be one of: local, network." });
     }
     const destPath = typeof body.path === "string" ? body.path.trim() : undefined;
     if ((destination === "local" || destination === "network") && !destPath) {
@@ -5717,8 +5611,8 @@ Important rules:
         error: `Computed intervalMinutes (${intervalMinutes}) is not a supported value. Valid combinations: 15 min, 30 min, 1 h, 2 h, 4 h, 8 h, 24 h.`,
       });
     }
-    if (destination !== "onedrive" && destination !== "local" && destination !== "network") {
-      return res.status(400).json({ error: "destination must be one of: onedrive, local, network." });
+    if (destination !== "local" && destination !== "network") {
+      return res.status(400).json({ error: "destination must be one of: local, network." });
     }
     if ((destination === "local" || destination === "network") && !destPath) {
       return res.status(400).json({ error: "path is required for local and network destinations." });
@@ -6017,66 +5911,6 @@ Important rules:
       })().catch(() => { /* handled above */ });
     },
   );
-
-  // ── Admin Backup: restore — from OneDrive (latest backup) ────────────────
-  router.post("/admin/backup/restore/from-onedrive", platformAdminUserOrSecret, async (req: any, res: any) => {
-    if (!isPlatformAdmin(req)) {
-      return res.status(403).json({ error: "Admin access required." });
-    }
-    const currentState = getRestoreState();
-    if (currentState.phase !== "idle" && currentState.phase !== "done" && currentState.phase !== "error") {
-      return res.status(409).json({ error: "A restore is already in progress.", phase: currentState.phase });
-    }
-    const reqUser = req.user;
-    const triggeredBy = `restore-onedrive:${reqUser?.username || "admin"}`;
-    // Respond 202, fetch + restore runs async.
-    res.status(202).json({ ok: true, phase: "uploading", message: "Fetching latest backup from OneDrive…" });
-    (async () => {
-      try {
-        // List LabTrax Backups folder, find the most-recently-modified .zip.enc
-        const folderPath = "LabTrax Backups";
-        const { getOneDriveAccessToken: _getToken } = await import("../lib/onedrive") as any;
-        const token = await _getToken();
-        const listResp = await fetch(
-          `https://graph.microsoft.com/v1.0/me/drive/root:/${encodeURIComponent(folderPath)}:/children?$top=500`,
-          { headers: { Authorization: `Bearer ${token}` } },
-        );
-        if (!listResp.ok) {
-          const errText = await listResp.text();
-          throw new Error(`Failed to list OneDrive backups: ${listResp.status} ${errText.slice(0, 200)}`);
-        }
-        const listData = await listResp.json() as any;
-        const items: Array<{ name: string; id: string; lastModifiedDateTime: string; size: number }> =
-          (listData.value ?? []).filter((item: any) =>
-            typeof item.name === "string" && item.name.endsWith(".zip.enc"),
-          );
-        if (items.length === 0) {
-          throw new Error("No .zip.enc backup files found in the LabTrax Backups folder on OneDrive.");
-        }
-        items.sort((a, b) =>
-          new Date(b.lastModifiedDateTime).getTime() - new Date(a.lastModifiedDateTime).getTime(),
-        );
-        const latest = items[0]!;
-        // Download the file content.
-        const downloadResp = await fetch(
-          `https://graph.microsoft.com/v1.0/me/drive/items/${encodeURIComponent(latest.id)}/content`,
-          { headers: { Authorization: `Bearer ${token}` } },
-        );
-        if (!downloadResp.ok) {
-          const errText = await downloadResp.text();
-          throw new Error(`Failed to download backup from OneDrive: ${downloadResp.status} ${errText.slice(0, 200)}`);
-        }
-        const arrayBuffer = await downloadResp.arrayBuffer();
-        const encryptedBuffer = Buffer.from(arrayBuffer);
-        await executeRestore(encryptedBuffer, triggeredBy);
-      } catch (err: unknown) {
-        req.log?.error(
-          { err: err instanceof Error ? err.message : String(err) },
-          "[restore] OneDrive restore pipeline failed",
-        );
-      }
-    })().catch(() => { /* handled above */ });
-  });
 
   // ── Admin Backup: history retention settings (PUT) ────────────────────────
   router.put("/admin/backup/history-retention", platformAdminUserOrSecret, async (req, res) => {

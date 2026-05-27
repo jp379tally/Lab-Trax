@@ -472,7 +472,6 @@ function formatBytes(bytes: number): string {
 
 function formatDestinationLabel(dest: string): string {
   switch (dest) {
-    case "onedrive": return "OneDrive";
     case "local": return "Local filesystem";
     case "network": return "Network / SFTP";
     default: return dest;
@@ -619,97 +618,6 @@ export async function sendBackupStaleAlertEmail(
   </div>`;
 
   const text = `LabTrax — Backup Overdue\n\nWarning: Your LabTrax data has not been backed up in over 7 days.\n\n${lastRunText}\n\nPlease review your backup settings: ${settingsUrl}\n\nThis alert is sent at most once every 3 days until a successful backup runs.\n\n— The LabTrax Team`;
-
-  for (const email of params.adminEmails) {
-    await sendMail({ to: email, subject, html, text });
-  }
-}
-
-export interface OneDriveDisconnectedAlertParams {
-  adminEmails: string[];
-  /** Optional error message from the failed status check. */
-  errorMessage?: string | null;
-  /** ISO timestamp when the disconnect was detected. */
-  detectedAt: string;
-}
-
-export async function sendOneDriveDisconnectedAlertEmail(
-  params: OneDriveDisconnectedAlertParams,
-): Promise<void> {
-  if (params.adminEmails.length === 0) return;
-
-  const settingsUrl = `${getAppBaseUrl()}/desktop/settings`;
-  const dateStr = params.detectedAt.slice(0, 10);
-  const subject = `LabTrax — OneDrive backup disconnected (${dateStr})`;
-  const detectedAtLabel = (() => {
-    const ms = new Date(params.detectedAt).getTime();
-    return isNaN(ms) ? params.detectedAt : new Date(ms).toUTCString();
-  })();
-
-  const errorBlock = params.errorMessage
-    ? `<h3 style="color:#c0392b;margin-top:0;">Reported error</h3>
-      <pre style="background:#1e1e1e;color:#f5f5f5;padding:12px;border-radius:4px;font-size:12px;white-space:pre-wrap;word-break:break-word;">${escapeHtml(params.errorMessage)}</pre>`
-    : "";
-
-  const html = `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-    <div style="background: #c0392b; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
-      <h2 style="margin: 0;">LabTrax</h2>
-      <p style="margin: 4px 0 0; opacity: 0.9;">OneDrive backup disconnected — action required</p>
-    </div>
-    <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
-      <div style="background:#fdf2f2;border-left:4px solid #c0392b;padding:12px 16px;border-radius:4px;margin-bottom:16px;">
-        <strong>Your LabTrax OneDrive backup integration is no longer connected.</strong> Scheduled backups to OneDrive will keep failing until an admin reconnects the integration.
-      </div>
-      <p style="font-size: 14px;">Disconnect detected at: <strong>${escapeHtml(detectedAtLabel)}</strong></p>
-      ${errorBlock}
-      <p style="text-align: center; margin: 24px 0;">
-        <a href="${settingsUrl}" style="display: inline-block; background: #c0392b; color: white; padding: 12px 32px; border-radius: 8px; text-decoration: none; font-weight: bold;">Reconnect OneDrive →</a>
-      </p>
-      <p style="color: #666; font-size: 13px;">Open Settings → Backup and click "Reconnect" to re-authorize the OneDrive integration. You'll only receive this alert once per disconnect event — a follow-up email will confirm when OneDrive reconnects.</p>
-    </div>
-  </div>`;
-
-  const text = `LabTrax — OneDrive backup disconnected\n\nYour LabTrax OneDrive backup integration is no longer connected. Scheduled backups to OneDrive will keep failing until an admin reconnects it.\n\nDisconnect detected at: ${detectedAtLabel}${params.errorMessage ? `\n\nReported error:\n${params.errorMessage}` : ""}\n\nReconnect at: ${settingsUrl}\n\nYou will only receive this alert once per disconnect event. A follow-up email will confirm when OneDrive reconnects.`;
-
-  for (const email of params.adminEmails) {
-    await sendMail({ to: email, subject, html, text });
-  }
-}
-
-export interface OneDriveReconnectedAlertParams {
-  adminEmails: string[];
-  /** ISO timestamp when reconnection was detected. */
-  reconnectedAt: string;
-}
-
-export async function sendOneDriveReconnectedAlertEmail(
-  params: OneDriveReconnectedAlertParams,
-): Promise<void> {
-  if (params.adminEmails.length === 0) return;
-
-  const settingsUrl = `${getAppBaseUrl()}/desktop/settings`;
-  const dateStr = params.reconnectedAt.slice(0, 10);
-  const subject = `LabTrax — OneDrive backup reconnected (${dateStr})`;
-  const reconnectedAtLabel = (() => {
-    const ms = new Date(params.reconnectedAt).getTime();
-    return isNaN(ms) ? params.reconnectedAt : new Date(ms).toUTCString();
-  })();
-
-  const html = `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-    <div style="background: #27ae60; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
-      <h2 style="margin: 0;">LabTrax</h2>
-      <p style="margin: 4px 0 0; opacity: 0.9;">OneDrive backup reconnected</p>
-    </div>
-    <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
-      <div style="background:#eafaf1;border-left:4px solid #27ae60;padding:12px 16px;border-radius:4px;margin-bottom:16px;">
-        <strong>Good news:</strong> the OneDrive backup integration is connected again. Scheduled backups will resume on the next run.
-      </div>
-      <p style="font-size: 14px;">Reconnection confirmed at: <strong>${escapeHtml(reconnectedAtLabel)}</strong></p>
-      <p style="font-size: 13px; color:#555;">Review backup status any time on the <a href="${settingsUrl}" style="color: #4A6CF7;">Settings page</a>.</p>
-    </div>
-  </div>`;
-
-  const text = `LabTrax — OneDrive backup reconnected\n\nGood news: the OneDrive backup integration is connected again. Scheduled backups will resume on the next run.\n\nReconnection confirmed at: ${reconnectedAtLabel}\n\nReview backup status: ${settingsUrl}`;
 
   for (const email of params.adminEmails) {
     await sendMail({ to: email, subject, html, text });
