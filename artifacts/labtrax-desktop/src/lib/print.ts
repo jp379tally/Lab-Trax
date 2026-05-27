@@ -13,6 +13,10 @@ import type {
   Invoice,
   LabCase,
 } from "./types";
+import {
+  type PrintLayoutConfig,
+  loadPrintLayoutConfig,
+} from "./print-layout";
 
 function escapeHtml(value: unknown): string {
   if (value === null || value === undefined) return "";
@@ -726,6 +730,12 @@ const OVERVIEW_CSS = `
 }
 `;
 
+const FONT_SIZE_PX: Record<string, string> = {
+  sm: "12px",
+  md: "16px",
+  lg: "22px",
+};
+
 export function printCaseOverview(
   labCase: LabCase,
   extras: {
@@ -737,7 +747,10 @@ export function printCaseOverview(
       authorName?: string | null;
     }>;
   } = {},
+  config?: PrintLayoutConfig,
 ): void {
+  const layout = config ?? loadPrintLayoutConfig();
+
   const patient = `${labCase.patientFirstName ?? ""} ${
     labCase.patientLastName ?? ""
   }`.trim();
@@ -763,18 +776,42 @@ export function printCaseOverview(
   </div>
 </div>`;
 
+  // ── Resolve field values keyed by field id ─────────────────────────────────
+  const teethKey = summary.isFullArch ? "Tooth coverage" : "Tooth number(s)";
+  const fieldValues: Record<string, { key: string; value: string }> = {
+    patient:         { key: "Patient",         value: patient || "—" },
+    doctor:          { key: "Doctor",           value: labCase.doctorName || "—" },
+    status:          { key: "Status",           value: statusLabel(labCase.status) },
+    priority:        { key: "Priority",         value: isRush ? "Rush" : "Normal" },
+    dueDate:         { key: "Due Date",         value: formatDate(labCase.dueDate) },
+    created:         { key: "Created",          value: formatDate(labCase.createdAt) },
+    casePanBarcode:  { key: "Case Pan Barcode", value: labCase.casePanBarcode ?? "" },
+    restorativeType: { key: "Restorative Type", value: summary.restorativeType ?? "Other" },
+    material:        { key: summary.materials.length > 1 ? "Materials" : "Material", value: summary.materials.length > 0 ? summary.materials.join(", ") : "—" },
+    shade:           { key: summary.shades.length > 1 ? "Shades" : "Shade",          value: summary.shades.length > 0 ? summary.shades.join(", ") : "—" },
+    toothNumbers:    { key: teethKey,           value: teethLabel || "—" },
+  };
+
+  function renderField(id: string, fontSize: string, fullWidth: boolean): string {
+    const fv = fieldValues[id];
+    if (!fv) return "";
+    // casePanBarcode: skip if empty
+    if (id === "casePanBarcode" && !labCase.casePanBarcode) return "";
+    const spanStyle = fontSize !== "sm" ? ` style="font-size:${FONT_SIZE_PX[fontSize] ?? "12px"}"` : "";
+    const colStyle = fullWidth ? ` style="grid-column:1/-1"` : "";
+    return `<div class="lt-ov-field"${colStyle}><span class="lt-ov-key">${escapeHtml(fv.key)}</span><span class="lt-ov-val"${spanStyle}>${escapeHtml(fv.value)}</span></div>`;
+  }
+
+  // ── Build details grid from config ─────────────────────────────────────────
+  const detailFields = layout.fields.filter((f) => f.section === "details" && f.visible);
+  const detailRows = detailFields.map((f) => renderField(f.id, f.fontSize, f.fullWidth)).join("\n");
   const detailsGrid = `
 <div class="lt-ov-section">Case Details</div>
 <div class="lt-ov-grid">
-  <div class="lt-ov-field"><span class="lt-ov-key">Patient</span><span class="lt-ov-val">${escapeHtml(patient || "—")}</span></div>
-  <div class="lt-ov-field"><span class="lt-ov-key">Doctor</span><span class="lt-ov-val">${escapeHtml(labCase.doctorName || "—")}</span></div>
-  <div class="lt-ov-field"><span class="lt-ov-key">Status</span><span class="lt-ov-val">${escapeHtml(statusLabel(labCase.status))}</span></div>
-  <div class="lt-ov-field"><span class="lt-ov-key">Priority</span><span class="lt-ov-val">${escapeHtml(isRush ? "Rush" : "Normal")}</span></div>
-  <div class="lt-ov-field"><span class="lt-ov-key">Due Date</span><span class="lt-ov-val">${escapeHtml(formatDate(labCase.dueDate))}</span></div>
-  <div class="lt-ov-field"><span class="lt-ov-key">Created</span><span class="lt-ov-val">${escapeHtml(formatDate(labCase.createdAt))}</span></div>
-  ${labCase.casePanBarcode ? `<div class="lt-ov-field" style="grid-column:1/-1"><span class="lt-ov-key">Case pan barcode</span><span class="lt-ov-val">${escapeHtml(labCase.casePanBarcode)}</span></div>` : ""}
+${detailRows}
 </div>`;
 
+  // ── Build Rx grid from config ──────────────────────────────────────────────
   const hasRx =
     summary.restorativeType ||
     summary.materials.length > 0 ||
@@ -786,44 +823,44 @@ export function printCaseOverview(
   if (!hasRx) {
     rxSection += `<div class="lt-ov-notes-empty">No restorations on this case yet.</div>`;
   } else {
-    const teethKey = summary.isFullArch ? "Tooth coverage" : "Tooth number(s)";
-    rxSection += `
-<div class="lt-ov-grid">
-  <div class="lt-ov-field"><span class="lt-ov-key">Restorative type</span><span class="lt-ov-val">${escapeHtml(summary.restorativeType ?? "Other")}</span></div>
-  <div class="lt-ov-field"><span class="lt-ov-key">${escapeHtml(summary.materials.length > 1 ? "Materials" : "Material")}</span><span class="lt-ov-val">${escapeHtml(summary.materials.length > 0 ? summary.materials.join(", ") : "—")}</span></div>
-  <div class="lt-ov-field"><span class="lt-ov-key">${escapeHtml(summary.shades.length > 1 ? "Shades" : "Shade")}</span><span class="lt-ov-val">${escapeHtml(summary.shades.length > 0 ? summary.shades.join(", ") : "—")}</span></div>
-  <div class="lt-ov-field" style="grid-column:1/-1"><span class="lt-ov-key">${escapeHtml(teethKey)}</span><span class="lt-ov-val">${escapeHtml(teethLabel)}</span></div>
-</div>`;
+    const rxFields = layout.fields.filter((f) => f.section === "rx" && f.visible);
+    const rxRows = rxFields.map((f) => renderField(f.id, f.fontSize, f.fullWidth)).join("\n");
+    rxSection += `<div class="lt-ov-grid">\n${rxRows}\n</div>`;
   }
 
-  // Notes
-  const notesArr = extras.notes ?? [];
-  let notesSection = `<div class="lt-ov-section">Notes</div>`;
-  if (notesArr.length === 0) {
-    notesSection += `<div class="lt-ov-notes-empty">No notes yet.</div>`;
-  } else {
-    const sorted = [...notesArr].sort((a, b) => {
-      const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-      const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-      return tb - ta;
-    });
-    notesSection += sorted
-      .map((n) => {
-        const when = n.createdAt ? formatDateTime(n.createdAt) : "";
-        const vis =
-          n.visibility === "internal_lab_only" ? "Lab only" : "Shared";
-        const author = n.authorName ? ` · ${escapeHtml(n.authorName)}` : "";
-        return `<div class="lt-ov-note">
+  // ── Tooth chart ────────────────────────────────────────────────────────────
+  const chartSection =
+    layout.showToothChart && hasRx
+      ? `<div class="lt-ov-section">Tooth Chart</div>${buildToothChart(highlighted)}`
+      : "";
+
+  // ── Notes ──────────────────────────────────────────────────────────────────
+  let notesSection = "";
+  if (layout.showNotes) {
+    const notesArr = extras.notes ?? [];
+    notesSection = `<div class="lt-ov-section">Notes</div>`;
+    if (notesArr.length === 0) {
+      notesSection += `<div class="lt-ov-notes-empty">No notes yet.</div>`;
+    } else {
+      const sorted = [...notesArr].sort((a, b) => {
+        const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return tb - ta;
+      });
+      notesSection += sorted
+        .map((n) => {
+          const when = n.createdAt ? formatDateTime(n.createdAt) : "";
+          const vis =
+            n.visibility === "internal_lab_only" ? "Lab only" : "Shared";
+          const author = n.authorName ? ` · ${escapeHtml(n.authorName)}` : "";
+          return `<div class="lt-ov-note">
   <div class="lt-ov-note-meta">${escapeHtml(vis)}${author}${when ? ` · ${escapeHtml(when)}` : ""}</div>
   <div class="lt-ov-note-text">${escapeHtml(n.noteText || "—")}</div>
 </div>`;
-      })
-      .join("");
+        })
+        .join("");
+    }
   }
-
-  const chartSection = hasRx
-    ? `<div class="lt-ov-section">Tooth Chart</div>${buildToothChart(highlighted)}`
-    : "";
 
   const footer = `<div class="lt-ov-footer">LabTrax · Case ${escapeHtml(labCase.caseNumber)} · Printed ${escapeHtml(formatDateTime(new Date().toISOString()))}</div>`;
 

@@ -20,7 +20,6 @@ import {
   Filter,
   Loader2,
   Lock,
-
   Paperclip,
   Pencil,
   Plus,
@@ -28,6 +27,7 @@ import {
   QrCode,
   ReceiptText,
   Search,
+  Settings2,
   Sparkles,
   Trash2,
   X,
@@ -76,6 +76,12 @@ import {
 import ScanViewerModal from "@/components/ScanViewerModal";
 import ScanThumbnail from "@/components/ScanThumbnail";
 import type { ScanFormat } from "@workspace/scan-viewer";
+import { PrintLayoutEditor } from "@/components/PrintLayoutEditor";
+import {
+  type PrintLayoutConfig,
+  isDefaultLayout,
+  loadPrintLayoutConfig,
+} from "@/lib/print-layout";
 
 const STATUS_FILTERS: Array<{ value: string; label: string }> = [
   { value: "all", label: "All" },
@@ -2008,6 +2014,8 @@ export function CaseDrawer({
   const [viewingInvoice, setViewingInvoice] = useState<Invoice | null>(null);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const [confirmDeleteCase, setConfirmDeleteCase] = useState(false);
+  const [showPrintLayoutEditor, setShowPrintLayoutEditor] = useState(false);
+  const [printLayout, setPrintLayout] = useState<PrintLayoutConfig>(() => loadPrintLayoutConfig());
 
   const [editMode, setEditMode] = useState(false);
   const [editForm, setEditForm] = useState({
@@ -3437,13 +3445,31 @@ export function CaseDrawer({
                         Staged
                       </span>
                     )}
+                    {!isDefaultLayout(printLayout) && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-medium text-primary bg-primary/10 px-1.5 py-0.5 rounded">
+                        Customized
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setShowPrintLayoutEditor(true)}
+                      className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                      title="Customize print layout"
+                    >
+                      <Settings2 size={11} />
+                      Layout
+                    </button>
                     <button
                       type="button"
                       onClick={() =>
-                        printCaseOverview(data ?? labCase, {
-                          restorations: data?.restorations ?? [],
-                          notes: data?.notes ?? [],
-                        })
+                        printCaseOverview(
+                          data ?? labCase,
+                          {
+                            restorations: data?.restorations ?? [],
+                            notes: data?.notes ?? [],
+                          },
+                          printLayout,
+                        )
                       }
                       className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs text-muted-foreground hover:text-foreground transition-colors"
                       title="Print overview"
@@ -4764,6 +4790,15 @@ export function CaseDrawer({
       {/* Invoice editor overlay */}
       {viewingInvoice && (
         <InvoiceEditor invoice={viewingInvoice} onClose={() => setViewingInvoice(null)} />
+      )}
+
+      {/* Print Layout Editor */}
+      {showPrintLayoutEditor && (
+        <PrintLayoutEditor
+          onClose={() => setShowPrintLayoutEditor(false)}
+          config={printLayout}
+          onChange={(next) => setPrintLayout(next)}
+        />
       )}
 
       {/* Delete case confirmation */}
