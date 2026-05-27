@@ -586,13 +586,17 @@ ATTACHMENTS: ${attachmentRows.length} file(s) attached.
  * Build a combined context block for multiple pinned cases.
  * Each case gets a labelled section so the AI can reference them by number.
  */
-async function buildMultiCaseContext(caseIds: string[]): Promise<string> {
+async function buildMultiCaseContext(
+  caseIds: string[],
+  userId?: string,
+  userType?: string,
+): Promise<string> {
   if (caseIds.length === 0) return "";
-  if (caseIds.length === 1) return buildSingleCaseContext(caseIds[0]!);
+  if (caseIds.length === 1) return buildSingleCaseContext(caseIds[0]!, userId, userType);
 
   const contexts = await Promise.all(
     caseIds.map(async (id) => {
-      const ctx = await buildSingleCaseContext(id);
+      const ctx = await buildSingleCaseContext(id, userId, userType);
       return ctx;
     }),
   );
@@ -694,7 +698,7 @@ export function registerAiChatRoutes(router: IRouter): void {
         contextBlock = await buildProviderContext(userId);
         let pinnedCaseCtx = "";
         if (requestedCaseIds.length > 0) {
-          pinnedCaseCtx = await buildMultiCaseContext(requestedCaseIds);
+          pinnedCaseCtx = await buildMultiCaseContext(requestedCaseIds, userId, userType);
         }
         systemPrompt = `You are LabTrax AI, a helpful assistant for dental providers (doctors and practices).
 You have access to the provider's real-time case data and pricing from all their linked dental labs.
@@ -712,7 +716,7 @@ ${pinnedCaseCtx ? `${pinnedCaseCtx}\n` : ""}${contextBlock}`;
         }
         let pinnedCaseCtx = "";
         if (requestedCaseIds.length > 0) {
-          pinnedCaseCtx = await buildMultiCaseContext(requestedCaseIds);
+          pinnedCaseCtx = await buildMultiCaseContext(requestedCaseIds, userId, userType);
         }
         systemPrompt = `You are LabTrax AI, a helpful assistant for dental lab staff.
 You have access to real-time data about this lab's cases, pricing tiers, and lab profile.

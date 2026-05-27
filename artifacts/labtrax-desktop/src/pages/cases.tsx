@@ -4292,12 +4292,12 @@ export function CaseDrawer({
           {activeTab === "files" && (
             <div
               className="relative px-5 py-5 space-y-4"
-              onDragEnter={handleFileDragEnter}
-              onDragLeave={handleFileDragLeave}
-              onDragOver={handleFileDragOver}
-              onDrop={handleFileDrop}
+              onDragEnter={labCase._source !== "mobile" ? handleFileDragEnter : undefined}
+              onDragLeave={labCase._source !== "mobile" ? handleFileDragLeave : undefined}
+              onDragOver={labCase._source !== "mobile" ? handleFileDragOver : undefined}
+              onDrop={labCase._source !== "mobile" ? handleFileDrop : undefined}
             >
-              {fileDragOver && (
+              {fileDragOver && labCase._source !== "mobile" && (
                 <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-primary bg-primary/8 pointer-events-none">
                   <FileUp size={24} className="text-primary" />
                   <p className="text-sm font-medium text-primary">Drop to attach files</p>
@@ -4325,21 +4325,28 @@ export function CaseDrawer({
                     <Printer size={12} />
                     Print
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={uploadingFile}
-                    className="inline-flex items-center gap-1.5 h-7 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50 transition-colors"
-                  >
-                    {uploadingFile ? <Loader2 size={12} className="animate-spin" /> : <FileUp size={12} />}
-                    {uploadingFile ? "Uploading…" : "Attach file"}
-                  </button>
+                  {labCase._source !== "mobile" && (
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={uploadingFile}
+                      className="inline-flex items-center gap-1.5 h-7 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50 transition-colors"
+                    >
+                      {uploadingFile ? <Loader2 size={12} className="animate-spin" /> : <FileUp size={12} />}
+                      {uploadingFile ? "Uploading…" : "Attach file"}
+                    </button>
+                  )}
                 </div>
               </div>
               <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileChange} />
               {uploadError && <p className="text-xs text-destructive">{uploadError}</p>}
+              {labCase._source === "mobile" && (
+                <p className="text-xs text-muted-foreground">
+                  This case was created in the mobile app. File attachments can be added from the mobile app.
+                </p>
+              )}
               {isLoading && <div className="text-sm text-muted-foreground">Loading…</div>}
-              {!isLoading && fileCount === 0 && !uploadingFile && (
+              {!isLoading && fileCount === 0 && !uploadingFile && labCase._source !== "mobile" && (
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}

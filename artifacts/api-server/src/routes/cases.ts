@@ -442,7 +442,7 @@ async function assertCaseAccess(userId: string, caseId: string) {
 
 async function assertCaseAccessWithMemberships(userId: string, caseId: string) {
   const found = await db.query.cases.findFirst({
-    where: eq(cases.id, caseId),
+    where: and(eq(cases.id, caseId), notDeleted(cases)),
   });
   if (!found) throw new HttpError(404, "Case not found.");
   const labMembership = await requireMembership(
@@ -2335,7 +2335,6 @@ router.post(
   "/:caseId/attachments",
   asyncHandler(async (req, res) => {
     let found: Awaited<ReturnType<typeof assertCaseAccess>> | null = null;
-    let mobileOrgId: string | null = null;
 
     try {
       found = await assertCaseAccess(
@@ -2343,11 +2342,14 @@ router.post(
         req.params.caseId
       );
     } catch (e: any) {
-      if (e.status !== 404) throw e;
+      if (e.statusCode !== 404) throw e;
     }
 
     if (!found) {
-      // Mobile case path: verify membership against the lab_cases row.
+      // Mobile case path: verify the caller is a member of the lab that owns
+      // this lab_cases row, then surface a clear error. The caseAttachments
+      // table has a FK to cases.id (not lab_cases.id), so we cannot store
+      // attachments for mobile cases without a schema migration.
       const mobileRow = await db.query.labCases.findFirst({
         where: and(
           eq(labCases.id, req.params.caseId),
@@ -2362,15 +2364,18 @@ router.post(
         (req as any).auth.userId,
         mobileRow.organizationId
       );
-      mobileOrgId = mobileRow.organizationId;
-    } else {
-      await requireMembership(
-        (req as any).auth.userId,
-        found.labOrganizationId
+      throw new HttpError(
+        422,
+        "File attachments cannot be added to legacy mobile cases. Open this case on the mobile app to add files."
       );
     }
 
-    const orgId = found ? found.labOrganizationId : (mobileOrgId as string);
+    await requireMembership(
+      (req as any).auth.userId,
+      found.labOrganizationId
+    );
+
+    const orgId = found.labOrganizationId;
 
     const input = z
       .object({
@@ -2562,7 +2567,7 @@ router.patch(
         req.params.caseId
       );
     } catch (e: any) {
-      if (e.status !== 404) throw e;
+      if (e.statusCode !== 404) throw e;
     }
 
     if (!found) {
