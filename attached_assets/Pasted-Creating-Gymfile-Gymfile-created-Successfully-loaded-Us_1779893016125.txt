@@ -1,0 +1,89 @@
+Creating Gymfile
+Gymfile created
+Successfully loaded '/Users/expo/workingdir/build/artifacts/labtrax/ios/Gymfile' 📄
++---------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+|                                                                  Detected Values from './Gymfile'                                                                   |
++-----------------------+---------------------------------------------------------------------------------------------------------------------------------------------+
+| suppress_xcode_output | true                                                                                                                                        |
+| clean                 | false                                                                                                                                       |
+| scheme                | LabTrax                                                                                                                                     |
+| configuration         | Release                                                                                                                                     |
+| export_options        |                                                                                                                                             |
+| export_xcargs         | OTHER_CODE_SIGN_FLAGS="--keychain /var/folders/5_/4knlryn57n39p2c_jw8567z00000gn/T/eas-build-e1b755ce-df95-40cc-b1d2-b51ad2d89cff.keychain" |
+| disable_xcpretty      | true                                                                                                                                        |
+| buildlog_path         | /Users/expo/workingdir/logs                                                                                                                 |
+| derived_data_path     | ./build                                                                                                                                     |
+| result_bundle         | true                                                                                                                                        |
+| result_bundle_path    | /var/folders/5_/4knlryn57n39p2c_jw8567z00000gn/T/result-bundle-1779892092874.xcresult                                                       |
+| output_directory      | ./build                                                                                                                                     |
++-----------------------+---------------------------------------------------------------------------------------------------------------------------------------------+
+Resolving Swift Package Manager dependencies...
+$ xcodebuild -resolvePackageDependencies -workspace ./LabTrax.xcworkspace -scheme LabTrax -configuration Release -derivedDataPath ./build
+▸ Command line invocation:
+▸     /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -resolvePackageDependencies -workspace ./LabTrax.xcworkspace -scheme LabTrax -configuration Release -derivedDataPath ./build
+▸ resolved source packages:
+$ xcodebuild -showBuildSettings -workspace ./LabTrax.xcworkspace -scheme LabTrax -configuration Release -derivedDataPath ./build 2>&1
+Detected provisioning profile mapping: {:"app.replit.labtrax"=>"24d22ccb-5d51-4b36-b82b-e2296a337079", :"app.replit.labtrax.share-extension"=>"a1162670-ede9-4634-860d-fbe2d283b6c8"}
+
++----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+|                                                                                               Summary for gym 2.228.0                                                                                                |
++------------------------------------------------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------+
+| workspace                                                              | ./LabTrax.xcworkspace                                                                                                                       |
+| scheme                                                                 | LabTrax                                                                                                                                     |
+| clean                                                                  | false                                                                                                                                       |
+| output_directory                                                       | ./build                                                                                                                                     |
+| output_name                                                            | LabTrax                                                                                                                                     |
+| configuration                                                          | Release                                                                                                                                     |
+| silent                                                                 | false                                                                                                                                       |
+| skip_package_ipa                                                       | false                                                                                                                                       |
+| skip_package_pkg                                                       | false                                                                                                                                       |
+| export_options.method                                                  | app-store                                                                                                                                   |
+| export_options.provisioningProfiles.app.replit.labtrax                 | 24d22ccb-5d51-4b36-b82b-e2296a337079                                                                                                        |
+| export_options.provisioningProfiles.app.replit.labtrax.share-extension | a1162670-ede9-4634-860d-fbe2d283b6c8                                                                                                        |
+| export_xcargs                                                          | OTHER_CODE_SIGN_FLAGS="--keychain /var/folders/5_/4knlryn57n39p2c_jw8567z00000gn/T/eas-build-e1b755ce-df95-40cc-b1d2-b51ad2d89cff.keychain" |
+| build_path                                                             | /Users/expo/Library/Developer/Xcode/Archives/2026-05-27                                                                                     |
+| derived_data_path                                                      | ./build                                                                                                                                     |
+| result_bundle                                                          | true                                                                                                                                        |
+| result_bundle_path                                                     | /var/folders/5_/4knlryn57n39p2c_jw8567z00000gn/T/result-bundle-1779892092874.xcresult                                                       |
+| buildlog_path                                                          | /Users/expo/workingdir/logs                                                                                                                 |
+| destination                                                            | generic/platform=iOS                                                                                                                        |
+| suppress_xcode_output                                                  | true                                                                                                                                        |
+| xcodebuild_formatter                                                   | xcpretty                                                                                                                                    |
+| build_timing_summary                                                   | false                                                                                                                                       |
+| disable_xcpretty                                                       | true                                                                                                                                        |
+| skip_profile_detection                                                 | false                                                                                                                                       |
+| xcodebuild_command                                                     | xcodebuild                                                                                                                                  |
+| skip_package_dependencies_resolution                                   | false                                                                                                                                       |
+| disable_package_automatic_updates                                      | false                                                                                                                                       |
+| use_system_scm                                                         | false                                                                                                                                       |
+| xcode_path                                                             | /Applications/Xcode.app                                                                                                                     |
++------------------------------------------------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------+
+$ set -o pipefail && xcodebuild -workspace ./LabTrax.xcworkspace -scheme LabTrax -configuration Release -derivedDataPath ./build -destination 'generic/platform=iOS' -archivePath /Users/expo/Library/Developer/Xcode/Archives/2026-05-27/LabTrax\ 2026-05-27\ 07.28.18.xcarchive -resultBundlePath '/var/folders/5_/4knlryn57n39p2c_jw8567z00000gn/T/result-bundle-1779892092874.xcresult' archive | tee /Users/expo/workingdir/logs/LabTrax-LabTrax.log > /dev/null
+    Run script build phase '[CP-User] [Hermes] Replace Hermes for the right configuration, if needed' will be run during every build because it does not specify any outputs. To address this issue, either add output dependencies to the script phase, or configure it to run in every build by unchecking "Based on dependency analysis" in the script phase. (in target 'hermes-engine' from project 'Pods')
+▸ ** ARCHIVE FAILED **
+▸ The following build commands failed:
+▸ 	Archiving workspace LabTrax with scheme LabTrax
+▸ (1 failure)
+Exit status: 65
+
++---------------------------------------+
+|           Build environment           |
++-------------+-------------------------+
+| xcode_path  | /Applications/Xcode.app |
+| gym_version | 2.228.0                 |
+| sdk         | iPhoneOS26.0.sdk        |
++-------------+-------------------------+
+Looks like fastlane ran into a build/archive error with your project
+It's hard to tell what's causing the error, so we wrote some guides on how
+to troubleshoot build and signing issues: https://docs.fastlane.tools/codesigning/getting-started/
+Before submitting an issue on GitHub, please follow the guide above and make
+sure your project is set up correctly.
+fastlane uses `xcodebuild` commands to generate your binary, you can see the
+the full commands printed out in yellow in the above log.
+Make sure to inspect the output above, as usually you'll find more error information there
+
+[!] Error building the application - see the log above
+Error: The "Run fastlane" step failed because of an error in the Xcode build process. We automatically detected following errors in your Xcode build logs:
+- Provisioning profile "*[expo] app.replit.labtrax.share-extension AppStore 2026-05-15T12:47:42.184Z" doesn't support the group.app.replit.labtrax App Group. (in target 'LabTraxShare' from project 'LabTrax')
+- Provisioning profile "*[expo] app.replit.labtrax.share-extension AppStore 2026-05-15T12:47:42.184Z" doesn't match the entitlements file's value for the com.apple.security.application-groups entitlement. (in target 'LabTraxShare' from project 'LabTrax')
+Refer to "Xcode Logs" below for additional, more detailed logs.
