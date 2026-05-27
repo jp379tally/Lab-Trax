@@ -4391,6 +4391,24 @@ export function CaseDrawer({
                   </>
                 );
               })()}
+              {!isLoading && !!data?.viewerCanManageAttachments && fileCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  onDragEnter={handleFileDragEnter}
+                  onDragLeave={handleFileDragLeave}
+                  onDragOver={handleFileDragOver}
+                  onDrop={handleFileDrop}
+                  className={`w-full flex items-center justify-center gap-2 py-3 rounded-lg border-2 border-dashed transition-colors cursor-pointer text-center ${
+                    fileDragOver
+                      ? "border-primary bg-primary/8 text-primary"
+                      : "border-muted-foreground/30 hover:border-primary/50 hover:bg-primary/5 text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <FileUp size={14} className={fileDragOver ? "text-primary" : "text-muted-foreground/60"} />
+                  <span className="text-xs font-medium">Drop files here or click to browse</span>
+                </button>
+              )}
             </div>
           )}
 
