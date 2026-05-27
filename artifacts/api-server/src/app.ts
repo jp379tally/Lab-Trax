@@ -17,7 +17,7 @@ import { handleStripeWebhook } from "./routes/billing";
 import {
   getDesktopInstallerHandle,
   openDesktopInstallerStream,
-  getDirectDownloadUrl,
+  getSignedDownloadUrl,
   type DesktopInstallerKind,
   DesktopInstallerNotConfiguredError,
 } from "./lib/desktop-installer-storage";
@@ -127,8 +127,8 @@ function serveInstaller(
       }
 
       // For full (non-range) GET requests, try to redirect the browser directly
-      // to GCS using a short-lived sidecar access token. This bypasses the
-      // Replit reverse proxy, which drops long-running connections for large
+      // to GCS using a short-lived signed URL (15-minute expiry). This bypasses
+      // the Replit reverse proxy, which drops long-running connections for large
       // file transfers (~145 MB). The browser downloads directly from Google
       // Cloud Storage, so the bytes never pass through this server or the proxy.
       //
@@ -136,18 +136,20 @@ function serveInstaller(
       // resumable-download retries where the client is patching a gap — those
       // fall through to the streaming path which supports sub-range opens.
       //
-      // If the sidecar is unreachable, the token is empty, or the object is
-      // missing, getDirectDownloadUrl returns null and we fall through to the
-      // existing stream-and-pipe path with no change in behavior.
+      // If signing is unavailable (external_account credentials don't support
+      // signing, object missing, or any signing error) getSignedDownloadUrl
+      // returns null and we fall through to the stream-and-pipe path.
       if (!isPartial) {
-        const directUrl = await getDirectDownloadUrl(kind);
-        if (directUrl) {
+        const signedUrl = await getSignedDownloadUrl(kind);
+        if (signedUrl) {
+          logger.info({ kind }, "Desktop installer download: redirecting to signed GCS URL");
           res.removeHeader("Content-Length");
           res.removeHeader("Content-Range");
           res.setHeader("Cache-Control", "no-store");
-          res.redirect(302, directUrl);
+          res.redirect(302, signedUrl);
           return;
         }
+        logger.info({ kind }, "Desktop installer download: signed URL unavailable, streaming through proxy");
       }
 
       const obj = await openDesktopInstallerStream(

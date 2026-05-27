@@ -51,7 +51,7 @@ vi.mock("pino-http", () => ({
 vi.mock("./lib/desktop-installer-storage.js", () => ({
   getDesktopInstallerHandle: vi.fn(),
   openDesktopInstallerStream: vi.fn(),
-  getDirectDownloadUrl: vi.fn().mockResolvedValue(null),
+  getSignedDownloadUrl: vi.fn().mockResolvedValue(null),
   installerKindFromUrl: vi.fn(),
   getDesktopInstallerMetadata: vi.fn(),
   uploadDesktopInstaller: vi.fn(),
@@ -65,6 +65,7 @@ import app from "./app.js";
 import {
   getDesktopInstallerHandle,
   openDesktopInstallerStream,
+  getSignedDownloadUrl,
 } from "./lib/desktop-installer-storage.js";
 
 // ---------------------------------------------------------------------------
@@ -140,6 +141,18 @@ describe("GET /downloads/LabTrax-Windows-Portable.zip", () => {
 
   afterAll(() => {
     server.close();
+  });
+
+  beforeEach(() => {
+    // Full reset of the signed-URL mock so any queued mockResolvedValueOnce
+    // calls from a previous test (e.g. one that skipped the signed-URL path)
+    // don't bleed into the next test.  mockReset clears the queue + call
+    // history + implementation, so we immediately re-apply the default.
+    vi.mocked(getSignedDownloadUrl).mockReset();
+    vi.mocked(getSignedDownloadUrl).mockResolvedValue(null);
+    // Clear call history on openDesktopInstallerStream so the
+    // "not.toHaveBeenCalled" assertions in the redirect tests start fresh.
+    vi.mocked(openDesktopInstallerStream).mockClear();
   });
 
   it("returns 200 with full content and correct headers for a plain GET", async () => {
@@ -361,6 +374,58 @@ describe("GET /downloads/LabTrax-Windows-Portable.zip", () => {
     expect(res.headers["etag"]).toBe(FAKE_ETAG);
     // HEAD responses have no body — supertest gives an empty object
     expect(Object.keys(res.body as object)).toHaveLength(0);
+  });
+
+  it("redirects to signed URL (302) when getSignedDownloadUrl succeeds for a full GET", async () => {
+    const fakeSignedUrl = "https://storage.googleapis.com/bucket/object?X-Goog-Signature=abc123";
+    vi.mocked(getSignedDownloadUrl).mockResolvedValueOnce(fakeSignedUrl);
+
+    const res = await request(server)
+      .get("/downloads/LabTrax-Windows-Portable.zip")
+      .redirects(0);
+
+    expect(res.status).toBe(302);
+    expect(res.headers["location"]).toBe(fakeSignedUrl);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    // The browser should be redirected to the signed URL — the installer bytes
+    // must not have been streamed through the server.
+    expect(vi.mocked(openDesktopInstallerStream)).not.toHaveBeenCalled();
+  });
+
+  it("does NOT redirect on a Range request even when getSignedDownloadUrl succeeds", async () => {
+    const fakeSignedUrl = "https://storage.googleapis.com/bucket/object?X-Goog-Signature=abc123";
+    vi.mocked(getSignedDownloadUrl).mockResolvedValueOnce(fakeSignedUrl);
+
+    const res = await request(server)
+      .get("/downloads/LabTrax-Windows-Portable.zip")
+      .set("Range", "bytes=0-9")
+      .buffer(true)
+      .parse((r, cb) => {
+        const chunks: Buffer[] = [];
+        r.on("data", (d: Buffer) => chunks.push(d));
+        r.on("end", () => cb(null, Buffer.concat(chunks)));
+      });
+
+    // Range requests must stream, not redirect, so the client can resume.
+    expect(res.status).toBe(206);
+    expect(vi.mocked(getSignedDownloadUrl)).not.toHaveBeenCalled();
+  });
+
+  it("falls back to streaming when getSignedDownloadUrl returns null", async () => {
+    vi.mocked(getSignedDownloadUrl).mockResolvedValueOnce(null);
+
+    const res = await request(server)
+      .get("/downloads/LabTrax-Windows-Portable.zip")
+      .buffer(true)
+      .parse((r, cb) => {
+        const chunks: Buffer[] = [];
+        r.on("data", (d: Buffer) => chunks.push(d));
+        r.on("end", () => cb(null, Buffer.concat(chunks)));
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body as Buffer).toEqual(FAKE_CONTENT);
+    expect(vi.mocked(openDesktopInstallerStream)).toHaveBeenCalled();
   });
 });
 
