@@ -1,4 +1,5 @@
 import type { Transporter } from "nodemailer";
+import { promises as dns } from "node:dns";
 import { logger } from "./logger";
 import {
   createTransport,
@@ -7,6 +8,36 @@ import {
 } from "./mailer";
 
 let cachedTransport: { key: string; transporter: Transporter } | null = null;
+
+const EMAIL_RE = /^[^\s@]+@([^\s@]+\.[^\s@]+)$/;
+const mxCache = new Map<string, { ok: boolean; ts: number }>();
+const MX_TTL_MS = 60 * 60 * 1000;
+const MX_NEG_TTL_MS = 10 * 60 * 1000;
+
+async function hasDeliverableDomain(email: string): Promise<boolean> {
+  const m = EMAIL_RE.exec(email.trim());
+  if (!m) return false;
+  const domain = m[1].toLowerCase();
+  const now = Date.now();
+  const cached = mxCache.get(domain);
+  if (cached && now - cached.ts < (cached.ok ? MX_TTL_MS : MX_NEG_TTL_MS)) {
+    return cached.ok;
+  }
+  let ok = false;
+  try {
+    const mx = await dns.resolveMx(domain);
+    ok = Array.isArray(mx) && mx.length > 0;
+  } catch {
+    try {
+      const a = await dns.resolve(domain);
+      ok = Array.isArray(a) && a.length > 0;
+    } catch {
+      ok = false;
+    }
+  }
+  mxCache.set(domain, { ok, ts: now });
+  return ok;
+}
 
 function getTransporter(cfg: MailerConfig): Transporter {
   const key = `${cfg.host}:${cfg.port}:${cfg.user}`;
@@ -38,6 +69,13 @@ export async function sendMail(opts: SendMailOptions): Promise<SendMailResult> {
       "[mail] SMTP not configured; skipping send"
     );
     return { sent: false, reason: "smtp_not_configured" };
+  }
+  if (!(await hasDeliverableDomain(opts.to))) {
+    logger.warn(
+      { to: opts.to, subject: opts.subject },
+      "[mail] recipient domain has no MX/A record; skipping send"
+    );
+    return { sent: false, reason: "undeliverable_domain" };
   }
   try {
     const transporter = getTransporter(cfg);
