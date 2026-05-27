@@ -1,0 +1,157 @@
+2026-05-27 11:54:51.38
+e45f58b8
+User
+{"level":30,"time":1779897291384,"pid":20,"hostname":"localhost","req":{"id":267,"method":"GET","url":"/downloads"},"res":{"statusCode":404},"responseTime":1,"msg":"request completed"}
+2026-05-27 11:55:33.47
+f532e4e6
+System
+artifact mode enabled runnable=2 static=1
+2026-05-27 11:55:33.47
+f532e4e6
+System
+starting up user application
+2026-05-27 11:55:33.47
+f532e4e6
+System
+starting artifact processes for monorepo deployment
+2026-05-27 11:55:33.47
+f532e4e6
+System
+forwarding local port 0 to external port 80 (mapped as 1104)
+2026-05-27 11:55:33.47
+f532e4e6
+System
+metasidecar: loaded enterprise status from environment is_enterprise=false
+2026-05-27 11:55:33.47
+f532e4e6
+System
+registered static handler for artifact publicDir=artifacts/labtrax-desktop/dist/public path=/desktop/
+2026-05-27 11:55:33.47
+f532e4e6
+System
+waiting for runnable artifact ports ports=[8080 19134]
+2026-05-27 11:55:33.47
+f532e4e6
+System
+baseline ports snapshot before artifact start ports=[1104]
+2026-05-27 11:55:33.48
+f532e4e6
+System
+starting artifact processes count=2
+2026-05-27 11:55:33.48
+f532e4e6
+System
+starting artifact process artifact=artifacts/labtrax args=[pnpm --filter @workspace/labtrax run serve] port=19134
+2026-05-27 11:55:33.48
+f532e4e6
+System
+starting artifact process port=8080 artifact=artifacts/api-server args=[node --max-old-space-size=512 artifacts/api-server/dist/index.mjs]
+2026-05-27 11:55:33.49
+f532e4e6
+System
+artifact process started pid=21 artifact=artifacts/labtrax
+2026-05-27 11:55:33.49
+f532e4e6
+System
+artifact process started artifact=artifacts/api-server pid=20
+2026-05-27 11:55:35.35
+f532e4e6
+User
+> @workspace/labtrax@0.0.0 serve /home/runner/workspace/artifacts/labtrax
+2026-05-27 11:55:35.35
+f532e4e6
+User
+> node server/serve.js
+2026-05-27 11:55:35.48
+f532e4e6
+System
+artifact port detected port=19134 detected=1 expected=2
+2026-05-27 11:55:35.49
+f532e4e6
+User
+Serving static Expo build on port 19134
+2026-05-27 11:55:35.79
+e45f58b8
+User
+{"level":30,"time":1779897335799,"pid":20,"hostname":"localhost","req":{"id":270,"method":"GET","url":"/cases"},"res":{"statusCode":404},"responseTime":1,"msg":"request completed"}
+2026-05-27 11:55:35.80
+e45f58b8
+User
+{"level":30,"time":1779897335800,"pid":20,"hostname":"localhost","req":{"id":271,"method":"GET","url":"/downloads"},"res":{"statusCode":404},"responseTime":1,"msg":"request completed"}
+2026-05-27 11:55:35.80
+e45f58b8
+User
+{"level":30,"time":1779897335801,"pid":20,"hostname":"localhost","req":{"id":272,"method":"GET","url":"/api"},"res":{"statusCode":404},"responseTime":1,"msg":"request completed"}
+2026-05-27 11:55:38.00
+f532e4e6
+User
+{"level":30,"time":1779897338003,"pid":20,"hostname":"localhost","hourUtc":8,"firstRunInMin":969,"msg":"Monthly statement scheduler armed"}
+2026-05-27 11:55:38.04
+f532e4e6
+User
+{"level":30,"time":1779897338005,"pid":20,"hostname":"localhost","hourUtc":6,"msUntilFirst":50661995,"hoursUntilFirst":14,"msg":"[installer-health] Health check job scheduled — first run at UTC 06:00 (~14h from now)"}
+2026-05-27 11:55:38.04
+f532e4e6
+User
+{"level":30,"time":1779897338004,"pid":20,"hostname":"localhost","intervalMs":900000,"msg":"Statement retry scheduler armed"}
+2026-05-27 11:56:33.47
+f532e4e6
+System
+seccomp port detection incomplete, trying /proc/net/tcp fallback expected=[8080 19134] seccompDetected=1
+2026-05-27 11:56:33.48
+f532e4e6
+System
+not all artifact ports opened within timeout expected=[8080 19134] detected=1
+2026-05-27 11:56:33.48
+f532e4e6
+System
+sending SIGTERM to artifact process artifact=artifacts/api-server
+2026-05-27 11:56:33.48
+f532e4e6
+System
+sending SIGTERM to artifact process artifact=artifacts/labtrax
+2026-05-27 11:56:33.50
+f532e4e6
+System
+artifact process exited with error error=signal: terminated artifact=artifacts/api-server
+2026-05-27 11:56:33.50
+f532e4e6
+User
+Command failed with signal "SIGTERM"
+
+2026-05-27 11:56:33.50
+f532e4e6
+User
+/home/runner/workspace/artifacts/labtrax:
+2026-05-27 11:56:33.50
+f532e4e6
+User
+ ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/labtrax@0.0.0 serve: `node server/serve.js`
+2026-05-27 11:56:43.48
+f532e4e6
+System
+timeout waiting for artifact processes, sending SIGKILL
+2026-05-27 11:56:43.48
+f532e4e6
+System
+a port configuration was specified but the required port was never opened
+2026-05-27 11:59:50.90
+e45f58b8
+User
+{"level":30,"time":1779897590907,"pid":20,"hostname":"localhost","req":{"id":274,"method":"GET","url":"/uploads"},"res":{"statusCode":404},"responseTime":1,"msg":"request completed"}
+2026-05-27 11:59:50.90
+e45f58b8
+User
+{"level":30,"time":1779897590908,"pid":20,"hostname":"localhost","req":{"id":275,"method":"GET","url":"/downloads"},"res":{"statusCode":404},"responseTime":1,"msg":"request completed"}
+2026-05-27 11:59:50.91
+e45f58b8
+User
+{"level":30,"time":1779897590909,"pid":20,"hostname":"localhost","req":{"id":276,"method":"GET","url":"/cases"},"res":{"statusCode":404},"responseTime":1,"msg":"request completed"}
+2026-05-27 11:59:50.91
+e45f58b8
+User
+{"level":30,"time":1779897590910,"pid":20,"hostname":"localhost","req":{"id":277,"method":"GET","url":"/api"},"res":{"statusCode":404},"responseTime":1,"msg":"request completed"}
+2026-05-27 11:59:50.91
+e45f58b8
+User
+{"level":30,"time":1779897590910,"pid":20,"hostname":"localhost","req":{"id":277,"method":"GET","url":"/api"},"res":{"statusCode":404},"responseTime":1,"msg":"request completed"}

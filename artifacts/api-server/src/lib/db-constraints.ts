@@ -58,8 +58,50 @@ CREATE TRIGGER invoice_line_items_invoice_id_match_trigger
  * Failures are logged and re-thrown so the process exits rather than
  * running without the safety net.
  */
+function describeDbTarget(): { host: string; database: string } {
+  const raw = process.env["DATABASE_URL"] ?? "";
+  try {
+    const u = new URL(raw);
+    return {
+      host: `${u.hostname}:${u.port || "5432"}`,
+      database: u.pathname.replace(/^\//, "") || "(none)",
+    };
+  } catch {
+    return { host: "(unparseable DATABASE_URL)", database: "(unknown)" };
+  }
+}
+
+const CONNECT_TIMEOUT_MS = 15_000;
+
 export async function ensureDbConstraints(): Promise<void> {
-  const client = await pool.connect();
+  const target = describeDbTarget();
+  logger.info({ ...target }, "Connecting to database for startup constraint setup");
+
+  const connectPromise = pool.connect();
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    const t = setTimeout(() => {
+      reject(
+        new Error(
+          `Timed out after ${CONNECT_TIMEOUT_MS}ms connecting to database host=${target.host} database=${target.database}. ` +
+            `Most likely cause: DATABASE_URL points to a host that is not reachable from this environment (e.g. a dev-only hostname like 'helium' in a production deployment, a paused serverless DB, or a missing/wrong production secret).`,
+        ),
+      );
+    }, CONNECT_TIMEOUT_MS);
+    t.unref();
+  });
+
+  let client;
+  try {
+    client = await Promise.race([connectPromise, timeoutPromise]);
+  } catch (err) {
+    // If the timeout won, the connectPromise may still resolve later with a
+    // client that nothing will release. Release it whenever it eventually
+    // arrives so we don't leak a pooled connection on the way to exit.
+    connectPromise.then((c) => c.release()).catch(() => {});
+    logger.error({ err, ...target }, "Failed to connect to database — aborting startup");
+    throw err;
+  }
+
   try {
     await client.query(SETUP_SQL);
     logger.info("DB constraints installed (invoice_line_items_invoice_id_match)");
