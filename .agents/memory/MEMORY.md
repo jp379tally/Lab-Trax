@@ -1,0 +1,1 @@
+- [EAS iOS non-interactive auth](eas-ios-non-interactive-auth.md) — `--non-interactive` builds need 5 env vars or eas-cli silently prompts and hangs in CI.
