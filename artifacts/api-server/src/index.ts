@@ -18,37 +18,53 @@ if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
-ensureDbConstraints()
-  .then(() => {
-    const server = app.listen(port, (err) => {
-      if (err) {
-        logger.error({ err }, "Error listening on port");
-        process.exit(1);
-      }
-
-      logger.info({ port }, "Server listening");
-      scheduleVendorLinkBackfillIfNeeded();
-    });
-
-    setupMessengerWebSocket(server);
-
-    function shutdown(signal: string) {
-      logger.info({ signal }, "Received shutdown signal, closing server");
-      server.close(() => {
-        logger.info("HTTP server closed");
-        process.exit(0);
-      });
-      setTimeout(() => {
-        logger.warn("Graceful shutdown timed out, forcing exit");
-        process.exit(0);
-      }, 10_000).unref();
-    }
-
-    process.on("SIGTERM", () => shutdown("SIGTERM"));
-    process.on("SIGINT", () => shutdown("SIGINT"));
-  })
-  .catch((err) => {
-    logger.error({ err }, "DB constraint setup failed — exiting");
+// Start the HTTP listener IMMEDIATELY so the platform's port-open health
+// check passes inside the 60s deploy window. DB constraint setup is a
+// background safety-net task — it must never gate the listener. Previously
+// a slow Neon cold-start on the constraint DDL caused the entire deploy to
+// SIGKILL at 60s before the port ever opened.
+const server = app.listen(port, (err) => {
+  if (err) {
+    process.stderr.write(`[startup] listen FAILED: ${err.message}\n`);
+    logger.error({ err }, "Error listening on port");
     process.exit(1);
+  }
+
+  process.stderr.write(`[startup] server listening on port ${port}\n`);
+  logger.info({ port }, "Server listening");
+  scheduleVendorLinkBackfillIfNeeded();
+
+  // Fire-and-forget DB constraint installation. Logs loudly on failure
+  // but does NOT crash the process — the app worked for months without
+  // this trigger, and a slow/unreachable DB at boot must not take the
+  // whole service down.
+  ensureDbConstraints().catch((err) => {
+    process.stderr.write(
+      `[startup] DB constraint setup failed (server still running): ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    );
+    logger.error(
+      { err },
+      "DB constraint setup failed — server is running but invoice_line_items integrity trigger is NOT installed",
+    );
   });
+});
+
+setupMessengerWebSocket(server);
+
+function shutdown(signal: string) {
+  logger.info({ signal }, "Received shutdown signal, closing server");
+  server.close(() => {
+    logger.info("HTTP server closed");
+    process.exit(0);
+  });
+  setTimeout(() => {
+    logger.warn("Graceful shutdown timed out, forcing exit");
+    process.exit(0);
+  }, 10_000).unref();
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 
