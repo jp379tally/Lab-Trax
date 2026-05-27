@@ -87,6 +87,8 @@ import type {
   SendMessageInput,
   SmsInvoice200,
   SmsInvoiceBody,
+  SmsPreferencesInput,
+  SmsPreferencesResult,
   StatementScheduleInput,
   StatementScheduleResult,
   SuccessResult,
@@ -1905,6 +1907,169 @@ export const useUpdateEmailPreferences = <
   TContext
 > => {
   return useMutation(getUpdateEmailPreferencesMutationOptions(options));
+};
+
+/**
+ * Returns the stored preferences merged with all-true defaults so missing keys are always ON.
+ * @summary Get the authenticated user's SMS notification preferences
+ */
+export const getGetSmsPreferencesUrl = () => {
+  return `/api/users/me/sms-preferences`;
+};
+
+export const getSmsPreferences = async (
+  options?: RequestInit,
+): Promise<SmsPreferencesResult> => {
+  return customFetch<SmsPreferencesResult>(getGetSmsPreferencesUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetSmsPreferencesQueryKey = () => {
+  return [`/api/users/me/sms-preferences`] as const;
+};
+
+export const getGetSmsPreferencesQueryOptions = <
+  TData = Awaited<ReturnType<typeof getSmsPreferences>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getSmsPreferences>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetSmsPreferencesQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getSmsPreferences>>
+  > = ({ signal }) => getSmsPreferences({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getSmsPreferences>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetSmsPreferencesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getSmsPreferences>>
+>;
+export type GetSmsPreferencesQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Get the authenticated user's SMS notification preferences
+ */
+
+export function useGetSmsPreferences<
+  TData = Awaited<ReturnType<typeof getSmsPreferences>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getSmsPreferences>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetSmsPreferencesQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Accepts a partial update — only provided keys are written. Omitted keys are left unchanged.
+ * @summary Update the authenticated user's SMS notification preferences
+ */
+export const getUpdateSmsPreferencesUrl = () => {
+  return `/api/users/me/sms-preferences`;
+};
+
+export const updateSmsPreferences = async (
+  smsPreferencesInput: SmsPreferencesInput,
+  options?: RequestInit,
+): Promise<SmsPreferencesResult> => {
+  return customFetch<SmsPreferencesResult>(getUpdateSmsPreferencesUrl(), {
+    ...options,
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(smsPreferencesInput),
+  });
+};
+
+export const getUpdateSmsPreferencesMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateSmsPreferences>>,
+    TError,
+    { data: BodyType<SmsPreferencesInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof updateSmsPreferences>>,
+  TError,
+  { data: BodyType<SmsPreferencesInput> },
+  TContext
+> => {
+  const mutationKey = ["updateSmsPreferences"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof updateSmsPreferences>>,
+    { data: BodyType<SmsPreferencesInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return updateSmsPreferences(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UpdateSmsPreferencesMutationResult = NonNullable<
+  Awaited<ReturnType<typeof updateSmsPreferences>>
+>;
+export type UpdateSmsPreferencesMutationBody = BodyType<SmsPreferencesInput>;
+export type UpdateSmsPreferencesMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Update the authenticated user's SMS notification preferences
+ */
+export const useUpdateSmsPreferences = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateSmsPreferences>>,
+    TError,
+    { data: BodyType<SmsPreferencesInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof updateSmsPreferences>>,
+  TError,
+  { data: BodyType<SmsPreferencesInput> },
+  TContext
+> => {
+  return useMutation(getUpdateSmsPreferencesMutationOptions(options));
 };
 
 /**

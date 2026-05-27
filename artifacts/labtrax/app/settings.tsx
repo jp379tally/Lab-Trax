@@ -207,6 +207,18 @@ export default function SettingsScreen() {
   });
   const [emailPrefsSaving, setEmailPrefsSaving] = useState<Partial<Record<keyof EmailPrefs, boolean>>>({});
 
+  type SmsPrefs = {
+    accountLinkInvites: boolean;
+    caseNoteNotifications: boolean;
+    billingReminders: boolean;
+  };
+  const [smsPrefs, setSmsPrefs] = useState<SmsPrefs>({
+    accountLinkInvites: true,
+    caseNoteNotifications: true,
+    billingReminders: true,
+  });
+  const [smsPrefsSaving, setSmsPrefsSaving] = useState<Partial<Record<keyof SmsPrefs, boolean>>>({});
+
   type BuildCounterWarning = {
     runUrl: string | null;
     runId: string | null;
@@ -247,7 +259,24 @@ export default function SettingsScreen() {
         // silently ignore — default to all enabled
       }
     }
+    async function fetchSmsPrefs() {
+      try {
+        const res = await resilientFetch("/api/users/me/sms-preferences");
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (!cancelled) {
+          setSmsPrefs({
+            accountLinkInvites: data.accountLinkInvites ?? true,
+            caseNoteNotifications: data.caseNoteNotifications ?? true,
+            billingReminders: data.billingReminders ?? true,
+          });
+        }
+      } catch {
+        // silently ignore — default to all enabled
+      }
+    }
     void fetchEmailPrefs();
+    void fetchSmsPrefs();
     return () => { cancelled = true; };
   }, []);
 
@@ -302,6 +331,23 @@ export default function SettingsScreen() {
       setEmailPrefs((prev) => ({ ...prev, [key]: !value }));
     } finally {
       setEmailPrefsSaving((prev) => ({ ...prev, [key]: false }));
+    }
+  }
+
+  async function updateSmsPref(key: keyof SmsPrefs, value: boolean) {
+    setSmsPrefs((prev) => ({ ...prev, [key]: value }));
+    setSmsPrefsSaving((prev) => ({ ...prev, [key]: true }));
+    try {
+      await resilientFetch("/api/users/me/sms-preferences", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [key]: value }),
+      });
+    } catch {
+      // revert on error
+      setSmsPrefs((prev) => ({ ...prev, [key]: !value }));
+    } finally {
+      setSmsPrefsSaving((prev) => ({ ...prev, [key]: false }));
     }
   }
 
@@ -1619,7 +1665,8 @@ export default function SettingsScreen() {
         </Modal>
 
         <View style={styles.section}>
-          <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>EMAIL NOTIFICATIONS</Text>
+          <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>NOTIFICATIONS</Text>
+          <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textSecondary, marginBottom: 10, paddingHorizontal: 4 }}>Email</Text>
           <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             {(
               [
@@ -1673,6 +1720,60 @@ export default function SettingsScreen() {
                     value={emailPrefs[key]}
                     onValueChange={(val) => updateEmailPref(key, val)}
                     disabled={!!emailPrefsSaving[key]}
+                    trackColor={{ false: colors.border, true: colors.tint }}
+                    thumbColor="#FFF"
+                  />
+                </View>
+              </React.Fragment>
+            ))}
+          </View>
+
+          <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textSecondary, marginTop: 16, marginBottom: 10, paddingHorizontal: 4 }}>Text messages</Text>
+          <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            {(
+              [
+                {
+                  key: "accountLinkInvites" as const,
+                  label: "Lab link invites",
+                  sub: "Text when another lab adds you and wants to link your accounts",
+                  icon: "link" as const,
+                  iconBg: "#EDE9FE",
+                  iconColor: "#7C3AED",
+                },
+                {
+                  key: "caseNoteNotifications" as const,
+                  label: "Case note alerts",
+                  sub: "Text when a note is added to one of your cases",
+                  icon: "chatbox" as const,
+                  iconBg: colors.tintLight,
+                  iconColor: colors.tint,
+                },
+                {
+                  key: "billingReminders" as const,
+                  label: "Billing reminders",
+                  sub: "Trial expiry, payment due, and account status alerts via text",
+                  icon: "card" as const,
+                  iconBg: "#FEF3C7",
+                  iconColor: "#D97706",
+                },
+              ] as const
+            ).map(({ key, label, sub, icon, iconBg, iconColor }, idx) => (
+              <React.Fragment key={key}>
+                {idx > 0 && (
+                  <View style={[styles.menuDivider, { backgroundColor: colors.borderLight }]} />
+                )}
+                <View style={styles.menuItem}>
+                  <View style={[styles.menuIcon, { backgroundColor: iconBg }]}>
+                    <Ionicons name={icon} size={18} color={iconColor} />
+                  </View>
+                  <View style={styles.menuInfo}>
+                    <Text style={[styles.menuTitle, { color: colors.text }]}>{label}</Text>
+                    <Text style={[styles.menuSub, { color: colors.textSecondary }]}>{sub}</Text>
+                  </View>
+                  <Switch
+                    value={smsPrefs[key]}
+                    onValueChange={(val) => updateSmsPref(key, val)}
+                    disabled={!!smsPrefsSaving[key]}
                     trackColor={{ false: colors.border, true: colors.tint }}
                     thumbColor="#FFF"
                   />

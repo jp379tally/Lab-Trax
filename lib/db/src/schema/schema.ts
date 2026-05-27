@@ -55,6 +55,10 @@ export const users = pgTable(
     // Nullable — missing keys default to true (opt-in matches previous behaviour).
     // Keys: caseNoteNotifications, orgInviteNotifications, statementEmails, billingReminders
     emailPreferences: jsonb("email_preferences"),
+    // Per-user SMS notification preferences.
+    // Nullable — missing keys default to true (opt-in matches previous behaviour).
+    // Keys: accountLinkInvites, caseNoteNotifications, billingReminders
+    smsPreferences: jsonb("sms_preferences"),
     // Two-factor authentication (Task #825). twoFactorSecret is AES-256-GCM
     // encrypted using a key derived from JWT_SECRET. twoFactorBackupCodes is a
     // JSONB array of bcrypt-hashed one-time-use codes (8 codes generated on

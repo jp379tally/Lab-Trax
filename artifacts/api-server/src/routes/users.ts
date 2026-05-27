@@ -7,6 +7,7 @@ import { HttpError, ok } from "../lib/http";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
 import { mergeEmailPrefs } from "../lib/email-prefs";
+import { mergeSmsPrefs } from "../lib/sms-prefs";
 
 const router = Router();
 
@@ -19,6 +20,14 @@ const emailPrefsInputSchema = z
     installerAlerts: z.boolean().optional(),
     backupAlerts: z.boolean().optional(),
     cleanupAlerts: z.boolean().optional(),
+  })
+  .strict();
+
+const smsPrefsInputSchema = z
+  .object({
+    accountLinkInvites: z.boolean().optional(),
+    caseNoteNotifications: z.boolean().optional(),
+    billingReminders: z.boolean().optional(),
   })
   .strict();
 
@@ -58,6 +67,45 @@ router.patch(
       .returning();
 
     return ok(res, mergeEmailPrefs(updated.emailPreferences));
+  })
+);
+
+router.get(
+  "/me/sms-preferences",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId;
+    const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
+    if (!user) throw new HttpError(404, "User not found.");
+    return ok(res, mergeSmsPrefs(user.smsPreferences));
+  })
+);
+
+router.patch(
+  "/me/sms-preferences",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId;
+    const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
+    if (!user) throw new HttpError(404, "User not found.");
+
+    const updates = smsPrefsInputSchema.parse(req.body);
+    if (Object.keys(updates).length === 0) {
+      return ok(res, mergeSmsPrefs(user.smsPreferences));
+    }
+
+    const merged = mergeSmsPrefs(user.smsPreferences);
+    for (const [k, v] of Object.entries(updates)) {
+      if (v !== undefined) (merged as Record<string, boolean>)[k] = v;
+    }
+
+    const [updated] = await db
+      .update(users)
+      .set({ smsPreferences: merged })
+      .where(eq(users.id, userId))
+      .returning();
+
+    return ok(res, mergeSmsPrefs(updated.smsPreferences));
   })
 );
 

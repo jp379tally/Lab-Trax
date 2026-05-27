@@ -409,6 +409,37 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EmailPreferencesResult"
+  /users/me/sms-preferences:
+    get:
+      operationId: getSmsPreferences
+      tags: [users]
+      summary: Get the authenticated user's SMS notification preferences
+      description: Returns the stored preferences merged with all-true defaults so missing keys are always ON.
+      responses:
+        "200":
+          description: SMS preferences
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmsPreferencesResult"
+    patch:
+      operationId: updateSmsPreferences
+      tags: [users]
+      summary: Update the authenticated user's SMS notification preferences
+      description: Accepts a partial update — only provided keys are written. Omitted keys are left unchanged.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SmsPreferencesInput"
+      responses:
+        "200":
+          description: Updated SMS preferences
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmsPreferencesResult"
   /healthz:
     get:
       operationId: healthCheck
@@ -2311,6 +2342,31 @@ components:
         caseNoteNotifications: { type: boolean }
         orgInviteNotifications: { type: boolean }
         statementEmails: { type: boolean }
+        billingReminders: { type: boolean }
+    SmsPreferences:
+      type: object
+      properties:
+        accountLinkInvites:
+          type: boolean
+          description: SMS when another lab adds a doctor with the same email/phone (cross-lab link invite)
+        caseNoteNotifications:
+          type: boolean
+          description: SMS when a note is added to one of your cases
+        billingReminders:
+          type: boolean
+          description: Trial expiry warnings and payment failure texts
+    SmsPreferencesResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          $ref: "#/components/schemas/SmsPreferences"
+    SmsPreferencesInput:
+      type: object
+      description: Partial update — only provided keys are written; omitted keys are unchanged.
+      properties:
+        accountLinkInvites: { type: boolean }
+        caseNoteNotifications: { type: boolean }
         billingReminders: { type: boolean }
     VendorType:
       type: string

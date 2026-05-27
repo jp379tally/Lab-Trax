@@ -674,6 +674,29 @@ export interface EmailPreferencesInput {
   billingReminders?: boolean;
 }
 
+export interface SmsPreferences {
+  /** SMS when another lab adds a doctor with the same email/phone (cross-lab link invite) */
+  accountLinkInvites?: boolean;
+  /** SMS when a note is added to one of your cases */
+  caseNoteNotifications?: boolean;
+  /** Trial expiry warnings and payment failure texts */
+  billingReminders?: boolean;
+}
+
+export interface SmsPreferencesResult {
+  ok?: boolean;
+  data?: SmsPreferences;
+}
+
+/**
+ * Partial update — only provided keys are written; omitted keys are unchanged.
+ */
+export interface SmsPreferencesInput {
+  accountLinkInvites?: boolean;
+  caseNoteNotifications?: boolean;
+  billingReminders?: boolean;
+}
+
 /**
  * Category of the payee — general vendor, employee, or lab supply item
  */

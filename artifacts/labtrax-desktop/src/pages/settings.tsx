@@ -7394,6 +7394,12 @@ type EmailPrefsData = {
   cleanupAlerts: boolean;
 };
 
+type SmsPrefsData = {
+  accountLinkInvites: boolean;
+  caseNoteNotifications: boolean;
+  billingReminders: boolean;
+};
+
 function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
   const [prefs, setPrefs] = useState<EmailPrefsData>({
     caseNoteNotifications: true,
@@ -7404,7 +7410,13 @@ function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
     backupAlerts: true,
     cleanupAlerts: true,
   });
+  const [smsPrefs, setSmsPrefs] = useState<SmsPrefsData>({
+    accountLinkInvites: true,
+    caseNoteNotifications: true,
+    billingReminders: true,
+  });
   const [saving, setSaving] = useState<Partial<Record<keyof EmailPrefsData, boolean>>>({});
+  const [smsSaving, setSmsSaving] = useState<Partial<Record<keyof SmsPrefsData, boolean>>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<{ tone: "success" | "danger"; message: string } | null>(null);
   const saveStatusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -7413,6 +7425,9 @@ function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
     apiFetch("/users/me/email-preferences")
       .then((data: EmailPrefsData) => setPrefs(data))
       .catch((err: Error) => setLoadError(err.message || "Could not load preferences."));
+    apiFetch("/users/me/sms-preferences")
+      .then((data: SmsPrefsData) => setSmsPrefs(data))
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -7441,6 +7456,23 @@ function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
       showSaveStatus("danger", (err instanceof Error ? err.message : null) || "Could not save preference.");
     } finally {
       setSaving((s) => ({ ...s, [key]: false }));
+    }
+  }
+
+  async function toggleSms(key: keyof SmsPrefsData, value: boolean) {
+    setSmsPrefs((p) => ({ ...p, [key]: value }));
+    setSmsSaving((s) => ({ ...s, [key]: true }));
+    try {
+      await apiFetch("/users/me/sms-preferences", {
+        method: "PATCH",
+        body: JSON.stringify({ [key]: value }),
+      });
+      showSaveStatus("success", "Preference saved.");
+    } catch (err) {
+      setSmsPrefs((p) => ({ ...p, [key]: !value }));
+      showSaveStatus("danger", (err instanceof Error ? err.message : null) || "Could not save preference.");
+    } finally {
+      setSmsSaving((s) => ({ ...s, [key]: false }));
     }
   }
 
@@ -7485,6 +7517,24 @@ function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
     },
   ];
 
+  const smsRows: Array<{ prefKey: keyof SmsPrefsData; label: string; desc: string }> = [
+    {
+      prefKey: "accountLinkInvites",
+      label: "Lab link invites (SMS)",
+      desc: "Receive a text when another lab adds you as a doctor and wants to link your accounts",
+    },
+    {
+      prefKey: "caseNoteNotifications",
+      label: "Case note alerts (SMS)",
+      desc: "Receive a text when a note is added to one of your cases",
+    },
+    {
+      prefKey: "billingReminders",
+      label: "Billing reminders (SMS)",
+      desc: "Trial expiry countdowns, payment-due notices, and account lock warnings via text",
+    },
+  ];
+
   function ToggleRow({ prefKey, label, desc }: { prefKey: keyof EmailPrefsData; label: string; desc: string }) {
     return (
       <div className="flex items-center justify-between px-4 py-3 bg-card">
@@ -7508,16 +7558,39 @@ function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
     );
   }
 
+  function SmsToggleRow({ prefKey, label, desc }: { prefKey: keyof SmsPrefsData; label: string; desc: string }) {
+    return (
+      <div className="flex items-center justify-between px-4 py-3 bg-card">
+        <div className="min-w-0 mr-6">
+          <p className="text-sm font-medium text-foreground">{label}</p>
+          <p className="text-xs text-muted-foreground mt-0.5">{desc}</p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={smsPrefs[prefKey]}
+          disabled={!!smsSaving[prefKey]}
+          onClick={() => toggleSms(prefKey, !smsPrefs[prefKey])}
+          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${smsPrefs[prefKey] ? "bg-primary" : "bg-input"}`}
+        >
+          <span
+            className={`pointer-events-none block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform ${smsPrefs[prefKey] ? "translate-x-5" : "translate-x-0"}`}
+          />
+        </button>
+      </div>
+    );
+  }
+
   return (
     <PanelShell
-      title="Email Notifications"
-      subtitle="Choose which emails LabTrax sends to you. Transactional emails (password resets, verification codes) are always sent."
+      title="Notifications"
+      subtitle="Choose which emails and texts LabTrax sends to you. Transactional messages (password resets, verification codes) are always sent."
     >
       {loadError && <Alert tone="danger">{loadError}</Alert>}
       {saveStatus && <Alert tone={saveStatus.tone}>{saveStatus.message}</Alert>}
 
       <div className="space-y-1">
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground px-0.5">Account</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground px-0.5">Email</p>
       </div>
       <div className="divide-y divide-border rounded-lg border border-border overflow-hidden">
         {accountRows.map((row) => (
@@ -7538,6 +7611,17 @@ function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
           </div>
         </div>
       )}
+
+      <div className="space-y-2 pt-2">
+        <div className="space-y-1">
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground px-0.5">Text messages</p>
+        </div>
+        <div className="divide-y divide-border rounded-lg border border-border overflow-hidden">
+          {smsRows.map((row) => (
+            <SmsToggleRow key={row.prefKey} {...row} />
+          ))}
+        </div>
+      </div>
     </PanelShell>
   );
 }

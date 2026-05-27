@@ -588,6 +588,68 @@ export const UpdateEmailPreferencesResponse = zod.object({
 });
 
 /**
+ * Returns the stored preferences merged with all-true defaults so missing keys are always ON.
+ * @summary Get the authenticated user's SMS notification preferences
+ */
+export const GetSmsPreferencesResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      accountLinkInvites: zod
+        .boolean()
+        .optional()
+        .describe(
+          "SMS when another lab adds a doctor with the same email\/phone (cross-lab link invite)",
+        ),
+      caseNoteNotifications: zod
+        .boolean()
+        .optional()
+        .describe("SMS when a note is added to one of your cases"),
+      billingReminders: zod
+        .boolean()
+        .optional()
+        .describe("Trial expiry warnings and payment failure texts"),
+    })
+    .optional(),
+});
+
+/**
+ * Accepts a partial update — only provided keys are written. Omitted keys are left unchanged.
+ * @summary Update the authenticated user's SMS notification preferences
+ */
+export const UpdateSmsPreferencesBody = zod
+  .object({
+    accountLinkInvites: zod.boolean().optional(),
+    caseNoteNotifications: zod.boolean().optional(),
+    billingReminders: zod.boolean().optional(),
+  })
+  .describe(
+    "Partial update — only provided keys are written; omitted keys are unchanged.",
+  );
+
+export const UpdateSmsPreferencesResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      accountLinkInvites: zod
+        .boolean()
+        .optional()
+        .describe(
+          "SMS when another lab adds a doctor with the same email\/phone (cross-lab link invite)",
+        ),
+      caseNoteNotifications: zod
+        .boolean()
+        .optional()
+        .describe("SMS when a note is added to one of your cases"),
+      billingReminders: zod
+        .boolean()
+        .optional()
+        .describe("Trial expiry warnings and payment failure texts"),
+    })
+    .optional(),
+});
+
+/**
  * Returns server health status
  * @summary Health check
  */

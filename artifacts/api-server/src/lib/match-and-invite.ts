@@ -20,6 +20,7 @@ import {
   normalizePhoneE164,
   sendLinkInviteSms,
 } from "./account-link-sms";
+import { checkSmsPrefById } from "./sms-prefs";
 
 export interface MatchAndInviteArgs {
   newUser: {
@@ -106,6 +107,17 @@ export async function matchAndInviteCrossLabDoctors(
       if (!invite) continue;
 
       if (targetPhone) {
+        const smsAllowed = await checkSmsPrefById(
+          (existing as any).id,
+          "accountLinkInvites"
+        );
+        if (!smsAllowed) {
+          args.log?.info?.(
+            { existingUserId: (existing as any).id },
+            "matchAndInviteCrossLabDoctors: skipping SMS — user has opted out of accountLinkInvites"
+          );
+          continue;
+        }
         const result = await sendLinkInviteSms({
           toPhoneE164: targetPhone,
           newLabName: args.newLabName,
