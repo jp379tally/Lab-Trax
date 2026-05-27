@@ -71,42 +71,70 @@ function describeDbTarget(): { host: string; database: string } {
   }
 }
 
-const CONNECT_TIMEOUT_MS = 15_000;
+// process.stderr.write is fully synchronous on Node (file/tty) and survives
+// process.exit() without buffering. Pino's default async stdio silently drops
+// in-flight messages on abnormal exit, which made the original deploy hang
+// undiagnosable. Use this for STARTUP-critical events only.
+function logStartupSync(msg: string): void {
+  try {
+    process.stderr.write(`[startup] ${msg}\n`);
+  } catch {
+    // ignore — best-effort
+  }
+}
+
+const CONNECT_TIMEOUT_MS = 10_000;
 
 export async function ensureDbConstraints(): Promise<void> {
   const target = describeDbTarget();
-  logger.info({ ...target }, "Connecting to database for startup constraint setup");
+  logStartupSync(
+    `connecting to database host=${target.host} database=${target.database}`,
+  );
 
   const connectPromise = pool.connect();
+  let timeoutHandle: NodeJS.Timeout | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    const t = setTimeout(() => {
+    timeoutHandle = setTimeout(() => {
       reject(
         new Error(
           `Timed out after ${CONNECT_TIMEOUT_MS}ms connecting to database host=${target.host} database=${target.database}. ` +
-            `Most likely cause: DATABASE_URL points to a host that is not reachable from this environment (e.g. a dev-only hostname like 'helium' in a production deployment, a paused serverless DB, or a missing/wrong production secret).`,
+            `Most likely cause: DATABASE_URL points to a host that is not reachable from this environment (e.g. a dev-only hostname like 'helium' in a production deployment, a paused serverless DB, or a missing/wrong production secret in the Deploy → Secrets panel).`,
         ),
       );
     }, CONNECT_TIMEOUT_MS);
-    t.unref();
   });
 
   let client;
   try {
     client = await Promise.race([connectPromise, timeoutPromise]);
+    if (timeoutHandle) clearTimeout(timeoutHandle);
   } catch (err) {
     // If the timeout won, the connectPromise may still resolve later with a
     // client that nothing will release. Release it whenever it eventually
     // arrives so we don't leak a pooled connection on the way to exit.
     connectPromise.then((c) => c.release()).catch(() => {});
+    const msg = err instanceof Error ? err.message : String(err);
+    logStartupSync(`DB connect FAILED: ${msg}`);
     logger.error({ err, ...target }, "Failed to connect to database — aborting startup");
+    // Force a hard exit. Relying on the .catch in index.ts to call
+    // process.exit means we depend on pino flushing a goodbye log first; in
+    // production pino is async and silently drops in-flight messages, which
+    // is why the original deploy timed out at the platform's 60s SIGTERM
+    // instead of exiting cleanly. A direct exit guarantees the deploy step
+    // gets a real failure signal in <CONNECT_TIMEOUT_MS> seconds.
+    setImmediate(() => process.exit(1));
     throw err;
   }
 
   try {
     await client.query(SETUP_SQL);
+    logStartupSync("DB constraints installed");
     logger.info("DB constraints installed (invoice_line_items_invoice_id_match)");
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logStartupSync(`DB constraint install FAILED: ${msg}`);
     logger.error({ err }, "Failed to install DB constraints — aborting startup");
+    setImmediate(() => process.exit(1));
     throw err;
   } finally {
     client.release();
