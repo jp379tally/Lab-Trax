@@ -79,25 +79,7 @@
         }
       ],
       "expo-font",
-      "expo-web-browser",
-      [
-        "expo-share-intent",
-        {
-          "iosActivationRules": {
-            "NSExtensionActivationSupportsImageWithMaxCount": 20,
-            "NSExtensionActivationSupportsMovieWithMaxCount": 5,
-            "NSExtensionActivationSupportsFileWithMaxCount": 10
-          },
-          "iosShareExtensionName": "LabTraxShare",
-          "iosAppGroupIdentifier": "group.app.replit.labtrax.sdr",
-          "androidIntentFilters": [
-            "image/*"
-          ],
-          "androidMultiIntentFilters": [
-            "image/*"
-          ]
-        }
-      ]
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true,
