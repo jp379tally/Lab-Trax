@@ -879,7 +879,13 @@ async function getAdminEmails(): Promise<string[]> {
       .select({ email: users.email })
       .from(users)
       .where(eq(users.role, "admin"));
-    const emails = admins.map((u) => u.email).filter((e): e is string => Boolean(e));
+    const emails = Array.from(
+      new Set(
+        admins
+          .map((u) => u.email?.trim().toLowerCase())
+          .filter((e): e is string => Boolean(e)),
+      ),
+    );
     return filterEmailsByPref(emails, "backupAlerts");
   } catch (err: unknown) {
     logger.error(
