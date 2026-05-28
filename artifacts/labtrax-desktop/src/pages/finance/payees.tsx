@@ -321,7 +321,7 @@ function PayeesContent({ organizationId }: { organizationId: string }) {
                       <td className="px-3 py-2">
                         <input
                           value={form.phone}
-                          onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                          onChange={(e) => setForm({ ...form, phone: formatPhone(e.target.value) })}
                           className="h-8 px-2 rounded-md bg-background border border-input text-sm w-full"
                           placeholder="Phone"
                         />
@@ -513,7 +513,7 @@ function PayeeForm({
         />
         <input
           value={form.phone}
-          onChange={(e) => setForm({ ...form, phone: e.target.value })}
+          onChange={(e) => setForm({ ...form, phone: formatPhone(e.target.value) })}
           placeholder="Phone (optional)"
           className="h-9 px-2.5 rounded-md bg-background border border-input text-sm focus:outline-none focus:ring-1 focus:ring-primary"
         />

@@ -1,12 +1,61 @@
 /**
- * Formats a raw phone string into XXX-XXX-XXXX as the user types.
- * Strips non-digits and caps at 10 digits.
+ * Formats a raw phone string as the user types.
+ *
+ * Behavior:
+ * - Empty in → empty out.
+ * - Strips non-digits.
+ * - A leading "1" with more digits after it is treated as a US/Canada
+ *   country code and rendered as "+1 (XXX) XXX-XXXX".
+ * - 10-digit numbers (no leading 1) render as "(XXX) XXX-XXXX".
+ * - Partial inputs format progressively (e.g. "+1 (850) 363-33").
+ * - An optional extension is captured after `x`, `ext`, `ext.`, `#`, or
+ *   when more digits are entered than the main number can hold, and is
+ *   appended as " ext. NNNN".
  */
 export function formatPhone(raw: string): string {
-  const digits = raw.replace(/\D/g, "").slice(0, 10);
-  if (digits.length <= 3) return digits;
-  if (digits.length <= 6) return `${digits.slice(0, 3)}-${digits.slice(3)}`;
-  return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
+  if (!raw) return "";
+
+  const extMatch = raw.match(/ext\.?|[xX#]/i);
+  let mainPart = raw;
+  let extPart = "";
+  if (extMatch && typeof extMatch.index === "number") {
+    mainPart = raw.slice(0, extMatch.index);
+    extPart = raw.slice(extMatch.index + extMatch[0].length).replace(/\D/g, "");
+  }
+
+  let digits = mainPart.replace(/\D/g, "");
+
+  let countryCode = false;
+  if (digits.startsWith("1") && digits.length > 1) {
+    countryCode = true;
+    digits = digits.slice(1);
+  }
+
+  if (digits.length > 10) {
+    if (!extPart) extPart = digits.slice(10);
+    digits = digits.slice(0, 10);
+  }
+
+  let formatted = "";
+  if (digits.length === 0) {
+    formatted = "";
+  } else if (digits.length <= 3) {
+    formatted = digits;
+  } else if (digits.length <= 6) {
+    formatted = `(${digits.slice(0, 3)}) ${digits.slice(3)}`;
+  } else {
+    formatted = `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+  }
+
+  if (countryCode) {
+    formatted = formatted ? `+1 ${formatted}` : "+1";
+  }
+
+  if (extPart) {
+    formatted = formatted ? `${formatted} ext. ${extPart}` : `ext. ${extPart}`;
+  }
+
+  return formatted;
 }
 
 export function formatMoney(value: string | number | null | undefined): string {
