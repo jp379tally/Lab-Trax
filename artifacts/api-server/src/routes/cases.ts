@@ -675,6 +675,31 @@ async function tryProjectLegacyCaseForDesktop(
       createdAt: occurredISO,
     });
   }
+
+  // Guarantee a "Case Created" entry in the History tab regardless of which
+  // platform created the case. Older mobile builds (or sync paths that
+  // dropped activityLog) can leave a legacy case without a `created` entry,
+  // which made the desktop History tab show only later events. Synthesize
+  // one from the case's actual createdAt when none is present.
+  const CREATION_EVENT_TYPES = new Set([
+    "created",
+    "case_created",
+    "case_created_from_itero",
+  ]);
+  if (!events.some((e) => CREATION_EVENT_TYPES.has(String(e.eventType)))) {
+    events.push({
+      id: `legacy-evt-${legacyRow.id}-created`,
+      caseId: legacyRow.id,
+      eventType: "case_created",
+      actorUserId: null,
+      actorOrganizationId: labOrgId || null,
+      actorInitials: null,
+      metadataJson: { synthesized: true, source: "legacy_created_at" },
+      occurredAt: createdISO,
+      createdAt: createdISO,
+    });
+  }
+
   // Newest first to match canonical ordering.
   events.sort(
     (a, b) =>
@@ -2392,6 +2417,44 @@ router.get(
           where: eq(caseLocations.caseId, found.id),
         }),
       ]);
+
+    // Guarantee a "Case Created" entry in the History tab regardless of which
+    // platform created the case. Canonical case creation (POST /cases) writes
+    // a case_created event, but any case from an older path that skipped that
+    // insert would have a Created-less History tab. Synthesize one from
+    // `found.createdAt` when no creation-type event already exists.
+    const CANONICAL_CREATION_EVENT_TYPES = new Set([
+      "created",
+      "case_created",
+      "case_created_from_itero",
+    ]);
+    if (
+      found.createdAt &&
+      !events.some((e: any) =>
+        CANONICAL_CREATION_EVENT_TYPES.has(String(e.eventType)),
+      )
+    ) {
+      const createdAtIso =
+        found.createdAt instanceof Date
+          ? found.createdAt.toISOString()
+          : new Date(found.createdAt as any).toISOString();
+      events.push({
+        id: `synth-created-${found.id}`,
+        caseId: found.id,
+        eventType: "case_created",
+        actorUserId: found.createdByUserId ?? null,
+        actorOrganizationId: found.labOrganizationId,
+        actorInitials: null,
+        metadataJson: { synthesized: true, source: "case_created_at" },
+        occurredAt: createdAtIso,
+        createdAt: createdAtIso,
+      } as any);
+      // Keep newest-first ordering used by the rest of the handler.
+      events.sort(
+        (a: any, b: any) =>
+          new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime(),
+      );
+    }
 
     // Fetch original case events when this is a remake so the history tab can
     // display the full timeline (original case history + remake history) in one view.
