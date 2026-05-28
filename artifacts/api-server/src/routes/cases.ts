@@ -1729,7 +1729,8 @@ router.get(
 //
 // Lightweight case search for the desktop file-drop zone case picker.
 // Returns at most 20 cases matching the query (case number prefix, patient
-// first/last name prefix) for a given lab. Requires lab membership.
+// first/last name prefix) for a given lab. Searches both canonical cases
+// and legacy mobile cases (lab_cases). Requires lab membership.
 // ─────────────────────────────────────────────────────────────────────────────
 router.get(
   "/quick-search",
@@ -1742,31 +1743,81 @@ router.get(
     if (q.length < 2) return ok(res, { cases: [] });
 
     const ql = q.toLowerCase();
-    const results = await db
-      .select({
-        id: cases.id,
-        caseNumber: cases.caseNumber,
-        patientFirstName: cases.patientFirstName,
-        patientLastName: cases.patientLastName,
-        doctorName: cases.doctorName,
-        status: cases.status,
-      })
-      .from(cases)
-      .where(
-        and(
-          eq(cases.labOrganizationId, labOrganizationId),
-          notDeleted(cases),
-          or(
-            sql`lower(${cases.caseNumber}) like ${`${ql}%`}`,
-            sql`lower(${cases.patientLastName}) like ${`${ql}%`}`,
-            sql`lower(${cases.patientFirstName}) like ${`${ql}%`}`,
-          ),
-        ),
-      )
-      .orderBy(desc(cases.createdAt))
-      .limit(20);
 
-    return ok(res, { cases: results });
+    const [canonicalResults, mobileRows] = await Promise.all([
+      db
+        .select({
+          id: cases.id,
+          caseNumber: cases.caseNumber,
+          patientFirstName: cases.patientFirstName,
+          patientLastName: cases.patientLastName,
+          doctorName: cases.doctorName,
+          status: cases.status,
+        })
+        .from(cases)
+        .where(
+          and(
+            eq(cases.labOrganizationId, labOrganizationId),
+            notDeleted(cases),
+            or(
+              sql`lower(${cases.caseNumber}) like ${`${ql}%`}`,
+              sql`lower(${cases.patientLastName}) like ${`${ql}%`}`,
+              sql`lower(${cases.patientFirstName}) like ${`${ql}%`}`,
+            ),
+          ),
+        )
+        .orderBy(desc(cases.createdAt))
+        .limit(20),
+      db
+        .select({ id: labCases.id, caseData: labCases.caseData })
+        .from(labCases)
+        .where(
+          and(
+            eq(labCases.organizationId, labOrganizationId),
+            isNull(labCases.deletedAt),
+          ),
+        )
+        .orderBy(desc(labCases.updatedAt))
+        .limit(200),
+    ]);
+
+    const canonicalIds = new Set(canonicalResults.map((r) => r.id));
+    const mobileMerged: Array<{
+      id: string;
+      caseNumber: string;
+      patientFirstName: string;
+      patientLastName: string;
+      doctorName: string;
+      status: string;
+    }> = [];
+
+    for (const mr of mobileRows) {
+      if (canonicalIds.has(mr.id)) continue;
+      if (canonicalResults.length + mobileMerged.length >= 20) break;
+      try {
+        const parsed =
+          typeof mr.caseData === "string" ? JSON.parse(mr.caseData) : mr.caseData;
+        if (!parsed || typeof parsed !== "object") continue;
+        const cn = String(parsed.caseNumber ?? "").toLowerCase();
+        const patientName = String(parsed.patientName ?? "");
+        const spaceIdx = patientName.indexOf(" ");
+        const fn = (spaceIdx >= 0 ? patientName.slice(0, spaceIdx) : patientName).toLowerCase();
+        const ln = (spaceIdx >= 0 ? patientName.slice(spaceIdx + 1) : "").toLowerCase();
+        if (!cn.startsWith(ql) && !fn.startsWith(ql) && !ln.startsWith(ql)) continue;
+        mobileMerged.push({
+          id: mr.id,
+          caseNumber: String(parsed.caseNumber ?? ""),
+          patientFirstName: spaceIdx >= 0 ? patientName.slice(0, spaceIdx) : patientName,
+          patientLastName: spaceIdx >= 0 ? patientName.slice(spaceIdx + 1) : "",
+          doctorName: String(parsed.doctorName ?? ""),
+          status: "received",
+        });
+      } catch {
+        // skip malformed rows
+      }
+    }
+
+    return ok(res, { cases: [...canonicalResults, ...mobileMerged] });
   }),
 );
 

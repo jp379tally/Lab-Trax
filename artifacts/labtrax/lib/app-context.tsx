@@ -2263,6 +2263,47 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } catch {}
   }
 
+  async function uploadPhotoToCanonicalCase(caseId: string, photoUri: string): Promise<void> {
+    try {
+      const uriClean = photoUri.toLowerCase().split("?")[0] ?? "";
+      const ext = uriClean.split(".").pop() || "jpg";
+      const isVid = isVideoUri(photoUri);
+      const mimeType = isVid
+        ? ext === "mov" ? "video/quicktime" : `video/${ext}`
+        : ext === "jpg" ? "image/jpeg" : `image/${ext}`;
+      const fileName = `case-media-${Date.now()}.${ext}`;
+      const formData = new FormData();
+      if (Platform.OS === "web") {
+        const blob = await globalThis.fetch(photoUri).then((r) => r.blob());
+        formData.append("file", blob as any, fileName);
+      } else {
+        (formData as any).append("file", { uri: photoUri, name: fileName, type: mimeType });
+      }
+      const uploadRes = await resilientFetch("/api/media/upload", { method: "POST", body: formData });
+      if (!uploadRes?.ok) return;
+      const { url } = await uploadRes.json();
+      await resilientFetch(`/api/cases/${encodeURIComponent(caseId)}/attachments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ storageKey: url, fileName, fileType: mimeType }),
+      });
+    } catch {
+      // best-effort: local state is already updated, server sync failure is silent
+    }
+  }
+
+  async function addNoteToCanonicalCase(caseId: string, noteText: string): Promise<void> {
+    try {
+      await resilientFetch(`/api/cases/${encodeURIComponent(caseId)}/notes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ noteText }),
+      });
+    } catch {
+      // best-effort
+    }
+  }
+
   async function addCasePhoto(caseId: string, photoUri: string, user?: string) {
     const sharedPhotoUri = (await normalizeSharedImageUri(photoUri)) || photoUri;
     const now = Date.now();
@@ -2285,6 +2326,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
             activityLog: [...(c.activityLog || []), photoEntry],
           };
           void syncCaseToServer(updatedCase);
+          if ((c as any)._sourceTable === "cases") {
+            void uploadPhotoToCanonicalCase(caseId, sharedPhotoUri);
+          }
           return updatedCase;
         }
         return c;
@@ -2313,6 +2357,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
             activityLog: [...(c.activityLog || []), noteEntry],
           };
           void syncCaseToServer(updatedCase);
+          if ((c as any)._sourceTable === "cases") {
+            void addNoteToCanonicalCase(caseId, note);
+          }
           return updatedCase;
         }
         return c;
@@ -2364,6 +2411,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
             ],
           };
           void syncCaseToServer(updatedCase);
+          if ((c as any)._sourceTable === "cases") {
+            for (const uri of normalizedUris) {
+              void uploadPhotoToCanonicalCase(caseId, uri);
+            }
+            if (noteEntry) {
+              void addNoteToCanonicalCase(caseId, noteEntry.description);
+            }
+          }
           return updatedCase;
         }
         return c;
