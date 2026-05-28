@@ -479,14 +479,7 @@ export function PlatformAdminSetupNotice({
                 <>Enter your admin PIN to unlock platform admin tools for this session.</>
               )}
             </p>
-            {hasBridge ? (
-              <Link
-                to="/settings?tab=platform-admin"
-                className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
-              >
-                Open Settings → Platform admin
-              </Link>
-            ) : (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
               <button
                 type="button"
                 onClick={() => setShowModal(true)}
@@ -495,7 +488,15 @@ export function PlatformAdminSetupNotice({
                 <Lock size={11} />
                 Enter admin PIN
               </button>
-            )}
+              {hasBridge && (
+                <Link
+                  to="/settings?tab=platform-admin"
+                  className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-primary hover:underline"
+                >
+                  Or paste full secret in Settings
+                </Link>
+              )}
+            </div>
           </div>
         </div>
       </div>

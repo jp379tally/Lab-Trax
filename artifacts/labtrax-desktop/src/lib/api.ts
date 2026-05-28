@@ -203,8 +203,14 @@ async function getPlatformAdminSecretForRequest(): Promise<PlatformAdminCred | n
     const pin = getSessionSecret();
     return pin ? { header: PLATFORM_ADMIN_HEADER_PIN, value: pin } : null;
   }
+  // Electron desktop: prefer the long PLATFORM_ADMIN_SECRET saved in the
+  // OS keychain. If none is saved yet, fall back to the session PIN the
+  // admin entered via the unlock modal so the desktop app can use the
+  // same lightweight PIN flow as the web build.
   const value = platformAdminCacheLoaded ? platformAdminSecretCache : await loadPlatformAdminSecret();
-  return value ? { header: PLATFORM_ADMIN_HEADER_SECRET, value } : null;
+  if (value) return { header: PLATFORM_ADMIN_HEADER_SECRET, value };
+  const pin = getSessionSecret();
+  return pin ? { header: PLATFORM_ADMIN_HEADER_PIN, value: pin } : null;
 }
 
 export function clearPlatformAdminSecretCache(): void {

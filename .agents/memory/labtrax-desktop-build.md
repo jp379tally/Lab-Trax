@@ -46,3 +46,28 @@ When bumping `electron-builder` past v25 the config will fail validation with `V
 ## Republishing the zip to App Storage
 
 `pnpm --filter @workspace/scripts run upload-desktop-installer` uses the Replit sidecar OAuth path (`gcs.bucket.file.save`) and works without `PLATFORM_ADMIN_SECRET`. The download endpoint `/downloads/LabTrax-Windows-Portable.zip` then 302s users straight to GCS with a short-lived access token. Verify with `curl -sI -L` against the prod domain — `content-length` should match the uploaded byte count exactly.
+
+## electron-builder 26 hangs on pnpm node-modules probe (2026-05-28)
+
+In this pnpm workspace, `electron-builder --win` (with or without `--dir`, with or without `--config.npmRebuild=false`, with or without `"packageManager": "pnpm@..."` in package.json) hangs indefinitely after emitting `searching for node modules pm=npm` + the giant `collector stderr output` of `npm error ELSPROBLEMS` lines. It exits cleanly under timeout with only base electron files in `win-unpacked/` — no `resources/app/`, no rename of `electron.exe`.
+
+**Workaround that worked:** stage `win-unpacked/` manually, no electron-builder packaging step.
+
+```bash
+# After `pnpm exec vite build --config vite.electron.config.ts`, and
+# after `electron-builder --win --config.npmRebuild=false` exits leaving
+# just base electron files in electron-dist/win-unpacked/:
+cd artifacts/labtrax-desktop
+mkdir -p electron-dist/win-unpacked/resources/app
+cp package.json electron-dist/win-unpacked/resources/app/
+cp -r electron electron-dist/win-unpacked/resources/app/
+rm -rf electron-dist/win-unpacked/resources/app/electron/__tests__
+find electron-dist/win-unpacked/resources/app/electron -name '*.test.*' -delete
+mkdir -p electron-dist/win-unpacked/resources/app/dist
+cp -r dist/electron-app electron-dist/win-unpacked/resources/app/dist/
+mv electron-dist/win-unpacked/electron.exe electron-dist/win-unpacked/LabTrax.exe
+# then zipUnpacked() → electron-dist/LabTrax-Windows-Portable.zip
+# then pnpm --filter @workspace/scripts run upload-desktop-installer
+```
+
+Resulting zip is ~140 MB (vs ~153 MB from a normal electron-builder run because we omit `default_app.asar`). The portable starts cleanly because `resources/app/package.json` has `"main": "electron/main.cjs"` and electron prefers `resources/app/` over a missing `default_app.asar`.
