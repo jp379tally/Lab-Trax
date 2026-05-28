@@ -3,6 +3,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { Transform } from "node:stream";
 import archiver from "archiver";
 import AdmZip from "adm-zip";
 import { db } from "@workspace/db";
@@ -118,7 +119,25 @@ async function buildPgDumpBuffer(): Promise<Buffer> {
  * env var (preferred) or JWT_SECRET (fallback). Decryption requires the same
  * secret; document decrypt steps in the manifest inside the ZIP before encrypting.
  */
-function encryptBuffer(plaintext: Buffer): Buffer {
+// Magic prefixes identifying the on-disk backup format.
+//   "LTRX" — tag-in-middle: magic(4) | iv(12) | authTag(16) | ciphertext
+//            Produced by the in-memory encryptBuffer (the auth tag is only
+//            known after the whole plaintext is encrypted, so it can sit up
+//            front once everything is buffered).
+//   "LTR2" — tag-trailing: magic(4) | iv(12) | ciphertext | authTag(16)
+//            Produced by the streaming download path, which writes the header
+//            and ciphertext incrementally and can only append the tag at the
+//            very end. Both formats decrypt with the same key.
+const BACKUP_MAGIC_BUFFERED = "LTRX";
+const BACKUP_MAGIC_STREAMED = "LTR2";
+const GCM_IV_BYTES = 12;
+const GCM_TAG_BYTES = 16;
+
+/**
+ * Derive the 32-byte AES key from BACKUP_ENCRYPTION_KEY (preferred) or
+ * JWT_SECRET (fallback). Throws a clear error if neither is set.
+ */
+function deriveBackupKey(): Buffer {
   const secret = process.env.BACKUP_ENCRYPTION_KEY || process.env.JWT_SECRET;
   if (!secret) {
     throw new Error(
@@ -126,12 +145,16 @@ function encryptBuffer(plaintext: Buffer): Buffer {
       "Set one of these environment variables before running a backup.",
     );
   }
-  const key = createHash("sha256").update(secret).digest(); // 32-byte key
-  const iv = randomBytes(12); // 96-bit IV for GCM
+  return createHash("sha256").update(secret).digest(); // 32-byte key
+}
+
+function encryptBuffer(plaintext: Buffer): Buffer {
+  const key = deriveBackupKey();
+  const iv = randomBytes(GCM_IV_BYTES); // 96-bit IV for GCM
   const cipher = createCipheriv("aes-256-gcm", key, iv);
   const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   const authTag = cipher.getAuthTag(); // 16 bytes
-  const magic = Buffer.from("LTRX");
+  const magic = Buffer.from(BACKUP_MAGIC_BUFFERED);
   return Buffer.concat([magic, iv, authTag, ciphertext]);
 }
 
@@ -144,26 +167,33 @@ function encryptBuffer(plaintext: Buffer): Buffer {
  * fails (wrong key or corrupted ciphertext).
  */
 export function decryptBuffer(encrypted: Buffer): Buffer {
-  if (encrypted.length < 32) {
+  const headerLen = 4 + GCM_IV_BYTES + GCM_TAG_BYTES; // magic + iv + tag
+  if (encrypted.length < headerLen) {
     throw new Error("File is too short to be a valid LabTrax backup.");
   }
   const magic = encrypted.slice(0, 4).toString("ascii");
-  if (magic !== "LTRX") {
+  if (magic !== BACKUP_MAGIC_BUFFERED && magic !== BACKUP_MAGIC_STREAMED) {
     throw new Error(
-      `Invalid backup file: expected magic bytes 'LTRX', got '${magic}'. ` +
+      `Invalid backup file: expected magic bytes '${BACKUP_MAGIC_BUFFERED}' or ` +
+      `'${BACKUP_MAGIC_STREAMED}', got '${magic}'. ` +
       "Make sure the file is a LabTrax .zip.enc backup.",
     );
   }
-  const secret = process.env.BACKUP_ENCRYPTION_KEY || process.env.JWT_SECRET;
-  if (!secret) {
-    throw new Error(
-      "BACKUP_ENCRYPTION_KEY (or JWT_SECRET) is not set — cannot decrypt backup.",
-    );
+  const key = deriveBackupKey();
+  const iv = encrypted.slice(4, 4 + GCM_IV_BYTES);
+
+  // Tag position differs by format: buffered keeps it after the IV, streamed
+  // appends it at the very end (it isn't known until the stream finishes).
+  let authTag: Buffer;
+  let ciphertext: Buffer;
+  if (magic === BACKUP_MAGIC_BUFFERED) {
+    authTag = encrypted.slice(4 + GCM_IV_BYTES, headerLen);
+    ciphertext = encrypted.slice(headerLen);
+  } else {
+    authTag = encrypted.slice(encrypted.length - GCM_TAG_BYTES);
+    ciphertext = encrypted.slice(4 + GCM_IV_BYTES, encrypted.length - GCM_TAG_BYTES);
   }
-  const key = createHash("sha256").update(secret).digest();
-  const iv = encrypted.slice(4, 16);
-  const authTag = encrypted.slice(16, 32);
-  const ciphertext = encrypted.slice(32);
+
   const decipher = createDecipheriv("aes-256-gcm", key, iv);
   decipher.setAuthTag(authTag);
   try {
@@ -407,40 +437,56 @@ export async function executeRestore(
  * The resulting `.zip.enc` file can be decrypted with the matching secret and
  * then restored with pg_restore (for the db dump) + extracting the media/ dir.
  */
-export async function buildBackupZipBuffer(triggeredBy: string): Promise<{
-  buffer: Buffer;
-  fileName: string;
-}> {
-  const pgDump = await buildPgDumpBuffer();
-
+/** Stable backup file name for the current date. */
+function backupFileName(): string {
   const dateStr = new Date().toISOString().split("T")[0];
-  const fileName = `labtrax-backup-${dateStr}.zip.enc`;
+  return `labtrax-backup-${dateStr}.zip.enc`;
+}
 
-  const manifest = {
+/** Build the manifest JSON embedded at the root of the inner ZIP. */
+function buildBackupManifest(triggeredBy: string): Record<string, unknown> {
+  return {
     version: "2.0",
     appName: "LabTrax",
     exportedAt: new Date().toISOString(),
     exportedBy: triggeredBy,
     dbFormat: "pg_dump:custom",
     decryptNote:
-      "This file is AES-256-GCM encrypted. Format: 4-byte magic 'LTRX' + 12-byte IV + 16-byte GCM auth-tag + ciphertext. " +
+      "This file is AES-256-GCM encrypted. Format: 4-byte magic " +
+      `('${BACKUP_MAGIC_BUFFERED}' = tag after IV, or '${BACKUP_MAGIC_STREAMED}' = tag appended at end) ` +
+      "+ 12-byte IV + 16-byte GCM auth-tag + ciphertext. " +
       "Set BACKUP_ENCRYPTION_KEY (or JWT_SECRET) to the same value used during backup, derive a 32-byte key via SHA-256, " +
       "then decrypt to get the inner ZIP. Restore the database with: pg_restore --clean --if-exists -d <dbname> db/database.pgdump",
     mediaNote: "Case-media attachments are in the media/ directory of the inner ZIP.",
   };
+}
 
+/** Create the ZIP archiver and queue the manifest, db dump, and media dir. */
+function createBackupArchive(triggeredBy: string, pgDump: Buffer): archiver.Archiver {
+  const manifest = buildBackupManifest(triggeredBy);
   const mediaDir = path.resolve(process.cwd(), "uploads", "case-media");
   const mediaExists = fs.existsSync(mediaDir);
 
+  const archive = archiver("zip", { zlib: { level: 6 } });
+  archive.append(JSON.stringify(manifest, null, 2), { name: "manifest.json" });
+  archive.append(pgDump, { name: "db/database.pgdump" });
+  if (mediaExists) archive.directory(mediaDir, "media");
+  return archive;
+}
+
+export async function buildBackupZipBuffer(triggeredBy: string): Promise<{
+  buffer: Buffer;
+  fileName: string;
+}> {
+  const pgDump = await buildPgDumpBuffer();
+  const fileName = backupFileName();
+
   const zipBuffer: Buffer = await new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    const archive = archiver("zip", { zlib: { level: 6 } });
+    const archive = createBackupArchive(triggeredBy, pgDump);
     archive.on("data", (chunk: Buffer) => chunks.push(chunk));
     archive.on("end", () => resolve(Buffer.concat(chunks)));
     archive.on("error", reject);
-    archive.append(JSON.stringify(manifest, null, 2), { name: "manifest.json" });
-    archive.append(pgDump, { name: "db/database.pgdump" });
-    if (mediaExists) archive.directory(mediaDir, "media");
     archive.finalize();
   });
 
@@ -728,6 +774,111 @@ export async function generateBackupForDownload(triggeredBy: string): Promise<{
   await recordSuccessfulBackup();
   await recordBackupRun({ ...result, triggeredBy });
   return { buffer, fileName, size: buffer.length, completedAt };
+}
+
+/**
+ * Stream an encrypted backup straight to the HTTP response.
+ *
+ * Unlike `generateBackupForDownload`, this never buffers the whole ZIP (or its
+ * encrypted form) in memory: the ZIP archiver pipes through an AES-256-GCM
+ * cipher and out to the client as chunked transfer-encoding, so bytes start
+ * flowing within the first few hundred ms and server memory stays flat even for
+ * multi-GB media libraries. This is the fix for "Failed to fetch" on large labs,
+ * where the single-shot Content-Length response was dropped mid-transfer.
+ *
+ * Output uses the tag-trailing 'LTR2' format because the GCM auth tag is only
+ * known after the entire plaintext is encrypted; it is appended once the cipher
+ * stream ends. `decryptBuffer` understands both 'LTRX' and 'LTR2'.
+ *
+ * Pre-flight work (key derivation, pg_dump) runs BEFORE any header/byte is
+ * written, so those failures still surface as a JSON 500 from the route. Once
+ * streaming has begun the status is already 200 and errors can only abort the
+ * connection.
+ */
+export async function streamBackupDownload(
+  triggeredBy: string,
+  res: import("express").Response,
+): Promise<void> {
+  // ── Pre-flight (must not write anything yet) ──────────────────────────────
+  const key = deriveBackupKey(); // throws if no secret is configured
+  const pgDump = await buildPgDumpBuffer(); // throws on pg_dump failure
+  const fileName = backupFileName();
+
+  const iv = randomBytes(GCM_IV_BYTES);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const archive = createBackupArchive(triggeredBy, pgDump);
+
+  // Count ciphertext bytes without breaking pipe backpressure (no raw 'data'
+  // listener on the piped path).
+  let ciphertextBytes = 0;
+  const counter = new Transform({
+    transform(chunk: Buffer, _enc, cb) {
+      ciphertextBytes += chunk.length;
+      cb(null, chunk);
+    },
+  });
+
+  res.status(200);
+  res.setHeader("Content-Type", "application/octet-stream");
+  res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+  res.setHeader("Cache-Control", "no-store");
+  // Header frame: magic + IV. No Content-Length — the encrypted size isn't
+  // known up front, so this goes out chunked.
+  res.write(Buffer.concat([Buffer.from(BACKUP_MAGIC_STREAMED), iv]));
+
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const fail = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      archive.destroy();
+      cipher.destroy();
+      counter.destroy();
+      reject(err);
+    };
+
+    archive.on("error", fail);
+    cipher.on("error", fail);
+    counter.on("error", fail);
+
+    // 'finish' fires once the whole response (including the trailing auth tag)
+    // has been flushed — that is the only success signal. 'close' fires when
+    // the socket closes; if it beats 'finish' the client aborted. Settling on
+    // these events (rather than the res.end callback) avoids a hung promise if
+    // the connection drops in the gap between res.end() and its callback.
+    res.on("finish", () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    });
+    res.on("close", () => {
+      fail(new Error("Client closed the connection before the backup finished."));
+    });
+
+    // When the cipher's output is fully drained, append the GCM auth tag and
+    // end the response.
+    counter.on("end", () => {
+      if (settled) return;
+      res.end(cipher.getAuthTag());
+    });
+
+    archive.pipe(cipher);
+    cipher.pipe(counter);
+    counter.pipe(res, { end: false });
+    archive.finalize().catch(fail);
+  });
+
+  // Record history only after a fully successful stream.
+  const completedAt = new Date().toISOString();
+  await recordSuccessfulBackup();
+  await recordBackupRun({
+    size: 4 + GCM_IV_BYTES + ciphertextBytes + GCM_TAG_BYTES,
+    completedAt,
+    fileName,
+    destination: "local",
+    path: undefined,
+    triggeredBy,
+  });
 }
 
 export async function runBackup(

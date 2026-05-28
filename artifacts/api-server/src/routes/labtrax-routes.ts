@@ -17,7 +17,7 @@ import {
 import { dispatchInstallerAlert } from "../lib/desktop-installer-alerts";
 import { runDesktopInstallerHealthCheck } from "../lib/desktop-installer-health";
 import { getDownloadInterruptionStats } from "../lib/download-interruptions";
-import { runBackup, generateBackupForDownload, getBackupHourUtc, getBackupScheduleConfig, getLastSuccessfulBackupAt, getBackupStaleAlertSettings, getBackupHistoryRetentionDays, restartScheduledBackupJob, runScheduledBackupNow, executeRestore, getRestoreState, SETTING_BACKUP_HOUR_UTC, SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, SETTING_BACKUP_SCHEDULE_DESTINATION, SETTING_BACKUP_SCHEDULE_PATH, SETTING_BACKUP_SCHEDULE_ENABLED, SETTING_BACKUP_LAST_SUCCESSFUL_AT, SETTING_BACKUP_HISTORY_RETENTION_DAYS, SETTING_BACKUP_HISTORY_MAX_ROWS, ALL_SCHEDULE_SETTINGS, SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS, SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS, SETTING_BACKUP_STALE_DAYS, DEFAULT_BACKUP_STALE_DAYS, type BackupDestination } from "../lib/backup";
+import { runBackup, generateBackupForDownload, streamBackupDownload, getBackupHourUtc, getBackupScheduleConfig, getLastSuccessfulBackupAt, getBackupStaleAlertSettings, getBackupHistoryRetentionDays, restartScheduledBackupJob, runScheduledBackupNow, executeRestore, getRestoreState, SETTING_BACKUP_HOUR_UTC, SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, SETTING_BACKUP_SCHEDULE_DESTINATION, SETTING_BACKUP_SCHEDULE_PATH, SETTING_BACKUP_SCHEDULE_ENABLED, SETTING_BACKUP_LAST_SUCCESSFUL_AT, SETTING_BACKUP_HISTORY_RETENTION_DAYS, SETTING_BACKUP_HISTORY_MAX_ROWS, ALL_SCHEDULE_SETTINGS, SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS, SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS, SETTING_BACKUP_STALE_DAYS, DEFAULT_BACKUP_STALE_DAYS, type BackupDestination } from "../lib/backup";
 import { sendInstallerPublishFailureAlertEmail, sendMail, getAppBaseUrl } from "../lib/mail";
 import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, getCleanupProgress, getCleanupStuckTimeoutMinutes, cancelCleanup, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC, SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES } from "../lib/case-media";
 import multer from "multer";
@@ -5528,18 +5528,25 @@ Important rules:
   // their machine, not on the Linux server.
   router.post("/admin/backup/generate", platformAdminUserOrSecret, async (req, res) => {
     if (!isPlatformAdmin(req)) {
-      return res.status(403).json({ error: "Admin access required." });
+      res.status(403).json({ error: "Admin access required." });
+      return;
     }
     const reqUser = (req as any).user;
+    const triggeredBy = `manual:${(reqUser as any)?.username || "admin"}`;
     try {
-      const triggeredBy = `manual:${(reqUser as any)?.username || "admin"}`;
-      const { buffer, fileName } = await generateBackupForDownload(triggeredBy);
-      res.setHeader("Content-Type", "application/octet-stream");
-      res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
-      res.setHeader("Content-Length", buffer.length);
-      return res.end(buffer);
+      // Streams the encrypted ZIP straight to the client (chunked transfer) so
+      // large labs don't hit the proxy's single-shot transfer cap that caused
+      // "Failed to fetch". Pre-flight failures throw before any byte is written
+      // and are reported as a JSON 500 below; once streaming begins the headers
+      // are already sent, so we just log and let the aborted connection surface.
+      await streamBackupDownload(triggeredBy, res);
     } catch (e: any) {
-      return res.status(500).json({ error: e?.message || "Backup failed." });
+      if (!res.headersSent) {
+        res.status(500).json({ error: e?.message || "Backup failed." });
+        return;
+      }
+      req.log.error({ err: e }, "Backup stream aborted after headers were sent");
+      if (!res.writableEnded) res.destroy();
     }
   });
 
