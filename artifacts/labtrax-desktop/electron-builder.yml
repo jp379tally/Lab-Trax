@@ -29,12 +29,12 @@ win:
   # additional env vars for that provider and point signtool at the token.
   # The SHA-256 timestamp below remains correct for all certificate types.
   #
-  # signingHashAlgorithms must include sha256 for SmartScreen reputation.
-  signingHashAlgorithms:
-    - sha256
-  # RFC 3161 timestamp server embeds a trusted time into the signature so the
-  # installer remains valid even after the certificate expires.
-  rfc3161TimeStampServer: http://timestamp.sectigo.com
+  # Signing hash algorithm + RFC 3161 timestamp server are now nested under
+  # signtoolOptions in electron-builder >=26.
+  signtoolOptions:
+    signingHashAlgorithms:
+      - sha256
+    rfc3161TimeStampServer: http://timestamp.sectigo.com
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
@@ -76,8 +76,9 @@ mac:
   #   APPLE_APP_SPECIFIC_PASSWORD — app-specific password for that Apple ID
   #   APPLE_TEAM_ID             — 10-character Team ID from developer.apple.com
   # See .github/workflows/build-macos.yml for how these are wired up.
-  notarize:
-    teamId: ${APPLE_TEAM_ID}
+  # In electron-builder >=26, notarize is a boolean. Team ID is taken from
+  # the APPLE_TEAM_ID env var (or the Developer ID certificate) automatically.
+  notarize: true
 dmg:
   # The DMG itself does not need a separate signature — the app bundle inside
   # it is already signed and notarized.

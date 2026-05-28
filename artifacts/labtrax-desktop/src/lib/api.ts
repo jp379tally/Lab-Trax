@@ -1,7 +1,32 @@
 import { getSessionSecret, clearSessionSecret } from "./platform-admin-session";
 
+// Hardcoded production API origin used as a defensive fallback when an
+// Electron installer was packaged without VITE_API_BASE_URL baked in.
+// Past "Failed to fetch" reports on the login screen were traced to that
+// case: _API_ORIGIN was empty, so apiUrl built "app://labtrax/api/..."
+// which the Electron renderer (cross-origin to the API) cannot reach.
+//
+// The fallback is intentionally scoped to Electron-only — same-origin
+// web builds legitimately set VITE_API_BASE_URL="" to use relative paths,
+// and we must not hijack them to production. We detect Electron by the
+// "app:" protocol exposed by the custom app://labtrax origin in
+// production, or by the presence of window.electronAPI from preload.cjs.
+const _PROD_API_FALLBACK = "https://lab-trax.replit.app";
+
+function _isElectronRenderer(): boolean {
+  if (typeof window === "undefined") return false;
+  if ((window as unknown as { electronAPI?: unknown }).electronAPI) return true;
+  if (typeof window.location !== "undefined" && window.location.protocol === "app:") {
+    return true;
+  }
+  return false;
+}
+
+const _CONFIGURED_ORIGIN = (import.meta.env.VITE_API_BASE_URL as string | undefined)
+  ?.replace(/\/$/, "");
+
 const _API_ORIGIN =
-  (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "";
+  _CONFIGURED_ORIGIN || (_isElectronRenderer() ? _PROD_API_FALLBACK : "");
 
 function apiUrl(path: string): string {
   if (path.startsWith("http")) return path;
