@@ -699,19 +699,12 @@ export default function ScanScreen() {
     setCasePhotos((prev) => (prev.includes(finalUri) ? prev : [...prev, finalUri]));
     cropDoneRef.current = true;
 
-    // Auto-fire AI immediately so the shutter → fields-populated flow
-    // doesn't dead-end on the Review screen. handleFinishedReview will
-    // transition to phase="form" when done (or on watchdog timeout).
-    // Only do this on a fresh single-page capture; if the user is adding
-    // more pages from Review, the scanning -> review transition stays
-    // intact so they can keep iterating before Finish triggers AI with
-    // the full page set.
-    if (isFreshCapture) {
-      autoAnalyzedRef.current = true;
-      handleFinishedReview([finalUri]).catch((err) => {
-        console.log("AI auto-analyze after capture failed:", err?.message || err);
-      });
-    }
+    // Always route the user through the Review screen so they have a
+    // chance to add more pages before AI analysis runs. The Review
+    // screen runs a short auto-finish countdown for fresh single-page
+    // captures, so single-page users still get a near-instant
+    // shutter → AI flow without an extra mandatory tap.
+    void isFreshCapture;
   }
 
   function handleManualCrop() {
@@ -4734,6 +4727,7 @@ export default function ScanScreen() {
         visible={phase === "review"}
         initialPhotos={casePhotos}
         isFinishing={isAnalyzing}
+        autoFinishCountdownMs={2500}
         onCancel={() => {
           setCasePhotos([]);
           setCaseAttachments([]);

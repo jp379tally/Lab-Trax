@@ -35,6 +35,15 @@ export interface ReviewAndEditScreenProps {
   onFinish: (finalUris: string[]) => void;
   /** called whenever the local pages array changes so the parent can keep a copy */
   onPagesChanged?: (uris: string[]) => void;
+  /**
+   * When set (> 0), starts a one-shot countdown on first hydration with
+   * a single page and auto-fires onFinish when it reaches zero. Any user
+   * interaction (Add page, Edit, tapping a thumb, rotating, etc.) cancels
+   * the countdown for the remainder of the session. Lets single-page
+   * captures keep their near-instant shutter → AI flow while still
+   * giving the user a clear window to add another page.
+   */
+  autoFinishCountdownMs?: number;
 }
 
 type Mode = "preview" | "edit";
@@ -61,6 +70,7 @@ export function ReviewAndEditScreen({
   onAddMore,
   onFinish,
   onPagesChanged,
+  autoFinishCountdownMs,
 }: ReviewAndEditScreenProps) {
   const insets = useSafeAreaInsets();
 
@@ -69,6 +79,15 @@ export function ReviewAndEditScreen({
   const [activeIndex, setActiveIndex] = useState(0);
   const [showReorder, setShowReorder] = useState(false);
   const [showCrop, setShowCrop] = useState(false);
+
+  // Auto-finish countdown for single-page fresh captures. Lets shutter →
+  // AI feel near-instant while still giving a clear window to add a page.
+  const [countdownMsLeft, setCountdownMsLeft] = useState<number | null>(null);
+  // Once cancelled or fired in a session, never restart.
+  const countdownConsumedRef = useRef(false);
+  // Idempotency guard — both manual tap and countdown expiry funnel through
+  // here, ensuring onFinish is invoked at most once per visible session.
+  const finishRequestedRef = useRef(false);
 
   // Track whether we've hydrated from initialPhotos for the current visible session,
   // so prop-driven re-syncs don't clobber edits or reset mode/activeIndex.
@@ -79,6 +98,9 @@ export function ReviewAndEditScreen({
     if (!visible) {
       hydratedRef.current = false;
       lastEmittedRef.current = "";
+      countdownConsumedRef.current = false;
+      finishRequestedRef.current = false;
+      setCountdownMsLeft(null);
       return;
     }
     if (hydratedRef.current) return;
@@ -88,7 +110,24 @@ export function ReviewAndEditScreen({
     setMode("preview");
     hydratedRef.current = true;
     lastEmittedRef.current = initialPhotos.join("|");
-  }, [visible, initialPhotos]);
+    // Arm the auto-finish countdown ONLY for fresh single-page captures.
+    if (
+      !countdownConsumedRef.current &&
+      autoFinishCountdownMs &&
+      autoFinishCountdownMs > 0 &&
+      initialPhotos.length === 1
+    ) {
+      setCountdownMsLeft(autoFinishCountdownMs);
+    } else {
+      setCountdownMsLeft(null);
+    }
+  }, [visible, initialPhotos, autoFinishCountdownMs]);
+
+  const cancelAutoFinish = useCallback(() => {
+    if (countdownMsLeft === null && countdownConsumedRef.current) return;
+    countdownConsumedRef.current = true;
+    setCountdownMsLeft(null);
+  }, [countdownMsLeft]);
 
   // Notify parent on changes — only after hydration, only while visible, and
   // only when the URI signature actually differs from what we last emitted.
@@ -118,12 +157,14 @@ export function ReviewAndEditScreen({
   );
 
   const handleRotate = useCallback(async () => {
+    cancelAutoFinish();
     if (!activePage) return;
     const u = await rotateUri(activePage.uri);
     setActivePage((p) => ({ ...p, uri: u }));
-  }, [activePage, setActivePage]);
+  }, [activePage, setActivePage, cancelAutoFinish]);
 
   const handleDelete = useCallback(() => {
+    cancelAutoFinish();
     if (!activePage) return;
     Alert.alert("Delete page?", "This page will be removed from the scan.", [
       { text: "Cancel", style: "cancel" },
@@ -142,21 +183,67 @@ export function ReviewAndEditScreen({
 
   const handleCropApplied = useCallback(
     (croppedUri: string) => {
+      cancelAutoFinish();
       setShowCrop(false);
       setActivePage((p) => ({ ...p, uri: croppedUri }));
     },
-    [setActivePage],
+    [setActivePage, cancelAutoFinish],
   );
 
   const handleReorder = useCallback((from: number, to: number) => {
+    cancelAutoFinish();
     setPages((prev) => reorderArray(prev, from, to));
     if (activeIndex === from) setActiveIndex(to);
-  }, [activeIndex]);
+  }, [activeIndex, cancelAutoFinish]);
 
   const handleFinish = useCallback(() => {
     if (isFinishing || pages.length === 0) return;
+    if (finishRequestedRef.current) return;
+    finishRequestedRef.current = true;
+    countdownConsumedRef.current = true;
+    setCountdownMsLeft(null);
     onFinish(pages.map((p) => p.uri));
   }, [isFinishing, pages, onFinish]);
+
+  const handleAddMore = useCallback(() => {
+    cancelAutoFinish();
+    onAddMore();
+  }, [cancelAutoFinish, onAddMore]);
+
+  const enterEditMode = useCallback(() => {
+    cancelAutoFinish();
+    setMode("edit");
+  }, [cancelAutoFinish]);
+
+  const selectThumb = useCallback(
+    (idx: number) => {
+      cancelAutoFinish();
+      setActiveIndex(idx);
+    },
+    [cancelAutoFinish],
+  );
+
+  // Countdown ticker — runs every 100ms while armed; fires onFinish at zero.
+  useEffect(() => {
+    if (countdownMsLeft === null) return;
+    if (countdownMsLeft <= 0) {
+      countdownConsumedRef.current = true;
+      setCountdownMsLeft(null);
+      if (
+        !isFinishing &&
+        pages.length > 0 &&
+        !finishRequestedRef.current
+      ) {
+        finishRequestedRef.current = true;
+        onFinish(pages.map((p) => p.uri));
+      }
+      return;
+    }
+    const id = setTimeout(() => {
+      setCountdownMsLeft((cur) => (cur === null ? null : Math.max(0, cur - 100)));
+    }, 100);
+    return () => clearTimeout(id);
+  }, [countdownMsLeft, isFinishing, pages, onFinish]);
 
   if (!visible) return null;
 
@@ -198,13 +285,23 @@ export function ReviewAndEditScreen({
               <Ionicons name="refresh" size={22} color="#FFF" />
             </Pressable>
             <Pressable
-              onPress={onAddMore}
+              onPress={enterEditMode}
               style={({ pressed }) => [styles.sideToolPill, pressed && { opacity: 0.7 }]}
-              accessibilityLabel="Take another photo"
+              accessibilityLabel="Edit pages"
             >
-              <Ionicons name="image-outline" size={22} color="#FFF" />
+              <Ionicons name="create-outline" size={22} color="#FFF" />
             </Pressable>
           </View>
+        </View>
+
+        <View style={styles.pageCountRow}>
+          <Text style={styles.pageCountText}>
+            {pages.length === 0
+              ? "No pages"
+              : pages.length === 1
+                ? "Page 1 of 1"
+                : `Page ${activeIndex + 1} of ${pages.length}`}
+          </Text>
         </View>
 
         <ScrollView
@@ -217,16 +314,19 @@ export function ReviewAndEditScreen({
             return (
               <Pressable
                 key={`${p.uri}-${idx}`}
-                onPress={() => setActiveIndex(idx)}
+                onPress={() => selectThumb(idx)}
                 style={[styles.previewThumb, isActive && styles.previewThumbActive]}
                 accessibilityLabel={`Page ${idx + 1}`}
               >
                 <Image source={{ uri: p.uri }} style={StyleSheet.absoluteFillObject} contentFit="cover" />
+                <View style={styles.thumbPageBadge}>
+                  <Text style={styles.thumbPageBadgeText}>{idx + 1}</Text>
+                </View>
               </Pressable>
             );
           })}
           <Pressable
-            onPress={onAddMore}
+            onPress={handleAddMore}
             style={[styles.previewThumb, styles.previewAddMoreThumb]}
             accessibilityLabel="Add another page"
           >
@@ -238,19 +338,47 @@ export function ReviewAndEditScreen({
         </ScrollView>
 
         <View style={[styles.bottomBar, { paddingBottom: insets.bottom + 16 }]}>
-          <Pressable
-            onPress={() => setMode("edit")}
-            disabled={pages.length === 0}
-            style={({ pressed }) => [
-              styles.primaryBtn,
-              pressed && { opacity: 0.85 },
-              pages.length === 0 && { opacity: 0.5 },
-            ]}
-            accessibilityLabel="Open editor"
-          >
-            <Text style={styles.primaryBtnText}>Review and Edit</Text>
-            <Ionicons name="chevron-forward" size={20} color="#FFF" />
-          </Pressable>
+          {countdownMsLeft !== null && !isFinishing && (
+            <Text style={styles.countdownHint}>
+              Analyzing in {Math.ceil(countdownMsLeft / 1000)}s — tap{" "}
+              <Text style={styles.countdownHintEmph}>Add page</Text> to add another
+            </Text>
+          )}
+          <View style={styles.bottomBtnRow}>
+            <Pressable
+              onPress={handleAddMore}
+              disabled={isFinishing}
+              style={({ pressed }) => [
+                styles.secondaryBtn,
+                pressed && { opacity: 0.8 },
+                isFinishing && { opacity: 0.5 },
+              ]}
+              accessibilityLabel="Add another page"
+            >
+              <Ionicons name="add" size={20} color="#FFF" />
+              <Text style={styles.secondaryBtnText}>Add page</Text>
+            </Pressable>
+            <Pressable
+              onPress={handleFinish}
+              disabled={isFinishing || pages.length === 0}
+              style={({ pressed }) => [
+                styles.primaryBtn,
+                styles.primaryBtnFlex,
+                pressed && { opacity: 0.85 },
+                (isFinishing || pages.length === 0) && { opacity: 0.5 },
+              ]}
+              accessibilityLabel={isFinishing ? "Analyzing" : "Analyze now"}
+            >
+              {isFinishing ? (
+                <ActivityIndicator size="small" color="#FFF" />
+              ) : (
+                <Ionicons name="sparkles" size={20} color="#FFF" />
+              )}
+              <Text style={styles.primaryBtnText}>
+                {isFinishing ? "Analyzing…" : "Analyze now"}
+              </Text>
+            </Pressable>
+          </View>
         </View>
       </View>
     );
@@ -475,11 +603,42 @@ const styles = StyleSheet.create({
     alignItems: "center", justifyContent: "center",
   },
   bottomBar: { paddingHorizontal: 24, paddingTop: 8, backgroundColor: "rgba(0,0,0,0.95)" },
+  bottomBtnRow: { flexDirection: "row", alignItems: "stretch", gap: 10 },
   primaryBtn: {
     flexDirection: "row", alignItems: "center", justifyContent: "center",
     gap: 8, backgroundColor: "#3B82F6", borderRadius: 14, paddingVertical: 16,
+    paddingHorizontal: 18,
   },
+  primaryBtnFlex: { flex: 1 },
   primaryBtnText: { color: "#FFF", fontSize: 16, fontFamily: "Inter_700Bold" },
+  secondaryBtn: {
+    flexDirection: "row", alignItems: "center", justifyContent: "center",
+    gap: 6,
+    paddingVertical: 16, paddingHorizontal: 16,
+    backgroundColor: "rgba(255,255,255,0.12)",
+    borderWidth: 1, borderColor: "rgba(255,255,255,0.25)",
+    borderRadius: 14,
+  },
+  secondaryBtnText: { color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  countdownHint: {
+    color: "rgba(255,255,255,0.75)",
+    fontSize: 12, fontFamily: "Inter_500Medium",
+    textAlign: "center",
+    paddingBottom: 8,
+  },
+  countdownHintEmph: { color: "#FFF", fontFamily: "Inter_700Bold" },
+  pageCountRow: { alignItems: "center", paddingTop: 4, paddingBottom: 2 },
+  pageCountText: {
+    color: "rgba(255,255,255,0.75)",
+    fontSize: 12, fontFamily: "Inter_600SemiBold",
+  },
+  thumbPageBadge: {
+    position: "absolute", bottom: 4, left: 4,
+    minWidth: 16, height: 16, borderRadius: 8, paddingHorizontal: 4,
+    backgroundColor: "rgba(0,0,0,0.65)",
+    alignItems: "center", justifyContent: "center",
+  },
+  thumbPageBadgeText: { color: "#FFF", fontSize: 10, fontFamily: "Inter_700Bold" },
   // Edit mode
   editMain: { flex: 1, flexDirection: "row" },
   canvasWrap: { flex: 1, backgroundColor: "#1a1a1a", overflow: "hidden", position: "relative" },
