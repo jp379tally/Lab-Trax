@@ -3208,6 +3208,16 @@ function BackupPanel() {
                           <Check size={9} />
                           OK
                         </span>
+                      ) : run.error?.includes("unreachable from the server") ? (
+                        <span
+                          className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 cursor-help"
+                          title={
+                            (run.error ?? "") +
+                            "\n\nTo fix this, update the scheduled destination in the Schedule section above."
+                          }
+                        >
+                          Skipped
+                        </span>
                       ) : (
                         <span
                           className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-destructive/15 text-destructive cursor-help"
