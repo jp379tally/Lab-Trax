@@ -20,6 +20,7 @@ import {
   Eye,
   EyeOff,
   GripVertical,
+  LayoutTemplate,
   RotateCcw,
   X,
 } from "lucide-react";
@@ -126,9 +127,23 @@ interface PrintLayoutEditorProps {
   onClose: () => void;
   config: PrintLayoutConfig;
   onChange: (config: PrintLayoutConfig) => void;
+  /**
+   * Optional callback fired when the user clicks "Advanced layout…".
+   * The parent should close this editor and open the per-lab
+   * CasePrintLayoutEditor (drag-and-scale boxes).
+   */
+  onOpenAdvanced?: () => void;
+  /** True when the lab has a saved custom advanced template. */
+  hasCustomAdvancedTemplate?: boolean;
 }
 
-export function PrintLayoutEditor({ onClose, config, onChange }: PrintLayoutEditorProps) {
+export function PrintLayoutEditor({
+  onClose,
+  config,
+  onChange,
+  onOpenAdvanced,
+  hasCustomAdvancedTemplate,
+}: PrintLayoutEditorProps) {
   const [local, setLocal] = useState<PrintLayoutConfig>(config);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingConfigRef = useRef<PrintLayoutConfig | null>(null);
@@ -227,6 +242,31 @@ export function PrintLayoutEditor({ onClose, config, onChange }: PrintLayoutEdit
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
+          {/* Advanced layout — drag/resize template shared across the lab */}
+          {onOpenAdvanced && (
+            <button
+              type="button"
+              onClick={onOpenAdvanced}
+              className="w-full flex items-center gap-3 p-3 rounded-lg border border-primary/30 bg-primary/5 hover:bg-primary/10 transition-colors text-left"
+            >
+              <LayoutTemplate size={18} className="text-primary shrink-0" />
+              <span className="flex-1 min-w-0">
+                <span className="block text-xs font-semibold text-foreground">
+                  Advanced layout (drag & resize)
+                </span>
+                <span className="block text-[11px] text-muted-foreground">
+                  Build a per-lab print template with movable boxes and your
+                  own logos or signatures.
+                </span>
+              </span>
+              {hasCustomAdvancedTemplate && (
+                <span className="text-[10px] font-medium text-primary bg-primary/15 px-1.5 py-0.5 rounded shrink-0">
+                  Custom
+                </span>
+              )}
+            </button>
+          )}
+
           {/* Case Details section */}
           <div>
             <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">

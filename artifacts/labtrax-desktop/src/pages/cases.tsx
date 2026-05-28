@@ -51,6 +51,7 @@ import type {
 import { formatDate, formatDateTime, formatMoney, formatPhone, relativeTime, statusLabel } from "@/lib/format";
 import {
   printCaseCard,
+  printCaseCardAdvanced,
   printCaseHistory,
   printCaseOverview,
   printInvoice,
@@ -78,11 +79,16 @@ import ScanViewerModal from "@/components/ScanViewerModal";
 import ScanThumbnail from "@/components/ScanThumbnail";
 import type { ScanFormat } from "@workspace/scan-viewer";
 import { PrintLayoutEditor } from "@/components/PrintLayoutEditor";
+import { CasePrintLayoutEditor } from "@/components/CasePrintLayoutEditor";
 import {
   type PrintLayoutConfig,
   isDefaultLayout,
   loadPrintLayoutConfig,
 } from "@/lib/print-layout";
+import {
+  coerceCasePrintTemplate,
+  type CasePrintTemplate,
+} from "@/lib/case-print-template";
 
 const STATUS_FILTERS: Array<{ value: string; label: string }> = [
   { value: "all", label: "All" },
@@ -2039,7 +2045,29 @@ export function CaseDrawer({
   const setLightboxUrl = (url: string | null) => setLightbox(url ? { url, kind: "image" } : null);
   const [confirmDeleteCase, setConfirmDeleteCase] = useState(false);
   const [showPrintLayoutEditor, setShowPrintLayoutEditor] = useState(false);
+  const [showCaseAdvancedEditor, setShowCaseAdvancedEditor] = useState(false);
   const [printLayout, setPrintLayout] = useState<PrintLayoutConfig>(() => loadPrintLayoutConfig());
+
+  // Per-lab advanced (drag/scale) print template. Null = no custom layout
+  // yet — the Print button keeps the existing list-based lab slip.
+  const advancedTemplateQuery = useQuery<{
+    template: CasePrintTemplate;
+    isCustom: boolean;
+  }>({
+    enabled: !!labCase.labOrganizationId,
+    queryKey: ["casePrintTemplate", labCase.labOrganizationId],
+    queryFn: async () => {
+      const res = await apiFetch<
+        { data: { template: unknown; isCustom: boolean } } | { template: unknown; isCustom: boolean }
+      >(`/organizations/${labCase.labOrganizationId}/case-print-template`);
+      const inner = (res as { data?: { template: unknown; isCustom: boolean } }).data ?? (res as { template: unknown; isCustom: boolean });
+      return {
+        template: coerceCasePrintTemplate(inner.template),
+        isCustom: !!inner.isCustom,
+      };
+    },
+  });
+  const hasAdvancedTemplate = !!advancedTemplateQuery.data?.isCustom;
 
   const [editMode, setEditMode] = useState(false);
   const [editForm, setEditForm] = useState({
@@ -3471,18 +3499,30 @@ export function CaseDrawer({
                     </button>
                     <button
                       type="button"
-                      onClick={() =>
-                        printCaseOverview(
-                          data ?? labCase,
-                          {
-                            restorations: data?.restorations ?? [],
-                            notes: data?.notes ?? [],
-                          },
-                          printLayout,
-                        )
-                      }
+                      onClick={() => {
+                        const advTemplate = advancedTemplateQuery.data;
+                        if (advTemplate?.isCustom) {
+                          printCaseCardAdvanced(
+                            data ?? labCase,
+                            {
+                              restorations: data?.restorations ?? [],
+                              notes: data?.notes ?? [],
+                            },
+                            advTemplate.template,
+                          );
+                        } else {
+                          printCaseOverview(
+                            data ?? labCase,
+                            {
+                              restorations: data?.restorations ?? [],
+                              notes: data?.notes ?? [],
+                            },
+                            printLayout,
+                          );
+                        }
+                      }}
                       className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                      title="Print lab slip"
+                      title={hasAdvancedTemplate ? "Print using advanced layout" : "Print lab slip"}
                     >
                       <Printer size={11} />
                       Print
@@ -4908,6 +4948,18 @@ export function CaseDrawer({
           onClose={() => setShowPrintLayoutEditor(false)}
           config={printLayout}
           onChange={(next) => setPrintLayout(next)}
+          hasCustomAdvancedTemplate={hasAdvancedTemplate}
+          onOpenAdvanced={() => {
+            setShowPrintLayoutEditor(false);
+            setShowCaseAdvancedEditor(true);
+          }}
+        />
+      )}
+
+      {/* Advanced (drag & resize) per-lab Print Layout Editor */}
+      {showCaseAdvancedEditor && (
+        <CasePrintLayoutEditor
+          onClose={() => setShowCaseAdvancedEditor(false)}
         />
       )}
 

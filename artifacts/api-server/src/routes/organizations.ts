@@ -2,10 +2,13 @@ import crypto from "node:crypto";
 import { Router } from "express";
 import multer from "multer";
 import {
+  deleteCasePrintTemplateImage,
   deleteInvoiceTemplateImage,
   isAllowedLogoMime,
+  openCasePrintTemplateImageStream,
   openInvoiceTemplateImageStream,
   openLabLogoStream,
+  uploadCasePrintTemplateImage,
   uploadInvoiceTemplateImage,
   uploadLabLogo,
 } from "../lib/lab-logo-storage";
@@ -14,6 +17,11 @@ import {
   DEFAULT_INVOICE_TEMPLATE,
   invoiceTemplateSchema,
 } from "../lib/invoice-template";
+import {
+  coerceCasePrintTemplate,
+  DEFAULT_CASE_PRINT_TEMPLATE,
+  casePrintTemplateSchema,
+} from "../lib/case-print-template";
 import {
   coerceStatementTemplate,
   DEFAULT_STATEMENT_TEMPLATE,
@@ -2642,6 +2650,158 @@ router.delete(
     const { organizationId, imageId } = req.params;
     await resolveOrgAdminAccess((req as any).auth.userId, organizationId);
     await deleteInvoiceTemplateImage(organizationId, imageId);
+    return ok(res, { deleted: true });
+  })
+);
+
+// ─── Case-print-label template (advanced layout editor) ─────────────────────
+//
+// Per-lab visual layout that drives the printed case label. Stored on
+// `organizations.case_print_template` (jsonb). Null = no advanced layout;
+// the case drawer falls back to the legacy per-user PrintLayoutConfig.
+
+router.get(
+  "/:organizationId/case-print-template",
+  asyncHandler(async (req, res) => {
+    const { organizationId } = req.params;
+    await resolveOrgReadAccess((req as any).auth.userId, organizationId);
+    const org = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organizationId),
+    });
+    if (!org) throw new HttpError(404, "Organization not found.");
+    const template = coerceCasePrintTemplate((org as any).casePrintTemplate);
+    return ok(res, {
+      template,
+      isCustom: (org as any).casePrintTemplate != null,
+      defaultTemplate: DEFAULT_CASE_PRINT_TEMPLATE,
+    });
+  })
+);
+
+router.put(
+  "/:organizationId/case-print-template",
+  asyncHandler(async (req, res) => {
+    const { organizationId } = req.params;
+    await resolveOrgAdminAccess((req as any).auth.userId, organizationId);
+
+    const body = req.body as { template?: unknown };
+    let toStore: unknown = null;
+    if (body && body.template !== null && body.template !== undefined) {
+      const parsed = casePrintTemplateSchema.safeParse(body.template);
+      if (!parsed.success) {
+        throw new HttpError(
+          400,
+          `Invalid case print template: ${parsed.error.message}`,
+        );
+      }
+      toStore = parsed.data;
+    }
+
+    const existing = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organizationId),
+    });
+    if (!existing) throw new HttpError(404, "Organization not found.");
+
+    const [updated] = await db
+      .update(organizations)
+      .set({ casePrintTemplate: toStore as any, updatedAt: new Date() } as any)
+      .where(eq(organizations.id, organizationId))
+      .returning();
+
+    await writeAuditLog({
+      req,
+      labId: organizationId,
+      action: "organization_case_print_template_updated",
+      entityType: "organization",
+      entityId: organizationId,
+      beforeJson: { casePrintTemplate: (existing as any).casePrintTemplate ?? null },
+      afterJson: { casePrintTemplate: toStore },
+    });
+
+    return ok(res, {
+      template: coerceCasePrintTemplate((updated as any).casePrintTemplate),
+      isCustom: (updated as any).casePrintTemplate != null,
+      defaultTemplate: DEFAULT_CASE_PRINT_TEMPLATE,
+    });
+  })
+);
+
+const casePrintImageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
+
+router.post(
+  "/:organizationId/case-print-template/images",
+  (req, res, next) => {
+    casePrintImageUpload.single("file")(req, res, (err: any) => {
+      if (err) {
+        const status = err?.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+        res.status(status).json({ error: err?.message || "Upload failed." });
+        return;
+      }
+      next();
+    });
+  },
+  asyncHandler(async (req, res) => {
+    const { organizationId } = req.params;
+    await resolveOrgAdminAccess((req as any).auth.userId, organizationId);
+
+    const file = (req as any).file as
+      | { mimetype: string; buffer: Buffer; size: number }
+      | undefined;
+    if (!file || !file.buffer || file.size === 0) {
+      throw new HttpError(400, "Missing 'file' field.");
+    }
+    if (!isAllowedLogoMime(file.mimetype)) {
+      throw new HttpError(
+        400,
+        `Unsupported image type: ${file.mimetype}. Use PNG, JPG, GIF, SVG, or WebP.`,
+      );
+    }
+    const meta = await uploadCasePrintTemplateImage(
+      organizationId,
+      file.buffer,
+      file.mimetype,
+    );
+    const url = `/api/organizations/${organizationId}/case-print-template/images/${meta.id}`;
+    return ok(res, {
+      id: meta.id,
+      storageKey: meta.storageKey,
+      url,
+      contentType: meta.contentType,
+      size: meta.size,
+    });
+  })
+);
+
+router.get(
+  "/:organizationId/case-print-template/images/:imageId",
+  asyncHandler(async (req, res) => {
+    const { organizationId, imageId } = req.params;
+    await resolveOrgReadAccess((req as any).auth.userId, organizationId);
+    const stream = await openCasePrintTemplateImageStream(organizationId, imageId);
+    if (!stream) {
+      res.status(404).json({ error: "Image not found." });
+      return;
+    }
+    res.setHeader("Content-Type", stream.contentType);
+    res.setHeader("Cache-Control", "private, max-age=60");
+    stream.stream.on("error", (err) => {
+      req.log?.error?.({ err }, "case-print-template image stream error");
+      if (!res.headersSent) res.status(500).end();
+      else res.end();
+    });
+    stream.stream.pipe(res);
+  })
+);
+
+router.delete(
+  "/:organizationId/case-print-template/images/:imageId",
+  asyncHandler(async (req, res) => {
+    const { organizationId, imageId } = req.params;
+    await resolveOrgAdminAccess((req as any).auth.userId, organizationId);
+    await deleteCasePrintTemplateImage(organizationId, imageId);
     return ok(res, { deleted: true });
   })
 );

@@ -186,6 +186,11 @@ export const organizations = pgTable(
     // defined by `StatementTemplate` in lib/statement-template. Null = use
     // the built-in default layout.
     statementTemplate: jsonb("statement_template"),
+    // Per-lab visual case-print-label template (advanced layout editor).
+    // JSON shape is defined by `CasePrintTemplate` in lib/case-print-template.
+    // Null = labs that haven't opened the advanced editor — falls back to
+    // the legacy field-list `PrintLayoutConfig` from local storage.
+    casePrintTemplate: jsonb("case_print_template"),
     // Per-lab visual correspondence-layout template (Task #906). JSON shape
     // is defined by `CorrespondenceTemplate` in lib/correspondence-template.
     // Null = use the built-in default layout.
