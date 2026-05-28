@@ -1,5 +1,6 @@
 import { Switch, Route, Router as WouterRouter, Redirect } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { lazy, Suspense } from "react";
 import {
   setBaseUrl as setApiClientBaseUrl,
   setAuthTokenGetter as setApiClientAuthTokenGetter,
@@ -9,30 +10,31 @@ import { getApiOrigin, getAccessToken } from "@/lib/api";
 import { describeAuthRestoreStatus } from "@/lib/auth-restore-status";
 import { UploadsProvider } from "@/lib/uploads-context";
 import LoginPage from "@/pages/login";
-import DashboardPage from "@/pages/dashboard";
-import CasesPage from "@/pages/cases";
-import InvoicesPage from "@/pages/invoices";
-import AccountsPage from "@/pages/accounts";
-import StatementsPage from "@/pages/statements";
-import PricingPage from "@/pages/pricing";
-import ReportsPage from "@/pages/reports";
-import SettingsPage from "@/pages/settings";
-import MaintenancePage from "@/pages/maintenance";
-import RegisterPage from "@/pages/finance/register";
-import ReconcilePage from "@/pages/finance/reconcile";
-import CashFlowPage from "@/pages/finance/cash-flow";
-import RecurringPage from "@/pages/finance/recurring";
-import ReceivePaymentsPage from "@/pages/finance/receive-payments";
-import PayeesPage from "@/pages/finance/payees";
-import ListsPage from "@/pages/lists";
-import { canReceivePayments } from "@/components/finance/FinanceShell";
-import DownloadPage from "@/pages/download";
-import BillingPage from "@/pages/billing";
-import CustomerCenterPage from "@/pages/customer-center";
-import NotFound from "@/pages/not-found";
 import { AppLayout } from "@/components/AppLayout";
 import { OfflineBanner } from "@/components/OfflineBanner";
 import { MessengerProvider } from "@/context/MessengerContext";
+import { canReceivePayments } from "@/components/finance/FinanceShell";
+
+const DashboardPage = lazy(() => import("@/pages/dashboard"));
+const CasesPage = lazy(() => import("@/pages/cases"));
+const InvoicesPage = lazy(() => import("@/pages/invoices"));
+const AccountsPage = lazy(() => import("@/pages/accounts"));
+const StatementsPage = lazy(() => import("@/pages/statements"));
+const PricingPage = lazy(() => import("@/pages/pricing"));
+const ReportsPage = lazy(() => import("@/pages/reports"));
+const SettingsPage = lazy(() => import("@/pages/settings"));
+const MaintenancePage = lazy(() => import("@/pages/maintenance"));
+const RegisterPage = lazy(() => import("@/pages/finance/register"));
+const ReconcilePage = lazy(() => import("@/pages/finance/reconcile"));
+const CashFlowPage = lazy(() => import("@/pages/finance/cash-flow"));
+const RecurringPage = lazy(() => import("@/pages/finance/recurring"));
+const ReceivePaymentsPage = lazy(() => import("@/pages/finance/receive-payments"));
+const PayeesPage = lazy(() => import("@/pages/finance/payees"));
+const ListsPage = lazy(() => import("@/pages/lists"));
+const DownloadPage = lazy(() => import("@/pages/download"));
+const BillingPage = lazy(() => import("@/pages/billing"));
+const CustomerCenterPage = lazy(() => import("@/pages/customer-center"));
+const NotFound = lazy(() => import("@/pages/not-found"));
 
 // Wire the generated react-query hooks (`@workspace/api-client-react`) up
 // to the same bearer-token + base-URL machinery the legacy `apiFetch`
@@ -64,31 +66,33 @@ function AuthedRoutes() {
 function AppLayoutWithUploads() {
   return (
     <AppLayout>
-      <Switch>
-        <Route path="/" component={DashboardPage} />
-        <Route path="/cases" component={CasesPage} />
-        <Route path="/invoices" component={InvoicesPage} />
-        <Route path="/accounts" component={AccountsPage} />
-        <Route path="/doctors" component={() => <Redirect to="/accounts" />} />
-        <Route path="/practices" component={() => <Redirect to="/accounts" />} />
-        <Route path="/statements" component={StatementsPage} />
-        <Route path="/pricing" component={PricingPage} />
-        <Route path="/reports" component={ReportsPage} />
-        <Route path="/settings" component={SettingsPage} />
-        <Route path="/maintenance" component={MaintenancePage} />
-        <Route path="/finance" component={() => <Redirect to="/finance/register" />} />
-        <Route path="/finance/register" component={RegisterPage} />
-        <Route path="/finance/reconcile" component={ReconcilePage} />
-        <Route path="/finance/cash-flow" component={CashFlowPage} />
-        <Route path="/finance/recurring" component={RecurringPage} />
-        <Route path="/finance/receive-payments" component={ReceivePaymentsGuard} />
-        <Route path="/finance/payees" component={PayeesPage} />
-        <Route path="/lists" component={ListsPage} />
-        <Route path="/customer-center" component={CustomerCenterPage} />
-        <Route path="/download" component={DownloadPage} />
-        <Route path="/billing" component={BillingPage} />
-        <Route component={NotFound} />
-      </Switch>
+      <Suspense fallback={<div className="min-h-screen flex items-center justify-center text-sm text-muted-foreground">Loading…</div>}>
+        <Switch>
+          <Route path="/" component={DashboardPage} />
+          <Route path="/cases" component={CasesPage} />
+          <Route path="/invoices" component={InvoicesPage} />
+          <Route path="/accounts" component={AccountsPage} />
+          <Route path="/doctors" component={() => <Redirect to="/accounts" />} />
+          <Route path="/practices" component={() => <Redirect to="/accounts" />} />
+          <Route path="/statements" component={StatementsPage} />
+          <Route path="/pricing" component={PricingPage} />
+          <Route path="/reports" component={ReportsPage} />
+          <Route path="/settings" component={SettingsPage} />
+          <Route path="/maintenance" component={MaintenancePage} />
+          <Route path="/finance" component={() => <Redirect to="/finance/register" />} />
+          <Route path="/finance/register" component={RegisterPage} />
+          <Route path="/finance/reconcile" component={ReconcilePage} />
+          <Route path="/finance/cash-flow" component={CashFlowPage} />
+          <Route path="/finance/recurring" component={RecurringPage} />
+          <Route path="/finance/receive-payments" component={ReceivePaymentsGuard} />
+          <Route path="/finance/payees" component={PayeesPage} />
+          <Route path="/lists" component={ListsPage} />
+          <Route path="/customer-center" component={CustomerCenterPage} />
+          <Route path="/download" component={DownloadPage} />
+          <Route path="/billing" component={BillingPage} />
+          <Route component={NotFound} />
+        </Switch>
+      </Suspense>
     </AppLayout>
   );
 }
