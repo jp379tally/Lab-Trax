@@ -3906,8 +3906,34 @@ function AppVersionCard() {
     };
   }, [api]);
 
-  // The card is desktop-only — render nothing in the browser/PWA build.
-  if (!api) return null;
+  // When not running inside the installed Electron desktop app, the
+  // electron-updater IPC bridge is unavailable — there is no "current
+  // version" to report and no way to trigger a download. Render a
+  // placeholder card so admins viewing in a browser/PWA still see where
+  // the update controls live (and aren't left wondering why the
+  // Refresh / Check-for-updates button is missing).
+  if (!api) {
+    return (
+      <div className="rounded-lg border border-border bg-secondary/30 px-5 py-4 space-y-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="text-sm font-semibold">App version</div>
+          <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-secondary text-muted-foreground">
+            Browser preview
+          </span>
+        </div>
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          Update controls (<strong>Check for updates</strong>,{" "}
+          <strong>Download</strong>, <strong>Restart &amp; install</strong>) only appear when
+          you open this page inside the <em>installed</em> LabTrax Desktop app —
+          they rely on Electron auto-update IPC that the browser can&apos;t
+          provide. Download &amp; install the desktop app from{" "}
+          <strong>Download Desktop App</strong> in the sidebar, then sign in
+          there and revisit Settings → Desktop app to see the version banner and
+          the Check-for-updates button.
+        </p>
+      </div>
+    );
+  }
 
   const currentVersion = state?.currentVersion ?? appVersion ?? "—";
   const status = state?.status ?? "idle";
