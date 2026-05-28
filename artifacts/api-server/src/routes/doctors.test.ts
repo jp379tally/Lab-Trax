@@ -220,7 +220,7 @@ maybe("Task #382 doctor merge route (db integration)", () => {
 
   it("rejects non-admin members", async () => {
     const c1 = await insertCase({
-      caseNumber: "M1",
+      caseNumber: rid("CN"),
       doctorName: "Dr. Smith",
       practiceId: practiceAId,
     });
@@ -257,27 +257,27 @@ maybe("Task #382 doctor merge route (db integration)", () => {
     const ids: string[] = [];
     ids.push(
       await insertCase({
-        caseNumber: "MS1",
+        caseNumber: rid("CN"),
         doctorName: "Dr. Smith",
         practiceId: practiceAId,
       })
     );
     ids.push(
       await insertCase({
-        caseNumber: "MS2",
+        caseNumber: rid("CN"),
         doctorName: "Dr Smith",
         practiceId: practiceAId,
       })
     );
     ids.push(
       await insertCase({
-        caseNumber: "MS3",
+        caseNumber: rid("CN"),
         doctorName: "Dr. SMYTH",
         practiceId: practiceBId,
       })
     );
     const softId = await insertCase({
-      caseNumber: "MS-soft",
+      caseNumber: rid("CN"),
       doctorName: "Dr. Smith",
       practiceId: practiceAId,
       deletedAt: new Date(),
@@ -354,12 +354,12 @@ maybe("Task #382 doctor merge route (db integration)", () => {
 
   it("includeSoftDeleted=true also moves soft-deleted cases", async () => {
     const live = await insertCase({
-      caseNumber: "SD-live",
+      caseNumber: rid("CN"),
       doctorName: "Dr. Jones",
       practiceId: practiceAId,
     });
     const soft = await insertCase({
-      caseNumber: "SD-soft",
+      caseNumber: rid("CN"),
       doctorName: "Dr. Jones",
       practiceId: practiceAId,
       deletedAt: new Date(),
@@ -394,7 +394,7 @@ maybe("Task #382 doctor merge route (db integration)", () => {
     for (let i = 0; i < 2; i++) {
       ids.push(
         await insertCase({
-          caseNumber: `U${i}`,
+          caseNumber: rid("CN"),
           doctorName: "Dr. Original",
           practiceId: practiceAId,
         })
@@ -473,7 +473,7 @@ maybe("Task #382 doctor merge route (db integration)", () => {
 
   it("respects DOCTOR_MERGE_UNDO_WINDOW_MINUTES override", async () => {
     const id = await insertCase({
-      caseNumber: "W1",
+      caseNumber: rid("CN"),
       doctorName: "Dr. Window",
       practiceId: practiceAId,
     });
@@ -525,7 +525,7 @@ maybe("Task #382 doctor merge route (db integration)", () => {
     for (let i = 0; i < 12; i++) {
       ids.push(
         await insertCase({
-          caseNumber: `PV${i}`,
+          caseNumber: rid("CN"),
           doctorName: "Dr. Counted",
           practiceId: practiceAId,
         })
@@ -553,7 +553,7 @@ maybe("Task #382 doctor merge route (db integration)", () => {
 
   it("undo refused when a moved pricing override was edited after the merge", async () => {
     const cId = await insertCase({
-      caseNumber: "OV1",
+      caseNumber: rid("CN"),
       doctorName: "Dr. OvEdit",
       practiceId: practiceAId,
     });
@@ -594,7 +594,7 @@ maybe("Task #382 doctor merge route (db integration)", () => {
 
   it("undo refused when a new active override exists at source name (would clobber unique index)", async () => {
     const cId = await insertCase({
-      caseNumber: "OV2",
+      caseNumber: rid("CN"),
       doctorName: "Dr. OvCollide",
       practiceId: practiceAId,
     });

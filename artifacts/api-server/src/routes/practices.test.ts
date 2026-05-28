@@ -332,7 +332,7 @@ maybe("Task #711 practice merge route (db integration)", () => {
   it("preview returns deterministic counts and is idempotent", async () => {
     if (!routeAvailable) return;
     const cId = await insertCase({
-      caseNumber: "PV-1",
+      caseNumber: rid("CN"),
       practiceId: sourcePracticeId,
     });
     const iId = await insertInvoice({
