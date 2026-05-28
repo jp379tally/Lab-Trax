@@ -52,6 +52,7 @@ vi.mock("./lib/desktop-installer-storage.js", () => ({
   getDesktopInstallerHandle: vi.fn(),
   openDesktopInstallerStream: vi.fn(),
   getSignedDownloadUrl: vi.fn().mockResolvedValue(null),
+  getDirectDownloadUrl: vi.fn().mockResolvedValue(null),
   installerKindFromUrl: vi.fn(),
   getDesktopInstallerMetadata: vi.fn(),
   uploadDesktopInstaller: vi.fn(),
@@ -66,6 +67,7 @@ import {
   getDesktopInstallerHandle,
   openDesktopInstallerStream,
   getSignedDownloadUrl,
+  getDirectDownloadUrl,
 } from "./lib/desktop-installer-storage.js";
 
 // ---------------------------------------------------------------------------
@@ -426,6 +428,26 @@ describe("GET /downloads/LabTrax-Windows-Portable.zip", () => {
     expect(res.status).toBe(200);
     expect(res.body as Buffer).toEqual(FAKE_CONTENT);
     expect(vi.mocked(openDesktopInstallerStream)).toHaveBeenCalled();
+  });
+
+  it("redirects to direct GCS URL when signed URL unavailable but direct URL succeeds", async () => {
+    // Replit federated credentials cannot sign URLs, so getSignedDownloadUrl
+    // returns null in production. getDirectDownloadUrl uses a sidecar access
+    // token and still bypasses the Replit proxy — this is the prod fast-path
+    // for large (~145 MB) downloads.
+    vi.mocked(getSignedDownloadUrl).mockResolvedValueOnce(null);
+    const fakeDirectUrl =
+      "https://storage.googleapis.com/bucket/desktop-installer/LabTrax-Windows-Portable.zip?access_token=abc123";
+    vi.mocked(getDirectDownloadUrl).mockResolvedValueOnce(fakeDirectUrl);
+
+    const res = await request(server)
+      .get("/downloads/LabTrax-Windows-Portable.zip")
+      .redirects(0);
+
+    expect(res.status).toBe(302);
+    expect(res.headers["location"]).toBe(fakeDirectUrl);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(vi.mocked(openDesktopInstallerStream)).not.toHaveBeenCalled();
   });
 });
 

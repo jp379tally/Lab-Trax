@@ -18,6 +18,7 @@ import {
   getDesktopInstallerHandle,
   openDesktopInstallerStream,
   getSignedDownloadUrl,
+  getDirectDownloadUrl,
   type DesktopInstallerKind,
   DesktopInstallerNotConfiguredError,
 } from "./lib/desktop-installer-storage";
@@ -149,7 +150,21 @@ function serveInstaller(
           res.redirect(302, signedUrl);
           return;
         }
-        logger.info({ kind }, "Desktop installer download: signed URL unavailable, streaming through proxy");
+        // Signed URLs require a private-key service account, which Replit's
+        // federated (external_account) credentials do not provide. Fall back
+        // to a direct GCS URL with a short-lived sidecar access token — this
+        // still bypasses the Replit reverse proxy (which drops long-running
+        // ~145 MB transfers) by sending the browser straight to GCS.
+        const directUrl = await getDirectDownloadUrl(kind);
+        if (directUrl) {
+          logger.info({ kind }, "Desktop installer download: redirecting to direct GCS URL (sidecar token)");
+          res.removeHeader("Content-Length");
+          res.removeHeader("Content-Range");
+          res.setHeader("Cache-Control", "no-store");
+          res.redirect(302, directUrl);
+          return;
+        }
+        logger.info({ kind }, "Desktop installer download: signed and direct URLs unavailable, streaming through proxy");
       }
 
       const obj = await openDesktopInstallerStream(
