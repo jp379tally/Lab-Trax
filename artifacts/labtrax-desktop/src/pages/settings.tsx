@@ -3888,7 +3888,7 @@ function DesktopAppUserPanel() {
 // without waiting for the 4-hour background poll in `electron/main.cjs`.
 // When auto-download is in progress or an update is staged for install, the
 // card mirrors that status so admins can re-launch from this card too.
-function AppVersionCard() {
+export function AppVersionCard() {
   const api = getDesktopUpdaterApi();
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [state, setState] = useState<DesktopUpdateState | null>(null);
@@ -4336,6 +4336,7 @@ function DesktopInstallerPanel() {
       }
     >
       {gate.blocked && <PlatformAdminSetupNotice />}
+      <AppVersionCard />
       {query.isLoading && (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 size={13} className="animate-spin" />
@@ -4347,7 +4348,6 @@ function DesktopInstallerPanel() {
       )}
       {info && (
         <div className="space-y-5">
-          <AppVersionCard />
           {info.repoUrlWarning && (
             <Alert tone="warning">{info.repoUrlWarning}</Alert>
           )}
