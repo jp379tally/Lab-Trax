@@ -2944,7 +2944,7 @@ function BackupPanel() {
                   <input
                     value={schedPath}
                     onChange={(e) => setSchedPath(e.target.value)}
-                    placeholder={schedDest === "local" ? "C:\\Backups\\LabTrax" : "\\\\server\\share\\LabTrax"}
+                    placeholder={schedDest === "local" ? "C:\\Backups\\LabTrax" : "sftp://user@host/backups/labtrax"}
                     className={inputCls}
                   />
                 </div>
@@ -2958,6 +2958,29 @@ function BackupPanel() {
                   </button>
                 )}
               </div>
+            )}
+
+            {/* Warn when the scheduled destination can't be reached from the server */}
+            {(schedDest === "local" || (schedDest === "network" && !!schedPath.trim() && !schedPath.trim().startsWith("sftp://"))) && (
+              <div className="flex items-start gap-2.5 rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3.5 py-3 text-amber-800 dark:text-amber-300">
+                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                <div className="text-xs leading-snug space-y-1">
+                  <p className="font-semibold">Scheduled backups can't write to this destination</p>
+                  <p className="text-amber-700 dark:text-amber-400">
+                    {schedDest === "local"
+                      ? "Local folder and USB paths exist on your Windows machine, but scheduled backups run on the server (Linux) where those paths don't exist. The file would never reach you."
+                      : "UNC/SMB network paths (\\\\server\\share) exist on your Windows network, but scheduled backups run on the server (Linux) where those paths aren't mounted."}
+                    {" "}Use an <strong>SFTP URL</strong> (<code className="font-mono">sftp://user@host/path</code>) for scheduled backups, or use <strong>Back up now</strong> for local folder / USB backups.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Warn when network destination path looks like SFTP but is missing required fields */}
+            {schedDest === "network" && schedPath.trim().startsWith("sftp://") && (
+              <p className="text-[11px] text-muted-foreground">
+                SFTP: authenticate via SSH key. Embedded passwords are not supported.
+              </p>
             )}
 
             <div>
@@ -3020,7 +3043,11 @@ function BackupPanel() {
               saveScheduleMutation.isPending ||
               scheduleQuery.isLoading ||
               gate.blocked ||
-              (schedEnabled && needsPath(schedDest) && !schedPath.trim())
+              (schedEnabled && needsPath(schedDest) && !schedPath.trim()) ||
+              schedEnabled && (
+                schedDest === "local" ||
+                (schedDest === "network" && !!schedPath.trim() && !schedPath.trim().startsWith("sftp://"))
+              )
             }
             className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-2"
           >

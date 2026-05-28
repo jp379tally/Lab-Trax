@@ -1062,6 +1062,45 @@ async function fireScheduledBackup() {
   const config = await getBackupScheduleConfig();
   if (!config.enabled || !config.destination) return;
   const label = `scheduler:interval`;
+
+  // Scheduled backups run on the server (Linux). Local folder paths and UNC/SMB
+  // network paths exist on the admin's Windows machine, not the server, so writes
+  // to those paths would silently fail or produce an unreachable file. Only SFTP
+  // destinations are reachable from the server at scheduled-run time.
+  const isUnsupportedPath =
+    config.destination === "local" ||
+    (config.destination === "network" && !!config.path && !config.path.startsWith("sftp://"));
+
+  if (isUnsupportedPath) {
+    const errMsg =
+      "Scheduled backups cannot write to local folder or UNC/SMB network paths because the backup " +
+      "runs on the server (Linux), not on your Windows machine. The file would never reach you. " +
+      "Switch the scheduled destination to an SFTP server (sftp://user@host/path), or use " +
+      "\u201cBack up now\u201d for local folder / USB backups.";
+    logger.warn(
+      { destination: config.destination, path: config.path },
+      "[backup] Scheduled backup skipped — local/UNC path is unreachable from the server",
+    );
+    await recordBackupError(label, config.destination, config.path ?? undefined, errMsg);
+    try {
+      const adminEmails = await getAdminEmails();
+      await sendBackupNotificationEmail({
+        adminEmails,
+        triggeredBy: label,
+        success: false,
+        errorMessage: errMsg,
+        failedAt: new Date().toISOString(),
+        destination: config.destination,
+      });
+    } catch (mailErr: unknown) {
+      logger.error(
+        { err: mailErr instanceof Error ? mailErr.message : String(mailErr) },
+        "[backup] Scheduled backup skip: notification email failed",
+      );
+    }
+    return;
+  }
+
   try {
     logger.info(
       { destination: config.destination, path: config.path },

@@ -5639,6 +5639,22 @@ Important rules:
     if ((destination === "local" || destination === "network") && !destPath) {
       return res.status(400).json({ error: "path is required for local and network destinations." });
     }
+    // Block local folder and UNC/SMB network destinations for scheduled backups.
+    // Scheduled runs execute on the server (Linux); paths like C:\Backups or \\server\share
+    // exist on the admin's Windows machine, not the server. Writing to those paths would
+    // silently produce a file that never reaches the user. Only SFTP is server-reachable.
+    if (
+      destination === "local" ||
+      (destination === "network" && destPath && !destPath.startsWith("sftp://"))
+    ) {
+      return res.status(400).json({
+        error:
+          "Scheduled backups can only use SFTP destinations. " +
+          "Local folder and UNC/SMB network paths exist on your Windows machine, not on the server " +
+          "where scheduled backups run (Linux). The file would never reach you. " +
+          "Use an SFTP URL (sftp://user@host/path) for scheduled backups, or use \u201cBack up now\u201d for local folder / USB backups.",
+      });
+    }
     // Reject SFTP URLs with embedded passwords — credentials must not be stored
     // at rest in system_settings. Use SSH key authentication or mount the remote
     // share as a local filesystem path.
