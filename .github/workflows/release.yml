@@ -242,8 +242,13 @@ jobs:
         run: |
           set -uo pipefail
           if [[ -z "$PLATFORM_ADMIN_SECRET" || -z "$PUBLISH_API_BASE_URL" ]]; then
-            echo "::notice::Skipping auto-publish — PLATFORM_ADMIN_SECRET or PUBLISH_API_BASE_URL secret not set."
-            exit 0
+            # Auto-release on merge to main makes this the primary delivery
+            # path for new versions — silently skipping leaves /downloads/
+            # stuck on an old build with no operator-visible signal. Fail loud
+            # so the release is noticed and either the secrets are wired up
+            # or the auto-release workflow is intentionally disabled.
+            echo "::error::PLATFORM_ADMIN_SECRET and PUBLISH_API_BASE_URL must both be set so the freshly built installer can be auto-published to /downloads/. Add them in repo Settings → Secrets and variables → Actions, or disable .github/workflows/auto-tag-desktop-release.yml if auto-release is not desired."
+            exit 1
           fi
           BASE_URL="${PUBLISH_API_BASE_URL%/}"
           # electron-builder is configured to emit a stable filename
@@ -429,8 +434,11 @@ process.stdout.write(out.join('\n').trim());
           PUBLISH_API_BASE_URL: ${{ secrets.PUBLISH_API_BASE_URL }}
         run: |
           if [[ -z "$PLATFORM_ADMIN_SECRET" || -z "$PUBLISH_API_BASE_URL" ]]; then
-            echo "::notice::Skipping auto-publish — PLATFORM_ADMIN_SECRET or PUBLISH_API_BASE_URL secret not set."
-            exit 0
+            # See the Windows publish step for rationale — auto-release on
+            # merge makes this the primary delivery path, so missing secrets
+            # are a real misconfiguration, not a benign opt-out.
+            echo "::error::PLATFORM_ADMIN_SECRET and PUBLISH_API_BASE_URL must both be set so the freshly built DMG can be auto-published to /downloads/. Add them in repo Settings → Secrets and variables → Actions, or disable .github/workflows/auto-tag-desktop-release.yml if auto-release is not desired."
+            exit 1
           fi
           BASE_URL="${PUBLISH_API_BASE_URL%/}"
           # electron-builder produces one DMG per arch (arm64 + x64), plus a

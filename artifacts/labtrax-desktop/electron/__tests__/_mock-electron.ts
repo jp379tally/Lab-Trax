@@ -30,7 +30,9 @@ export type ElectronMock = {
   };
   ipcMain: {
     handle: (channel: string, fn: (...args: unknown[]) => unknown) => void;
+    on: (channel: string, fn: (...args: unknown[]) => unknown) => void;
     handlers: Map<string, (...args: unknown[]) => unknown>;
+    listeners: Map<string, Array<(...args: unknown[]) => unknown>>;
   };
   BrowserWindow: {
     new (...args: unknown[]): unknown;
@@ -69,8 +71,14 @@ export function installElectronMock(overrides: Partial<ElectronMock> = {}): Elec
     },
     ipcMain: {
       handlers,
+      listeners: new Map(),
       handle: (channel, fn) => {
         handlers.set(channel, fn);
+      },
+      on(channel, fn) {
+        const arr = this.listeners.get(channel) ?? [];
+        arr.push(fn);
+        this.listeners.set(channel, arr);
       },
       ...(overrides.ipcMain ?? {}),
     },

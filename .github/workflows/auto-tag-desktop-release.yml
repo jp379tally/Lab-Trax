@@ -1,0 +1,116 @@
+name: Auto-tag Desktop release on merge to main
+
+# Runs on every push to main that touches code which can affect the LabTrax
+# Desktop build. Bumps the patch version in artifacts/labtrax-desktop/package.json,
+# commits the bump back to main, and pushes a new `vX.Y.Z` tag. That tag push
+# triggers the existing `Release` workflow (.github/workflows/release.yml),
+# which builds + signs + publishes the installer.
+#
+# Why a separate workflow (vs. modifying release.yml directly)?
+#  - release.yml is already complex (build-number allocation, signing,
+#    notarization, atomic publish). Keeping the tag-only path out of band
+#    lets us reason about each concern in isolation, and lets release.yml
+#    keep being usable by hand-pushed tags during incident response.
+#
+# Why pushes need BUILD_BOT_TOKEN:
+#  - GitHub Actions deliberately does NOT trigger workflows from refs
+#    created using the default GITHUB_TOKEN. If the tag is pushed with
+#    GITHUB_TOKEN, release.yml will NOT fire and nothing gets built.
+#    BUILD_BOT_TOKEN is a fine-grained PAT (Contents: Read & Write +
+#    bypass branch protection) already configured in the repo and reused
+#    here for that side-effect.
+
+on:
+  push:
+    branches: [main]
+    # Skip merges that only touch docs, the mobile app, the mockup sandbox,
+    # or other artifacts unrelated to the desktop build. Anything that
+    # affects desktop bundles (lib/db schemas, api-server contracts the
+    # desktop talks to, the desktop source itself, electron config, this
+    # workflow, the release workflow) falls through and triggers a release.
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "artifacts/labtrax/**"
+      - "artifacts/mockup-sandbox/**"
+      - "attached_assets/**"
+      - ".github/workflows/eas-build.yml"
+      - ".local/**"
+      - ".agents/**"
+
+permissions:
+  contents: write
+
+concurrency:
+  # Serialize tag bumps on main so two near-simultaneous merges can't both
+  # try to allocate the same vX.Y.Z. Don't cancel in flight — we always
+  # want every queued merge to get its own tag.
+  group: auto-tag-desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    # Opt-out: include `[skip desktop-release]` (or the standard `[skip ci]`)
+    # in the merge commit subject/body to suppress the auto-release.
+    if: >-
+      !contains(github.event.head_commit.message, '[skip desktop-release]')
+      && !contains(github.event.head_commit.message, '[skip ci]')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # See "Why pushes need BUILD_BOT_TOKEN" at the top of this file.
+          token: ${{ secrets.BUILD_BOT_TOKEN || github.token }}
+
+      - name: Bump patch version, commit, and push tag
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          CURRENT=$(node -p "require('./artifacts/labtrax-desktop/package.json').version")
+          if [[ ! "$CURRENT" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "::error::package.json version '$CURRENT' is not a clean semver triple — refusing to auto-bump."
+            exit 1
+          fi
+          MAJ="${BASH_REMATCH[1]}"
+          MIN="${BASH_REMATCH[2]}"
+          PATCH="${BASH_REMATCH[3]}"
+          NEXT="${MAJ}.${MIN}.$((PATCH + 1))"
+          TAG="v${NEXT}"
+
+          # Skip cleanly if the next tag already exists (e.g. a re-run of
+          # the same merge). Pushing the same tag again would be a no-op
+          # but a manually-created tag at the same point could surprise us.
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::notice::Tag ${TAG} already exists on origin — skipping bump."
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          node -e "
+            const fs = require('fs');
+            const p = 'artifacts/labtrax-desktop/package.json';
+            const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+            j.version = '${NEXT}';
+            fs.writeFileSync(p, JSON.stringify(j, null, 2) + '\n');
+          "
+
+          git add artifacts/labtrax-desktop/package.json
+          # [skip ci] on the bump commit prevents this workflow from
+          # re-triggering itself; the tag push will still trigger release.yml.
+          git commit -m "chore(desktop): release ${TAG} [skip ci]"
+          git tag -a "${TAG}" -m "LabTrax Desktop ${TAG}"
+
+          # Push the bump first, then the tag. Order matters: release.yml
+          # checks out the tag's tree and reads package.json from it, so
+          # the tag must point at a commit whose package.json carries the
+          # new version.
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git push origin "${TAG}"
+
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "::notice::Created and pushed ${TAG} — release.yml will now build and publish."

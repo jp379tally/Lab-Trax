@@ -119,11 +119,14 @@ Setup: connect Stripe integration → run `seed-stripe-products` → set `STRIPE
 Installers (`LabTrax-Windows-Portable.zip`, `LabTrax-Setup.exe`, `LabTrax.dmg`) are stored in App Storage and served at `GET /downloads/<filename>` (no auth). Object keys: `<PRIVATE_OBJECT_DIR>/desktop-installer/<filename>`.
 
 To publish a new installer:
-1. **In-app (manual):** Settings → Desktop App → "Choose installer and upload" → `POST /api/admin/desktop-installer/upload`
-2. **CLI bootstrap:** `pnpm --filter @workspace/scripts run upload-desktop-installer`
-3. **CI (preferred for releases):** GitHub Actions `build-windows.yml` / `build-macos.yml` / `release.yml` POST to the **atomic** `POST /api/admin/desktop-installer/publish` endpoint. Gated by `PLATFORM_ADMIN_SECRET` + `PUBLISH_API_BASE_URL` secrets; safe to leave unset (exits 0).
+1. **Auto-release on merge (default):** `.github/workflows/auto-tag-desktop-release.yml` triggers on every push to `main`, bumps the patch in `artifacts/labtrax-desktop/package.json`, commits with `[skip ci]`, tags `vX.Y.Z`, and pushes via `BUILD_BOT_TOKEN`. The tag fires `release.yml` → builds + publishes to `/downloads/`. Skips when only non-desktop paths changed (docs, mobile, mockup, etc.) or when the commit message contains `[skip desktop-release]` / `[skip ci]`.
+2. **In-app (manual):** Settings → Desktop App → "Choose installer and upload" → `POST /api/admin/desktop-installer/upload`
+3. **CLI bootstrap:** `pnpm --filter @workspace/scripts run upload-desktop-installer`
+4. **CI tag-push (manual override):** push a `v*` tag yourself to re-run `release.yml` for a specific commit.
 
-The publish endpoint (`/publish`) accepts `X-Platform-Admin-Secret` without a user JWT so CI doesn't need an account. A deduped alert email fires at most once per 6 h window for any publish failure or health-check failure. Full runbook: [`docs/desktop-publish-pipeline.md`](docs/desktop-publish-pipeline.md).
+The publish endpoint (`/publish`) accepts `X-Platform-Admin-Secret` without a user JWT so CI doesn't need an account. The Windows + macOS publish steps in `release.yml` now **fail loudly** (exit 1) when `PLATFORM_ADMIN_SECRET` or `PUBLISH_API_BASE_URL` is unset — auto-release on merge made silent skip a real foot-gun. A deduped alert email fires at most once per 6 h window for any publish failure or health-check failure. Full runbook: [`docs/desktop-publish-pipeline.md`](docs/desktop-publish-pipeline.md), [`artifacts/labtrax-desktop/docs/auto-update-runbook.md`](artifacts/labtrax-desktop/docs/auto-update-runbook.md).
+
+End-users see the current installed version and a **Check for updates** button in Settings → Desktop App (admin-only). The card mirrors auto-updater state (checking / available / downloading / ready-to-install) and exposes **Restart & install** when a build is staged. IPC: `check-for-updates`, `download-update`, `get-update-state`, plus the `update-state` broadcast channel.
 
 Auto-update channel for existing installs uses GitHub Releases `latest.yml` / `latest-mac.yml` (electron-updater). Keep both channels in sync on every release.
 

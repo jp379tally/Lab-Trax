@@ -1,5 +1,38 @@
 # Auto-update end-to-end runbook
 
+## Release trigger
+
+Every merge to `main` automatically tags a new patch release via
+`.github/workflows/auto-tag-desktop-release.yml`. That workflow:
+
+1. Skips when only non-desktop paths (`docs/**`, `**.md`, mobile app,
+   mockup sandbox, attached assets, EAS workflow, `.local/**`,
+   `.agents/**`) changed, or when the head commit message contains
+   `[skip desktop-release]` or `[skip ci]`.
+2. Bumps the patch version in `artifacts/labtrax-desktop/package.json`,
+   commits with `[skip ci]` (so the bump itself doesn't loop), tags
+   `vX.Y.Z`, and pushes both using `BUILD_BOT_TOKEN` (a fine-grained PAT
+   that can push to protected `main`).
+3. The pushed tag fires `.github/workflows/release.yml` which builds
+   Windows + macOS and **must** auto-publish to `/downloads/`. Both
+   publish steps now exit non-zero (not silently 0) when
+   `PLATFORM_ADMIN_SECRET` or `PUBLISH_API_BASE_URL` is missing — auto-
+   release is the primary delivery path, so a missing secret is a real
+   misconfiguration to surface, not a benign opt-out.
+
+To pause auto-release temporarily, disable the
+`auto-tag-desktop-release.yml` workflow in Actions → Workflows. To skip
+a single merge, append `[skip desktop-release]` to the merge commit
+message.
+
+The runbook below verifies the *download / install swap* mechanics that
+unit tests can't cover. Run it before any release that changes
+`electron-builder.yml`, `electron/main.cjs` updater wiring, or the
+publish provider.
+
+---
+
+
 This runbook verifies that a packaged LabTrax Desktop build will actually
 download a newer version, swap binaries, and relaunch on the new version.
 Unit tests cover the IPC wiring and `releaseNotes` shape handling, but they

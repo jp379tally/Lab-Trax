@@ -29,6 +29,8 @@ const updater = {
     updaterListeners.set(event, arr);
   },
   checkForUpdatesAndNotify: vi.fn(() => Promise.resolve()),
+  checkForUpdates: vi.fn(() => Promise.resolve()),
+  downloadUpdate: vi.fn(() => Promise.resolve()),
   quitAndInstall: vi.fn(),
 };
 
@@ -81,6 +83,11 @@ beforeAll(async () => {
     isDestroyed: () => false,
     loadURL: () => {},
     setMenuBarVisibility: () => {},
+    on: () => {},
+    once: () => {},
+    show: () => {},
+    focus: () => {},
+    close: () => {},
   };
 
   electronMock = installElectronMock({
@@ -257,5 +264,40 @@ describe("auto-updater wiring in main.cjs", () => {
     const handler = electronMock.ipcMain.handlers.get("get-app-version");
     expect(handler).toBeTypeOf("function");
     expect(handler?.()).toBe("1.2.3");
+  });
+
+  it("get-update-state IPC handler returns a snapshot with the current version", () => {
+    const handler = electronMock.ipcMain.handlers.get("get-update-state");
+    expect(handler).toBeTypeOf("function");
+    const snapshot = handler?.() as { currentVersion: string; status: string; autoUpdaterEnabled: boolean };
+    expect(snapshot.currentVersion).toBe("1.2.3");
+    expect(typeof snapshot.status).toBe("string");
+    expect(snapshot.autoUpdaterEnabled).toBe(true);
+  });
+
+  it("check-for-updates IPC handler invokes autoUpdater.checkForUpdates and returns state", async () => {
+    updater.checkForUpdates.mockClear();
+    const handler = electronMock.ipcMain.handlers.get("check-for-updates");
+    expect(handler).toBeTypeOf("function");
+    const result = (await handler?.()) as { currentVersion: string };
+    expect(updater.checkForUpdates).toHaveBeenCalled();
+    expect(result.currentVersion).toBe("1.2.3");
+  });
+
+  it("download-update IPC handler invokes autoUpdater.downloadUpdate", async () => {
+    updater.downloadUpdate.mockClear();
+    const handler = electronMock.ipcMain.handlers.get("download-update");
+    expect(handler).toBeTypeOf("function");
+    await handler?.();
+    expect(updater.downloadUpdate).toHaveBeenCalled();
+  });
+
+  it("broadcasts update-state on lifecycle events", () => {
+    sentMessages.length = 0;
+    emit("update-available", { version: "2.0.0" });
+    const stateMsg = sentMessages.find((m) => m.channel === "update-state");
+    expect(stateMsg).toBeDefined();
+    expect((stateMsg!.payload as { status: string }).status).toBe("available");
+    expect((stateMsg!.payload as { latestVersion: string }).latestVersion).toBe("2.0.0");
   });
 });

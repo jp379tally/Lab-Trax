@@ -13,6 +13,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
     return () => ipcRenderer.removeListener("update-downloaded", listener);
   },
   installUpdate: () => ipcRenderer.invoke("install-update"),
+  checkForUpdates: () => ipcRenderer.invoke("check-for-updates"),
+  downloadUpdate: () => ipcRenderer.invoke("download-update"),
+  getUpdateState: () => ipcRenderer.invoke("get-update-state"),
+  onUpdateState: (callback) => {
+    const listener = (_event, state) => callback(state);
+    ipcRenderer.on("update-state", listener);
+    return () => ipcRenderer.removeListener("update-state", listener);
+  },
   platformAdmin: {
     getStatus: () => ipcRenderer.invoke("platformAdmin:get-status"),
     getSecret: () => ipcRenderer.invoke("platformAdmin:get-secret"),

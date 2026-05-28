@@ -97,6 +97,27 @@ protocol.registerSchemesAsPrivileged([
 
 const appDir = path.resolve(path.join(__dirname, "..", "dist", "electron-app"));
 
+// Live auto-updater state. Mutated by the autoUpdater event handlers,
+// surfaced to the renderer through the `get-update-state` IPC handler and
+// the broadcasted `update-state` channel, and read by `check-for-updates` /
+// `download-update` so the UI can show check/download buttons that reflect
+// reality (idle vs. checking vs. downloading vs. ready-to-install).
+const updateState = {
+  status: "idle", // idle | checking | available | not-available | downloading | downloaded | error
+  lastCheckedAt: null, // ISO timestamp of the most recent check completion
+  currentVersion: null, // populated lazily on first read so we don't depend on `app` at import time
+  latestVersion: null, // version reported by `update-available` / `update-downloaded`
+  downloadProgress: null, // 0..100 (rounded) during downloading; null otherwise
+  releaseNotes: null, // normalised release notes for the downloaded build
+  error: null, // last user-facing error string (cleared on next successful check)
+  feedUrl: null, // populated when UPDATE_FEED_URL is set, for diagnostics
+};
+
+function patchUpdateState(patch) {
+  Object.assign(updateState, patch);
+  broadcast("update-state", { ...updateState });
+}
+
 function setupAutoUpdater() {
   const { autoUpdater } = require("electron-updater");
   const log = require("electron-log");
@@ -109,25 +130,41 @@ function setupAutoUpdater() {
   const feedUrl = process.env.UPDATE_FEED_URL;
   if (feedUrl) {
     autoUpdater.setFeedURL({ provider: "generic", url: feedUrl });
+    updateState.feedUrl = feedUrl;
   }
 
   autoUpdater.on("checking-for-update", () => {
     log.info("Checking for updates…");
+    patchUpdateState({ status: "checking", error: null });
   });
 
   autoUpdater.on("update-available", (info) => {
     log.info(`Update available: v${info.version} — downloading in background`);
+    patchUpdateState({
+      status: "available",
+      latestVersion: info.version ?? null,
+      lastCheckedAt: new Date().toISOString(),
+      error: null,
+    });
   });
 
-  autoUpdater.on("update-not-available", () => {
+  autoUpdater.on("update-not-available", (info) => {
     log.info("App is up to date.");
+    patchUpdateState({
+      status: "not-available",
+      latestVersion: info?.version ?? null,
+      lastCheckedAt: new Date().toISOString(),
+      error: null,
+    });
   });
 
   autoUpdater.on("download-progress", (progress) => {
-    log.info(`Download progress: ${Math.round(progress.percent)}%`);
+    const pct = Math.round(progress.percent);
+    log.info(`Download progress: ${pct}%`);
+    patchUpdateState({ status: "downloading", downloadProgress: pct });
     const win = BrowserWindow.getAllWindows()[0];
     if (win) {
-      win.webContents.send("update-download-progress", Math.round(progress.percent));
+      win.webContents.send("update-download-progress", pct);
     }
   });
 
@@ -149,6 +186,14 @@ function setupAutoUpdater() {
       }
     }
 
+    patchUpdateState({
+      status: "downloaded",
+      latestVersion: info.version ?? null,
+      downloadProgress: 100,
+      releaseNotes,
+      error: null,
+    });
+
     const win = BrowserWindow.getAllWindows()[0];
     if (win) {
       win.webContents.send("update-downloaded", { version: info.version, releaseNotes });
@@ -157,6 +202,10 @@ function setupAutoUpdater() {
 
   autoUpdater.on("error", (err) => {
     log.error("Auto-updater error:", err);
+    patchUpdateState({
+      status: "error",
+      error: err && err.message ? String(err.message) : String(err),
+    });
   });
 
   autoUpdater.checkForUpdatesAndNotify().catch((err) => {
@@ -170,6 +219,25 @@ function setupAutoUpdater() {
       log.warn("Periodic update check failed:", err.message);
     });
   }, FOUR_HOURS_MS);
+}
+
+// Lazy-load autoUpdater inside the IPC handlers so dev-mode launches (which
+// skip setupAutoUpdater) can still answer `get-update-state` / etc. cleanly.
+function getAutoUpdaterOrNull() {
+  if (isDev || process.env.LABTRAX_SKIP_AUTOUPDATER === "1") return null;
+  try {
+    return require("electron-updater").autoUpdater;
+  } catch {
+    return null;
+  }
+}
+
+function snapshotUpdateState() {
+  return {
+    ...updateState,
+    currentVersion: app.getVersion(),
+    autoUpdaterEnabled: getAutoUpdaterOrNull() !== null,
+  };
 }
 
 // Stable reference to the primary application window used for IPC routing,
@@ -361,6 +429,55 @@ ipcMain.handle("install-update", () => {
   const { autoUpdater } = require("electron-updater");
   autoUpdater.quitAndInstall();
 });
+
+// User-initiated "Check for updates" — wraps autoUpdater.checkForUpdates()
+// so the renderer can drive the same code path that runs on launch /
+// every 4 h. We deliberately call checkForUpdates() (not
+// checkForUpdatesAndNotify) here because the renderer is showing its own
+// status UI; the system notification would be redundant.
+ipcMain.handle("check-for-updates", async () => {
+  const autoUpdater = getAutoUpdaterOrNull();
+  if (!autoUpdater) {
+    // Dev mode or autoupdater explicitly disabled — be honest about it
+    // rather than silently faking a "not-available" reply.
+    patchUpdateState({
+      status: "error",
+      error: "Auto-updates are disabled in this build (dev mode or LABTRAX_SKIP_AUTOUPDATER=1).",
+    });
+    return snapshotUpdateState();
+  }
+  try {
+    patchUpdateState({ status: "checking", error: null });
+    await autoUpdater.checkForUpdates();
+  } catch (err) {
+    patchUpdateState({
+      status: "error",
+      error: err && err.message ? String(err.message) : String(err),
+    });
+  }
+  return snapshotUpdateState();
+});
+
+// Manual "Download" trigger. With autoDownload=true the download already
+// starts on `update-available`, so this is mostly a fallback for
+// retry-after-error cases — but having it exposed means the UI can offer
+// a "Retry download" button without reaching back to the main process for
+// new IPC plumbing later.
+ipcMain.handle("download-update", async () => {
+  const autoUpdater = getAutoUpdaterOrNull();
+  if (!autoUpdater) return snapshotUpdateState();
+  try {
+    await autoUpdater.downloadUpdate();
+  } catch (err) {
+    patchUpdateState({
+      status: "error",
+      error: err && err.message ? String(err.message) : String(err),
+    });
+  }
+  return snapshotUpdateState();
+});
+
+ipcMain.handle("get-update-state", () => snapshotUpdateState());
 
 ipcMain.on("app:relaunch", () => {
   app.relaunch();

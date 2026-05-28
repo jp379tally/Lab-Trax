@@ -3833,6 +3833,216 @@ function compareVersions(a: string, b: string): number {
   return 0;
 }
 
+interface DesktopUpdateState {
+  status: "idle" | "checking" | "available" | "not-available" | "downloading" | "downloaded" | "error";
+  lastCheckedAt: string | null;
+  currentVersion: string | null;
+  latestVersion: string | null;
+  downloadProgress: number | null;
+  releaseNotes: string | null;
+  error: string | null;
+  feedUrl: string | null;
+  autoUpdaterEnabled: boolean;
+}
+
+interface DesktopUpdaterApi {
+  getAppVersion?: () => Promise<string>;
+  getUpdateState?: () => Promise<DesktopUpdateState>;
+  checkForUpdates?: () => Promise<DesktopUpdateState>;
+  downloadUpdate?: () => Promise<DesktopUpdateState>;
+  installUpdate?: () => Promise<void>;
+  onUpdateState?: (cb: (state: DesktopUpdateState) => void) => () => void;
+}
+
+function getDesktopUpdaterApi(): DesktopUpdaterApi | null {
+  if (typeof window === "undefined") return null;
+  const api = (window as unknown as { electronAPI?: DesktopUpdaterApi }).electronAPI;
+  if (!api || typeof api.getUpdateState !== "function") return null;
+  return api;
+}
+
+// Card shown at the top of Settings → Desktop App: surfaces the currently
+// installed app version and lets an admin trigger an on-demand update check
+// without waiting for the 4-hour background poll in `electron/main.cjs`.
+// When auto-download is in progress or an update is staged for install, the
+// card mirrors that status so admins can re-launch from this card too.
+function AppVersionCard() {
+  const api = getDesktopUpdaterApi();
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [state, setState] = useState<DesktopUpdateState | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!api) return;
+    let mounted = true;
+    api.getAppVersion?.().then((v) => mounted && setAppVersion(v)).catch(() => {});
+    api.getUpdateState?.().then((s) => mounted && setState(s)).catch(() => {});
+    const off = api.onUpdateState?.((s) => mounted && setState(s));
+    return () => {
+      mounted = false;
+      off?.();
+    };
+  }, [api]);
+
+  // The card is desktop-only — render nothing in the browser/PWA build.
+  if (!api) return null;
+
+  const currentVersion = state?.currentVersion ?? appVersion ?? "—";
+  const status = state?.status ?? "idle";
+  const isChecking = status === "checking" || busy;
+  const isDownloading = status === "downloading";
+  const isDownloaded = status === "downloaded";
+  const lastChecked = state?.lastCheckedAt
+    ? new Date(state.lastCheckedAt).toLocaleString()
+    : "never";
+
+  async function handleCheck() {
+    const check = api?.checkForUpdates;
+    if (!check) return;
+    setBusy(true);
+    try {
+      const next = await check();
+      setState(next);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDownload() {
+    const dl = api?.downloadUpdate;
+    if (!dl) return;
+    setBusy(true);
+    try {
+      const next = await dl();
+      setState(next);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleInstall() {
+    await api?.installUpdate?.();
+  }
+
+  let statusLabel: string;
+  let statusCls: string;
+  switch (status) {
+    case "checking":
+      statusLabel = "Checking…";
+      statusCls = "bg-secondary text-muted-foreground";
+      break;
+    case "available":
+      statusLabel = state?.latestVersion ? `Update available: v${state.latestVersion}` : "Update available";
+      statusCls = "bg-primary/10 text-primary";
+      break;
+    case "downloading":
+      statusLabel = `Downloading${state?.downloadProgress != null ? ` ${state.downloadProgress}%` : "…"}`;
+      statusCls = "bg-primary/10 text-primary";
+      break;
+    case "downloaded":
+      statusLabel = state?.latestVersion ? `Ready to install v${state.latestVersion}` : "Ready to install";
+      statusCls = "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400";
+      break;
+    case "not-available":
+      statusLabel = "Up to date";
+      statusCls = "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400";
+      break;
+    case "error":
+      statusLabel = "Check failed";
+      statusCls = "bg-destructive/10 text-destructive";
+      break;
+    default:
+      statusLabel = "Idle";
+      statusCls = "bg-secondary text-muted-foreground";
+  }
+
+  return (
+    <div className="rounded-lg border border-border bg-secondary/30 px-5 py-4 space-y-3">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="text-sm font-semibold">App version</div>
+            <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full ${statusCls}`}>
+              {statusLabel}
+            </span>
+          </div>
+          <div className="text-xs text-muted-foreground mt-0.5">
+            Installed v{currentVersion} · last checked {lastChecked}
+            {state?.feedUrl ? <> · feed <code className="font-mono text-[10px]">{state.feedUrl}</code></> : null}
+          </div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {isDownloaded && (
+            <button
+              type="button"
+              onClick={handleInstall}
+              className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-2"
+            >
+              <Download size={14} />
+              Restart &amp; install
+            </button>
+          )}
+          {(status === "available" || (status === "error" && state?.latestVersion)) && !isDownloaded && (
+            <button
+              type="button"
+              onClick={handleDownload}
+              disabled={busy || isDownloading}
+              className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-50 inline-flex items-center gap-2"
+            >
+              {isDownloading ? (
+                <Loader2 size={13} className="animate-spin" />
+              ) : (
+                <Download size={13} />
+              )}
+              {isDownloading
+                ? `Downloading${state?.downloadProgress != null ? ` ${state.downloadProgress}%` : "…"}`
+                : status === "error"
+                  ? "Retry download"
+                  : "Download now"}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={handleCheck}
+            disabled={isChecking || isDownloading}
+            className="h-9 px-4 rounded-md border border-border bg-background text-sm font-semibold hover:bg-secondary disabled:opacity-50 inline-flex items-center gap-2"
+          >
+            {isChecking ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : (
+              <RefreshCcw size={13} />
+            )}
+            {isChecking ? "Checking…" : "Check for updates"}
+          </button>
+        </div>
+      </div>
+      {status === "error" && state?.error && (
+        <div className="text-[11px] rounded-md px-3 py-2 bg-destructive/10 text-destructive">
+          {state.error}
+        </div>
+      )}
+      {isDownloading && state?.downloadProgress != null && (
+        <div className="w-full h-1.5 rounded-full bg-secondary overflow-hidden">
+          <div
+            className="h-full bg-primary transition-all"
+            style={{ width: `${state.downloadProgress}%` }}
+          />
+        </div>
+      )}
+      {isDownloaded && state?.releaseNotes && (
+        <div className="rounded-md border border-border bg-background px-4 py-3 space-y-1">
+          <div className="text-[11px] uppercase tracking-wide font-semibold text-muted-foreground">
+            Release notes
+          </div>
+          <p className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
+            {state.releaseNotes}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DesktopInstallerPanel() {
   const queryClient = useQueryClient();
   const [urlInput, setUrlInput] = useState<string>("");
@@ -4089,6 +4299,7 @@ function DesktopInstallerPanel() {
       )}
       {info && (
         <div className="space-y-5">
+          <AppVersionCard />
           {info.repoUrlWarning && (
             <Alert tone="warning">{info.repoUrlWarning}</Alert>
           )}
