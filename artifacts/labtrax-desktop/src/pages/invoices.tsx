@@ -32,13 +32,20 @@ import QRCodeLib from "qrcode";
 import { apiFetch, ApiError, getApiOrigin, getAccessToken } from "@/lib/api";
 import type {
   CaseAttachment,
+  CaseRestoration,
   Invoice,
   InvoiceDisplayMetadata,
   InvoiceLineItem,
+  LabCase,
   Organization,
   PracticeStatement,
 } from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
+import {
+  deriveRxSummary,
+  formatRxTeethLabel,
+  formatRxTeethWithShades,
+} from "@/lib/rx-summary";
 import { StatusBadge } from "@/components/StatusBadge";
 import {
   buildInvoicePdf,
@@ -995,11 +1002,26 @@ export function InvoiceEditor({
   const linkedCaseQuery = useQuery({
     queryKey: ["case-number-for-invoice", caseIdForPricing],
     queryFn: () =>
-      apiFetch<{ caseNumber: string; id: string }>(`/cases/${caseIdForPricing}`),
+      apiFetch<LabCase & { restorations?: CaseRestoration[]; caseNotes?: string | null }>(
+        `/cases/${caseIdForPricing}`,
+      ),
     enabled: !!caseIdForPricing,
     staleTime: 300_000,
   });
-  const linkedCaseNumber = linkedCaseQuery.data?.caseNumber ?? null;
+  const linkedCase = linkedCaseQuery.data ?? null;
+  const linkedCaseNumber = linkedCase?.caseNumber ?? null;
+  const linkedRxSummary = useMemo(
+    () => deriveRxSummary(linkedCase?.restorations),
+    [linkedCase?.restorations],
+  );
+  const linkedRxTeethLabel = useMemo(
+    () =>
+      formatRxTeethWithShades(
+        linkedCase?.restorations,
+        formatRxTeethLabel(linkedRxSummary),
+      ),
+    [linkedCase?.restorations, linkedRxSummary],
+  );
 
   // Pre-generate a QR code data URL for the invoice PDF. The QR encodes the
   // case deep-link URL so recipients can scan to open the case in LabTrax.
@@ -1877,6 +1899,48 @@ export function InvoiceEditor({
               </div>
             )}
           </section>
+
+          {linkedCase && (
+            <section>
+              <h3 className="text-sm font-semibold mb-3">Rx Summary</h3>
+              <div className="rounded-lg border border-border bg-secondary/20 px-4 py-3 grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Patient</div>
+                  <div>{`${linkedCase.patientFirstName ?? ""} ${linkedCase.patientLastName ?? ""}`.trim() || "—"}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Doctor</div>
+                  <div>{linkedCase.doctorName || "—"}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Restorative Type</div>
+                  <div>{linkedRxSummary.restorativeType ?? "—"}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
+                    {linkedRxSummary.materials.length > 1 ? "Materials" : "Material"}
+                  </div>
+                  <div>{linkedRxSummary.materials.length > 0 ? linkedRxSummary.materials.join(", ") : "—"}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
+                    {linkedRxSummary.shades.length > 1 ? "Shades" : "Shade"}
+                  </div>
+                  <div>{linkedRxSummary.shades.length > 0 ? linkedRxSummary.shades.join(", ") : "—"}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
+                    {linkedRxSummary.isFullArch ? "Tooth Coverage" : "Tooth Number(s)"}
+                  </div>
+                  <div>{linkedRxTeethLabel || "—"}</div>
+                </div>
+                <div className="md:col-span-2">
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Rx Notes</div>
+                  <div className="whitespace-pre-wrap">{(linkedCase.caseNotes ?? "").trim() || "—"}</div>
+                </div>
+              </div>
+            </section>
+          )}
 
           <section>
             <h3 className="text-sm font-semibold mb-3">Patient & billing details</h3>

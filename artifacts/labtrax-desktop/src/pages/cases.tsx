@@ -2009,7 +2009,7 @@ function CaseTimelineBar({
   );
 }
 
-type CaseTab = "overview" | "restorations" | "notes" | "files" | "invoice" | "history";
+type CaseTab = "lab-slip" | "restorations" | "notes" | "files" | "invoice" | "history";
 
 export function CaseDrawer({
   labCase,
@@ -2030,7 +2030,7 @@ export function CaseDrawer({
   const [fileDragOver, setFileDragOver] = useState(false);
   const fileDragCounterRef = useRef(0);
 
-  const [activeTab, setActiveTab] = useState<CaseTab>("overview");
+  const [activeTab, setActiveTab] = useState<CaseTab>("lab-slip");
   const [historySortOrder, setHistorySortOrder] = useState<"asc" | "desc">("asc");
   const [viewingInvoice, setViewingInvoice] = useState<Invoice | null>(null);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
@@ -2952,7 +2952,7 @@ export function CaseDrawer({
   const ROUTE_STATUSES = STATUS_FILTERS.filter((s) => s.value !== "all");
 
   const tabs: Array<{ id: CaseTab; label: string; count?: number }> = [
-    { id: "overview", label: "Overview" },
+    { id: "lab-slip", label: "Lab Slip" },
     { id: "restorations", label: "Restorations", count: restorationCount },
     { id: "notes", label: "Notes", count: noteCount },
     { id: "files", label: "Files", count: fileCount },
@@ -3426,7 +3426,7 @@ export function CaseDrawer({
         <div className="flex-1 overflow-y-auto">
 
           {/* ── OVERVIEW ── */}
-          {activeTab === "overview" && (() => {
+          {activeTab === "lab-slip" && (() => {
             const summary = deriveRxSummary(data?.restorations);
             const overviewNotes = data?.notes ?? [];
             const latestNote = [...overviewNotes].sort((a, b) => {
@@ -3493,7 +3493,7 @@ export function CaseDrawer({
                         )
                       }
                       className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                      title="Print overview"
+                      title="Print lab slip"
                     >
                       <Printer size={11} />
                       Print
@@ -3672,24 +3672,13 @@ export function CaseDrawer({
                   restorations and notes still happens in their dedicated
                   tabs; this section is read-only. */}
               {(() => {
-                const hasAny =
-                  summary.restorativeType ||
-                  summary.materials.length > 0 ||
-                  summary.shades.length > 0 ||
-                  summary.teeth.length > 0 ||
-                  summary.isFullArch !== null;
                 const highlightValue = buildHighlightedToothValue(summary);
                 return (
                   <section>
                     <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-3">
                       Rx Summary
                     </h3>
-                    {!hasAny ? (
-                      <div className="border border-dashed border-border rounded-md px-3 py-4 text-sm text-muted-foreground">
-                        No restorations on this case yet. Add one in the
-                        Restorations tab to populate this summary.
-                      </div>
-                    ) : (
+                    {(
                       <div className="space-y-3">
                         <div className="grid grid-cols-2 gap-4 text-sm">
                           <Field
@@ -3726,6 +3715,12 @@ export function CaseDrawer({
                                 data?.restorations,
                                 formatRxTeethLabel(summary),
                               )}
+                            />
+                          </div>
+                          <div className="col-span-2">
+                            <Field
+                              label="Rx notes"
+                              value={(data?.caseNotes ?? labCase.caseNotes ?? "").trim() || "—"}
                             />
                           </div>
                         </div>
@@ -4569,6 +4564,33 @@ export function CaseDrawer({
           {/* ── HISTORY ── */}
           {activeTab === "history" && (
             <div className="px-5 py-5">
+              {(() => {
+                const histSummary = deriveRxSummary(data?.restorations);
+                const histPatient = `${data?.patientFirstName ?? labCase.patientFirstName ?? ""} ${data?.patientLastName ?? labCase.patientLastName ?? ""}`.trim();
+                const histDoctor = data?.doctorName ?? labCase.doctorName ?? "";
+                const histMaterial = histSummary.materials.length > 0 ? histSummary.materials.join(", ") : "—";
+                const histShade = histSummary.shades.length > 0 ? histSummary.shades.join(", ") : "—";
+                const histTeeth = formatRxTeethWithShades(data?.restorations, formatRxTeethLabel(histSummary)) || "—";
+                const histRxNotes = (data?.caseNotes ?? labCase.caseNotes ?? "").trim() || "—";
+                return (
+                  <section className="mb-5 rounded-lg border border-border bg-secondary/20 px-4 py-3">
+                    <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">
+                      Rx Summary
+                    </h3>
+                    <div className="grid grid-cols-2 gap-3 text-sm">
+                      <Field label="Patient" value={histPatient || "—"} />
+                      <Field label="Doctor" value={histDoctor || "—"} />
+                      <Field label="Restorative type" value={histSummary.restorativeType ?? "—"} />
+                      <Field label={histSummary.materials.length > 1 ? "Materials" : "Material"} value={histMaterial} />
+                      <Field label={histSummary.shades.length > 1 ? "Shades" : "Shade"} value={histShade} />
+                      <Field label={histSummary.isFullArch ? "Tooth coverage" : "Tooth number(s)"} value={histTeeth} />
+                      <div className="col-span-2">
+                        <Field label="Rx notes" value={histRxNotes} />
+                      </div>
+                    </div>
+                  </section>
+                );
+              })()}
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
                   Activity Log

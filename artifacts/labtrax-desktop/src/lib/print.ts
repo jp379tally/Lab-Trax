@@ -602,7 +602,7 @@ ${buildToothChart(selected)}`;
   });
 }
 
-// ── Full Overview (letter-size, mirrors the on-screen Overview tab) ─────────
+// ── Full Lab Slip (letter-size, mirrors the on-screen Lab Slip tab) ─────────
 
 const OVERVIEW_CSS = `
 @page { size: letter; margin: 0.55in; }
@@ -790,6 +790,7 @@ export function printCaseOverview(
     material:        { key: summary.materials.length > 1 ? "Materials" : "Material", value: summary.materials.length > 0 ? summary.materials.join(", ") : "—" },
     shade:           { key: summary.shades.length > 1 ? "Shades" : "Shade",          value: summary.shades.length > 0 ? summary.shades.join(", ") : "—" },
     toothNumbers:    { key: teethKey,           value: teethLabel || "—" },
+    rxNotes:         { key: "Rx Notes",         value: (labCase.caseNotes ?? "").trim() || "—" },
   };
 
   function renderField(id: string, fontSize: string, fullWidth: boolean): string {
@@ -812,27 +813,17 @@ ${detailRows}
 </div>`;
 
   // ── Build Rx grid from config ──────────────────────────────────────────────
-  const hasRx =
-    summary.restorativeType ||
-    summary.materials.length > 0 ||
-    summary.shades.length > 0 ||
-    summary.teeth.length > 0 ||
-    summary.isFullArch !== null;
-
+  // Always render the Rx grid so configured fields show with "—" placeholders
+  // even on sparse cases. Editing happens in the Restorations tab.
   let rxSection = `<div class="lt-ov-section">Rx Summary</div>`;
-  if (!hasRx) {
-    rxSection += `<div class="lt-ov-notes-empty">No restorations on this case yet.</div>`;
-  } else {
-    const rxFields = layout.fields.filter((f) => f.section === "rx" && f.visible);
-    const rxRows = rxFields.map((f) => renderField(f.id, f.fontSize, f.fullWidth)).join("\n");
-    rxSection += `<div class="lt-ov-grid">\n${rxRows}\n</div>`;
-  }
+  const rxFields = layout.fields.filter((f) => f.section === "rx" && f.visible);
+  const rxRows = rxFields.map((f) => renderField(f.id, f.fontSize, f.fullWidth)).join("\n");
+  rxSection += `<div class="lt-ov-grid">\n${rxRows}\n</div>`;
 
   // ── Tooth chart ────────────────────────────────────────────────────────────
-  const chartSection =
-    layout.showToothChart && hasRx
-      ? `<div class="lt-ov-section">Tooth Chart</div>${buildToothChart(highlighted)}`
-      : "";
+  const chartSection = layout.showToothChart
+    ? `<div class="lt-ov-section">Tooth Chart</div>${buildToothChart(highlighted)}`
+    : "";
 
   // ── Notes ──────────────────────────────────────────────────────────────────
   let notesSection = "";
@@ -867,7 +858,7 @@ ${detailRows}
   const body = `${header}${detailsGrid}${rxSection}${chartSection}${notesSection}${footer}`;
 
   openPrintWindow({
-    title: `Case ${labCase.caseNumber} — Overview`,
+    title: `Case ${labCase.caseNumber} — Lab Slip`,
     bodyClass: "lt-ov-page",
     extraCss: OVERVIEW_CSS,
     body,
@@ -881,7 +872,7 @@ export function printOverview(labCase: LabCase): string {
     labCase.patientLastName ?? ""
   }`.trim();
   return `
-<h2>Overview</h2>
+<h2>Lab Slip</h2>
 <div class="lt-row"><div class="lt-label">Patient</div><div class="lt-value">${escapeHtml(patient || "—")}</div></div>
 <div class="lt-row"><div class="lt-label">Doctor</div><div class="lt-value">${escapeHtml(labCase.doctorName || "—")}</div></div>
 <div class="lt-row"><div class="lt-label">Status</div><div class="lt-value">${escapeHtml(statusLabel(labCase.status))}</div></div>
@@ -1007,10 +998,12 @@ export function printTabContent(args: {
   body += `<div class="lt-meta lt-small" style="margin-top:18px">Printed ${escapeHtml(
     formatDateTime(new Date().toISOString()),
   )}</div>`;
+  const tabTitle =
+    args.tab === "overview"
+      ? "Lab Slip"
+      : args.tab.charAt(0).toUpperCase() + args.tab.slice(1);
   openPrintWindow({
-    title: `Case ${args.labCase.caseNumber} — ${
-      args.tab.charAt(0).toUpperCase() + args.tab.slice(1)
-    }`,
+    title: `Case ${args.labCase.caseNumber} — ${tabTitle}`,
     body,
   });
 }

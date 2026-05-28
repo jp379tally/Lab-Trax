@@ -34,6 +34,7 @@ export const RX_FIELDS: PrintLayoutField[] = [
   { id: "material",        section: "rx", label: "Material",          fontSize: "sm", visible: true,  fullWidth: false },
   { id: "shade",           section: "rx", label: "Shade",             fontSize: "sm", visible: true,  fullWidth: false },
   { id: "toothNumbers",    section: "rx", label: "Tooth Number(s)",   fontSize: "sm", visible: true,  fullWidth: true  },
+  { id: "rxNotes",         section: "rx", label: "Rx Notes",          fontSize: "sm", visible: true,  fullWidth: true  },
 ];
 
 export const DEFAULT_PRINT_LAYOUT_CONFIG: PrintLayoutConfig = {
