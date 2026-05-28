@@ -20,9 +20,13 @@ export const DEFAULT_EMAIL_PREFS: Record<EmailPrefKey, boolean> = {
   orgInviteNotifications: true,
   statementEmails: true,
   billingReminders: true,
-  installerAlerts: true,
-  backupAlerts: true,
-  cleanupAlerts: true,
+  // System-ops alerts default OFF: in practice these fire frequently
+  // (release pipeline blips, transient backup hiccups, cleanup runs)
+  // and users were getting flooded. Admins who actually want them must
+  // opt in via Settings → Notifications.
+  installerAlerts: false,
+  backupAlerts: false,
+  cleanupAlerts: false,
 };
 
 /**
