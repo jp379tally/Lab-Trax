@@ -2580,7 +2580,7 @@ function BackupPanel() {
   const queryClient = useQueryClient();
   const [nowDest, setNowDest] = useState<BackupDestinationType>("local");
   const [nowPath, setNowPath] = useState("");
-  const [backupResult, setBackupResult] = useState<{ size: number; completedAt: string; fileName: string } | null>(null);
+  const [backupResult, setBackupResult] = useState<{ size: number; completedAt: string; fileName: string; savedTo?: string | null; viaBrowser?: boolean } | null>(null);
   const [backupError, setBackupError] = useState<string | null>(null);
 
   const [schedIntervalKey, setSchedIntervalKey] = useState<string>(intervalKey(1, "hours"));
@@ -2663,13 +2663,14 @@ function BackupPanel() {
   }, [scheduleQuery.data]);
 
   const backupNowMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (): Promise<{ size: number; completedAt: string; fileName: string; savedTo: string | null; viaBrowser: boolean }> => {
       const isNetworkSftp = nowDest === "network" && nowPath.trim().startsWith("sftp://");
       if (isNetworkSftp) {
-        return apiFetch<{ size: number; completedAt: string; fileName: string }>("/admin/backup/run", {
+        const res = await apiFetch<{ size: number; completedAt: string; fileName: string }>("/admin/backup/run", {
           method: "POST",
           body: JSON.stringify({ destination: nowDest, path: nowPath.trim() || undefined }),
         });
+        return { ...res, savedTo: nowPath.trim(), viaBrowser: false };
       }
       const { buffer, headers } = await apiFetchArrayBuffer("/admin/backup/generate", {
         method: "POST",
@@ -2680,23 +2681,33 @@ function BackupPanel() {
       const size = buffer.byteLength;
       const completedAt = new Date().toISOString();
       const electronAPI = (window as unknown as { electronAPI?: { saveBackupToFolder?: (buf: Uint8Array, name: string, folder: string) => Promise<{ ok: boolean; path?: string; error?: string }> } }).electronAPI;
-      if (electronAPI?.saveBackupToFolder && nowPath.trim()) {
+      const wantsPath = !!nowPath.trim();
+      if (wantsPath && !electronAPI?.saveBackupToFolder) {
+        // Running in a regular browser — we cannot write to an arbitrary
+        // filesystem path. Refuse instead of silently downloading to the
+        // browser's default Downloads folder while pretending we saved to
+        // the user's E:\… path.
+        throw new Error(
+          `This browser cannot save directly to "${nowPath.trim()}". Install and open the LabTrax Desktop app to back up to a specific folder, or clear the folder path to download the backup file through your browser instead.`,
+        );
+      }
+      if (electronAPI?.saveBackupToFolder && wantsPath) {
         const result = await electronAPI.saveBackupToFolder(new Uint8Array(buffer), fileName, nowPath.trim());
         if (!result.ok) {
           throw new Error(result.error ?? "Failed to save backup to folder.");
         }
-      } else {
-        const blob = new Blob([buffer], { type: "application/octet-stream" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = fileName;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        return { size, completedAt, fileName, savedTo: result.path ?? nowPath.trim(), viaBrowser: false };
       }
-      return { size, completedAt, fileName };
+      const blob = new Blob([buffer], { type: "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      return { size, completedAt, fileName, savedTo: null, viaBrowser: true };
     },
     onSuccess: (data) => {
       setBackupResult(data);
@@ -2832,9 +2843,25 @@ function BackupPanel() {
         {backupError && !gate.blocked && <Alert tone="danger">{backupError}</Alert>}
         {backupResult && (
           <Alert tone="success">
-            Backup complete — {formatBackupSize(backupResult.size)} saved as{" "}
-            <code className="font-mono text-xs">{backupResult.fileName}</code> at{" "}
-            {new Date(backupResult.completedAt).toLocaleString()}.
+            Backup complete — {formatBackupSize(backupResult.size)}{" "}
+            {backupResult.viaBrowser ? (
+              <>
+                downloaded by your browser as{" "}
+                <code className="font-mono text-xs">{backupResult.fileName}</code>. Check your
+                browser's downloads folder.
+              </>
+            ) : backupResult.savedTo ? (
+              <>
+                saved to{" "}
+                <code className="font-mono text-xs">{backupResult.savedTo}</code>.
+              </>
+            ) : (
+              <>
+                saved as{" "}
+                <code className="font-mono text-xs">{backupResult.fileName}</code>.
+              </>
+            )}{" "}
+            <span className="opacity-70">{new Date(backupResult.completedAt).toLocaleString()}</span>
           </Alert>
         )}
 
@@ -2860,6 +2887,15 @@ function BackupPanel() {
 
           {needsPath(nowDest) && (
             <div className="space-y-1.5">
+              {!electron?.saveBackupToFolder && nowDest === "local" && (
+                <div className="rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-[11px] leading-snug text-amber-800 dark:text-amber-300">
+                  You're using LabTrax in a web browser. Browsers can't save files
+                  to a specific folder like <span className="font-mono">E:\Lab Software\LabTrax Backup</span>.
+                  Either install and open the LabTrax Desktop app to save to a chosen
+                  folder, or clear the folder path below to download the backup file
+                  through your browser instead.
+                </div>
+              )}
               <div className="flex gap-2 items-end">
                 <div className="flex-1">
                   <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
@@ -6676,7 +6712,7 @@ type PlatformAdminAPI = {
   testSecret: (payload: string | { apiBaseUrl: string }) => Promise<PlatformAdminTestResult>;
   onChanged: (cb: (s: PlatformAdminStatus) => void) => () => void;
 };
-type ElectronWindow = Window & { electronAPI?: { showFolderDialog?: () => Promise<string | null>; showOpenDialog?: (opts: { title?: string; filters?: Array<{ name: string; extensions: string[] }>; properties?: string[] }) => Promise<string[] | null>; relaunch?: () => void; openExternal?: (url: string) => Promise<boolean>; itero?: IteroAPI; platformAdmin?: PlatformAdminAPI } };
+type ElectronWindow = Window & { electronAPI?: { showFolderDialog?: () => Promise<string | null>; showOpenDialog?: (opts: { title?: string; filters?: Array<{ name: string; extensions: string[] }>; properties?: string[] }) => Promise<string[] | null>; relaunch?: () => void; openExternal?: (url: string) => Promise<boolean>; saveBackupToFolder?: (buffer: Uint8Array, fileName: string, folderPath: string) => Promise<{ ok: boolean; path?: string; error?: string }>; itero?: IteroAPI; platformAdmin?: PlatformAdminAPI } };
 
 function PlatformAdminPanel() {
   const electron = typeof window !== "undefined" ? (window as ElectronWindow).electronAPI : null;
