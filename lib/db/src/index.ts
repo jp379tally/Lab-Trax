@@ -41,6 +41,17 @@ export const pool = new Pool({
   // above p99 for any intentional query in this codebase.
   statement_timeout: 30_000,
 });
+
+// Without this handler, any error on an idle client (e.g. the database
+// briefly terminating a connection with "terminating connection due to
+// administrator command") would emit an unhandled 'error' event and crash
+// the Node.js process.  pg removes the bad client from the pool
+// automatically; logging here is sufficient — the next query will simply
+// acquire a fresh connection.
+pool.on("error", (err) => {
+  console.error("[db] idle client error — connection will be recycled:", err.message);
+});
+
 export const db = drizzle(pool, { schema });
 
 export * from "./schema";
