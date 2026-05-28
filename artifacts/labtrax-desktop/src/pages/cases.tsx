@@ -24,6 +24,7 @@ import {
   Pencil,
   Plus,
   Printer,
+  RefreshCw,
   QrCode,
   ReceiptText,
   Search,
@@ -813,7 +814,7 @@ function readIteroActiveBatch(): { batchId: string; caseIds: string[]; importedA
 export default function CasesPage() {
   const [, setLocation] = useLocation();
 
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, isFetching, refetch } = useQuery({
     queryKey: ["cases"],
     queryFn: () => apiFetch<LabCase[]>("/cases"),
     refetchInterval: 60_000,
@@ -847,6 +848,16 @@ export default function CasesPage() {
   const deepLinkOpenedRef = useRef(false);
 
   const qc = useQueryClient();
+
+  const handleRefresh = () => {
+    void refetch();
+    qc.invalidateQueries({ queryKey: ["organizations"] });
+    qc.invalidateQueries({ queryKey: ["invoice-for-case"] });
+    qc.invalidateQueries({ queryKey: ["invoice-detail"] });
+    if (selected?.id) {
+      qc.invalidateQueries({ queryKey: ["case", selected.id] });
+    }
+  };
 
   const orgsQuery = useQuery({
     queryKey: ["organizations"],
@@ -1129,6 +1140,16 @@ export default function CasesPage() {
           <div className="text-sm text-muted-foreground">
             {filtered.length} of {data?.length ?? 0}
           </div>
+          <button
+            type="button"
+            onClick={handleRefresh}
+            disabled={isFetching}
+            title="Refresh cases"
+            className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border border-border bg-background text-sm font-medium hover:bg-muted/50 transition-colors disabled:opacity-60"
+          >
+            <RefreshCw size={14} className={isFetching ? "animate-spin" : ""} />
+            Refresh
+          </button>
           <button
             type="button"
             onClick={() => setShowNewCase(true)}
