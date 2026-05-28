@@ -1,3 +1,4 @@
 - [EAS iOS non-interactive auth](eas-ios-non-interactive-auth.md) — `--non-interactive` builds need 5 env vars or eas-cli silently prompts and hangs in CI.
 - [LabTrax Desktop build on Replit](labtrax-desktop-build.md) — vite+electron-builder sequence (no Wine), VITE_API_BASE_URL must bake in, electron-builder v26 schema changes.
+- [Replit proxy upload limit](replit-proxy-upload-limit.md) — single-shot multipart POSTs >~20 MB are dropped by the proxy as "Failed to fetch"; use chunked /media/upload-session instead.
 - [Replit GCS sidecar auth](replit-gcs-sidecar.md) — federated creds can't sign URLs and sidecar `/token` is POST-only; use `storageClient.authClient.getClient().getAccessToken()` to build direct GCS URLs that bypass the Replit proxy on large downloads.

@@ -14,9 +14,18 @@ import {
   reconciliations,
   transactionCategories,
   vendors,
+  vendorTypes,
 } from "@workspace/db";
 import { HttpError, ok } from "../lib/http";
 import { softDelete, softDeleteById } from "../lib/soft-delete";
+import {
+  ensureVendorTypesSeeded,
+  getBuiltinKindMap,
+  getDefaultVendorTypeId,
+  listVendorTypes,
+  resolveVendorTypeId,
+  type VendorTypeRow,
+} from "../lib/vendor-types-seed";
 import { ADMIN_ROLES, BILLING_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
@@ -1140,7 +1149,7 @@ router.get(
     );
     const vendorMap = new Map<
       string,
-      { id: string; name: string; vendorType: string }
+      { id: string; name: string; vendorType: string; vendorTypeId: string | null }
     >();
     if (vendorIds.length > 0) {
       const vendorRows = await db
@@ -1148,17 +1157,41 @@ router.get(
           id: vendors.id,
           name: vendors.name,
           vendorType: vendors.vendorType,
+          vendorTypeId: vendors.vendorTypeId,
         })
         .from(vendors)
         .where(inArray(vendors.id, vendorIds));
       for (const v of vendorRows) vendorMap.set(v.id, v);
     }
+    // Look up the per-lab type names for any vendors referenced here.
+    const typesById = new Map<string, { id: string; name: string; builtinKind: string | null }>();
+    const typeIds = Array.from(
+      new Set(
+        Array.from(vendorMap.values())
+          .map((v) => v.vendorTypeId)
+          .filter((id): id is string => !!id),
+      ),
+    );
+    if (typeIds.length > 0) {
+      const typeRows = await db
+        .select({
+          id: vendorTypes.id,
+          name: vendorTypes.name,
+          builtinKind: vendorTypes.builtinKind,
+        })
+        .from(vendorTypes)
+        .where(inArray(vendorTypes.id, typeIds));
+      for (const t of typeRows) typesById.set(t.id, t);
+    }
     const enriched = rows.map((r) => {
       const v = r.vendorId ? vendorMap.get(r.vendorId) : null;
+      const t = v?.vendorTypeId ? typesById.get(v.vendorTypeId) : null;
       return {
         ...r,
         vendorName: v?.name ?? null,
         vendorType: v?.vendorType ?? null,
+        vendorTypeId: v?.vendorTypeId ?? null,
+        vendorTypeName: t?.name ?? null,
       };
     });
     return ok(res, enriched);
@@ -2130,32 +2163,273 @@ router.get(
   }),
 );
 
-// ─── Vendors ──────────────────────────────────────────────────────────────────
+// ─── Vendor Types (per-lab customizable payee categories) ────────────────────
+//
+// Task #1188: replaces the hard-coded ["vendor","employee","item"] enum that
+// used to live on vendors.vendor_type. Each lab gets the three built-in rows
+// seeded on first call via ensureVendorTypesSeeded(), and admins can add /
+// rename / remove additional types from Lists → Payee Types.
 
-const VENDOR_TYPES = ["vendor", "employee", "item"] as const;
-type VendorType = typeof VENDOR_TYPES[number];
+// Enrich a raw vendor row with `vendorTypeName` + `builtinKind` so clients
+// can render badges and labels without a second lookup. Falls back to the
+// legacy `vendorType` text column if the FK has not been backfilled yet.
+function enrichVendor(
+  row: typeof vendors.$inferSelect,
+  typesById: Map<string, VendorTypeRow>,
+): typeof vendors.$inferSelect & {
+  vendorTypeName: string;
+  builtinKind: string | null;
+} {
+  const t = row.vendorTypeId ? typesById.get(row.vendorTypeId) : undefined;
+  return {
+    ...row,
+    vendorTypeName: t?.name ?? capitalize(row.vendorType),
+    builtinKind: t?.builtinKind ?? row.vendorType,
+  };
+}
+
+function capitalize(s: string): string {
+  if (!s) return s;
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+router.get(
+  "/vendor-types",
+  asyncHandler(async (req, res) => {
+    const { organizationId } = z
+      .object({ organizationId: z.string().min(1) })
+      .parse(req.query);
+    await requireAnyRole(uid(req), organizationId, BILLING_ROLES);
+    await ensureVendorTypesSeeded(organizationId);
+    const rows = await listVendorTypes(organizationId);
+    return ok(res, rows);
+  }),
+);
+
+const vendorTypeBodySchema = z.object({
+  organizationId: z.string().min(1).optional(),
+  name: z.string().min(1).max(80).optional(),
+});
+
+router.post(
+  "/vendor-types",
+  asyncHandler(async (req, res) => {
+    const input = vendorTypeBodySchema
+      .required({ organizationId: true, name: true })
+      .parse(req.body);
+    await requireAnyRole(uid(req), input.organizationId, BILLING_ROLES);
+    await ensureVendorTypesSeeded(input.organizationId);
+    const trimmed = input.name.trim();
+    const [dupe] = await db
+      .select({ id: vendorTypes.id })
+      .from(vendorTypes)
+      .where(
+        and(
+          eq(vendorTypes.labOrganizationId, input.organizationId),
+          sql`lower(${vendorTypes.name}) = lower(${trimmed})`,
+          sql`${vendorTypes.deletedAt} IS NULL`,
+        ),
+      )
+      .limit(1);
+    if (dupe) {
+      throw new HttpError(409, "A payee type with this name already exists.");
+    }
+    // Stick custom rows at the end of the list (max sortOrder + 1).
+    const [{ maxSort } = { maxSort: 0 }] = await db
+      .select({ maxSort: sql<number>`coalesce(max(${vendorTypes.sortOrder}), 0)` })
+      .from(vendorTypes)
+      .where(eq(vendorTypes.labOrganizationId, input.organizationId));
+    const [row] = await db
+      .insert(vendorTypes)
+      .values({
+        labOrganizationId: input.organizationId,
+        name: trimmed,
+        sortOrder: Number(maxSort) + 1,
+        isBuiltin: false,
+        builtinKind: null,
+      })
+      .returning();
+    return ok(res, row);
+  }),
+);
+
+router.patch(
+  "/vendor-types/:id",
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const input = vendorTypeBodySchema.parse(req.body);
+    const [existing] = await db
+      .select()
+      .from(vendorTypes)
+      .where(eq(vendorTypes.id, id))
+      .limit(1);
+    if (!existing || existing.deletedAt) {
+      throw new HttpError(404, "Vendor type not found");
+    }
+    await requireAnyRole(uid(req), existing.labOrganizationId, BILLING_ROLES);
+    if (input.name === undefined) return ok(res, existing);
+    const trimmed = input.name.trim();
+    const [dupe] = await db
+      .select({ id: vendorTypes.id })
+      .from(vendorTypes)
+      .where(
+        and(
+          eq(vendorTypes.labOrganizationId, existing.labOrganizationId),
+          sql`lower(${vendorTypes.name}) = lower(${trimmed})`,
+          sql`${vendorTypes.deletedAt} IS NULL`,
+          ne(vendorTypes.id, id),
+        ),
+      )
+      .limit(1);
+    if (dupe) {
+      throw new HttpError(409, "A payee type with this name already exists.");
+    }
+    const [updated] = await db
+      .update(vendorTypes)
+      .set({ name: trimmed, updatedAt: new Date() })
+      .where(eq(vendorTypes.id, id))
+      .returning();
+    return ok(res, updated);
+  }),
+);
+
+router.delete(
+  "/vendor-types/:id",
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { reassignToVendorTypeId } = z
+      .object({ reassignToVendorTypeId: z.string().min(1).optional() })
+      .parse(req.query);
+    const [existing] = await db
+      .select()
+      .from(vendorTypes)
+      .where(eq(vendorTypes.id, id))
+      .limit(1);
+    if (!existing || existing.deletedAt) {
+      throw new HttpError(404, "Vendor type not found");
+    }
+    await requireAnyRole(uid(req), existing.labOrganizationId, BILLING_ROLES);
+    if (existing.isBuiltin) {
+      throw new HttpError(400, "Built-in payee types cannot be deleted.");
+    }
+
+    // Count vendors still pointing at this type.
+    const [{ inUseCount }] = await db
+      .select({ inUseCount: sql<number>`count(*)::int` })
+      .from(vendors)
+      .where(
+        and(
+          eq(vendors.vendorTypeId, id),
+          sql`${vendors.deletedAt} IS NULL`,
+        ),
+      );
+    const used = Number(inUseCount);
+
+    if (used > 0) {
+      if (!reassignToVendorTypeId) {
+        throw new HttpError(
+          409,
+          `${used} payee${used === 1 ? "" : "s"} still use this type. ` +
+            `Provide reassignToVendorTypeId to move them before deleting.`,
+          { inUseCount: used, vendorTypeId: id },
+        );
+      }
+      const [target] = await db
+        .select({
+          id: vendorTypes.id,
+          builtinKind: vendorTypes.builtinKind,
+          labOrganizationId: vendorTypes.labOrganizationId,
+        })
+        .from(vendorTypes)
+        .where(eq(vendorTypes.id, reassignToVendorTypeId))
+        .limit(1);
+      if (
+        !target ||
+        target.labOrganizationId !== existing.labOrganizationId
+      ) {
+        throw new HttpError(
+          400,
+          "Reassignment target must be a vendor type in the same lab.",
+        );
+      }
+      await db.transaction(async (tx) => {
+        await tx
+          .update(vendors)
+          .set({
+            vendorTypeId: target.id,
+            vendorType: target.builtinKind ?? "vendor",
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(vendors.vendorTypeId, id),
+              sql`${vendors.deletedAt} IS NULL`,
+            ),
+          );
+        await tx
+          .update(vendorTypes)
+          .set({
+            deletedAt: new Date(),
+            deletedByUserId: uid(req),
+            updatedAt: new Date(),
+          })
+          .where(eq(vendorTypes.id, id));
+      });
+    } else {
+      await db
+        .update(vendorTypes)
+        .set({
+          deletedAt: new Date(),
+          deletedByUserId: uid(req),
+          updatedAt: new Date(),
+        })
+        .where(eq(vendorTypes.id, id));
+    }
+    return ok(res, { ok: true, reassigned: used });
+  }),
+);
+
+// ─── Vendors ──────────────────────────────────────────────────────────────────
 
 router.get(
   "/vendors",
   asyncHandler(async (req, res) => {
-    const { organizationId, vendorType, includeInactive } = z.object({
-      organizationId: z.string().min(1),
-      vendorType: z.enum(VENDOR_TYPES).optional(),
-      includeInactive: z.enum(["true", "false"]).transform((v) => v === "true").optional(),
-    }).parse(req.query);
+    const { organizationId, vendorType, vendorTypeId, includeInactive } = z
+      .object({
+        organizationId: z.string().min(1),
+        // Legacy kind filter — still accepted; maps to a builtin row id.
+        vendorType: z.string().optional(),
+        vendorTypeId: z.string().optional(),
+        includeInactive: z
+          .enum(["true", "false"])
+          .transform((v) => v === "true")
+          .optional(),
+      })
+      .parse(req.query);
     await requireAnyRole(uid(req), organizationId, BILLING_ROLES);
+    await ensureVendorTypesSeeded(organizationId);
+    const types = await listVendorTypes(organizationId);
+    const typesById = new Map(types.map((t) => [t.id, t]));
+
     const conditions = [
       eq(vendors.labOrganizationId, organizationId),
       sql`${vendors.deletedAt} IS NULL`,
     ];
-    if (vendorType) conditions.push(eq(vendors.vendorType, vendorType));
+    if (vendorTypeId) {
+      conditions.push(eq(vendors.vendorTypeId, vendorTypeId));
+    } else if (vendorType) {
+      // Legacy filter: resolve to the builtin row id for this lab.
+      const match = types.find((t) => t.builtinKind === vendorType);
+      if (match) conditions.push(eq(vendors.vendorTypeId, match.id));
+      else conditions.push(eq(vendors.vendorType, vendorType));
+    }
     if (!includeInactive) conditions.push(eq(vendors.isActive, true));
     const rows = await db
       .select()
       .from(vendors)
       .where(and(...conditions))
       .orderBy(asc(vendors.name));
-    return ok(res, rows);
+    return ok(res, rows.map((r) => enrichVendor(r, typesById)));
   }),
 );
 
@@ -2170,7 +2444,8 @@ const vendorBodySchema = z.object({
   email: z.string().max(200).nullable().optional(),
   website: z.string().max(500).nullable().optional(),
   notes: z.string().max(2000).nullable().optional(),
-  vendorType: z.enum(VENDOR_TYPES).optional(),
+  vendorType: z.string().optional(),
+  vendorTypeId: z.string().optional(),
   isActive: z.boolean().optional(),
 });
 
@@ -2179,6 +2454,7 @@ router.post(
   asyncHandler(async (req, res) => {
     const input = vendorBodySchema.required({ organizationId: true, name: true }).parse(req.body);
     await requireAnyRole(uid(req), input.organizationId, BILLING_ROLES);
+    await ensureVendorTypesSeeded(input.organizationId);
     const trimmedName = input.name.trim();
     const [dupe] = await db
       .select({ id: vendors.id })
@@ -2192,6 +2468,17 @@ router.post(
       )
       .limit(1);
     if (dupe) throw new HttpError(409, "A payee with this name already exists in this lab.");
+    const resolved = await resolveVendorTypeId(input.organizationId, {
+      vendorTypeId: input.vendorTypeId,
+      vendorType: input.vendorType,
+    });
+    let typeId = resolved?.id;
+    let kind = resolved?.builtinKind ?? input.vendorType ?? "vendor";
+    if (!typeId) {
+      // No type provided — fall back to the lab's "Vendor" builtin.
+      typeId = await getDefaultVendorTypeId(input.organizationId);
+      kind = "vendor";
+    }
     const [row] = await db
       .insert(vendors)
       .values({
@@ -2205,11 +2492,14 @@ router.post(
         email: input.email ?? null,
         website: input.website ?? null,
         notes: input.notes ?? null,
-        vendorType: input.vendorType ?? "vendor",
+        vendorType: kind ?? "vendor",
+        vendorTypeId: typeId,
         isActive: input.isActive ?? true,
       })
       .returning();
-    return ok(res, row);
+    const types = await listVendorTypes(input.organizationId);
+    const typesById = new Map(types.map((t) => [t.id, t]));
+    return ok(res, enrichVendor(row, typesById));
   }),
 );
 
@@ -2228,9 +2518,16 @@ const importRecordSchema = z.object({
 
 async function importVendorRecords(
   organizationId: string,
-  vendorType: VendorType,
+  builtinKind: "vendor" | "employee" | "item",
   records: z.infer<typeof importRecordSchema>[]
 ): Promise<{ imported: number; skipped: number; skippedSameType: number; skippedCrossType: number }> {
+  await ensureVendorTypesSeeded(organizationId);
+  const kindMap = await getBuiltinKindMap(organizationId);
+  const vendorTypeId = kindMap.get(builtinKind);
+  if (!vendorTypeId) {
+    throw new HttpError(500, `Built-in vendor type "${builtinKind}" missing for lab`);
+  }
+
   const allExisting = await db
     .select({ name: vendors.name, vendorType: vendors.vendorType })
     .from(vendors)
@@ -2244,12 +2541,12 @@ async function importVendorRecords(
 
   const sameTypeNames = new Set(
     allExisting
-      .filter((r) => r.vendorType === vendorType)
+      .filter((r) => r.vendorType === builtinKind)
       .map((r) => r.name.toLowerCase())
   );
   const crossTypeNames = new Set(
     allExisting
-      .filter((r) => r.vendorType !== vendorType)
+      .filter((r) => r.vendorType !== builtinKind)
       .map((r) => r.name.toLowerCase())
   );
 
@@ -2296,8 +2593,9 @@ async function importVendorRecords(
         email: r.email ?? null,
         website: r.website ?? null,
         notes: r.notes ?? null,
-        unitPrice: vendorType === "item" ? normalizePrice(r.unitPrice) : null,
-        vendorType,
+        unitPrice: builtinKind === "item" ? normalizePrice(r.unitPrice) : null,
+        vendorType: builtinKind,
+        vendorTypeId,
         isActive: true,
       }))
     )
@@ -2457,14 +2755,27 @@ router.patch(
     if (input.email !== undefined) updates.email = input.email;
     if (input.website !== undefined) updates.website = input.website;
     if (input.notes !== undefined) updates.notes = input.notes;
-    if (input.vendorType !== undefined) updates.vendorType = input.vendorType;
+    if (input.vendorTypeId !== undefined || input.vendorType !== undefined) {
+      await ensureVendorTypesSeeded(existing.labOrganizationId);
+      const resolved = await resolveVendorTypeId(
+        existing.labOrganizationId,
+        { vendorTypeId: input.vendorTypeId, vendorType: input.vendorType },
+      );
+      if (!resolved) {
+        throw new HttpError(400, "Unknown vendor type for this lab.");
+      }
+      updates.vendorTypeId = resolved.id;
+      updates.vendorType = resolved.builtinKind ?? "vendor";
+    }
     if (input.isActive !== undefined) updates.isActive = input.isActive;
     const [updated] = await db
       .update(vendors)
       .set(updates)
       .where(eq(vendors.id, vendorId))
       .returning();
-    return ok(res, updated);
+    const types = await listVendorTypes(existing.labOrganizationId);
+    const typesById = new Map(types.map((t) => [t.id, t]));
+    return ok(res, enrichVendor(updated, typesById));
   }),
 );
 

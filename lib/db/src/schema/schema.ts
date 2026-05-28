@@ -1785,14 +1785,72 @@ export const vendors = pgTable(
     website: text("website"),
     notes: text("notes"),
     unitPrice: decimal("unit_price", { precision: 10, scale: 2 }),
-    vendorType: text("vendor_type", { enum: ["vendor", "employee", "item"] }).notNull().default("vendor"),
+    // Legacy: kept for back-compat / migration period. New code reads
+    // `vendorTypeId` which points at a per-lab row in `vendor_types`.
+    // For builtin types this still mirrors `builtin_kind`; for custom
+    // user-created types it defaults to "vendor" so old enum-based
+    // queries don't 500.
+    vendorType: text("vendor_type").notNull().default("vendor"),
+    // FK into per-lab vendor_types. Nullable for newly-created rows
+    // before the per-lab seeding helper has run (ensureVendorTypesSeeded
+    // backfills this on first finance call).
+    vendorTypeId: varchar("vendor_type_id").references(
+      (): AnyPgColumn => vendorTypes.id,
+      { onDelete: "restrict" },
+    ),
     isActive: boolean("is_active").default(true).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    deletedByUserId: varchar("deleted_by_user_id"),
   },
   (table) => ({
     vendorLabIdx: index("vendors_lab_idx").on(table.labOrganizationId),
+    vendorTypeIdx: index("vendors_vendor_type_idx").on(table.vendorTypeId),
+  })
+);
+
+/**
+ * Per-lab customizable payee types. Replaces the previous hard-coded
+ * `["vendor","employee","item"]` enum on `vendors.vendor_type`. Each lab
+ * gets the three built-in types seeded on first access (rows with
+ * `is_builtin=true` and `builtin_kind` set), and admins can add/rename/
+ * remove additional types from the Lists page.
+ *
+ * Soft-deleted (deleted_at) when removed by an admin so historical
+ * vendor.vendor_type_id references remain valid. The CRUD endpoint
+ * blocks deletion when any active vendor still points at the type
+ * unless the caller specifies a reassignment target.
+ */
+export const vendorTypes = pgTable(
+  "vendor_types",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    labOrganizationId: varchar("lab_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    sortOrder: integer("sort_order").default(0).notNull(),
+    isBuiltin: boolean("is_builtin").default(false).notNull(),
+    // For builtin rows, one of "vendor" | "employee" | "item". Null for
+    // user-created types. Lets the API map legacy `vendorType` string
+    // arguments and import endpoints back to the seeded row.
+    builtinKind: text("builtin_kind"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    deletedByUserId: varchar("deleted_by_user_id"),
+  },
+  (table) => ({
+    labIdx: index("vendor_types_lab_idx").on(table.labOrganizationId),
+    labNameUnique: uniqueIndex("vendor_types_lab_name_unique")
+      .on(table.labOrganizationId, sql`lower(${table.name})`)
+      .where(sql`${table.deletedAt} IS NULL`),
+    labBuiltinKindUnique: uniqueIndex("vendor_types_lab_builtin_kind_unique")
+      .on(table.labOrganizationId, table.builtinKind)
+      .where(sql`${table.builtinKind} IS NOT NULL AND ${table.deletedAt} IS NULL`),
   })
 );
 
