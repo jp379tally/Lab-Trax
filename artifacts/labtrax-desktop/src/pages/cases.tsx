@@ -2033,7 +2033,10 @@ export function CaseDrawer({
   const [activeTab, setActiveTab] = useState<CaseTab>("lab-slip");
   const [historySortOrder, setHistorySortOrder] = useState<"asc" | "desc">("asc");
   const [viewingInvoice, setViewingInvoice] = useState<Invoice | null>(null);
-  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [lightbox, setLightbox] = useState<
+    { url: string; kind: "image" | "video"; mimeType?: string } | null
+  >(null);
+  const setLightboxUrl = (url: string | null) => setLightbox(url ? { url, kind: "image" } : null);
   const [confirmDeleteCase, setConfirmDeleteCase] = useState(false);
   const [showPrintLayoutEditor, setShowPrintLayoutEditor] = useState(false);
   const [printLayout, setPrintLayout] = useState<PrintLayoutConfig>(() => loadPrintLayoutConfig());
@@ -4401,7 +4404,11 @@ export function CaseDrawer({
               )}
               {(() => {
                 const images = data?.attachments?.filter((a) => (a.fileType || "").startsWith("image/")) ?? [];
-                const others = data?.attachments?.filter((a) => !(a.fileType || "").startsWith("image/")) ?? [];
+                const videos = data?.attachments?.filter((a) => (a.fileType || "").startsWith("video/")) ?? [];
+                const others = data?.attachments?.filter((a) => {
+                  const t = a.fileType || "";
+                  return !t.startsWith("image/") && !t.startsWith("video/");
+                }) ?? [];
                 return (
                   <>
                     {images.length > 0 && (
@@ -4433,6 +4440,22 @@ export function CaseDrawer({
                             caseId={labCase.id}
                             attachment={a}
                             canManage={!!data?.viewerCanManageAttachments}
+                          />
+                        ))}
+                      </div>
+                    )}
+                    {videos.length > 0 && (
+                      <div className="space-y-2">
+                        <p className="text-[11px] text-muted-foreground font-medium">
+                          Videos ({videos.length})
+                        </p>
+                        {videos.map((a) => (
+                          <AttachmentRow
+                            key={a.id}
+                            caseId={labCase.id}
+                            attachment={a}
+                            canManage={!!data?.viewerCanManageAttachments}
+                            onVideoClick={(url, mimeType) => setLightbox({ url, kind: "video", mimeType })}
                           />
                         ))}
                       </div>
@@ -4744,8 +4767,10 @@ export function CaseDrawer({
                                   {formatDateTime(e.occurredAt || e.createdAt)}
                                 </span>
                               </div>
-                              {e.actorInitials && (
-                                <div className="text-xs text-muted-foreground mt-0.5">{e.actorInitials}</div>
+                              {(e.actorInitials || (metadata.user as string | undefined)) && (
+                                <div className="text-xs text-muted-foreground mt-0.5">
+                                  {e.actorInitials || String(metadata.user)}
+                                </div>
                               )}
                               {isStatus && (e.metadataJson as any)?.fromStatus && (e.metadataJson as any)?.toStatus && (
                                 <div className="flex items-center gap-1.5 mt-1">
@@ -4761,29 +4786,73 @@ export function CaseDrawer({
                                     : "Shared with provider"}
                                 </div>
                               )}
-                              {isAttachment && metadata.attachmentId && (
-                                <div className="mt-1.5">
-                                  {metadata.fileType && String(metadata.fileType).startsWith("image/") ? (
-                                    <button
-                                      type="button"
-                                      onClick={() => setLightboxUrl(
-                                        `${getApiOrigin()}/api/cases/${labCase.id}/attachments/${String(metadata.attachmentId)}/file`
-                                      )}
-                                      className="block group"
-                                      title={`View ${metadata.fileName ?? "image"}`}
-                                    >
-                                      <img
-                                        src={`${getApiOrigin()}/api/cases/${labCase.id}/attachments/${String(metadata.attachmentId)}/file`}
-                                        alt={String(metadata.fileName ?? "attachment")}
-                                        className="w-16 h-16 object-cover rounded-md border border-border group-hover:border-primary/50 transition-colors"
-                                        onError={(ev) => { (ev.target as HTMLImageElement).style.display = "none"; }}
-                                      />
-                                    </button>
-                                  ) : (
-                                    <span className="text-xs text-muted-foreground">{String(metadata.fileName ?? "")}</span>
-                                  )}
+                              {isNote && (metadata.noteText || metadata.description) && (
+                                <div className="mt-1.5 text-sm bg-secondary/50 border border-border rounded-md px-3 py-2 whitespace-pre-wrap break-words">
+                                  {String(metadata.noteText ?? metadata.description)}
                                 </div>
                               )}
+                              {isAttachment && (() => {
+                                const fileType = String(metadata.fileType ?? "");
+                                const mediaKind = String(metadata.mediaKind ?? "");
+                                const isImg = fileType.startsWith("image/") || mediaKind === "photo";
+                                const isVid = fileType.startsWith("video/") || mediaKind === "video";
+                                // Prefer the legacy/mobile imageUri (works without auth headers,
+                                // including data: URIs) when present. Fall back to the canonical
+                                // /file route for desktop-created attachments.
+                                const directSrc = metadata.imageUri ? String(metadata.imageUri) : null;
+                                const apiSrc = metadata.attachmentId
+                                  ? `${getApiOrigin()}/api/cases/${labCase.id}/attachments/${String(metadata.attachmentId)}/file`
+                                  : null;
+                                const src = directSrc || apiSrc;
+                                if (!src) {
+                                  return metadata.fileName ? (
+                                    <div className="mt-1.5">
+                                      <span className="text-xs text-muted-foreground">{String(metadata.fileName)}</span>
+                                    </div>
+                                  ) : null;
+                                }
+                                const mime = fileType || (isVid ? "video/mp4" : isImg ? "image/jpeg" : undefined);
+                                return (
+                                  <div className="mt-1.5">
+                                    {isImg ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => setLightbox({ url: src, kind: "image" })}
+                                        className="block group"
+                                        title={`View ${metadata.fileName ?? "image"}`}
+                                      >
+                                        <img
+                                          src={src}
+                                          alt={String(metadata.fileName ?? "attachment")}
+                                          className="w-20 h-20 object-cover rounded-md border border-border group-hover:border-primary/50 transition-colors"
+                                          onError={(ev) => { (ev.target as HTMLImageElement).style.display = "none"; }}
+                                        />
+                                      </button>
+                                    ) : isVid ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => setLightbox({ url: src, kind: "video", mimeType: mime })}
+                                        className="block group relative"
+                                        title={`Play ${metadata.fileName ?? "video"}`}
+                                      >
+                                        <video
+                                          src={src}
+                                          className="w-20 h-20 object-cover rounded-md border border-border group-hover:border-primary/50 transition-colors bg-black"
+                                          muted
+                                          playsInline
+                                          preload="metadata"
+                                          onError={(ev) => { (ev.target as HTMLVideoElement).style.display = "none"; }}
+                                        />
+                                        <span className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                          <span className="h-7 w-7 rounded-full bg-black/60 text-white flex items-center justify-center text-[10px] font-bold">▶</span>
+                                        </span>
+                                      </button>
+                                    ) : (
+                                      <span className="text-xs text-muted-foreground">{String(metadata.fileName ?? "")}</span>
+                                    )}
+                                  </div>
+                                );
+                              })()}
                               {eventType === "remade_by" && metadata.remakeCaseId && (
                                 <div className="mt-1">
                                   <button
@@ -4808,25 +4877,37 @@ export function CaseDrawer({
         </div>
       </aside>
 
-      {/* Image lightbox */}
-      {lightboxUrl && (
+      {/* Image / Video lightbox */}
+      {lightbox && (
         <div
           className="fixed inset-0 z-[60] bg-black/90 flex items-center justify-center"
-          onClick={() => setLightboxUrl(null)}
+          onClick={() => setLightbox(null)}
         >
           <button
             type="button"
-            onClick={() => setLightboxUrl(null)}
+            onClick={() => setLightbox(null)}
             className="absolute top-4 right-4 h-10 w-10 rounded-full bg-white/10 text-white flex items-center justify-center hover:bg-white/20 transition-colors"
           >
             <X size={20} />
           </button>
-          <img
-            src={lightboxUrl}
-            alt="Preview"
-            className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg"
-            onClick={(e) => e.stopPropagation()}
-          />
+          {lightbox.kind === "video" ? (
+            <video
+              src={lightbox.url}
+              controls
+              autoPlay
+              className="max-w-[90vw] max-h-[90vh] rounded-lg bg-black"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {lightbox.mimeType && <source src={lightbox.url} type={lightbox.mimeType} />}
+            </video>
+          ) : (
+            <img
+              src={lightbox.url}
+              alt="Preview"
+              className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg"
+              onClick={(e) => e.stopPropagation()}
+            />
+          )}
         </div>
       )}
 
@@ -5354,11 +5435,13 @@ function AttachmentRow({
   attachment,
   canManage,
   onImageClick,
+  onVideoClick,
 }: {
   caseId: string;
   attachment: CaseAttachment;
   canManage: boolean;
   onImageClick?: (url: string) => void;
+  onVideoClick?: (url: string, mimeType?: string) => void;
 }) {
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [scanViewerOpen, setScanViewerOpen] = useState(false);
@@ -5395,6 +5478,7 @@ function AttachmentRow({
   });
 
   const isImage = (attachment.fileType || "").startsWith("image/");
+  const isVideo = (attachment.fileType || "").startsWith("video/");
 
   const SCAN_MIME_TYPES = new Set(["model/stl", "model/obj", "model/ply", "application/sla"]);
   const SCAN_EXTENSIONS = new Set([".stl", ".obj", ".ply", ".dcm", ".3ds", ".dae"]);
@@ -5445,6 +5529,10 @@ function AttachmentRow({
     }
     if (isImage && onImageClick && href) {
       onImageClick(href);
+      return;
+    }
+    if (isVideo && onVideoClick && href) {
+      onVideoClick(href, attachment.fileType || "video/mp4");
       return;
     }
     if (isPreviewing) return;
@@ -5546,6 +5634,15 @@ function AttachmentRow({
             onClick={() => onImageClick(href)}
             className="flex items-start gap-3 flex-1 min-w-0 -mx-1 -my-0.5 px-1 py-0.5 rounded hover:bg-secondary/60 transition-colors cursor-pointer text-left"
             title={`View "${attachment.fileName}"`}
+          >
+            {rowBody}
+          </button>
+        ) : isVideo && onVideoClick ? (
+          <button
+            type="button"
+            onClick={() => onVideoClick(href, attachment.fileType || "video/mp4")}
+            className="flex items-start gap-3 flex-1 min-w-0 -mx-1 -my-0.5 px-1 py-0.5 rounded hover:bg-secondary/60 transition-colors cursor-pointer text-left"
+            title={`Play "${attachment.fileName}"`}
           >
             {rowBody}
           </button>

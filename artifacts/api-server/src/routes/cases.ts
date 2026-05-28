@@ -636,6 +636,7 @@ async function tryProjectLegacyCaseForDesktop(
       Number.isFinite(occurredMs) ? occurredMs : createdMs,
     ).toISOString();
     let eventType: string;
+    let mediaKind: "photo" | "video" | "document" | null = null;
     switch (e.type) {
       case "created":
         eventType = "created";
@@ -645,9 +646,15 @@ async function tryProjectLegacyCaseForDesktop(
         break;
       case "photo":
         eventType = "attachment_added";
+        mediaKind = "photo";
+        break;
+      case "video":
+        eventType = "attachment_added";
+        mediaKind = "video";
         break;
       case "document":
         eventType = "attachment_added";
+        mediaKind = "document";
         break;
       case "note":
         eventType = "note_added";
@@ -656,13 +663,31 @@ async function tryProjectLegacyCaseForDesktop(
         eventType = String(e.type ?? "event");
     }
     const metadata: Record<string, unknown> = {};
-    if (e.description) metadata.description = e.description;
+    if (e.description) {
+      metadata.description = e.description;
+      if (eventType === "note_added") metadata.noteText = e.description;
+    }
     if (e.station) {
       metadata.toStatus =
         MOBILE_TO_DESKTOP_STATUS[String(e.station).toUpperCase()] ?? e.station;
       metadata.mobileStation = e.station;
     }
     if (e.user) metadata.user = e.user;
+    if (mediaKind) metadata.mediaKind = mediaKind;
+    // imageUri/fileName/fileType are written by the mobile addPhoto/addVideo/
+    // addDocument flows. Surface them so the desktop History tab can render
+    // an inline preview without round-tripping through the canonical
+    // /:caseId/attachments/:attachmentId/file route (which doesn't know
+    // about projected legacy attachment ids).
+    if (typeof e.imageUri === "string" && e.imageUri) metadata.imageUri = e.imageUri;
+    if (typeof e.fileName === "string" && e.fileName) metadata.fileName = e.fileName;
+    if (typeof e.fileType === "string" && e.fileType) {
+      metadata.fileType = e.fileType;
+    } else if (mediaKind === "photo") {
+      metadata.fileType = "image/jpeg";
+    } else if (mediaKind === "video") {
+      metadata.fileType = "video/mp4";
+    }
     events.push({
       id: String(e.id ?? `legacy-evt-${legacyRow.id}-${occurredMs}`),
       caseId: legacyRow.id,
@@ -3391,7 +3416,11 @@ router.post(
       actorUserId: (req as any).auth.userId,
       actorOrganizationId: authorOrgId,
       actorInitials: user?.initials || "SYS",
-      metadataJson: { visibility: input.visibility, noteId: note.id },
+      metadataJson: {
+        visibility: input.visibility,
+        noteId: note.id,
+        noteText: input.noteText,
+      },
     });
 
     return ok(res, note, 201);
