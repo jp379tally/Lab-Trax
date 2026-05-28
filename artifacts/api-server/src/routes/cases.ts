@@ -4496,6 +4496,31 @@ async function generateIteroCaseNumber(
   return `${year}-${next}`;
 }
 
+// `case_number` carries a GLOBAL unique constraint and is generated as
+// `max(case_number) + 1`, so two concurrent imports (multiple poller orders, or
+// parallel test forks sharing one DB) can read the same max and collide on
+// INSERT. Detect that specific duplicate-key error so the caller can regenerate
+// the number and retry instead of surfacing a 500.
+function isCaseNumberUniqueViolation(err: unknown): boolean {
+  const seen = new Set<unknown>();
+  let cur: unknown = err;
+  while (cur != null && typeof cur === "object" && !seen.has(cur)) {
+    seen.add(cur);
+    const e = cur as { code?: unknown; constraint?: unknown; message?: unknown; cause?: unknown };
+    const code = e.code;
+    const constraint = typeof e.constraint === "string" ? e.constraint : "";
+    const message = typeof e.message === "string" ? e.message : "";
+    if (
+      code === "23505" &&
+      (constraint.includes("case_number") || message.includes("case_number"))
+    ) {
+      return true;
+    }
+    cur = e.cause;
+  }
+  return false;
+}
+
 interface ExtractedRxFields {
   doctorName?: string | null;
   patientFirstName?: string | null;
@@ -4855,8 +4880,6 @@ router.post(
       if (!Number.isNaN(parsed.getTime())) dueDate = parsed;
     }
 
-    const caseNumber = await generateIteroCaseNumber(body.labOrganizationId);
-
     // Resolve any AI-derived restoration rows BEFORE the transaction so the
     // pricing lookups don't hold open the dedup-claim transaction.
     const teethList = (extracted.teeth || "")
@@ -4919,7 +4942,8 @@ router.post(
     // Postgres rolls back the dedup-claim row too, freeing the iTero order
     // for retry on the next poll cycle. The only success path commits the
     // claim with createdCaseId set, so future requests see the existing case.
-    const txResult = await db.transaction(async (tx) => {
+    const runImportTx = (caseNumber: string) =>
+      db.transaction(async (tx) => {
       const [claim] = await tx
         .insert(iteroImportedOrders)
         .values({
@@ -5185,6 +5209,29 @@ router.post(
 
       return { kind: "created" as const, createdCase, attachment, autoInvoiceId };
     });
+
+    // Generate the case number INSIDE a retry loop: it is `max + 1` against a
+    // globally-unique column, so a concurrent import can claim the same number
+    // between our read and INSERT. On that specific collision we regenerate and
+    // retry rather than 500 the caller.
+    const MAX_CASE_NUMBER_ATTEMPTS = 5;
+    let txResult: Awaited<ReturnType<typeof runImportTx>>;
+    for (let attempt = 1; ; attempt++) {
+      const caseNumber = await generateIteroCaseNumber(body.labOrganizationId);
+      try {
+        txResult = await runImportTx(caseNumber);
+        break;
+      } catch (err) {
+        if (isCaseNumberUniqueViolation(err) && attempt < MAX_CASE_NUMBER_ATTEMPTS) {
+          req.log?.warn?.(
+            { attempt, err: (err as Error)?.message },
+            "iTero import: case number collision; regenerating and retrying"
+          );
+          continue;
+        }
+        throw err;
+      }
+    }
 
     if (txResult.kind === "deduped") {
       try {

@@ -58,6 +58,14 @@ maybe("Cases AI reader endpoints (db integration)", () => {
 
   const tokens = { admin: "", outsider: "" };
 
+  // The itero-import tests exercise the documented "no-AI stub path" (case is
+  // created with needsAiReview:true regardless of AI). When AI_INTEGRATIONS_
+  // OPENAI_API_KEY is present (as it is in Replit envs), the route makes a live
+  // AI call against the fake test PDF whose non-deterministic output can break a
+  // downstream step and surface as a 500. Force the key off for this fork so the
+  // stub path runs deterministically; restore it in afterAll.
+  let savedOpenAIKey: string | undefined;
+
   async function makeSession(userId: string): Promise<string> {
     const { db, userSessions } = dbMod as any;
     const sessionId = rid("sess");
@@ -82,6 +90,8 @@ maybe("Cases AI reader endpoints (db integration)", () => {
 
     process.env["JWT_SECRET"] =
       process.env["JWT_SECRET"] ?? "labtrax-test-secret-ai-reader";
+    savedOpenAIKey = process.env["AI_INTEGRATIONS_OPENAI_API_KEY"];
+    delete process.env["AI_INTEGRATIONS_OPENAI_API_KEY"];
     dbMod = await import("@workspace/db");
     appMod = await import("../app.js");
     auth = await import("../lib/auth.js");
@@ -113,6 +123,9 @@ maybe("Cases AI reader endpoints (db integration)", () => {
   });
 
   afterAll(async () => {
+    if (savedOpenAIKey !== undefined) {
+      process.env["AI_INTEGRATIONS_OPENAI_API_KEY"] = savedOpenAIKey;
+    }
     if (!SHOULD_RUN) return;
     const {
       db,

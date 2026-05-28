@@ -20,6 +20,17 @@
   - Keep individual entries concise — one bullet point per change.
 -->
 
+## v1.0.1
+
+- Added an in-app signup flow so new labs can create an account from the desktop client.
+- New Check-for-updates UI with auto-release support: see when an update is available, downloading, or ready, and restart to install.
+- Added admin PIN entry as an alternative to the full platform-admin secret.
+- Added a Lab Slip tab for printing case slips.
+- Added a manual refresh control to pull the latest cases on demand.
+- More graceful handling of network drops with clearer error messaging.
+- Refreshed branding and application icon.
+- Added desktop push notifications for new messages.
+
 ## v1.0.0
 
 - Initial release of LabTrax Desktop for Windows and macOS.

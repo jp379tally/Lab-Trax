@@ -27,6 +27,10 @@ import {
   deleteDesktopInstaller,
   getDesktopInstallerMetadata,
 } from "./lib/desktop-installer-storage.js";
+import {
+  acquireInstallerE2ELock,
+  releaseInstallerE2ELock,
+} from "./installer-e2e-lock.js";
 
 const SUITE_ENABLED =
   Boolean(process.env.PRIVATE_OBJECT_DIR) && Boolean(process.env.PLATFORM_ADMIN_SECRET);
@@ -40,7 +44,9 @@ const DUMMY_EXE = (() => {
   return buf;
 })();
 
-const TEST_VERSION = "999.0.0-publish-e2e";
+// Must be strict X.Y.Z — validateInstallerVersion() rejects pre-release
+// suffixes. 999.0.0 is an obvious, collision-free test sentinel.
+const TEST_VERSION = "999.0.0";
 
 // In-memory stand-ins for the system_settings rows the endpoint writes, so we
 // can assert atomicity without touching the real Postgres. The mocked db
@@ -83,32 +89,24 @@ vi.mock("@workspace/db", () => {
   const installerUploads = { id: "id" } as const;
   const users = { id: "id", email: "email", role: "role" } as const;
 
-  const insertImpl = (table: any) => ({
-    values: (vals: any) => ({
-      onConflictDoUpdate: ({ set }: any) => {
-        if (table === systemSettings) {
-          settingsRows.set(vals.key, vals.value);
-        }
-        return Promise.resolve();
-      },
-    }),
-  });
-
-  // Variant of insert without onConflictDoUpdate (for changelog/uploads).
-  const insertPlain = (table: any) => ({
+  // Single insert mock that supports BOTH call shapes the route uses:
+  //   - db.insert(systemSettings).values(...).onConflictDoUpdate(...)  (upsert)
+  //   - db.insert(installerChangelog).values(...)                       (plain await)
+  // `.values()` records the row immediately and returns a thenable that also
+  // carries `.onConflictDoUpdate()` for the settings upsert path.
+  const insertWrap = (table: any) => ({
     values: (vals: any) => {
       if (table === installerChangelog) changelogRows.push(vals);
       if (table === installerUploads) uploadsRows.push(vals);
       if (table === systemSettings) settingsRows.set(vals.key, vals.value);
-      return Promise.resolve();
+      const result: any = Promise.resolve();
+      result.onConflictDoUpdate = (_args: any) => {
+        if (table === systemSettings) settingsRows.set(vals.key, vals.value);
+        return Promise.resolve();
+      };
+      return result;
     },
   });
-
-  const insertWrap = (table: any) => {
-    const base = insertImpl(table);
-    const plain = insertPlain(table);
-    return Object.assign(plain, base);
-  };
 
   return {
     db: {
@@ -126,6 +124,8 @@ vi.mock("@workspace/db", () => {
     labCases: {}, labPendingFiles: {}, labPendingFileNoteEdits: {}, organizations: {},
     organizationMemberships: {}, cases: {}, caseAttachments: {}, caseEvents: {},
     mediaCleanupRuns: {}, subscriptions: {}, backupRuns: {}, rxPracticeNameAliases: {},
+    invoices: {}, invoiceAttachments: {}, bankTransactions: {}, pricingTiers: {},
+    pricingOverrides: {}, vendorTypes: {},
   };
 });
 
@@ -182,6 +182,7 @@ describe.skipIf(!SUITE_ENABLED)("POST /admin/desktop-installer/publish (atomic)"
   let snapshot: Buffer | null = null;
 
   beforeAll(async () => {
+    await acquireInstallerE2ELock();
     const existing = await getDesktopInstallerMetadata("exe");
     if (existing) {
       const stream = await openDesktopInstallerStream("exe");
@@ -204,6 +205,7 @@ describe.skipIf(!SUITE_ENABLED)("POST /admin/desktop-installer/publish (atomic)"
       await deleteDesktopInstaller("exe");
     }
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    await releaseInstallerE2ELock();
   });
 
   it("atomically uploads to App Storage AND writes system_settings + changelog", async () => {

@@ -45,6 +45,10 @@ import {
   uploadDesktopInstaller,
   deleteDesktopInstaller,
 } from "./lib/desktop-installer-storage.js";
+import {
+  acquireInstallerE2ELock,
+  releaseInstallerE2ELock,
+} from "./installer-e2e-lock.js";
 
 // ---------------------------------------------------------------------------
 // Guards — skip when credentials needed by the test are absent.
@@ -170,6 +174,8 @@ vi.mock("@workspace/db", () => {
     // Billing / subscriptions
     subscriptions: T,
     subscriptionEvents: T,
+    // Vendor types (referenced transitively by lib/soft-delete)
+    vendorTypes: T,
     // Audit / misc
     auditLogs: T,
     mediaCleanupRuns: T,
@@ -281,6 +287,7 @@ describe.skipIf(!SUITE_ENABLED)(
     let preTestExeSnapshot: Buffer | null = null;
 
     beforeAll(async () => {
+      await acquireInstallerE2ELock();
       // --- Snapshot the existing EXE installer before the test overwrites it ---
       // openDesktopInstallerStream is the real (un-mocked) storage client, so
       // this reads whatever is currently in App Storage for the "exe" slot.
@@ -341,6 +348,7 @@ describe.skipIf(!SUITE_ENABLED)(
           `[storage-e2e] afterAll: failed to restore pre-test installer state: ${err}\n`,
         );
       }
+      await releaseInstallerE2ELock();
     });
 
     it("uploads a dummy .exe via POST /api/admin/desktop-installer/upload and downloads it back via GET /downloads/LabTrax-Setup.exe with correct headers and body", async () => {
@@ -371,8 +379,15 @@ describe.skipIf(!SUITE_ENABLED)(
       // --- Download via the REAL serveInstaller() in app.ts ---
       // Calls getDesktopInstallerHandle() and openDesktopInstallerStream()
       // from desktop-installer-storage.ts — no mocks in the download path.
+      //
+      // For full (non-range) GET requests the handler now redirects (302) the
+      // browser straight to a short-lived GCS URL (signed or sidecar-token),
+      // bypassing the Replit reverse proxy which drops large transfers. If
+      // signing/token URLs are unavailable it falls back to streaming the bytes
+      // back through the server (200). Accept either outcome.
       const downloadRes = await request(server)
         .get("/downloads/LabTrax-Setup.exe")
+        .redirects(0)
         .buffer(true)
         .parse((res, cb) => {
           const chunks: Buffer[] = [];
@@ -381,31 +396,48 @@ describe.skipIf(!SUITE_ENABLED)(
         });
 
       expect(
-        downloadRes.status,
-        `Download failed (${downloadRes.status}): ${JSON.stringify(downloadRes.body)}`,
-      ).toBe(200);
+        [200, 302],
+        `Unexpected download status ${downloadRes.status}: ${JSON.stringify(downloadRes.body)}`,
+      ).toContain(downloadRes.status);
 
-      // Content-Type must identify a Windows PE executable.
-      expect(downloadRes.headers["content-type"]).toMatch(
-        /application\/vnd\.microsoft\.portable-executable|application\/octet-stream/,
-      );
+      if (downloadRes.status === 302) {
+        // Redirect path: Location must point at a direct GCS https URL.
+        const location = downloadRes.headers["location"] as string;
+        expect(typeof location).toBe("string");
+        expect(location).toMatch(/^https:\/\/storage\.googleapis\.com\//);
 
-      // Content-Disposition must name the correct file.
-      expect(downloadRes.headers["content-disposition"]).toContain("LabTrax-Setup.exe");
+        // Follow the redirect ourselves and confirm the bytes round-trip.
+        const gcsRes = await fetch(location);
+        expect(
+          gcsRes.status,
+          `GCS fetch failed (${gcsRes.status})`,
+        ).toBe(200);
+        const gcsBytes = Buffer.from(await gcsRes.arrayBuffer());
+        expect(gcsBytes).toEqual(DUMMY_EXE);
+      } else {
+        // Streaming fallback path: bytes come back through the server.
+        // Content-Type must identify a Windows PE executable.
+        expect(downloadRes.headers["content-type"]).toMatch(
+          /application\/vnd\.microsoft\.portable-executable|application\/octet-stream/,
+        );
 
-      // Content-Length must match the uploaded file size exactly.
-      expect(downloadRes.headers["content-length"]).toBe(String(DUMMY_EXE.length));
+        // Content-Disposition must name the correct file.
+        expect(downloadRes.headers["content-disposition"]).toContain("LabTrax-Setup.exe");
 
-      // Body bytes must be exactly what was uploaded.
-      const body = downloadRes.body as Buffer;
-      expect(body).toEqual(DUMMY_EXE);
+        // Content-Length must match the uploaded file size exactly.
+        expect(downloadRes.headers["content-length"]).toBe(String(DUMMY_EXE.length));
 
-      // ETag must be present (derived from size + uploadedAt by the real handler).
-      expect(typeof downloadRes.headers["etag"]).toBe("string");
-      expect((downloadRes.headers["etag"] as string).length).toBeGreaterThan(0);
+        // Body bytes must be exactly what was uploaded.
+        const body = downloadRes.body as Buffer;
+        expect(body).toEqual(DUMMY_EXE);
 
-      // Accept-Ranges must be advertised so download managers can resume.
-      expect(downloadRes.headers["accept-ranges"]).toBe("bytes");
+        // ETag must be present (derived from size + uploadedAt by the real handler).
+        expect(typeof downloadRes.headers["etag"]).toBe("string");
+        expect((downloadRes.headers["etag"] as string).length).toBeGreaterThan(0);
+
+        // Accept-Ranges must be advertised so download managers can resume.
+        expect(downloadRes.headers["accept-ranges"]).toBe("bytes");
+      }
     });
 
     it("returns 401 when X-Platform-Admin-Secret header is wrong", async () => {

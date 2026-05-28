@@ -218,6 +218,7 @@ vi.mock("@workspace/db", () => {
     transactionCategories: { __table: "transactionCategories" },
     pricingTiers: { __table: "pricingTiers" },
     pricingOverrides: { __table: "pricingOverrides" },
+    vendorTypes: { __table: "vendorTypes" },
     systemSettings: { __table: "systemSettings" },
     installerChangelog: { __table: "installerChangelog" },
     installerUploads: { __table: "installerUploads" },

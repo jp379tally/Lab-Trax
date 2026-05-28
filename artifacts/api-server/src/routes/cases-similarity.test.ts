@@ -25,6 +25,7 @@ maybe("Task #331 cross-provider scoping (db integration)", () => {
   const providerBOrgId = rid("provB");
   const userId = rid("u");
   const canonicalForAId = rid("c");
+  const canonicalForBId = rid("c");
   const legacyForAId = rid("lc");
   const legacyForBId = rid("lc");
 
@@ -48,7 +49,7 @@ maybe("Task #331 cross-provider scoping (db integration)", () => {
     // Canonical case for provider A with doctor "Dr. Alpha"
     await db.insert(cases).values({
       id: canonicalForAId,
-      caseNumber: "A-1",
+      caseNumber: `A-1-${canonicalForAId}`,
       labOrganizationId: labOrgId,
       providerOrganizationId: providerAOrgId,
       doctorName: "Dr. Alpha",
@@ -85,8 +86,8 @@ maybe("Task #331 cross-provider scoping (db integration)", () => {
     // Canonical case for provider B with doctor "Dr. Bravo" so the
     // doctor-name set for B is non-empty.
     await db.insert(cases).values({
-      id: rid("c"),
-      caseNumber: "B-1",
+      id: canonicalForBId,
+      caseNumber: `B-1-${canonicalForBId}`,
       labOrganizationId: labOrgId,
       providerOrganizationId: providerBOrgId,
       doctorName: "Dr. Bravo",
