@@ -243,6 +243,9 @@ function createWindow() {
     win.webContents.openDevTools();
   } else {
     win.loadURL("app://labtrax/index.html");
+    // TEMP: auto-open DevTools in production so users can screenshot errors
+    // while we diagnose the "blank route content" issue. Remove once fixed.
+    win.webContents.openDevTools({ mode: "detach" });
   }
 }
 
