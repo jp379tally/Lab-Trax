@@ -2999,20 +2999,6 @@ export function CaseDrawer({
               <Sparkles size={14} />
               Ask AI
             </button>
-            <button
-              type="button"
-              onClick={() =>
-                printCaseCard(data ?? labCase, {
-                  restorations: data?.restorations ?? [],
-                  notes: data?.notes ?? [],
-                })
-              }
-              className="h-8 px-2.5 rounded-md hover:bg-secondary text-muted-foreground hover:text-foreground inline-flex items-center gap-1.5 text-xs font-medium"
-              title="Print case label"
-            >
-              <Printer size={14} />
-              Label
-            </button>
             {isAdmin && (
               <button
                 type="button"
