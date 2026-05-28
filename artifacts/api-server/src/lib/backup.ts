@@ -704,6 +704,32 @@ async function recordBackupError(
   return failedAt.toISOString();
 }
 
+/**
+ * Generate a backup in memory and record the run so history and stale-check
+ * stay accurate. Used by the streaming download endpoint so the client saves
+ * the file locally rather than the server writing to a (possibly nonexistent)
+ * path on the Linux filesystem.
+ */
+export async function generateBackupForDownload(triggeredBy: string): Promise<{
+  buffer: Buffer;
+  fileName: string;
+  size: number;
+  completedAt: string;
+}> {
+  const { buffer, fileName } = await buildBackupZipBuffer(triggeredBy);
+  const completedAt = new Date().toISOString();
+  const result: BackupRunResult = {
+    size: buffer.length,
+    completedAt,
+    fileName,
+    destination: "local",
+    path: undefined,
+  };
+  await recordSuccessfulBackup();
+  await recordBackupRun({ ...result, triggeredBy });
+  return { buffer, fileName, size: buffer.length, completedAt };
+}
+
 export async function runBackup(
   triggeredBy: string,
   destination: BackupDestination,

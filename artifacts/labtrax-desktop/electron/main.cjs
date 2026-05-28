@@ -308,6 +308,17 @@ ipcMain.handle("preview:open-file", async (_event, buffer, mimeType, fileKey, fi
   win.loadURL(pathToFileURL(tmpPath).toString());
 });
 
+ipcMain.handle("backup:save-to-folder", async (_event, { buffer, fileName, folderPath }) => {
+  try {
+    fs.mkdirSync(folderPath, { recursive: true });
+    const dest = path.join(folderPath, fileName);
+    fs.writeFileSync(dest, Buffer.from(buffer));
+    return { ok: true, path: dest };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+});
+
 ipcMain.handle("dialog:show-folder", async () => {
   const win = BrowserWindow.getAllWindows()[0];
   const result = await dialog.showOpenDialog(win ?? undefined, {

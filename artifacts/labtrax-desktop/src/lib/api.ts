@@ -524,6 +524,61 @@ export async function apiFetch<T = unknown>(
   return parsed as T;
 }
 
+/**
+ * Like apiFetch but returns an ArrayBuffer instead of parsed JSON. Use for
+ * binary download endpoints (e.g. the backup generate endpoint). Handles
+ * bearer-token auth, platform-admin headers, and a single 401-refresh retry
+ * in the same way apiFetch does.
+ */
+export async function apiFetchArrayBuffer(
+  path: string,
+  options: RequestInit = {},
+  retried = false,
+): Promise<{ buffer: ArrayBuffer; headers: Headers }> {
+  const headers: Record<string, string> = {
+    ...authHeader(),
+    ...(options.headers as Record<string, string> | undefined),
+  };
+  if (options.body && !(options.body instanceof FormData) && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
+  }
+  if (
+    isAdminApiPath(path) &&
+    !headers[PLATFORM_ADMIN_HEADER_SECRET] &&
+    !headers[PLATFORM_ADMIN_HEADER_PIN]
+  ) {
+    const cred = await getPlatformAdminSecretForRequest();
+    if (cred) headers[cred.header] = cred.value;
+  }
+  const url = apiUrl(path);
+  const res = await fetch(url, { ...options, headers });
+
+  if (res.status === 401 && !retried && _tokens?.refreshToken) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) return apiFetchArrayBuffer(path, options, true);
+    throw new ApiError("Your session has expired. Please sign in again.", 401);
+  }
+
+  if (!res.ok) {
+    let msg = `Request failed (${res.status})`;
+    try {
+      const text = await res.text();
+      const parsed = text ? JSON.parse(text) : null;
+      if (parsed && typeof parsed === "object") {
+        const obj = parsed as Record<string, unknown>;
+        if (typeof obj.message === "string") msg = obj.message;
+        else if (typeof obj.error === "string") msg = obj.error;
+      }
+    } catch {
+      /* ignore */
+    }
+    throw new ApiError(msg, res.status);
+  }
+
+  const buffer = await res.arrayBuffer();
+  return { buffer, headers: res.headers };
+}
+
 export interface UploadWithProgressOptions {
   onProgress?: (percent: number) => void;
   signal?: AbortSignal;

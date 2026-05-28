@@ -18,7 +18,7 @@ import {
   SheetTitle,
   SheetDescription,
 } from "@/components/ui/sheet";
-import { apiFetch, ApiError, notifySessionCleared, getApiOrigin } from "@/lib/api";
+import { apiFetch, apiFetchArrayBuffer, ApiError, notifySessionCleared, getApiOrigin } from "@/lib/api";
 import {
   DEFAULT_DUP_SIMILARITY_THRESHOLD,
   buildDuplicateClusters,
@@ -2661,11 +2661,41 @@ function BackupPanel() {
   }, [scheduleQuery.data]);
 
   const backupNowMutation = useMutation({
-    mutationFn: () =>
-      apiFetch<{ size: number; completedAt: string; fileName: string }>("/admin/backup/run", {
+    mutationFn: async () => {
+      const isNetworkSftp = nowDest === "network" && nowPath.trim().startsWith("sftp://");
+      if (isNetworkSftp) {
+        return apiFetch<{ size: number; completedAt: string; fileName: string }>("/admin/backup/run", {
+          method: "POST",
+          body: JSON.stringify({ destination: nowDest, path: nowPath.trim() || undefined }),
+        });
+      }
+      const { buffer, headers } = await apiFetchArrayBuffer("/admin/backup/generate", {
         method: "POST",
-        body: JSON.stringify({ destination: nowDest, path: nowPath.trim() || undefined }),
-      }),
+      });
+      const disposition = headers.get("Content-Disposition") ?? "";
+      const nameMatch = /filename="([^"]+)"/.exec(disposition);
+      const fileName = nameMatch?.[1] ?? "labtrax-backup.zip.enc";
+      const size = buffer.byteLength;
+      const completedAt = new Date().toISOString();
+      const electronAPI = (window as unknown as { electronAPI?: { saveBackupToFolder?: (buf: Uint8Array, name: string, folder: string) => Promise<{ ok: boolean; path?: string; error?: string }> } }).electronAPI;
+      if (electronAPI?.saveBackupToFolder && nowPath.trim()) {
+        const result = await electronAPI.saveBackupToFolder(new Uint8Array(buffer), fileName, nowPath.trim());
+        if (!result.ok) {
+          throw new Error(result.error ?? "Failed to save backup to folder.");
+        }
+      } else {
+        const blob = new Blob([buffer], { type: "application/octet-stream" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+      return { size, completedAt, fileName };
+    },
     onSuccess: (data) => {
       setBackupResult(data);
       setBackupError(null);
