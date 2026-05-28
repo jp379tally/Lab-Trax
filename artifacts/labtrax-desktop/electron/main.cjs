@@ -9,6 +9,22 @@ const authStore = require("./auth-store.cjs");
 
 const isDev = process.env.ELECTRON_DEV === "1";
 
+// Force the app's display name and dock icon as early as possible, before
+// any window is created. macOS reads CFBundleName from Info.plist only for
+// packaged .app bundles — when run unpackaged (dev, or our manually-staged
+// portable copied to another machine), the dock label and dock icon fall
+// back to "Electron" + the default atom icon. Setting app.name + dock.setIcon
+// here makes the brand correct in every launch mode.
+app.setName("LabTrax");
+const BRAND_ICON_PATH = path.join(__dirname, "icon.png");
+if (process.platform === "darwin" && app.dock) {
+  try {
+    app.dock.setIcon(BRAND_ICON_PATH);
+  } catch {
+    /* non-fatal */
+  }
+}
+
 function broadcast(channel, payload) {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(channel, payload);
