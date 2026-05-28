@@ -2842,26 +2842,40 @@ function BackupPanel() {
           </div>
 
           {needsPath(nowDest) && (
-            <div className="flex gap-2 items-end">
-              <div className="flex-1">
-                <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
-                  {nowDest === "local" ? "Folder path" : "Network path (UNC/SMB or SFTP URL)"}
-                </label>
-                <input
-                  value={nowPath}
-                  onChange={(e) => setNowPath(e.target.value)}
-                  placeholder={nowDest === "local" ? "C:\\Backups\\LabTrax" : "\\\\server\\share\\LabTrax"}
-                  className={inputCls}
-                />
+            <div className="space-y-1.5">
+              <div className="flex gap-2 items-end">
+                <div className="flex-1">
+                  <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                    {nowDest === "local" ? "Folder path" : "Network path (UNC/SMB or SFTP URL)"}
+                  </label>
+                  <input
+                    value={nowPath}
+                    onChange={(e) => setNowPath(e.target.value)}
+                    placeholder={nowDest === "local" ? "C:\\Backups\\LabTrax" : "\\\\server\\share\\LabTrax  or  sftp://user@host/backups"}
+                    className={inputCls}
+                  />
+                </div>
+                {electron?.showFolderDialog && nowDest === "local" && (
+                  <button
+                    type="button"
+                    onClick={() => pickFolderFor(setNowPath)}
+                    className="h-9 px-3 rounded-md border border-border bg-secondary text-foreground text-xs font-medium hover:bg-secondary/80 shrink-0"
+                  >
+                    Browse…
+                  </button>
+                )}
               </div>
-              {electron?.showFolderDialog && nowDest === "local" && (
-                <button
-                  type="button"
-                  onClick={() => pickFolderFor(setNowPath)}
-                  className="h-9 px-3 rounded-md border border-border bg-secondary text-foreground text-xs font-medium hover:bg-secondary/80 shrink-0"
-                >
-                  Browse…
-                </button>
+              {nowDest === "network" && nowPath.trim() && (
+                <p className="text-[11px] text-muted-foreground leading-snug">
+                  {nowPath.trim().startsWith("sftp://")
+                    ? "SFTP — the file will be uploaded by the server directly to this location."
+                    : "UNC/SMB — the file will be saved by this desktop app directly. The app must be open when you click Back up now."}
+                </p>
+              )}
+              {nowDest === "network" && !nowPath.trim() && (
+                <p className="text-[11px] text-muted-foreground leading-snug">
+                  Use <span className="font-mono">\\server\share\LabTrax</span> for a network share (saved by this app) or <span className="font-mono">sftp://user@host/path</span> for SFTP (saved by the server).
+                </p>
               )}
             </div>
           )}
@@ -2936,26 +2950,41 @@ function BackupPanel() {
             </div>
 
             {needsPath(schedDest) && (
-              <div className="flex gap-2 items-end">
-                <div className="flex-1">
-                  <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
-                    {schedDest === "local" ? "Folder path" : "Network path (UNC/SMB or SFTP URL)"}
-                  </label>
-                  <input
-                    value={schedPath}
-                    onChange={(e) => setSchedPath(e.target.value)}
-                    placeholder={schedDest === "local" ? "C:\\Backups\\LabTrax" : "sftp://user@host/backups/labtrax"}
-                    className={inputCls}
-                  />
+              <div className="space-y-1.5">
+                <div className="flex gap-2 items-end">
+                  <div className="flex-1">
+                    <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                      {schedDest === "local" ? "Folder path" : "Network path (SFTP URL)"}
+                    </label>
+                    <input
+                      value={schedPath}
+                      onChange={(e) => setSchedPath(e.target.value)}
+                      placeholder={schedDest === "local" ? "C:\\Backups\\LabTrax" : "sftp://user@host/backups/LabTrax"}
+                      className={inputCls}
+                    />
+                  </div>
+                  {electron?.showFolderDialog && schedDest === "local" && (
+                    <button
+                      type="button"
+                      onClick={() => pickFolderFor(setSchedPath)}
+                      className="h-9 px-3 rounded-md border border-border bg-secondary text-foreground text-xs font-medium hover:bg-secondary/80 shrink-0"
+                    >
+                      Browse…
+                    </button>
+                  )}
                 </div>
-                {electron?.showFolderDialog && schedDest === "local" && (
-                  <button
-                    type="button"
-                    onClick={() => pickFolderFor(setSchedPath)}
-                    className="h-9 px-3 rounded-md border border-border bg-secondary text-foreground text-xs font-medium hover:bg-secondary/80 shrink-0"
-                  >
-                    Browse…
-                  </button>
+                {schedDest === "network" && schedPath.trim() && !schedPath.trim().startsWith("sftp://") && (
+                  <div className="flex items-start gap-1.5 rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-amber-800 dark:text-amber-300">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                    <p className="text-[11px] leading-snug">
+                      UNC/SMB paths can't be used for scheduled backups — the server runs on Linux and can't access Windows network shares. Use an SFTP URL (<span className="font-mono">sftp://user@host/path</span>) for scheduled network backups. For UNC shares, use <strong>Back up now</strong> instead.
+                    </p>
+                  </div>
+                )}
+                {schedDest === "network" && !schedPath.trim() && (
+                  <p className="text-[11px] text-muted-foreground leading-snug">
+                    Only SFTP URLs are supported for scheduled backups. Use <span className="font-mono">sftp://user@host/path</span>.
+                  </p>
                 )}
               </div>
             )}
