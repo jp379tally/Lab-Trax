@@ -2592,6 +2592,8 @@ function BackupPanel() {
   const [schedStaleDays, setSchedStaleDays] = useState<number>(DEFAULT_BACKUP_STALE_DAYS);
   const [schedError, setSchedError] = useState<string | null>(null);
   const [schedSuccess, setSchedSuccess] = useState(false);
+  const [schedRunNowResult, setSchedRunNowResult] = useState<{ size: number; completedAt: string; fileName: string } | null>(null);
+  const [schedRunNowError, setSchedRunNowError] = useState<string | null>(null);
 
   const scheduleQuery = useQuery<BackupScheduleData>({
     queryKey: ["admin", "backup-schedule-v2"],
@@ -2749,6 +2751,20 @@ function BackupPanel() {
     },
   });
 
+  const schedRunNowMutation = useMutation({
+    mutationFn: () => apiFetch("/admin/backup/schedule/run-now", { method: "POST" }),
+    onSuccess: (data: { size: number; completedAt: string; fileName: string }) => {
+      setSchedRunNowResult(data);
+      setSchedRunNowError(null);
+      queryClient.invalidateQueries({ queryKey: ["admin", "backup-history"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "backup-schedule-v2"] });
+    },
+    onError: (err: Error) => {
+      setSchedRunNowResult(null);
+      setSchedRunNowError(err.message || "Backup run failed.");
+    },
+  });
+
   const electron = typeof window !== "undefined"
     ? (window as ElectronWindow).electronAPI
     : null;
@@ -2765,6 +2781,7 @@ function BackupPanel() {
     backupNowMutation.error,
     saveScheduleMutation.error,
     disableScheduleMutation.error,
+    schedRunNowMutation.error,
   ]);
 
   const needsPath = (d: BackupDestinationType) => d === "local" || d === "network";
@@ -3064,7 +3081,7 @@ function BackupPanel() {
           </div>
         )}
 
-        <div className="flex items-center gap-2 pt-1">
+        <div className="flex items-center gap-2 pt-1 flex-wrap">
           <button
             type="button"
             onClick={() => saveScheduleMutation.mutate()}
@@ -3093,7 +3110,35 @@ function BackupPanel() {
               Disable
             </button>
           )}
+          {scheduleQuery.data?.enabled &&
+            scheduleQuery.data?.destination === "network" &&
+            !!scheduleQuery.data?.path?.startsWith("sftp://") && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSchedRunNowResult(null);
+                  setSchedRunNowError(null);
+                  schedRunNowMutation.mutate();
+                }}
+                disabled={schedRunNowMutation.isPending || gate.blocked}
+                className="h-9 px-3 rounded-md border border-border text-sm text-muted-foreground hover:text-foreground disabled:opacity-60 inline-flex items-center gap-1.5"
+              >
+                {schedRunNowMutation.isPending
+                  ? <><Loader2 size={13} className="animate-spin" />Running…</>
+                  : <><Play size={13} />Run now</>}
+              </button>
+            )}
         </div>
+
+        {schedRunNowResult && !gate.blocked && (
+          <Alert tone="success">
+            Schedule test complete — {formatBackupSize(schedRunNowResult.size)} saved as{" "}
+            <code className="font-mono text-xs">{schedRunNowResult.fileName}</code>.
+          </Alert>
+        )}
+        {schedRunNowError && !gate.blocked && (
+          <Alert tone="danger">{schedRunNowError}</Alert>
+        )}
       </div>
 
       {/* ── Recent backups ── */}

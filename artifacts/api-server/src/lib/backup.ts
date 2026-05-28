@@ -1159,6 +1159,31 @@ async function fireScheduledBackup() {
   }
 }
 
+/**
+ * Immediately runs the configured scheduled backup once as an admin-triggered
+ * test. Validates that the schedule is enabled and that the destination is an
+ * SFTP URL (the only destination reachable from the server). Records the run
+ * in backup_runs with triggeredBy "admin:manual-schedule-test".
+ */
+export async function runScheduledBackupNow(): Promise<BackupRunResult> {
+  const config = await getBackupScheduleConfig();
+  if (!config.enabled) {
+    throw new Error("No schedule is currently enabled. Enable and save a schedule before running it.");
+  }
+  if (
+    !config.destination ||
+    !config.path ||
+    config.destination !== "network" ||
+    !config.path.startsWith("sftp://")
+  ) {
+    throw new Error(
+      "Only SFTP scheduled destinations can be triggered from the server. " +
+        "Set the scheduled destination to an SFTP URL (sftp://user@host/path) and save the schedule first.",
+    );
+  }
+  return runBackup("admin:manual-schedule-test", config.destination, config.path);
+}
+
 export async function restartScheduledBackupJob(): Promise<void> {
   if (_scheduledIntervalTimer !== null) {
     clearInterval(_scheduledIntervalTimer);
