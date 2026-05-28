@@ -151,13 +151,22 @@ export default function ListsPage() {
 
   const orgId: string | undefined = meQuery.data?.memberships?.find(
     (m: any) => m.status === "active" && m.organization?.type === "lab"
-  )?.labId;
+  )?.organizationId;
 
-  if (!orgId) {
+  if (meQuery.isLoading) {
     return (
       <div className="flex items-center justify-center py-24 text-muted-foreground">
         <Loader2 size={16} className="animate-spin mr-2" />
         Loading…
+      </div>
+    );
+  }
+
+  if (!orgId) {
+    return (
+      <div className="flex flex-col items-center justify-center py-24 text-muted-foreground gap-2">
+        <p>No active lab membership found on this account.</p>
+        <p className="text-xs">Lists are scoped to a lab organization. Ask an admin to add you to a lab to see this page.</p>
       </div>
     );
   }
