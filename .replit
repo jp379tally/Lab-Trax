@@ -48,7 +48,7 @@ outputType = "console"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "pnpm --filter @workspace/scripts run bump-build-number && cd /home/runner/workspace/artifacts/labtrax && python3 scripts/write-asc-key.py && EAS_NO_VCS=1 EAS_BUILD_NO_EXPO_GO_WARNING=true EXPO_ASC_API_KEY_PATH=/tmp/AuthKey_RV23AJ8V62.p8 EXPO_ASC_KEY_ID=RV23AJ8V62 EXPO_ASC_ISSUER_ID=1d2faabc-3d66-4e64-b514-c234043e143a EXPO_APPLE_TEAM_ID=2D9XT8L3D2 EXPO_APPLE_TEAM_TYPE=COMPANY_OR_ORGANIZATION eas build --platform ios --profile production --non-interactive --auto-submit"
+args = "bash scripts/eas-ios-build.sh"
 
 [[workflows.workflow]]
 name = "regression-tests"
