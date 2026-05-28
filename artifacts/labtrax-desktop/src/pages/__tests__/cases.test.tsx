@@ -4,6 +4,15 @@ import { render, screen } from "@testing-library/react";
 import CasesPage, { CaseDrawer } from "@/pages/cases";
 import type { LabCase } from "@/lib/types";
 import { makeWrapper } from "../../__tests__/test-utils";
+import { AiPanelContext } from "@/lib/ai-panel-context";
+
+function withAiPanel(children: React.ReactNode) {
+  return (
+    <AiPanelContext.Provider value={{ openPanel: () => {} }}>
+      {children}
+    </AiPanelContext.Provider>
+  );
+}
 
 // jspdf and react-pdf pull in heavy/non-jsdom-friendly modules at import
 // time. The smoke render doesn't exercise PDF code paths, so stub them.
@@ -41,9 +50,7 @@ describe("CasesPage smoke render", () => {
   it("renders the case list shell without throwing", () => {
     const Wrapper = makeWrapper("/cases");
     render(
-      <Wrapper>
-        <CasesPage />
-      </Wrapper>,
+      <Wrapper>{withAiPanel(<CasesPage />)}</Wrapper>,
     );
     // Status filter dropdown is always present; if it disappears the case
     // list page is broken.
@@ -71,11 +78,11 @@ describe("CaseDrawer smoke render", () => {
     const Wrapper = makeWrapper("/cases");
     render(
       <Wrapper>
-        <CaseDrawer labCase={fakeCase} onClose={() => {}} />
+        {withAiPanel(<CaseDrawer labCase={fakeCase} onClose={() => {}} />)}
       </Wrapper>,
     );
     // The patient name from the case is rendered into the drawer header.
-    expect(screen.getByText(/Jane/)).toBeInTheDocument();
-    expect(screen.getByText(/26-1/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Jane/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/26-1/).length).toBeGreaterThan(0);
   });
 });

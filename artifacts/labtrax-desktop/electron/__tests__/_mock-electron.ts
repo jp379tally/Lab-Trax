@@ -86,9 +86,16 @@ export function installElectronMock(overrides: Partial<ElectronMock> = {}): Elec
       function BrowserWindow() {
         return {
           loadURL: () => {},
-          webContents: { send: () => {}, openDevTools: () => {} },
+          webContents: { send: () => {}, openDevTools: () => {}, on: () => {}, once: () => {} },
           setMenuBarVisibility: () => {},
           isDestroyed: () => false,
+          on: () => {},
+          once: () => {},
+          show: () => {},
+          focus: () => {},
+          close: () => {},
+          hide: () => {},
+          destroy: () => {},
         };
       } as unknown as ElectronMock["BrowserWindow"],
       { getAllWindows: () => [] as unknown[] },

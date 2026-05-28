@@ -43,6 +43,15 @@ const EXPECTED_CHANNELS = [
   // app-level
   "get-app-version",
   "install-update",
+  "check-for-updates",
+  "download-update",
+  "get-update-state",
+  "messenger:notify",
+  "preview:open-file",
+  "backup:save-to-folder",
+  "dialog:show-folder",
+  "dialog:showOpenDialog",
+  "shell:open-external",
 ];
 
 let electronMock: ElectronMock;
@@ -85,10 +94,12 @@ beforeAll(async () => {
     },
     ipcMain: {
       handlers,
+      listeners: new Map(),
       handle: (channel: string, fn: (...a: unknown[]) => unknown) => {
         handleCalls.push(channel);
         handlers.set(channel, fn);
       },
+      on: () => {},
     },
   });
 
