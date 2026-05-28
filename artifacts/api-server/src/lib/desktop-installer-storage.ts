@@ -277,15 +277,20 @@ export async function getDirectDownloadUrl(
     return null;
   }
   try {
-    const tokenRes = await fetch(`${REPLIT_SIDECAR_ENDPOINT}/token`);
-    if (!tokenRes.ok) return null;
-    const tokenData = (await tokenRes.json()) as { access_token?: string };
-    const accessToken = tokenData.access_token;
-    if (!accessToken) return null;
-
     const file = getInstallerFile(kind);
     const [exists] = await file.exists();
     if (!exists) return null;
+
+    // Use the Storage client's already-configured auth to fetch a real OAuth2
+    // access token via the proper STS exchange. The Replit sidecar's /token
+    // endpoint is POST-only (a plain GET returns 405), so we cannot fetch it
+    // ourselves — but the google-auth-library client used by the Storage
+    // constructor knows how to do the federated exchange correctly.
+    const authClient = await storageClient.authClient.getClient();
+    const tokenResponse = await authClient.getAccessToken();
+    const accessToken =
+      typeof tokenResponse === "string" ? tokenResponse : tokenResponse?.token;
+    if (!accessToken) return null;
 
     const cfg = INSTALLER_KIND_CONFIG[kind];
     const fullPath = `${getPrivateObjectDir()}/${cfg.objectKeySuffix}`;
