@@ -80,7 +80,7 @@ export default function SettingsPage() {
     { key: "organizations", label: "Organizations", icon: Building2, show: true },
     { key: "users", label: "Users", icon: ShieldCheck, show: isAdmin },
     { key: "backup", label: "Backup", icon: ShieldCheck, show: isAdmin },
-    { key: "desktop", label: "Desktop app", icon: Download, show: isAdmin },
+    { key: "desktop", label: "Desktop app", icon: Download, show: true },
     { key: "templates", label: "Templates", icon: LayoutList, show: isAdmin },
     { key: "invoice-layout", label: "Invoice layout", icon: LayoutList, show: isAdmin, parentKey: "templates" },
     { key: "statement-layout", label: "Statement layout", icon: LayoutList, show: isAdmin, parentKey: "templates" },
@@ -179,7 +179,7 @@ export default function SettingsPage() {
           {tab === "organizations" && <OrganizationsPanel />}
           {tab === "users" && isAdmin && <UsersPanel />}
           {tab === "backup" && isAdmin && <BackupPanel />}
-          {tab === "desktop" && isAdmin && <DesktopInstallerPanel />}
+          {tab === "desktop" && (isAdmin ? <DesktopInstallerPanel /> : <DesktopAppUserPanel />)}
           {tab === "invoice-layout" && isAdmin && <InvoiceLayoutPanel />}
           {tab === "statement-layout" && isAdmin && <StatementLayoutPanel />}
           {tab === "correspondence-layout" && isAdmin && <CorrespondenceLayoutPanel />}
@@ -3859,6 +3859,28 @@ function getDesktopUpdaterApi(): DesktopUpdaterApi | null {
   const api = (window as unknown as { electronAPI?: DesktopUpdaterApi }).electronAPI;
   if (!api || typeof api.getUpdateState !== "function") return null;
   return api;
+}
+
+// Non-admin Desktop app panel: shows just the version + Check for updates
+// card so any signed-in user can self-report their version and trigger an
+// on-demand check without waiting for the 4-hour background poll. Admin-only
+// controls (installer upload, build pipeline, etc.) stay in DesktopInstallerPanel.
+function DesktopAppUserPanel() {
+  const api = getDesktopUpdaterApi();
+  return (
+    <PanelShell
+      title="Desktop app"
+      subtitle="Your installed version and update status."
+    >
+      {api ? (
+        <AppVersionCard />
+      ) : (
+        <Alert tone="warning">
+          App version info is only available inside the LabTrax desktop app.
+        </Alert>
+      )}
+    </PanelShell>
+  );
 }
 
 // Card shown at the top of Settings → Desktop App: surfaces the currently
