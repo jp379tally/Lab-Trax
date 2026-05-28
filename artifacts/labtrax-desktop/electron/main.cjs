@@ -242,10 +242,13 @@ function createWindow() {
     win.loadURL(`http://localhost:${devPort}`);
     win.webContents.openDevTools();
   } else {
-    win.loadURL("app://labtrax/index.html");
-    // TEMP: auto-open DevTools in production so users can screenshot errors
-    // while we diagnose the "blank route content" issue. Remove once fixed.
-    win.webContents.openDevTools({ mode: "detach" });
+    // Load at the root path so window.location.pathname === "/" and the
+    // wouter router matches the "/" route. Loading "/index.html" makes the
+    // initial pathname "/index.html", which matches none of the configured
+    // routes and falls through to NotFound (or, with stale base config,
+    // renders nothing at all). The protocol handler already serves
+    // index.html for the root path.
+    win.loadURL("app://labtrax/");
   }
 }
 
