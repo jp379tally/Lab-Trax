@@ -439,6 +439,381 @@ async function assertCaseAccess(userId: string, caseId: string) {
   return access.case;
 }
 
+async function fetchUserActiveLabIds(userId: string): Promise<string[]> {
+  const memberships = await db
+    .select({ labId: organizationMemberships.labId })
+    .from(organizationMemberships)
+    .innerJoin(organizations, eq(organizations.id, organizationMemberships.labId))
+    .where(
+      and(
+        eq(organizationMemberships.userId, userId),
+        eq(organizationMemberships.status, "active"),
+        eq(organizations.type, "lab"),
+      ),
+    );
+  const ids = new Set<string>();
+  for (const row of memberships) {
+    if (row.labId) ids.add(row.labId);
+  }
+  return Array.from(ids);
+}
+
+const MOBILE_TO_DESKTOP_STATUS: Record<string, string> = {
+  INTAKE: "received",
+  DESIGN: "in_design",
+  SCAN: "scan",
+  MILLING: "in_milling",
+  POST_MILL: "post_mill",
+  SINTERING_FURNACE: "sintering_furnace",
+  MODEL_ROOM: "model_room",
+  PORCELAIN: "in_porcelain",
+  QC_CHECK: "qc",
+  COMPLETE: "complete",
+  DELIVERY: "shipped",
+  ON_HOLD: "on_hold",
+  REMAKE: "remake",
+};
+
+/**
+ * Project a mobile-app legacy `lab_cases` JSON blob into the canonical
+ * DetailedCase shape used by `GET /api/cases/:id`. Returns null when the
+ * case isn't found in lab_cases or the caller isn't allowed to see it.
+ *
+ * This is the read bridge that lets the desktop client display data for
+ * cases that were created on the mobile app (where the source of truth is
+ * still the legacy JSON blob, not the canonical tables).
+ */
+async function tryProjectLegacyCaseForDesktop(
+  userId: string,
+  caseId: string,
+): Promise<any | null> {
+  const legacyRow = await db.query.labCases.findFirst({
+    where: and(eq(labCases.id, caseId), isNull(labCases.deletedAt)),
+  });
+  if (!legacyRow) return null;
+
+  // Authorization: require active lab membership in the case's owning
+  // organization. We intentionally do NOT fall back to ownerId-equality
+  // here — former employees who still hold a session must not see lab
+  // data after their membership is revoked, matching the canonical
+  // assertCaseAccessWithMemberships behavior.
+  const labIds = await fetchUserActiveLabIds(userId);
+  const isLabMember = legacyRow.organizationId
+    ? labIds.includes(legacyRow.organizationId)
+    : false;
+  if (!isLabMember) {
+    throw new HttpError(403, "You do not have access to this case.");
+  }
+
+  let parsed: any = {};
+  try {
+    parsed =
+      typeof legacyRow.caseData === "string"
+        ? JSON.parse(legacyRow.caseData)
+        : legacyRow.caseData ?? {};
+  } catch {
+    parsed = {};
+  }
+
+  const split = splitDisplayName(parsed?.patientName ?? "");
+  const firstName =
+    parsed?.patientFirstName ?? split.first ?? parsed?.patientInitials ?? "";
+  const lastName = parsed?.patientLastName ?? split.last ?? "";
+  const labOrgId = legacyRow.organizationId ?? parsed?.organizationId ?? "";
+  const mobileStatus = String(parsed?.status ?? "INTAKE").toUpperCase();
+  const desktopStatus =
+    MOBILE_TO_DESKTOP_STATUS[mobileStatus] ?? "received";
+  const toMs = (v: unknown, fallback: number): number => {
+    if (v === null || v === undefined || v === "") return fallback;
+    const n = typeof v === "number" ? v : Number(v);
+    if (Number.isFinite(n) && n > 0) return n;
+    if (typeof v === "string") {
+      const parsedMs = Date.parse(v);
+      if (Number.isFinite(parsedMs)) return parsedMs;
+    }
+    return fallback;
+  };
+  const toISO = (ms: number, fallback: string): string => {
+    if (!Number.isFinite(ms)) return fallback;
+    try {
+      return new Date(ms).toISOString();
+    } catch {
+      return fallback;
+    }
+  };
+  const rowUpdatedMs = legacyRow.updatedAt
+    ? new Date(legacyRow.updatedAt).getTime()
+    : Date.now();
+  const nowMs = Date.now();
+  const fallbackMs = Number.isFinite(rowUpdatedMs) ? rowUpdatedMs : nowMs;
+  const createdMs = toMs(parsed?.createdAt, fallbackMs);
+  const updatedMs = toMs(parsed?.updatedAt, createdMs);
+  const nowISO = new Date(nowMs).toISOString();
+  const createdISO = toISO(createdMs, nowISO);
+  const updatedISO = toISO(updatedMs, createdISO);
+
+  // Restorations: derive one row per tooth from toothMap[] (preferred) or
+  // toothIndices[] (older mobile builds). Fall back to a single row using
+  // the top-level material/shade when no per-tooth detail exists.
+  const restorations: any[] = [];
+  const teeth: Array<{ num: string | number; type?: string }> = [];
+  if (Array.isArray(parsed?.toothMap)) {
+    for (const t of parsed.toothMap) {
+      if (t && t.num !== undefined && t.num !== null) {
+        teeth.push({ num: t.num, type: t.type });
+      }
+    }
+  } else if (Array.isArray(parsed?.toothIndices)) {
+    for (const n of parsed.toothIndices) {
+      teeth.push({ num: n });
+    }
+  }
+  if (teeth.length > 0) {
+    for (const t of teeth) {
+      restorations.push({
+        id: `legacy-rest-${legacyRow.id}-${t.num}`,
+        caseId: legacyRow.id,
+        toothNumber: String(t.num),
+        restorationType: t.type ?? parsed?.caseType ?? "restoration",
+        restorationSubtype: null,
+        material: parsed?.material ?? null,
+        shade: parsed?.shade ?? null,
+        notes: null,
+        quantity: 1,
+        unitPrice: "0",
+        priceSource: null,
+        priceSourceId: null,
+        priceSourceName: null,
+        priceKey: null,
+        createdAt: createdISO,
+        updatedAt: updatedISO,
+      });
+    }
+  } else if (parsed?.caseType || parsed?.material || parsed?.shade) {
+    restorations.push({
+      id: `legacy-rest-${legacyRow.id}-0`,
+      caseId: legacyRow.id,
+      toothNumber: "",
+      restorationType: parsed?.caseType ?? "restoration",
+      restorationSubtype: null,
+      material: parsed?.material ?? null,
+      shade: parsed?.shade ?? null,
+      notes: null,
+      quantity: 1,
+      unitPrice: "0",
+      priceSource: null,
+      priceSourceId: null,
+      priceSourceName: null,
+      priceKey: null,
+      createdAt: createdISO,
+      updatedAt: updatedISO,
+    });
+  }
+
+  // Notes: convert the single notes string (if any) into one CaseNote.
+  const notesOut: any[] = [];
+  const notesText = typeof parsed?.notes === "string" ? parsed.notes.trim() : "";
+  if (notesText) {
+    notesOut.push({
+      id: `legacy-note-${legacyRow.id}`,
+      caseId: legacyRow.id,
+      noteText: notesText,
+      visibility: "shared_with_provider",
+      createdAt: createdISO,
+      authorUserId: legacyRow.ownerId ?? null,
+      authorName: null,
+    });
+  }
+
+  // Events: project activityLog[] entries to CaseEvent shape so the
+  // History tab renders the mobile timeline.
+  const events: any[] = [];
+  const log = Array.isArray(parsed?.activityLog) ? parsed.activityLog : [];
+  for (const e of log) {
+    if (!e || typeof e !== "object") continue;
+    const occurredMs = Number(e.timestamp ?? createdMs);
+    const occurredISO = new Date(
+      Number.isFinite(occurredMs) ? occurredMs : createdMs,
+    ).toISOString();
+    let eventType: string;
+    switch (e.type) {
+      case "created":
+        eventType = "created";
+        break;
+      case "station_change":
+        eventType = "status_changed";
+        break;
+      case "photo":
+        eventType = "attachment_added";
+        break;
+      case "document":
+        eventType = "attachment_added";
+        break;
+      case "note":
+        eventType = "note_added";
+        break;
+      default:
+        eventType = String(e.type ?? "event");
+    }
+    const metadata: Record<string, unknown> = {};
+    if (e.description) metadata.description = e.description;
+    if (e.station) {
+      metadata.toStatus =
+        MOBILE_TO_DESKTOP_STATUS[String(e.station).toUpperCase()] ?? e.station;
+      metadata.mobileStation = e.station;
+    }
+    if (e.user) metadata.user = e.user;
+    events.push({
+      id: String(e.id ?? `legacy-evt-${legacyRow.id}-${occurredMs}`),
+      caseId: legacyRow.id,
+      eventType,
+      actorUserId: null,
+      actorOrganizationId: labOrgId || null,
+      actorInitials: typeof e.user === "string" ? e.user.slice(0, 2) : null,
+      metadataJson: metadata,
+      occurredAt: occurredISO,
+      createdAt: occurredISO,
+    });
+  }
+  // Newest first to match canonical ordering.
+  events.sort(
+    (a, b) =>
+      new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime(),
+  );
+
+  // Attachments: project photos/videos arrays. URLs may be remote (http)
+  // or data URIs — the desktop renders both via <img src=...>.
+  const attachments: any[] = [];
+  const photos = Array.isArray(parsed?.photos) ? parsed.photos : [];
+  const videos = Array.isArray(parsed?.videos) ? parsed.videos : [];
+  let idx = 0;
+  for (const url of photos) {
+    if (typeof url !== "string" || !url) continue;
+    attachments.push({
+      id: `legacy-photo-${legacyRow.id}-${idx}`,
+      caseId: legacyRow.id,
+      uploadedByUserId: legacyRow.ownerId ?? "",
+      uploadedByOrganizationId: labOrgId,
+      fileName: `mobile-photo-${idx + 1}`,
+      storageKey: url,
+      fileType: url.startsWith("data:") ? url.slice(5, url.indexOf(";")) : "image/jpeg",
+      visibility: "shared_with_provider",
+      createdAt: createdISO,
+      uploaderName: null,
+      // Direct URL for renderers that prefer a fully-qualified src.
+      url,
+    });
+    idx++;
+  }
+  idx = 0;
+  for (const url of videos) {
+    if (typeof url !== "string" || !url) continue;
+    attachments.push({
+      id: `legacy-video-${legacyRow.id}-${idx}`,
+      caseId: legacyRow.id,
+      uploadedByUserId: legacyRow.ownerId ?? "",
+      uploadedByOrganizationId: labOrgId,
+      fileName: `mobile-video-${idx + 1}`,
+      storageKey: url,
+      fileType: url.startsWith("data:") ? url.slice(5, url.indexOf(";")) : "video/mp4",
+      visibility: "shared_with_provider",
+      createdAt: createdISO,
+      uploaderName: null,
+      url,
+    });
+    idx++;
+  }
+
+  // Status history: synthesize from the createdAt + any station_change
+  // events so the Overview timeline ribbon has content.
+  const STATUS_LABELS: Record<string, string> = {
+    received: "Received",
+    in_design: "Design",
+    scan: "Scan",
+    in_milling: "Milling",
+    post_mill: "Post Mill",
+    sintering_furnace: "Sintering",
+    model_room: "Model Room",
+    in_porcelain: "Porcelain",
+    qc: "QC",
+    complete: "Complete",
+    shipped: "Shipped",
+    delivered: "Delivered",
+    on_hold: "On Hold",
+    remake: "Remake",
+    cancelled: "Cancelled",
+    draft: "Draft",
+  };
+  const statusHistory: Array<{ status: string; label: string; occurredAt: string }> = [
+    { status: "received", label: STATUS_LABELS["received"]!, occurredAt: createdISO },
+  ];
+  for (const e of events.slice().reverse()) {
+    if (e.eventType !== "status_changed") continue;
+    const s = (e.metadataJson as any)?.toStatus as string | undefined;
+    if (!s || !STATUS_LABELS[s]) continue;
+    statusHistory.push({
+      status: s,
+      label: STATUS_LABELS[s] ?? s,
+      occurredAt: e.occurredAt,
+    });
+  }
+
+  const dueDateMs =
+    parsed?.dueDate !== undefined && parsed?.dueDate !== null && parsed?.dueDate !== ""
+      ? toMs(parsed.dueDate, NaN)
+      : NaN;
+  const dueDateISO = Number.isFinite(dueDateMs)
+    ? toISO(dueDateMs, "")
+    : null;
+
+  return {
+    id: legacyRow.id,
+    caseNumber: String(parsed?.caseNumber ?? legacyRow.id),
+    labOrganizationId: labOrgId,
+    providerOrganizationId: "",
+    patientFirstName: firstName,
+    patientLastName: lastName,
+    externalPatientId: null,
+    doctorName: parsed?.doctorName ?? "",
+    status: desktopStatus,
+    priority: parsed?.isRush ? "rush" : "normal",
+    dueDate: dueDateISO,
+    createdAt: createdISO,
+    updatedAt: updatedISO,
+    restorationCount: restorations.length,
+    restorationTypes: null,
+    restorationMaterials: null,
+    teeth: teeth.map((t) => t.num).join(","),
+    totalPrice: parsed?.price ?? null,
+    _source: "mobile" as const,
+    needsAiReview: false,
+    aiImportSource: null,
+    remakeOfCaseId: parsed?.remakeOfCaseId ?? null,
+    remakeReason: parsed?.remakeReason ?? null,
+    remakeCharged:
+      typeof parsed?.remakeCharged === "boolean"
+        ? parsed.remakeCharged
+        : null,
+    suggestedDoctorName: null,
+    suggestedProviderOrgId: null,
+    suggestedPracticeName: null,
+    casePanBarcode: null,
+    caseNotes: notesText || null,
+    restorations,
+    notes: notesOut,
+    attachments,
+    events,
+    originalCaseEvents: [],
+    remakeChildrenEvents: [],
+    locations: [],
+    remakeOriginal: null,
+    remakeChildren: [],
+    viewerIsLabMember: isLabMember,
+    viewerCanManageAttachments: false,
+    statusHistory,
+  };
+}
+
 async function assertCaseAccessWithMemberships(userId: string, caseId: string) {
   const found = await db.query.cases.findFirst({
     where: and(eq(cases.id, caseId), notDeleted(cases)),
@@ -1980,10 +2355,21 @@ router.get(
 router.get(
   "/:caseId",
   asyncHandler(async (req, res) => {
-    const access = await assertCaseAccessWithMemberships(
-      (req as any).auth.userId,
-      req.params.caseId
-    );
+    const userId = (req as any).auth.userId as string;
+    const caseId = req.params.caseId;
+    let access;
+    try {
+      access = await assertCaseAccessWithMemberships(userId, caseId);
+    } catch (err) {
+      // Bridge: when the id isn't in the canonical cases table, try the
+      // mobile-app legacy lab_cases JSON blob and project it into the
+      // DetailedCase shape. Lets desktop view mobile-created cases.
+      if (err instanceof HttpError && err.statusCode === 404) {
+        const projected = await tryProjectLegacyCaseForDesktop(userId, caseId);
+        if (projected) return ok(res, projected);
+      }
+      throw err;
+    }
     const found = access.case;
     const [restorations, notes, attachments, events, locations] =
       await Promise.all([
