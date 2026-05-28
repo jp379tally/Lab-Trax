@@ -90,7 +90,13 @@ describe("checkAndAlertBackupStaleness — compare-and-swap claim", () => {
     const alertRow = lastSentRaw
       ? [{ key: SETTING_BACKUP_STALE_ALERT_LAST_SENT_AT, value: lastSentRaw }]
       : [];
-    const adminRow = [{ email: "admin@lab.com" }];
+    // Includes emailPreferences so that filterEmailsByPref("backupAlerts")
+    // — which issues its own db.select for user prefs — sees the admin as
+    // opted-in. After defaults flipped to OFF, omitting this field caused
+    // the email to be silently dropped.
+    const adminRow = [
+      { email: "admin@lab.com", emailPreferences: { backupAlerts: true } },
+    ];
 
     let selectCallCount = 0;
     (db.select as Mock).mockImplementation(() => {
@@ -242,7 +248,7 @@ describe("checkAndAlertBackupStaleness — compare-and-swap claim", () => {
     //   select 8 → instance B: admin emails
     const staleRow = [{ key: "backup_last_successful_at", value: staleBackupAt() }];
     const alertRow: never[] = [];
-    const adminRow = [{ email: "admin@lab.com" }];
+    const adminRow = [{ email: "admin@lab.com", emailPreferences: { backupAlerts: true } }];
 
     const responses = [staleRow, [], staleRow, [], alertRow, alertRow, adminRow, adminRow];
     let selectCallCount = 0;
@@ -291,7 +297,7 @@ describe("checkAndAlertBackupStaleness — compare-and-swap claim", () => {
     const staleRow = [{ key: "backup_last_successful_at", value: staleBackupAt() }];
     const oldAlert = oldAlertAt();
     const alertRow = [{ key: SETTING_BACKUP_STALE_ALERT_LAST_SENT_AT, value: oldAlert }];
-    const adminRow = [{ email: "admin@lab.com" }];
+    const adminRow = [{ email: "admin@lab.com", emailPreferences: { backupAlerts: true } }];
 
     const responses = [staleRow, [], staleRow, [], alertRow, alertRow, adminRow, adminRow];
     let selectCallCount = 0;
