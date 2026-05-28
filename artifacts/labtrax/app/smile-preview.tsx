@@ -19,7 +19,6 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from "expo-file-system";
 import * as Sharing from "expo-sharing";
-import * as MediaLibrary from "expo-media-library";
 import { resilientFetch } from "@/lib/query-client";
 
 type Step = "capture" | "options" | "result";
@@ -168,6 +167,9 @@ export default function SmilePreviewScreen() {
   async function saveToPhotos() {
     if (!enhancedUri) return;
     try {
+      // Dynamic require defers native module resolution to call time,
+      // preventing a crash in Expo Go where the native module is unavailable.
+      const MediaLibrary = require("expo-media-library");
       const { status } = await MediaLibrary.requestPermissionsAsync();
       if (status !== "granted") {
         Alert.alert("Permission Needed", "Allow access to save photos to your library.");
