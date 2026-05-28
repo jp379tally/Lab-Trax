@@ -4,9 +4,14 @@ directories:
   output: electron-dist
 files:
   - dist/electron-app/**
-  - electron/main.cjs
-  - electron/preload.cjs
-  - electron/icon.png
+  # Include the entire electron/ directory so sibling modules
+  # (itero-poller.cjs, itero-helpers.cjs, platform-admin.cjs, auth-store.cjs,
+  # entitlements.mac.plist, icon.png) are present at runtime. Listing only
+  # main.cjs + preload.cjs caused "Cannot find module './itero-poller.cjs'"
+  # on every launch of the packaged Windows app.
+  - electron/**/*
+  - "!electron/__tests__/**"
+  - "!electron/**/*.test.*"
 
 # ─── Windows ────────────────────────────────────────────────────────────────
 win:
