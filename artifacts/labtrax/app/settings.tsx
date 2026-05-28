@@ -85,6 +85,9 @@ export default function SettingsScreen() {
   };
   const [backupHistory, setBackupHistory] = useState<BackupRun[]>([]);
   const [backupHistoryLoading, setBackupHistoryLoading] = useState(false);
+  const [backupNowLoading, setBackupNowLoading] = useState(false);
+  const [backupNowError, setBackupNowError] = useState<string | null>(null);
+  const [backupNowSuccess, setBackupNowSuccess] = useState(false);
 
   type VersionHistoryEntry = { version: string; changedByUsername: string; changedAt: string };
   const [mobileBuildVersionHistory, setMobileBuildVersionHistory] = useState<VersionHistoryEntry[]>([]);
@@ -378,6 +381,39 @@ export default function SettingsScreen() {
     void fetchBackupHistory();
     return () => { cancelled = true; };
   }, [isLabAdminForEffect]);
+
+  async function handleBackupNow() {
+    setBackupNowLoading(true);
+    setBackupNowError(null);
+    setBackupNowSuccess(false);
+    try {
+      const res = await resilientFetch("/api/admin/backup/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ destination: "local" }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { error?: string };
+        throw new Error((body as { error?: string }).error ?? `Backup failed (${res.status})`);
+      }
+      setBackupNowSuccess(true);
+      setBackupNowError(null);
+      // refresh history to show the new run
+      setBackupHistoryLoading(true);
+      try {
+        const hr = await resilientFetch("/api/admin/backup/history");
+        if (hr.ok) {
+          const data = await hr.json();
+          if (Array.isArray(data.runs)) setBackupHistory(data.runs.slice(0, 10));
+        }
+      } catch { /* ignore */ } finally { setBackupHistoryLoading(false); }
+    } catch (err: unknown) {
+      setBackupNowError(err instanceof Error ? err.message : "Backup failed.");
+      setBackupNowSuccess(false);
+    } finally {
+      setBackupNowLoading(false);
+    }
+  }
 
   const currentUserDataForVersionEffect = registeredUsers.find(
     (u) => u.username.toLowerCase() === (currentUser || "").toLowerCase()
@@ -1449,6 +1485,52 @@ export default function SettingsScreen() {
                     </React.Fragment>
                   );
                 })
+              )}
+            </View>
+          </View>
+        )}
+
+        {isLabAdmin && (
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>BACK UP NOW</Text>
+            <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border, padding: 14, gap: 10 }]}>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textSecondary, lineHeight: 18 }}>
+                Save an encrypted backup of all lab data and case media to the server's configured local folder.
+              </Text>
+              <Pressable
+                style={({ pressed }) => ({
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 7,
+                  paddingVertical: 11,
+                  paddingHorizontal: 18,
+                  borderRadius: 10,
+                  backgroundColor: backupNowLoading ? colors.border : colors.tint,
+                  opacity: pressed ? 0.8 : 1,
+                  alignSelf: "flex-start",
+                })}
+                onPress={() => void handleBackupNow()}
+                disabled={backupNowLoading}
+              >
+                {backupNowLoading
+                  ? <ActivityIndicator size="small" color="#fff" />
+                  : <Ionicons name="save-outline" size={15} color="#fff" />}
+                <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: "#fff" }}>
+                  {backupNowLoading ? "Backing up…" : "Back up now"}
+                </Text>
+              </Pressable>
+              {backupNowSuccess && !backupNowLoading && (
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                  <Ionicons name="checkmark-circle" size={15} color="#16a34a" />
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "#16a34a" }}>Backup complete</Text>
+                </View>
+              )}
+              {backupNowError && (
+                <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
+                  <Ionicons name="alert-circle" size={15} color="#dc2626" style={{ marginTop: 1 }} />
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "#dc2626", flex: 1 }}>{backupNowError}</Text>
+                </View>
               )}
             </View>
           </View>
