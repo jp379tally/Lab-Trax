@@ -2,7 +2,11 @@ import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -14,6 +18,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Colors from "@/constants/colors";
 import { getAccessToken, getApiUrl } from "@/lib/query-client";
 import { useApp } from "@/lib/app-context";
+import { formatPhone } from "@/lib/data";
 
 interface ProviderOrg {
   id: string;
@@ -51,14 +56,19 @@ function fmtDate(d?: string | null) {
   });
 }
 
-async function apiFetch<T>(path: string): Promise<T> {
+async function apiFetch<T>(
+  path: string,
+  init?: { method?: string; body?: unknown }
+): Promise<T> {
   const token = await getAccessToken();
   const url = new URL(`/api${path}`, getApiUrl()).toString();
   const res = await fetch(url, {
+    method: init?.method ?? "GET",
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
+    body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -67,14 +77,29 @@ async function apiFetch<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+interface EligibleDoctor {
+  id: string;
+  username: string;
+  email?: string | null;
+  phone?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  doctorName?: string | null;
+  platformAccountNumber?: string | null;
+  currentPractices: string[];
+  virtual?: boolean;
+}
+
 export default function CustomersScreen() {
   const insets = useSafeAreaInsets();
-  const { invoices: appInvoices, setPendingInvoiceEditId } = useApp();
+  const { invoices: appInvoices, setPendingInvoiceEditId, role } = useApp();
   const [orgs, setOrgs] = useState<ProviderOrg[]>([]);
   const [apiInvoices, setApiInvoices] = useState<InvoiceRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [addDoctorOpen, setAddDoctorOpen] = useState(false);
+  const isLabAdmin = role === "admin";
 
   useEffect(() => {
     let cancelled = false;
@@ -201,6 +226,19 @@ export default function CustomersScreen() {
           </View>
         </View>
 
+        {isLabAdmin && !selectedOrg.deletedAt && (
+          <View style={styles.actionsBar}>
+            <Pressable
+              onPress={() => setAddDoctorOpen(true)}
+              style={({ pressed }) => [styles.addDoctorBtn, pressed && { opacity: 0.85 }]}
+              testID="add-doctor-to-practice"
+            >
+              <Ionicons name="person-add-outline" size={14} color="#fff" />
+              <Text style={styles.addDoctorBtnText}>Add doctor to practice</Text>
+            </Pressable>
+          </View>
+        )}
+
         {/* Practice info strip */}
         <View style={styles.infoStrip}>
           {selectedOrg.phone ? (
@@ -283,6 +321,12 @@ export default function CustomersScreen() {
               </Pressable>
             );
           }}
+        />
+
+        <AddDoctorToPracticeModal
+          visible={addDoctorOpen}
+          org={selectedOrg}
+          onClose={() => setAddDoctorOpen(false)}
         />
       </View>
     );
@@ -372,6 +416,692 @@ export default function CustomersScreen() {
   );
 }
 
+interface AddDoctorToPracticeModalProps {
+  visible: boolean;
+  org: ProviderOrg;
+  onClose: () => void;
+}
+
+function AddDoctorToPracticeModal({ visible, org, onClose }: AddDoctorToPracticeModalProps) {
+  const [mode, setMode] = useState<"new" | "existing">("new");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  // new-doctor fields
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+
+  // existing-doctor picker
+  const [eligible, setEligible] = useState<EligibleDoctor[]>([]);
+  const [eligibleLoading, setEligibleLoading] = useState(false);
+  const [eligibleError, setEligibleError] = useState<string | null>(null);
+  const [selectedUserId, setSelectedUserId] = useState("");
+  const [search, setSearch] = useState("");
+
+  // Reset everything when the modal opens.
+  useEffect(() => {
+    if (!visible) return;
+    setMode("new");
+    setError(null);
+    setSuccess(null);
+    setFirstName("");
+    setLastName("");
+    setEmail("");
+    setPhone("");
+    setSelectedUserId("");
+    setSearch("");
+    setSubmitting(false);
+  }, [visible, org.id]);
+
+  // Load eligible doctors lazily when the "existing" tab is opened.
+  useEffect(() => {
+    if (!visible || mode !== "existing") return;
+    let cancelled = false;
+    setEligibleLoading(true);
+    setEligibleError(null);
+    apiFetch<EligibleDoctor[]>(`/organizations/${org.id}/eligible-doctors`)
+      .then((rows) => {
+        if (!cancelled) setEligible(rows);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setEligibleError(err instanceof Error ? err.message : "Failed to load doctors.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setEligibleLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [visible, mode, org.id]);
+
+  const filteredEligible = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return eligible;
+    return eligible.filter((u) => {
+      const name = `${u.firstName ?? ""} ${u.lastName ?? ""}`.toLowerCase();
+      return (
+        name.includes(q) ||
+        (u.email ?? "").toLowerCase().includes(q) ||
+        (u.username ?? "").toLowerCase().includes(q) ||
+        (u.platformAccountNumber ?? "").toLowerCase().includes(q) ||
+        (u.doctorName ?? "").toLowerCase().includes(q)
+      );
+    });
+  }, [eligible, search]);
+
+  async function submitNewDoctor() {
+    const fName = firstName.trim();
+    if (!fName) {
+      setError("First name is required.");
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const res = await apiFetch<{
+        created: Array<{ firstName?: string | null; lastName?: string | null }>;
+        skipped: Array<{ index: number; reason: string }>;
+      }>(`/organizations/${org.id}/doctors`, {
+        method: "POST",
+        body: {
+          doctors: [
+            {
+              firstName: fName,
+              lastName: lastName.trim(),
+              email: email.trim() || undefined,
+              phone: phone.trim() || undefined,
+            },
+          ],
+        },
+      });
+      const skipped = res.skipped?.[0];
+      if (skipped) {
+        setError(skipped.reason || "Could not add doctor.");
+        return;
+      }
+      const d = res.created?.[0];
+      const name = [d?.firstName, d?.lastName].filter(Boolean).join(" ") || "Doctor";
+      setSuccess(`${name} added to ${org.displayName || org.name}.`);
+      setFirstName("");
+      setLastName("");
+      setEmail("");
+      setPhone("");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not add doctor.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function submitLinkExisting() {
+    if (!selectedUserId) {
+      setError("Pick a doctor from the list first.");
+      return;
+    }
+    const selectedDoc = eligible.find((u) => u.id === selectedUserId);
+    setSubmitting(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      // "Virtual" doctors (extracted from case history with no real account)
+      // need an account created first; mirror the desktop's two-step flow.
+      if (selectedDoc?.virtual) {
+        const raw = (selectedDoc.doctorName || selectedDoc.username || "").trim();
+        const stripped = raw.replace(/^dr\.?\s+/i, "").trim();
+        const parts = stripped.split(/\s+/);
+        const fName = parts[0] || "Doctor";
+        const lName = parts.slice(1).join(" ") || undefined;
+        const res = await apiFetch<{
+          created: Array<{ firstName?: string | null; lastName?: string | null }>;
+          skipped: Array<{ index: number; reason: string }>;
+        }>(`/organizations/${org.id}/doctors`, {
+          method: "POST",
+          body: { doctors: [{ firstName: fName, lastName: lName }] },
+        });
+        const skipped = res.skipped?.[0];
+        if (skipped) {
+          setError(skipped.reason || "Could not create doctor account.");
+          return;
+        }
+        const d = res.created?.[0];
+        const name = [d?.firstName, d?.lastName].filter(Boolean).join(" ") || "Doctor";
+        setSuccess(`${name} added to ${org.displayName || org.name}.`);
+      } else {
+        const res = await apiFetch<{ firstName?: string | null; lastName?: string | null }>(
+          `/organizations/${org.id}/doctors/link`,
+          { method: "POST", body: { userId: selectedUserId } }
+        );
+        const name = [res.firstName, res.lastName].filter(Boolean).join(" ") || "Doctor";
+        setSuccess(`${name} linked to ${org.displayName || org.name}.`);
+      }
+      setSelectedUserId("");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not link doctor.");
+      setSubmitting(false);
+      return;
+    }
+    setSubmitting(false);
+    // Best-effort refresh of the picker — the just-added doctor should drop
+    // off the list. Failure here must NOT clobber the success banner above.
+    setEligibleLoading(true);
+    try {
+      const rows = await apiFetch<EligibleDoctor[]>(`/organizations/${org.id}/eligible-doctors`);
+      setEligible(rows);
+    } catch {
+      // ignore refresh failure; the link/create itself succeeded.
+    } finally {
+      setEligibleLoading(false);
+    }
+  }
+
+  function handleSubmit() {
+    if (mode === "new") submitNewDoctor();
+    else submitLinkExisting();
+  }
+
+  const submitDisabled =
+    submitting || (mode === "new" ? !firstName.trim() : !selectedUserId);
+
+  const selectedVirtual =
+    mode === "existing" &&
+    selectedUserId &&
+    eligible.find((u) => u.id === selectedUserId)?.virtual;
+
+  return (
+    <Modal
+      visible={visible}
+      animationType="slide"
+      presentationStyle="pageSheet"
+      onRequestClose={onClose}
+    >
+      <KeyboardAvoidingView
+        style={{ flex: 1, backgroundColor: Colors.light.backgroundSolid }}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
+        <View style={modalStyles.header}>
+          <View style={{ flex: 1 }}>
+            <Text style={modalStyles.headerEyebrow}>Practice</Text>
+            <Text style={modalStyles.headerTitle} numberOfLines={1}>
+              {org.displayName || org.name}
+            </Text>
+          </View>
+          <Pressable onPress={onClose} hitSlop={10} style={modalStyles.closeBtn}>
+            <Ionicons name="close" size={22} color={Colors.light.text} />
+          </Pressable>
+        </View>
+
+        <View style={modalStyles.tabs}>
+          <Pressable
+            onPress={() => {
+              setMode("new");
+              setError(null);
+              setSuccess(null);
+            }}
+            style={[modalStyles.tab, mode === "new" && modalStyles.tabActive]}
+          >
+            <Ionicons
+              name="person-add-outline"
+              size={14}
+              color={mode === "new" ? "#fff" : Colors.light.text}
+            />
+            <Text style={[modalStyles.tabText, mode === "new" && modalStyles.tabTextActive]}>
+              Add new doctor
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              setMode("existing");
+              setError(null);
+              setSuccess(null);
+            }}
+            style={[modalStyles.tab, mode === "existing" && modalStyles.tabActive]}
+          >
+            <Ionicons
+              name="people-outline"
+              size={14}
+              color={mode === "existing" ? "#fff" : Colors.light.text}
+            />
+            <Text style={[modalStyles.tabText, mode === "existing" && modalStyles.tabTextActive]}>
+              Pick existing
+            </Text>
+          </Pressable>
+        </View>
+
+        <ScrollView
+          style={{ flex: 1 }}
+          contentContainerStyle={modalStyles.body}
+          keyboardShouldPersistTaps="handled"
+        >
+          {error && (
+            <View style={[modalStyles.banner, { backgroundColor: "#FEE2E2" }]}>
+              <Text style={[modalStyles.bannerText, { color: "#B91C1C" }]}>{error}</Text>
+            </View>
+          )}
+          {success && (
+            <View style={[modalStyles.banner, { backgroundColor: "#DCFCE7" }]}>
+              <Text style={[modalStyles.bannerText, { color: "#15803D" }]}>{success}</Text>
+            </View>
+          )}
+
+          {mode === "new" ? (
+            <View style={{ gap: 12 }}>
+              <View style={modalStyles.row}>
+                <View style={{ flex: 1 }}>
+                  <Text style={modalStyles.label}>First name</Text>
+                  <TextInput
+                    value={firstName}
+                    onChangeText={setFirstName}
+                    placeholder="Jane"
+                    placeholderTextColor={Colors.light.textSecondary}
+                    style={modalStyles.input}
+                    autoCapitalize="words"
+                    autoFocus
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={modalStyles.label}>Last name</Text>
+                  <TextInput
+                    value={lastName}
+                    onChangeText={setLastName}
+                    placeholder="Smith"
+                    placeholderTextColor={Colors.light.textSecondary}
+                    style={modalStyles.input}
+                    autoCapitalize="words"
+                  />
+                </View>
+              </View>
+              <View>
+                <Text style={modalStyles.label}>Email</Text>
+                <TextInput
+                  value={email}
+                  onChangeText={setEmail}
+                  placeholder="optional"
+                  placeholderTextColor={Colors.light.textSecondary}
+                  style={modalStyles.input}
+                  autoCapitalize="none"
+                  keyboardType="email-address"
+                  autoCorrect={false}
+                />
+              </View>
+              <View>
+                <Text style={modalStyles.label}>Phone</Text>
+                <TextInput
+                  value={phone}
+                  onChangeText={(v) => setPhone(formatPhone(v))}
+                  placeholder="000-000-0000"
+                  placeholderTextColor={Colors.light.textSecondary}
+                  style={modalStyles.input}
+                  keyboardType="phone-pad"
+                />
+              </View>
+              <Text style={modalStyles.hint}>
+                Creates a new doctor account at this practice. They'll receive
+                their own platform account number.
+              </Text>
+            </View>
+          ) : (
+            <View style={{ gap: 10 }}>
+              <View style={modalStyles.searchWrap}>
+                <Ionicons
+                  name="search-outline"
+                  size={16}
+                  color={Colors.light.textSecondary}
+                  style={{ position: "absolute", left: 12, top: 12 }}
+                />
+                <TextInput
+                  value={search}
+                  onChangeText={setSearch}
+                  placeholder="Search existing doctors…"
+                  placeholderTextColor={Colors.light.textSecondary}
+                  style={modalStyles.searchInput}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              </View>
+              <View style={modalStyles.list}>
+                {eligibleLoading && (
+                  <View style={modalStyles.listMsg}>
+                    <ActivityIndicator size="small" color={Colors.light.tint} />
+                    <Text style={modalStyles.listMsgText}>Loading doctors…</Text>
+                  </View>
+                )}
+                {!eligibleLoading && eligibleError && (
+                  <View style={modalStyles.listMsg}>
+                    <Text style={[modalStyles.listMsgText, { color: "#B91C1C" }]}>
+                      {eligibleError}
+                    </Text>
+                  </View>
+                )}
+                {!eligibleLoading && !eligibleError && filteredEligible.length === 0 && (
+                  <View style={modalStyles.listMsg}>
+                    <Text style={modalStyles.listMsgText}>
+                      {eligible.length === 0
+                        ? "No existing doctors on the platform to link yet."
+                        : "No matches."}
+                    </Text>
+                  </View>
+                )}
+                {filteredEligible.map((u) => {
+                  const checked = selectedUserId === u.id;
+                  const name = u.virtual
+                    ? u.doctorName || u.username
+                    : [u.firstName, u.lastName].filter(Boolean).join(" ") || u.username;
+                  return (
+                    <Pressable
+                      key={u.id}
+                      onPress={() => setSelectedUserId(u.id)}
+                      style={[modalStyles.listRow, checked && modalStyles.listRowChecked]}
+                    >
+                      <View
+                        style={[
+                          modalStyles.radio,
+                          checked && { borderColor: Colors.light.tint },
+                        ]}
+                      >
+                        {checked && <View style={modalStyles.radioDot} />}
+                      </View>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                          <Text style={modalStyles.listName} numberOfLines={1}>
+                            {name}
+                          </Text>
+                          {u.virtual ? (
+                            <View style={[modalStyles.tag, { backgroundColor: "#FEF3C7" }]}>
+                              <Text style={[modalStyles.tagText, { color: "#92400E" }]}>
+                                no account yet
+                              </Text>
+                            </View>
+                          ) : u.platformAccountNumber ? (
+                            <View style={[modalStyles.tag, { backgroundColor: Colors.light.tintLight || "#EFF6FF" }]}>
+                              <Text style={[modalStyles.tagText, { color: Colors.light.tint, fontFamily: "Inter_500Medium" }]}>
+                                {u.platformAccountNumber}
+                              </Text>
+                            </View>
+                          ) : null}
+                        </View>
+                        <Text style={modalStyles.listSub} numberOfLines={1}>
+                          {u.virtual
+                            ? "From case history — will create account"
+                            : u.email || u.phone || u.username}
+                        </Text>
+                        {!u.virtual && u.currentPractices.length > 0 && (
+                          <Text style={modalStyles.listSub} numberOfLines={1}>
+                            Currently at: {u.currentPractices.join(", ")}
+                          </Text>
+                        )}
+                      </View>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <Text style={modalStyles.hint}>
+                {eligible.some((u) => u.virtual)
+                  ? "Doctors with accounts can be linked instantly. Doctors from case history will get a new account created."
+                  : "Links any existing doctor on the platform to this practice without creating a duplicate account."}
+              </Text>
+            </View>
+          )}
+        </ScrollView>
+
+        <View style={modalStyles.footer}>
+          <Pressable onPress={onClose} style={modalStyles.footerBtnSecondary}>
+            <Text style={modalStyles.footerBtnSecondaryText}>Close</Text>
+          </Pressable>
+          <Pressable
+            onPress={handleSubmit}
+            disabled={submitDisabled}
+            style={[
+              modalStyles.footerBtnPrimary,
+              submitDisabled && { opacity: 0.5 },
+            ]}
+          >
+            {submitting && <ActivityIndicator size="small" color="#fff" style={{ marginRight: 6 }} />}
+            <Text style={modalStyles.footerBtnPrimaryText}>
+              {mode === "new"
+                ? "Add doctor"
+                : selectedVirtual
+                  ? "Create & link"
+                  : "Link doctor"}
+            </Text>
+          </Pressable>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
+const modalStyles = StyleSheet.create({
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: Colors.light.border,
+    gap: 10,
+  },
+  headerEyebrow: {
+    fontSize: 10,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.textSecondary,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  headerTitle: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
+    marginTop: 2,
+  },
+  closeBtn: {
+    width: 32,
+    height: 32,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 8,
+  },
+  tabs: {
+    flexDirection: "row",
+    marginHorizontal: 16,
+    marginTop: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.light.border,
+    borderRadius: 8,
+    overflow: "hidden",
+  },
+  tab: {
+    flex: 1,
+    height: 34,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    backgroundColor: Colors.light.backgroundSolid,
+  },
+  tabActive: {
+    backgroundColor: Colors.light.tint,
+  },
+  tabText: {
+    fontSize: 13,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.text,
+  },
+  tabTextActive: {
+    color: "#fff",
+  },
+  body: {
+    padding: 16,
+    paddingBottom: 24,
+  },
+  banner: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 8,
+    marginBottom: 12,
+  },
+  bannerText: {
+    fontSize: 13,
+    fontFamily: "Inter_500Medium",
+  },
+  row: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  label: {
+    fontSize: 11,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.textSecondary,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginBottom: 6,
+  },
+  input: {
+    height: 42,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.light.border,
+    backgroundColor: Colors.light.surface || "#fff",
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.text,
+  },
+  hint: {
+    fontSize: 11,
+    color: Colors.light.textSecondary,
+    fontFamily: "Inter_400Regular",
+    marginTop: 4,
+    lineHeight: 16,
+  },
+  searchWrap: {
+    position: "relative",
+  },
+  searchInput: {
+    height: 40,
+    paddingLeft: 36,
+    paddingRight: 12,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.light.border,
+    backgroundColor: Colors.light.surface || "#fff",
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.text,
+  },
+  list: {
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.light.border,
+    backgroundColor: Colors.light.surface || "#fff",
+    overflow: "hidden",
+    maxHeight: 360,
+  },
+  listMsg: {
+    paddingVertical: 24,
+    paddingHorizontal: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    flexDirection: "row",
+  },
+  listMsgText: {
+    fontSize: 13,
+    color: Colors.light.textSecondary,
+    fontFamily: "Inter_400Regular",
+  },
+  listRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: Colors.light.border,
+  },
+  listRowChecked: {
+    backgroundColor: Colors.light.tintLight || "#EFF6FF",
+  },
+  radio: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 1.5,
+    borderColor: Colors.light.border,
+    marginTop: 2,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  radioDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 4.5,
+    backgroundColor: Colors.light.tint,
+  },
+  listName: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
+    flexShrink: 1,
+  },
+  listSub: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textSecondary,
+    marginTop: 1,
+  },
+  tag: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  tagText: {
+    fontSize: 10,
+    fontFamily: "Inter_500Medium",
+  },
+  footer: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: Colors.light.border,
+    backgroundColor: Colors.light.backgroundSolid,
+  },
+  footerBtnSecondary: {
+    height: 40,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  footerBtnSecondaryText: {
+    fontSize: 14,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.text,
+  },
+  footerBtnPrimary: {
+    flexDirection: "row",
+    alignItems: "center",
+    height: 40,
+    paddingHorizontal: 18,
+    borderRadius: 8,
+    backgroundColor: Colors.light.tint,
+  },
+  footerBtnPrimaryText: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: "#fff",
+  },
+});
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -425,6 +1155,27 @@ const styles = StyleSheet.create({
     borderBottomColor: Colors.light.border,
     backgroundColor: Colors.light.surface || Colors.light.backgroundSolid,
     gap: 4,
+  },
+  actionsBar: {
+    flexDirection: "row",
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 4,
+    gap: 8,
+  },
+  addDoctorBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    height: 34,
+    borderRadius: 8,
+    backgroundColor: Colors.light.tint,
+  },
+  addDoctorBtnText: {
+    color: "#fff",
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
   },
   infoItem: {
     flexDirection: "row",
