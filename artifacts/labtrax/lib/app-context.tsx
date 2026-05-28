@@ -10,6 +10,11 @@ import React, {
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system";
 import { getApiUrl, resilientFetch, getAccessToken } from "./query-client";
+import {
+  enqueuePhoto,
+  enqueueNote,
+  drainQueue,
+} from "./offline-queue";
 import { AppState, Platform } from "react-native";
 import {
   UserRole,
@@ -878,6 +883,47 @@ export function AppProvider({ children }: { children: ReactNode }) {
       subscription.remove();
       clearInterval(intervalId);
     };
+  }, [currentUserId]);
+
+  // ─── Offline queue drain ──────────────────────────────────────────────────
+  // Drain any pending photo/note uploads queued while offline.
+  //
+  // Three triggers:
+  //  1. Mount — picks up items left over from a previous session that was
+  //     interrupted before the queue was fully drained.
+  //  2. AppState "active" — fires when the user brings the app to the
+  //     foreground after a background-or-closed stint during which network
+  //     may have been unavailable.
+  //  3. 30-second interval while the app is foregrounded — handles the
+  //     common case where the device regains connectivity while the app
+  //     stays open (e.g. Wi-Fi dropping and reconnecting), without
+  //     requiring a background/foreground transition.
+  useEffect(() => {
+    if (!currentUserId) return;
+
+    void drainQueue(rawUploadPhotoToCase, rawPostNoteToCase);
+
+    const appStateSubscription = AppState.addEventListener(
+      "change",
+      (nextState) => {
+        if (nextState === "active") {
+          void drainQueue(rawUploadPhotoToCase, rawPostNoteToCase);
+        }
+      }
+    );
+
+    const DRAIN_INTERVAL_MS = 30_000;
+    const intervalId = setInterval(() => {
+      if (AppState.currentState === "active") {
+        void drainQueue(rawUploadPhotoToCase, rawPostNoteToCase);
+      }
+    }, DRAIN_INTERVAL_MS);
+
+    return () => {
+      appStateSubscription.remove();
+      clearInterval(intervalId);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUserId]);
 
   function mapJoinRequestStatus(status?: string): GroupJoinRequest["status"] {
@@ -2263,15 +2309,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } catch {}
   }
 
-  async function uploadPhotoToCanonicalCase(caseId: string, photoUri: string): Promise<void> {
+  // ─── Raw executors used by both the hot-path and the offline drain ──────────
+
+  async function rawUploadPhotoToCase(
+    caseId: string,
+    photoUri: string,
+    fileName: string,
+    mimeType: string
+  ): Promise<boolean> {
     try {
-      const uriClean = photoUri.toLowerCase().split("?")[0] ?? "";
-      const ext = uriClean.split(".").pop() || "jpg";
-      const isVid = isVideoUri(photoUri);
-      const mimeType = isVid
-        ? ext === "mov" ? "video/quicktime" : `video/${ext}`
-        : ext === "jpg" ? "image/jpeg" : `image/${ext}`;
-      const fileName = `case-media-${Date.now()}.${ext}`;
       const formData = new FormData();
       if (Platform.OS === "web") {
         const blob = await globalThis.fetch(photoUri).then((r) => r.blob());
@@ -2280,27 +2326,66 @@ export function AppProvider({ children }: { children: ReactNode }) {
         (formData as any).append("file", { uri: photoUri, name: fileName, type: mimeType });
       }
       const uploadRes = await resilientFetch("/api/media/upload", { method: "POST", body: formData });
-      if (!uploadRes?.ok) return;
+      if (!uploadRes?.ok) return false;
       const { url } = await uploadRes.json();
-      await resilientFetch(`/api/cases/${encodeURIComponent(caseId)}/attachments`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ storageKey: url, fileName, fileType: mimeType }),
-      });
+      const attachRes = await resilientFetch(
+        `/api/cases/${encodeURIComponent(caseId)}/attachments`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ storageKey: url, fileName, fileType: mimeType }),
+        }
+      );
+      return !!attachRes?.ok;
     } catch {
-      // best-effort: local state is already updated, server sync failure is silent
+      return false;
+    }
+  }
+
+  async function rawPostNoteToCase(caseId: string, noteText: string): Promise<boolean> {
+    try {
+      const res = await resilientFetch(
+        `/api/cases/${encodeURIComponent(caseId)}/notes`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ noteText }),
+        }
+      );
+      return !!res?.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  function triggerQueueDrain() {
+    void drainQueue(rawUploadPhotoToCase, rawPostNoteToCase);
+  }
+
+  // ─── Public wrappers: attempt immediately, enqueue on failure ────────────
+
+  async function uploadPhotoToCanonicalCase(caseId: string, photoUri: string): Promise<void> {
+    const uriClean = photoUri.toLowerCase().split("?")[0] ?? "";
+    const ext = uriClean.split(".").pop() || "jpg";
+    const isVid = isVideoUri(photoUri);
+    const mimeType = isVid
+      ? ext === "mov" ? "video/quicktime" : `video/${ext}`
+      : ext === "jpg" ? "image/jpeg" : `image/${ext}`;
+    const fileName = `case-media-${Date.now()}.${ext}`;
+    const itemId = `photo-${caseId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    const succeeded = await rawUploadPhotoToCase(caseId, photoUri, fileName, mimeType);
+    if (!succeeded) {
+      await enqueuePhoto(itemId, caseId, photoUri, fileName, mimeType);
     }
   }
 
   async function addNoteToCanonicalCase(caseId: string, noteText: string): Promise<void> {
-    try {
-      await resilientFetch(`/api/cases/${encodeURIComponent(caseId)}/notes`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ noteText }),
-      });
-    } catch {
-      // best-effort
+    const itemId = `note-${caseId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    const succeeded = await rawPostNoteToCase(caseId, noteText);
+    if (!succeeded) {
+      await enqueueNote(itemId, caseId, noteText);
     }
   }
 
