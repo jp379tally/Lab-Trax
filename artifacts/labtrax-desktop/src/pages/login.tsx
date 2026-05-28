@@ -3,6 +3,7 @@ import { useAuth } from "@/lib/auth-context";
 import { ApiError, TwoFactorRequiredError, getApiOrigin } from "@/lib/api";
 import { describeAuthRestoreStatus } from "@/lib/auth-restore-status";
 import { Logo } from "@/components/Logo";
+import SignupWizard from "@/components/SignupWizard";
 
 export default function LoginPage() {
   const {
@@ -12,6 +13,7 @@ export default function LoginPage() {
     restoreNoticeDismissed,
     acknowledgeRestoreNotice,
   } = useAuth();
+  const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -95,6 +97,29 @@ export default function LoginPage() {
   const buildLabel = appVersion
     ? `v${appVersion}${buildNumber ? ` (build ${buildNumber})` : ""}${commitSha ? ` · ${commitSha}` : ""}`
     : "";
+
+  if (mode === "signup" && !pendingToken) {
+    return (
+      <div className="min-h-screen w-full flex items-center justify-center bg-background px-6 py-10">
+        <div className="w-full max-w-[460px]">
+          <div className="flex justify-center mb-6">
+            <Logo size={56} />
+          </div>
+          <SignupWizard
+            onCancel={() => {
+              setMode("signin");
+              setError(null);
+            }}
+          />
+          {apiOrigin && (
+            <p className="text-center text-[10px] text-muted-foreground/70 mt-3 break-all">
+              Server: {apiOrigin}
+            </p>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen w-full flex items-center justify-center bg-background px-6">
@@ -238,6 +263,19 @@ export default function LoginPage() {
                   {submitting ? "Signing in…" : "Sign in"}
                 </button>
               </form>
+              <div className="mt-5 pt-4 border-t border-border text-center text-sm text-muted-foreground">
+                Don't have an account?{" "}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setError(null);
+                    setMode("signup");
+                  }}
+                  className="text-primary font-medium hover:underline"
+                >
+                  Create one
+                </button>
+              </div>
             </>
           )}
         </div>

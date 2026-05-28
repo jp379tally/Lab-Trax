@@ -973,6 +973,159 @@ export async function login(username: string, password: string): Promise<Session
   return body.user as SessionUser;
 }
 
+export interface RegisterPayload {
+  username: string;
+  password: string;
+  email: string;
+  phone?: string;
+  wantsUpdates?: boolean;
+  userType: "provider" | "lab";
+  licenseNumber?: string;
+  practiceName?: string;
+  doctorName?: string;
+  practiceAddress?: string;
+  practicePhone?: string;
+  phoneContactName?: string;
+  role?: "user" | "admin";
+  accountNumber?: string;
+  joinOrganizationId?: string;
+  createOrganization?: boolean;
+  claimProvider?: { labId: string; accountNumber: string };
+}
+
+export interface RegisterResult {
+  user: SessionUser;
+  message?: string;
+  pendingJoinRequest?: boolean;
+  organization?: { id: string; name: string } | null;
+}
+
+export async function register(payload: RegisterPayload): Promise<RegisterResult> {
+  let r: Response;
+  try {
+    r = await fetch(apiUrl("/auth/register"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...payload, clientType: "desktop" }),
+    });
+  } catch {
+    const origin = getApiOrigin();
+    const detail = origin
+      ? ` (tried ${origin}/api/auth/register)`
+      : " (this installer was built without an API server URL — please reinstall the latest LabTrax Desktop)";
+    throw new ApiError(
+      `Can't reach the LabTrax server. Check your internet connection and try again.${detail}`,
+      0,
+    );
+  }
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok || !body?.success) {
+    throw new ApiError(body?.message || body?.error || "Registration failed.", r.status);
+  }
+  if (typeof body.accessToken === "string" && typeof body.refreshToken === "string") {
+    persistTokens({ accessToken: body.accessToken, refreshToken: body.refreshToken });
+  } else {
+    throw new ApiError(
+      "The server didn't return a sign-in token. Please contact your administrator.",
+      r.status,
+    );
+  }
+  emit(body.user);
+  return {
+    user: body.user as SessionUser,
+    message: body.message,
+    pendingJoinRequest: !!body.pendingJoinRequest,
+    organization: body.organization ?? null,
+  };
+}
+
+export interface LabGroup {
+  organizationId: string;
+  practiceName: string;
+  username: string;
+  practiceAddress: string;
+  memberCount: number;
+}
+
+export async function fetchLabGroups(): Promise<LabGroup[]> {
+  const r = await fetch(apiUrl("/labs/groups"));
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new ApiError(body?.error || "Failed to fetch labs", r.status);
+  return Array.isArray(body?.groups) ? (body.groups as LabGroup[]) : [];
+}
+
+export interface LabLookupResult {
+  id: string;
+  name: string;
+  displayName: string;
+  city: string | null;
+  state: string | null;
+}
+
+export async function lookupLabs(query: string): Promise<LabLookupResult[]> {
+  const r = await fetch(apiUrl(`/labs/lookup?q=${encodeURIComponent(query)}`));
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new ApiError(body?.error || "Lab lookup failed", r.status);
+  return Array.isArray(body?.labs) ? (body.labs as LabLookupResult[]) : [];
+}
+
+export async function sendEmailVerificationCode(email: string): Promise<{ demoCode?: string }> {
+  const r = await fetch(apiUrl("/send-email-code"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new ApiError(body?.error || "Failed to send code.", r.status);
+  return { demoCode: body?.demoCode };
+}
+
+export async function verifyEmailCode(email: string, code: string): Promise<boolean> {
+  const r = await fetch(apiUrl("/verify-email-code"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, code }),
+  });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new ApiError(body?.error || "Verification failed.", r.status);
+  if (!body?.verified) throw new ApiError(body?.error || "Incorrect code.", 400);
+  return true;
+}
+
+export async function sendPhoneVerificationCode(phone: string): Promise<{ demoCode?: string }> {
+  const r = await fetch(apiUrl("/send-phone-code"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ phone }),
+  });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new ApiError(body?.error || "Failed to send code.", r.status);
+  return { demoCode: body?.demoCode };
+}
+
+export async function verifyPhoneCode(phone: string, code: string): Promise<boolean> {
+  const r = await fetch(apiUrl("/verify-phone-code"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ phone, code }),
+  });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new ApiError(body?.error || "Verification failed.", r.status);
+  if (!body?.verified) throw new ApiError(body?.error || "Incorrect code.", 400);
+  return true;
+}
+
+export async function checkUsernameAvailable(username: string): Promise<boolean> {
+  const r = await fetch(apiUrl("/check-username"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username }),
+  });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new ApiError(body?.error || "Failed to check username.", r.status);
+  return !!body?.available;
+}
+
 export async function completeTwoFactorChallenge(
   pendingToken: string,
   code: string,

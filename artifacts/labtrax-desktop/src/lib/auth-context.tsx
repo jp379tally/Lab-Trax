@@ -12,10 +12,13 @@ import {
   getAuthRestoreStatus,
   login as apiLogin,
   logout as apiLogout,
+  register as apiRegister,
   completeTwoFactorChallenge as apiCompleteTwoFactor,
   subscribeSession,
   waitForTokenHydration,
   TwoFactorRequiredError,
+  type RegisterPayload,
+  type RegisterResult,
   type SessionUser,
 } from "./api";
 
@@ -35,6 +38,7 @@ interface AuthContextValue {
   login: (username: string, password: string) => Promise<void>;
   /** Pass trustDevice=true to remember this device for 30 days. */
   completeTwoFactor: (pendingToken: string, code: string, trustDevice?: boolean) => Promise<void>;
+  register: (payload: RegisterPayload) => Promise<RegisterResult>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
 }
@@ -108,6 +112,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setStatus("authed");
   }, []);
 
+  const register = useCallback(async (payload: RegisterPayload) => {
+    const result = await apiRegister(payload);
+    setUser(result.user);
+    setStatus("authed");
+    return result;
+  }, []);
+
   const logout = useCallback(async () => {
     await apiLogout();
     setUser(null);
@@ -123,6 +134,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       acknowledgeRestoreNotice,
       login,
       completeTwoFactor,
+      register,
       logout,
       refresh: verify,
     }),
@@ -134,6 +146,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       acknowledgeRestoreNotice,
       login,
       completeTwoFactor,
+      register,
       logout,
       verify,
     ],
