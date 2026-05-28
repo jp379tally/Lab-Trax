@@ -22,7 +22,7 @@ import {
   PAGE_W as TPL_PAGE_W,
   type CasePrintTemplate,
 } from "./case-print-template";
-import { getApiOrigin } from "./api";
+import { apiFetchArrayBuffer, getApiOrigin } from "./api";
 
 function escapeHtml(value: unknown): string {
   if (value === null || value === undefined) return "";
@@ -720,7 +720,44 @@ function resolveImageUrl(url: string): string {
   return origin ? `${origin}${url}` : url;
 }
 
-export function printCaseCardAdvanced(
+function arrayBufferToBase64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode.apply(
+      null,
+      Array.from(bytes.subarray(i, i + CHUNK)),
+    );
+  }
+  return btoa(bin);
+}
+
+/**
+ * Fetch a per-lab case-print-template image as a data: URL.
+ *
+ * The image route requires Authorization, which a plain `<img src>` can
+ * never attach (desktop uses bearer tokens, not cookies). We pull the
+ * bytes via `apiFetchArrayBuffer` (which handles auth + 401 refresh)
+ * and inline them as base64 so the image renders both inside the editor
+ * and inside the cross-document print window.
+ */
+export async function fetchTemplateImageAsDataUrl(
+  orgId: string,
+  imageId: string,
+): Promise<string | null> {
+  try {
+    const { buffer, headers } = await apiFetchArrayBuffer(
+      `/organizations/${orgId}/case-print-template/images/${imageId}`,
+    );
+    const ct = headers.get("Content-Type") || "application/octet-stream";
+    return `data:${ct};base64,${arrayBufferToBase64(buffer)}`;
+  } catch {
+    return null;
+  }
+}
+
+export async function printCaseCardAdvanced(
   labCase: LabCase,
   extras: {
     restorations?: CaseRestoration[];
@@ -731,7 +768,7 @@ export function printCaseCardAdvanced(
     }>;
   },
   template: CasePrintTemplate,
-): void {
+): Promise<void> {
   const patient = `${labCase.patientFirstName ?? ""} ${
     labCase.patientLastName ?? ""
   }`.trim();
@@ -843,11 +880,24 @@ export function printCaseCardAdvanced(
 </div>`);
   }
 
-  for (const img of template.extraImages) {
+  // Pre-fetch each template image as a data: URL. Plain `<img src>` can't
+  // attach the bearer token desktop uses for auth, so we inline the bytes
+  // before constructing the print HTML.
+  const orgId = labCase.labOrganizationId;
+  const imageSrcs = orgId
+    ? await Promise.all(
+        template.extraImages.map((img) =>
+          fetchTemplateImageAsDataUrl(orgId, img.id),
+        ),
+      )
+    : template.extraImages.map(() => null);
+  template.extraImages.forEach((img, i) => {
+    const src = imageSrcs[i];
+    if (!src) return;
     sections.push(`<div class="lt-adv-box" style="${boxStyle(img, `opacity:${img.opacity}`)}">
-  <img src="${escapeHtml(resolveImageUrl(img.url))}" class="lt-adv-img" alt="" />
+  <img src="${escapeHtml(src)}" class="lt-adv-img" alt="" />
 </div>`);
-  }
+  });
 
   const body = `<div class="lt-adv-page">${sections.join("\n")}</div>`;
 

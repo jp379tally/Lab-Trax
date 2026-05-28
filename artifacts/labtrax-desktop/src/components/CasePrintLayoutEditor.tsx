@@ -26,6 +26,7 @@ import {
   X,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import { fetchTemplateImageAsDataUrl } from "@/lib/print";
 import { useAuth } from "@/lib/auth-context";
 import {
   coerceCasePrintTemplate,
@@ -175,6 +176,38 @@ export function CasePrintLayoutEditor({
       seededRef.current = true;
     }
   }, [query.data]);
+
+  // Resolved per-image data: URLs. Plain `<img src="/api/...">` can't
+  // attach the bearer token desktop uses for auth, so we prefetch each
+  // template image via apiFetchArrayBuffer and inline it as base64.
+  const [imageDataUrls, setImageDataUrls] = useState<Record<string, string>>(
+    {},
+  );
+  useEffect(() => {
+    if (!orgId) return;
+    const known = imageDataUrls;
+    const missing = draft.extraImages.filter((img) => !known[img.id]);
+    if (missing.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const entries = await Promise.all(
+        missing.map(async (img) => {
+          const url = await fetchTemplateImageAsDataUrl(orgId, img.id);
+          return [img.id, url] as const;
+        }),
+      );
+      if (cancelled) return;
+      setImageDataUrls((prev) => {
+        const next = { ...prev };
+        for (const [id, url] of entries) if (url) next[id] = url;
+        return next;
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orgId, draft.extraImages]);
 
   const saveMutation = useMutation({
     mutationFn: async (template: CasePrintTemplate | null) => {
@@ -569,7 +602,7 @@ export function CasePrintLayoutEditor({
                     >
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
-                        src={img.url}
+                        src={imageDataUrls[img.id] ?? ""}
                         alt=""
                         className="w-6 h-6 object-contain bg-white rounded border border-border shrink-0"
                       />
@@ -722,7 +755,7 @@ export function CasePrintLayoutEditor({
                     color="rgba(99,102,241,0.10)"
                     label=""
                     selected={isSelected}
-                    imageUrl={img.url}
+                    imageUrl={imageDataUrls[img.id]}
                     opacity={img.opacity}
                     onStart={(e, h) => startDrag(e, "image", img.id, h, img)}
                     onDelete={() => deleteImage(img.id)}
