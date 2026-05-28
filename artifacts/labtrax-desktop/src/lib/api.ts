@@ -486,6 +486,55 @@ function authHeader(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+// Network-level fetch can throw TypeError("Failed to fetch") on transient
+// connectivity blips, captive-portal redirects, sleep/wake, or the
+// renderer briefly losing its proxy. We retry GET/HEAD once after 800 ms
+// before surfacing the failure — those are idempotent so a duplicate
+// in-flight call is safe. Mutating methods (POST/PATCH/PUT/DELETE) are
+// NEVER auto-retried because the original request may have reached the
+// server and only the response was lost, and a second attempt would
+// duplicate the side effect (e.g. create two cases). On final failure,
+// throw an ApiError that includes the URL so users can report what
+// actually broke instead of the opaque "Failed to fetch".
+const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+function networkErrorMessage(url: string, err: unknown): string {
+  const detail = err instanceof Error ? err.message : String(err);
+  return `Could not reach the server (${detail}). URL: ${url}. Check your internet connection and try again.`;
+}
+
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
+  const method = (init.method ?? "GET").toUpperCase();
+  const canRetry = IDEMPOTENT_METHODS.has(method);
+  try {
+    return await fetch(url, init);
+  } catch (firstErr) {
+    // Preserve aborts (caller cancelled) — never wrap or retry these.
+    if (firstErr instanceof DOMException && firstErr.name === "AbortError") {
+      throw firstErr;
+    }
+    if (!(firstErr instanceof TypeError)) throw firstErr;
+    if (!canRetry) {
+      throw new ApiError(networkErrorMessage(url, firstErr), 0);
+    }
+    await new Promise((r) => setTimeout(r, 800));
+    try {
+      return await fetch(url, init);
+    } catch (secondErr) {
+      if (
+        secondErr instanceof DOMException &&
+        secondErr.name === "AbortError"
+      ) {
+        throw secondErr;
+      }
+      throw new ApiError(networkErrorMessage(url, secondErr), 0);
+    }
+  }
+}
+
 export async function apiFetch<T = unknown>(
   path: string,
   options: RequestInit = {},
@@ -508,7 +557,7 @@ export async function apiFetch<T = unknown>(
     if (cred) headers[cred.header] = cred.value;
   }
   const url = apiUrl(path);
-  const res = await fetch(url, { ...options, headers });
+  const res = await fetchWithRetry(url, { ...options, headers });
 
   if (res.status === 401 && !retried && _tokens?.refreshToken) {
     const refreshed = await refreshAccessToken();
@@ -582,7 +631,7 @@ export async function apiFetchArrayBuffer(
     if (cred) headers[cred.header] = cred.value;
   }
   const url = apiUrl(path);
-  const res = await fetch(url, { ...options, headers });
+  const res = await fetchWithRetry(url, { ...options, headers });
 
   if (res.status === 401 && !retried && _tokens?.refreshToken) {
     const refreshed = await refreshAccessToken();
