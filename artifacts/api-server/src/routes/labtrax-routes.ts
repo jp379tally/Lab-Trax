@@ -33,6 +33,73 @@ import { HttpError } from "../lib/http";
 import { requireAuth, optionalAuth } from "../middlewares/auth";
 import { parseOrganizationIdFromAffiliationKey } from "../lib/case-visibility";
 
+// ── Append-only union helpers for the legacy mobile case blob ──────────
+// The mobile app rebuilds its in-memory case list from the LIST endpoint
+// (GET /legacy/cases), which strips activityLog/photos/videos to keep the
+// payload small. When the client then appends a single note/photo/status
+// entry and PUTs the WHOLE case back via POST /legacy/cases, those arrays
+// contain only the one new item — everything else was stripped client-side.
+// A naive replace of case_data would therefore destroy the case's entire
+// history and every previously-uploaded photo/video (this is exactly the
+// "history only keeps one event / my photo disappeared" bug). To make the
+// endpoint safe for EVERY client, including already-installed app builds,
+// we union the incoming arrays with what is already stored: entries are
+// only ever added, never dropped. No mobile surface deletes individual
+// photos or activity entries, so union semantics cannot resurrect an
+// intentional deletion.
+function activityEntryKey(entry: any): string {
+  if (entry && typeof entry === "object") {
+    if (entry.id != null && entry.id !== "") return `id:${String(entry.id)}`;
+    // No stable id (older/legacy entries): build a content signature from as
+    // many discriminators as are available so two genuinely-distinct events
+    // are not collapsed into one. imageUri/attachmentId/user separate media
+    // and authored entries that may otherwise share type+timestamp.
+    return [
+      "sig",
+      entry.type ?? "",
+      entry.timestamp ?? "",
+      entry.description ?? "",
+      entry.imageUri ?? "",
+      entry.attachmentId ?? "",
+      entry.user ?? "",
+    ].join("|");
+  }
+  return `raw:${JSON.stringify(entry)}`;
+}
+
+function unionActivityLog(existing: unknown, incoming: unknown): any[] {
+  const ex = Array.isArray(existing) ? existing : [];
+  const inc = Array.isArray(incoming) ? incoming : [];
+  const seen = new Set<string>();
+  const out: any[] = [];
+  for (const e of [...ex, ...inc]) {
+    const k = activityEntryKey(e);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(e);
+  }
+  out.sort((a, b) => {
+    const ta = typeof a?.timestamp === "number" ? a.timestamp : 0;
+    const tb = typeof b?.timestamp === "number" ? b.timestamp : 0;
+    return ta - tb;
+  });
+  return out;
+}
+
+function unionMediaList(existing: unknown, incoming: unknown): any[] {
+  const ex = Array.isArray(existing) ? existing : [];
+  const inc = Array.isArray(incoming) ? incoming : [];
+  const seen = new Set<string>();
+  const out: any[] = [];
+  for (const item of [...ex, ...inc]) {
+    const k = typeof item === "string" ? item : JSON.stringify(item);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(item);
+  }
+  return out;
+}
+
 // Look up the set of lab organization ids the given user is an active member
 // of. This is the SINGLE source of truth used to decide which lab cases the
 // user can see or write — clients never get to influence this set.
@@ -1319,6 +1386,24 @@ export async function registerRoutes(): Promise<IRouter> {
                 normalizedCaseData.affiliationName =
                   existingCaseData.affiliationName;
               }
+
+              // Append-only merge of history + media so a stale client
+              // (one that loaded the case from the list endpoint, where
+              // these arrays are stripped) can never wipe the stored
+              // timeline or previously-uploaded photos/videos. See the
+              // unionActivityLog / unionMediaList helpers above.
+              normalizedCaseData.activityLog = unionActivityLog(
+                existingCaseData?.activityLog,
+                normalizedCaseData?.activityLog,
+              );
+              normalizedCaseData.photos = unionMediaList(
+                existingCaseData?.photos,
+                normalizedCaseData?.photos,
+              );
+              normalizedCaseData.videos = unionMediaList(
+                existingCaseData?.videos,
+                normalizedCaseData?.videos,
+              );
             } catch {
               // Ignore malformed legacy payloads.
             }
