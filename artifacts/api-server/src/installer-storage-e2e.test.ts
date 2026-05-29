@@ -19,22 +19,27 @@
  * DB failures are non-fatal to the storage path under test.  Every named
  * table export is listed explicitly so vitest's module-import validation pass.
  *
+ * Storage target & isolation:
+ *  This suite never touches the production PRIVATE_OBJECT_DIR. It runs only
+ *  when a dedicated, non-production target is supplied via
+ *  INSTALLER_E2E_OBJECT_DIR, and writes under a unique per-run prefix beneath
+ *  it (see installer-e2e-target.ts). That makes it safe to run anywhere —
+ *  including a workspace whose PRIVATE_OBJECT_DIR points at the live bucket —
+ *  with zero risk of overwriting the real desktop installer, and lets it run
+ *  in parallel with installer-publish-e2e.test.ts without a shared lock.
+ *
  * Skip behaviour:
- *  The suite is skipped automatically when PRIVATE_OBJECT_DIR is absent
- *  (App Storage not provisioned) or when PLATFORM_ADMIN_SECRET is absent
+ *  The suite is skipped automatically when INSTALLER_E2E_OBJECT_DIR is absent
+ *  (no dedicated test target) or when PLATFORM_ADMIN_SECRET is absent
  *  (isPlatformAdmin() always returns false when the secret is unset, so the
  *  upload endpoint blocks all callers — by design).
  *
  * Storage cleanup:
- *  The test snapshots the existing "exe" installer (if any) in beforeAll, then
- *  restores it in afterAll.  If no installer existed before the test ran, the
- *  dummy file is deleted so the slot is left clean.
- *
- *  Cleanup is safe to repeat: uploadDesktopInstaller and deleteDesktopInstaller
- *  are idempotent.  If afterAll fails mid-way (e.g. network outage), re-run
- *  the suite — it will snapshot the dummy file and delete/replace it again —
- *  or manually re-upload the real installer via Settings → Desktop App or with:
- *    pnpm --filter @workspace/scripts run upload-desktop-installer
+ *  Each run gets its own empty object prefix, so there is nothing to snapshot
+ *  or restore. afterAll simply deletes the dummy file it wrote so the test
+ *  target stays clean. deleteDesktopInstaller is idempotent, so a partial
+ *  failure (e.g. network outage) is harmless — the abandoned per-run prefix is
+ *  unique and never collides with a real installer.
  */
 
 import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
@@ -42,24 +47,28 @@ import type { Server } from "node:http";
 import request from "supertest";
 import {
   openDesktopInstallerStream,
-  uploadDesktopInstaller,
   deleteDesktopInstaller,
 } from "./lib/desktop-installer-storage.js";
 import {
-  acquireInstallerE2ELock,
-  releaseInstallerE2ELock,
-} from "./installer-e2e-lock.js";
+  applyInstallerE2EStorageTarget,
+  type InstallerE2ETarget,
+} from "./installer-e2e-target.js";
 
 // ---------------------------------------------------------------------------
-// Guards — skip when credentials needed by the test are absent.
+// Guards & isolation — skip unless a dedicated test target is configured.
 //
-// PRIVATE_OBJECT_DIR: App Storage not provisioned → storage calls throw.
+// INSTALLER_E2E_OBJECT_DIR: the dedicated, non-production storage target. When
+//   set, applyInstallerE2EStorageTarget() redirects PRIVATE_OBJECT_DIR to a
+//   unique per-run prefix beneath it for this fork only. When unset, the suite
+//   skips so it can never touch the production installer slot.
 // PLATFORM_ADMIN_SECRET: isPlatformAdmin() returns false when unset (by
 //   design), blocking the upload endpoint for all callers.
 // ---------------------------------------------------------------------------
 
+const E2E_TARGET: InstallerE2ETarget | null = applyInstallerE2EStorageTarget();
+
 const SUITE_ENABLED =
-  Boolean(process.env.PRIVATE_OBJECT_DIR) && Boolean(process.env.PLATFORM_ADMIN_SECRET);
+  Boolean(E2E_TARGET) && Boolean(process.env.PLATFORM_ADMIN_SECRET);
 
 // ---------------------------------------------------------------------------
 // Dummy Windows PE file: 'M' (0x4D) 'Z' (0x5A) magic bytes at positions 0-1,
@@ -269,38 +278,14 @@ import app from "./app.js";
 // ---------------------------------------------------------------------------
 
 describe.skipIf(!SUITE_ENABLED)(
-  "installer storage round-trip — real upload handler + real App Storage (requires PRIVATE_OBJECT_DIR + PLATFORM_ADMIN_SECRET)",
+  "installer storage round-trip — real upload handler + real App Storage (requires INSTALLER_E2E_OBJECT_DIR + PLATFORM_ADMIN_SECRET)",
   () => {
     let server: Server;
 
-    /**
-     * Snapshot of the "exe" installer that existed in App Storage before the
-     * test ran.  null means no installer was present (slot was empty).
-     *
-     * afterAll uses this to restore the bucket to its pre-test state:
-     *  - snapshot !== null → re-upload the original bytes.
-     *  - snapshot === null → delete the dummy file the test wrote.
-     *
-     * This makes the suite safe to run repeatedly against a shared or
-     * production-backed bucket without permanently replacing the real installer.
-     */
-    let preTestExeSnapshot: Buffer | null = null;
-
     beforeAll(async () => {
-      await acquireInstallerE2ELock();
-      // --- Snapshot the existing EXE installer before the test overwrites it ---
-      // openDesktopInstallerStream is the real (un-mocked) storage client, so
-      // this reads whatever is currently in App Storage for the "exe" slot.
-      const existing = await openDesktopInstallerStream("exe");
-      if (existing) {
-        preTestExeSnapshot = await new Promise<Buffer>((resolve, reject) => {
-          const chunks: Buffer[] = [];
-          existing.stream.on("data", (d: Buffer) => chunks.push(d));
-          existing.stream.on("end", () => resolve(Buffer.concat(chunks)));
-          existing.stream.on("error", reject);
-        });
-      }
-
+      // No snapshot/restore needed: applyInstallerE2EStorageTarget() pointed
+      // PRIVATE_OBJECT_DIR at a fresh, unique per-run prefix, so the "exe" slot
+      // starts empty and overwriting it cannot affect any real installer.
       server = app.listen(0);
       // Wait deterministically for the upload route to become available.
       // routes/index.ts calls registerRoutes() asynchronously; once the route
@@ -324,31 +309,19 @@ describe.skipIf(!SUITE_ENABLED)(
     afterAll(async () => {
       server.close();
 
-      // --- Restore App Storage to its pre-test state ---
-      //
-      // If a real installer was in the slot before the test, re-upload it so
-      // the production download URL continues to serve the correct file.
-      //
-      // If the slot was empty before the test, delete the dummy file the test
-      // wrote so no garbage is left behind.
-      //
-      // Both uploadDesktopInstaller and deleteDesktopInstaller are idempotent,
-      // so re-running the suite after a partial failure is safe.  If cleanup
-      // fails entirely (e.g. network outage during afterAll), re-upload the
-      // real installer manually via Settings → Desktop App or:
-      //   pnpm --filter @workspace/scripts run upload-desktop-installer
+      // Delete the dummy file this run wrote so the per-run prefix is left
+      // clean. deleteDesktopInstaller is idempotent, so a partial failure is
+      // harmless; the prefix is unique to this run and never holds a real
+      // installer. Finally restore PRIVATE_OBJECT_DIR so the override does not
+      // leak into any other suite sharing this worker.
       try {
-        if (preTestExeSnapshot !== null) {
-          await uploadDesktopInstaller(preTestExeSnapshot, "exe");
-        } else {
-          await deleteDesktopInstaller("exe");
-        }
+        await deleteDesktopInstaller("exe");
       } catch (err) {
         process.stderr.write(
-          `[storage-e2e] afterAll: failed to restore pre-test installer state: ${err}\n`,
+          `[storage-e2e] afterAll: failed to delete dummy installer: ${err}\n`,
         );
       }
-      await releaseInstallerE2ELock();
+      E2E_TARGET?.restore();
     });
 
     it("uploads a dummy .exe via POST /api/admin/desktop-installer/upload and downloads it back via GET /downloads/LabTrax-Setup.exe with correct headers and body", async () => {

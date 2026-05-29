@@ -167,8 +167,8 @@ Each carries `deleted_at` + `deleted_by_user_id` columns and an audit log entry.
 
 **Adding a protected table:** (1) add `deleted_at` + `deleted_by_user_id` to schema and push; (2) filter reads with `notDeleted(table)`; (3) add table + Drizzle export to `PROTECTED_TABLES` and `PROTECTED_DRIZZLE_EXPORTS` in `soft-delete.ts`.
 
-## Installer Storage Integration Test (opt-in)
+## Installer Storage Integration Tests (opt-in)
 
-`installer-storage-e2e.test.ts` tests the full upload → download round-trip against real App Storage. Auto-skipped unless `PRIVATE_OBJECT_DIR` and `PLATFORM_ADMIN_SECRET` are both set. **Warning:** writes a dummy `.exe` to the live `desktop-installer/` prefix — use a dedicated test bucket, not production.
+`installer-storage-e2e.test.ts` (upload → download round-trip) and `installer-publish-e2e.test.ts` (atomic `/publish`) exercise real App Storage. Both are gated on `INSTALLER_E2E_OBJECT_DIR` + `PLATFORM_ADMIN_SECRET` — auto-skipped unless **both** are set. They never touch the production `PRIVATE_OBJECT_DIR`: when `INSTALLER_E2E_OBJECT_DIR` is set they redirect storage to a unique per-run prefix (`<INSTALLER_E2E_OBJECT_DIR>/e2e-run-<id>/…`, see `installer-e2e-target.ts`) for that fork only, so they can run anywhere (including a workspace whose `PRIVATE_OBJECT_DIR` points at the live bucket) with zero risk of overwriting the real desktop installer. The per-run prefix also means the two suites never collide, so no shared lock is needed. Point `INSTALLER_E2E_OBJECT_DIR` at a dedicated, non-production storage dir (in CI it reuses the staging bucket).
 
 See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.

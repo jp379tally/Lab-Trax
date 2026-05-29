@@ -169,22 +169,29 @@ jobs:
 
       - name: Run API server tests
         # PRIVATE_OBJECT_DIR and DEFAULT_OBJECT_STORAGE_BUCKET_ID point to a
-        # dedicated CI/staging bucket — NOT the production bucket — so the
-        # dummy EXE written by the storage round-trip test never touches live
-        # installer downloads.  The afterAll in installer-storage-e2e.test.ts
-        # deletes the dummy EXE after each run so the bucket stays clean.
+        # dedicated CI/staging bucket — NOT the production bucket.
+        #
+        # INSTALLER_E2E_OBJECT_DIR is what actually gates the installer e2e
+        # suites (installer-storage-e2e + installer-publish-e2e). Those suites
+        # never read PRIVATE_OBJECT_DIR directly: when INSTALLER_E2E_OBJECT_DIR
+        # is set they redirect storage to a UNIQUE per-run prefix beneath it, so
+        # the dummy EXE they write can never overwrite a real installer and the
+        # two suites never collide (no shared lock needed). afterAll deletes the
+        # dummy EXE so the prefix stays clean. We reuse the staging dir here
+        # because it is already a dedicated, non-production target.
         #
         # CI_PLATFORM_ADMIN_SECRET is a repository secret scoped to the
         # staging environment so the production PLATFORM_ADMIN_SECRET is
         # never stored in CI.
         #
-        # The installer-storage-e2e suite auto-skips when either
-        # PRIVATE_OBJECT_DIR or PLATFORM_ADMIN_SECRET is unset (and the
-        # consistency check above already fails on partial configurations).
+        # The installer e2e suites auto-skip when either INSTALLER_E2E_OBJECT_DIR
+        # or PLATFORM_ADMIN_SECRET is unset (and the consistency check above
+        # already fails on partial configurations).
         run: pnpm --filter @workspace/api-server run test
         env:
           NODE_ENV: test
           PRIVATE_OBJECT_DIR: ${{ secrets.CI_PRIVATE_OBJECT_DIR }}
+          INSTALLER_E2E_OBJECT_DIR: ${{ secrets.CI_PRIVATE_OBJECT_DIR }}
           DEFAULT_OBJECT_STORAGE_BUCKET_ID: ${{ secrets.CI_DEFAULT_OBJECT_STORAGE_BUCKET_ID }}
           PLATFORM_ADMIN_SECRET: ${{ secrets.CI_PLATFORM_ADMIN_SECRET }}
 

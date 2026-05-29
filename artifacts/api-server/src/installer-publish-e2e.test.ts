@@ -12,28 +12,31 @@
  *   3. The alert dedup state (installer_publish_alert_last) is NOT touched
  *      on a successful publish (no admin email).
  *
- * Skip behaviour mirrors installer-storage-e2e.test.ts: the suite no-ops
- * unless PRIVATE_OBJECT_DIR and PLATFORM_ADMIN_SECRET are both set.
- *
- * Storage cleanup: the test snapshots the existing exe installer in
- * beforeAll and restores it in afterAll, even on test failure.
+ * Storage target & isolation mirror installer-storage-e2e.test.ts: the suite
+ * never touches the production PRIVATE_OBJECT_DIR. It runs only when a
+ * dedicated, non-production target is supplied via INSTALLER_E2E_OBJECT_DIR,
+ * and writes under a unique per-run prefix beneath it (see
+ * installer-e2e-target.ts). Each run gets its own empty prefix, so there is
+ * nothing to snapshot or restore and no shared lock is needed — afterAll just
+ * deletes the dummy file it wrote.
  */
 import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import type { Server } from "node:http";
 import request from "supertest";
 import {
   openDesktopInstallerStream,
-  uploadDesktopInstaller,
   deleteDesktopInstaller,
   getDesktopInstallerMetadata,
 } from "./lib/desktop-installer-storage.js";
 import {
-  acquireInstallerE2ELock,
-  releaseInstallerE2ELock,
-} from "./installer-e2e-lock.js";
+  applyInstallerE2EStorageTarget,
+  type InstallerE2ETarget,
+} from "./installer-e2e-target.js";
+
+const E2E_TARGET: InstallerE2ETarget | null = applyInstallerE2EStorageTarget();
 
 const SUITE_ENABLED =
-  Boolean(process.env.PRIVATE_OBJECT_DIR) && Boolean(process.env.PLATFORM_ADMIN_SECRET);
+  Boolean(E2E_TARGET) && Boolean(process.env.PLATFORM_ADMIN_SECRET);
 
 // Minimal valid Windows PE: 'MZ' magic followed by zero padding. The
 // /publish endpoint validates this magic before accepting the upload.
@@ -179,33 +182,28 @@ vi.mock("pino-http", () => ({
 
 describe.skipIf(!SUITE_ENABLED)("POST /admin/desktop-installer/publish (atomic)", () => {
   let server: Server;
-  let snapshot: Buffer | null = null;
 
   beforeAll(async () => {
-    await acquireInstallerE2ELock();
-    const existing = await getDesktopInstallerMetadata("exe");
-    if (existing) {
-      const stream = await openDesktopInstallerStream("exe");
-      if (stream) {
-        const chunks: Buffer[] = [];
-        for await (const c of stream.stream as any) {
-          chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c));
-        }
-        snapshot = Buffer.concat(chunks);
-      }
-    }
+    // No snapshot needed: applyInstallerE2EStorageTarget() pointed
+    // PRIVATE_OBJECT_DIR at a fresh, unique per-run prefix, so the "exe" slot
+    // starts empty and overwriting it cannot affect any real installer.
     const { default: app } = await import("./app.js");
     server = app.listen(0);
   });
 
   afterAll(async () => {
-    if (snapshot) {
-      await uploadDesktopInstaller(snapshot, "exe");
-    } else {
+    // Delete the dummy file this run wrote so the per-run prefix is left clean,
+    // then restore PRIVATE_OBJECT_DIR so the override does not leak into any
+    // other suite sharing this worker.
+    try {
       await deleteDesktopInstaller("exe");
+    } catch (err) {
+      process.stderr.write(
+        `[publish-e2e] afterAll: failed to delete dummy installer: ${err}\n`,
+      );
     }
     await new Promise<void>((resolve) => server.close(() => resolve()));
-    await releaseInstallerE2ELock();
+    E2E_TARGET?.restore();
   });
 
   it("atomically uploads to App Storage AND writes system_settings + changelog", async () => {
