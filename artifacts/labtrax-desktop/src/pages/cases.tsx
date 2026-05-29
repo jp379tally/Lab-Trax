@@ -35,6 +35,7 @@ import {
 } from "lucide-react";
 import QRCodeSVG from "react-qr-code";
 import { apiFetch, getAccessToken, getApiOrigin } from "@/lib/api";
+import { AuthedImage, AuthedVideo, isSameApiOrigin } from "@/components/AuthedMedia";
 import type {
   CaseAttachment,
   CaseEvent,
@@ -4847,11 +4848,10 @@ export function CaseDrawer({
                                         className="block group"
                                         title={`View ${metadata.fileName ?? "image"}`}
                                       >
-                                        <img
-                                          src={src}
+                                        <AuthedImage
+                                          url={src}
                                           alt={String(metadata.fileName ?? "attachment")}
                                           className="w-20 h-20 object-cover rounded-md border border-border group-hover:border-primary/50 transition-colors"
-                                          onError={(ev) => { (ev.target as HTMLImageElement).style.display = "none"; }}
                                         />
                                       </button>
                                     ) : isVid ? (
@@ -4861,20 +4861,49 @@ export function CaseDrawer({
                                         className="block group relative"
                                         title={`Play ${metadata.fileName ?? "video"}`}
                                       >
-                                        <video
-                                          src={src}
+                                        <AuthedVideo
+                                          url={src}
                                           className="w-20 h-20 object-cover rounded-md border border-border group-hover:border-primary/50 transition-colors bg-black"
                                           muted
                                           playsInline
                                           preload="metadata"
-                                          onError={(ev) => { (ev.target as HTMLVideoElement).style.display = "none"; }}
                                         />
                                         <span className="absolute inset-0 flex items-center justify-center pointer-events-none">
                                           <span className="h-7 w-7 rounded-full bg-black/60 text-white flex items-center justify-center text-[10px] font-bold">▶</span>
                                         </span>
                                       </button>
                                     ) : (
-                                      <span className="text-xs text-muted-foreground">{String(metadata.fileName ?? "")}</span>
+                                      <button
+                                        type="button"
+                                        onClick={async () => {
+                                          if (src.startsWith("data:") || src.startsWith("blob:")) {
+                                            window.open(src, "_blank");
+                                            return;
+                                          }
+                                          try {
+                                            const token = getAccessToken();
+                                            const sameOrigin = isSameApiOrigin(src);
+                                            const resp = await fetch(
+                                              src,
+                                              sameOrigin && token
+                                                ? { headers: { Authorization: `Bearer ${token}` } }
+                                                : undefined,
+                                            );
+                                            if (!resp.ok) throw new Error(String(resp.status));
+                                            const blob = await resp.blob();
+                                            const objUrl = URL.createObjectURL(blob);
+                                            window.open(objUrl, "_blank");
+                                            setTimeout(() => URL.revokeObjectURL(objUrl), 60_000);
+                                          } catch {
+                                            window.open(src, "_blank");
+                                          }
+                                        }}
+                                        className="inline-flex items-center gap-1.5 text-xs text-primary underline hover:text-primary/80"
+                                        title={`Open ${metadata.fileName ?? "file"}`}
+                                      >
+                                        <Paperclip size={12} />
+                                        {String(metadata.fileName ?? "Open file")}
+                                      </button>
                                     )}
                                   </div>
                                 );
@@ -4917,18 +4946,17 @@ export function CaseDrawer({
             <X size={20} />
           </button>
           {lightbox.kind === "video" ? (
-            <video
-              src={lightbox.url}
+            <AuthedVideo
+              url={lightbox.url}
               controls
               autoPlay
+              mimeType={lightbox.mimeType}
               className="max-w-[90vw] max-h-[90vh] rounded-lg bg-black"
               onClick={(e) => e.stopPropagation()}
-            >
-              {lightbox.mimeType && <source src={lightbox.url} type={lightbox.mimeType} />}
-            </video>
+            />
           ) : (
-            <img
-              src={lightbox.url}
+            <AuthedImage
+              url={lightbox.url}
               alt="Preview"
               className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg"
               onClick={(e) => e.stopPropagation()}

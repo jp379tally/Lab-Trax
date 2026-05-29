@@ -31,6 +31,7 @@ import * as DocumentPicker from "expo-document-picker";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { useApp } from "@/lib/app-context";
 import { resilientFetch, getAccessToken, getApiUrl } from "@/lib/query-client";
+import { caseMediaSource, isSameApiOrigin } from "@/lib/case-media-source";
 import * as FileSystem from "expo-file-system";
 import * as LegacyFileSystem from "expo-file-system/legacy";
 import { useAuth } from "@/lib/auth-context";
@@ -2386,7 +2387,7 @@ export default function CaseDetailScreen() {
               {caseItem.photos!.map((uri, idx) => (
                 <Pressable key={idx} onPress={() => setFullScreenPhoto(uri)}>
                   <Image
-                    source={{ uri }}
+                    source={caseMediaSource(uri)}
                     style={styles.photoThumb}
                   />
                 </Pressable>
@@ -2467,7 +2468,7 @@ export default function CaseDetailScreen() {
                               style={({ pressed }) => ({ opacity: pressed ? 0.85 : 1 })}
                             >
                               <Image
-                                source={{ uri: fullUrl }}
+                                source={caseMediaSource(fullUrl)}
                                 style={{ width: 88, height: 88, borderRadius: 8, backgroundColor: Colors.light.border }}
                               />
                             </Pressable>
@@ -2965,6 +2966,7 @@ export default function CaseDetailScreen() {
             const isNote = entry.type === "note";
             const isPhoto = entry.type === "photo";
             const isVideo = entry.type === "video";
+            const isDoc = entry.type === "document";
             const isBarcode = entry.type === "barcode_assigned" || entry.type === "barcode_unassigned";
             const isInvoice = entry.type === "invoice_paid" || entry.type === "invoice_attached";
             const isTracking = entry.type === "tracking_added";
@@ -3136,12 +3138,118 @@ export default function CaseDetailScreen() {
                         if (isPhoto && entry.imageUri) {
                           setFullScreenPhoto(entry.imageUri);
                         } else if (isVideo && entry.imageUri) {
+                          const videoUrl = entry.imageUri;
+                          const mimeType = entry.fileType || "video/mp4";
+                          const token = getAccessToken();
+                          // Only attach the bearer token for our own API origin so it
+                          // is never sent to a third-party host.
+                          const authHeaders = token && isSameApiOrigin(videoUrl)
+                            ? { Authorization: `Bearer ${token}` }
+                            : undefined;
                           if (Platform.OS === "web") {
-                            (window as any).open(entry.imageUri, "_blank");
+                            (async () => {
+                              try {
+                                const resp = await fetch(
+                                  videoUrl,
+                                  authHeaders ? { headers: authHeaders } : {},
+                                );
+                                if (!resp.ok) {
+                                  (window as any).open(videoUrl, "_blank");
+                                  return;
+                                }
+                                const blob = await resp.blob();
+                                const objUrl = URL.createObjectURL(blob);
+                                (window as any).open(objUrl, "_blank");
+                                setTimeout(() => URL.revokeObjectURL(objUrl), 60_000);
+                              } catch {
+                                (window as any).open(videoUrl, "_blank");
+                              }
+                            })();
                           } else {
-                            Linking.openURL(entry.imageUri).catch(() =>
-                              Alert.alert("Cannot play video", "Unable to open video on this device.")
-                            );
+                            (async () => {
+                              try {
+                                const ext = (mimeType.split("/")[1] || "mp4").split(";")[0];
+                                const cacheDir = FileSystem.Paths.cache.uri;
+                                const base = cacheDir.endsWith("/") ? cacheDir : cacheDir + "/";
+                                const localUri = `${base}case-video-${Date.now()}.${ext}`;
+                                const dl = LegacyFileSystem.createDownloadResumable(
+                                  videoUrl,
+                                  localUri,
+                                  authHeaders ? { headers: authHeaders } : {},
+                                );
+                                const res = await dl.downloadAsync();
+                                if (!res || res.status !== 200) {
+                                  Alert.alert("Cannot play video", "Unable to download this video.");
+                                  return;
+                                }
+                                if (await Sharing.isAvailableAsync()) {
+                                  await Sharing.shareAsync(res.uri, { mimeType, dialogTitle: "Video" });
+                                } else {
+                                  await Linking.openURL(res.uri).catch(() =>
+                                    Alert.alert("Cannot play video", "Unable to open video on this device.")
+                                  );
+                                }
+                              } catch {
+                                Alert.alert("Cannot play video", "Unable to open video on this device.");
+                              }
+                            })();
+                          }
+                        } else if (isDoc && entry.imageUri) {
+                          const fileUrl = entry.imageUri;
+                          const mimeType = entry.fileType || "application/octet-stream";
+                          const token = getAccessToken();
+                          // Only attach the bearer token for our own API origin so it
+                          // is never sent to a third-party host.
+                          const authHeaders = token && isSameApiOrigin(fileUrl)
+                            ? { Authorization: `Bearer ${token}` }
+                            : undefined;
+                          if (Platform.OS === "web") {
+                            (async () => {
+                              try {
+                                const resp = await fetch(
+                                  fileUrl,
+                                  authHeaders ? { headers: authHeaders } : {},
+                                );
+                                if (!resp.ok) {
+                                  (window as any).open(fileUrl, "_blank");
+                                  return;
+                                }
+                                const blob = await resp.blob();
+                                const objUrl = URL.createObjectURL(blob);
+                                (window as any).open(objUrl, "_blank");
+                                setTimeout(() => URL.revokeObjectURL(objUrl), 60_000);
+                              } catch {
+                                (window as any).open(fileUrl, "_blank");
+                              }
+                            })();
+                          } else {
+                            (async () => {
+                              try {
+                                const safeName = (entry.description || "file").replace(/[^A-Za-z0-9._-]/g, "_");
+                                const cacheDir = FileSystem.Paths.cache.uri;
+                                const base = cacheDir.endsWith("/") ? cacheDir : cacheDir + "/";
+                                const localUri = `${base}case-file-${Date.now()}-${safeName}`;
+                                const dl = LegacyFileSystem.createDownloadResumable(
+                                  fileUrl,
+                                  localUri,
+                                  authHeaders ? { headers: authHeaders } : {},
+                                );
+                                const res = await dl.downloadAsync();
+                                if (!res || res.status !== 200) {
+                                  Alert.alert("Cannot open file", "Unable to download this file.");
+                                  return;
+                                }
+                                if (await Sharing.isAvailableAsync()) {
+                                  await Sharing.shareAsync(res.uri, { mimeType, dialogTitle: entry.description || "File" });
+                                } else {
+                                  await Linking.openURL(res.uri).catch(() =>
+                                    Alert.alert("Cannot open file", "Unable to open this file on this device.")
+                                  );
+                                }
+                              } catch {
+                                Alert.alert("Cannot open file", "Unable to open this file on this device.");
+                              }
+                            })();
                           }
                         } else if (isNote) {
                           Alert.alert("Note", entry.description);
@@ -3157,7 +3265,7 @@ export default function CaseDetailScreen() {
                     >
                       <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 4 }}>
                         <Ionicons
-                          name={isNote ? "document-text" : isVideo ? "videocam" : "camera"}
+                          name={isNote ? "document-text" : isVideo ? "videocam" : isDoc ? "document-attach" : "camera"}
                           size={13}
                           color={isNote ? "#D97706" : "#7C3AED"}
                         />
@@ -3168,16 +3276,16 @@ export default function CaseDetailScreen() {
                           textTransform: "uppercase",
                           letterSpacing: 0.5,
                         }}>
-                          {isNote ? "Note" : isVideo ? "Video" : "Photo"}
+                          {isNote ? "Note" : isVideo ? "Video" : isDoc ? "File" : "Photo"}
                         </Text>
                         {entry.user && (
                           <View style={styles.initialsChip}>
                             <Text style={styles.initialsText}>{entryUserInitials}</Text>
                           </View>
                         )}
-                        {(isPhoto || isVideo) && entry.imageUri && (
+                        {(isPhoto || isVideo || isDoc) && entry.imageUri && (
                           <View style={{ marginLeft: "auto" }}>
-                            <Ionicons name={isVideo ? "play-circle-outline" : "expand-outline"} size={14} color="#7C3AED" />
+                            <Ionicons name={isVideo ? "play-circle-outline" : isDoc ? "download-outline" : "expand-outline"} size={14} color="#7C3AED" />
                           </View>
                         )}
                       </View>
@@ -3191,7 +3299,7 @@ export default function CaseDetailScreen() {
                       </Text>
                       {isPhoto && entry.imageUri && (
                         <Image
-                          source={{ uri: entry.imageUri }}
+                          source={caseMediaSource(entry.imageUri)}
                           style={{
                             width: "100%",
                             height: 120,
@@ -3215,6 +3323,21 @@ export default function CaseDetailScreen() {
                         }}>
                           <Ionicons name="play-circle" size={32} color="#A78BFA" />
                           <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "#C4B5FD" }}>Tap to play video</Text>
+                        </View>
+                      )}
+                      {isDoc && entry.imageUri && (
+                        <View style={{
+                          flexDirection: "row",
+                          alignItems: "center",
+                          gap: 8,
+                          marginTop: 8,
+                          paddingVertical: 8,
+                          paddingHorizontal: 10,
+                          borderRadius: 8,
+                          backgroundColor: "#EEF2FF",
+                        }}>
+                          <Ionicons name="document-attach" size={20} color="#6366F1" />
+                          <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "#4F46E5" }}>Tap to open file</Text>
                         </View>
                       )}
                       {(isPhoto || isVideo) && (() => {
@@ -3646,7 +3769,7 @@ export default function CaseDetailScreen() {
 
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.photoStrip}>
               {capturedPhotos.map((uri, idx) => (
-                <Image key={idx} source={{ uri }} style={styles.previewPhoto} />
+                <Image key={idx} source={caseMediaSource(uri)} style={styles.previewPhoto} />
               ))}
             </ScrollView>
 
@@ -3950,7 +4073,7 @@ export default function CaseDetailScreen() {
                           {uniquePhotos.map((uri, idx) => (
                             <Pressable key={idx} onPress={() => setFullScreenPhoto(uri)}>
                               <Image
-                                source={{ uri }}
+                                source={caseMediaSource(uri)}
                                 style={styles.completePhoto}
                                 resizeMode="cover"
                               />
@@ -4458,7 +4581,7 @@ export default function CaseDetailScreen() {
           <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 8 }}>
             {fullScreenPhoto && (
               <Image
-                source={{ uri: fullScreenPhoto }}
+                source={caseMediaSource(fullScreenPhoto)}
                 style={{ width: "100%", height: "100%" }}
                 resizeMode="contain"
               />

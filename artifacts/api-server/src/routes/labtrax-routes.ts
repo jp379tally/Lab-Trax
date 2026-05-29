@@ -2282,42 +2282,209 @@ export async function registerRoutes(): Promise<IRouter> {
       const patientName = [firstName, lastName].filter(Boolean).join(" ");
       const initials = (firstName[0] ?? "") + (lastName[0] ?? "");
 
-      // Build a minimal activityLog so the History tab has content
-      const activityLog: any[] = [
-        {
+      // Build a UNIFIED, chronological activityLog for desktop-created cases so
+      // the mobile History tab shows the same complete timeline the desktop
+      // shows. Previously this synthesized a minimal log (created + one status +
+      // one entry per attachment) and ignored case_events / case_notes entirely,
+      // which is why mobile appeared to "only keep one event at a time".
+      //
+      // Source of truth = case_events (every note, status change, attachment,
+      // restoration, remake, etc. is recorded there). Media events are enriched
+      // with a viewable absolute imageUri + attachmentId + fileType so the mobile
+      // timeline can render a pressable thumbnail. This handler is READ-ONLY —
+      // no writes occur, so the protected-table guarantees are unaffected.
+      const eventRows = await db
+        .select()
+        .from(caseEvents)
+        .where(eq(caseEvents.caseId, caseId));
+
+      // Absolute file URL for an attachment (mobile native cannot resolve
+      // relative URLs). Mirrors the host/proto resolution used by /media/upload.
+      const fwdHost = req.header("x-forwarded-host");
+      const fileHost = fwdHost || req.get("host") || "localhost";
+      const fwdProto = req.header("x-forwarded-proto");
+      const fileProto = fwdProto
+        ? fwdProto.split(",")[0]!.trim()
+        : req.protocol || "https";
+      const attachmentFileUrl = (attId: string) =>
+        `${fileProto}://${fileHost}/api/cases/${caseId}/attachments/${attId}/file`;
+
+      const mobileStationLabel = (mobile: string) =>
+        mobile.charAt(0) + mobile.slice(1).toLowerCase().replace(/_/g, " ");
+
+      // Best-effort human description for less-common event types. Returns null
+      // to omit purely-internal events (dedup detection, auto-link, deletions).
+      const humanizeEvent = (type: string, meta: any): string | null => {
+        switch (type) {
+          case "location_changed":
+            return meta?.toLocation
+              ? `Moved to ${meta.toLocation}`
+              : "Location changed";
+          case "restoration_added":
+            return "Restoration added";
+          case "restoration_updated":
+            return "Restoration updated";
+          case "restoration_deleted":
+            return "Restoration removed";
+          case "invoice_generated":
+            return "Invoice generated";
+          case "invoice_paid":
+            return "Invoice paid";
+          case "remake_of":
+            return meta?.remakeOfCaseId
+              ? `Created as a remake of case ${meta.remakeOfCaseId}`
+              : "Created as a remake";
+          case "remade_by":
+            return "Remade by a new case";
+          case "provider_submission_received":
+            return "Provider submission received";
+          case "provider_submission_approved":
+            return "Provider submission approved";
+          case "provider_submission_rejected":
+            return "Provider submission rejected";
+          case "ai_review_acknowledged":
+            return "AI import reviewed";
+          case "files_attached_from_zip":
+            return "Files attached";
+          default:
+            return null;
+        }
+      };
+
+      const attachmentById = new Map(attachmentRows.map((a) => [a.id, a]));
+      const usedAttachmentIds = new Set<string>();
+      const activityLog: any[] = [];
+
+      for (const ev of eventRows) {
+        const meta: any = (ev.metadataJson as any) || {};
+        const ts = ev.occurredAt
+          ? new Date(ev.occurredAt).getTime()
+          : createdMs;
+        const actor = ev.actorInitials || "Lab";
+        switch (ev.eventType) {
+          case "case_created":
+          case "case_created_from_itero":
+            activityLog.push({
+              id: `evt-${ev.id}`,
+              type: "created",
+              timestamp: ts,
+              description: "Case received",
+              user: actor,
+            });
+            break;
+          case "status_changed": {
+            const toMobile =
+              DESKTOP_TO_MOBILE_STATUS[String(meta.toStatus ?? "")] ?? null;
+            const label = toMobile
+              ? mobileStationLabel(toMobile)
+              : String(meta.toStatus ?? "");
+            activityLog.push({
+              id: `evt-${ev.id}`,
+              type: "station_change",
+              station: toMobile ?? undefined,
+              timestamp: ts,
+              description: `Case moved to ${label}`,
+              user: actor,
+            });
+            break;
+          }
+          case "note_added":
+            activityLog.push({
+              id: `evt-${ev.id}`,
+              type: "note",
+              timestamp: ts,
+              description: String(meta.noteText ?? ""),
+              user: actor,
+              visibility: meta.visibility ?? null,
+            });
+            break;
+          case "case_attachment_added": {
+            const attId = String(meta.attachmentId ?? "");
+            const att = attId ? attachmentById.get(attId) : undefined;
+            const fileType = String(att?.fileType ?? meta.fileType ?? "");
+            const isVideo = fileType.startsWith("video/");
+            const isPhoto = fileType.startsWith("image/");
+            if (attId) usedAttachmentIds.add(attId);
+            activityLog.push({
+              id: `evt-${ev.id}`,
+              type: isVideo ? "video" : isPhoto ? "photo" : "document",
+              timestamp: ts,
+              description:
+                att?.fileName ??
+                meta.fileName ??
+                (isPhoto
+                  ? "Photo added to case"
+                  : isVideo
+                    ? "Video added to case"
+                    : "File added to case"),
+              user: actor,
+              attachmentId: attId || undefined,
+              fileType: fileType || undefined,
+              imageUri: attId ? attachmentFileUrl(attId) : undefined,
+            });
+            break;
+          }
+          default: {
+            const desc = humanizeEvent(ev.eventType, meta);
+            if (desc) {
+              activityLog.push({
+                id: `evt-${ev.id}`,
+                type: "note",
+                timestamp: ts,
+                description: desc,
+                user: actor,
+              });
+            }
+          }
+        }
+      }
+
+      // Include any attachments that have no corresponding case_attachment_added
+      // event (older data, or files attached via paths that didn't log an event).
+      for (const att of attachmentRows) {
+        if (usedAttachmentIds.has(att.id)) continue;
+        const ts = att.createdAt
+          ? new Date(att.createdAt).getTime()
+          : createdMs;
+        const fileType = att.fileType ?? "";
+        const isVideo = fileType.startsWith("video/");
+        const isPhoto = fileType.startsWith("image/");
+        activityLog.push({
+          id: `att-${att.id}`,
+          type: isVideo ? "video" : isPhoto ? "photo" : "document",
+          timestamp: ts,
+          description:
+            att.fileName ??
+            (isPhoto
+              ? "Photo added to case"
+              : isVideo
+                ? "Video added to case"
+                : "File added to case"),
+          user: "Lab",
+          attachmentId: att.id,
+          fileType: fileType || undefined,
+          imageUri: attachmentFileUrl(att.id),
+        });
+      }
+
+      // Guarantee a "Case received" anchor even if no creation event was logged.
+      if (!activityLog.some((e) => e.type === "created")) {
+        activityLog.push({
           id: `desktop-created-${dc.id}`,
           type: "created",
           timestamp: createdMs,
           description: "Case received",
-          user: "Lab",
-        },
-      ];
-
-      if (dc.status && dc.status !== "received") {
-        activityLog.push({
-          id: `desktop-status-${dc.id}`,
-          type: "station_change",
-          station: mobileStatus,
-          timestamp: updatedMs,
-          description: `Case moved to ${mobileStatus.charAt(0) + mobileStatus.slice(1).toLowerCase().replace(/_/g, " ")}`,
-          user: "Lab",
-        });
-      }
-
-      for (const att of attachmentRows) {
-        const attMs = att.createdAt ? new Date(att.createdAt).getTime() : createdMs;
-        const isPhoto = att.fileType?.startsWith("image/");
-        activityLog.push({
-          id: `desktop-att-${att.id}`,
-          type: isPhoto ? "photo" : "document",
-          timestamp: attMs,
-          description: att.fileName ?? (isPhoto ? "Photo added" : "File added"),
           user: "Lab",
         });
       }
 
       // Sort chronologically
       activityLog.sort((a, b) => a.timestamp - b.timestamp);
+
+      // Surface image attachments in the mobile "Photos" section too.
+      const photos = attachmentRows
+        .filter((a) => (a.fileType ?? "").startsWith("image/"))
+        .map((a) => attachmentFileUrl(a.id));
 
       // Resolve the suggested practice name so the mobile banner can render it
       // without a second round-trip — mirrors the canonical /api/cases/:id shape.
@@ -2356,7 +2523,7 @@ export async function registerRoutes(): Promise<IRouter> {
         suggestedProviderOrgId,
         suggestedPracticeName,
         suggestedDoctorName: (dc as any).suggestedDoctorName ?? null,
-        photos: [],
+        photos,
         activityLog,
         restorations: restorationRows.map((r) => ({
           id: r.id,

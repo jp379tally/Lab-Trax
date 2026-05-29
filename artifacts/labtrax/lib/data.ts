@@ -62,6 +62,8 @@ export interface ActivityEntry {
   timestamp: number;
   description: string;
   imageUri?: string;
+  attachmentId?: string;
+  fileType?: string;
   station?: CaseStatus;
   user?: string;
 }
