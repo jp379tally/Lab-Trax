@@ -7,3 +7,4 @@
 - [iTero import test flake](itero-import-test-flake.md) — "no-AI stub path" tests must force AI key OFF themselves (it's set in Replit envs); live AI call on fake PDF intermittently 500s.
 - [Expo native upload](expo-native-upload.md) — expo/fetch rejects RN `{uri,name,type}` FormData parts ("Unsupported FormDataPart implementation"); use XHR uploadCaseMedia, never resilientFetch, for file uploads.
 - [Legacy mobile case blob merge](legacy-mobile-case-blob-merge.md) — mobile lab_cases history/photos collapsed to one event; list endpoint strips arrays + blob-replace upsert wiped them; fix = append-only union merge server-side.
+- [Case media needs attachment row](case-media-attachment-row.md) — a bare /api/media/upload URL 404s on the auth-gated serving routes; persisted media must be backed by a caseAttachments row (upload→attach→store id-based URL).

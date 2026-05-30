@@ -2355,22 +2355,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // ─── Public wrappers: attempt immediately, enqueue on failure ────────────
 
-  async function uploadPhotoToCanonicalCase(caseId: string, photoUri: string): Promise<void> {
-    const uriClean = photoUri.toLowerCase().split("?")[0] ?? "";
-    const ext = uriClean.split(".").pop() || "jpg";
-    const isVid = isVideoUri(photoUri);
-    const mimeType = isVid
-      ? ext === "mov" ? "video/quicktime" : `video/${ext}`
-      : ext === "jpg" ? "image/jpeg" : `image/${ext}`;
-    const fileName = `case-media-${Date.now()}.${ext}`;
-    const itemId = `photo-${caseId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-    const succeeded = await rawUploadPhotoToCase(caseId, photoUri, fileName, mimeType);
-    if (!succeeded) {
-      await enqueuePhoto(itemId, caseId, photoUri, fileName, mimeType);
-    }
-  }
-
   async function addNoteToCanonicalCase(caseId: string, noteText: string): Promise<void> {
     const itemId = `note-${caseId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -2380,16 +2364,86 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  // Upload a local photo/video and create its caseAttachments row in a SINGLE
+  // round-trip, returning a URL the app can actually render. This is critical:
+  // the bare /api/media/upload endpoint stores a file but creates NO attachment
+  // row, and the auth-gated file-serving routes only serve files that have a
+  // matching caseAttachments record — so a bare media URL renders blank (404).
+  // We therefore upload, create the attachment, and return the canonical
+  // id-based serving URL (/api/cases/:caseId/attachments/:id/file), which is
+  // same-origin and so receives the bearer token via caseMediaSource. Returns
+  // null on any failure so callers can fall back to the local uri + retry queue.
+  async function uploadPhotoAndCreateAttachment(
+    caseId: string,
+    photoUri: string,
+  ): Promise<string | null> {
+    const uriClean = photoUri.toLowerCase().split("?")[0] ?? "";
+    const isVid = isVideoUri(photoUri);
+    const ext = uriClean.split(".").pop() || (isVid ? "mp4" : "jpg");
+    const mimeType = isVid
+      ? ext === "mov" ? "video/quicktime" : `video/${ext}`
+      : ext === "jpg" ? "image/jpeg" : `image/${ext}`;
+    const fileName = `case-media-${Date.now()}.${ext}`;
+    try {
+      const uploadRes = await uploadCaseMedia("/api/media/upload", photoUri, fileName, mimeType);
+      if (!uploadRes?.ok) return null;
+      const { url } = await uploadRes.json();
+      if (!url) return null;
+      const attachRes = await resilientFetch(
+        `/api/cases/${encodeURIComponent(caseId)}/attachments`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ storageKey: url, fileName, fileType: mimeType }),
+        }
+      );
+      if (!attachRes?.ok) return null;
+      const body = await attachRes.json();
+      const attachmentId = body?.data?.id ?? body?.id;
+      if (!attachmentId) {
+        // Attachment row was created with storageKey === url, so the
+        // filename-based serving route can now resolve it; fall back to that.
+        return url;
+      }
+      const base = getApiUrl().replace(/\/+$/, "");
+      return `${base}/api/cases/${encodeURIComponent(caseId)}/attachments/${encodeURIComponent(String(attachmentId))}/file`;
+    } catch {
+      return null;
+    }
+  }
+
   async function addCasePhoto(caseId: string, photoUri: string, user?: string) {
-    const sharedPhotoUri = (await normalizeSharedImageUri(photoUri)) || photoUri;
     const now = Date.now();
-    const isVid = isVideoUri(sharedPhotoUri);
+    const isVid = isVideoUri(photoUri);
+    const targetCase = cases.find((c) => c.id === caseId);
+    const isCanonical = (targetCase as any)?._sourceTable === "cases";
+
+    // Decide what URI to persist. For canonical server cases we MUST store a
+    // URL backed by a real caseAttachments row (see uploadPhotoAndCreateAttachment),
+    // otherwise the auth-gated serving route 404s and the photo renders blank.
+    let storedUri = photoUri;
+    let enqueueForRetry = false;
+    if (isCanonical) {
+      const canonicalUrl = await uploadPhotoAndCreateAttachment(caseId, photoUri);
+      if (canonicalUrl) {
+        storedUri = canonicalUrl;
+      } else {
+        // Offline / upload failed: keep the local uri for on-device preview and
+        // queue the upload so it syncs once connectivity returns.
+        enqueueForRetry = true;
+      }
+    } else {
+      // Legacy/local cases have no server attachment endpoint; best-effort
+      // public upload, else keep the local uri.
+      storedUri = (await normalizeSharedImageUri(photoUri)) || photoUri;
+    }
+
     const photoEntry: ActivityEntry = {
       id: generateId(),
       type: isVid ? "video" : "photo",
       timestamp: now,
       description: isVid ? "Video added to case" : "Photo added to case",
-      imageUri: sharedPhotoUri,
+      imageUri: storedUri,
       user: user || undefined,
     };
     setCases((prevCases) => {
@@ -2398,13 +2452,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const updatedCase = {
             ...c,
             updatedAt: now,
-            photos: [...(c.photos || []), sharedPhotoUri],
+            photos: [...(c.photos || []), storedUri],
             activityLog: [...(c.activityLog || []), photoEntry],
           };
           void syncCaseToServer(updatedCase);
-          if ((c as any)._sourceTable === "cases") {
-            void uploadPhotoToCanonicalCase(caseId, sharedPhotoUri);
-          }
           return updatedCase;
         }
         return c;
@@ -2412,6 +2463,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
       return updated;
     });
+
+    if (enqueueForRetry) {
+      const uriClean = photoUri.toLowerCase().split("?")[0] ?? "";
+      const ext = uriClean.split(".").pop() || (isVid ? "mp4" : "jpg");
+      const mimeType = isVid
+        ? ext === "mov" ? "video/quicktime" : `video/${ext}`
+        : ext === "jpg" ? "image/jpeg" : `image/${ext}`;
+      const fileName = `case-media-${Date.now()}.${ext}`;
+      const itemId = `photo-${caseId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      await enqueuePhoto(itemId, caseId, photoUri, fileName, mimeType);
+    }
   }
 
   function addCaseNote(caseId: string, note: string, user?: string) {
@@ -2447,21 +2509,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   async function addCasePhotosWithNote(caseId: string, photoUris: string[], note: string, user?: string) {
     const now = Date.now();
-    const normalizedUris = await Promise.all(
-      photoUris.map(async (uri) => (await normalizeSharedImageUri(uri)) || uri)
+    const targetCase = cases.find((c) => c.id === caseId);
+    const isCanonical = (targetCase as any)?._sourceTable === "cases";
+
+    // Resolve each local uri to a renderable, persistable uri. For canonical
+    // server cases this uploads + creates the attachment row so the serving
+    // route can actually return the file (otherwise it 404s → blank). isVid is
+    // derived from the ORIGINAL uri because the canonical serving URL has no
+    // file extension to sniff.
+    const resolved = await Promise.all(
+      photoUris.map(async (originalUri) => {
+        const isVid = isVideoUri(originalUri);
+        if (isCanonical) {
+          const canonicalUrl = await uploadPhotoAndCreateAttachment(caseId, originalUri);
+          if (canonicalUrl) return { storedUri: canonicalUrl, isVid, retry: false, originalUri };
+          return { storedUri: originalUri, isVid, retry: true, originalUri };
+        }
+        const shared = (await normalizeSharedImageUri(originalUri)) || originalUri;
+        return { storedUri: shared, isVid, retry: false, originalUri };
+      })
     );
 
-    const photoEntries: ActivityEntry[] = normalizedUris.map((uri, i) => {
-      const isVid = isVideoUri(uri);
-      return {
-        id: generateId(),
-        type: (isVid ? "video" : "photo") as ActivityEntryType,
-        timestamp: now + i,
-        description: isVid ? "Video added to case" : "Photo added to case",
-        imageUri: uri,
-        user: user || undefined,
-      };
-    });
+    const normalizedUris = resolved.map((r) => r.storedUri);
+
+    const photoEntries: ActivityEntry[] = resolved.map((r, i) => ({
+      id: generateId(),
+      type: (r.isVid ? "video" : "photo") as ActivityEntryType,
+      timestamp: now + i,
+      description: r.isVid ? "Video added to case" : "Photo added to case",
+      imageUri: r.storedUri,
+      user: user || undefined,
+    }));
 
     const noteEntry: ActivityEntry | null = note.trim()
       ? {
@@ -2487,13 +2565,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
             ],
           };
           void syncCaseToServer(updatedCase);
-          if ((c as any)._sourceTable === "cases") {
-            for (const uri of normalizedUris) {
-              void uploadPhotoToCanonicalCase(caseId, uri);
-            }
-            if (noteEntry) {
-              void addNoteToCanonicalCase(caseId, noteEntry.description);
-            }
+          if (isCanonical && noteEntry) {
+            void addNoteToCanonicalCase(caseId, noteEntry.description);
           }
           return updatedCase;
         }
@@ -2502,6 +2575,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
       AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
       return updated;
     });
+
+    // Queue any uploads that failed (offline) so they sync when back online.
+    for (const r of resolved) {
+      if (!r.retry) continue;
+      const uriClean = r.originalUri.toLowerCase().split("?")[0] ?? "";
+      const ext = uriClean.split(".").pop() || (r.isVid ? "mp4" : "jpg");
+      const mimeType = r.isVid
+        ? ext === "mov" ? "video/quicktime" : `video/${ext}`
+        : ext === "jpg" ? "image/jpeg" : `image/${ext}`;
+      const fileName = `case-media-${Date.now()}.${ext}`;
+      const itemId = `photo-${caseId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      await enqueuePhoto(itemId, caseId, r.originalUri, fileName, mimeType);
+    }
   }
 
   function addTrackingNumber(caseId: string, tracking: string) {
