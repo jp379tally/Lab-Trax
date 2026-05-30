@@ -15,7 +15,8 @@ import {
 import { Stack, router as expoRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Colors from "@/constants/colors";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
+import { EmptyState } from "@/components/ui/EmptyState";
 import { getAccessToken, getApiUrl } from "@/lib/query-client";
 import { useApp } from "@/lib/app-context";
 import { formatPhone } from "@/lib/data";
@@ -92,6 +93,8 @@ interface EligibleDoctor {
 
 export default function CustomersScreen() {
   const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const { invoices: appInvoices, setPendingInvoiceEditId, role } = useApp();
   const [orgs, setOrgs] = useState<ProviderOrg[]>([]);
   const [apiInvoices, setApiInvoices] = useState<InvoiceRow[]>([]);
@@ -187,7 +190,7 @@ export default function CustomersScreen() {
     return (
       <View style={styles.centered}>
         <Stack.Screen options={{ headerShown: false }} />
-        <ActivityIndicator size="large" color={Colors.light.tint} />
+        <ActivityIndicator size="large" color={colors.tint} />
       </View>
     );
   }
@@ -202,7 +205,7 @@ export default function CustomersScreen() {
             style={styles.backBtn}
             hitSlop={8}
           >
-            <Ionicons name="chevron-back" size={22} color={Colors.light.tint} />
+            <Ionicons name="chevron-back" size={22} color={colors.tint} />
           </Pressable>
           <View style={{ flex: 1 }}>
             <Text style={styles.headerTitle} numberOfLines={1}>
@@ -218,7 +221,7 @@ export default function CustomersScreen() {
             <Text
               style={[
                 styles.balanceValue,
-                (openBalanceByOrg.get(selectedOrg.id) ?? 0) > 0 && { color: "#D97706" },
+                (openBalanceByOrg.get(selectedOrg.id) ?? 0) > 0 && { color: colors.warningStrong },
               ]}
             >
               {fmtMoney(openBalanceByOrg.get(selectedOrg.id) ?? 0)}
@@ -233,7 +236,7 @@ export default function CustomersScreen() {
               style={({ pressed }) => [styles.addDoctorBtn, pressed && { opacity: 0.85 }]}
               testID="add-doctor-to-practice"
             >
-              <Ionicons name="person-add-outline" size={14} color="#fff" />
+              <Ionicons name="person-add-outline" size={14} color={colors.textInverse} />
               <Text style={styles.addDoctorBtnText}>Add doctor to practice</Text>
             </Pressable>
           </View>
@@ -243,13 +246,13 @@ export default function CustomersScreen() {
         <View style={styles.infoStrip}>
           {selectedOrg.phone ? (
             <View style={styles.infoItem}>
-              <Ionicons name="call-outline" size={13} color={Colors.light.textSecondary} />
+              <Ionicons name="call-outline" size={13} color={colors.textSecondary} />
               <Text style={styles.infoText}>{selectedOrg.phone}</Text>
             </View>
           ) : null}
           {selectedOrg.billingEmail ? (
             <View style={styles.infoItem}>
-              <Ionicons name="mail-outline" size={13} color={Colors.light.textSecondary} />
+              <Ionicons name="mail-outline" size={13} color={colors.textSecondary} />
               <Text style={styles.infoText} numberOfLines={1}>
                 {selectedOrg.billingEmail}
               </Text>
@@ -257,7 +260,7 @@ export default function CustomersScreen() {
           ) : null}
           {(selectedOrg.city || selectedOrg.state) ? (
             <View style={styles.infoItem}>
-              <Ionicons name="location-outline" size={13} color={Colors.light.textSecondary} />
+              <Ionicons name="location-outline" size={13} color={colors.textSecondary} />
               <Text style={styles.infoText}>
                 {[selectedOrg.city, selectedOrg.state].filter(Boolean).join(", ")}
               </Text>
@@ -270,9 +273,11 @@ export default function CustomersScreen() {
           keyExtractor={(inv) => inv.id}
           contentContainerStyle={{ paddingBottom: insets.bottom + 32 }}
           ListEmptyComponent={
-            <View style={styles.empty}>
-              <Text style={styles.emptyText}>No invoices found.</Text>
-            </View>
+            <EmptyState
+              icon="receipt-outline"
+              title="No invoices found"
+              description="Invoices for this customer will appear here."
+            />
           }
           renderItem={({ item: inv }) => {
             const isOpen = inv.status === "open" || inv.status === "partially_paid";
@@ -293,18 +298,18 @@ export default function CustomersScreen() {
                   <View
                     style={[
                       styles.statusBadge,
-                      inv.status === "paid" && { backgroundColor: "#DCFCE7" },
-                      (inv.status === "open" || inv.status === "partially_paid") && { backgroundColor: "#FEF9C3" },
-                      inv.status === "void" && { backgroundColor: "#F1F5F9" },
-                      inv.status === "draft" && { backgroundColor: "#F1F5F9" },
+                      inv.status === "paid" && { backgroundColor: colors.successLight },
+                      (inv.status === "open" || inv.status === "partially_paid") && { backgroundColor: colors.warningLight },
+                      inv.status === "void" && { backgroundColor: colors.surfaceAlt },
+                      inv.status === "draft" && { backgroundColor: colors.surfaceAlt },
                     ]}
                   >
                     <Text
                       style={[
                         styles.statusText,
-                        inv.status === "paid" && { color: "#16A34A" },
-                        (inv.status === "open" || inv.status === "partially_paid") && { color: "#D97706" },
-                        (inv.status === "void" || inv.status === "draft") && { color: "#64748B" },
+                        inv.status === "paid" && { color: colors.successStrong },
+                        (inv.status === "open" || inv.status === "partially_paid") && { color: colors.warningStrong },
+                        (inv.status === "void" || inv.status === "draft") && { color: colors.textSecondary },
                       ]}
                     >
                       {inv.status.replace(/_/g, " ")}
@@ -312,12 +317,12 @@ export default function CustomersScreen() {
                   </View>
                   <Text style={styles.invTotal}>{fmtMoney(inv.total)}</Text>
                   {isOpen && balance > 0 && (
-                    <Text style={[styles.invBalance, { color: "#D97706" }]}>
+                    <Text style={[styles.invBalance, { color: colors.warningStrong }]}>
                       bal {fmtMoney(balance)}
                     </Text>
                   )}
                 </View>
-                <Ionicons name="chevron-forward" size={16} color={Colors.light.textSecondary} style={{ marginLeft: 8 }} />
+                <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} style={{ marginLeft: 8 }} />
               </Pressable>
             );
           }}
@@ -341,7 +346,7 @@ export default function CustomersScreen() {
           style={styles.backBtn}
           hitSlop={8}
         >
-          <Ionicons name="chevron-back" size={22} color={Colors.light.tint} />
+          <Ionicons name="chevron-back" size={22} color={colors.tint} />
         </Pressable>
         <Text style={styles.headerTitle}>Customers</Text>
       </View>
@@ -350,14 +355,14 @@ export default function CustomersScreen() {
         <Ionicons
           name="search-outline"
           size={16}
-          color={Colors.light.textSecondary}
+          color={colors.textSecondary}
           style={{ position: "absolute", left: 12, top: "50%", marginTop: -8 }}
         />
         <TextInput
           value={search}
           onChangeText={setSearch}
           placeholder="Search practices…"
-          placeholderTextColor={Colors.light.textSecondary}
+          placeholderTextColor={colors.textSecondary}
           style={styles.searchInput}
         />
       </View>
@@ -367,9 +372,11 @@ export default function CustomersScreen() {
         keyExtractor={(o) => o.id}
         contentContainerStyle={{ paddingBottom: insets.bottom + 32 }}
         ListEmptyComponent={
-          <View style={styles.empty}>
-            <Text style={styles.emptyText}>No practices found.</Text>
-          </View>
+          <EmptyState
+            icon="business-outline"
+            title="No practices found"
+            description="Linked practices will appear here."
+          />
         }
         renderItem={({ item: org }) => {
           const balance = openBalanceByOrg.get(org.id) ?? 0;
@@ -380,7 +387,7 @@ export default function CustomersScreen() {
               onPress={() => setSelectedId(org.id)}
             >
               <View style={styles.orgIcon}>
-                <Ionicons name="business-outline" size={18} color={Colors.light.tint} />
+                <Ionicons name="business-outline" size={18} color={colors.tint} />
               </View>
               <View style={{ flex: 1, minWidth: 0 }}>
                 <Text style={styles.orgName} numberOfLines={1}>
@@ -407,7 +414,7 @@ export default function CustomersScreen() {
                   <Text style={styles.orgBalance}>{fmtMoney(balance)}</Text>
                 )}
               </View>
-              <Ionicons name="chevron-forward" size={16} color={Colors.light.textSecondary} />
+              <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />
             </Pressable>
           );
         }}
@@ -423,6 +430,8 @@ interface AddDoctorToPracticeModalProps {
 }
 
 function AddDoctorToPracticeModal({ visible, org, onClose }: AddDoctorToPracticeModalProps) {
+  const { colors } = useTheme();
+  const modalStyles = useMemo(() => makeModalStyles(colors), [colors]);
   const [mode, setMode] = useState<"new" | "existing">("new");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -621,7 +630,7 @@ function AddDoctorToPracticeModal({ visible, org, onClose }: AddDoctorToPractice
       onRequestClose={onClose}
     >
       <KeyboardAvoidingView
-        style={{ flex: 1, backgroundColor: Colors.light.backgroundSolid }}
+        style={{ flex: 1, backgroundColor: colors.backgroundSolid }}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
         <View style={modalStyles.header}>
@@ -632,7 +641,7 @@ function AddDoctorToPracticeModal({ visible, org, onClose }: AddDoctorToPractice
             </Text>
           </View>
           <Pressable onPress={onClose} hitSlop={10} style={modalStyles.closeBtn}>
-            <Ionicons name="close" size={22} color={Colors.light.text} />
+            <Ionicons name="close" size={22} color={colors.text} />
           </Pressable>
         </View>
 
@@ -648,7 +657,7 @@ function AddDoctorToPracticeModal({ visible, org, onClose }: AddDoctorToPractice
             <Ionicons
               name="person-add-outline"
               size={14}
-              color={mode === "new" ? "#fff" : Colors.light.text}
+              color={mode === "new" ? colors.textInverse : colors.text}
             />
             <Text style={[modalStyles.tabText, mode === "new" && modalStyles.tabTextActive]}>
               Add new doctor
@@ -665,7 +674,7 @@ function AddDoctorToPracticeModal({ visible, org, onClose }: AddDoctorToPractice
             <Ionicons
               name="people-outline"
               size={14}
-              color={mode === "existing" ? "#fff" : Colors.light.text}
+              color={mode === "existing" ? colors.textInverse : colors.text}
             />
             <Text style={[modalStyles.tabText, mode === "existing" && modalStyles.tabTextActive]}>
               Pick existing
@@ -679,13 +688,13 @@ function AddDoctorToPracticeModal({ visible, org, onClose }: AddDoctorToPractice
           keyboardShouldPersistTaps="handled"
         >
           {error && (
-            <View style={[modalStyles.banner, { backgroundColor: "#FEE2E2" }]}>
-              <Text style={[modalStyles.bannerText, { color: "#B91C1C" }]}>{error}</Text>
+            <View style={[modalStyles.banner, { backgroundColor: colors.errorLight }]}>
+              <Text style={[modalStyles.bannerText, { color: colors.errorText }]}>{error}</Text>
             </View>
           )}
           {success && (
-            <View style={[modalStyles.banner, { backgroundColor: "#DCFCE7" }]}>
-              <Text style={[modalStyles.bannerText, { color: "#15803D" }]}>{success}</Text>
+            <View style={[modalStyles.banner, { backgroundColor: colors.successLight }]}>
+              <Text style={[modalStyles.bannerText, { color: colors.successStrong }]}>{success}</Text>
             </View>
           )}
 
@@ -698,7 +707,7 @@ function AddDoctorToPracticeModal({ visible, org, onClose }: AddDoctorToPractice
                     value={firstName}
                     onChangeText={setFirstName}
                     placeholder="Jane"
-                    placeholderTextColor={Colors.light.textSecondary}
+                    placeholderTextColor={colors.textSecondary}
                     style={modalStyles.input}
                     autoCapitalize="words"
                     autoFocus
@@ -710,7 +719,7 @@ function AddDoctorToPracticeModal({ visible, org, onClose }: AddDoctorToPractice
                     value={lastName}
                     onChangeText={setLastName}
                     placeholder="Smith"
-                    placeholderTextColor={Colors.light.textSecondary}
+                    placeholderTextColor={colors.textSecondary}
                     style={modalStyles.input}
                     autoCapitalize="words"
                   />
@@ -722,7 +731,7 @@ function AddDoctorToPracticeModal({ visible, org, onClose }: AddDoctorToPractice
                   value={email}
                   onChangeText={setEmail}
                   placeholder="optional"
-                  placeholderTextColor={Colors.light.textSecondary}
+                  placeholderTextColor={colors.textSecondary}
                   style={modalStyles.input}
                   autoCapitalize="none"
                   keyboardType="email-address"
@@ -735,7 +744,7 @@ function AddDoctorToPracticeModal({ visible, org, onClose }: AddDoctorToPractice
                   value={phone}
                   onChangeText={(v) => setPhone(formatPhone(v))}
                   placeholder="000-000-0000"
-                  placeholderTextColor={Colors.light.textSecondary}
+                  placeholderTextColor={colors.textSecondary}
                   style={modalStyles.input}
                   keyboardType="phone-pad"
                 />
@@ -751,14 +760,14 @@ function AddDoctorToPracticeModal({ visible, org, onClose }: AddDoctorToPractice
                 <Ionicons
                   name="search-outline"
                   size={16}
-                  color={Colors.light.textSecondary}
+                  color={colors.textSecondary}
                   style={{ position: "absolute", left: 12, top: 12 }}
                 />
                 <TextInput
                   value={search}
                   onChangeText={setSearch}
                   placeholder="Search existing doctors…"
-                  placeholderTextColor={Colors.light.textSecondary}
+                  placeholderTextColor={colors.textSecondary}
                   style={modalStyles.searchInput}
                   autoCapitalize="none"
                   autoCorrect={false}
@@ -767,13 +776,13 @@ function AddDoctorToPracticeModal({ visible, org, onClose }: AddDoctorToPractice
               <View style={modalStyles.list}>
                 {eligibleLoading && (
                   <View style={modalStyles.listMsg}>
-                    <ActivityIndicator size="small" color={Colors.light.tint} />
+                    <ActivityIndicator size="small" color={colors.tint} />
                     <Text style={modalStyles.listMsgText}>Loading doctors…</Text>
                   </View>
                 )}
                 {!eligibleLoading && eligibleError && (
                   <View style={modalStyles.listMsg}>
-                    <Text style={[modalStyles.listMsgText, { color: "#B91C1C" }]}>
+                    <Text style={[modalStyles.listMsgText, { color: colors.errorText }]}>
                       {eligibleError}
                     </Text>
                   </View>
@@ -801,7 +810,7 @@ function AddDoctorToPracticeModal({ visible, org, onClose }: AddDoctorToPractice
                       <View
                         style={[
                           modalStyles.radio,
-                          checked && { borderColor: Colors.light.tint },
+                          checked && { borderColor: colors.tint },
                         ]}
                       >
                         {checked && <View style={modalStyles.radioDot} />}
@@ -812,14 +821,14 @@ function AddDoctorToPracticeModal({ visible, org, onClose }: AddDoctorToPractice
                             {name}
                           </Text>
                           {u.virtual ? (
-                            <View style={[modalStyles.tag, { backgroundColor: "#FEF3C7" }]}>
-                              <Text style={[modalStyles.tagText, { color: "#92400E" }]}>
+                            <View style={[modalStyles.tag, { backgroundColor: colors.warningLight }]}>
+                              <Text style={[modalStyles.tagText, { color: colors.warningText }]}>
                                 no account yet
                               </Text>
                             </View>
                           ) : u.platformAccountNumber ? (
-                            <View style={[modalStyles.tag, { backgroundColor: Colors.light.tintLight || "#EFF6FF" }]}>
-                              <Text style={[modalStyles.tagText, { color: Colors.light.tint, fontFamily: "Inter_500Medium" }]}>
+                            <View style={[modalStyles.tag, { backgroundColor: colors.tintLight }]}>
+                              <Text style={[modalStyles.tagText, { color: colors.tint, fontFamily: "Inter_500Medium" }]}>
                                 {u.platformAccountNumber}
                               </Text>
                             </View>
@@ -861,7 +870,7 @@ function AddDoctorToPracticeModal({ visible, org, onClose }: AddDoctorToPractice
               submitDisabled && { opacity: 0.5 },
             ]}
           >
-            {submitting && <ActivityIndicator size="small" color="#fff" style={{ marginRight: 6 }} />}
+            {submitting && <ActivityIndicator size="small" color={colors.textInverse} style={{ marginRight: 6 }} />}
             <Text style={modalStyles.footerBtnPrimaryText}>
               {mode === "new"
                 ? "Add doctor"
@@ -876,27 +885,27 @@ function AddDoctorToPracticeModal({ visible, org, onClose }: AddDoctorToPractice
   );
 }
 
-const modalStyles = StyleSheet.create({
+const makeModalStyles = (colors: ThemeColors) => StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 16,
     paddingVertical: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: Colors.light.border,
+    borderBottomColor: colors.border,
     gap: 10,
   },
   headerEyebrow: {
     fontSize: 10,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     textTransform: "uppercase",
     letterSpacing: 0.5,
   },
   headerTitle: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
     marginTop: 2,
   },
   closeBtn: {
@@ -911,7 +920,7 @@ const modalStyles = StyleSheet.create({
     marginHorizontal: 16,
     marginTop: 12,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
     borderRadius: 8,
     overflow: "hidden",
   },
@@ -922,18 +931,18 @@ const modalStyles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
-    backgroundColor: Colors.light.backgroundSolid,
+    backgroundColor: colors.backgroundSolid,
   },
   tabActive: {
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
   },
   tabText: {
     fontSize: 13,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.text,
+    color: colors.text,
   },
   tabTextActive: {
-    color: "#fff",
+    color: colors.textInverse,
   },
   body: {
     padding: 16,
@@ -956,7 +965,7 @@ const modalStyles = StyleSheet.create({
   label: {
     fontSize: 11,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     textTransform: "uppercase",
     letterSpacing: 0.5,
     marginBottom: 6,
@@ -966,15 +975,15 @@ const modalStyles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: 8,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: Colors.light.border,
-    backgroundColor: Colors.light.surface || "#fff",
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
     fontSize: 14,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.text,
+    color: colors.text,
   },
   hint: {
     fontSize: 11,
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     fontFamily: "Inter_400Regular",
     marginTop: 4,
     lineHeight: 16,
@@ -988,17 +997,17 @@ const modalStyles = StyleSheet.create({
     paddingRight: 12,
     borderRadius: 8,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: Colors.light.border,
-    backgroundColor: Colors.light.surface || "#fff",
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
     fontSize: 14,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.text,
+    color: colors.text,
   },
   list: {
     borderRadius: 8,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: Colors.light.border,
-    backgroundColor: Colors.light.surface || "#fff",
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
     overflow: "hidden",
     maxHeight: 360,
   },
@@ -1012,7 +1021,7 @@ const modalStyles = StyleSheet.create({
   },
   listMsgText: {
     fontSize: 13,
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     fontFamily: "Inter_400Regular",
   },
   listRow: {
@@ -1022,17 +1031,17 @@ const modalStyles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: Colors.light.border,
+    borderTopColor: colors.border,
   },
   listRowChecked: {
-    backgroundColor: Colors.light.tintLight || "#EFF6FF",
+    backgroundColor: colors.tintLight,
   },
   radio: {
     width: 18,
     height: 18,
     borderRadius: 9,
     borderWidth: 1.5,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
     marginTop: 2,
     alignItems: "center",
     justifyContent: "center",
@@ -1041,18 +1050,18 @@ const modalStyles = StyleSheet.create({
     width: 9,
     height: 9,
     borderRadius: 4.5,
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
   },
   listName: {
     fontSize: 14,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
     flexShrink: 1,
   },
   listSub: {
     fontSize: 12,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     marginTop: 1,
   },
   tag: {
@@ -1072,8 +1081,8 @@ const modalStyles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: Colors.light.border,
-    backgroundColor: Colors.light.backgroundSolid,
+    borderTopColor: colors.border,
+    backgroundColor: colors.backgroundSolid,
   },
   footerBtnSecondary: {
     height: 40,
@@ -1085,7 +1094,7 @@ const modalStyles = StyleSheet.create({
   footerBtnSecondaryText: {
     fontSize: 14,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.text,
+    color: colors.text,
   },
   footerBtnPrimary: {
     flexDirection: "row",
@@ -1093,25 +1102,25 @@ const modalStyles = StyleSheet.create({
     height: 40,
     paddingHorizontal: 18,
     borderRadius: 8,
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
   },
   footerBtnPrimaryText: {
     fontSize: 14,
     fontFamily: "Inter_600SemiBold",
-    color: "#fff",
+    color: colors.textInverse,
   },
 });
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.light.backgroundSolid,
+    backgroundColor: colors.backgroundSolid,
   },
   centered: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    backgroundColor: Colors.light.backgroundSolid,
+    backgroundColor: colors.backgroundSolid,
   },
   header: {
     flexDirection: "row",
@@ -1119,7 +1128,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: Colors.light.border,
+    borderBottomColor: colors.border,
     gap: 10,
   },
   backBtn: {
@@ -1128,32 +1137,32 @@ const styles = StyleSheet.create({
   headerTitle: {
     fontSize: 17,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
     flex: 1,
   },
   headerSub: {
     fontSize: 12,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   balanceLabel: {
     fontSize: 10,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     textTransform: "uppercase",
     letterSpacing: 0.5,
   },
   balanceValue: {
     fontSize: 16,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   infoStrip: {
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: Colors.light.border,
-    backgroundColor: Colors.light.surface || Colors.light.backgroundSolid,
+    borderBottomColor: colors.border,
+    backgroundColor: colors.surface || colors.backgroundSolid,
     gap: 4,
   },
   actionsBar: {
@@ -1170,10 +1179,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     height: 34,
     borderRadius: 8,
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
   },
   addDoctorBtnText: {
-    color: "#fff",
+    color: colors.textInverse,
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
   },
@@ -1185,7 +1194,7 @@ const styles = StyleSheet.create({
   infoText: {
     fontSize: 12,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   searchWrap: {
     position: "relative",
@@ -1196,11 +1205,11 @@ const styles = StyleSheet.create({
     height: 40,
     paddingLeft: 38,
     paddingRight: 12,
-    backgroundColor: Colors.light.surface || "#F1F5F9",
+    backgroundColor: colors.surface,
     borderRadius: 10,
     fontSize: 14,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.text,
+    color: colors.text,
   },
   orgRow: {
     flexDirection: "row",
@@ -1208,38 +1217,38 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: Colors.light.border,
+    borderBottomColor: colors.border,
     gap: 12,
   },
   orgIcon: {
     width: 36,
     height: 36,
     borderRadius: 8,
-    backgroundColor: Colors.light.tintLight || "#EFF6FF",
+    backgroundColor: colors.tintLight,
     alignItems: "center",
     justifyContent: "center",
   },
   orgName: {
     fontSize: 14,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   orgSub: {
     fontSize: 12,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     marginTop: 1,
   },
   orgContact: {
     fontSize: 12,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     marginTop: 1,
   },
   orgBalance: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: "#D97706",
+    color: colors.warningStrong,
   },
   invoiceRow: {
     flexDirection: "row",
@@ -1247,24 +1256,24 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: Colors.light.border,
+    borderBottomColor: colors.border,
     gap: 8,
   },
   invNum: {
     fontSize: 14,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   invDate: {
     fontSize: 12,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     marginTop: 1,
   },
   invTotal: {
     fontSize: 14,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   invBalance: {
     fontSize: 12,
@@ -1274,12 +1283,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: 99,
-    backgroundColor: "#F1F5F9",
+    backgroundColor: colors.surfaceAlt,
   },
   statusText: {
     fontSize: 11,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     textTransform: "capitalize",
   },
   empty: {
@@ -1288,7 +1297,7 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     fontSize: 14,
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     fontFamily: "Inter_400Regular",
   },
 });

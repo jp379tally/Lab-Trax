@@ -2,6 +2,7 @@ import React from "react";
 import { View, Text, Pressable, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/lib/theme-context";
+import { Spacing, Radius, Typography } from "@/constants/tokens";
 
 interface ListRowProps {
   title: string;
@@ -96,45 +97,43 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    minHeight: 60,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    gap: 12,
+    gap: Spacing.md,
   },
   leading: {
-    width: 36,
-    height: 36,
-    borderRadius: 8,
+    width: 40,
+    height: 40,
+    borderRadius: Radius.md,
     alignItems: "center",
     justifyContent: "center",
     flexShrink: 0,
   },
   initials: {
-    fontSize: 13,
-    fontFamily: "Inter_600SemiBold",
+    ...Typography.bodySemibold,
   },
   content: {
     flex: 1,
     minWidth: 0,
   },
   title: {
-    fontSize: 14,
-    fontFamily: "Inter_500Medium",
+    ...Typography.bodyMedium,
   },
   subtitle: {
-    fontSize: 12,
-    fontFamily: "Inter_400Regular",
+    ...Typography.caption,
     marginTop: 2,
   },
   meta: {
+    ...Typography.caption,
     fontSize: 11,
-    fontFamily: "Inter_400Regular",
     marginTop: 2,
   },
   trailing: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: Spacing.sm,
     flexShrink: 0,
   },
 });

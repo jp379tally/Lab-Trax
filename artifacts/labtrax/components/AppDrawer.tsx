@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Dimensions,
   Modal,
@@ -20,7 +20,7 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 import { router, usePathname } from "expo-router";
-import { useTheme } from "@/lib/theme-context";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { useDrawer } from "@/lib/drawer-context";
 import { useAuth } from "@/lib/auth-context";
 import { useApp } from "@/lib/app-context";
@@ -89,6 +89,8 @@ function NavItemRow({
   indent?: boolean;
   onPress: () => void;
 }) {
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   return (
     <Pressable
       onPress={onPress}
@@ -102,7 +104,7 @@ function NavItemRow({
       <Ionicons
         name={item.icon}
         size={18}
-        color={active ? "#FFF" : "rgba(255,255,255,0.7)"}
+        color={active ? colors.textInverse : "rgba(255,255,255,0.7)"}
       />
       <Text
         style={[
@@ -124,6 +126,7 @@ export function AppDrawer() {
   const { role, setRole, setAdminUnlocked } = useApp();
   const insets = useSafeAreaInsets();
   const pathname = usePathname();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
 
   const translateX = useSharedValue(-DRAWER_WIDTH);
   const overlayOpacity = useSharedValue(0);
@@ -210,7 +213,7 @@ export function AppDrawer() {
 
         <Animated.View style={[styles.drawer, drawerStyle, { width: DRAWER_WIDTH }]}>
           <LinearGradient
-            colors={["#0F172A", "#162032"]}
+            colors={["#0F172A", "#162032"] /* hex-allow: fixed dark drawer gradient (always-dark nav rail) */}
             start={{ x: 0, y: 0 }}
             end={{ x: 0.5, y: 1 }}
             style={[
@@ -221,12 +224,12 @@ export function AppDrawer() {
             {/* Brand */}
             <View style={styles.brand}>
               <LinearGradient
-                colors={["#145DA0", "#3B82F6"]}
+                colors={[colors.tint, colors.info]}
                 style={styles.brandIcon}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
               >
-                <Ionicons name="flask" size={20} color="#FFF" />
+                <Ionicons name="flask" size={20} color={colors.textInverse} />
               </LinearGradient>
               <View>
                 <Text style={styles.brandName}>LabTrax</Text>
@@ -321,8 +324,8 @@ export function AppDrawer() {
                     }}
                     style={({ pressed }) => [styles.navItem, pressed && styles.navItemPressed]}
                   >
-                    <Ionicons name="shield-outline" size={18} color="#F59E0B" />
-                    <Text style={[styles.navLabel, { color: "#F59E0B" }]}>Exit Admin Mode</Text>
+                    <Ionicons name="shield-outline" size={18} color={colors.warning} />
+                    <Text style={[styles.navLabel, { color: colors.warning }]}>Exit Admin Mode</Text>
                   </Pressable>
                 </>
               )}
@@ -335,7 +338,7 @@ export function AppDrawer() {
               style={({ pressed }) => [styles.signOut, pressed && { opacity: 0.7 }]}
               testID="drawer-signout"
             >
-              <Ionicons name="log-out-outline" size={18} color="#EF4444" />
+              <Ionicons name="log-out-outline" size={18} color={colors.error} />
               <Text style={styles.signOutText}>Sign Out</Text>
             </Pressable>
             <View style={{ height: Platform.OS === "web" ? 24 : insets.bottom + 8 }} />
@@ -346,7 +349,7 @@ export function AppDrawer() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   wrapper: { flex: 1 },
   overlay: {
     ...StyleSheet.absoluteFillObject,
@@ -383,7 +386,7 @@ const styles = StyleSheet.create({
   brandName: {
     fontSize: 17,
     fontFamily: "Inter_700Bold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
   brandSub: {
     fontSize: 12,
@@ -419,7 +422,7 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
   },
   navItemActive: {
-    backgroundColor: "#145DA0",
+    backgroundColor: colors.tint,
   },
   navItemPressed: {
     backgroundColor: "rgba(255,255,255,0.06)",
@@ -432,7 +435,7 @@ const styles = StyleSheet.create({
   },
   navLabelActive: {
     fontFamily: "Inter_600SemiBold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
   navLabelIndent: {
     fontSize: 13,
@@ -449,6 +452,6 @@ const styles = StyleSheet.create({
   signOutText: {
     fontSize: 14,
     fontFamily: "Inter_500Medium",
-    color: "#EF4444",
+    color: colors.error,
   },
 });

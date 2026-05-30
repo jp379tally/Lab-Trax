@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import {
   StyleSheet,
   View,
@@ -18,7 +18,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import { useAuth } from "@/lib/auth-context";
-import Colors from "@/constants/colors";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { resilientFetch } from "@/lib/query-client";
 
 interface ChatMsg {
@@ -157,6 +157,8 @@ function getSessionPreview(session: StoredSession): string {
 
 export default function ChatScreen() {
   const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const { userType } = useAuth();
   const isProvider = userType === "provider";
   const params = useLocalSearchParams<{
@@ -549,7 +551,7 @@ export default function ChatScreen() {
       >
         {!isUser && (
           <View style={styles.aiAvatar}>
-            <Ionicons name="sparkles" size={14} color={Colors.light.tint} />
+            <Ionicons name="sparkles" size={14} color={colors.tint} />
           </View>
         )}
         <View
@@ -592,7 +594,7 @@ export default function ChatScreen() {
           hitSlop={12}
           style={({ pressed }) => [{ opacity: pressed ? 0.5 : 1, padding: 4 }]}
         >
-          <Ionicons name="trash-outline" size={16} color={Colors.light.textTertiary} />
+          <Ionicons name="trash-outline" size={16} color={colors.textTertiary} />
         </Pressable>
       </Pressable>
     );
@@ -607,11 +609,11 @@ export default function ChatScreen() {
         ]}
       >
         <Pressable onPress={() => router.back()} hitSlop={12}>
-          <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
+          <Ionicons name="arrow-back" size={24} color={colors.text} />
         </Pressable>
         <View style={styles.headerCenter}>
           <View style={styles.headerIcon}>
-            <Ionicons name="sparkles" size={16} color={Colors.light.tint} />
+            <Ionicons name="sparkles" size={16} color={colors.tint} />
           </View>
           <View>
             <Text style={styles.headerTitle}>AI Assistant</Text>
@@ -633,7 +635,7 @@ export default function ChatScreen() {
               hitSlop={12}
               style={({ pressed }) => [{ opacity: pressed ? 0.5 : 1 }]}
             >
-              <Ionicons name="add-circle-outline" size={22} color={Colors.light.tint} />
+              <Ionicons name="add-circle-outline" size={22} color={colors.tint} />
             </Pressable>
           )}
           {sessionsForKey.length > 0 && (
@@ -642,7 +644,7 @@ export default function ChatScreen() {
               hitSlop={12}
               style={({ pressed }) => [{ opacity: pressed ? 0.5 : 1 }]}
             >
-              <Ionicons name="time-outline" size={20} color={Colors.light.textSecondary} />
+              <Ionicons name="time-outline" size={20} color={colors.textSecondary} />
             </Pressable>
           )}
           <Pressable
@@ -653,7 +655,7 @@ export default function ChatScreen() {
             <Ionicons
               name="create-outline"
               size={20}
-              color={hasHistory ? Colors.light.tint : Colors.light.textSecondary}
+              color={hasHistory ? colors.tint : colors.textSecondary}
             />
           </Pressable>
         </View>
@@ -678,7 +680,7 @@ export default function ChatScreen() {
                 hitSlop={8}
                 style={({ pressed }) => [styles.chipRemove, { opacity: pressed ? 0.5 : 1 }]}
               >
-                <Ionicons name="close" size={12} color={Colors.light.tint} />
+                <Ionicons name="close" size={12} color={colors.tint} />
               </Pressable>
             </View>
           ))}
@@ -696,7 +698,7 @@ export default function ChatScreen() {
           <View style={styles.sessionsModalHeader}>
             <Text style={styles.sessionsModalTitle}>Past Conversations</Text>
             <Pressable onPress={() => setShowSessionsModal(false)} hitSlop={12}>
-              <Ionicons name="close" size={22} color={Colors.light.textSecondary} />
+              <Ionicons name="close" size={22} color={colors.textSecondary} />
             </Pressable>
           </View>
           {pinnedCases.length > 0 && (
@@ -724,7 +726,7 @@ export default function ChatScreen() {
               }}
               style={({ pressed }) => [styles.newChatBtn, pressed && { opacity: 0.8 }]}
             >
-              <Ionicons name="create-outline" size={16} color="#FFF" />
+              <Ionicons name="create-outline" size={16} color={colors.textInverse} />
               <Text style={styles.newChatBtnText}>New Chat</Text>
             </Pressable>
           </View>
@@ -777,7 +779,7 @@ export default function ChatScreen() {
 
         {sending && (
           <View style={styles.typingIndicator}>
-            <ActivityIndicator size="small" color={Colors.light.tint} />
+            <ActivityIndicator size="small" color={colors.tint} />
             <Text style={styles.typingText}>AI is thinking…</Text>
           </View>
         )}
@@ -804,7 +806,7 @@ export default function ChatScreen() {
                 ? "Ask about a case or pricing…"
                 : "Ask about a case, pricing, or lab…"
             }
-            placeholderTextColor={Colors.light.textTertiary}
+            placeholderTextColor={colors.textTertiary}
             multiline
             maxLength={1000}
             returnKeyType="send"
@@ -823,7 +825,7 @@ export default function ChatScreen() {
             <Ionicons
               name="send"
               size={18}
-              color={!input.trim() || sending ? Colors.light.textTertiary : "#FFF"}
+              color={!input.trim() || sending ? colors.textTertiary : colors.textInverse}
             />
           </Pressable>
         </View>
@@ -859,22 +861,22 @@ export default function ChatScreen() {
                 }}
                 hitSlop={12}
               >
-                <Ionicons name="close" size={22} color={Colors.light.text} />
+                <Ionicons name="close" size={22} color={colors.text} />
               </Pressable>
             </View>
             <View style={styles.modalSearchBar}>
-              <Ionicons name="search" size={16} color={Colors.light.textSecondary} />
+              <Ionicons name="search" size={16} color={colors.textSecondary} />
               <TextInput
                 style={styles.modalSearchInput}
                 value={caseSearchQuery}
                 onChangeText={setCaseSearchQuery}
                 placeholder="Search by case # or patient name…"
-                placeholderTextColor={Colors.light.textTertiary}
+                placeholderTextColor={colors.textTertiary}
                 autoFocus
                 returnKeyType="search"
               />
               {caseSearchLoading && (
-                <ActivityIndicator size="small" color={Colors.light.tint} />
+                <ActivityIndicator size="small" color={colors.tint} />
               )}
             </View>
             <ScrollView style={styles.modalResults} keyboardShouldPersistTaps="handled">
@@ -914,7 +916,7 @@ export default function ChatScreen() {
                         ) : null}
                       </View>
                       {!alreadyPinned && (
-                        <Ionicons name="add-circle" size={22} color={Colors.light.tint} />
+                        <Ionicons name="add-circle" size={22} color={colors.tint} />
                       )}
                     </Pressable>
                   );
@@ -928,10 +930,10 @@ export default function ChatScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.light.background,
+    backgroundColor: colors.background,
   },
   header: {
     flexDirection: "row",
@@ -940,8 +942,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingBottom: 12,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.light.borderLight,
-    backgroundColor: Colors.light.surface,
+    borderBottomColor: colors.borderLight,
+    backgroundColor: colors.surface,
   },
   headerCenter: {
     flexDirection: "row",
@@ -959,25 +961,25 @@ const styles = StyleSheet.create({
     width: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: Colors.light.tintLight,
+    backgroundColor: colors.tintLight,
     justifyContent: "center",
     alignItems: "center",
   },
   headerTitle: {
     fontSize: 17,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   headerSubtitle: {
     fontSize: 11,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.tint,
+    color: colors.tint,
     marginTop: 1,
   },
   chipsRow: {
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.light.borderLight,
+    borderBottomColor: colors.borderLight,
     maxHeight: 44,
   },
   chipsContent: {
@@ -990,27 +992,27 @@ const styles = StyleSheet.create({
   chip: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: Colors.light.tintLight,
+    backgroundColor: colors.tintLight,
     borderRadius: 20,
     paddingLeft: 10,
     paddingRight: 6,
     paddingVertical: 4,
     borderWidth: 1,
-    borderColor: Colors.light.tint + "33",
+    borderColor: colors.tint + "33",
     gap: 4,
     maxWidth: 200,
   },
   chipText: {
     fontSize: 12,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.tint,
+    color: colors.tint,
     flexShrink: 1,
   },
   chipRemove: {
     width: 16,
     height: 16,
     borderRadius: 8,
-    backgroundColor: Colors.light.tint + "22",
+    backgroundColor: colors.tint + "22",
     justifyContent: "center",
     alignItems: "center",
   },
@@ -1035,7 +1037,7 @@ const styles = StyleSheet.create({
     width: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: Colors.light.tintLight,
+    backgroundColor: colors.tintLight,
     justifyContent: "center",
     alignItems: "center",
     marginBottom: 2,
@@ -1047,21 +1049,21 @@ const styles = StyleSheet.create({
     borderRadius: 18,
   },
   userBubble: {
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
     borderBottomRightRadius: 4,
   },
   assistantBubble: {
-    backgroundColor: Colors.light.surfaceSecondary,
+    backgroundColor: colors.surfaceSecondary,
     borderBottomLeftRadius: 4,
   },
   messageText: {
     fontSize: 15,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.text,
+    color: colors.text,
     lineHeight: 21,
   },
   userText: {
-    color: "#FFF",
+    color: colors.textInverse,
   },
   promptsContainer: {
     paddingVertical: 12,
@@ -1070,7 +1072,7 @@ const styles = StyleSheet.create({
   promptsLabel: {
     fontSize: 12,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     paddingHorizontal: 4,
     marginBottom: 4,
   },
@@ -1079,17 +1081,17 @@ const styles = StyleSheet.create({
     paddingBottom: 4,
   },
   promptChip: {
-    backgroundColor: Colors.light.tintLight,
+    backgroundColor: colors.tintLight,
     borderRadius: 20,
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderWidth: 1,
-    borderColor: Colors.light.tint + "33",
+    borderColor: colors.tint + "33",
   },
   promptChipText: {
     fontSize: 13,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.tint,
+    color: colors.tint,
   },
   typingIndicator: {
     flexDirection: "row",
@@ -1101,7 +1103,7 @@ const styles = StyleSheet.create({
   typingText: {
     fontSize: 13,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   inputBar: {
     flexDirection: "row",
@@ -1109,39 +1111,39 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingTop: 8,
     borderTopWidth: 1,
-    borderTopColor: Colors.light.borderLight,
-    backgroundColor: Colors.light.surface,
+    borderTopColor: colors.borderLight,
+    backgroundColor: colors.surface,
     gap: 8,
   },
   textInput: {
     flex: 1,
     minHeight: 40,
     maxHeight: 100,
-    backgroundColor: Colors.light.surfaceSecondary,
+    backgroundColor: colors.surfaceSecondary,
     borderRadius: 20,
     paddingHorizontal: 16,
     paddingVertical: 10,
     fontSize: 15,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.text,
+    color: colors.text,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
   },
   sendBtn: {
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
     justifyContent: "center",
     alignItems: "center",
   },
   sendBtnDisabled: {
-    backgroundColor: Colors.light.surfaceSecondary,
+    backgroundColor: colors.surfaceSecondary,
   },
   // Sessions modal (full-screen page sheet)
   sessionsModalContainer: {
     flex: 1,
-    backgroundColor: Colors.light.background,
+    backgroundColor: colors.background,
   },
   sessionsModalHeader: {
     flexDirection: "row",
@@ -1153,12 +1155,12 @@ const styles = StyleSheet.create({
   sessionsModalTitle: {
     fontSize: 20,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   sessionsModalSubtitle: {
     fontSize: 13,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.tint,
+    color: colors.tint,
     paddingHorizontal: 20,
     marginBottom: 12,
     marginTop: 2,
@@ -1172,25 +1174,25 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingVertical: 14,
     paddingHorizontal: 16,
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderRadius: 12,
     gap: 12,
   },
   sessionItemActive: {
     borderWidth: 1.5,
-    borderColor: Colors.light.tint,
+    borderColor: colors.tint,
   },
   sessionPreview: {
     fontSize: 14,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.text,
+    color: colors.text,
     lineHeight: 20,
     marginBottom: 4,
   },
   sessionTime: {
     fontSize: 12,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   sessionSeparator: {
     height: 8,
@@ -1198,7 +1200,7 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 14,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     textAlign: "center",
     marginTop: 40,
   },
@@ -1206,21 +1208,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 12,
     borderTopWidth: 1,
-    borderTopColor: Colors.light.borderLight,
+    borderTopColor: colors.borderLight,
   },
   newChatBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
     borderRadius: 12,
     paddingVertical: 14,
   },
   newChatBtnText: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
   // Case picker modal (bottom sheet)
   modalOverlay: {
@@ -1229,7 +1231,7 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
   },
   modalSheet: {
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     maxHeight: "75%",
@@ -1246,7 +1248,7 @@ const styles = StyleSheet.create({
   modalTitle: {
     fontSize: 17,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   modalSearchBar: {
     flexDirection: "row",
@@ -1254,18 +1256,18 @@ const styles = StyleSheet.create({
     gap: 8,
     marginHorizontal: 16,
     marginBottom: 8,
-    backgroundColor: Colors.light.surfaceSecondary,
+    backgroundColor: colors.surfaceSecondary,
     borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
   },
   modalSearchInput: {
     flex: 1,
     fontSize: 15,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.text,
+    color: colors.text,
   },
   modalResults: {
     maxHeight: 360,
@@ -1273,7 +1275,7 @@ const styles = StyleSheet.create({
   modalHint: {
     fontSize: 14,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     textAlign: "center",
     paddingVertical: 24,
     paddingHorizontal: 20,
@@ -1285,7 +1287,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.light.borderLight,
+    borderBottomColor: colors.borderLight,
   },
   modalResultItemDisabled: {
     opacity: 0.5,
@@ -1297,22 +1299,22 @@ const styles = StyleSheet.create({
   modalResultCaseNum: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   modalResultPinnedLabel: {
     fontSize: 13,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   modalResultPatient: {
     fontSize: 13,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   modalResultStatus: {
     fontSize: 12,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
     textTransform: "capitalize",
   },
 });

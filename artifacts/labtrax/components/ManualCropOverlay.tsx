@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useMemo } from "react";
 import {
   View,
   Text,
@@ -15,6 +15,7 @@ import * as ImageManipulator from "expo-image-manipulator";
 import * as FileSystem from "expo-file-system";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 
 interface Point { x: number; y: number; }
 
@@ -41,6 +42,8 @@ function computeImageRect(cw: number, ch: number, nw: number, nh: number) {
 
 export function ManualCropOverlay({ visible, imageUri, onCancel, onCropped }: Props) {
   const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
   const [naturalSize, setNaturalSize] = useState({ w: 1, h: 1 });
   const [corners, setCorners] = useState<Point[]>([
@@ -231,7 +234,7 @@ export function ManualCropOverlay({ visible, imageUri, onCancel, onCropped }: Pr
           onPress={onCancel}
           style={({ pressed }) => [styles.footerBtn, styles.cancelBtn, pressed && { opacity: 0.7 }]}
         >
-          <Ionicons name="close" size={20} color="#fff" />
+          <Ionicons name="close" size={20} color={colors.textInverse} />
           <Text style={styles.cancelText}>Cancel</Text>
         </Pressable>
         <Pressable
@@ -240,8 +243,8 @@ export function ManualCropOverlay({ visible, imageUri, onCancel, onCropped }: Pr
           style={({ pressed }) => [styles.footerBtn, styles.applyBtn, (pressed || isApplying) && { opacity: 0.75 }]}
         >
           {isApplying
-            ? <ActivityIndicator size="small" color="#fff" />
-            : <Ionicons name="checkmark-circle" size={20} color="#fff" />}
+            ? <ActivityIndicator size="small" color={colors.textInverse} />
+            : <Ionicons name="checkmark-circle" size={20} color={colors.textInverse} />}
           <Text style={styles.applyText}>{isApplying ? "Applying…" : "Apply Crop"}</Text>
         </Pressable>
       </View>
@@ -249,9 +252,9 @@ export function ManualCropOverlay({ visible, imageUri, onCancel, onCropped }: Pr
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   headerTitle: {
-    color: "#fff",
+    color: colors.textInverse,
     fontSize: 18,
     fontFamily: "Inter_700Bold",
   },
@@ -282,7 +285,7 @@ const styles = StyleSheet.create({
     borderRadius: HANDLE_SIZE / 2,
     backgroundColor: "rgba(255,255,255,0.18)",
     borderWidth: 3,
-    borderColor: "#fff",
+    borderColor: colors.textInverse,
     alignItems: "center",
     justifyContent: "center",
     shadowColor: "#000",
@@ -295,7 +298,7 @@ const styles = StyleSheet.create({
     width: 10,
     height: 10,
     borderRadius: 5,
-    backgroundColor: "#fff",
+    backgroundColor: colors.textInverse,
   },
   footer: {
     flexDirection: "row",
@@ -320,15 +323,15 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.2)",
   },
   cancelText: {
-    color: "#fff",
+    color: colors.textInverse,
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
   },
   applyBtn: {
-    backgroundColor: "#14B8A6",
+    backgroundColor: colors.accent,
   },
   applyText: {
-    color: "#fff",
+    color: colors.textInverse,
     fontSize: 15,
     fontFamily: "Inter_700Bold",
   },

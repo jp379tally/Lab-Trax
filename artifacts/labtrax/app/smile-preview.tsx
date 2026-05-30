@@ -1,4 +1,4 @@
-import React, { useRef, useState, useCallback } from "react";
+import React, { useRef, useState, useCallback, useMemo } from "react";
 import {
   View,
   Text,
@@ -20,6 +20,7 @@ import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from "expo-file-system";
 import * as Sharing from "expo-sharing";
 import { resilientFetch } from "@/lib/query-client";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 
 type Step = "capture" | "options" | "result";
 
@@ -27,6 +28,8 @@ export default function SmilePreviewScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const cameraRef = useRef<any>(null);
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
 
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [step, setStep] = useState<Step>("capture");
@@ -221,7 +224,7 @@ export default function SmilePreviewScreen() {
   if (!cameraPermission) {
     return (
       <View style={styles.container}>
-        <ActivityIndicator size="large" color="#7C3AED" />
+        <ActivityIndicator size="large" color={colors.violet} />
       </View>
     );
   }
@@ -231,7 +234,7 @@ export default function SmilePreviewScreen() {
       <View style={styles.container}>
         <View style={[styles.header, { paddingTop: topPad }]}>
           <Pressable onPress={() => { setStep("options"); setEnhancedUri(null); sliderXRaw.current = 0.5; sliderXAnim.setValue(0.5); }} style={styles.iconBtn}>
-            <Ionicons name="arrow-back" size={24} color="#FFF" />
+            <Ionicons name="arrow-back" size={24} color={colors.textInverse} />
           </Pressable>
           <Text style={styles.headerTitle}>Before / After</Text>
           <View style={{ width: 40 }} />
@@ -271,8 +274,8 @@ export default function SmilePreviewScreen() {
             {...panResponder.panHandlers}
           >
             <View style={styles.dividerHandle}>
-              <Ionicons name="chevron-back" size={14} color="#FFF" />
-              <Ionicons name="chevron-forward" size={14} color="#FFF" />
+              <Ionicons name="chevron-back" size={14} color={colors.textInverse} />
+              <Ionicons name="chevron-forward" size={14} color={colors.textInverse} />
             </View>
           </Animated.View>
 
@@ -281,7 +284,7 @@ export default function SmilePreviewScreen() {
               <Text style={styles.compareLabelText}>Before</Text>
             </View>
             <View style={[styles.compareLabel, styles.compareLabelRight]}>
-              <Ionicons name="sparkles" size={11} color="#FFF" style={{ marginRight: 3 }} />
+              <Ionicons name="sparkles" size={11} color={colors.textInverse} style={{ marginRight: 3 }} />
               <Text style={styles.compareLabelText}>Enhanced</Text>
             </View>
           </View>
@@ -294,14 +297,14 @@ export default function SmilePreviewScreen() {
               onPress={saveToPhotos}
               style={({ pressed }) => [styles.resultBtn, pressed && { opacity: 0.8 }]}
             >
-              <Ionicons name="download-outline" size={20} color="#FFF" />
+              <Ionicons name="download-outline" size={20} color={colors.textInverse} />
               <Text style={styles.resultBtnText}>Save to Photos</Text>
             </Pressable>
             <Pressable
               onPress={sharePhoto}
               style={({ pressed }) => [styles.resultBtn, styles.resultBtnShare, pressed && { opacity: 0.8 }]}
             >
-              <Ionicons name="share-outline" size={20} color="#FFF" />
+              <Ionicons name="share-outline" size={20} color={colors.textInverse} />
               <Text style={styles.resultBtnText}>Share</Text>
             </Pressable>
           </View>
@@ -322,7 +325,7 @@ export default function SmilePreviewScreen() {
       <View style={styles.container}>
         <View style={[styles.header, { paddingTop: topPad }]}>
           <Pressable onPress={() => { setStep("capture"); setOriginalUri(null); }} style={styles.iconBtn}>
-            <Ionicons name="arrow-back" size={24} color="#FFF" />
+            <Ionicons name="arrow-back" size={24} color={colors.textInverse} />
           </Pressable>
           <Text style={styles.headerTitle}>Choose Enhancements</Text>
           <View style={{ width: 40 }} />
@@ -332,7 +335,7 @@ export default function SmilePreviewScreen() {
           <View style={styles.thumbContainer}>
             <Image source={{ uri: originalUri }} style={styles.thumbnail} contentFit="cover" />
             <View style={styles.thumbLabel}>
-              <Ionicons name="image-outline" size={12} color="#FFF" />
+              <Ionicons name="image-outline" size={12} color={colors.textInverse} />
               <Text style={styles.thumbLabelText}>Original</Text>
             </View>
           </View>
@@ -349,14 +352,14 @@ export default function SmilePreviewScreen() {
               ]}
             >
               <View style={[styles.optionIcon, whitenOn && styles.optionIconActive]}>
-                <Ionicons name="sunny" size={22} color={whitenOn ? "#FFF" : "rgba(255,255,255,0.4)"} />
+                <Ionicons name="sunny" size={22} color={whitenOn ? colors.textInverse : "rgba(255,255,255,0.4)"} />
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.optionTitle}>Whiten Smile</Text>
                 <Text style={styles.optionSubtitle}>AI brightens and whitens teeth naturally</Text>
               </View>
               <View style={[styles.checkBox, whitenOn && styles.checkBoxActive]}>
-                {whitenOn && <Ionicons name="checkmark" size={16} color="#FFF" />}
+                {whitenOn && <Ionicons name="checkmark" size={16} color={colors.textInverse} />}
               </View>
             </Pressable>
 
@@ -370,20 +373,20 @@ export default function SmilePreviewScreen() {
               ]}
             >
               <View style={[styles.optionIcon, straightenOn && styles.optionIconActive, straightenOn && styles.optionIconActivePurple]}>
-                <Ionicons name="git-compare-outline" size={22} color={straightenOn ? "#FFF" : "rgba(255,255,255,0.4)"} />
+                <Ionicons name="git-compare-outline" size={22} color={straightenOn ? colors.textInverse : "rgba(255,255,255,0.4)"} />
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.optionTitle}>Straighten Smile</Text>
                 <Text style={styles.optionSubtitle}>Corrects minor alignment and symmetry</Text>
               </View>
               <View style={[styles.checkBox, straightenOn && styles.checkBoxActive, straightenOn && styles.checkBoxActivePurple]}>
-                {straightenOn && <Ionicons name="checkmark" size={16} color="#FFF" />}
+                {straightenOn && <Ionicons name="checkmark" size={16} color={colors.textInverse} />}
               </View>
             </Pressable>
 
             {whitenOn && straightenOn && (
               <View style={styles.bothBadge}>
-                <Ionicons name="sparkles" size={14} color="#F59E0B" />
+                <Ionicons name="sparkles" size={14} color={colors.warning} />
                 <Text style={styles.bothBadgeText}>Both enhancements selected — full AI smile makeover</Text>
               </View>
             )}
@@ -399,7 +402,7 @@ export default function SmilePreviewScreen() {
             >
               {processing ? (
                 <>
-                  <ActivityIndicator size="small" color="#FFF" />
+                  <ActivityIndicator size="small" color={colors.textInverse} />
                   <Text style={styles.generateBtnText}>
                     {whitenOn && straightenOn
                       ? "AI is enhancing the smile…"
@@ -410,7 +413,7 @@ export default function SmilePreviewScreen() {
                 </>
               ) : (
                 <>
-                  <Ionicons name="sparkles" size={20} color="#FFF" />
+                  <Ionicons name="sparkles" size={20} color={colors.textInverse} />
                   <Text style={styles.generateBtnText}>Generate Preview</Text>
                 </>
               )}
@@ -426,7 +429,7 @@ export default function SmilePreviewScreen() {
       <View style={styles.container}>
         <View style={[styles.header, { paddingTop: topPad }]}>
           <Pressable onPress={() => router.back()} style={styles.iconBtn}>
-            <Ionicons name="arrow-back" size={24} color="#FFF" />
+            <Ionicons name="arrow-back" size={24} color={colors.textInverse} />
           </Pressable>
           <Text style={styles.headerTitle}>Smile Preview</Text>
           <View style={{ width: 40 }} />
@@ -441,7 +444,7 @@ export default function SmilePreviewScreen() {
             onPress={() => requestCameraPermission()}
             style={({ pressed }) => [styles.purpleBtn, pressed && { opacity: 0.8 }]}
           >
-            <Ionicons name="camera" size={18} color="#FFF" />
+            <Ionicons name="camera" size={18} color={colors.textInverse} />
             <Text style={styles.purpleBtnText}>Allow Camera</Text>
           </Pressable>
           <Pressable
@@ -460,11 +463,11 @@ export default function SmilePreviewScreen() {
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: topPad }]}>
         <Pressable onPress={() => router.back()} style={styles.iconBtn}>
-          <Ionicons name="arrow-back" size={24} color="#FFF" />
+          <Ionicons name="arrow-back" size={24} color={colors.textInverse} />
         </Pressable>
         <Text style={styles.headerTitle}>Smile Preview</Text>
         <Pressable onPress={() => setFacing((f) => (f === "front" ? "back" : "front"))} style={styles.iconBtn}>
-          <Ionicons name="camera-reverse-outline" size={24} color="#FFF" />
+          <Ionicons name="camera-reverse-outline" size={24} color={colors.textInverse} />
         </Pressable>
       </View>
 
@@ -482,7 +485,7 @@ export default function SmilePreviewScreen() {
             onPress={pickFromGallery}
             style={({ pressed }) => [styles.galleryBtn, pressed && { opacity: 0.7 }]}
           >
-            <Ionicons name="images-outline" size={28} color="#FFF" />
+            <Ionicons name="images-outline" size={28} color={colors.textInverse} />
             <Text style={styles.galleryBtnLabel}>Gallery</Text>
           </Pressable>
 
@@ -492,7 +495,7 @@ export default function SmilePreviewScreen() {
             style={({ pressed }) => [styles.captureBtn, pressed && { opacity: 0.8 }, capturing && { opacity: 0.5 }]}
           >
             {capturing ? (
-              <ActivityIndicator size="small" color="#FFF" />
+              <ActivityIndicator size="small" color={colors.textInverse} />
             ) : (
               <View style={styles.captureBtnInner} />
             )}
@@ -506,8 +509,8 @@ export default function SmilePreviewScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#0A0A0A" },
+const makeStyles = (colors: ThemeColors) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: "#0A0A0A" }, // hex-allow: fixed near-black smile-preview stage
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -518,21 +521,21 @@ const styles = StyleSheet.create({
     zIndex: 10,
   },
   iconBtn: { width: 40, height: 40, alignItems: "center", justifyContent: "center" },
-  headerTitle: { fontSize: 17, fontFamily: "Inter_600SemiBold", color: "#FFF" },
+  headerTitle: { fontSize: 17, fontFamily: "Inter_600SemiBold", color: colors.textInverse },
   centeredBox: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 40, gap: 16 },
-  permissionTitle: { fontSize: 20, fontFamily: "Inter_700Bold", color: "#FFF", textAlign: "center" },
+  permissionTitle: { fontSize: 20, fontFamily: "Inter_700Bold", color: colors.textInverse, textAlign: "center" },
   permissionText: { fontSize: 14, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.55)", textAlign: "center", lineHeight: 20 },
   purpleBtn: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    backgroundColor: "#7C3AED",
+    backgroundColor: colors.violet,
     paddingHorizontal: 24,
     paddingVertical: 14,
     borderRadius: 12,
     marginTop: 4,
   },
-  purpleBtnText: { color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  purpleBtnText: { color: colors.textInverse, fontSize: 15, fontFamily: "Inter_600SemiBold" },
   outlineBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -581,11 +584,11 @@ const styles = StyleSheet.create({
     height: 72,
     borderRadius: 36,
     borderWidth: 4,
-    borderColor: "#7C3AED",
+    borderColor: colors.violet,
     alignItems: "center",
     justifyContent: "center",
   },
-  captureBtnInner: { width: 58, height: 58, borderRadius: 29, backgroundColor: "#FFF" },
+  captureBtnInner: { width: 58, height: 58, borderRadius: 29, backgroundColor: colors.surface },
   captureHint: { color: "rgba(255,255,255,0.4)", fontSize: 12, fontFamily: "Inter_400Regular" },
 
   thumbContainer: {
@@ -593,7 +596,7 @@ const styles = StyleSheet.create({
     minHeight: 220,
     position: "relative",
     overflow: "hidden",
-    backgroundColor: "#111",
+    backgroundColor: "#111", // hex-allow: fixed dark image-compare frame
   },
   thumbnail: { flex: 1, width: "100%" },
   thumbLabel: {
@@ -608,7 +611,7 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     borderRadius: 20,
   },
-  thumbLabelText: { fontSize: 12, fontFamily: "Inter_500Medium", color: "#FFF" },
+  thumbLabelText: { fontSize: 12, fontFamily: "Inter_500Medium", color: colors.textInverse },
 
   optionsPanel: {
     backgroundColor: "rgba(0,0,0,0.92)",
@@ -636,11 +639,11 @@ const styles = StyleSheet.create({
   },
   optionRowActive: {
     backgroundColor: "rgba(37,99,235,0.15)",
-    borderColor: "#2563EB",
+    borderColor: colors.info,
   },
   optionRowActivePurple: {
     backgroundColor: "rgba(124,58,237,0.15)",
-    borderColor: "#7C3AED",
+    borderColor: colors.violet,
   },
   optionIcon: {
     width: 44,
@@ -650,9 +653,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  optionIconActive: { backgroundColor: "#2563EB" },
-  optionIconActivePurple: { backgroundColor: "#7C3AED" },
-  optionTitle: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#FFF" },
+  optionIconActive: { backgroundColor: colors.info },
+  optionIconActivePurple: { backgroundColor: colors.violet },
+  optionTitle: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: colors.textInverse },
   optionSubtitle: { fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.5)", marginTop: 2 },
   checkBox: {
     width: 24,
@@ -663,8 +666,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  checkBoxActive: { backgroundColor: "#2563EB", borderColor: "#2563EB" },
-  checkBoxActivePurple: { backgroundColor: "#7C3AED", borderColor: "#7C3AED" },
+  checkBoxActive: { backgroundColor: colors.info, borderColor: colors.info },
+  checkBoxActivePurple: { backgroundColor: colors.violet, borderColor: colors.violet },
   bothBadge: {
     flexDirection: "row",
     alignItems: "center",
@@ -676,19 +679,19 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(245,158,11,0.3)",
   },
-  bothBadgeText: { fontSize: 12, fontFamily: "Inter_500Medium", color: "#F59E0B", flex: 1 },
+  bothBadgeText: { fontSize: 12, fontFamily: "Inter_500Medium", color: colors.warning, flex: 1 },
   generateBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 10,
-    backgroundColor: "#7C3AED",
+    backgroundColor: colors.violet,
     borderRadius: 14,
     paddingVertical: 16,
     marginTop: 4,
   },
   generateBtnDisabled: { backgroundColor: "rgba(124,58,237,0.4)" },
-  generateBtnText: { fontSize: 16, fontFamily: "Inter_700Bold", color: "#FFF" },
+  generateBtnText: { fontSize: 16, fontFamily: "Inter_700Bold", color: colors.textInverse },
 
   compareContainer: {
     flex: 1,
@@ -716,7 +719,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     width: 3,
     marginLeft: -1.5,
-    backgroundColor: "#FFF",
+    backgroundColor: colors.surface,
     zIndex: 10,
     alignItems: "center",
     justifyContent: "center",
@@ -725,7 +728,7 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: "#FFF",
+    backgroundColor: colors.surface,
     alignItems: "center",
     justifyContent: "center",
     flexDirection: "row",
@@ -754,7 +757,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
   },
   compareLabelRight: { backgroundColor: "rgba(124,58,237,0.7)" },
-  compareLabelText: { fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#FFF" },
+  compareLabelText: { fontSize: 12, fontFamily: "Inter_600SemiBold", color: colors.textInverse },
 
   resultControls: {
     backgroundColor: "rgba(0,0,0,0.92)",
@@ -776,12 +779,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    backgroundColor: "#2563EB",
+    backgroundColor: colors.info,
     borderRadius: 14,
     paddingVertical: 14,
   },
-  resultBtnShare: { backgroundColor: "#7C3AED" },
-  resultBtnText: { fontSize: 14, fontFamily: "Inter_600SemiBold", color: "#FFF" },
+  resultBtnShare: { backgroundColor: colors.violet },
+  resultBtnText: { fontSize: 14, fontFamily: "Inter_600SemiBold", color: colors.textInverse },
   retakeBtn: {
     flexDirection: "row",
     alignItems: "center",

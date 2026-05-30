@@ -19,33 +19,37 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
-import { useTheme } from "@/lib/theme-context";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { useAuth } from "@/lib/auth-context";
 import { useMessenger, MMessage } from "@/lib/messenger-context";
 
-const AVATAR_COLORS = [
-  "#145DA0",
-  "#0F766E",
-  "#7C3AED",
-  "#059669",
-  "#DC2626",
-  "#D97706",
-  "#EC4899",
-  "#8B5CF6",
-  "#06B6D4",
-  "#F97316",
-];
+function makeAvatarColors(colors: ThemeColors): string[] {
+  return [
+    colors.tint,
+    colors.accent,
+    colors.violet,
+    colors.successStrong,
+    colors.errorStrong,
+    colors.warningStrong,
+    colors.pink,
+    colors.violet,
+    colors.cyan,
+    colors.orange,
+  ];
+}
 
-function getAvatarColor(str: string): string {
+function getAvatarColor(str: string, colors: ThemeColors): string {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
     hash = str.charCodeAt(i) + ((hash << 5) - hash);
   }
-  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+  const palette = makeAvatarColors(colors);
+  return palette[Math.abs(hash) % palette.length];
 }
 
 function Avatar({ name, size = 32 }: { name: string; size?: number }) {
-  const color = getAvatarColor(name);
+  const { colors } = useTheme();
+  const color = getAvatarColor(name, colors);
   const initial = (name || "?").charAt(0).toUpperCase();
   return (
     <View
@@ -54,7 +58,7 @@ function Avatar({ name, size = 32 }: { name: string; size?: number }) {
         { width: size, height: size, borderRadius: size / 2, backgroundColor: color },
       ]}
     >
-      <Text style={[styles.avatarText, { fontSize: size * 0.44 }]}>
+      <Text style={[styles.avatarText, { fontSize: size * 0.44, color: colors.textInverse }]}>
         {initial}
       </Text>
     </View>
@@ -252,7 +256,7 @@ export default function MessengerChatScreen() {
                     {
                       backgroundColor: isDark
                         ? colors.surface
-                        : "#E9EEF5",
+                        : colors.surfaceAlt,
                     },
                   ],
             ]}
@@ -260,7 +264,7 @@ export default function MessengerChatScreen() {
             <Text
               style={[
                 styles.bubbleText,
-                { color: isMine ? "#fff" : colors.text },
+                { color: isMine ? colors.textInverse : colors.text },
               ]}
             >
               {item.body}
@@ -424,9 +428,9 @@ export default function MessengerChatScreen() {
             ]}
           >
             {sending ? (
-              <ActivityIndicator color="#fff" size="small" />
+              <ActivityIndicator color={colors.textInverse} size="small" />
             ) : (
-              <Ionicons name="arrow-up" size={18} color="#fff" />
+              <Ionicons name="arrow-up" size={18} color={colors.textInverse} />
             )}
           </Pressable>
         </View>
@@ -465,7 +469,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   avatarText: {
-    color: "#fff",
     fontFamily: "Inter_600SemiBold",
   },
   loadingWrap: {

@@ -8,6 +8,7 @@
     "build": "node scripts/build.js",
     "serve": "node server/serve.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint:hex": "node scripts/lint-hex-colors.mjs",
     "test": "vitest run"
   },
   "devDependencies": {

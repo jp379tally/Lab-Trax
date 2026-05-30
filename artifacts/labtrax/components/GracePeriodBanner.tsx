@@ -1,7 +1,8 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { View, Text, Pressable, StyleSheet, Platform } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 
 interface Props {
   graceDaysRemaining: number | null;
@@ -11,6 +12,8 @@ interface Props {
 
 export function GracePeriodBanner({ graceDaysRemaining, onSubscribe, onDismiss }: Props) {
   const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
 
   const daysLabel =
     graceDaysRemaining === null
@@ -30,7 +33,7 @@ export function GracePeriodBanner({ graceDaysRemaining, onSubscribe, onDismiss }
         },
       ]}
     >
-      <Ionicons name="time-outline" size={15} color="#92400E" style={styles.icon} />
+      <Ionicons name="time-outline" size={15} color={colors.warningText} style={styles.icon} />
       <Text style={styles.text} numberOfLines={1}>
         {daysLabel}
       </Text>
@@ -46,19 +49,19 @@ export function GracePeriodBanner({ graceDaysRemaining, onSubscribe, onDismiss }
         hitSlop={10}
         style={({ pressed }) => [styles.closeBtn, pressed && { opacity: 0.7 }]}
       >
-        <Ionicons name="close" size={15} color="#92400E" />
+        <Ionicons name="close" size={15} color={colors.warningText} />
       </Pressable>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   container: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#FEF3C7",
+    backgroundColor: colors.warningLight,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#FCD34D",
+    borderBottomColor: colors.warning,
     paddingHorizontal: 12,
     paddingBottom: 8,
     gap: 6,
@@ -70,19 +73,19 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 12,
     fontFamily: "Inter_400Regular",
-    color: "#78350F",
+    color: colors.warningText,
   },
   subscribeBtn: {
     flexShrink: 0,
     paddingHorizontal: 10,
     paddingVertical: 3,
     borderRadius: 999,
-    backgroundColor: "#D97706",
+    backgroundColor: colors.warningStrong,
   },
   subscribeBtnText: {
     fontSize: 11,
     fontFamily: "Inter_600SemiBold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
   closeBtn: {
     flexShrink: 0,

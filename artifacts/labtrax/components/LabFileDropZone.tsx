@@ -19,7 +19,7 @@ import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Colors from "@/constants/colors";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Client, LabCase } from "@/lib/data";
 import { popSharedFiles, subscribeSharedFileInbox } from "@/lib/shared-file-inbox";
 import { getApiUrl, resilientFetch } from "@/lib/query-client";
@@ -163,6 +163,8 @@ export function LabFileDropZone({
   isFocused = true,
 }: LabFileDropZoneProps) {
   const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const s = useMemo(() => makeS(colors), [colors]);
   const { activeLabAffiliationKey, activeLabAffiliationName, allLabOrganizationIds } = useApp();
   const activeLabOrgId = getActiveLabOrganizationId(activeLabAffiliationKey);
   // Memoized stable key for the *set* of labs the user belongs to. Used as
@@ -936,7 +938,7 @@ export function LabFileDropZone({
               <Ionicons
                 name={dragOver ? "arrow-down-circle" : fileCount > 0 ? "folder-open" : "cloud-upload-outline"}
                 size={22}
-                color={dragOver ? "#2563EB" : fileCount > 0 ? "#D97706" : Colors.light.tint}
+                color={dragOver ? colors.info : fileCount > 0 ? colors.warningStrong : colors.tint}
               />
             </View>
             <View style={s.barTextWrap}>
@@ -975,7 +977,7 @@ export function LabFileDropZone({
               value={draftNote}
               onChangeText={setDraftNote}
               placeholder="e.g. Bite open, prep photo, shade reference, patient screenshot..."
-              placeholderTextColor="#94A3B8"
+              placeholderTextColor={colors.textTertiary}
               multiline
               numberOfLines={3}
               autoFocus
@@ -1012,13 +1014,13 @@ export function LabFileDropZone({
               onPress={() => { setPreviewVisible(false); setPreviewTarget(null); setPreviewDraftNote(""); }}
               hitSlop={12}
             >
-              <Ionicons name="close" size={26} color="#0F172A" />
+              <Ionicons name="close" size={26} color={colors.text} />
             </Pressable>
             <Text style={s.previewTitle} numberOfLines={1}>
               {previewTarget?.fileName || "Attachment"}
             </Text>
             <Pressable onPress={deleteFromPreview} hitSlop={12}>
-              <Ionicons name="trash-outline" size={22} color="#DC2626" />
+              <Ionicons name="trash-outline" size={22} color={colors.errorStrong} />
             </Pressable>
           </View>
 
@@ -1042,7 +1044,7 @@ export function LabFileDropZone({
                       : "document-text-outline"
                   }
                   size={56}
-                  color="#334155"
+                  color={colors.textSecondary}
                 />
                 <Text style={s.previewFallbackText}>
                   {previewTarget?.fileName || previewTarget?.mimeType || "File"}
@@ -1056,7 +1058,7 @@ export function LabFileDropZone({
               value={previewDraftNote}
               onChangeText={setPreviewDraftNote}
               placeholder="Add notes for this attachment..."
-              placeholderTextColor="#94A3B8"
+              placeholderTextColor={colors.textTertiary}
               multiline
               numberOfLines={4}
             />
@@ -1084,7 +1086,7 @@ export function LabFileDropZone({
                     pressed && { opacity: 0.7 },
                   ]}
                 >
-                  <Ionicons name="time-outline" size={14} color="#475569" />
+                  <Ionicons name="time-outline" size={14} color={colors.textSecondary} />
                   <Text style={s.historyLinkText}>View edit history</Text>
                 </Pressable>
               </>
@@ -1110,7 +1112,7 @@ export function LabFileDropZone({
                 </Text>
               </View>
               <Pressable onPress={dismissHistory} hitSlop={12}>
-                <Ionicons name="close" size={24} color="#0F172A" />
+                <Ionicons name="close" size={24} color={colors.text} />
               </Pressable>
             </View>
             <ScrollView
@@ -1177,13 +1179,13 @@ export function LabFileDropZone({
           <View style={[s.modalHeader, { paddingTop: headerPaddingTop }]}>
             <Text style={s.modalTitle}>File Review</Text>
             <Pressable onPress={() => setReviewOpen(false)} hitSlop={12}>
-              <Ionicons name="close" size={24} color={Colors.light.text} />
+              <Ionicons name="close" size={24} color={colors.text} />
             </Pressable>
           </View>
 
           {fileCount === 0 ? (
             <View style={s.emptyState}>
-              <Ionicons name="folder-open-outline" size={48} color="#CBD5E1" />
+              <Ionicons name="folder-open-outline" size={48} color={colors.border} />
               <Text style={s.emptyTitle}>No pending files</Text>
               <Text style={s.emptySub}>
                 Files uploaded by lab members will appear here for review.
@@ -1192,7 +1194,7 @@ export function LabFileDropZone({
                 onPress={showPickOptions}
                 style={({ pressed }) => [s.uploadBtn, pressed && s.uploadBtnPressed]}
               >
-                <Ionicons name="cloud-upload-outline" size={18} color="#FFF" />
+                <Ionicons name="cloud-upload-outline" size={18} color={colors.textInverse} />
                 <Text style={s.uploadBtnText}>Upload Files</Text>
               </Pressable>
             </View>
@@ -1210,7 +1212,7 @@ export function LabFileDropZone({
                   }}
                   style={({ pressed }) => [s.addMoreBtn, pressed && { opacity: 0.8 }]}
                 >
-                  <Ionicons name="images-outline" size={16} color={Colors.light.tint} />
+                  <Ionicons name="images-outline" size={16} color={colors.tint} />
                   <Text style={s.addMoreBtnText} numberOfLines={1}>Photos &amp; Videos</Text>
                 </Pressable>
                 <Pressable
@@ -1220,7 +1222,7 @@ export function LabFileDropZone({
                   }}
                   style={({ pressed }) => [s.addMoreBtn, pressed && { opacity: 0.8 }]}
                 >
-                  <Ionicons name="phone-portrait-outline" size={16} color={Colors.light.tint} />
+                  <Ionicons name="phone-portrait-outline" size={16} color={colors.tint} />
                   <Text style={s.addMoreBtnText} numberOfLines={1}>Screenshots</Text>
                 </Pressable>
                 <Pressable
@@ -1230,7 +1232,7 @@ export function LabFileDropZone({
                   }}
                   style={({ pressed }) => [s.addMoreBtn, pressed && { opacity: 0.8 }]}
                 >
-                  <Ionicons name="document-text-outline" size={16} color={Colors.light.tint} />
+                  <Ionicons name="document-text-outline" size={16} color={colors.tint} />
                   <Text style={s.addMoreBtnText} numberOfLines={1}>Files &amp; PDFs</Text>
                 </Pressable>
               </View>
@@ -1252,15 +1254,15 @@ export function LabFileDropZone({
                           <Image source={{ uri: file.uri }} style={s.fileThumb} contentFit="cover" />
                         ) : kind === "video" ? (
                           <View style={[s.fileThumb, s.videoThumb]}>
-                            <Ionicons name="play-circle" size={22} color="#D97706" />
+                            <Ionicons name="play-circle" size={22} color={colors.warningStrong} />
                           </View>
                         ) : kind === "pdf" ? (
                           <View style={[s.fileThumb, s.pdfThumb]}>
-                            <Ionicons name="document-text" size={20} color="#DC2626" />
+                            <Ionicons name="document-text" size={20} color={colors.errorStrong} />
                           </View>
                         ) : (
                           <View style={[s.fileThumb, s.fileGenericThumb]}>
-                            <Ionicons name="document-outline" size={20} color="#64748B" />
+                            <Ionicons name="document-outline" size={20} color={colors.textSecondary} />
                           </View>
                         )}
                       </Pressable>
@@ -1305,7 +1307,7 @@ export function LabFileDropZone({
                             ]}
                             hitSlop={6}
                           >
-                            <Ionicons name="time-outline" size={12} color="#475569" />
+                            <Ionicons name="time-outline" size={12} color={colors.textSecondary} />
                             <Text style={s.rowHistoryText}>View history</Text>
                           </Pressable>
                         )}
@@ -1313,10 +1315,10 @@ export function LabFileDropZone({
 
                       <View style={s.fileActions}>
                         <Pressable onPress={() => openPreview(file)} hitSlop={8} style={s.fileActionBtn}>
-                          <Ionicons name="pencil-outline" size={17} color="#64748B" />
+                          <Ionicons name="pencil-outline" size={17} color={colors.textSecondary} />
                         </Pressable>
                         <Pressable onPress={() => removeFile(file.id)} hitSlop={8} style={s.fileActionBtn}>
-                          <Ionicons name="trash-outline" size={17} color="#EF4444" />
+                          <Ionicons name="trash-outline" size={17} color={colors.error} />
                         </Pressable>
                       </View>
                     </View>
@@ -1330,7 +1332,7 @@ export function LabFileDropZone({
                         <TextInput
                           style={s.searchInput}
                           placeholder="Start typing provider name..."
-                          placeholderTextColor="#94A3B8"
+                          placeholderTextColor={colors.textTertiary}
                           value={providerSearch}
                           onChangeText={(value) => {
                             setProviderSearch(value);
@@ -1371,7 +1373,7 @@ export function LabFileDropZone({
                             <TextInput
                               style={s.searchInput}
                               placeholder="Start typing patient name..."
-                              placeholderTextColor="#94A3B8"
+                              placeholderTextColor={colors.textTertiary}
                               value={patientSearch}
                               onChangeText={(value) => {
                                 setPatientSearch(value);
@@ -1413,7 +1415,7 @@ export function LabFileDropZone({
                             pressed && selectedCase && s.uploadBtnPressed,
                           ]}
                         >
-                          <Ionicons name="add-circle" size={18} color="#FFF" />
+                          <Ionicons name="add-circle" size={18} color={colors.textInverse} />
                           <Text style={s.addToCaseBtnText}>Add to Case</Text>
                         </Pressable>
                       </View>
@@ -1429,25 +1431,25 @@ export function LabFileDropZone({
   );
 }
 
-const s = StyleSheet.create({
+const makeS = (colors: ThemeColors) => StyleSheet.create({
   bar: {
     marginHorizontal: 20,
     marginTop: 16,
     marginBottom: 10,
     borderRadius: 18,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: "#DCE7F5",
+    borderColor: colors.border,
     overflow: "hidden",
-    shadowColor: "#0F172A",
+    shadowColor: colors.text,
     shadowOpacity: 0.05,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 6 },
     elevation: 2,
   },
   barDragOver: {
-    borderColor: "#2563EB",
-    backgroundColor: "#EFF6FF",
+    borderColor: colors.info,
+    backgroundColor: colors.infoSurface,
   },
   barPressed: {
     opacity: 0.9,
@@ -1481,12 +1483,12 @@ const s = StyleSheet.create({
   barTitle: {
     fontFamily: "Inter_600SemiBold",
     fontSize: 15,
-    color: Colors.light.text,
+    color: colors.text,
   },
   barSub: {
     fontFamily: "Inter_400Regular",
     fontSize: 12,
-    color: "#64748B",
+    color: colors.textSecondary,
     lineHeight: 17,
   },
   barAction: {
@@ -1498,12 +1500,12 @@ const s = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderRadius: 999,
-    backgroundColor: "#EEF4FF",
+    backgroundColor: colors.infoSurface,
   },
   barActionText: {
     fontFamily: "Inter_700Bold",
     fontSize: 12,
-    color: "#1D4ED8",
+    color: colors.infoStrong,
     textTransform: "uppercase",
     letterSpacing: 0.4,
   },
@@ -1511,7 +1513,7 @@ const s = StyleSheet.create({
     minWidth: 22,
     height: 22,
     borderRadius: 11,
-    backgroundColor: "#EF4444",
+    backgroundColor: colors.error,
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 6,
@@ -1519,7 +1521,7 @@ const s = StyleSheet.create({
   badgeText: {
     fontFamily: "Inter_700Bold",
     fontSize: 11,
-    color: "#FFF",
+    color: colors.textInverse,
   },
   noteBackdrop: {
     flex: 1,
@@ -1530,12 +1532,12 @@ const s = StyleSheet.create({
     width: 36,
     height: 4,
     borderRadius: 2,
-    backgroundColor: "#CBD5E1",
+    backgroundColor: colors.border,
     alignSelf: "center",
     marginBottom: 8,
   },
   noteCard: {
-    backgroundColor: "#FFF",
+    backgroundColor: colors.surface,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     padding: 24,
@@ -1545,23 +1547,23 @@ const s = StyleSheet.create({
   noteCardTitle: {
     fontFamily: "Inter_700Bold",
     fontSize: 18,
-    color: "#0F172A",
+    color: colors.text,
   },
   noteCardSub: {
     fontFamily: "Inter_400Regular",
     fontSize: 13,
-    color: "#64748B",
+    color: colors.textSecondary,
     lineHeight: 19,
   },
   noteInput: {
     borderWidth: 1,
-    borderColor: "#E2E8F0",
+    borderColor: colors.border,
     borderRadius: 10,
     padding: 12,
     fontSize: 14,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.text,
-    backgroundColor: "#F8FAFC",
+    color: colors.text,
+    backgroundColor: colors.canvas,
     minHeight: 90,
     textAlignVertical: "top",
     marginTop: 4,
@@ -1578,12 +1580,12 @@ const s = StyleSheet.create({
     paddingVertical: 12,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: "#E2E8F0",
+    borderColor: colors.border,
   },
   noteBtnSecondaryText: {
     fontFamily: "Inter_600SemiBold",
     fontSize: 14,
-    color: "#64748B",
+    color: colors.textSecondary,
   },
   noteBtnPrimary: {
     flex: 2,
@@ -1591,16 +1593,16 @@ const s = StyleSheet.create({
     justifyContent: "center",
     paddingVertical: 12,
     borderRadius: 10,
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
   },
   noteBtnPrimaryText: {
     fontFamily: "Inter_700Bold",
     fontSize: 14,
-    color: "#FFF",
+    color: colors.textInverse,
   },
   previewScreen: {
     flex: 1,
-    backgroundColor: "#FFF",
+    backgroundColor: colors.surface,
   },
   previewHeader: {
     flexDirection: "row",
@@ -1609,13 +1611,13 @@ const s = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 14,
     borderBottomWidth: 1,
-    borderBottomColor: "#F1F5F9",
+    borderBottomColor: colors.surfaceAlt,
   },
   previewTitle: {
     flex: 1,
     fontFamily: "Inter_600SemiBold",
     fontSize: 16,
-    color: "#0F172A",
+    color: colors.text,
     textAlign: "center",
     marginHorizontal: 8,
   },
@@ -1631,13 +1633,13 @@ const s = StyleSheet.create({
     width: "100%",
     height: 280,
     borderRadius: 12,
-    backgroundColor: "#F1F5F9",
+    backgroundColor: colors.surfaceAlt,
   },
   previewFallback: {
     width: "100%",
     height: 200,
     borderRadius: 12,
-    backgroundColor: "#F1F5F9",
+    backgroundColor: colors.surfaceAlt,
     alignItems: "center",
     justifyContent: "center",
     gap: 10,
@@ -1645,30 +1647,30 @@ const s = StyleSheet.create({
   previewFallbackText: {
     fontFamily: "Inter_400Regular",
     fontSize: 13,
-    color: "#64748B",
+    color: colors.textSecondary,
     textAlign: "center",
     paddingHorizontal: 20,
   },
   previewNoteLabel: {
     fontFamily: "Inter_600SemiBold",
     fontSize: 13,
-    color: "#64748B",
+    color: colors.textSecondary,
     marginTop: 8,
   },
   previewNoteInput: {
     borderWidth: 1,
-    borderColor: "#E2E8F0",
+    borderColor: colors.border,
     borderRadius: 10,
     padding: 12,
     fontSize: 14,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.text,
-    backgroundColor: "#F8FAFC",
+    color: colors.text,
+    backgroundColor: colors.canvas,
     minHeight: 90,
     textAlignVertical: "top",
   },
   previewSaveBtn: {
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
     paddingVertical: 13,
     borderRadius: 10,
     alignItems: "center",
@@ -1677,19 +1679,19 @@ const s = StyleSheet.create({
   previewSaveBtnText: {
     fontFamily: "Inter_700Bold",
     fontSize: 15,
-    color: "#FFF",
+    color: colors.textInverse,
   },
   previewMeta: {
     fontFamily: "Inter_400Regular",
     fontSize: 12,
-    color: "#94A3B8",
+    color: colors.textTertiary,
     textAlign: "center",
     marginTop: 4,
   },
   previewMetaEdited: {
     fontFamily: "Inter_400Regular",
     fontSize: 11,
-    color: "#94A3B8",
+    color: colors.textTertiary,
     textAlign: "center",
     marginTop: 2,
     fontStyle: "italic",
@@ -1705,7 +1707,7 @@ const s = StyleSheet.create({
   historyLinkText: {
     fontFamily: "Inter_600SemiBold",
     fontSize: 12,
-    color: "#475569",
+    color: colors.textSecondary,
   },
   rowHistoryBtn: {
     flexDirection: "row",
@@ -1718,7 +1720,7 @@ const s = StyleSheet.create({
   rowHistoryText: {
     fontFamily: "Inter_600SemiBold",
     fontSize: 11,
-    color: "#475569",
+    color: colors.textSecondary,
   },
   historyBackdrop: {
     flex: 1,
@@ -1726,7 +1728,7 @@ const s = StyleSheet.create({
     justifyContent: "flex-end",
   },
   historySheet: {
-    backgroundColor: "#FFF",
+    backgroundColor: colors.surface,
     borderTopLeftRadius: 18,
     borderTopRightRadius: 18,
     maxHeight: "85%",
@@ -1740,7 +1742,7 @@ const s = StyleSheet.create({
     paddingTop: 18,
     paddingBottom: 14,
     borderBottomWidth: 1,
-    borderBottomColor: "#F1F5F9",
+    borderBottomColor: colors.surfaceAlt,
     gap: 12,
   },
   historyHeaderText: {
@@ -1749,12 +1751,12 @@ const s = StyleSheet.create({
   historyTitle: {
     fontFamily: "Inter_700Bold",
     fontSize: 16,
-    color: "#0F172A",
+    color: colors.text,
   },
   historySubtitle: {
     fontFamily: "Inter_400Regular",
     fontSize: 12,
-    color: "#94A3B8",
+    color: colors.textTertiary,
     marginTop: 2,
   },
   historyScroll: {
@@ -1767,19 +1769,19 @@ const s = StyleSheet.create({
   historyEmpty: {
     fontFamily: "Inter_400Regular",
     fontSize: 13,
-    color: "#94A3B8",
+    color: colors.textTertiary,
     textAlign: "center",
     paddingVertical: 32,
   },
   historyError: {
     fontFamily: "Inter_500Medium",
     fontSize: 13,
-    color: "#DC2626",
+    color: colors.errorStrong,
     textAlign: "center",
     paddingVertical: 32,
   },
   historyEntry: {
-    backgroundColor: "#F8FAFC",
+    backgroundColor: colors.canvas,
     borderRadius: 12,
     padding: 12,
     gap: 6,
@@ -1794,18 +1796,18 @@ const s = StyleSheet.create({
   historyEditor: {
     fontFamily: "Inter_600SemiBold",
     fontSize: 13,
-    color: "#0F172A",
+    color: colors.text,
     flexShrink: 1,
   },
   historyTime: {
     fontFamily: "Inter_400Regular",
     fontSize: 11,
-    color: "#94A3B8",
+    color: colors.textTertiary,
   },
   historySectionLabel: {
     fontFamily: "Inter_600SemiBold",
     fontSize: 10,
-    color: "#64748B",
+    color: colors.textSecondary,
     textTransform: "uppercase",
     letterSpacing: 0.5,
     marginTop: 2,
@@ -1816,28 +1818,28 @@ const s = StyleSheet.create({
     paddingVertical: 8,
   },
   historyBlockBefore: {
-    backgroundColor: "#FFFFFF",
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: "#E2E8F0",
+    borderColor: colors.border,
   },
   historyBlockAfter: {
-    backgroundColor: "#EFF6FF",
+    backgroundColor: colors.infoSurface,
     borderWidth: 1,
-    borderColor: "#BFDBFE",
+    borderColor: colors.infoLight,
   },
   historyBlockText: {
     fontFamily: "Inter_400Regular",
     fontSize: 13,
-    color: "#0F172A",
+    color: colors.text,
     lineHeight: 18,
   },
   historyBlockEmpty: {
     fontStyle: "italic",
-    color: "#94A3B8",
+    color: colors.textTertiary,
   },
   modal: {
     flex: 1,
-    backgroundColor: "#FFF",
+    backgroundColor: colors.surface,
   },
   modalHeader: {
     flexDirection: "row",
@@ -1846,12 +1848,12 @@ const s = StyleSheet.create({
     paddingHorizontal: 20,
     paddingBottom: 16,
     borderBottomWidth: 1,
-    borderBottomColor: "#F1F5F9",
+    borderBottomColor: colors.surfaceAlt,
   },
   modalTitle: {
     fontFamily: "Inter_700Bold",
     fontSize: 20,
-    color: Colors.light.text,
+    color: colors.text,
   },
   modalScroll: {
     flex: 1,
@@ -1870,13 +1872,13 @@ const s = StyleSheet.create({
   emptyTitle: {
     fontFamily: "Inter_600SemiBold",
     fontSize: 16,
-    color: Colors.light.text,
+    color: colors.text,
     marginTop: 8,
   },
   emptySub: {
     fontFamily: "Inter_400Regular",
     fontSize: 13,
-    color: "#94A3B8",
+    color: colors.textTertiary,
     textAlign: "center",
     lineHeight: 19,
   },
@@ -1884,7 +1886,7 @@ const s = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
     paddingVertical: 10,
     paddingHorizontal: 16,
     borderRadius: 10,
@@ -1896,7 +1898,7 @@ const s = StyleSheet.create({
   uploadBtnText: {
     fontFamily: "Inter_600SemiBold",
     fontSize: 14,
-    color: "#FFF",
+    color: colors.textInverse,
   },
   addMoreRow: {
     flexDirection: "row",
@@ -1913,25 +1915,25 @@ const s = StyleSheet.create({
     paddingHorizontal: 10,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: Colors.light.tint,
-    backgroundColor: "#EEF4FF",
+    borderColor: colors.tint,
+    backgroundColor: colors.infoSurface,
   },
   addMoreBtnText: {
     fontFamily: "Inter_600SemiBold",
     fontSize: 13,
-    color: Colors.light.tint,
+    color: colors.tint,
   },
   fileCard: {
-    backgroundColor: "#F8FAFC",
+    backgroundColor: colors.canvas,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: "#E2E8F0",
+    borderColor: colors.border,
     marginBottom: 12,
     overflow: "hidden",
   },
   fileCardSelected: {
-    borderColor: Colors.light.tint,
-    backgroundColor: "#EFF6FF",
+    borderColor: colors.tint,
+    backgroundColor: colors.infoSurface,
   },
   fileRow: {
     flexDirection: "row",
@@ -1947,22 +1949,22 @@ const s = StyleSheet.create({
     width: 52,
     height: 52,
     borderRadius: 8,
-    backgroundColor: "#E2E8F0",
+    backgroundColor: colors.border,
   },
   videoThumb: {
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#FEF3C7",
+    backgroundColor: colors.warningLight,
   },
   pdfThumb: {
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#FEE2E2",
+    backgroundColor: colors.errorLight,
   },
   fileGenericThumb: {
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#F1F5F9",
+    backgroundColor: colors.surfaceAlt,
   },
   fileTextWrap: {
     flex: 1,
@@ -1971,17 +1973,17 @@ const s = StyleSheet.create({
   fileName: {
     fontFamily: "Inter_600SemiBold",
     fontSize: 14,
-    color: Colors.light.text,
+    color: colors.text,
   },
   fileMeta: {
     fontFamily: "Inter_400Regular",
     fontSize: 11,
-    color: "#94A3B8",
+    color: colors.textTertiary,
   },
   fileNotePreview: {
     fontFamily: "Inter_400Regular",
     fontSize: 12,
-    color: "#475569",
+    color: colors.textSecondary,
     marginTop: 3,
     fontStyle: "italic",
     lineHeight: 16,
@@ -1989,7 +1991,7 @@ const s = StyleSheet.create({
   fileNoteEdited: {
     fontFamily: "Inter_400Regular",
     fontSize: 10,
-    color: "#94A3B8",
+    color: colors.textTertiary,
     marginTop: 2,
     fontStyle: "italic",
   },
@@ -2005,18 +2007,18 @@ const s = StyleSheet.create({
     padding: 12,
     paddingTop: 4,
     borderTopWidth: 1,
-    borderTopColor: "#E2E8F0",
+    borderTopColor: colors.border,
   },
   assignLabel: {
     fontFamily: "Inter_700Bold",
     fontSize: 14,
-    color: Colors.light.text,
+    color: colors.text,
     marginBottom: 10,
   },
   fieldLabel: {
     fontFamily: "Inter_600SemiBold",
     fontSize: 12,
-    color: "#64748B",
+    color: colors.textSecondary,
     marginBottom: 4,
   },
   patientFieldLabel: {
@@ -2024,20 +2026,20 @@ const s = StyleSheet.create({
   },
   searchInput: {
     borderWidth: 1,
-    borderColor: "#E2E8F0",
+    borderColor: colors.border,
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontSize: 14,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.text,
-    backgroundColor: "#FFF",
+    color: colors.text,
+    backgroundColor: colors.surface,
   },
   dropdown: {
     borderWidth: 1,
-    borderColor: "#E2E8F0",
+    borderColor: colors.border,
     borderRadius: 8,
-    backgroundColor: "#FFF",
+    backgroundColor: colors.surface,
     marginTop: 4,
     overflow: "hidden",
   },
@@ -2048,26 +2050,26 @@ const s = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: "#F1F5F9",
+    borderBottomColor: colors.surfaceAlt,
   },
   dropdownItemPressed: {
-    backgroundColor: "#F1F5F9",
+    backgroundColor: colors.surfaceAlt,
   },
   dropdownItemText: {
     fontFamily: "Inter_500Medium",
     fontSize: 14,
-    color: Colors.light.text,
+    color: colors.text,
   },
   dropdownItemSub: {
     fontFamily: "Inter_400Regular",
     fontSize: 11,
-    color: "#94A3B8",
+    color: colors.textTertiary,
     marginTop: 1,
   },
   noResults: {
     fontFamily: "Inter_400Regular",
     fontSize: 12,
-    color: "#94A3B8",
+    color: colors.textTertiary,
     marginTop: 8,
     fontStyle: "italic",
   },
@@ -2076,17 +2078,17 @@ const s = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
-    backgroundColor: "#22C55E",
+    backgroundColor: colors.success,
     paddingVertical: 12,
     borderRadius: 10,
     marginTop: 16,
   },
   addToCaseBtnDisabled: {
-    backgroundColor: "#CBD5E1",
+    backgroundColor: colors.border,
   },
   addToCaseBtnText: {
     fontFamily: "Inter_700Bold",
     fontSize: 14,
-    color: "#FFF",
+    color: colors.textInverse,
   },
 });

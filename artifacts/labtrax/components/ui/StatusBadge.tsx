@@ -1,6 +1,7 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { View, Text, StyleSheet } from "react-native";
-import { useTheme } from "@/lib/theme-context";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
+import { Spacing, Radius } from "@/constants/tokens";
 
 export type BadgeVariant =
   | "intake"
@@ -29,34 +30,37 @@ interface StatusBadgeProps {
   size?: "sm" | "md";
 }
 
-const VARIANT_MAP: Record<BadgeVariant, { color: string; bg: string }> = {
-  intake:   { color: "#2563EB", bg: "#DBEAFE" },
-  progress: { color: "#7C3AED", bg: "#EDE9FE" },
-  ship:     { color: "#0891B2", bg: "#CFFAFE" },
-  complete: { color: "#10B981", bg: "#D1FAE5" },
-  rush:     { color: "#EF4444", bg: "#FEE2E2" },
-  remake:   { color: "#F59E0B", bg: "#FEF3C7" },
-  paid:     { color: "#10B981", bg: "#D1FAE5" },
-  unpaid:   { color: "#F59E0B", bg: "#FEF3C7" },
-  overdue:  { color: "#EF4444", bg: "#FEE2E2" },
-  draft:    { color: "#64748B", bg: "#F1F5F9" },
-  void:     { color: "#64748B", bg: "#F1F5F9" },
-  open:     { color: "#D97706", bg: "#FEF3C7" },
-  trialing: { color: "#7C3AED", bg: "#EDE9FE" },
-  active:   { color: "#10B981", bg: "#D1FAE5" },
-  grace:    { color: "#EA580C", bg: "#FFF7ED" },
-  locked:   { color: "#EF4444", bg: "#FEE2E2" },
-  custom:   { color: "#145DA0", bg: "#D9E9F7" },
-};
+function makeVariantMap(c: ThemeColors): Record<BadgeVariant, { color: string; bg: string }> {
+  return {
+    intake:   { color: c.info,         bg: c.infoLight },
+    progress: { color: c.violet,       bg: c.violetLight },
+    ship:     { color: c.cyan,         bg: c.cyanLight },
+    complete: { color: c.success,      bg: c.successLight },
+    rush:     { color: c.error,        bg: c.errorLight },
+    remake:   { color: c.warning,      bg: c.warningLight },
+    paid:     { color: c.success,      bg: c.successLight },
+    unpaid:   { color: c.warning,      bg: c.warningLight },
+    overdue:  { color: c.error,        bg: c.errorLight },
+    draft:    { color: c.textSecondary, bg: c.surfaceAlt },
+    void:     { color: c.textSecondary, bg: c.surfaceAlt },
+    open:     { color: c.warningStrong, bg: c.warningLight },
+    trialing: { color: c.violet,       bg: c.violetLight },
+    active:   { color: c.success,      bg: c.successLight },
+    grace:    { color: c.orange,       bg: c.orangeLight },
+    locked:   { color: c.error,        bg: c.errorLight },
+    custom:   { color: c.tint,         bg: c.tintLight },
+  };
+}
 
 export function StatusBadge({ label, color, bg, variant, size = "md" }: StatusBadgeProps) {
-  const { isDark } = useTheme();
-  const resolved = variant ? VARIANT_MAP[variant] : null;
-  const badgeColor = color ?? resolved?.color ?? "#64748B";
-  const badgeBg   = bg    ?? resolved?.bg    ?? "#F1F5F9";
+  const { colors, isDark } = useTheme();
+  const variantMap = useMemo(() => makeVariantMap(colors), [colors]);
+  const resolved = variant ? variantMap[variant] : null;
+  const badgeColor = color ?? resolved?.color ?? colors.textSecondary;
+  const badgeBg   = bg    ?? resolved?.bg    ?? colors.surfaceAlt;
 
   const darkBg = isDark ? badgeColor + "25" : badgeBg;
-  const darkColor = isDark ? badgeColor : badgeColor;
+  const darkColor = badgeColor;
 
   return (
     <View style={[
@@ -78,12 +82,12 @@ export function StatusBadge({ label, color, bg, variant, size = "md" }: StatusBa
 const styles = StyleSheet.create({
   badge: {
     alignSelf: "flex-start",
-    paddingHorizontal: 8,
+    paddingHorizontal: Spacing.sm,
     paddingVertical: 3,
-    borderRadius: 6,
+    borderRadius: Radius.xs,
   },
   badgeSm: {
-    paddingHorizontal: 6,
+    paddingHorizontal: Spacing.xs + 2,
     paddingVertical: 2,
   },
   label: {

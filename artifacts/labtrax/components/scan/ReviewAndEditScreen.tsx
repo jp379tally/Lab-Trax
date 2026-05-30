@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -22,6 +22,7 @@ import {
   type PageEdit,
   reorderArray,
 } from "@/lib/scan/page-edits";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 
 const { height: SCREEN_H } = Dimensions.get("window");
 
@@ -73,6 +74,8 @@ export function ReviewAndEditScreen({
   autoFinishCountdownMs,
 }: ReviewAndEditScreenProps) {
   const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
 
   const [pages, setPages] = useState<PageEdit[]>([]);
   const [mode, setMode] = useState<Mode>("preview");
@@ -253,7 +256,7 @@ export function ReviewAndEditScreen({
       <View style={[StyleSheet.absoluteFill, styles.root]}>
         <View style={[styles.headerRow, { paddingTop: insets.top + 12 }]}>
           <Pressable onPress={onCancel} hitSlop={12} style={styles.iconBtn} accessibilityLabel="Discard scan">
-            <Ionicons name="chevron-back" size={26} color="#FFF" />
+            <Ionicons name="chevron-back" size={26} color={colors.textInverse} />
           </Pressable>
         </View>
 
@@ -282,14 +285,14 @@ export function ReviewAndEditScreen({
               style={({ pressed }) => [styles.sideToolPill, pressed && { opacity: 0.7 }]}
               accessibilityLabel="Rotate page"
             >
-              <Ionicons name="refresh" size={22} color="#FFF" />
+              <Ionicons name="refresh" size={22} color={colors.textInverse} />
             </Pressable>
             <Pressable
               onPress={enterEditMode}
               style={({ pressed }) => [styles.sideToolPill, pressed && { opacity: 0.7 }]}
               accessibilityLabel="Edit pages"
             >
-              <Ionicons name="create-outline" size={22} color="#FFF" />
+              <Ionicons name="create-outline" size={22} color={colors.textInverse} />
             </Pressable>
           </View>
         </View>
@@ -330,9 +333,9 @@ export function ReviewAndEditScreen({
             style={[styles.previewThumb, styles.previewAddMoreThumb]}
             accessibilityLabel="Add another page"
           >
-            <Ionicons name="add" size={26} color="#FFF" />
+            <Ionicons name="add" size={26} color={colors.textInverse} />
             <View style={styles.cameraBadge}>
-              <Ionicons name="camera" size={10} color="#FFF" />
+              <Ionicons name="camera" size={10} color={colors.textInverse} />
             </View>
           </Pressable>
         </ScrollView>
@@ -355,7 +358,7 @@ export function ReviewAndEditScreen({
               ]}
               accessibilityLabel="Add another page"
             >
-              <Ionicons name="add" size={20} color="#FFF" />
+              <Ionicons name="add" size={20} color={colors.textInverse} />
               <Text style={styles.secondaryBtnText}>Add page</Text>
             </Pressable>
             <Pressable
@@ -370,9 +373,9 @@ export function ReviewAndEditScreen({
               accessibilityLabel={isFinishing ? "Analyzing" : "Analyze now"}
             >
               {isFinishing ? (
-                <ActivityIndicator size="small" color="#FFF" />
+                <ActivityIndicator size="small" color={colors.textInverse} />
               ) : (
-                <Ionicons name="sparkles" size={20} color="#FFF" />
+                <Ionicons name="sparkles" size={20} color={colors.textInverse} />
               )}
               <Text style={styles.primaryBtnText}>
                 {isFinishing ? "Analyzing…" : "Analyze now"}
@@ -389,7 +392,7 @@ export function ReviewAndEditScreen({
     <View style={[StyleSheet.absoluteFill, styles.root]}>
       <View style={[styles.headerRow, { paddingTop: insets.top + 12 }]}>
         <Pressable onPress={() => setMode("preview")} hitSlop={12} style={styles.iconBtn} accessibilityLabel="Back to preview">
-          <Ionicons name="chevron-back" size={26} color="#FFF" />
+          <Ionicons name="chevron-back" size={26} color={colors.textInverse} />
         </Pressable>
         <Text style={styles.headerTitle}>Page {activeIndex + 1} of {pages.length}</Text>
         <View style={{ width: 40 }} />
@@ -420,7 +423,7 @@ export function ReviewAndEditScreen({
               accessibilityLabel={t.label}
             >
               <Text style={styles.editSideLabel}>{t.label}</Text>
-              <Ionicons name={t.icon} size={20} color="#FFF" />
+              <Ionicons name={t.icon} size={20} color={colors.textInverse} />
             </Pressable>
           ))}
         </View>
@@ -429,11 +432,11 @@ export function ReviewAndEditScreen({
       <View style={[styles.editBottomBar, { paddingBottom: insets.bottom + 16 }]}>
         <View style={styles.editBottomTools}>
           <Pressable onPress={() => setShowReorder(true)} style={styles.editBottomTool} accessibilityLabel="Reorder pages">
-            <Ionicons name="grid-outline" size={22} color="#FFF" />
+            <Ionicons name="grid-outline" size={22} color={colors.textInverse} />
             <Text style={styles.editBottomToolLabel}>Reorder</Text>
           </Pressable>
           <Pressable onPress={onAddMore} style={styles.editBottomTool} accessibilityLabel="Add more pages">
-            <Ionicons name="camera-outline" size={22} color="#FFF" />
+            <Ionicons name="camera-outline" size={22} color={colors.textInverse} />
             <Text style={styles.editBottomToolLabel}>Add more</Text>
           </Pressable>
         </View>
@@ -449,9 +452,9 @@ export function ReviewAndEditScreen({
           accessibilityLabel="Finish"
         >
           {isFinishing ? (
-            <ActivityIndicator size="small" color="#FFF" />
+            <ActivityIndicator size="small" color={colors.textInverse} />
           ) : (
-            <Ionicons name="checkmark" size={22} color="#FFF" />
+            <Ionicons name="checkmark" size={22} color={colors.textInverse} />
           )}
           <Text style={styles.primaryBtnText}>{isFinishing ? "Analyzing…" : "Finish"}</Text>
         </Pressable>
@@ -484,6 +487,8 @@ function ReorderModal({ visible, pages, onClose, onReorder }: {
   onReorder: (from: number, to: number) => void;
 }) {
   const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose} transparent>
       <View style={styles.modalRoot}>
@@ -491,7 +496,7 @@ function ReorderModal({ visible, pages, onClose, onReorder }: {
           <View style={styles.modalHeader}>
             <Text style={styles.modalTitle}>Reorder pages</Text>
             <Pressable onPress={onClose} hitSlop={12} accessibilityLabel="Close reorder">
-              <Ionicons name="close" size={26} color="#FFF" />
+              <Ionicons name="close" size={26} color={colors.textInverse} />
             </Pressable>
           </View>
           <Text style={styles.modalSub}>Use the arrows to change page order.</Text>
@@ -507,7 +512,7 @@ function ReorderModal({ visible, pages, onClose, onReorder }: {
                   style={({ pressed }) => [styles.reorderBtn, (pressed || idx === 0) && { opacity: 0.4 }]}
                   accessibilityLabel={`Move page ${idx + 1} up`}
                 >
-                  <Ionicons name="arrow-up" size={20} color="#FFF" />
+                  <Ionicons name="arrow-up" size={20} color={colors.textInverse} />
                 </Pressable>
                 <Pressable
                   disabled={idx === pages.length - 1}
@@ -515,7 +520,7 @@ function ReorderModal({ visible, pages, onClose, onReorder }: {
                   style={({ pressed }) => [styles.reorderBtn, (pressed || idx === pages.length - 1) && { opacity: 0.4 }]}
                   accessibilityLabel={`Move page ${idx + 1} down`}
                 >
-                  <Ionicons name="arrow-down" size={20} color="#FFF" />
+                  <Ionicons name="arrow-down" size={20} color={colors.textInverse} />
                 </Pressable>
               </View>
             ))}
@@ -540,7 +545,7 @@ void _platformProbe;
 // ============================================================================
 //                                 Styles
 // ============================================================================
-const styles = StyleSheet.create({
+const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   root: { backgroundColor: "#000", zIndex: 9000 },
   headerRow: {
     flexDirection: "row",
@@ -549,7 +554,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingBottom: 8,
   },
-  headerTitle: { color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  headerTitle: { color: colors.textInverse, fontSize: 15, fontFamily: "Inter_600SemiBold" },
   iconBtn: {
     width: 40, height: 40, borderRadius: 20,
     backgroundColor: "rgba(255,255,255,0.1)",
@@ -568,7 +573,7 @@ const styles = StyleSheet.create({
   cornerDot: {
     position: "absolute",
     width: 16, height: 16, borderRadius: 8,
-    backgroundColor: "#FFF",
+    backgroundColor: colors.textInverse,
     shadowColor: "#000", shadowOpacity: 0.5, shadowRadius: 4, shadowOffset: { width: 0, height: 1 },
     elevation: 4,
   },
@@ -590,7 +595,7 @@ const styles = StyleSheet.create({
     borderWidth: 2, borderColor: "transparent",
     alignItems: "center", justifyContent: "center",
   },
-  previewThumbActive: { borderColor: "#3B82F6" },
+  previewThumbActive: { borderColor: colors.info },
   previewAddMoreThumb: {
     borderStyle: "dashed",
     borderColor: "rgba(255,255,255,0.5)",
@@ -599,18 +604,18 @@ const styles = StyleSheet.create({
   cameraBadge: {
     position: "absolute", bottom: 6, right: 6,
     width: 16, height: 16, borderRadius: 8,
-    backgroundColor: "#3B82F6",
+    backgroundColor: colors.info,
     alignItems: "center", justifyContent: "center",
   },
   bottomBar: { paddingHorizontal: 24, paddingTop: 8, backgroundColor: "rgba(0,0,0,0.95)" },
   bottomBtnRow: { flexDirection: "row", alignItems: "stretch", gap: 10 },
   primaryBtn: {
     flexDirection: "row", alignItems: "center", justifyContent: "center",
-    gap: 8, backgroundColor: "#3B82F6", borderRadius: 14, paddingVertical: 16,
+    gap: 8, backgroundColor: colors.info, borderRadius: 14, paddingVertical: 16,
     paddingHorizontal: 18,
   },
   primaryBtnFlex: { flex: 1 },
-  primaryBtnText: { color: "#FFF", fontSize: 16, fontFamily: "Inter_700Bold" },
+  primaryBtnText: { color: colors.textInverse, fontSize: 16, fontFamily: "Inter_700Bold" },
   secondaryBtn: {
     flexDirection: "row", alignItems: "center", justifyContent: "center",
     gap: 6,
@@ -619,14 +624,14 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: "rgba(255,255,255,0.25)",
     borderRadius: 14,
   },
-  secondaryBtnText: { color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  secondaryBtnText: { color: colors.textInverse, fontSize: 15, fontFamily: "Inter_600SemiBold" },
   countdownHint: {
     color: "rgba(255,255,255,0.75)",
     fontSize: 12, fontFamily: "Inter_500Medium",
     textAlign: "center",
     paddingBottom: 8,
   },
-  countdownHintEmph: { color: "#FFF", fontFamily: "Inter_700Bold" },
+  countdownHintEmph: { color: colors.textInverse, fontFamily: "Inter_700Bold" },
   pageCountRow: { alignItems: "center", paddingTop: 4, paddingBottom: 2 },
   pageCountText: {
     color: "rgba(255,255,255,0.75)",
@@ -638,10 +643,10 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.65)",
     alignItems: "center", justifyContent: "center",
   },
-  thumbPageBadgeText: { color: "#FFF", fontSize: 10, fontFamily: "Inter_700Bold" },
+  thumbPageBadgeText: { color: colors.textInverse, fontSize: 10, fontFamily: "Inter_700Bold" },
   // Edit mode
   editMain: { flex: 1, flexDirection: "row" },
-  canvasWrap: { flex: 1, backgroundColor: "#1a1a1a", overflow: "hidden", position: "relative" },
+  canvasWrap: { flex: 1, backgroundColor: "#1a1a1a", overflow: "hidden", position: "relative" }, // hex-allow: fixed dark photo-editor canvas
   sideToolColumn: {
     width: 130,
     backgroundColor: "rgba(50,50,50,0.95)",
@@ -651,21 +656,21 @@ const styles = StyleSheet.create({
     flexDirection: "row", alignItems: "center", justifyContent: "space-between",
     paddingHorizontal: 12, paddingVertical: 14, borderRadius: 10,
   },
-  editSideLabel: { color: "#FFF", fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  editSideLabel: { color: colors.textInverse, fontSize: 14, fontFamily: "Inter_600SemiBold" },
   editBottomBar: { paddingHorizontal: 24, paddingTop: 12, backgroundColor: "rgba(0,0,0,0.95)" },
   editBottomTools: { flexDirection: "row", justifyContent: "space-around", paddingBottom: 16 },
   editBottomTool: { alignItems: "center", gap: 4, minWidth: 64 },
-  editBottomToolLabel: { color: "#FFF", fontSize: 11, fontFamily: "Inter_600SemiBold" },
+  editBottomToolLabel: { color: colors.textInverse, fontSize: 11, fontFamily: "Inter_600SemiBold" },
   // Modal
   modalRoot: { flex: 1, backgroundColor: "rgba(0,0,0,0.85)", justifyContent: "flex-end" },
   modalCard: {
-    backgroundColor: "#1f1f1f",
+    backgroundColor: "#1f1f1f", // hex-allow: fixed dark editor modal sheet
     borderTopLeftRadius: 20, borderTopRightRadius: 20,
     paddingHorizontal: 20,
     maxHeight: SCREEN_H * 0.8,
   },
   modalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 4 },
-  modalTitle: { color: "#FFF", fontSize: 18, fontFamily: "Inter_700Bold" },
+  modalTitle: { color: colors.textInverse, fontSize: 18, fontFamily: "Inter_700Bold" },
   modalSub: { color: "rgba(255,255,255,0.6)", fontSize: 13, fontFamily: "Inter_400Regular", marginBottom: 8 },
   reorderRow: {
     flexDirection: "row", alignItems: "center", gap: 12,
@@ -676,7 +681,7 @@ const styles = StyleSheet.create({
     width: 44, height: 60, borderRadius: 6,
     backgroundColor: "rgba(255,255,255,0.08)",
   },
-  reorderLabel: { color: "#FFF", fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  reorderLabel: { color: colors.textInverse, fontSize: 14, fontFamily: "Inter_600SemiBold" },
   reorderBtn: {
     width: 36, height: 36, borderRadius: 18,
     alignItems: "center", justifyContent: "center",

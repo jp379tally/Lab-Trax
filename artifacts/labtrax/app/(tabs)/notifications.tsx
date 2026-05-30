@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from "react";
+import React, { useState, useCallback, useRef, useMemo } from "react";
 import {
   StyleSheet,
   View,
@@ -20,29 +20,30 @@ import * as Haptics from "expo-haptics";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import { useProviderFilteredNotifications } from "@/lib/useFilteredNotifications";
-import Colors from "@/constants/colors";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
+import { EmptyState } from "@/components/ui/EmptyState";
 import { Notification, GroupJoinRequest, LabInvitation } from "@/lib/data";
 import { ChatButton } from "@/components/ChatButton";
 import { AppHeader } from "@/components/ui/AppHeader";
 
-function getNotifIcon(type: Notification["type"] | string | undefined) {
+function getNotifIcon(type: Notification["type"] | string | undefined, colors: ThemeColors) {
   switch (type) {
     case "rush":
-      return { name: "flash" as const, color: Colors.light.error, bg: Colors.light.errorLight };
+      return { name: "flash" as const, color: colors.error, bg: colors.errorLight };
     case "update":
-      return { name: "swap-horizontal" as const, color: Colors.light.tint, bg: Colors.light.tintLight };
+      return { name: "swap-horizontal" as const, color: colors.tint, bg: colors.tintLight };
     case "complete":
-      return { name: "checkmark-circle" as const, color: Colors.light.success, bg: Colors.light.successLight };
+      return { name: "checkmark-circle" as const, color: colors.success, bg: colors.successLight };
     case "alert":
-      return { name: "alert-circle" as const, color: Colors.light.warning, bg: Colors.light.warningLight };
+      return { name: "alert-circle" as const, color: colors.warning, bg: colors.warningLight };
     default:
       // Defensive fallback so an unknown / new notification type from the
       // server cannot crash the entire screen with a "Something went wrong"
       // ErrorBoundary fault.
       return {
         name: "notifications" as const,
-        color: Colors.light.tint,
-        bg: Colors.light.tintLight,
+        color: colors.tint,
+        bg: colors.tintLight,
       };
   }
 }
@@ -60,6 +61,7 @@ function formatTime(ts: number) {
 }
 
 function SwipeableNotifRow({ children, onDelete }: { children: React.ReactNode; onDelete: () => void }) {
+  const { colors } = useTheme();
   const translateX = useRef(new RNAnimated.Value(0)).current;
   const deleteThreshold = -80;
 
@@ -99,13 +101,13 @@ function SwipeableNotifRow({ children, onDelete }: { children: React.ReactNode; 
       <View style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 120, flexDirection: "row", justifyContent: "flex-end" }}>
         <Pressable
           onPress={handleDelete}
-          style={{ width: 120, backgroundColor: "#EF4444", justifyContent: "center", alignItems: "center" }}
+          style={{ width: 120, backgroundColor: colors.error, justifyContent: "center", alignItems: "center" }}
         >
-          <Ionicons name="trash" size={22} color="#FFF" />
-          <Text style={{ color: "#FFF", fontSize: 12, fontWeight: "500" as const, marginTop: 4 }}>Delete</Text>
+          <Ionicons name="trash" size={22} color={colors.textInverse} />
+          <Text style={{ color: colors.textInverse, fontSize: 12, fontWeight: "500" as const, marginTop: 4 }}>Delete</Text>
         </Pressable>
       </View>
-      <RNAnimated.View style={{ transform: [{ translateX }], backgroundColor: "#fff" }} {...panResponder.panHandlers}>
+      <RNAnimated.View style={{ transform: [{ translateX }], backgroundColor: colors.surface }} {...panResponder.panHandlers}>
         {children}
       </RNAnimated.View>
     </View>
@@ -116,6 +118,8 @@ export default function NotificationsScreen() {
   const { markNotificationRead, markAllNotificationsRead, removeNotification, groupJoinRequests, respondToGroupJoinRequest, labInvitations, respondToLabInvite, hardRefresh } = useApp();
   const { currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const [refreshing, setRefreshing] = useState(false);
   const [confirmJoinRequest, setConfirmJoinRequest] = useState<{ request: GroupJoinRequest; accept: boolean; role?: "admin" | "user" } | null>(null);
   const [confirmLabInvite, setConfirmLabInvite] = useState<{ invite: LabInvitation; accept: boolean } | null>(null);
@@ -157,8 +161,8 @@ export default function NotificationsScreen() {
 
     return (
       <View key={request.id} style={styles.inviteCard}>
-        <View style={[styles.notifIcon, { backgroundColor: isProvider ? "#DBEAFE" : isInternalJoin ? "#FEF3C7" : "#FEF3C7" }]}>
-          <Ionicons name={isProvider ? "medical" : "person-add"} size={20} color={isProvider ? "#2563EB" : "#D97706"} />
+        <View style={[styles.notifIcon, { backgroundColor: isProvider ? colors.infoLight : isInternalJoin ? colors.warningLight : colors.warningLight }]}>
+          <Ionicons name={isProvider ? "medical" : "person-add"} size={20} color={isProvider ? colors.info : colors.warningStrong} />
         </View>
         <View style={styles.notifContent}>
           <Text style={styles.notifTitle}>{isProvider ? "Provider Join Request" : isInternalJoin ? "User Join Request" : "Lab Join Request"}</Text>
@@ -166,7 +170,7 @@ export default function NotificationsScreen() {
             <Text style={{ fontFamily: "Inter_600SemiBold" }}>{request.requestingUsername}</Text>
             {isProvider ? " (Provider) wants to join your lab" : isInternalJoin ? " wants to join your lab" : " wants to join your lab"}
           </Text>
-          <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 4, marginBottom: 8 }}>
+          <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textSecondary, marginTop: 4, marginBottom: 8 }}>
             {isInternalJoin ? "What role should this user have?" : isProvider ? "Accept this provider into your lab?" : "Accept this user into your lab?"}
           </Text>
           <View style={styles.inviteBtns}>
@@ -176,21 +180,21 @@ export default function NotificationsScreen() {
                   style={({ pressed }) => [styles.acceptBtn, pressed && { opacity: 0.8 }]}
                   onPress={() => setConfirmJoinRequest({ request, accept: true, role: "user" })}
                 >
-                  <Ionicons name="checkmark" size={16} color="#FFF" />
+                  <Ionicons name="checkmark" size={16} color={colors.textInverse} />
                   <Text style={styles.acceptText}>As User</Text>
                 </Pressable>
                 <Pressable
-                  style={({ pressed }) => [styles.acceptBtn, { backgroundColor: "#F59E0B" }, pressed && { opacity: 0.8 }]}
+                  style={({ pressed }) => [styles.acceptBtn, { backgroundColor: colors.warning }, pressed && { opacity: 0.8 }]}
                   onPress={() => setConfirmJoinRequest({ request, accept: true, role: "admin" })}
                 >
-                  <Ionicons name="shield-checkmark" size={16} color="#FFF" />
+                  <Ionicons name="shield-checkmark" size={16} color={colors.textInverse} />
                   <Text style={styles.acceptText}>As Admin</Text>
                 </Pressable>
                 <Pressable
                   style={({ pressed }) => [styles.declineBtn, pressed && { opacity: 0.8 }]}
                   onPress={() => setConfirmJoinRequest({ request, accept: false })}
                 >
-                  <Ionicons name="close" size={16} color={Colors.light.error} />
+                  <Ionicons name="close" size={16} color={colors.error} />
                   <Text style={styles.declineText}>Reject</Text>
                 </Pressable>
               </>
@@ -200,14 +204,14 @@ export default function NotificationsScreen() {
                   style={({ pressed }) => [styles.acceptBtn, pressed && { opacity: 0.8 }]}
                   onPress={() => setConfirmJoinRequest({ request, accept: true, role: "user" })}
                 >
-                  <Ionicons name="checkmark" size={16} color="#FFF" />
+                  <Ionicons name="checkmark" size={16} color={colors.textInverse} />
                   <Text style={styles.acceptText}>Accept</Text>
                 </Pressable>
                 <Pressable
                   style={({ pressed }) => [styles.declineBtn, pressed && { opacity: 0.8 }]}
                   onPress={() => setConfirmJoinRequest({ request, accept: false })}
                 >
-                  <Ionicons name="close" size={16} color={Colors.light.error} />
+                  <Ionicons name="close" size={16} color={colors.error} />
                   <Text style={styles.declineText}>Reject</Text>
                 </Pressable>
               </>
@@ -219,7 +223,7 @@ export default function NotificationsScreen() {
   }
 
   function renderNotification({ item }: { item: Notification }) {
-    const icon = getNotifIcon(item.type);
+    const icon = getNotifIcon(item.type, colors);
     return (
       <SwipeableNotifRow onDelete={() => removeNotification(item.id)}>
         <Pressable
@@ -290,8 +294,8 @@ export default function NotificationsScreen() {
                     const isAffiliated = !!currentUserProfile?.practiceName;
                     return (
                       <View key={invite.id} style={styles.inviteCard}>
-                        <View style={[styles.notifIcon, { backgroundColor: "#EDE9FE" }]}>
-                          <Ionicons name="mail-open" size={20} color="#7C3AED" />
+                        <View style={[styles.notifIcon, { backgroundColor: colors.violetLight }]}>
+                          <Ionicons name="mail-open" size={20} color={colors.violet} />
                         </View>
                         <View style={styles.notifContent}>
                           <Text style={styles.notifTitle}>Lab Invitation</Text>
@@ -302,13 +306,13 @@ export default function NotificationsScreen() {
                             {` as ${invite.role === "admin" ? "an admin" : "a user"}.`}
                           </Text>
                           {isAffiliated && (
-                            <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.error, marginTop: 4 }}>
+                            <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: colors.error, marginTop: 4 }}>
                               You are currently affiliated with {currentUserProfile?.practiceName}. You must leave your current lab before accepting.
                             </Text>
                           )}
                           <View style={[styles.inviteBtns, { marginTop: 8 }]}>
                             <Pressable
-                              style={({ pressed }) => [styles.acceptBtn, { backgroundColor: "#7C3AED" }, isAffiliated && { opacity: 0.4 }, pressed && { opacity: 0.8 }]}
+                              style={({ pressed }) => [styles.acceptBtn, { backgroundColor: colors.violet }, isAffiliated && { opacity: 0.4 }, pressed && { opacity: 0.8 }]}
                               onPress={() => {
                                 if (isAffiliated) {
                                   Alert.alert("Already Affiliated", `You are currently a member of ${currentUserProfile?.practiceName}. Please leave your current lab in Settings before accepting a new invitation.`);
@@ -317,14 +321,14 @@ export default function NotificationsScreen() {
                                 setConfirmLabInvite({ invite, accept: true });
                               }}
                             >
-                              <Ionicons name="checkmark" size={16} color="#FFF" />
+                              <Ionicons name="checkmark" size={16} color={colors.textInverse} />
                               <Text style={styles.acceptText}>Accept</Text>
                             </Pressable>
                             <Pressable
                               style={({ pressed }) => [styles.declineBtn, pressed && { opacity: 0.8 }]}
                               onPress={() => setConfirmLabInvite({ invite, accept: false })}
                             >
-                              <Ionicons name="close" size={16} color={Colors.light.error} />
+                              <Ionicons name="close" size={16} color={colors.error} />
                               <Text style={styles.declineText}>Decline</Text>
                             </Pressable>
                           </View>
@@ -345,14 +349,11 @@ export default function NotificationsScreen() {
         }
         ListEmptyComponent={
           (pendingJoinRequests.length === 0 && pendingLabInvites.length === 0) ? (
-            <View style={styles.emptyState}>
-              <Ionicons
-                name="notifications-off-outline"
-                size={48}
-                color={Colors.light.textTertiary}
-              />
-              <Text style={styles.emptyText}>No notifications yet</Text>
-            </View>
+            <EmptyState
+              icon="notifications-off-outline"
+              title="No notifications yet"
+              description="Join requests and lab invites will show up here."
+            />
           ) : null
         }
       />
@@ -360,11 +361,11 @@ export default function NotificationsScreen() {
       <Modal visible={!!confirmJoinRequest} transparent animationType="fade" onRequestClose={() => setConfirmJoinRequest(null)}>
         <View style={styles.confirmOverlay}>
           <View style={styles.confirmCard}>
-            <View style={[styles.confirmIconWrap, { backgroundColor: confirmJoinRequest?.accept ? "#DCFCE7" : "#FEE2E2" }]}>
+            <View style={[styles.confirmIconWrap, { backgroundColor: confirmJoinRequest?.accept ? colors.successLight : colors.errorLight }]}>
               <Ionicons
                 name={confirmJoinRequest?.accept ? "person-add" : "close-circle"}
                 size={32}
-                color={confirmJoinRequest?.accept ? "#16A34A" : "#EF4444"}
+                color={confirmJoinRequest?.accept ? colors.successStrong : colors.error}
               />
             </View>
             <Text style={styles.confirmTitle}>
@@ -387,7 +388,7 @@ export default function NotificationsScreen() {
             </Text>
             <View style={styles.confirmBtns}>
               <Pressable
-                style={({ pressed }) => [styles.confirmYesBtn, !confirmJoinRequest?.accept && { backgroundColor: "#EF4444" }, pressed && { opacity: 0.85 }]}
+                style={({ pressed }) => [styles.confirmYesBtn, !confirmJoinRequest?.accept && { backgroundColor: colors.error }, pressed && { opacity: 0.85 }]}
                 onPress={async () => {
                   if (!confirmJoinRequest) return;
                   const result = await respondToGroupJoinRequest(confirmJoinRequest.request.id, confirmJoinRequest.accept, confirmJoinRequest.role);
@@ -419,11 +420,11 @@ export default function NotificationsScreen() {
       <Modal visible={!!confirmLabInvite} transparent animationType="fade" onRequestClose={() => setConfirmLabInvite(null)}>
         <View style={styles.confirmOverlay}>
           <View style={styles.confirmCard}>
-            <View style={[styles.confirmIconWrap, { backgroundColor: confirmLabInvite?.accept ? "#EDE9FE" : "#FEE2E2" }]}>
+            <View style={[styles.confirmIconWrap, { backgroundColor: confirmLabInvite?.accept ? colors.violetLight : colors.errorLight }]}>
               <Ionicons
                 name={confirmLabInvite?.accept ? "mail-open" : "close-circle"}
                 size={32}
-                color={confirmLabInvite?.accept ? "#7C3AED" : "#EF4444"}
+                color={confirmLabInvite?.accept ? colors.violet : colors.error}
               />
             </View>
             <Text style={styles.confirmTitle}>
@@ -436,7 +437,7 @@ export default function NotificationsScreen() {
             </Text>
             <View style={styles.confirmBtns}>
               <Pressable
-                style={({ pressed }) => [styles.confirmYesBtn, confirmLabInvite?.accept ? { backgroundColor: "#7C3AED" } : { backgroundColor: "#EF4444" }, pressed && { opacity: 0.85 }]}
+                style={({ pressed }) => [styles.confirmYesBtn, confirmLabInvite?.accept ? { backgroundColor: colors.violet } : { backgroundColor: colors.error }, pressed && { opacity: 0.85 }]}
                 onPress={async () => {
                   if (!confirmLabInvite) return;
                   const result = await respondToLabInvite(confirmLabInvite.invite.id, confirmLabInvite.accept);
@@ -468,22 +469,22 @@ export default function NotificationsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.light.background,
+    backgroundColor: colors.background,
   },
   header: {
     paddingHorizontal: 20,
     paddingBottom: 16,
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.light.border,
+    borderBottomColor: colors.border,
   },
   title: {
     fontSize: 26,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   listContent: {
     padding: 20,
@@ -495,7 +496,7 @@ const styles = StyleSheet.create({
   sectionLabel: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.subText,
+    color: colors.subText,
     textTransform: "uppercase",
     letterSpacing: 0.5,
     marginBottom: 10,
@@ -503,11 +504,11 @@ const styles = StyleSheet.create({
   inviteCard: {
     flexDirection: "row",
     alignItems: "flex-start",
-    backgroundColor: "#EFF6FF",
+    backgroundColor: colors.infoSurface,
     borderRadius: 18,
     padding: 16,
     borderWidth: 1,
-    borderColor: "#BFDBFE",
+    borderColor: colors.infoLight,
     gap: 14,
     marginBottom: 10,
   },
@@ -520,7 +521,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
-    backgroundColor: "#16A34A",
+    backgroundColor: colors.successStrong,
     borderRadius: 8,
     paddingHorizontal: 14,
     paddingVertical: 7,
@@ -528,13 +529,13 @@ const styles = StyleSheet.create({
   acceptText: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
   declineBtn: {
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
-    backgroundColor: "#FEE2E2",
+    backgroundColor: colors.errorLight,
     borderRadius: 8,
     paddingHorizontal: 14,
     paddingVertical: 7,
@@ -542,21 +543,21 @@ const styles = StyleSheet.create({
   declineText: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.error,
+    color: colors.error,
   },
   notifCard: {
     flexDirection: "row",
     alignItems: "flex-start",
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderRadius: 18,
     padding: 16,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
     gap: 14,
   },
   notifCardUnread: {
-    borderColor: Colors.light.tint + "40",
-    backgroundColor: Colors.light.tintLight + "30",
+    borderColor: colors.tint + "40",
+    backgroundColor: colors.tintLight + "30",
   },
   notifIcon: {
     width: 44,
@@ -577,24 +578,24 @@ const styles = StyleSheet.create({
   notifTitle: {
     fontSize: 14,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   notifTime: {
     fontSize: 11,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
   },
   notifMessage: {
     fontSize: 13,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     lineHeight: 19,
   },
   unreadDot: {
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
     marginTop: 4,
   },
   emptyState: {
@@ -606,7 +607,7 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 15,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
   },
   confirmOverlay: {
     flex: 1,
@@ -616,7 +617,7 @@ const styles = StyleSheet.create({
     padding: 24,
   },
   confirmCard: {
-    backgroundColor: "#FFF",
+    backgroundColor: colors.surface,
     borderRadius: 20,
     padding: 28,
     width: "100%",
@@ -634,14 +635,14 @@ const styles = StyleSheet.create({
   confirmTitle: {
     fontSize: 17,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
     textAlign: "center",
     marginBottom: 8,
   },
   confirmDesc: {
     fontSize: 14,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.subText,
+    color: colors.subText,
     textAlign: "center",
     lineHeight: 20,
     marginBottom: 20,
@@ -653,7 +654,7 @@ const styles = StyleSheet.create({
   },
   confirmYesBtn: {
     flex: 1,
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
     borderRadius: 12,
     paddingVertical: 12,
     alignItems: "center",
@@ -661,11 +662,11 @@ const styles = StyleSheet.create({
   confirmYesText: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
   confirmNoBtn: {
     flex: 1,
-    backgroundColor: Colors.light.surfaceAlt,
+    backgroundColor: colors.surfaceAlt,
     borderRadius: 12,
     paddingVertical: 12,
     alignItems: "center",
@@ -673,6 +674,6 @@ const styles = StyleSheet.create({
   confirmNoText: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
   },
 });

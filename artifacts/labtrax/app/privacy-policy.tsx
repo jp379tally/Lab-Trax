@@ -32,8 +32,8 @@ export default function PrivacyPolicyScreen() {
 
         <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.borderLight }]}>
           <View style={styles.cardRow}>
-            <View style={[styles.bullet, { backgroundColor: "#DBEAFE" }]}>
-              <Ionicons name="person" size={18} color="#2563EB" />
+            <View style={[styles.bullet, { backgroundColor: colors.infoLight }]}>
+              <Ionicons name="person" size={18} color={colors.info} />
             </View>
             <View style={styles.cardContent}>
               <Text style={[styles.cardTitle, { color: colors.text }]}>Information We Collect</Text>
@@ -44,8 +44,8 @@ export default function PrivacyPolicyScreen() {
 
         <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.borderLight }]}>
           <View style={styles.cardRow}>
-            <View style={[styles.bullet, { backgroundColor: "#FEE2E2" }]}>
-              <Ionicons name="close-circle" size={18} color="#DC2626" />
+            <View style={[styles.bullet, { backgroundColor: colors.errorLight }]}>
+              <Ionicons name="close-circle" size={18} color={colors.errorStrong} />
             </View>
             <View style={styles.cardContent}>
               <Text style={[styles.cardTitle, { color: colors.text }]}>We Do Not Sell Data</Text>
@@ -56,8 +56,8 @@ export default function PrivacyPolicyScreen() {
 
         <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.borderLight }]}>
           <View style={styles.cardRow}>
-            <View style={[styles.bullet, { backgroundColor: "#D1FAE5" }]}>
-              <Ionicons name="checkmark-circle" size={18} color="#059669" />
+            <View style={[styles.bullet, { backgroundColor: colors.successLight }]}>
+              <Ionicons name="checkmark-circle" size={18} color={colors.successStrong} />
             </View>
             <View style={styles.cardContent}>
               <Text style={[styles.cardTitle, { color: colors.text }]}>Data Used for App Functionality Only</Text>
@@ -68,8 +68,8 @@ export default function PrivacyPolicyScreen() {
 
         <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.borderLight }]}>
           <View style={styles.cardRow}>
-            <View style={[styles.bullet, { backgroundColor: "#EDE9FE" }]}>
-              <Ionicons name="lock-closed" size={18} color="#7C3AED" />
+            <View style={[styles.bullet, { backgroundColor: colors.violetLight }]}>
+              <Ionicons name="lock-closed" size={18} color={colors.violet} />
             </View>
             <View style={styles.cardContent}>
               <Text style={[styles.cardTitle, { color: colors.text }]}>Security</Text>
@@ -80,8 +80,8 @@ export default function PrivacyPolicyScreen() {
 
         <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.borderLight }]}>
           <View style={styles.cardRow}>
-            <View style={[styles.bullet, { backgroundColor: "#FEF3C7" }]}>
-              <Ionicons name="trash" size={18} color="#D97706" />
+            <View style={[styles.bullet, { backgroundColor: colors.warningLight }]}>
+              <Ionicons name="trash" size={18} color={colors.warningStrong} />
             </View>
             <View style={styles.cardContent}>
               <Text style={[styles.cardTitle, { color: colors.text }]}>Account Deletion</Text>

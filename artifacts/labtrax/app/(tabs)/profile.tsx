@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { useRouter } from "expo-router";
 import {
   StyleSheet,
@@ -14,18 +14,17 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AppHeader } from "@/components/ui/AppHeader";
-import { useTheme } from "@/lib/theme-context";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
-import Colors from "@/constants/colors";
 import { ChatButton } from "@/components/ChatButton";
 import { useEntitlement, type SubscriptionStatus } from "@/lib/useEntitlement";
 
 type WorkStatus = "available" | "break" | "out_of_office";
 
-function entitlementConfig(status: SubscriptionStatus): {
+function entitlementConfig(status: SubscriptionStatus, colors: ThemeColors): {
   label: string;
   icon: keyof typeof Ionicons.glyphMap;
   color: string;
@@ -34,21 +33,21 @@ function entitlementConfig(status: SubscriptionStatus): {
 } {
   switch (status) {
     case "trialing":
-      return { label: "Trial", icon: "time-outline", color: "#7C3AED", bg: "#EDE9FE", borderColor: "#C4B5FD" };
+      return { label: "Trial", icon: "time-outline", color: colors.violet, bg: colors.violetLight, borderColor: colors.violetLight };
     case "active":
-      return { label: "Active", icon: "checkmark-circle", color: Colors.light.success, bg: Colors.light.successLight, borderColor: "#6EE7B7" };
+      return { label: "Active", icon: "checkmark-circle", color: colors.success, bg: colors.successLight, borderColor: colors.success };
     case "past_due":
-      return { label: "Payment Issue", icon: "warning", color: Colors.light.warning, bg: Colors.light.warningLight, borderColor: "#FCD34D" };
+      return { label: "Payment Issue", icon: "warning", color: colors.warning, bg: colors.warningLight, borderColor: colors.warning };
     case "grace":
-      return { label: "Grace Period", icon: "alert-circle", color: "#EA580C", bg: "#FFF7ED", borderColor: "#FDBA74" };
+      return { label: "Grace Period", icon: "alert-circle", color: colors.orange, bg: colors.orangeLight, borderColor: colors.orange };
     case "locked":
-      return { label: "Locked", icon: "lock-closed", color: Colors.light.error, bg: Colors.light.errorLight, borderColor: "#FCA5A5" };
+      return { label: "Locked", icon: "lock-closed", color: colors.error, bg: colors.errorLight, borderColor: colors.errorLight };
     case "canceled":
-      return { label: "Canceled", icon: "close-circle", color: Colors.light.error, bg: Colors.light.errorLight, borderColor: "#FCA5A5" };
+      return { label: "Canceled", icon: "close-circle", color: colors.error, bg: colors.errorLight, borderColor: colors.errorLight };
     case "legacy_free":
-      return { label: "Legacy Free", icon: "star", color: Colors.light.tint, bg: Colors.light.tintLight, borderColor: "#93C5FD" };
+      return { label: "Legacy Free", icon: "star", color: colors.tint, bg: colors.tintLight, borderColor: colors.infoLight };
     default:
-      return { label: status, icon: "ellipse-outline", color: Colors.light.textSecondary, bg: Colors.light.surfaceSecondary, borderColor: Colors.light.border };
+      return { label: status, icon: "ellipse-outline", color: colors.textSecondary, bg: colors.surfaceSecondary, borderColor: colors.border };
   }
 }
 
@@ -57,6 +56,8 @@ export default function ProfileScreen() {
   const { role, setRole, adminUnlocked, setAdminUnlocked, updateWorkStatus, hardRefresh } = useApp();
   const { logout, currentUser, profilePicUri, changePassword, registeredUsers, isAuthenticated } = useAuth();
   const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const { entitlement } = useEntitlement(isAuthenticated);
   const [refreshing, setRefreshing] = useState(false);
   const [workStatus, setWorkStatus] = useState<WorkStatus>("available");
@@ -150,12 +151,10 @@ export default function ProfileScreen() {
   }
 
   const statusConfig: { key: WorkStatus; label: string; icon: keyof typeof Ionicons.glyphMap; color: string; bg: string }[] = [
-    { key: "available", label: "Available", icon: "checkmark-circle", color: Colors.light.success, bg: Colors.light.successLight },
-    { key: "break", label: "Taking a Break", icon: "cafe", color: Colors.light.warning, bg: Colors.light.warningLight },
-    { key: "out_of_office", label: "Out of Office", icon: "airplane", color: Colors.light.textSecondary, bg: Colors.light.surfaceSecondary },
+    { key: "available", label: "Available", icon: "checkmark-circle", color: colors.success, bg: colors.successLight },
+    { key: "break", label: "Taking a Break", icon: "cafe", color: colors.warning, bg: colors.warningLight },
+    { key: "out_of_office", label: "Out of Office", icon: "airplane", color: colors.textSecondary, bg: colors.surfaceSecondary },
   ];
-
-  const { colors } = useTheme();
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.backgroundSolid }}>
@@ -185,10 +184,10 @@ export default function ProfileScreen() {
             <Image source={{ uri: profilePicUri }} style={styles.avatarImage} />
           ) : (
             <View style={styles.avatar}>
-              <Ionicons name="person" size={36} color={Colors.light.tint} />
+              <Ionicons name="person" size={36} color={colors.tint} />
             </View>
           )}
-          <View style={[styles.statusDot, { backgroundColor: workStatus === "available" ? Colors.light.success : workStatus === "break" ? Colors.light.warning : Colors.light.textSecondary }]} />
+          <View style={[styles.statusDot, { backgroundColor: workStatus === "available" ? colors.success : workStatus === "break" ? colors.warning : colors.textSecondary }]} />
         </View>
         <Text style={styles.profileName}>
           {currentUser ? currentUser.charAt(0).toUpperCase() + currentUser.slice(1) : role === "user" ? "User" : "Administrator"}
@@ -197,7 +196,7 @@ export default function ProfileScreen() {
       </View>
 
       {entitlement && (() => {
-        const cfg = entitlementConfig(entitlement.status);
+        const cfg = entitlementConfig(entitlement.status, colors);
         const daysLabel =
           entitlement.status === "trialing" && entitlement.trialDaysRemaining !== null
             ? `${entitlement.trialDaysRemaining} day${entitlement.trialDaysRemaining === 1 ? "" : "s"} left in trial`
@@ -244,8 +243,8 @@ export default function ProfileScreen() {
                 workStatus === s.key && { backgroundColor: s.bg, borderColor: s.color },
               ]}
             >
-              <View style={[styles.statusIconWrap, { backgroundColor: workStatus === s.key ? s.color : Colors.light.surfaceSecondary }]}>
-                <Ionicons name={s.icon} size={18} color={workStatus === s.key ? "#FFF" : Colors.light.textSecondary} />
+              <View style={[styles.statusIconWrap, { backgroundColor: workStatus === s.key ? s.color : colors.surfaceSecondary }]}>
+                <Ionicons name={s.icon} size={18} color={workStatus === s.key ? colors.textInverse : colors.textSecondary} />
               </View>
               <Text style={[styles.statusBtnText, workStatus === s.key && { color: s.color, fontFamily: "Inter_700Bold" }]}>{s.label}</Text>
               {workStatus === s.key && (
@@ -260,8 +259,8 @@ export default function ProfileScreen() {
         <Text style={styles.sectionTitle}>CREDENTIALS</Text>
         <View style={styles.menuGroup}>
           <View style={styles.menuItem}>
-            <View style={[styles.menuIcon, { backgroundColor: Colors.light.tintLight }]}>
-              <Ionicons name="person-circle" size={18} color={Colors.light.tint} />
+            <View style={[styles.menuIcon, { backgroundColor: colors.tintLight }]}>
+              <Ionicons name="person-circle" size={18} color={colors.tint} />
             </View>
             <View style={styles.menuInfo}>
               <Text style={styles.menuTitle}>Username</Text>
@@ -270,8 +269,8 @@ export default function ProfileScreen() {
           </View>
           <View style={styles.menuDivider} />
           <View style={styles.menuItem}>
-            <View style={[styles.menuIcon, { backgroundColor: Colors.light.successLight }]}>
-              <Ionicons name="shield-checkmark" size={18} color={Colors.light.success} />
+            <View style={[styles.menuIcon, { backgroundColor: colors.successLight }]}>
+              <Ionicons name="shield-checkmark" size={18} color={colors.success} />
             </View>
             <View style={styles.menuInfo}>
               <Text style={styles.menuTitle}>Role</Text>
@@ -280,8 +279,8 @@ export default function ProfileScreen() {
           </View>
           <View style={styles.menuDivider} />
           <View style={styles.menuItem}>
-            <View style={[styles.menuIcon, { backgroundColor: Colors.light.warningLight }]}>
-              <Ionicons name="finger-print" size={18} color={Colors.light.warning} />
+            <View style={[styles.menuIcon, { backgroundColor: colors.warningLight }]}>
+              <Ionicons name="finger-print" size={18} color={colors.warning} />
             </View>
             <View style={styles.menuInfo}>
               <Text style={styles.menuTitle}>Biometric Auth</Text>
@@ -298,8 +297,8 @@ export default function ProfileScreen() {
                   onPress={() => router.push("/receive-payments" as any)}
                   testID="receive-payments-button"
                 >
-                  <View style={[styles.menuIcon, { backgroundColor: "#DCFCE7" }]}>
-                    <Ionicons name="cash" size={18} color="#16A34A" />
+                  <View style={[styles.menuIcon, { backgroundColor: colors.successLight }]}>
+                    <Ionicons name="cash" size={18} color={colors.successStrong} />
                   </View>
                   <View style={styles.menuInfo}>
                     <Text style={styles.menuTitle}>Receive Payments</Text>
@@ -307,7 +306,7 @@ export default function ProfileScreen() {
                       Apply payments across open invoices
                     </Text>
                   </View>
-                  <Ionicons name="chevron-forward" size={18} color={Colors.light.textSecondary} />
+                  <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
                 </Pressable>
                 <View style={styles.menuDivider} />
               </>
@@ -318,8 +317,8 @@ export default function ProfileScreen() {
             onPress={() => router.push("/customers" as any)}
             testID="customers-button"
           >
-            <View style={[styles.menuIcon, { backgroundColor: "#F0FDF4" }]}>
-              <Ionicons name="people-outline" size={18} color="#16A34A" />
+            <View style={[styles.menuIcon, { backgroundColor: colors.successSurface }]}>
+              <Ionicons name="people-outline" size={18} color={colors.successStrong} />
             </View>
             <View style={styles.menuInfo}>
               <Text style={styles.menuTitle}>Customers</Text>
@@ -327,7 +326,7 @@ export default function ProfileScreen() {
                 View practices and open balances
               </Text>
             </View>
-            <Ionicons name="chevron-forward" size={18} color={Colors.light.textSecondary} />
+            <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
           </Pressable>
           <View style={styles.menuDivider} />
           <Pressable
@@ -335,14 +334,14 @@ export default function ProfileScreen() {
             onPress={() => router.push("/payees" as any)}
             testID="payees-button"
           >
-            <View style={[styles.menuIcon, { backgroundColor: "#E0F2FE" }]}>
-              <Ionicons name="receipt-outline" size={18} color="#0284C7" />
+            <View style={[styles.menuIcon, { backgroundColor: colors.cyanLight }]}>
+              <Ionicons name="receipt-outline" size={18} color={colors.cyan} />
             </View>
             <View style={styles.menuInfo}>
               <Text style={styles.menuTitle}>Payees</Text>
               <Text style={styles.menuSub}>Browse vendors, employees, and items</Text>
             </View>
-            <Ionicons name="chevron-forward" size={18} color={Colors.light.textSecondary} />
+            <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
           </Pressable>
           <View style={styles.menuDivider} />
           <Pressable
@@ -350,8 +349,8 @@ export default function ProfileScreen() {
             onPress={() => router.push("/link-labs" as any)}
             testID="link-labs-button"
           >
-            <View style={[styles.menuIcon, { backgroundColor: "#E0F2FE" }]}>
-              <Ionicons name="link" size={18} color="#0284C7" />
+            <View style={[styles.menuIcon, { backgroundColor: colors.cyanLight }]}>
+              <Ionicons name="link" size={18} color={colors.cyan} />
             </View>
             <View style={styles.menuInfo}>
               <Text style={styles.menuTitle}>Link Labs</Text>
@@ -359,7 +358,7 @@ export default function ProfileScreen() {
                 Combine cases & invoices across multiple labs
               </Text>
             </View>
-            <Ionicons name="chevron-forward" size={18} color={Colors.light.textSecondary} />
+            <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
           </Pressable>
           <View style={styles.menuDivider} />
           <Pressable
@@ -367,14 +366,14 @@ export default function ProfileScreen() {
             onPress={() => router.push("/subscription" as any)}
             testID="subscription-button"
           >
-            <View style={[styles.menuIcon, { backgroundColor: "#EDE9FE" }]}>
-              <Ionicons name="flash" size={18} color="#7C3AED" />
+            <View style={[styles.menuIcon, { backgroundColor: colors.violetLight }]}>
+              <Ionicons name="flash" size={18} color={colors.violet} />
             </View>
             <View style={styles.menuInfo}>
               <Text style={styles.menuTitle}>Subscription</Text>
               <Text style={styles.menuSub}>Manage your plan and billing</Text>
             </View>
-            <Ionicons name="chevron-forward" size={18} color={Colors.light.textSecondary} />
+            <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
           </Pressable>
           <View style={styles.menuDivider} />
           <Pressable
@@ -388,28 +387,28 @@ export default function ProfileScreen() {
               setPasswordSuccess(false);
             }}
           >
-            <View style={[styles.menuIcon, { backgroundColor: "#FEF3C7" }]}>
-              <Ionicons name="key" size={18} color="#D97706" />
+            <View style={[styles.menuIcon, { backgroundColor: colors.warningLight }]}>
+              <Ionicons name="key" size={18} color={colors.warningStrong} />
             </View>
             <View style={styles.menuInfo}>
               <Text style={styles.menuTitle}>Change Password</Text>
               <Text style={styles.menuSub}>Update your account password</Text>
             </View>
-            <Ionicons name="chevron-forward" size={18} color={Colors.light.textSecondary} />
+            <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
           </Pressable>
           <View style={styles.menuDivider} />
           <Pressable
             style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
             onPress={() => router.push("/two-factor" as any)}
           >
-            <View style={[styles.menuIcon, { backgroundColor: "#EDE9FE" }]}>
-              <Ionicons name="shield-checkmark" size={18} color="#7C3AED" />
+            <View style={[styles.menuIcon, { backgroundColor: colors.violetLight }]}>
+              <Ionicons name="shield-checkmark" size={18} color={colors.violet} />
             </View>
             <View style={styles.menuInfo}>
               <Text style={styles.menuTitle}>Two-Factor Authentication</Text>
               <Text style={styles.menuSub}>Add an extra layer of security</Text>
             </View>
-            <Ionicons name="chevron-forward" size={18} color={Colors.light.textSecondary} />
+            <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
           </Pressable>
           {currentUser && (() => {
             const userData = registeredUsers.find(u => u.username.toLowerCase() === currentUser.toLowerCase());
@@ -420,13 +419,13 @@ export default function ProfileScreen() {
               <>
                 <View style={styles.menuDivider} />
                 <View style={styles.menuItem}>
-                  <View style={[styles.menuIcon, { backgroundColor: "#E0E7FF" }]}>
-                    <Ionicons name="business" size={18} color="#4F46E5" />
+                  <View style={[styles.menuIcon, { backgroundColor: colors.indigoLight }]}>
+                    <Ionicons name="business" size={18} color={colors.indigo} />
                   </View>
                   <View style={[styles.menuInfo, { flex: 1 }]}>
                     <Text style={styles.menuTitle}>Lab</Text>
                     <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4 }}>
-                      <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: "#10B981" }} />
+                      <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: colors.success }} />
                       <Text style={[styles.menuSub, { marginTop: 0 }]}>{userData.practiceName}</Text>
                     </View>
                     {acctNum ? (
@@ -453,7 +452,7 @@ export default function ProfileScreen() {
           style={({ pressed }) => [styles.logoutBtn, pressed && { opacity: 0.8, transform: [{ scale: 0.98 }] }]}
           testID="logout-button"
         >
-          <Ionicons name="log-out-outline" size={20} color={Colors.light.error} />
+          <Ionicons name="log-out-outline" size={20} color={colors.error} />
           <Text style={styles.logoutText}>Sign Out</Text>
         </Pressable>
       </View>
@@ -468,14 +467,14 @@ export default function ProfileScreen() {
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Change Password</Text>
               <Pressable onPress={() => setShowChangePassword(false)} hitSlop={12}>
-                <Ionicons name="close" size={24} color={Colors.light.textSecondary} />
+                <Ionicons name="close" size={24} color={colors.textSecondary} />
               </Pressable>
             </View>
 
             {passwordSuccess ? (
               <View style={{ alignItems: "center", paddingVertical: 32 }}>
-                <Ionicons name="checkmark-circle" size={56} color={Colors.light.success} />
-                <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold" as const, color: Colors.light.success, marginTop: 12 }}>
+                <Ionicons name="checkmark-circle" size={56} color={colors.success} />
+                <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold" as const, color: colors.success, marginTop: 12 }}>
                   Password updated successfully!
                 </Text>
               </View>
@@ -488,7 +487,7 @@ export default function ProfileScreen() {
                   value={currentPasswordInput}
                   onChangeText={setCurrentPasswordInput}
                   placeholder="Enter current password"
-                  placeholderTextColor={Colors.light.textTertiary}
+                  placeholderTextColor={colors.textTertiary}
                   autoCapitalize="none"
                 />
 
@@ -499,7 +498,7 @@ export default function ProfileScreen() {
                   value={newPassword}
                   onChangeText={setNewPassword}
                   placeholder="Enter new password"
-                  placeholderTextColor={Colors.light.textTertiary}
+                  placeholderTextColor={colors.textTertiary}
                   autoCapitalize="none"
                 />
 
@@ -510,13 +509,13 @@ export default function ProfileScreen() {
                   value={confirmNewPassword}
                   onChangeText={setConfirmNewPassword}
                   placeholder="Confirm new password"
-                  placeholderTextColor={Colors.light.textTertiary}
+                  placeholderTextColor={colors.textTertiary}
                   autoCapitalize="none"
                 />
 
                 {passwordError && (
                   <View style={styles.modalError}>
-                    <Ionicons name="alert-circle" size={16} color={Colors.light.error} />
+                    <Ionicons name="alert-circle" size={16} color={colors.error} />
                     <Text style={styles.modalErrorText}>{passwordError}</Text>
                   </View>
                 )}
@@ -525,7 +524,7 @@ export default function ProfileScreen() {
                   style={({ pressed }) => [styles.modalButton, pressed && { opacity: 0.8 }]}
                   onPress={handleChangePassword}
                 >
-                  <Ionicons name="lock-closed" size={18} color="#FFF" />
+                  <Ionicons name="lock-closed" size={18} color={colors.textInverse} />
                   <Text style={styles.modalButtonText}>Update Password</Text>
                 </Pressable>
               </>
@@ -538,10 +537,10 @@ export default function ProfileScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.light.background,
+    backgroundColor: colors.background,
   },
   profileCard: {
     alignItems: "center",
@@ -556,7 +555,7 @@ const styles = StyleSheet.create({
     width: 96,
     height: 96,
     borderRadius: 48,
-    backgroundColor: Colors.light.tintLight,
+    backgroundColor: colors.tintLight,
     justifyContent: "center",
     alignItems: "center",
   },
@@ -573,18 +572,18 @@ const styles = StyleSheet.create({
     height: 18,
     borderRadius: 9,
     borderWidth: 3,
-    borderColor: Colors.light.background,
+    borderColor: colors.background,
   },
   profileName: {
     fontSize: 24,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
     marginBottom: 4,
   },
   profileRole: {
     fontSize: 14,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     marginBottom: 4,
   },
   statusGroup: {
@@ -597,9 +596,9 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     paddingHorizontal: 16,
     borderRadius: 16,
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderWidth: 1.5,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
   },
   statusIconWrap: {
     width: 36,
@@ -611,7 +610,7 @@ const styles = StyleSheet.create({
   statusBtnText: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   section: {
     paddingHorizontal: 20,
@@ -620,15 +619,15 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 11,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
     letterSpacing: 1.5,
     marginBottom: 12,
   },
   menuGroup: {
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderRadius: 18,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
     overflow: "hidden",
   },
   menuItem: {
@@ -650,17 +649,17 @@ const styles = StyleSheet.create({
   menuTitle: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   menuSub: {
     fontSize: 12,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     marginTop: 2,
   },
   menuDivider: {
     height: 1,
-    backgroundColor: Colors.light.borderLight,
+    backgroundColor: colors.borderLight,
     marginLeft: 68,
   },
   logoutBtn: {
@@ -668,7 +667,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 10,
-    backgroundColor: Colors.light.errorLight,
+    backgroundColor: colors.errorLight,
     borderWidth: 1,
     borderColor: "rgba(239,68,68,0.2)",
     paddingVertical: 16,
@@ -677,7 +676,7 @@ const styles = StyleSheet.create({
   logoutText: {
     fontSize: 15,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.error,
+    color: colors.error,
   },
   subscriptionCard: {
     flexDirection: "row",
@@ -686,7 +685,7 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     paddingVertical: 10,
     paddingHorizontal: 14,
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderRadius: 14,
     borderWidth: 1.5,
     gap: 10,
@@ -709,7 +708,7 @@ const styles = StyleSheet.create({
   subscriptionDays: {
     fontSize: 12,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   subscriptionManageBtn: {
     flexDirection: "row",
@@ -719,7 +718,7 @@ const styles = StyleSheet.create({
   subscriptionManageText: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.tint,
+    color: colors.tint,
   },
   modalBackdrop: {
     flex: 1,
@@ -729,7 +728,7 @@ const styles = StyleSheet.create({
     padding: 24,
   },
   modalCard: {
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderRadius: 20,
     padding: 24,
     width: "100%",
@@ -749,32 +748,32 @@ const styles = StyleSheet.create({
   modalTitle: {
     fontSize: 20,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   modalInputLabel: {
     fontSize: 12,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     marginBottom: 6,
     marginTop: 12,
   },
   modalInput: {
-    backgroundColor: Colors.light.background,
+    backgroundColor: colors.background,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
     paddingHorizontal: 14,
     paddingVertical: 12,
     fontSize: 15,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.text,
+    color: colors.text,
   },
   modalError: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
     marginTop: 14,
-    backgroundColor: Colors.light.errorLight,
+    backgroundColor: colors.errorLight,
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderRadius: 10,
@@ -782,7 +781,7 @@ const styles = StyleSheet.create({
   modalErrorText: {
     fontSize: 13,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.error,
+    color: colors.error,
     flex: 1,
   },
   modalButton: {
@@ -790,7 +789,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
     paddingVertical: 14,
     borderRadius: 14,
     marginTop: 20,
@@ -798,6 +797,6 @@ const styles = StyleSheet.create({
   modalButtonText: {
     fontSize: 15,
     fontFamily: "Inter_700Bold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
 });

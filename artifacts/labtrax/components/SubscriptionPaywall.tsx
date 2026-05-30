@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import {
   View,
   Text,
@@ -11,7 +11,7 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useTheme } from "@/lib/theme-context";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import {
   isRevenueCatAvailable,
   useRevenueCat,
@@ -42,7 +42,8 @@ function fmtRcPrice(pkg: PurchasesPackage): string {
 }
 
 export function SubscriptionPaywall({ accessLevel, onSubscribed, onDismiss }: Props) {
-  const { colors, isDark } = useTheme();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const insets = useSafeAreaInsets();
   const rcAvailable = isRevenueCatAvailable();
   const { offering, loading: rcLoading, refresh: rcRefresh } = useRevenueCat();
@@ -120,8 +121,8 @@ export function SubscriptionPaywall({ accessLevel, onSubscribed, onDismiss }: Pr
     }
   }
 
-  const headerBg = isLocked ? "#FEF2F2" : "#FFF7ED";
-  const headerIconColor = isLocked ? "#DC2626" : "#EA580C";
+  const headerBg = isLocked ? colors.errorSurface : colors.orangeLight;
+  const headerIconColor = isLocked ? colors.errorStrong : colors.orange;
   const headerIcon: keyof typeof Ionicons.glyphMap = isLocked ? "lock-closed" : "shield-outline";
   const headerTitle = isLocked ? "Account Locked" : "Grace Period";
   const headerDesc = isLocked
@@ -183,8 +184,8 @@ export function SubscriptionPaywall({ accessLevel, onSubscribed, onDismiss }: Pr
                     style={({ pressed }) => [
                       styles.planCard,
                       {
-                        backgroundColor: isDark ? "#1C1C1E" : "#F8FAFC",
-                        borderColor: isDark ? "#3A3A3C" : "#E2E8F0",
+                        backgroundColor: colors.canvas,
+                        borderColor: colors.border,
                       },
                       pressed && { opacity: 0.75 },
                     ]}
@@ -226,7 +227,7 @@ export function SubscriptionPaywall({ accessLevel, onSubscribed, onDismiss }: Pr
               </View>
             ) : (
               <View style={styles.noPlans}>
-                <Ionicons name="information-circle-outline" size={20} color="#6B7280" />
+                <Ionicons name="information-circle-outline" size={20} color={colors.textSecondary} />
                 <Text style={[styles.noPlansText, { color: colors.textSecondary }]}>
                   No plans available. Please try again later.
                 </Text>
@@ -235,7 +236,7 @@ export function SubscriptionPaywall({ accessLevel, onSubscribed, onDismiss }: Pr
           ) : useNativeIAP && !rcAvailable ? (
             <View style={styles.plansWrap}>
               <View style={[styles.noPlans, { marginBottom: 8 }]}>
-                <Ionicons name="information-circle-outline" size={20} color="#6B7280" />
+                <Ionicons name="information-circle-outline" size={20} color={colors.textSecondary} />
                 <Text style={[styles.noPlansText, { color: colors.textSecondary }]}>
                   In-app billing is not configured yet. Contact support or visit our website to manage your subscription.
                 </Text>
@@ -251,7 +252,7 @@ export function SubscriptionPaywall({ accessLevel, onSubscribed, onDismiss }: Pr
                   await Linking.openURL("https://labtrax.app/subscribe");
                 }}
               >
-                <Ionicons name="open-outline" size={18} color="#FFF" />
+                <Ionicons name="open-outline" size={18} color={colors.textInverse} />
                 <Text style={styles.primaryBtnText}>Subscribe on Website</Text>
               </Pressable>
               {dismissable && (
@@ -276,8 +277,8 @@ export function SubscriptionPaywall({ accessLevel, onSubscribed, onDismiss }: Pr
                     style={({ pressed }) => [
                       styles.planCard,
                       {
-                        backgroundColor: isDark ? "#1C1C1E" : "#F8FAFC",
-                        borderColor: isDark ? "#3A3A3C" : "#E2E8F0",
+                        backgroundColor: colors.canvas,
+                        borderColor: colors.border,
                       },
                       pressed && { opacity: 0.75 },
                     ]}
@@ -314,9 +315,9 @@ export function SubscriptionPaywall({ accessLevel, onSubscribed, onDismiss }: Pr
                   disabled={actionLoading}
                 >
                   {actionLoading ? (
-                    <ActivityIndicator size="small" color="#FFF" />
+                    <ActivityIndicator size="small" color={colors.textInverse} />
                   ) : (
-                    <Ionicons name="arrow-forward-circle" size={20} color="#FFF" />
+                    <Ionicons name="arrow-forward-circle" size={20} color={colors.textInverse} />
                   )}
                   <Text style={styles.primaryBtnText}>
                     {isLocked ? "Reactivate Subscription" : "Start Subscription"}
@@ -331,7 +332,7 @@ export function SubscriptionPaywall({ accessLevel, onSubscribed, onDismiss }: Pr
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   backdrop: {
     flex: 1,
     justifyContent: "flex-end",
@@ -353,7 +354,7 @@ const styles = StyleSheet.create({
     width: 40,
     height: 4,
     borderRadius: 2,
-    backgroundColor: "#D1D5DB",
+    backgroundColor: colors.border,
     marginBottom: 16,
   },
   closeBtn: {
@@ -385,7 +386,7 @@ const styles = StyleSheet.create({
   },
   divider: {
     height: StyleSheet.hairlineWidth,
-    backgroundColor: "#E5E7EB",
+    backgroundColor: colors.border,
     alignSelf: "stretch",
     marginVertical: 16,
   },
@@ -442,7 +443,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   primaryBtnText: {
-    color: "#FFF",
+    color: colors.textInverse,
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
   },

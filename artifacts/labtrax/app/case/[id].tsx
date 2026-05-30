@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, type ComponentProps } from "react";
+import React, { useState, useRef, useEffect, useMemo, type ComponentProps } from "react";
 import QRCode from "react-native-qrcode-svg";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
@@ -35,7 +35,7 @@ import { caseMediaSource, isSameApiOrigin } from "@/lib/case-media-source";
 import * as FileSystem from "expo-file-system";
 import * as LegacyFileSystem from "expo-file-system/legacy";
 import { useAuth } from "@/lib/auth-context";
-import Colors from "@/constants/colors";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { getStationInfo, STATIONS, CaseStatus, ToothType, MATERIAL_PRICES, CaseTypeValue, Invoice, LabCase, SHADE_OPTIONS, cleanDoctorDisplay, formatInvNum, ActivityEntry } from "@/lib/data";
 import { resolvePriceForCase } from "@/lib/pricing";
 import { ChatButton } from "@/components/ChatButton";
@@ -142,6 +142,7 @@ function unionActivity(a?: ActivityEntry[] | null, b?: ActivityEntry[] | null): 
 // ─────────────────────────────────────────────────────────────────────────────
 function QrCard({ caseQrUrl, caseNumber }: { caseQrUrl: string; caseNumber: string }) {
   const [expanded, setExpanded] = React.useState(false);
+  const { colors } = useTheme();
   return (
     <>
       <Pressable
@@ -151,9 +152,9 @@ function QrCard({ caseQrUrl, caseNumber }: { caseQrUrl: string; caseNumber: stri
           marginTop: 12,
           padding: 14,
           borderRadius: 12,
-          backgroundColor: "#F8FAFC",
+          backgroundColor: colors.canvas,
           borderWidth: 1,
-          borderColor: "#E2E8F0",
+          borderColor: colors.border,
           flexDirection: "row",
           alignItems: "center",
           gap: 14,
@@ -161,13 +162,13 @@ function QrCard({ caseQrUrl, caseNumber }: { caseQrUrl: string; caseNumber: stri
       >
         <QRCode value={caseQrUrl} size={72} />
         <View style={{ flex: 1 }}>
-          <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#1E293B" }}>
+          <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: colors.text }}>
             Case QR Code
           </Text>
-          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#64748B", marginTop: 2, lineHeight: 16 }}>
+          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textSecondary, marginTop: 2, lineHeight: 16 }}>
             Scan to open case {caseNumber} in LabTrax or a browser.
           </Text>
-          <Text style={{ fontSize: 10, fontFamily: "Inter_500Medium", color: "#94A3B8", marginTop: 4 }}>
+          <Text style={{ fontSize: 10, fontFamily: "Inter_500Medium", color: colors.textTertiary, marginTop: 4 }}>
             Tap QR to expand
           </Text>
         </View>
@@ -179,19 +180,19 @@ function QrCard({ caseQrUrl, caseNumber }: { caseQrUrl: string; caseNumber: stri
           style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.85)", justifyContent: "center", alignItems: "center" }}
           onPress={() => setExpanded(false)}
         >
-          <View style={{ backgroundColor: "#FFFFFF", borderRadius: 20, padding: 32, alignItems: "center", gap: 16 }}>
+          <View style={{ backgroundColor: colors.surface, borderRadius: 20, padding: 32, alignItems: "center", gap: 16 }}>
             <QRCode value={caseQrUrl} size={240} />
-            <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: "#1E293B" }}>
+            <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: colors.text }}>
               Case {caseNumber}
             </Text>
-            <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#64748B", textAlign: "center" }}>
+            <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textSecondary, textAlign: "center" }}>
               Scan with any camera or barcode app
             </Text>
             <Pressable
               onPress={() => Linking.openURL(caseQrUrl).catch(() => {})}
-              style={{ paddingVertical: 8, paddingHorizontal: 16, backgroundColor: "#EFF6FF", borderRadius: 8 }}
+              style={{ paddingVertical: 8, paddingHorizontal: 16, backgroundColor: colors.infoSurface, borderRadius: 8 }}
             >
-              <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: "#2563EB" }}>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: colors.info }}>
                 Open in browser
               </Text>
             </Pressable>
@@ -215,6 +216,11 @@ export default function CaseDetailScreen() {
     label: currentRegisteredUser?.username || currentUser,
   });
   const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const ctStyles = useMemo(() => makeCtStyles(colors), [colors]);
+  const exoStyles = useMemo(() => makeExoStyles(colors), [colors]);
+  const addStyles = useMemo(() => makeAddStyles(colors), [colors]);
   const [companyLogo, setCompanyLogo] = useState<string | null>(null);
   useEffect(() => {
     AsyncStorage.getItem("@drivesync_company_logo").then((uri) => {
@@ -1512,11 +1518,11 @@ export default function CaseDetailScreen() {
         ]}
       >
         <Pressable onPress={() => router.back()} style={styles.headerBtn}>
-          <Ionicons name="arrow-back" size={22} color={Colors.light.text} />
+          <Ionicons name="arrow-back" size={22} color={colors.text} />
         </Pressable>
         <View>
           <Text style={styles.headerTitle}>{caseItem.caseNumber}</Text>
-          <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, textAlign: "center" }}>Case & Invoice #{caseItem.caseNumber}</Text>
+          <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: colors.textSecondary, textAlign: "center" }}>Case & Invoice #{caseItem.caseNumber}</Text>
         </View>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
           <Pressable
@@ -1529,7 +1535,7 @@ export default function CaseDetailScreen() {
             style={[styles.headerBtn, { width: 36, height: 36 }]}
             hitSlop={4}
           >
-            <Ionicons name="sparkles" size={20} color={Colors.light.tint} />
+            <Ionicons name="sparkles" size={20} color={colors.tint} />
           </Pressable>
           <ChatButton />
         </View>
@@ -1569,25 +1575,25 @@ export default function CaseDetailScreen() {
               marginTop: 12,
               padding: 12,
               borderRadius: 10,
-              backgroundColor: "#DBEAFE",
+              backgroundColor: colors.infoLight,
               borderLeftWidth: 4,
-              borderLeftColor: "#2563EB",
+              borderLeftColor: colors.info,
               flexDirection: "row",
               alignItems: "flex-start",
               gap: 10,
             }}
           >
-            <MaterialCommunityIcons name="sync-alert" size={18} color="#1E40AF" style={{ marginTop: 1 }} />
+            <MaterialCommunityIcons name="sync-alert" size={18} color={colors.infoStrong} style={{ marginTop: 1 }} />
             <View style={{ flex: 1 }}>
-              <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#1E40AF" }}>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.infoStrong }}>
                 Remake{caseItem.remakeCharged === false || caseItem.price === 0 ? " — no charge" : ""}
               </Text>
               {caseItem.remakeReason ? (
-                <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#1E40AF", marginTop: 2 }}>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.infoStrong, marginTop: 2 }}>
                   Reason: {caseItem.remakeReason}
                 </Text>
               ) : null}
-              <Text style={{ fontSize: 10, fontFamily: "Inter_500Medium", color: "#1E40AF", marginTop: 4, textDecorationLine: "underline" }}>
+              <Text style={{ fontSize: 10, fontFamily: "Inter_500Medium", color: colors.infoStrong, marginTop: 4, textDecorationLine: "underline" }}>
                 {caseItem.remakeOfCaseId ? "Open original case →" : "View patient chart →"}
               </Text>
             </View>
@@ -1602,17 +1608,17 @@ export default function CaseDetailScreen() {
               marginTop: 12,
               padding: 12,
               borderRadius: 10,
-              backgroundColor: "#EEF2FF",
+              backgroundColor: colors.indigoLight,
               borderLeftWidth: 4,
-              borderLeftColor: "#4F46E5",
+              borderLeftColor: colors.indigo,
               gap: 6,
             }}>
-              <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#3730A3" }}>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: colors.indigo }}>
                 Remade by {children.length} case{children.length === 1 ? "" : "s"}
               </Text>
               {children.map((c) => (
                 <Pressable key={c.id} onPress={() => router.push(`/case/${encodeURIComponent(c.id)}`)}>
-                  <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: "#3730A3", textDecorationLine: "underline" }}>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: colors.indigo, textDecorationLine: "underline" }}>
                     {c.caseNumber}{c.remakeCharged === false ? " (no charge)" : ""}
                     {c.remakeReason ? ` — ${c.remakeReason}` : ""}
                   </Text>
@@ -1665,25 +1671,25 @@ export default function CaseDetailScreen() {
               marginTop: 12,
               padding: 12,
               borderRadius: 10,
-              backgroundColor: "#EEF2FF",
+              backgroundColor: colors.indigoLight,
               borderLeftWidth: 4,
-              borderLeftColor: "#4F46E5",
+              borderLeftColor: colors.indigo,
               flexDirection: "row",
               alignItems: "flex-start",
               gap: 10,
             }}>
-              <MaterialCommunityIcons name="lightbulb-on-outline" size={18} color="#3730A3" style={{ marginTop: 1 }} />
+              <MaterialCommunityIcons name="lightbulb-on-outline" size={18} color={colors.indigo} style={{ marginTop: 1 }} />
               <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#3730A3" }}>
+                <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.indigo }}>
                   AI-suggested practice
                 </Text>
-                <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#3730A3", marginTop: 2 }}>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.indigo, marginTop: 2 }}>
                   {suggestedName}
                 </Text>
               </View>
               <Pressable
                 onPress={acceptSuggestion}
-                style={{ paddingHorizontal: 10, paddingVertical: 6, backgroundColor: "#4F46E5", borderRadius: 6 }}
+                style={{ paddingHorizontal: 10, paddingVertical: 6, backgroundColor: colors.indigo, borderRadius: 6 }}
               >
                 <Text style={{ color: "white", fontSize: 11, fontFamily: "Inter_600SemiBold" }}>Use suggestion</Text>
               </Pressable>
@@ -1696,19 +1702,19 @@ export default function CaseDetailScreen() {
             marginTop: 12,
             padding: 12,
             borderRadius: 10,
-            backgroundColor: "#FEF3C7",
+            backgroundColor: colors.warningLight,
             borderLeftWidth: 4,
-            borderLeftColor: "#D97706",
+            borderLeftColor: colors.warningStrong,
             flexDirection: "row",
             alignItems: "flex-start",
             gap: 10,
           }}>
-            <MaterialCommunityIcons name="auto-fix" size={18} color="#92400E" style={{ marginTop: 1 }} />
+            <MaterialCommunityIcons name="auto-fix" size={18} color={colors.warningText} style={{ marginTop: 1 }} />
             <View style={{ flex: 1 }}>
-              <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#92400E" }}>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.warningText }}>
                 AI-imported — needs review
               </Text>
-              <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#92400E", marginTop: 2 }}>
+              <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.warningText, marginTop: 2 }}>
                 This case was auto-created from {fullCaseData?.aiImportSource || "an external source"}. Verify patient, doctor, and Rx attachment before routing.
               </Text>
             </View>
@@ -1725,7 +1731,7 @@ export default function CaseDetailScreen() {
                   Alert.alert("Could not dismiss", err?.message || "Try again later.");
                 }
               }}
-              style={{ paddingHorizontal: 10, paddingVertical: 6, backgroundColor: "#92400E", borderRadius: 6 }}
+              style={{ paddingHorizontal: 10, paddingVertical: 6, backgroundColor: colors.warningText, borderRadius: 6 }}
             >
               <Text style={{ color: "white", fontSize: 11, fontFamily: "Inter_600SemiBold" }}>Dismiss</Text>
             </Pressable>
@@ -1765,12 +1771,12 @@ export default function CaseDetailScreen() {
           </View>
           {caseItem.isRush && (
             <View style={styles.rushBadge}>
-              <Ionicons name="flash" size={14} color="#EF4444" />
+              <Ionicons name="flash" size={14} color={colors.error} />
               <Text style={styles.rushText}>RUSH</Text>
             </View>
           )}
           {(caseItem.status === "COMPLETE" || caseItem.status === "SHIP") && (
-            <Ionicons name="chevron-forward" size={18} color={Colors.light.textTertiary} />
+            <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
           )}
         </Pressable>
         )}
@@ -1835,14 +1841,14 @@ export default function CaseDetailScreen() {
           {showPrice && (
             <View style={styles.infoItem}>
               <Text style={styles.infoLabel}>Price</Text>
-              <Text style={[styles.infoValue, { color: Colors.light.tint }]}>
+              <Text style={[styles.infoValue, { color: colors.tint }]}>
                 ${(caseItem.price ?? 0).toFixed(2)}
               </Text>
             </View>
           )}
           {isAdmin && (
             <View style={{ position: "absolute", top: 8, right: 8 }}>
-              <Ionicons name="pencil" size={14} color={Colors.light.textTertiary} />
+              <Ionicons name="pencil" size={14} color={colors.textTertiary} />
             </View>
           )}
         </Pressable>
@@ -1861,9 +1867,9 @@ export default function CaseDetailScreen() {
                 marginBottom: 14,
                 padding: 14,
                 borderRadius: 14,
-                backgroundColor: isPast ? "#FFF7ED" : "#F0FDF4",
+                backgroundColor: isPast ? colors.orangeLight : colors.successSurface,
                 borderWidth: 1,
-                borderColor: isPast ? "#FED7AA" : "#86EFAC",
+                borderColor: isPast ? colors.orangeLight : colors.success,
                 flexDirection: "row",
                 alignItems: "center",
                 gap: 12,
@@ -1872,21 +1878,21 @@ export default function CaseDetailScreen() {
                   width: 42,
                   height: 42,
                   borderRadius: 10,
-                  backgroundColor: isPast ? "#FFEDD5" : "#DCFCE7",
+                  backgroundColor: isPast ? colors.orangeLight : colors.successLight,
                   alignItems: "center",
                   justifyContent: "center",
                 }}>
-                  <Ionicons name="calendar" size={22} color={isPast ? "#EA580C" : "#16A34A"} />
+                  <Ionicons name="calendar" size={22} color={isPast ? colors.orange : colors.successStrong} />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: isPast ? "#9A3412" : "#15803D", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2 }}>
+                  <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: isPast ? colors.orange : colors.successStrong, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2 }}>
                     Est. Ready Date
                   </Text>
-                  <Text style={{ fontSize: 17, fontFamily: "Inter_700Bold", color: isPast ? "#7C2D12" : "#14532D" }}>
+                  <Text style={{ fontSize: 17, fontFamily: "Inter_700Bold", color: isPast ? colors.orange : colors.successStrong }}>
                     {dateObj.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}
                   </Text>
                   {isPast && (
-                    <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#C2410C", marginTop: 2 }}>
+                    <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.orange, marginTop: 2 }}>
                       Past estimated date — contact your lab for an update
                     </Text>
                   )}
@@ -1900,9 +1906,9 @@ export default function CaseDetailScreen() {
               marginBottom: 14,
               padding: 14,
               borderRadius: 14,
-              backgroundColor: "#F8FAFC",
+              backgroundColor: colors.canvas,
               borderWidth: 1,
-              borderColor: "#E2E8F0",
+              borderColor: colors.border,
               flexDirection: "row",
               alignItems: "center",
               gap: 12,
@@ -1911,20 +1917,20 @@ export default function CaseDetailScreen() {
                 width: 42,
                 height: 42,
                 borderRadius: 10,
-                backgroundColor: "#F1F5F9",
+                backgroundColor: colors.surfaceAlt,
                 alignItems: "center",
                 justifyContent: "center",
               }}>
-                <Ionicons name="calendar-outline" size={22} color="#94A3B8" />
+                <Ionicons name="calendar-outline" size={22} color={colors.textTertiary} />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#64748B", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2 }}>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: colors.textSecondary, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2 }}>
                   Est. Ready Date
                 </Text>
-                <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#94A3B8" }}>
+                <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: colors.textTertiary }}>
                   Not yet set
                 </Text>
-                <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#94A3B8", marginTop: 2 }}>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textTertiary, marginTop: 2 }}>
                   Contact your lab for a delivery estimate
                 </Text>
               </View>
@@ -2032,7 +2038,7 @@ export default function CaseDetailScreen() {
 
         {userType === "provider" && canonicalCaseData?.statusHistory && canonicalCaseData.statusHistory.length > 0 && (
           <View style={{ marginHorizontal: 16, marginBottom: 20 }}>
-            <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: Colors.light.textTertiary, textTransform: "uppercase", letterSpacing: 0.6, marginBottom: 10 }}>
+            <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: colors.textTertiary, textTransform: "uppercase", letterSpacing: 0.6, marginBottom: 10 }}>
               Progress
             </Text>
             <CaseTimeline
@@ -2042,7 +2048,7 @@ export default function CaseDetailScreen() {
             />
             {canonicalCaseData.expectedDeliveryDate && (
               <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 8 }}>
-                <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, flex: 1 }}>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textTertiary, flex: 1 }}>
                   Expected delivery: {new Date(canonicalCaseData.expectedDeliveryDate).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}
                 </Text>
                 {!canonicalCaseData.deliveryDateProposalDate && (
@@ -2060,13 +2066,13 @@ export default function CaseDetailScreen() {
                         paddingVertical: 5,
                         paddingHorizontal: 10,
                         borderRadius: 8,
-                        backgroundColor: "#EDE9FE",
+                        backgroundColor: colors.violetLight,
                       },
                       pressed && { opacity: 0.75 },
                     ]}
                   >
-                    <Ionicons name="calendar-outline" size={13} color="#7C3AED" />
-                    <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#7C3AED" }}>
+                    <Ionicons name="calendar-outline" size={13} color={colors.violet} />
+                    <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: colors.violet }}>
                       Request change
                     </Text>
                   </Pressable>
@@ -2088,15 +2094,15 @@ export default function CaseDetailScreen() {
                     paddingVertical: 8,
                     paddingHorizontal: 12,
                     borderRadius: 10,
-                    backgroundColor: "#EDE9FE",
+                    backgroundColor: colors.violetLight,
                     alignSelf: "flex-start" as const,
                     marginTop: 10,
                   },
                   pressed && { opacity: 0.75 },
                 ]}
               >
-                <Ionicons name="calendar-outline" size={15} color="#7C3AED" />
-                <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#7C3AED" }}>
+                <Ionicons name="calendar-outline" size={15} color={colors.violet} />
+                <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: colors.violet }}>
                   Request delivery date
                 </Text>
               </Pressable>
@@ -2106,23 +2112,23 @@ export default function CaseDetailScreen() {
                 marginTop: 10,
                 padding: 10,
                 borderRadius: 10,
-                backgroundColor: "#FEF3C7",
+                backgroundColor: colors.warningLight,
                 borderWidth: 1,
-                borderColor: "#F59E0B",
+                borderColor: colors.warning,
                 flexDirection: "row",
                 alignItems: "flex-start",
                 gap: 8,
               }}>
-                <Ionicons name="time-outline" size={16} color="#D97706" style={{ marginTop: 1 }} />
+                <Ionicons name="time-outline" size={16} color={colors.warningStrong} style={{ marginTop: 1 }} />
                 <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#92400E" }}>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: colors.warningText }}>
                     Date change requested
                   </Text>
-                  <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#92400E", marginTop: 2 }}>
+                  <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.warningText, marginTop: 2 }}>
                     Preferred: {new Date(canonicalCaseData.deliveryDateProposalDate).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}
                   </Text>
                   {canonicalCaseData.deliveryDateProposalNote ? (
-                    <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#78350F", marginTop: 2 }}>
+                    <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.warningText, marginTop: 2 }}>
                       Note: {canonicalCaseData.deliveryDateProposalNote}
                     </Text>
                   ) : null}
@@ -2138,21 +2144,21 @@ export default function CaseDetailScreen() {
             marginBottom: 12,
             padding: 14,
             borderRadius: 12,
-            backgroundColor: "#EDE9FE",
+            backgroundColor: colors.violetLight,
             borderWidth: 1,
-            borderColor: "#C4B5FD",
+            borderColor: colors.violetLight,
           }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 6 }}>
-              <Ionicons name="calendar-outline" size={18} color="#7C3AED" />
-              <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: "#5B21B6" }}>
+              <Ionicons name="calendar-outline" size={18} color={colors.violet} />
+              <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: colors.violet }}>
                 Provider requested a date change
               </Text>
             </View>
-            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "#5B21B6", marginBottom: 2 }}>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: colors.violet, marginBottom: 2 }}>
               Preferred: {new Date(canonicalCaseData.deliveryDateProposalDate).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}
             </Text>
             {canonicalCaseData.deliveryDateProposalNote ? (
-              <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#6D28D9", marginBottom: 8 }}>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: colors.violet, marginBottom: 8 }}>
                 Note: {canonicalCaseData.deliveryDateProposalNote}
               </Text>
             ) : <View style={{ marginBottom: 8 }} />}
@@ -2196,14 +2202,14 @@ export default function CaseDetailScreen() {
                     gap: 6,
                     paddingVertical: 10,
                     borderRadius: 10,
-                    backgroundColor: "#7C3AED",
+                    backgroundColor: colors.violet,
                   },
                   pressed && { opacity: 0.85 },
                   submittingLabResponse && { opacity: 0.6 },
                 ]}
               >
-                <Ionicons name="checkmark-circle-outline" size={16} color="#FFF" />
-                <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>
+                <Ionicons name="checkmark-circle-outline" size={16} color={colors.textInverse} />
+                <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.textInverse }}>
                   {submittingLabResponse ? "Saving…" : "Accept"}
                 </Text>
               </Pressable>
@@ -2231,15 +2237,15 @@ export default function CaseDetailScreen() {
                     gap: 6,
                     paddingVertical: 10,
                     borderRadius: 10,
-                    backgroundColor: "#F5F3FF",
+                    backgroundColor: colors.violetLight,
                     borderWidth: 1,
-                    borderColor: "#C4B5FD",
+                    borderColor: colors.violetLight,
                   },
                   pressed && { opacity: 0.85 },
                 ]}
               >
-                <Ionicons name="swap-horizontal-outline" size={16} color="#7C3AED" />
-                <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#7C3AED" }}>Counter</Text>
+                <Ionicons name="swap-horizontal-outline" size={16} color={colors.violet} />
+                <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.violet }}>Counter</Text>
               </Pressable>
               <Pressable
                 disabled={submittingLabResponse}
@@ -2267,14 +2273,14 @@ export default function CaseDetailScreen() {
                     paddingVertical: 10,
                     paddingHorizontal: 14,
                     borderRadius: 10,
-                    backgroundColor: "#F5F3FF",
+                    backgroundColor: colors.violetLight,
                     borderWidth: 1,
-                    borderColor: "#C4B5FD",
+                    borderColor: colors.violetLight,
                   },
                   pressed && { opacity: 0.85 },
                 ]}
               >
-                <Ionicons name="close-outline" size={18} color="#7C3AED" />
+                <Ionicons name="close-outline" size={18} color={colors.violet} />
               </Pressable>
             </View>
           </View>
@@ -2296,13 +2302,13 @@ export default function CaseDetailScreen() {
                   gap: 8,
                   paddingVertical: 14,
                   borderRadius: 12,
-                  backgroundColor: "#2563EB",
+                  backgroundColor: colors.info,
                 },
                 pressed && { opacity: 0.85 },
               ]}
             >
-              <Ionicons name="document-text" size={18} color="#FFF" />
-              <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>View/Edit Invoice</Text>
+              <Ionicons name="document-text" size={18} color={colors.textInverse} />
+              <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: colors.textInverse }}>View/Edit Invoice</Text>
             </Pressable>
             <Pressable
               onPress={() => {
@@ -2318,13 +2324,13 @@ export default function CaseDetailScreen() {
                   paddingVertical: 14,
                   paddingHorizontal: 16,
                   borderRadius: 12,
-                  backgroundColor: "#7C3AED",
+                  backgroundColor: colors.violet,
                 },
                 pressed && { opacity: 0.85 },
               ]}
             >
-              <Ionicons name="create" size={18} color="#FFF" />
-              <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Edit Case</Text>
+              <Ionicons name="create" size={18} color={colors.textInverse} />
+              <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: colors.textInverse }}>Edit Case</Text>
             </Pressable>
           </View>
         )}
@@ -2342,12 +2348,12 @@ export default function CaseDetailScreen() {
                   pressed && { opacity: 0.85 },
                 ]}
               >
-                <Ionicons name="play-circle" size={22} color="#3B82F6" />
+                <Ionicons name="play-circle" size={22} color={colors.info} />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.chartHistoryBtnTitle}>Entire Chart History</Text>
                   <Text style={styles.chartHistoryBtnSub}>{patientCaseCount} case{patientCaseCount !== 1 ? "s" : ""} on file</Text>
                 </View>
-                <Ionicons name="chevron-forward" size={18} color={Colors.light.textTertiary} />
+                <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
               </Pressable>
             );
           }
@@ -2381,19 +2387,19 @@ export default function CaseDetailScreen() {
                   return (
                 <View key={entry.id} style={{ flexDirection: "row", alignItems: "flex-start", marginBottom: 8, gap: 10 }}>
                   <View style={{ minWidth: 70 }}>
-                    <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: Colors.light.textTertiary }}>
+                    <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: colors.textTertiary }}>
                       {new Date(entry.timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
                     </Text>
-                    <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 1 }}>
+                    <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: colors.textTertiary, marginTop: 1 }}>
                       {new Date(entry.timestamp).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: true })}
                     </Text>
                   </View>
-                  <Text style={{ flex: 1, fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.text, lineHeight: 20 }}>
+                  <Text style={{ flex: 1, fontSize: 14, fontFamily: "Inter_400Regular", color: colors.text, lineHeight: 20 }}>
                     {entry.description}
                   </Text>
                   {entry.user ? (
                     <View style={{ backgroundColor: "rgba(0,0,0,0.06)", borderRadius: 10, paddingHorizontal: 6, paddingVertical: 2, marginLeft: 4 }}>
-                      <Text style={{ fontSize: 11, fontFamily: "Inter_700Bold", color: Colors.light.textSecondary }}>{entryInitials}</Text>
+                      <Text style={{ fontSize: 11, fontFamily: "Inter_700Bold", color: colors.textSecondary }}>{entryInitials}</Text>
                     </View>
                   ) : null}
                 </View>
@@ -2435,7 +2441,7 @@ export default function CaseDetailScreen() {
                     onPress={() => void fetchServerAttachments()}
                     hitSlop={8}
                   >
-                    <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: "#EF4444" }}>
+                    <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: colors.error }}>
                       Failed · Retry
                     </Text>
                   </Pressable>
@@ -2454,11 +2460,11 @@ export default function CaseDetailScreen() {
                     borderRadius: 8,
                     backgroundColor: pressed || uploadingAttachment ? "rgba(0,0,0,0.06)" : "transparent",
                     borderWidth: 1,
-                    borderColor: Colors.light.border,
+                    borderColor: colors.border,
                   })}
                 >
-                  <Ionicons name="attach-outline" size={16} color={Colors.light.tint} />
-                  <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.tint }}>
+                  <Ionicons name="attach-outline" size={16} color={colors.tint} />
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.tint }}>
                     {uploadingAttachment ? "Uploading…" : "Attach file"}
                   </Text>
                 </Pressable>
@@ -2471,8 +2477,8 @@ export default function CaseDetailScreen() {
               if (serverAttachments.length === 0) {
                 return (
                   <View style={{ alignItems: "center", paddingVertical: 24 }}>
-                    <Ionicons name="folder-open-outline" size={32} color={Colors.light.textTertiary} />
-                    <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 8 }}>
+                    <Ionicons name="folder-open-outline" size={32} color={colors.textTertiary} />
+                    <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: colors.textTertiary, marginTop: 8 }}>
                       No files shared yet
                     </Text>
                   </View>
@@ -2482,7 +2488,7 @@ export default function CaseDetailScreen() {
                 <View style={{ gap: 16, marginTop: 8 }}>
                   {photoAtts.length > 0 && (
                     <View>
-                      <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: Colors.light.textTertiary, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
+                      <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: colors.textTertiary, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
                         Photos ({photoAtts.length})
                       </Text>
                       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginHorizontal: -4 }} contentContainerStyle={{ paddingHorizontal: 4, gap: 8 }}>
@@ -2497,7 +2503,7 @@ export default function CaseDetailScreen() {
                             >
                               <Image
                                 source={caseMediaSource(fullUrl)}
-                                style={{ width: 88, height: 88, borderRadius: 8, backgroundColor: Colors.light.border }}
+                                style={{ width: 88, height: 88, borderRadius: 8, backgroundColor: colors.border }}
                               />
                             </Pressable>
                           );
@@ -2507,7 +2513,7 @@ export default function CaseDetailScreen() {
                   )}
                   {videoAtts.length > 0 && (
                     <View>
-                      <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: Colors.light.textTertiary, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
+                      <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: colors.textTertiary, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
                         Videos ({videoAtts.length})
                       </Text>
                       {videoAtts.map((att) => {
@@ -2530,19 +2536,19 @@ export default function CaseDetailScreen() {
                               else { await Linking.openURL(downloadRes.uri).catch(() => Alert.alert("Unable to open", "Could not open this file.")); }
                             } catch { Alert.alert("Unable to open", "Could not download or open this file."); }
                             finally { setDownloadingAttachmentId(null); }
-                          }} style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8, paddingHorizontal: 10, backgroundColor: pressed ? "rgba(0,0,0,0.04)" : "#F8FAFC", borderRadius: 10, marginBottom: 6, borderWidth: 1, borderColor: Colors.light.border })}>
-                            <View style={{ width: 40, height: 40, borderRadius: 8, backgroundColor: "#E2E8F0", alignItems: "center", justifyContent: "center" }}>
+                          }} style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8, paddingHorizontal: 10, backgroundColor: pressed ? "rgba(0,0,0,0.04)" : colors.canvas, borderRadius: 10, marginBottom: 6, borderWidth: 1, borderColor: colors.border })}>
+                            <View style={{ width: 40, height: 40, borderRadius: 8, backgroundColor: colors.border, alignItems: "center", justifyContent: "center" }}>
                               {downloadingAttachmentId === att.id
-                                ? <ActivityIndicator size="small" color={Colors.light.tint} />
-                                : <Ionicons name="play-circle-outline" size={24} color={Colors.light.tint} />}
+                                ? <ActivityIndicator size="small" color={colors.tint} />
+                                : <Ionicons name="play-circle-outline" size={24} color={colors.tint} />}
                             </View>
                             <View style={{ flex: 1 }}>
-                              <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.text }} numberOfLines={1}>{att.fileName}</Text>
-                              <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 1 }}>
+                              <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.text }} numberOfLines={1}>{att.fileName}</Text>
+                              <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textSecondary, marginTop: 1 }}>
                                 {ext2.toUpperCase()} · {att.createdAt ? new Date(att.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : ""}
                               </Text>
                             </View>
-                            <Ionicons name="open-outline" size={16} color={Colors.light.textTertiary} />
+                            <Ionicons name="open-outline" size={16} color={colors.textTertiary} />
                           </Pressable>
                         );
                       })}
@@ -2550,7 +2556,7 @@ export default function CaseDetailScreen() {
                   )}
                   {otherAtts.length > 0 && (
                     <View>
-                      <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: Colors.light.textTertiary, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
+                      <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: colors.textTertiary, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
                         Documents ({otherAtts.length})
                       </Text>
                       {otherAtts.map((att) => {
@@ -2578,19 +2584,19 @@ export default function CaseDetailScreen() {
                               else { await Linking.openURL(downloadRes.uri).catch(() => Alert.alert("Unable to open", "Could not open this file.")); }
                             } catch { Alert.alert("Unable to open", "Could not download or open this file."); }
                             finally { setDownloadingAttachmentId(null); }
-                          }} style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8, paddingHorizontal: 10, backgroundColor: pressed ? "rgba(0,0,0,0.04)" : "#F8FAFC", borderRadius: 10, marginBottom: 6, borderWidth: 1, borderColor: Colors.light.border })}>
-                            <View style={{ width: 40, height: 40, borderRadius: 8, backgroundColor: "#E2E8F0", alignItems: "center", justifyContent: "center" }}>
+                          }} style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8, paddingHorizontal: 10, backgroundColor: pressed ? "rgba(0,0,0,0.04)" : colors.canvas, borderRadius: 10, marginBottom: 6, borderWidth: 1, borderColor: colors.border })}>
+                            <View style={{ width: 40, height: 40, borderRadius: 8, backgroundColor: colors.border, alignItems: "center", justifyContent: "center" }}>
                               {downloadingAttachmentId === att.id
-                                ? <ActivityIndicator size="small" color={Colors.light.tint} />
-                                : <Ionicons name={iconName2} size={22} color={Colors.light.tint} />}
+                                ? <ActivityIndicator size="small" color={colors.tint} />
+                                : <Ionicons name={iconName2} size={22} color={colors.tint} />}
                             </View>
                             <View style={{ flex: 1 }}>
-                              <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.text }} numberOfLines={1}>{att.fileName}</Text>
-                              <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 1 }}>
+                              <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.text }} numberOfLines={1}>{att.fileName}</Text>
+                              <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textSecondary, marginTop: 1 }}>
                                 {ext2.toUpperCase()} · {att.createdAt ? new Date(att.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : ""}
                               </Text>
                             </View>
-                            <Ionicons name="open-outline" size={16} color={Colors.light.textTertiary} />
+                            <Ionicons name="open-outline" size={16} color={colors.textTertiary} />
                           </Pressable>
                         );
                       })}
@@ -2767,12 +2773,12 @@ export default function CaseDetailScreen() {
                       backgroundColor: pressed
                         ? "rgba(0,0,0,0.04)"
                         : isPaused
-                        ? "#FFF7ED"
-                        : "#F8FAFC",
+                        ? colors.orangeLight
+                        : colors.canvas,
                       borderRadius: 10,
                       marginTop: 6,
                       borderWidth: 1,
-                      borderColor: isPaused ? "#FED7AA" : Colors.light.border,
+                      borderColor: isPaused ? colors.orangeLight : colors.border,
                     };
                   }}
                 >
@@ -2801,14 +2807,14 @@ export default function CaseDetailScreen() {
                           <Ionicons
                             name={iconName}
                             size={22}
-                            color={isDownloading || isPaused ? Colors.light.textSecondary : Colors.light.tint}
+                            color={isDownloading || isPaused ? colors.textSecondary : colors.tint}
                           />
                         )}
                         <View style={{ flex: 1 }}>
-                          <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.text }} numberOfLines={1}>
+                          <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.text }} numberOfLines={1}>
                             {att.fileName}
                           </Text>
-                          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 1 }}>
+                          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textSecondary, marginTop: 1 }}>
                             {isDownloading
                               ? (downloadProgress > 0
                                   ? `Downloading… ${Math.round(downloadProgress * 100)}%`
@@ -2827,7 +2833,7 @@ export default function CaseDetailScreen() {
                           </Text>
                           {(isDownloading || isPaused) && shownProgress > 0 && (
                             <View style={{ height: 3, backgroundColor: "rgba(0,0,0,0.08)", borderRadius: 2, marginTop: 5, overflow: "hidden" }}>
-                              <View style={{ height: 3, backgroundColor: isPaused ? "#F97316" : Colors.light.tint, borderRadius: 2, width: `${Math.round(shownProgress * 100)}%` }} />
+                              <View style={{ height: 3, backgroundColor: isPaused ? colors.orange : colors.tint, borderRadius: 2, width: `${Math.round(shownProgress * 100)}%` }} />
                             </View>
                           )}
                         </View>
@@ -2854,7 +2860,7 @@ export default function CaseDetailScreen() {
                               setDownloadProgress(0);
                             }}
                           >
-                            <Ionicons name="pause-circle-outline" size={22} color={Colors.light.tint} />
+                            <Ionicons name="pause-circle-outline" size={22} color={colors.tint} />
                           </Pressable>
                         ) : isPaused ? (
                           <Pressable
@@ -2894,10 +2900,10 @@ export default function CaseDetailScreen() {
                               }
                             }}
                           >
-                            <Ionicons name="play-circle-outline" size={22} color="#F97316" />
+                            <Ionicons name="play-circle-outline" size={22} color={colors.orange} />
                           </Pressable>
                         ) : (
-                          <Ionicons name={is3D ? "share-outline" : "open-outline"} size={16} color={Colors.light.textTertiary} />
+                          <Ionicons name={is3D ? "share-outline" : "open-outline"} size={16} color={colors.textTertiary} />
                         )}
                       </>
                     );
@@ -2912,14 +2918,14 @@ export default function CaseDetailScreen() {
                 gap: 10,
                 paddingVertical: 10,
                 paddingHorizontal: 12,
-                backgroundColor: "#F0F9FF",
+                backgroundColor: colors.infoSurface,
                 borderRadius: 10,
                 marginTop: 6,
                 borderWidth: 1,
-                borderColor: "#BAE6FD",
+                borderColor: colors.cyanLight,
               }}>
-                <Ionicons name="cloud-upload-outline" size={22} color="#0EA5E9" />
-                <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "#0369A1" }}>
+                <Ionicons name="cloud-upload-outline" size={22} color={colors.cyan} />
+                <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.cyan }}>
                   Uploading…
                 </Text>
               </View>
@@ -2939,13 +2945,13 @@ export default function CaseDetailScreen() {
               borderRadius: 8,
               backgroundColor: pressed ? "rgba(0,0,0,0.06)" : "transparent",
               borderWidth: 1,
-              borderColor: Colors.light.border,
+              borderColor: colors.border,
             })}
             testID="print-case-history-btn"
             accessibilityLabel="Print case history"
           >
-            <Ionicons name="print-outline" size={16} color={Colors.light.tint} />
-            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.tint }}>Print</Text>
+            <Ionicons name="print-outline" size={16} color={colors.tint} />
+            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.tint }}>Print</Text>
           </Pressable>
         </View>
         <View style={styles.timeline}>
@@ -3003,24 +3009,24 @@ export default function CaseDetailScreen() {
             const isEvent = isBarcode || isInvoice || isTracking || isCourtesy || isExocad;
             const stationInfo = entry.station ? getStationInfo(entry.station, customStationLabels) : null;
 
-            let dotColor = Colors.light.textTertiary;
+            let dotColor = colors.textTertiary;
 
             if (isStation && stationInfo) {
-              dotColor = isFirst ? stationInfo.color : Colors.light.textTertiary;
+              dotColor = isFirst ? stationInfo.color : colors.textTertiary;
             } else if (isNote) {
-              dotColor = "#F59E0B";
+              dotColor = colors.warning;
             } else if (isPhoto || isVideo) {
-              dotColor = "#8B5CF6";
+              dotColor = colors.violet;
             } else if (isBarcode) {
-              dotColor = "#10B981";
+              dotColor = colors.success;
             } else if (isInvoice) {
-              dotColor = "#3B82F6";
+              dotColor = colors.info;
             } else if (isTracking) {
-              dotColor = "#6366F1";
+              dotColor = colors.indigo;
             } else if (isCourtesy) {
-              dotColor = "#EC4899";
+              dotColor = colors.pink;
             } else if (isExocad) {
-              dotColor = "#7C3AED";
+              dotColor = colors.violet;
             }
 
             const matchingRegisteredUser = entry.user
@@ -3049,11 +3055,11 @@ export default function CaseDetailScreen() {
               <React.Fragment key={entry.id || String(idx)}>
                 {isFirstCurrentEntry && (
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginVertical: 10, paddingHorizontal: 4 }}>
-                    <View style={{ flex: 1, height: 1, backgroundColor: Colors.light.border }} />
-                    <Text style={{ fontSize: 10, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, textTransform: "uppercase", letterSpacing: 0.8 }}>
+                    <View style={{ flex: 1, height: 1, backgroundColor: colors.border }} />
+                    <Text style={{ fontSize: 10, fontFamily: "Inter_600SemiBold", color: colors.textSecondary, textTransform: "uppercase", letterSpacing: 0.8 }}>
                       Case {caseItem.caseNumber}
                     </Text>
-                    <View style={{ flex: 1, height: 1, backgroundColor: Colors.light.border }} />
+                    <View style={{ flex: 1, height: 1, backgroundColor: colors.border }} />
                   </View>
                 )}
               <View style={[styles.timelineItem, entry._source === "original" && { opacity: 0.6 }]}>
@@ -3065,9 +3071,9 @@ export default function CaseDetailScreen() {
                     ]}
                   >
                     {entryUserInitials ? (
-                      <Text style={{ fontSize: 8, fontFamily: "Inter_700Bold", color: "#FFF" }}>{entryUserInitials}</Text>
+                      <Text style={{ fontSize: 8, fontFamily: "Inter_700Bold", color: colors.textInverse }}>{entryUserInitials}</Text>
                     ) : (
-                      <Ionicons name="navigate" size={10} color="#FFF" />
+                      <Ionicons name="navigate" size={10} color={colors.textInverse} />
                     )}
                   </View>
                   {!isLast && <View style={styles.timelineConnector} />}
@@ -3091,7 +3097,7 @@ export default function CaseDetailScreen() {
                         )}
                       </View>
                       {entry.station === "INTAKE" && caseItem.assignedBarcode && (
-                        <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.tint, marginTop: 2 }}>
+                        <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: colors.tint, marginTop: 2 }}>
                           Case Pan: {caseItem.assignedBarcode}
                         </Text>
                       )}
@@ -3113,23 +3119,23 @@ export default function CaseDetailScreen() {
                         }
                       }}
                       style={{
-                        backgroundColor: isBarcode ? "#ECFDF5" : isInvoice ? "#EFF6FF" : isTracking ? "#EEF2FF" : "#FDF2F8",
+                        backgroundColor: isBarcode ? colors.successSurface : isInvoice ? colors.infoSurface : isTracking ? colors.indigoLight : colors.pinkLight,
                         borderRadius: 10,
                         padding: 10,
                         borderLeftWidth: 3,
-                        borderLeftColor: isBarcode ? "#10B981" : isInvoice ? "#3B82F6" : isTracking ? "#6366F1" : "#EC4899",
+                        borderLeftColor: isBarcode ? colors.success : isInvoice ? colors.info : isTracking ? colors.indigo : colors.pink,
                       }}
                     >
                       <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 4 }}>
                         <Ionicons
                           name={isBarcode ? "barcode" : isInvoice ? (entry.type === "invoice_paid" ? "card" : "receipt") : isTracking ? "airplane" : "chatbubble-ellipses"}
                           size={13}
-                          color={isBarcode ? "#059669" : isInvoice ? "#2563EB" : isTracking ? "#4F46E5" : "#DB2777"}
+                          color={isBarcode ? colors.successStrong : isInvoice ? colors.info : isTracking ? colors.indigo : colors.pink}
                         />
                         <Text style={{
                           fontSize: 11,
                           fontFamily: "Inter_600SemiBold",
-                          color: isBarcode ? "#059669" : isInvoice ? "#2563EB" : isTracking ? "#4F46E5" : "#DB2777",
+                          color: isBarcode ? colors.successStrong : isInvoice ? colors.info : isTracking ? colors.indigo : colors.pink,
                           textTransform: "uppercase",
                           letterSpacing: 0.5,
                         }}>
@@ -3144,20 +3150,20 @@ export default function CaseDetailScreen() {
                         )}
                         {(isInvoice && isAdmin) && (
                           <View style={{ marginLeft: "auto" }}>
-                            <Ionicons name="open-outline" size={14} color="#2563EB" />
+                            <Ionicons name="open-outline" size={14} color={colors.info} />
                           </View>
                         )}
                       </View>
                       <Text style={{
                         fontSize: 13,
                         fontFamily: "Inter_500Medium",
-                        color: Colors.light.text,
+                        color: colors.text,
                         lineHeight: 18,
                       }}>
                         {entry.description}
                       </Text>
                       {(isInvoice && isAdmin) && (
-                        <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "#2563EB", marginTop: 4 }}>Tap to view invoice</Text>
+                        <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: colors.info, marginTop: 4 }}>Tap to view invoice</Text>
                       )}
                     </Pressable>
                   ) : (
@@ -3284,23 +3290,23 @@ export default function CaseDetailScreen() {
                         }
                       }}
                       style={{
-                        backgroundColor: isNote ? "#FFF7ED" : "#F5F3FF",
+                        backgroundColor: isNote ? colors.orangeLight : colors.violetLight,
                         borderRadius: 10,
                         padding: 10,
                         borderLeftWidth: 3,
-                        borderLeftColor: isNote ? "#F59E0B" : "#8B5CF6",
+                        borderLeftColor: isNote ? colors.warning : colors.violet,
                       }}
                     >
                       <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 4 }}>
                         <Ionicons
                           name={isNote ? "document-text" : isVideo ? "videocam" : isDoc ? "document-attach" : "camera"}
                           size={13}
-                          color={isNote ? "#D97706" : "#7C3AED"}
+                          color={isNote ? colors.warningStrong : colors.violet}
                         />
                         <Text style={{
                           fontSize: 11,
                           fontFamily: "Inter_600SemiBold",
-                          color: isNote ? "#D97706" : "#7C3AED",
+                          color: isNote ? colors.warningStrong : colors.violet,
                           textTransform: "uppercase",
                           letterSpacing: 0.5,
                         }}>
@@ -3313,14 +3319,14 @@ export default function CaseDetailScreen() {
                         )}
                         {(isPhoto || isVideo || isDoc) && entry.imageUri && (
                           <View style={{ marginLeft: "auto" }}>
-                            <Ionicons name={isVideo ? "play-circle-outline" : isDoc ? "download-outline" : "expand-outline"} size={14} color="#7C3AED" />
+                            <Ionicons name={isVideo ? "play-circle-outline" : isDoc ? "download-outline" : "expand-outline"} size={14} color={colors.violet} />
                           </View>
                         )}
                       </View>
                       <Text style={{
                         fontSize: 13,
                         fontFamily: "Inter_500Medium",
-                        color: Colors.light.text,
+                        color: colors.text,
                         lineHeight: 18,
                       }}>
                         {entry.description}
@@ -3343,14 +3349,14 @@ export default function CaseDetailScreen() {
                           height: 80,
                           borderRadius: 8,
                           marginTop: 8,
-                          backgroundColor: "#1E1B2E",
+                          backgroundColor: "#1E1B2E", // hex-allow: fixed dark video-player card
                           alignItems: "center",
                           justifyContent: "center",
                           flexDirection: "row",
                           gap: 8,
                         }}>
-                          <Ionicons name="play-circle" size={32} color="#A78BFA" />
-                          <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "#C4B5FD" }}>Tap to play video</Text>
+                          <Ionicons name="play-circle" size={32} color={colors.violet} />
+                          <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.violetLight }}>Tap to play video</Text>
                         </View>
                       )}
                       {isDoc && entry.imageUri && (
@@ -3362,10 +3368,10 @@ export default function CaseDetailScreen() {
                           paddingVertical: 8,
                           paddingHorizontal: 10,
                           borderRadius: 8,
-                          backgroundColor: "#EEF2FF",
+                          backgroundColor: colors.indigoLight,
                         }}>
-                          <Ionicons name="document-attach" size={20} color="#6366F1" />
-                          <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "#4F46E5" }}>Tap to open file</Text>
+                          <Ionicons name="document-attach" size={20} color={colors.indigo} />
+                          <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.indigo }}>Tap to open file</Text>
                         </View>
                       )}
                       {(isPhoto || isVideo) && (() => {
@@ -3378,16 +3384,16 @@ export default function CaseDetailScreen() {
                             marginTop: 8,
                             paddingTop: 8,
                             borderTopWidth: 1,
-                            borderTopColor: "#E9D5FF",
+                            borderTopColor: colors.violetLight,
                           }}>
                             <View style={{ flexDirection: "row", alignItems: "center", gap: 5, marginBottom: 4 }}>
-                              <Ionicons name="document-text" size={12} color="#7C3AED" />
-                              <Text style={{ fontSize: 10, fontFamily: "Inter_600SemiBold", color: "#7C3AED", textTransform: "uppercase", letterSpacing: 0.5 }}>Note</Text>
+                              <Ionicons name="document-text" size={12} color={colors.violet} />
+                              <Text style={{ fontSize: 10, fontFamily: "Inter_600SemiBold", color: colors.violet, textTransform: "uppercase", letterSpacing: 0.5 }}>Note</Text>
                             </View>
                             <Text style={{
                               fontSize: 13,
                               fontFamily: "Inter_400Regular",
-                              color: Colors.light.text,
+                              color: colors.text,
                               lineHeight: 18,
                             }}>
                               {nearbyNote.description}
@@ -3402,8 +3408,8 @@ export default function CaseDetailScreen() {
                       {formatTimestamp(entry.timestamp)}
                     </Text>
                     {entry._source === "original" && (
-                      <View style={{ backgroundColor: "#F1F5F9", borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 }}>
-                        <Text style={{ fontSize: 9, fontFamily: "Inter_600SemiBold", color: "#64748B", textTransform: "uppercase", letterSpacing: 0.4 }}>
+                      <View style={{ backgroundColor: colors.surfaceAlt, borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 }}>
+                        <Text style={{ fontSize: 9, fontFamily: "Inter_600SemiBold", color: colors.textSecondary, textTransform: "uppercase", letterSpacing: 0.4 }}>
                           {originalCaseNumber ?? "Original"}
                         </Text>
                       </View>
@@ -3423,11 +3429,11 @@ export default function CaseDetailScreen() {
               onPress={() => setShowRouting(!showRouting)}
               style={({ pressed }) => [
                 styles.actionBtn,
-                { backgroundColor: Colors.light.tint },
+                { backgroundColor: colors.tint },
                 pressed && { opacity: 0.85 },
               ]}
             >
-              <Ionicons name="navigate" size={20} color="#FFF" />
+              <Ionicons name="navigate" size={20} color={colors.textInverse} />
               <Text style={styles.actionBtnText}>
                 {showRouting ? "Hide Stations" : "Locate Case"}
               </Text>
@@ -3514,11 +3520,11 @@ export default function CaseDetailScreen() {
               }}
               style={({ pressed }) => [
                 styles.actionBtn,
-                { backgroundColor: caseItem.assignedBarcode ? "#22C55E" : "#8B5CF6" },
+                { backgroundColor: caseItem.assignedBarcode ? colors.success : colors.violet },
                 pressed && { opacity: 0.85 },
               ]}
             >
-              <Ionicons name="barcode" size={20} color="#FFF" />
+              <Ionicons name="barcode" size={20} color={colors.textInverse} />
               <Text style={styles.actionBtnText}>
                 {caseItem.assignedBarcode ? `Barcode: ${caseItem.assignedBarcode}` : "Assign Barcode"}
               </Text>
@@ -3529,11 +3535,11 @@ export default function CaseDetailScreen() {
             onPress={() => setShowAddSomethingModal(true)}
             style={({ pressed }) => [
               styles.actionBtn,
-              { backgroundColor: "#4F46E5" },
+              { backgroundColor: colors.indigo },
               pressed && { opacity: 0.85 },
             ]}
           >
-            <Ionicons name="add-circle-outline" size={20} color="#FFF" />
+            <Ionicons name="add-circle-outline" size={20} color={colors.textInverse} />
             <Text style={styles.actionBtnText}>Add Something to This Case</Text>
           </Pressable>
 
@@ -3542,11 +3548,11 @@ export default function CaseDetailScreen() {
               onPress={() => setShowLabSlipModal(true)}
               style={({ pressed }) => [
                 styles.actionBtn,
-                { backgroundColor: "#6366F1" },
+                { backgroundColor: colors.indigo },
                 pressed && { opacity: 0.85 },
               ]}
             >
-              <Ionicons name="document-text" size={20} color="#FFF" />
+              <Ionicons name="document-text" size={20} color={colors.textInverse} />
               <Text style={styles.actionBtnText}>Reprint Lab Slip</Text>
             </Pressable>
           )}
@@ -3555,7 +3561,7 @@ export default function CaseDetailScreen() {
             <View style={exoStyles.exocadCard}>
               <View style={exoStyles.exocadHeader}>
                 <View style={exoStyles.exocadTitleRow}>
-                  <Ionicons name="cube-outline" size={20} color="#7C3AED" />
+                  <Ionicons name="cube-outline" size={20} color={colors.violet} />
                   <Text style={exoStyles.exocadTitle}>ExoCAD WebView</Text>
                 </View>
                 {userType !== "provider" && (
@@ -3578,7 +3584,7 @@ export default function CaseDetailScreen() {
                       );
                     }}
                   >
-                    <Ionicons name="trash-outline" size={18} color={Colors.light.error} />
+                    <Ionicons name="trash-outline" size={18} color={colors.error} />
                   </Pressable>
                 )}
               </View>
@@ -3586,9 +3592,9 @@ export default function CaseDetailScreen() {
               <View style={exoStyles.exocadActions}>
                 <Pressable
                   onPress={() => Linking.openURL(caseItem.exocadWebviewUrl!)}
-                  style={({ pressed }) => [exoStyles.exocadActionBtn, { backgroundColor: "#7C3AED" }, pressed && { opacity: 0.85 }]}
+                  style={({ pressed }) => [exoStyles.exocadActionBtn, { backgroundColor: colors.violet }, pressed && { opacity: 0.85 }]}
                 >
-                  <Ionicons name="open-outline" size={16} color="#FFF" />
+                  <Ionicons name="open-outline" size={16} color={colors.textInverse} />
                   <Text style={exoStyles.exocadActionText}>Open 3D View</Text>
                 </Pressable>
                 <Pressable
@@ -3617,9 +3623,9 @@ export default function CaseDetailScreen() {
                       Alert.alert("Activity Log Error", "The design was shared but the activity log could not be updated.");
                     }
                   }}
-                  style={({ pressed }) => [exoStyles.exocadActionBtn, { backgroundColor: "#0EA5E9" }, pressed && { opacity: 0.85 }]}
+                  style={({ pressed }) => [exoStyles.exocadActionBtn, { backgroundColor: colors.cyan }, pressed && { opacity: 0.85 }]}
                 >
-                  <Ionicons name="share-outline" size={16} color="#FFF" />
+                  <Ionicons name="share-outline" size={16} color={colors.textInverse} />
                   <Text style={exoStyles.exocadActionText}>Share with Provider</Text>
                 </Pressable>
               </View>
@@ -3632,11 +3638,11 @@ export default function CaseDetailScreen() {
               }}
               style={({ pressed }) => [
                 styles.actionBtn,
-                { backgroundColor: "#7C3AED" },
+                { backgroundColor: colors.violet },
                 pressed && { opacity: 0.85 },
               ]}
             >
-              <Ionicons name="cube-outline" size={20} color="#FFF" />
+              <Ionicons name="cube-outline" size={20} color={colors.textInverse} />
               <Text style={styles.actionBtnText}>Link ExoCAD Design</Text>
             </Pressable>
           ) : null}
@@ -3646,11 +3652,11 @@ export default function CaseDetailScreen() {
               <Text style={ctStyles.sectionTitle}>Courtesy Text History</Text>
               {(caseItem.courtesyTexts || []).map((ct) => {
                 const statusColors: Record<string, string> = {
-                  sent: "#F59E0B",
-                  date_requested: "#EF4444",
-                  date_proposed: "#3B82F6",
-                  accepted: "#22C55E",
-                  declined: "#EF4444",
+                  sent: colors.warning,
+                  date_requested: colors.error,
+                  date_proposed: colors.info,
+                  accepted: colors.success,
+                  declined: colors.error,
                 };
                 const statusLabels: Record<string, string> = {
                   sent: "Awaiting Response",
@@ -3662,8 +3668,8 @@ export default function CaseDetailScreen() {
                 return (
                   <View key={ct.id} style={ctStyles.courtesyCard}>
                     <View style={ctStyles.courtesyHeader}>
-                      <Ionicons name="chatbubble-ellipses" size={16} color={statusColors[ct.status] || "#94A3B8"} />
-                      <Text style={[ctStyles.statusBadge, { backgroundColor: statusColors[ct.status] || "#94A3B8" }]}>
+                      <Ionicons name="chatbubble-ellipses" size={16} color={statusColors[ct.status] || colors.textTertiary} />
+                      <Text style={[ctStyles.statusBadge, { backgroundColor: statusColors[ct.status] || colors.textTertiary }]}>
                         {statusLabels[ct.status] || ct.status}
                       </Text>
                     </View>
@@ -3674,7 +3680,7 @@ export default function CaseDetailScreen() {
 
                     {ct.proposedDate && ct.status === "date_proposed" && (
                       <View style={ctStyles.proposedDateBox}>
-                        <Ionicons name="calendar" size={16} color="#3B82F6" />
+                        <Ionicons name="calendar" size={16} color={colors.info} />
                         <Text style={ctStyles.proposedDateText}>
                           Proposed: {ct.proposedDate} at {ct.proposedTime}
                         </Text>
@@ -3717,7 +3723,7 @@ export default function CaseDetailScreen() {
                         }}
                         style={({ pressed }) => [ctStyles.proposeBtn, pressed && { opacity: 0.85 }]}
                       >
-                        <Ionicons name="calendar" size={18} color="#FFF" />
+                        <Ionicons name="calendar" size={18} color={colors.textInverse} />
                         <Text style={ctStyles.proposeBtnText}>Propose Delivery Date</Text>
                       </Pressable>
                     )}
@@ -3731,7 +3737,7 @@ export default function CaseDetailScreen() {
                           }}
                           style={({ pressed }) => [ctStyles.responseBtn, ctStyles.yesBtn, { flex: 1 }, pressed && { opacity: 0.85 }]}
                         >
-                          <Ionicons name="checkmark" size={18} color="#FFF" />
+                          <Ionicons name="checkmark" size={18} color={colors.textInverse} />
                           <Text style={ctStyles.responseBtnText}>Accept</Text>
                         </Pressable>
                         <Pressable
@@ -3742,7 +3748,7 @@ export default function CaseDetailScreen() {
                           }}
                           style={({ pressed }) => [ctStyles.responseBtn, ctStyles.noBtn, { flex: 1 }, pressed && { opacity: 0.85 }]}
                         >
-                          <Ionicons name="close" size={18} color="#FFF" />
+                          <Ionicons name="close" size={18} color={colors.textInverse} />
                           <Text style={ctStyles.responseBtnText}>Decline</Text>
                         </Pressable>
                       </View>
@@ -3752,7 +3758,7 @@ export default function CaseDetailScreen() {
                       <View style={ctStyles.historySection}>
                         {ct.responseHistory.map((r) => (
                           <View key={r.id} style={ctStyles.historyItem}>
-                            <View style={[ctStyles.historyDot, { backgroundColor: r.type === "accepted" ? "#22C55E" : r.type === "declined" ? "#EF4444" : "#3B82F6" }]} />
+                            <View style={[ctStyles.historyDot, { backgroundColor: r.type === "accepted" ? colors.success : r.type === "declined" ? colors.error : colors.info }]} />
                             <View style={{ flex: 1 }}>
                               <Text style={ctStyles.historyText}>
                                 {r.type === "date_requested" ? r.note :
@@ -3806,18 +3812,18 @@ export default function CaseDetailScreen() {
                 <TextInput
                   style={{
                     borderWidth: 1,
-                    borderColor: Colors.light.border,
+                    borderColor: colors.border,
                     borderRadius: 12,
                     padding: 14,
                     fontSize: 15,
                     fontFamily: "Inter_400Regular",
-                    color: Colors.light.text,
-                    backgroundColor: Colors.light.surface,
+                    color: colors.text,
+                    backgroundColor: colors.surface,
                     minHeight: 90,
                     textAlignVertical: "top",
                   }}
                   placeholder="Dictate notes to the lab..."
-                  placeholderTextColor={Colors.light.textTertiary}
+                  placeholderTextColor={colors.textTertiary}
                   value={photoNotes}
                   onChangeText={setPhotoNotes}
                   multiline
@@ -3831,12 +3837,12 @@ export default function CaseDetailScreen() {
                     }}
                     style={({ pressed }) => [
                       styles.photoActionBtn,
-                      { backgroundColor: Colors.light.surface, borderWidth: 1, borderColor: Colors.light.border },
+                      { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
                       pressed && { opacity: 0.85 },
                     ]}
                   >
-                    <Ionicons name="close" size={18} color={Colors.light.text} />
-                    <Text style={[styles.photoActionText, { color: Colors.light.text }]}>Cancel</Text>
+                    <Ionicons name="close" size={18} color={colors.text} />
+                    <Text style={[styles.photoActionText, { color: colors.text }]}>Cancel</Text>
                   </Pressable>
                   <Pressable
                     onPress={() => {
@@ -3846,26 +3852,26 @@ export default function CaseDetailScreen() {
                     }}
                     style={({ pressed }) => [
                       styles.photoActionBtn,
-                      { backgroundColor: photoNotes.trim() ? "#10B981" : "#ccc" },
+                      { backgroundColor: photoNotes.trim() ? colors.success : colors.textTertiary },
                       pressed && { opacity: 0.85 },
                     ]}
                   >
-                    <Ionicons name="checkmark" size={18} color="#FFF" />
-                    <Text style={[styles.photoActionText, { color: "#FFF" }]}>Submit Notes</Text>
+                    <Ionicons name="checkmark" size={18} color={colors.textInverse} />
+                    <Text style={[styles.photoActionText, { color: colors.textInverse }]}>Submit Notes</Text>
                   </Pressable>
                 </View>
               </View>
             ) : (
               <>
                 {photoNotes.trim() ? (
-                  <View style={{ backgroundColor: "#F0FDF4", borderRadius: 10, padding: 12, marginBottom: 4, borderWidth: 1, borderColor: "#BBF7D0" }}>
+                  <View style={{ backgroundColor: colors.successSurface, borderRadius: 10, padding: 12, marginBottom: 4, borderWidth: 1, borderColor: colors.successLight }}>
                     <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                      <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#16A34A" }}>Notes attached</Text>
+                      <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: colors.successStrong }}>Notes attached</Text>
                       <Pressable onPress={() => setShowPhotoNotes(true)} hitSlop={8}>
-                        <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: Colors.light.tint }}>Edit</Text>
+                        <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: colors.tint }}>Edit</Text>
                       </Pressable>
                     </View>
-                    <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.text }} numberOfLines={2}>{photoNotes}</Text>
+                    <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: colors.text }} numberOfLines={2}>{photoNotes}</Text>
                   </View>
                 ) : null}
 
@@ -3874,24 +3880,24 @@ export default function CaseDetailScreen() {
                     onPress={handleAddMoreMedia}
                     style={({ pressed }) => [
                       styles.photoActionBtn,
-                      { backgroundColor: Colors.light.surface, borderWidth: 1, borderColor: Colors.light.border },
+                      { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
                       pressed && { opacity: 0.85 },
                     ]}
                   >
-                    <Ionicons name="camera" size={20} color={Colors.light.text} />
-                    <Text style={[styles.photoActionText, { color: Colors.light.text }]}>Add More</Text>
+                    <Ionicons name="camera" size={20} color={colors.text} />
+                    <Text style={[styles.photoActionText, { color: colors.text }]}>Add More</Text>
                   </Pressable>
 
                   <Pressable
                     onPress={() => setShowPhotoNotes(true)}
                     style={({ pressed }) => [
                       styles.photoActionBtn,
-                      { backgroundColor: "#F59E0B" },
+                      { backgroundColor: colors.warning },
                       pressed && { opacity: 0.85 },
                     ]}
                   >
-                    <Ionicons name="create-outline" size={20} color="#FFF" />
-                    <Text style={[styles.photoActionText, { color: "#FFF" }]}>Add Notes</Text>
+                    <Ionicons name="create-outline" size={20} color={colors.textInverse} />
+                    <Text style={[styles.photoActionText, { color: colors.textInverse }]}>Add Notes</Text>
                   </Pressable>
                 </View>
 
@@ -3905,14 +3911,14 @@ export default function CaseDetailScreen() {
                       gap: 8,
                       paddingVertical: 14,
                       borderRadius: 14,
-                      backgroundColor: Colors.light.tint,
+                      backgroundColor: colors.tint,
                       marginTop: 6,
                     },
                     pressed && { opacity: 0.85 },
                   ]}
                 >
-                  <Ionicons name="checkmark-circle" size={22} color="#FFF" />
-                  <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#FFF" }}>Done</Text>
+                  <Ionicons name="checkmark-circle" size={22} color={colors.textInverse} />
+                  <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: colors.textInverse }}>Done</Text>
                 </Pressable>
               </>
             )}
@@ -3943,14 +3949,14 @@ export default function CaseDetailScreen() {
                   setShowNoteModal(false);
                 }}
               >
-                <Ionicons name="close" size={24} color={Colors.light.textSecondary} />
+                <Ionicons name="close" size={24} color={colors.textSecondary} />
               </Pressable>
             </View>
 
             <TextInput
               style={styles.noteInput}
               placeholder="Type your note here..."
-              placeholderTextColor={Colors.light.textTertiary}
+              placeholderTextColor={colors.textTertiary}
               value={noteText}
               onChangeText={setNoteText}
               multiline
@@ -3967,7 +3973,7 @@ export default function CaseDetailScreen() {
               ]}
               disabled={!noteText.trim()}
             >
-              <Ionicons name="checkmark" size={20} color="#FFF" />
+              <Ionicons name="checkmark" size={20} color={colors.textInverse} />
               <Text style={styles.saveNoteBtnText}>Save Note</Text>
             </Pressable>
           </View>
@@ -3988,7 +3994,7 @@ export default function CaseDetailScreen() {
               style={({ pressed }) => [addStyles.option, pressed && { opacity: 0.75 }]}
               onPress={() => { setShowAddSomethingModal(false); setTimeout(handleTakePhoto, 200); }}
             >
-              <Ionicons name="camera-outline" size={22} color="#0F172A" />
+              <Ionicons name="camera-outline" size={22} color={colors.text} />
               <Text style={addStyles.optionText}>Picture or Video</Text>
             </Pressable>
 
@@ -3996,7 +4002,7 @@ export default function CaseDetailScreen() {
               style={({ pressed }) => [addStyles.option, pressed && { opacity: 0.75 }]}
               onPress={() => { setShowAddSomethingModal(false); setTimeout(() => setShowNoteModal(true), 200); }}
             >
-              <Ionicons name="document-text-outline" size={22} color="#0F172A" />
+              <Ionicons name="document-text-outline" size={22} color={colors.text} />
               <Text style={addStyles.optionText}>Note</Text>
             </Pressable>
 
@@ -4004,7 +4010,7 @@ export default function CaseDetailScreen() {
               style={({ pressed }) => [addStyles.option, pressed && { opacity: 0.75 }]}
               onPress={() => { setShowAddSomethingModal(false); setTimeout(handleAttachFile, 200); }}
             >
-              <Ionicons name="attach-outline" size={22} color="#0F172A" />
+              <Ionicons name="attach-outline" size={22} color={colors.text} />
               <Text style={addStyles.optionText}>File</Text>
             </Pressable>
 
@@ -4012,7 +4018,7 @@ export default function CaseDetailScreen() {
               style={({ pressed }) => [addStyles.option, pressed && { opacity: 0.75 }]}
               onPress={() => { setShowAddSomethingModal(false); setTimeout(openAddItemModal, 200); }}
             >
-              <Ionicons name="layers-outline" size={22} color="#0F172A" />
+              <Ionicons name="layers-outline" size={22} color={colors.text} />
               <Text style={addStyles.optionText}>Item</Text>
             </Pressable>
 
@@ -4029,7 +4035,7 @@ export default function CaseDetailScreen() {
                   }, 200);
                 }}
               >
-                <Ionicons name="chatbubble-outline" size={22} color="#0F172A" />
+                <Ionicons name="chatbubble-outline" size={22} color={colors.text} />
                 <Text style={addStyles.optionText}>Courtesy Text</Text>
               </Pressable>
             )}
@@ -4058,14 +4064,14 @@ export default function CaseDetailScreen() {
                 {caseItem.status === "COMPLETE" ? "Completed Case" : "Shipped Case"}
               </Text>
               <Pressable onPress={() => setShowCompleteInfo(false)}>
-                <Ionicons name="close" size={24} color={Colors.light.textSecondary} />
+                <Ionicons name="close" size={24} color={colors.textSecondary} />
               </Pressable>
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false} style={styles.completeScroll}>
               <View style={styles.completeSectionWrap}>
                 <View style={styles.completeSectionHeader}>
-                  <Ionicons name="navigate" size={16} color="#6366F1" />
+                  <Ionicons name="navigate" size={16} color={colors.indigo} />
                   <Text style={styles.completeSectionTitle}>Tracking Numbers</Text>
                 </View>
                 {(caseItem.trackingNumbers?.length ?? 0) > 0 ? (
@@ -4082,7 +4088,7 @@ export default function CaseDetailScreen() {
 
               <View style={styles.completeSectionWrap}>
                 <View style={styles.completeSectionHeader}>
-                  <Ionicons name="camera" size={16} color="#8B5CF6" />
+                  <Ionicons name="camera" size={16} color={colors.violet} />
                   <Text style={styles.completeSectionTitle}>Completion Media</Text>
                 </View>
                 {(() => {
@@ -4119,14 +4125,14 @@ export default function CaseDetailScreen() {
                               Linking.openURL(v.imageUri!).catch(() => Alert.alert("Cannot play video", "Unable to open video."));
                             }
                           }}
-                          style={{ flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: "#1E1B2E", borderRadius: 10, padding: 12, marginTop: 8 }}
+                          style={{ flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: "#1E1B2E" /* hex-allow: fixed dark video-player card */, borderRadius: 10, padding: 12, marginTop: 8 }}
                         >
-                          <Ionicons name="play-circle" size={28} color="#A78BFA" />
+                          <Ionicons name="play-circle" size={28} color={colors.violet} />
                           <View style={{ flex: 1 }}>
-                            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#C4B5FD" }}>Video {idx + 1}</Text>
-                            <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#7C6FA0" }}>Tap to play</Text>
+                            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.violetLight }}>Video {idx + 1}</Text>
+                            <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#7C6FA0" /* hex-allow: muted label on fixed dark video card */ }}>Tap to play</Text>
                           </View>
-                          <Ionicons name="open-outline" size={16} color="#7C6FA0" />
+                          <Ionicons name="open-outline" size={16} color="#7C6FA0" /* hex-allow: muted icon on fixed dark video card */ />
                         </Pressable>
                       ))}
                     </View>
@@ -4603,7 +4609,7 @@ export default function CaseDetailScreen() {
         <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.95)" }}>
           <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top + 8, paddingHorizontal: 16, paddingBottom: 12, flexDirection: "row", justifyContent: "flex-end" }}>
             <Pressable onPress={() => setFullScreenPhoto(null)} style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: "rgba(255,255,255,0.15)", alignItems: "center", justifyContent: "center" }}>
-              <Ionicons name="close" size={24} color="#FFF" />
+              <Ionicons name="close" size={24} color={colors.textInverse} />
             </Pressable>
           </View>
           <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 8 }}>
@@ -4622,7 +4628,7 @@ export default function CaseDetailScreen() {
   );
 }
 
-const ep = StyleSheet.create({
+const makeEp = (colors: ThemeColors) => StyleSheet.create({
   overlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.55)",
@@ -4631,7 +4637,7 @@ const ep = StyleSheet.create({
     padding: 24,
   },
   card: {
-    backgroundColor: "#FFF",
+    backgroundColor: colors.surface,
     borderRadius: 20,
     padding: 28,
     width: "100%",
@@ -4642,7 +4648,7 @@ const ep = StyleSheet.create({
     width: 60,
     height: 60,
     borderRadius: 30,
-    backgroundColor: Colors.light.tintLight,
+    backgroundColor: colors.tintLight,
     justifyContent: "center",
     alignItems: "center",
     marginBottom: 16,
@@ -4650,13 +4656,13 @@ const ep = StyleSheet.create({
   title: {
     fontSize: 18,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
     marginBottom: 6,
   },
   desc: {
     fontSize: 14,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     textAlign: "center",
     marginBottom: 24,
   },
@@ -4673,23 +4679,23 @@ const ep = StyleSheet.create({
     justifyContent: "center",
   },
   btnNo: {
-    backgroundColor: Colors.light.surfaceSecondary,
+    backgroundColor: colors.surfaceSecondary,
   },
   btnNoText: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   btnYes: {
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
   },
   btnYesText: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
   photoCard: {
-    backgroundColor: "#FFF",
+    backgroundColor: colors.surface,
     borderRadius: 20,
     padding: 20,
     width: "100%",
@@ -4704,12 +4710,12 @@ const ep = StyleSheet.create({
   photoTitle: {
     fontSize: 18,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   photoSubtitle: {
     fontSize: 13,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     marginBottom: 16,
   },
   photoScroll: {
@@ -4728,7 +4734,7 @@ const ep = StyleSheet.create({
     position: "absolute" as const,
     top: -6,
     right: -6,
-    backgroundColor: "#FFF",
+    backgroundColor: colors.surface,
     borderRadius: 10,
   },
   photoBtnRow: {
@@ -4739,45 +4745,45 @@ const ep = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    backgroundColor: Colors.light.tintLight,
+    backgroundColor: colors.tintLight,
     paddingVertical: 12,
     borderRadius: 12,
   },
   addMoreText: {
     fontSize: 14,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.tint,
+    color: colors.tint,
   },
   noteInput: {
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: Colors.light.borderLight,
+    borderColor: colors.borderLight,
     padding: 14,
     fontSize: 14,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.text,
+    color: colors.text,
     minHeight: 120,
     marginBottom: 16,
   },
 });
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.light.background,
+    backgroundColor: colors.background,
   },
   emptyContainer: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    backgroundColor: Colors.light.background,
+    backgroundColor: colors.background,
     gap: 16,
   },
   emptyText: {
     fontSize: 16,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   backLink: {
     padding: 12,
@@ -4785,7 +4791,7 @@ const styles = StyleSheet.create({
   backLinkText: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.tint,
+    color: colors.tint,
   },
   header: {
     flexDirection: "row",
@@ -4793,9 +4799,9 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     paddingHorizontal: 16,
     paddingBottom: 16,
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.light.border,
+    borderBottomColor: colors.border,
   },
   headerBtn: {
     width: 44,
@@ -4806,7 +4812,7 @@ const styles = StyleSheet.create({
   headerTitle: {
     fontSize: 18,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   scroll: {
     flex: 1,
@@ -4815,11 +4821,11 @@ const styles = StyleSheet.create({
   statusCard: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderRadius: 18,
     padding: 16,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
     gap: 14,
     marginBottom: 16,
   },
@@ -4834,20 +4840,20 @@ const styles = StyleSheet.create({
   statusLabel: {
     fontSize: 10,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
     letterSpacing: 1,
   },
   statusValue: {
     fontSize: 20,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
     marginTop: 2,
   },
   rushBadge: {
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
-    backgroundColor: Colors.light.errorLight,
+    backgroundColor: colors.errorLight,
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 10,
@@ -4855,7 +4861,7 @@ const styles = StyleSheet.create({
   rushText: {
     fontSize: 11,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.error,
+    color: colors.error,
     letterSpacing: 0.5,
   },
   infoGrid: {
@@ -4865,18 +4871,18 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   infoItem: {
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderRadius: 14,
     padding: 14,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
     minWidth: "30%",
     flexGrow: 1,
   },
   infoLabel: {
     fontSize: 10,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
     letterSpacing: 0.5,
     textTransform: "uppercase" as const,
     marginBottom: 4,
@@ -4884,49 +4890,49 @@ const styles = StyleSheet.create({
   infoValue: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   chartHistoryBtn: {
     flexDirection: "row" as const,
     alignItems: "center" as const,
     gap: 12,
-    backgroundColor: "#EFF6FF",
+    backgroundColor: colors.infoSurface,
     borderRadius: 14,
     padding: 14,
     marginBottom: 16,
     borderWidth: 1,
-    borderColor: "#BFDBFE",
+    borderColor: colors.infoLight,
   },
   chartHistoryBtnTitle: {
     fontSize: 14,
     fontFamily: "Inter_600SemiBold",
-    color: "#3B82F6",
+    color: colors.info,
   },
   chartHistoryBtnSub: {
     fontSize: 11,
     fontFamily: "Inter_400Regular",
-    color: "#60A5FA",
+    color: colors.info,
     marginTop: 1,
   },
   notesCard: {
-    backgroundColor: Colors.light.warningLight,
+    backgroundColor: colors.warningLight,
     borderRadius: 14,
     padding: 16,
     marginBottom: 24,
   },
   rxSummaryCard: {
-    backgroundColor: Colors.light.background,
+    backgroundColor: colors.background,
     borderRadius: 14,
     padding: 16,
     marginHorizontal: 16,
     marginBottom: 16,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
   },
   rxSummaryHeading: {
     fontSize: 11,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     letterSpacing: 0.6,
     textTransform: "uppercase" as const,
     marginBottom: 12,
@@ -4934,7 +4940,7 @@ const styles = StyleSheet.create({
   rxSummaryEmpty: {
     borderWidth: 1,
     borderStyle: "dashed",
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
     borderRadius: 10,
     paddingVertical: 14,
     paddingHorizontal: 12,
@@ -4942,7 +4948,7 @@ const styles = StyleSheet.create({
   rxSummaryEmptyText: {
     fontSize: 13,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     textAlign: "center" as const,
   },
   rxSummaryGrid: {
@@ -4956,7 +4962,7 @@ const styles = StyleSheet.create({
   rxSummaryLabel: {
     fontSize: 10,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     letterSpacing: 0.5,
     textTransform: "uppercase" as const,
     marginBottom: 4,
@@ -4964,12 +4970,12 @@ const styles = StyleSheet.create({
   rxSummaryValue: {
     fontSize: 14,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.text,
+    color: colors.text,
   },
   rxSummaryNotesEmpty: {
     borderWidth: 1,
     borderStyle: "dashed",
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
     borderRadius: 8,
     paddingVertical: 8,
     paddingHorizontal: 10,
@@ -4978,11 +4984,11 @@ const styles = StyleSheet.create({
   rxSummaryNotesEmptyText: {
     fontSize: 13,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   rxSummaryNoteRow: {
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
     borderRadius: 8,
     paddingVertical: 8,
     paddingHorizontal: 10,
@@ -4991,19 +4997,19 @@ const styles = StyleSheet.create({
   rxSummaryNoteText: {
     fontSize: 13,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.text,
+    color: colors.text,
     lineHeight: 18,
   },
   rxSummaryNoteMeta: {
     fontSize: 10,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
     marginTop: 4,
   },
   notesLabel: {
     fontSize: 10,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.warning,
+    color: colors.warning,
     letterSpacing: 0.5,
     textTransform: "uppercase" as const,
     marginBottom: 6,
@@ -5011,7 +5017,7 @@ const styles = StyleSheet.create({
   notesText: {
     fontSize: 14,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.text,
+    color: colors.text,
     lineHeight: 20,
   },
   photoThumb: {
@@ -5019,7 +5025,7 @@ const styles = StyleSheet.create({
     height: 72,
     borderRadius: 10,
     marginRight: 8,
-    backgroundColor: Colors.light.border,
+    backgroundColor: colors.border,
   },
   sectionHeader: {
     marginBottom: 12,
@@ -5027,7 +5033,7 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 16,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   timeline: {
     marginBottom: 24,
@@ -5049,7 +5055,7 @@ const styles = StyleSheet.create({
     width: 2,
     flex: 1,
     minHeight: 20,
-    backgroundColor: Colors.light.border,
+    backgroundColor: colors.border,
     marginVertical: 4,
   },
   timelineContent: {
@@ -5059,12 +5065,12 @@ const styles = StyleSheet.create({
   timelineStation: {
     fontSize: 14,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   timelineTime: {
     fontSize: 12,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
     marginTop: 2,
   },
   actionSection: {
@@ -5088,7 +5094,7 @@ const styles = StyleSheet.create({
   actionBtnText: {
     fontSize: 15,
     fontFamily: "Inter_700Bold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
   stationGrid: {
     flexDirection: "row",
@@ -5099,9 +5105,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
     borderRadius: 12,
     paddingHorizontal: 14,
     paddingVertical: 12,
@@ -5117,7 +5123,7 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 13,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.text,
+    color: colors.text,
   },
   modalOverlay: {
     flex: 1,
@@ -5128,18 +5134,18 @@ const styles = StyleSheet.create({
     width: 40,
     height: 4,
     borderRadius: 2,
-    backgroundColor: Colors.light.border,
+    backgroundColor: colors.border,
     alignSelf: "center",
     marginBottom: 16,
   },
   modalTitle: {
     fontSize: 18,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
     marginBottom: 16,
   },
   photoModal: {
-    backgroundColor: Colors.light.background,
+    backgroundColor: colors.background,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     padding: 24,
@@ -5153,7 +5159,7 @@ const styles = StyleSheet.create({
     height: 120,
     borderRadius: 14,
     marginRight: 10,
-    backgroundColor: Colors.light.border,
+    backgroundColor: colors.border,
   },
   photoActions: {
     flexDirection: "row",
@@ -5173,7 +5179,7 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_700Bold",
   },
   noteModal: {
-    backgroundColor: Colors.light.background,
+    backgroundColor: colors.background,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     padding: 24,
@@ -5186,14 +5192,14 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   noteInput: {
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
     padding: 16,
     fontSize: 15,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.text,
+    color: colors.text,
     minHeight: 120,
     marginBottom: 16,
   },
@@ -5202,17 +5208,17 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    backgroundColor: "#8B5CF6",
+    backgroundColor: colors.violet,
     paddingVertical: 14,
     borderRadius: 14,
   },
   saveNoteBtnText: {
     fontSize: 15,
     fontFamily: "Inter_700Bold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
   statusCardTappable: {
-    borderColor: Colors.light.tint + "30",
+    borderColor: colors.tint + "30",
     borderWidth: 1.5,
   },
   completeOverlay: {
@@ -5221,7 +5227,7 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
   },
   completeSheet: {
-    backgroundColor: Colors.light.background,
+    backgroundColor: colors.background,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     padding: 24,
@@ -5237,7 +5243,7 @@ const styles = StyleSheet.create({
   completeTitle: {
     fontSize: 18,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   completeScroll: {
     flex: 1,
@@ -5254,12 +5260,12 @@ const styles = StyleSheet.create({
   completeSectionTitle: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   completeEmptyText: {
     fontSize: 14,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
     paddingLeft: 24,
   },
   trackingItem: {
@@ -5268,7 +5274,7 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingVertical: 10,
     paddingHorizontal: 16,
-    backgroundColor: "#EEF2FF",
+    backgroundColor: colors.indigoLight,
     borderRadius: 10,
     marginBottom: 8,
   },
@@ -5276,12 +5282,12 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: "#6366F1",
+    backgroundColor: colors.indigo,
   },
   trackingItemText: {
     fontSize: 14,
     fontFamily: "Inter_600SemiBold",
-    color: "#4338CA",
+    color: colors.indigo,
   },
   completePhotoGrid: {
     flexDirection: "row",
@@ -5292,7 +5298,7 @@ const styles = StyleSheet.create({
     width: 100,
     height: 100,
     borderRadius: 12,
-    backgroundColor: Colors.light.border,
+    backgroundColor: colors.border,
   },
   addItemOverlay: {
     flex: 1,
@@ -5300,7 +5306,7 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
   },
   addItemSheet: {
-    backgroundColor: Colors.light.background,
+    backgroundColor: colors.background,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     padding: 20,
@@ -5316,7 +5322,7 @@ const styles = StyleSheet.create({
   addItemTitle: {
     fontSize: 18,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   addItemCaseTypeList: {
     gap: 8,
@@ -5324,22 +5330,22 @@ const styles = StyleSheet.create({
   addItemCaseTypeItem: {
     flexDirection: "row" as const,
     alignItems: "center" as const,
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderRadius: 14,
     padding: 16,
     borderWidth: 1.5,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
     gap: 14,
   },
   addItemCaseTypeItemSelected: {
-    borderColor: Colors.light.tint,
-    backgroundColor: Colors.light.tintLight,
+    borderColor: colors.tint,
+    backgroundColor: colors.tintLight,
   },
   addItemCaseTypeIcon: {
     width: 40,
     height: 40,
     borderRadius: 12,
-    backgroundColor: Colors.light.surfaceSecondary,
+    backgroundColor: colors.surfaceSecondary,
     alignItems: "center" as const,
     justifyContent: "center" as const,
   },
@@ -5347,10 +5353,10 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 16,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   addItemCaseTypeTextSelected: {
-    color: Colors.light.tint,
+    color: colors.tint,
   },
   addItemToothScroll: {
     flex: 1,
@@ -5360,7 +5366,7 @@ const styles = StyleSheet.create({
     flexDirection: "row" as const,
     alignItems: "center" as const,
     gap: 6,
-    backgroundColor: Colors.light.tintLight,
+    backgroundColor: colors.tintLight,
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 10,
@@ -5370,12 +5376,12 @@ const styles = StyleSheet.create({
   addItemSelectedTypeText: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.tint,
+    color: colors.tint,
   },
   aiToothChartPanel: {
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
     borderRadius: 14,
     padding: 12,
     gap: 8,
@@ -5389,12 +5395,12 @@ const styles = StyleSheet.create({
   aiToothChartTitle: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   aiToothChartClear: {
     fontSize: 12,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.error,
+    color: colors.error,
   },
   aiToothChartLegend: {
     flexDirection: "row" as const,
@@ -5403,7 +5409,7 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     paddingHorizontal: 4,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.light.borderLight,
+    borderBottomColor: colors.borderLight,
     marginBottom: 4,
   },
   aiLegendItem: {
@@ -5419,19 +5425,19 @@ const styles = StyleSheet.create({
   aiLegendText: {
     fontSize: 10,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   aiLegendHint: {
     fontSize: 9,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
     fontStyle: "italic" as const,
     marginLeft: "auto",
   },
   aiArchContainer: {
     alignItems: "center" as const,
     paddingVertical: 10,
-    backgroundColor: "#EFF4FB",
+    backgroundColor: colors.infoSurface,
     borderRadius: 16,
     paddingHorizontal: 12,
     marginVertical: 4,
@@ -5439,7 +5445,7 @@ const styles = StyleSheet.create({
   aiArchSectionTitle: {
     fontSize: 11,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.tint,
+    color: colors.tint,
     letterSpacing: 2,
     marginBottom: 4,
     marginTop: 4,
@@ -5458,43 +5464,43 @@ const styles = StyleSheet.create({
   aiArchGapLine: {
     width: "100%",
     height: 1,
-    backgroundColor: Colors.light.border,
+    backgroundColor: colors.border,
   },
   aiArchToothBtn: {
     width: 30,
     height: 30,
     borderRadius: 15,
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     alignItems: "center" as const,
     justifyContent: "center" as const,
     borderWidth: 1.5,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
   },
   aiArchToothText: {
     fontSize: 10,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   aiToothBtnSelected: {
-    backgroundColor: Colors.light.tint,
-    borderColor: Colors.light.tint,
+    backgroundColor: colors.tint,
+    borderColor: colors.tint,
   },
   aiToothBtnBridge: {
-    backgroundColor: Colors.light.accent,
-    borderColor: Colors.light.accent,
+    backgroundColor: colors.accent,
+    borderColor: colors.accent,
   },
   aiToothBtnMissing: {
-    backgroundColor: Colors.light.errorLight,
-    borderColor: Colors.light.error,
+    backgroundColor: colors.errorLight,
+    borderColor: colors.error,
   },
   aiToothBtnTextSelected: {
-    color: "#FFF",
+    color: colors.textInverse,
   },
   aiToothBtnTextBridge: {
-    color: "#FFF",
+    color: colors.textInverse,
   },
   aiToothBtnTextMissing: {
-    color: Colors.light.error,
+    color: colors.error,
     fontSize: 11,
   },
   aiToothMissingWrap: {
@@ -5514,7 +5520,7 @@ const styles = StyleSheet.create({
   aiToothChartSummary: {
     paddingTop: 8,
     borderTopWidth: 1,
-    borderTopColor: Colors.light.borderLight,
+    borderTopColor: colors.borderLight,
     marginTop: 4,
     gap: 6,
   },
@@ -5526,7 +5532,7 @@ const styles = StyleSheet.create({
   aiToothChartSummaryText: {
     fontSize: 12,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.tint,
+    color: colors.tint,
     flex: 1,
   },
   aiMaterialSection: {
@@ -5536,7 +5542,7 @@ const styles = StyleSheet.create({
   aiMaterialLabel: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
     marginBottom: 8,
   },
   aiMaterialSelector: {
@@ -5547,28 +5553,28 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingVertical: 10,
     borderRadius: 10,
-    backgroundColor: Colors.light.surfaceSecondary,
+    backgroundColor: colors.surfaceSecondary,
     alignItems: "center" as const,
     borderWidth: 1.5,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
   },
   aiMaterialChipActive: {
-    backgroundColor: Colors.light.tintLight,
-    borderColor: Colors.light.tint,
+    backgroundColor: colors.tintLight,
+    borderColor: colors.tint,
   },
   aiMaterialText: {
     fontSize: 12,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   aiMaterialTextActive: {
-    color: Colors.light.tint,
+    color: colors.tint,
   },
   aiPricingRow: {
     flexDirection: "row" as const,
     alignItems: "center" as const,
     justifyContent: "space-between" as const,
-    backgroundColor: Colors.light.tintLight,
+    backgroundColor: colors.tintLight,
     borderRadius: 10,
     paddingHorizontal: 14,
     paddingVertical: 10,
@@ -5577,19 +5583,19 @@ const styles = StyleSheet.create({
   aiPricingLabel: {
     fontSize: 12,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   aiPricingTotal: {
     fontSize: 18,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.tint,
+    color: colors.tint,
   },
   aiSaveItemBtn: {
     flexDirection: "row" as const,
     alignItems: "center" as const,
     justifyContent: "center" as const,
     gap: 8,
-    backgroundColor: "#10B981",
+    backgroundColor: colors.success,
     paddingVertical: 14,
     borderRadius: 14,
     marginBottom: 8,
@@ -5597,7 +5603,7 @@ const styles = StyleSheet.create({
   aiSaveItemBtnText: {
     fontSize: 15,
     fontFamily: "Inter_700Bold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
   aiAdaChartContainer: {
     paddingVertical: 8,
@@ -5610,7 +5616,7 @@ const styles = StyleSheet.create({
   aiAdaQuadrantLabel: {
     fontSize: 10,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
     letterSpacing: 0.5,
     textTransform: "uppercase" as const,
   },
@@ -5627,9 +5633,9 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     justifyContent: "center" as const,
     alignItems: "center" as const,
-    backgroundColor: Colors.light.surfaceSecondary,
+    backgroundColor: colors.surfaceSecondary,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
   },
   aiAdaToothBtnMidline: {
     marginRight: 8,
@@ -5637,12 +5643,12 @@ const styles = StyleSheet.create({
   aiAdaToothText: {
     fontSize: 11,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   aiAdaMidline: {
     width: 1,
     height: 32,
-    backgroundColor: Colors.light.textTertiary,
+    backgroundColor: colors.textTertiary,
     marginHorizontal: 2,
   },
   aiAdaDividerRow: {
@@ -5652,10 +5658,10 @@ const styles = StyleSheet.create({
   aiAdaDividerLine: {
     height: 1,
     width: "90%",
-    backgroundColor: Colors.light.borderLight,
+    backgroundColor: colors.borderLight,
   },
   initialsChip: {
-    backgroundColor: Colors.light.tintLight,
+    backgroundColor: colors.tintLight,
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 6,
@@ -5664,11 +5670,11 @@ const styles = StyleSheet.create({
   initialsText: {
     fontSize: 10,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.tint,
+    color: colors.tint,
   },
 });
 
-const ctStyles = StyleSheet.create({
+const makeCtStyles = (colors: ThemeColors) => StyleSheet.create({
   courtesySection: {
     marginTop: 20,
     gap: 12,
@@ -5676,15 +5682,15 @@ const ctStyles = StyleSheet.create({
   sectionTitle: {
     fontSize: 15,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
     marginBottom: 4,
   },
   courtesyCard: {
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderRadius: 14,
     padding: 16,
     borderWidth: 1,
-    borderColor: Colors.light.borderLight,
+    borderColor: colors.borderLight,
     gap: 10,
   },
   courtesyHeader: {
@@ -5695,7 +5701,7 @@ const ctStyles = StyleSheet.create({
   statusBadge: {
     fontSize: 11,
     fontFamily: "Inter_600SemiBold",
-    color: "#FFF",
+    color: colors.textInverse,
     paddingHorizontal: 10,
     paddingVertical: 3,
     borderRadius: 10,
@@ -5704,19 +5710,19 @@ const ctStyles = StyleSheet.create({
   courtesyMsg: {
     fontSize: 13,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.text,
+    color: colors.text,
     lineHeight: 19,
   },
   courtesyMeta: {
     fontSize: 11,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   proposedDateBox: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    backgroundColor: "#EFF6FF",
+    backgroundColor: colors.infoSurface,
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 10,
@@ -5724,7 +5730,7 @@ const ctStyles = StyleSheet.create({
   proposedDateText: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: "#1E40AF",
+    color: colors.infoStrong,
   },
   responseRow: {
     gap: 8,
@@ -5732,7 +5738,7 @@ const ctStyles = StyleSheet.create({
   responseLabel: {
     fontSize: 13,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.text,
+    color: colors.text,
   },
   responseBtns: {
     flexDirection: "row",
@@ -5748,34 +5754,34 @@ const ctStyles = StyleSheet.create({
     borderRadius: 10,
   },
   yesBtn: {
-    backgroundColor: "#22C55E",
+    backgroundColor: colors.success,
   },
   noBtn: {
-    backgroundColor: "#EF4444",
+    backgroundColor: colors.error,
   },
   responseBtnText: {
     fontSize: 14,
     fontFamily: "Inter_600SemiBold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
   proposeBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    backgroundColor: "#3B82F6",
+    backgroundColor: colors.info,
     paddingVertical: 12,
     borderRadius: 12,
   },
   proposeBtnText: {
     fontSize: 14,
     fontFamily: "Inter_600SemiBold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
   historySection: {
     gap: 8,
     borderTopWidth: 1,
-    borderTopColor: Colors.light.borderLight,
+    borderTopColor: colors.borderLight,
     paddingTop: 10,
   },
   historyItem: {
@@ -5792,12 +5798,12 @@ const ctStyles = StyleSheet.create({
   historyText: {
     fontSize: 12,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.text,
+    color: colors.text,
   },
   historyMeta: {
     fontSize: 10,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     marginTop: 2,
   },
   modalOverlay: {
@@ -5808,7 +5814,7 @@ const ctStyles = StyleSheet.create({
     padding: 20,
   },
   modalCard: {
-    backgroundColor: "#FFF",
+    backgroundColor: colors.surface,
     borderRadius: 20,
     padding: 24,
     width: "100%",
@@ -5823,46 +5829,46 @@ const ctStyles = StyleSheet.create({
   modalTitle: {
     fontSize: 18,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   modalSubtitle: {
     fontSize: 13,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     lineHeight: 19,
   },
   messageInput: {
-    backgroundColor: Colors.light.background,
+    backgroundColor: colors.background,
     borderRadius: 12,
     padding: 14,
     fontSize: 14,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.text,
+    color: colors.text,
     minHeight: 120,
     borderWidth: 1,
-    borderColor: Colors.light.borderLight,
+    borderColor: colors.borderLight,
   },
   dateInput: {
-    backgroundColor: Colors.light.background,
+    backgroundColor: colors.background,
     borderRadius: 12,
     padding: 14,
     fontSize: 14,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.text,
+    color: colors.text,
     borderWidth: 1,
-    borderColor: Colors.light.borderLight,
+    borderColor: colors.borderLight,
   },
   inputLabel: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   sendBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    backgroundColor: "#F59E0B",
+    backgroundColor: colors.warning,
     paddingVertical: 14,
     borderRadius: 14,
     marginTop: 4,
@@ -5870,17 +5876,17 @@ const ctStyles = StyleSheet.create({
   sendBtnText: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
 });
 
-const exoStyles = StyleSheet.create({
+const makeExoStyles = (colors: ThemeColors) => StyleSheet.create({
   exocadCard: {
-    backgroundColor: "#F5F3FF",
+    backgroundColor: colors.violetLight,
     borderRadius: 14,
     padding: 14,
     borderWidth: 1.5,
-    borderColor: "#DDD6FE",
+    borderColor: colors.violetLight,
     gap: 10,
   },
   exocadHeader: {
@@ -5896,12 +5902,12 @@ const exoStyles = StyleSheet.create({
   exocadTitle: {
     fontSize: 15,
     fontFamily: "Inter_700Bold",
-    color: "#7C3AED",
+    color: colors.violet,
   },
   exocadUrl: {
     fontSize: 12,
     fontFamily: "Inter_400Regular",
-    color: "#6B7280",
+    color: colors.textSecondary,
   },
   exocadActions: {
     flexDirection: "row",
@@ -5919,18 +5925,18 @@ const exoStyles = StyleSheet.create({
   exocadActionText: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
 });
 
-const addStyles = StyleSheet.create({
+const makeAddStyles = (colors: ThemeColors) => StyleSheet.create({
   backdrop: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.45)",
     justifyContent: "flex-end",
   },
   card: {
-    backgroundColor: "#FFFFFF",
+    backgroundColor: colors.surface,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     paddingHorizontal: 20,
@@ -5941,7 +5947,7 @@ const addStyles = StyleSheet.create({
   title: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
-    color: "#64748B",
+    color: colors.textSecondary,
     marginBottom: 8,
   },
   option: {
@@ -5950,12 +5956,12 @@ const addStyles = StyleSheet.create({
     gap: 14,
     paddingVertical: 15,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#E2E8F0",
+    borderBottomColor: colors.border,
   },
   optionText: {
     fontSize: 16,
     fontFamily: "Inter_500Medium",
-    color: "#0F172A",
+    color: colors.text,
   },
   cancelBtn: {
     alignItems: "center",
@@ -5965,6 +5971,6 @@ const addStyles = StyleSheet.create({
   cancelText: {
     fontSize: 16,
     fontFamily: "Inter_600SemiBold",
-    color: "#EF4444",
+    color: colors.error,
   },
 });

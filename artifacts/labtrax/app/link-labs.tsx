@@ -5,7 +5,7 @@
  * pending SMS invites, and manually link by entering another platform-wide
  * account number (e.g. one their lab gave them on paper).
  */
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Pressable,
@@ -17,7 +17,7 @@ import {
 } from "react-native";
 import { Stack, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import Colors from "@/constants/colors";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { getAccessToken, getApiUrl } from "@/lib/query-client";
 
 interface UserCard {
@@ -75,6 +75,8 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 
 export default function LinkLabsScreen() {
   const router = useRouter();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const [data, setData] = useState<AccountLinksResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [otherAcct, setOtherAcct] = useState("");
@@ -157,7 +159,7 @@ export default function LinkLabsScreen() {
           title: "Link Labs",
           headerLeft: () => (
             <Pressable onPress={() => router.back()} hitSlop={12}>
-              <Ionicons name="chevron-back" size={24} color={Colors.light.tint} />
+              <Ionicons name="chevron-back" size={24} color={colors.tint} />
             </Pressable>
           ),
         }}
@@ -196,11 +198,11 @@ export default function LinkLabsScreen() {
                   onPress={() => unlink(u.userId)}
                   style={({ pressed }) => [
                     styles.smallBtn,
-                    { backgroundColor: "#FEE2E2" },
+                    { backgroundColor: colors.errorLight },
                     pressed && { opacity: 0.7 },
                   ]}
                 >
-                  <Text style={[styles.smallBtnText, { color: "#B91C1C" }]}>
+                  <Text style={[styles.smallBtnText, { color: colors.errorText }]}>
                     Unlink
                   </Text>
                 </Pressable>
@@ -231,12 +233,12 @@ export default function LinkLabsScreen() {
                   onPress={() => respond(inv.inviteId, true)}
                   style={({ pressed }) => [
                     styles.smallBtn,
-                    { backgroundColor: Colors.light.tintLight },
+                    { backgroundColor: colors.tintLight },
                     pressed && { opacity: 0.7 },
                   ]}
                 >
                   <Text
-                    style={[styles.smallBtnText, { color: Colors.light.tint }]}
+                    style={[styles.smallBtnText, { color: colors.tint }]}
                   >
                     Link
                   </Text>
@@ -246,11 +248,11 @@ export default function LinkLabsScreen() {
                   onPress={() => respond(inv.inviteId, false)}
                   style={({ pressed }) => [
                     styles.smallBtn,
-                    { backgroundColor: "#F3F4F6", marginLeft: 6 },
+                    { backgroundColor: colors.surfaceAlt, marginLeft: 6 },
                     pressed && { opacity: 0.7 },
                   ]}
                 >
-                  <Text style={[styles.smallBtnText, { color: "#374151" }]}>
+                  <Text style={[styles.smallBtnText, { color: colors.textSecondary }]}>
                     Dismiss
                   </Text>
                 </Pressable>
@@ -311,11 +313,11 @@ export default function LinkLabsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   container: { padding: 16, paddingBottom: 64 },
   intro: {
     fontSize: 14,
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     marginBottom: 16,
     lineHeight: 20,
   },
@@ -323,14 +325,14 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 12,
     fontWeight: "600",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     textTransform: "uppercase",
     marginBottom: 8,
   },
-  muted: { color: Colors.light.textSecondary, fontSize: 14, marginBottom: 8 },
+  muted: { color: colors.textSecondary, fontSize: 14, marginBottom: 8 },
   card: {
-    backgroundColor: "#fff",
-    borderColor: Colors.light.border,
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
     borderWidth: 1,
     borderRadius: 12,
     padding: 12,
@@ -339,8 +341,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
   },
-  cardTitle: { fontWeight: "600", color: Colors.light.text, fontSize: 15 },
-  cardMeta: { color: Colors.light.textSecondary, fontSize: 13, marginTop: 2 },
+  cardTitle: { fontWeight: "600", color: colors.text, fontSize: 15 },
+  cardMeta: { color: colors.textSecondary, fontSize: 13, marginTop: 2 },
   smallBtn: {
     paddingHorizontal: 12,
     paddingVertical: 8,
@@ -349,20 +351,21 @@ const styles = StyleSheet.create({
   smallBtnText: { fontWeight: "600", fontSize: 13 },
   input: {
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontSize: 16,
-    backgroundColor: "#fff",
+    backgroundColor: colors.surface,
+    color: colors.text,
     marginTop: 8,
     marginBottom: 12,
   },
   primaryBtn: {
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
     borderRadius: 10,
     paddingVertical: 12,
     alignItems: "center",
   },
-  primaryBtnText: { color: "#fff", fontWeight: "600", fontSize: 15 },
+  primaryBtnText: { color: colors.textInverse, fontWeight: "600", fontSize: 15 },
 });

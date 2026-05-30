@@ -14,29 +14,33 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router, useFocusEffect } from "expo-router";
 import * as Haptics from "expo-haptics";
-import { useTheme } from "@/lib/theme-context";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
+import { EmptyState } from "@/components/ui/EmptyState";
 import { useAuth } from "@/lib/auth-context";
 import { useMessenger, MConversation, MUser } from "@/lib/messenger-context";
 
-const AVATAR_COLORS = [
-  "#145DA0",
-  "#0F766E",
-  "#7C3AED",
-  "#059669",
-  "#DC2626",
-  "#D97706",
-  "#EC4899",
-  "#8B5CF6",
-  "#06B6D4",
-  "#F97316",
-];
+function makeAvatarColors(colors: ThemeColors): string[] {
+  return [
+    colors.tint,
+    colors.accent,
+    colors.violet,
+    colors.successStrong,
+    colors.errorStrong,
+    colors.warningStrong,
+    colors.pink,
+    colors.violet,
+    colors.cyan,
+    colors.orange,
+  ];
+}
 
-function getAvatarColor(str: string): string {
+function getAvatarColor(str: string, colors: ThemeColors): string {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
     hash = str.charCodeAt(i) + ((hash << 5) - hash);
   }
-  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+  const palette = makeAvatarColors(colors);
+  return palette[Math.abs(hash) % palette.length];
 }
 
 function formatRelativeTime(iso: string | undefined | null): string {
@@ -53,7 +57,8 @@ function formatRelativeTime(iso: string | undefined | null): string {
 }
 
 function Avatar({ name, size = 48 }: { name: string; size?: number }) {
-  const color = getAvatarColor(name);
+  const { colors } = useTheme();
+  const color = getAvatarColor(name, colors);
   const initial = (name || "?").charAt(0).toUpperCase();
   return (
     <View
@@ -62,7 +67,7 @@ function Avatar({ name, size = 48 }: { name: string; size?: number }) {
         { width: size, height: size, borderRadius: size / 2, backgroundColor: color },
       ]}
     >
-      <Text style={[styles.avatarText, { fontSize: size * 0.42 }]}>
+      <Text style={[styles.avatarText, { fontSize: size * 0.42, color: colors.textInverse }]}>
         {initial}
       </Text>
     </View>
@@ -148,7 +153,7 @@ function ConversationRow({
           </Text>
           {hasUnread && (
             <View style={[styles.badge, { backgroundColor: colors.tint }]}>
-              <Text style={styles.badgeText}>
+              <Text style={[styles.badgeText, { color: colors.textInverse }]}>
                 {item.unreadCount > 99 ? "99+" : item.unreadCount}
               </Text>
             </View>
@@ -414,26 +419,11 @@ export default function MessagesTab() {
           <ActivityIndicator color={colors.tint} />
         </View>
       ) : sortedConversations.length === 0 ? (
-        <View style={styles.emptyWrap}>
-          <View
-            style={[
-              styles.emptyIconWrap,
-              { backgroundColor: colors.tintLight },
-            ]}
-          >
-            <Ionicons
-              name="chatbubbles-outline"
-              size={36}
-              color={colors.tint}
-            />
-          </View>
-          <Text style={[styles.emptyTitle, { color: colors.text }]}>
-            No messages yet
-          </Text>
-          <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
-            Tap the pencil icon to start a conversation
-          </Text>
-        </View>
+        <EmptyState
+          icon="chatbubbles-outline"
+          title="No messages yet"
+          description="Tap the pencil icon to start a conversation."
+        />
       ) : (
         <FlatList
           data={sortedConversations}
@@ -546,7 +536,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   badgeText: {
-    color: "#fff",
     fontSize: 11,
     fontFamily: "Inter_600SemiBold",
   },
@@ -555,7 +544,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   avatarText: {
-    color: "#fff",
     fontFamily: "Inter_600SemiBold",
   },
   separator: {

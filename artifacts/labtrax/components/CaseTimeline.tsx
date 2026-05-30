@@ -1,6 +1,6 @@
 import React from "react";
 import { View, Text, ScrollView, StyleSheet } from "react-native";
-import Colors from "@/constants/colors";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 
 export type TimelineEntry = {
   status: string;
@@ -44,8 +44,10 @@ function fmtDate(s: string): string {
 }
 
 export function CaseTimeline({ statusHistory, currentStatus, expectedDeliveryDate }: Props) {
-  const PRIMARY = Colors.light.tint;
-  const DUE_COLOR = "#0EA5E9";
+  const { colors } = useTheme();
+  const styles = React.useMemo(() => makeStyles(colors), [colors]);
+  const PRIMARY = colors.tint;
+  const DUE_COLOR = colors.cyan;
 
   // Overall progress across the full received→expected window (0–1, capped).
   const progressFill = React.useMemo(() => {
@@ -104,7 +106,7 @@ export function CaseTimeline({ statusHistory, currentStatus, expectedDeliveryDat
                             height: 14,
                             borderRadius: 7,
                             borderWidth: 2,
-                            borderColor: "#fff",
+                            borderColor: colors.textInverse,
                             shadowColor: PRIMARY,
                             shadowOpacity: 0.5,
                             shadowRadius: 4,
@@ -139,7 +141,7 @@ export function CaseTimeline({ statusHistory, currentStatus, expectedDeliveryDat
                           styles.connectorFill,
                           {
                             width: `${Math.round(fill * 100)}%`,
-                            backgroundColor: isOverdue ? "#EF4444" : PRIMARY,
+                            backgroundColor: isOverdue ? colors.error : PRIMARY,
                             opacity: 0.7,
                           },
                         ]}
@@ -154,7 +156,7 @@ export function CaseTimeline({ statusHistory, currentStatus, expectedDeliveryDat
           {expectedDeliveryDate && (
             <View style={styles.nodeWrap}>
               <Text
-                style={[styles.nodeLabel, { color: isOverdue ? "#EF4444" : DUE_COLOR, fontWeight: "600" }]}
+                style={[styles.nodeLabel, { color: isOverdue ? colors.error : DUE_COLOR, fontWeight: "600" }]}
                 numberOfLines={2}
               >
                 Expected
@@ -165,12 +167,12 @@ export function CaseTimeline({ statusHistory, currentStatus, expectedDeliveryDat
                   {
                     backgroundColor: "transparent",
                     borderWidth: 2,
-                    borderColor: isOverdue ? "#EF4444" : DUE_COLOR,
+                    borderColor: isOverdue ? colors.error : DUE_COLOR,
                     borderStyle: "dashed",
                   },
                 ]}
               />
-              <Text style={[styles.nodeDate, { color: isOverdue ? "#EF4444" : DUE_COLOR }]}>
+              <Text style={[styles.nodeDate, { color: isOverdue ? colors.error : DUE_COLOR }]}>
                 {fmtDate(expectedDeliveryDate)}
               </Text>
             </View>
@@ -185,7 +187,7 @@ export function CaseTimeline({ statusHistory, currentStatus, expectedDeliveryDat
         </Text>
       )}
       {expectedDeliveryDate && isOverdue && (
-        <Text style={[styles.progressHint, { color: "#EF4444" }]}>
+        <Text style={[styles.progressHint, { color: colors.error }]}>
           Past expected delivery date
         </Text>
       )}
@@ -195,7 +197,7 @@ export function CaseTimeline({ statusHistory, currentStatus, expectedDeliveryDat
 
 const CONNECTOR_W = 36;
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   outer: {
     marginHorizontal: -16,
     paddingHorizontal: 16,
@@ -216,7 +218,7 @@ const styles = StyleSheet.create({
   nodeLabel: {
     fontSize: 10,
     fontFamily: "Inter_600SemiBold",
-    color: "#64748B",
+    color: colors.textSecondary,
     textAlign: "center",
     marginBottom: 6,
     lineHeight: 13,
@@ -226,12 +228,12 @@ const styles = StyleSheet.create({
     width: 10,
     height: 10,
     borderRadius: 5,
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
   },
   nodeDate: {
     fontSize: 9,
     fontFamily: "Inter_400Regular",
-    color: "#94A3B8",
+    color: colors.textTertiary,
     marginTop: 6,
     textAlign: "center",
   },
@@ -239,7 +241,7 @@ const styles = StyleSheet.create({
     height: 2,
     width: CONNECTOR_W,
     marginBottom: 8,
-    backgroundColor: "#CBD5E1",
+    backgroundColor: colors.border,
     borderRadius: 1,
     overflow: "hidden",
   },
@@ -250,7 +252,7 @@ const styles = StyleSheet.create({
   progressHint: {
     fontSize: 10,
     fontFamily: "Inter_400Regular",
-    color: "#94A3B8",
+    color: colors.textTertiary,
     marginTop: 4,
     textAlign: "center",
   },

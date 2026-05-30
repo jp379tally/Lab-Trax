@@ -1,6 +1,7 @@
 import React from "react";
 import { Modal, View, Text, Pressable, ScrollView, TextInput } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useTheme } from "@/lib/theme-context";
 import type { DuplicateHit } from "@/lib/scan/duplicate-merge";
 
 export type DuplicatePromptState = {
@@ -43,6 +44,7 @@ export function DuplicatePromptModal({
   onConfirmRemake,
   onSetError,
 }: Props) {
+  const { colors } = useTheme();
   return (
     <Modal
       visible={!!prompt}
@@ -52,21 +54,21 @@ export function DuplicatePromptModal({
       onRequestClose={onClose}
     >
       <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "center", padding: 16 }}>
-        <View style={{ backgroundColor: "#FFF", borderRadius: 14, maxHeight: "88%", overflow: "hidden" }}>
-          <View style={{ paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: "#E5E7EB", flexDirection: "row", alignItems: "center", gap: 8 }}>
-            <Ionicons name="warning" size={18} color="#D97706" />
-            <Text style={{ flex: 1, fontFamily: "Inter_700Bold", fontSize: 15, color: "#111827" }}>
+        <View style={{ backgroundColor: colors.surface, borderRadius: 14, maxHeight: "88%", overflow: "hidden" }}>
+          <View style={{ paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: colors.border, flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <Ionicons name="warning" size={18} color={colors.warningStrong} />
+            <Text style={{ flex: 1, fontFamily: "Inter_700Bold", fontSize: 15, color: colors.text }}>
               Possible duplicate / remake?
             </Text>
             <Pressable onPress={onClose} hitSlop={10}>
-              <Ionicons name="close" size={20} color="#6B7280" />
+              <Ionicons name="close" size={20} color={colors.textSecondary} />
             </Pressable>
           </View>
           <ScrollView style={{ maxHeight: 520 }} contentContainerStyle={{ padding: 16 }}>
-            <Text style={{ fontFamily: "Inter_400Regular", fontSize: 13, color: "#374151", marginBottom: 12 }}>
+            <Text style={{ fontFamily: "Inter_400Regular", fontSize: 13, color: colors.textSecondary, marginBottom: 12 }}>
               Found {prompt?.matches.length ?? 0} prior case
               {(prompt?.matches.length ?? 0) === 1 ? "" : "s"} for{" "}
-              <Text style={{ fontFamily: "Inter_600SemiBold", color: "#111827" }}>
+              <Text style={{ fontFamily: "Inter_600SemiBold", color: colors.text }}>
                 {prompt?.patientName}
               </Text>
               . If this is a remake, pick which prior case it is remaking.
@@ -83,8 +85,8 @@ export function DuplicatePromptModal({
                   }}
                   style={{
                     borderWidth: 1,
-                    borderColor: selected ? "#2563EB" : "#E5E7EB",
-                    backgroundColor: selected ? "#EFF6FF" : "#FFF",
+                    borderColor: selected ? colors.info : colors.border,
+                    backgroundColor: selected ? colors.infoSurface : colors.surface,
                     borderRadius: 10,
                     padding: 10,
                     marginBottom: 8,
@@ -94,29 +96,29 @@ export function DuplicatePromptModal({
                     <View style={{
                       width: 16, height: 16, borderRadius: 8,
                       borderWidth: 2,
-                      borderColor: selected ? "#2563EB" : "#9CA3AF",
+                      borderColor: selected ? colors.info : colors.textTertiary,
                       alignItems: "center", justifyContent: "center",
                     }}>
-                      {selected && <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: "#2563EB" }} />}
+                      {selected && <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: colors.info }} />}
                     </View>
-                    <Text style={{ fontFamily: "Inter_700Bold", fontSize: 13, color: "#111827" }}>
+                    <Text style={{ fontFamily: "Inter_700Bold", fontSize: 13, color: colors.text }}>
                       Case {m.caseNumber}
                     </Text>
                     {m.matchKind && m.matchKind !== "exact" && (
-                      <Text style={{ fontFamily: "Inter_500Medium", fontSize: 10, color: "#6B7280", textTransform: "uppercase" }}>
+                      <Text style={{ fontFamily: "Inter_500Medium", fontSize: 10, color: colors.textSecondary, textTransform: "uppercase" }}>
                         {m.matchKind}
                       </Text>
                     )}
                     {isLegacy && (
-                      <Text style={{ fontFamily: "Inter_500Medium", fontSize: 10, color: "#9CA3AF", marginLeft: "auto" }}>
+                      <Text style={{ fontFamily: "Inter_500Medium", fontSize: 10, color: colors.textTertiary, marginLeft: "auto" }}>
                         mobile
                       </Text>
                     )}
                   </View>
-                  <Text style={{ fontFamily: "Inter_500Medium", fontSize: 12, color: "#374151", marginTop: 6 }}>
+                  <Text style={{ fontFamily: "Inter_500Medium", fontSize: 12, color: colors.textSecondary, marginTop: 6 }}>
                     {m.patientFirstName} {m.patientLastName}
                   </Text>
-                  <Text style={{ fontFamily: "Inter_400Regular", fontSize: 11, color: "#6B7280", marginTop: 2 }}>
+                  <Text style={{ fontFamily: "Inter_400Regular", fontSize: 11, color: colors.textSecondary, marginTop: 2 }}>
                     {(m.createdAt ? new Date(m.createdAt).toLocaleDateString() : "—")}
                     {m.toothNumbers ? ` · Teeth ${m.toothNumbers}` : ""}
                     {m.restorationTypes ? ` · ${m.restorationTypes}` : ""}
@@ -126,7 +128,7 @@ export function DuplicatePromptModal({
               );
             })}
 
-            <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: "#374151", marginTop: 6, marginBottom: 4 }}>
+            <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: colors.textSecondary, marginTop: 6, marginBottom: 4 }}>
               Reason for remake (required if remake)
             </Text>
             <TextInput
@@ -135,14 +137,14 @@ export function DuplicatePromptModal({
               placeholder="e.g. Doesn't fit / open margins / wrong shade..."
               multiline
               style={{
-                borderWidth: 1, borderColor: "#E5E7EB", borderRadius: 8,
+                borderWidth: 1, borderColor: colors.border, borderRadius: 8,
                 paddingHorizontal: 10, paddingVertical: 8, minHeight: 60,
-                fontFamily: "Inter_400Regular", fontSize: 13, color: "#111827",
+                fontFamily: "Inter_400Regular", fontSize: 13, color: colors.text,
                 textAlignVertical: "top",
               }}
             />
 
-            <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: "#374151", marginTop: 12, marginBottom: 4 }}>
+            <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: colors.textSecondary, marginTop: 12, marginBottom: 4 }}>
               Charge for this remake?
             </Text>
             <View style={{ flexDirection: "row", gap: 8 }}>
@@ -153,14 +155,14 @@ export function DuplicatePromptModal({
                   style={{
                     flex: 1, paddingVertical: 10, borderRadius: 8,
                     borderWidth: 1,
-                    borderColor: charge === v ? (v === "no" ? "#D97706" : "#2563EB") : "#E5E7EB",
-                    backgroundColor: charge === v ? (v === "no" ? "#FEF3C7" : "#EFF6FF") : "#FFF",
+                    borderColor: charge === v ? (v === "no" ? colors.warningStrong : colors.info) : colors.border,
+                    backgroundColor: charge === v ? (v === "no" ? colors.warningLight : colors.infoSurface) : colors.surface,
                     alignItems: "center",
                   }}
                 >
                   <Text style={{
                     fontFamily: "Inter_600SemiBold", fontSize: 12,
-                    color: charge === v ? (v === "no" ? "#92400E" : "#1D4ED8") : "#374151",
+                    color: charge === v ? (v === "no" ? colors.warningText : colors.infoStrong) : colors.textSecondary,
                   }}>
                     {v === "yes" ? "Yes — charge as usual" : "No — no-charge remake"}
                   </Text>
@@ -169,34 +171,34 @@ export function DuplicatePromptModal({
             </View>
 
             {error && (
-              <Text style={{ marginTop: 10, color: "#B91C1C", fontFamily: "Inter_500Medium", fontSize: 12 }}>
+              <Text style={{ marginTop: 10, color: colors.errorText, fontFamily: "Inter_500Medium", fontSize: 12 }}>
                 {error}
               </Text>
             )}
           </ScrollView>
 
-          <View style={{ flexDirection: "row", gap: 8, padding: 12, borderTopWidth: 1, borderTopColor: "#E5E7EB" }}>
+          <View style={{ flexDirection: "row", gap: 8, padding: 12, borderTopWidth: 1, borderTopColor: colors.border }}>
             <Pressable
               onPress={onClose}
-              style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, backgroundColor: "#F3F4F6" }}
+              style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, backgroundColor: colors.surfaceAlt }}
             >
-              <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: "#374151" }}>Cancel</Text>
+              <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: colors.textSecondary }}>Cancel</Text>
             </Pressable>
             <Pressable
               onPress={() => {
                 const pn = prompt?.patientName ?? "";
                 onViewChart(pn);
               }}
-              style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, backgroundColor: "#E5E7EB" }}
+              style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, backgroundColor: colors.border }}
             >
-              <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: "#111827" }}>View chart</Text>
+              <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: colors.text }}>View chart</Text>
             </Pressable>
             <View style={{ flex: 1 }} />
             <Pressable
               onPress={onNotARemake}
-              style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, backgroundColor: "#F3F4F6" }}
+              style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, backgroundColor: colors.surfaceAlt }}
             >
-              <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: "#374151" }}>Not a remake</Text>
+              <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: colors.textSecondary }}>Not a remake</Text>
             </Pressable>
             <Pressable
               onPress={() => {
@@ -214,9 +216,9 @@ export function DuplicatePromptModal({
                 }
                 onConfirmRemake(selectedId, reason.trim(), charge === "yes");
               }}
-              style={{ paddingHorizontal: 14, paddingVertical: 10, borderRadius: 8, backgroundColor: "#2563EB" }}
+              style={{ paddingHorizontal: 14, paddingVertical: 10, borderRadius: 8, backgroundColor: colors.info }}
             >
-              <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: "#FFF" }}>
+              <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: colors.textInverse }}>
                 Yes — link as remake
               </Text>
             </Pressable>

@@ -21,7 +21,9 @@ import { router } from "expo-router";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import { resilientFetch } from "@/lib/query-client";
-import Colors from "@/constants/colors";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
+import { Spacing, Radius, Typography } from "@/constants/tokens";
+import { EmptyState } from "@/components/ui/EmptyState";
 import { getStationInfo, STATIONS, CaseStatus, LabCase, cleanDoctorDisplay, Invoice } from "@/lib/data";
 import { ChatButton } from "@/components/ChatButton";
 import InvoicePDFViewer from "@/components/InvoicePDFViewer";
@@ -34,6 +36,9 @@ export default function CasesScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const { userType, currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const locStyles = useMemo(() => makeLocStyles(colors), [colors]);
   const [companyLogo, setCompanyLogo] = useState<string | null>(null);
   useEffect(() => {
     AsyncStorage.getItem("@drivesync_company_logo").then((uri) => {
@@ -181,12 +186,12 @@ export default function CasesScreen() {
               <Text style={styles.casePatient}>{item.patientName}</Text>
               {item.isRemake && (
                 <View style={styles.remakeBadge}>
-                  <Ionicons name="refresh" size={8} color="#FFF" />
+                  <Ionicons name="refresh" size={8} color={colors.textInverse} />
                 </View>
               )}
               {item.isRush && (
                 <View style={styles.rushBadge}>
-                  <Ionicons name="flash" size={10} color="#EF4444" />
+                  <Ionicons name="flash" size={10} color={colors.error} />
                   <Text style={styles.rushText}>RUSH</Text>
                 </View>
               )}
@@ -227,7 +232,7 @@ export default function CasesScreen() {
               style={styles.chartHistoryChip}
               testID={`chart-history-${item.id}`}
             >
-              <Ionicons name="play-circle" size={16} color="#3B82F6" />
+              <Ionicons name="play-circle" size={16} color={colors.info} />
               <Text style={styles.chartHistoryChipText}>{patientCaseCount}</Text>
             </Pressable>
           )}
@@ -280,7 +285,7 @@ export default function CasesScreen() {
                   paddingVertical: 6,
                   paddingHorizontal: 10,
                   borderRadius: 8,
-                  backgroundColor: "#2563EB",
+                  backgroundColor: colors.info,
                   marginRight: 6,
                 },
                 pressed && { opacity: 0.8 },
@@ -288,8 +293,8 @@ export default function CasesScreen() {
               hitSlop={8}
               testID={`edit-invoice-${item.id}`}
             >
-              <Ionicons name="document-text" size={14} color="#FFF" />
-              <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>
+              <Ionicons name="document-text" size={14} color={colors.textInverse} />
+              <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: colors.textInverse }}>
                 Invoice
               </Text>
             </Pressable>
@@ -297,7 +302,7 @@ export default function CasesScreen() {
           <Feather
             name="chevron-right"
             size={16}
-            color={Colors.light.textTertiary}
+            color={colors.textTertiary}
           />
         </View>
       </Pressable>
@@ -320,12 +325,12 @@ export default function CasesScreen() {
             <Feather
               name="search"
               size={18}
-              color={Colors.light.textTertiary}
+              color={colors.textTertiary}
             />
             <TextInput
               style={styles.searchInput}
               placeholder="Search cases..."
-              placeholderTextColor={Colors.light.textTertiary}
+              placeholderTextColor={colors.textTertiary}
               value={search}
               onChangeText={setSearch}
             />
@@ -334,7 +339,7 @@ export default function CasesScreen() {
                 <Ionicons
                   name="close-circle"
                   size={18}
-                  color={Colors.light.textTertiary}
+                  color={colors.textTertiary}
                 />
               </Pressable>
             )}
@@ -349,9 +354,9 @@ export default function CasesScreen() {
               }}
             >
               {refreshing ? (
-                <ActivityIndicator size={16} color={Colors.light.tint} />
+                <ActivityIndicator size={16} color={colors.tint} />
               ) : (
-                <Ionicons name="refresh" size={18} color={Colors.light.tint} />
+                <Ionicons name="refresh" size={18} color={colors.tint} />
               )}
               <Text style={styles.barcodeLocateBtnText}>Sync Cases</Text>
             </Pressable>
@@ -361,7 +366,7 @@ export default function CasesScreen() {
               style={({ pressed }) => [styles.askAiBtn, pressed && { opacity: 0.7 }]}
               onPress={() => router.push("/chat")}
             >
-              <Ionicons name="sparkles" size={18} color="#7C3AED" />
+              <Ionicons name="sparkles" size={18} color={colors.violet} />
               <Text style={styles.askAiBtnText}>Ask AI about all my cases</Text>
             </Pressable>
           )}
@@ -396,7 +401,7 @@ export default function CasesScreen() {
                 barcodeLocateProcessingRef.current = false;
               }}
             >
-              <Ionicons name="barcode-outline" size={18} color={Colors.light.tint} />
+              <Ionicons name="barcode-outline" size={18} color={colors.tint} />
               <Text style={styles.barcodeLocateBtnText}>Use Barcode to Locate Case</Text>
             </Pressable>
           )}
@@ -450,14 +455,15 @@ export default function CasesScreen() {
           setRefreshing(false);
         }}
         ListEmptyComponent={
-          <View style={styles.emptyState}>
-            <Feather
-              name="inbox"
-              size={48}
-              color={Colors.light.textTertiary}
-            />
-            <Text style={styles.emptyText}>No cases found</Text>
-          </View>
+          <EmptyState
+            featherIcon="inbox"
+            title="No cases found"
+            description={
+              search.trim() || filterStatus !== "ALL"
+                ? "Try adjusting your search or filter."
+                : "New cases will appear here as they come in."
+            }
+          />
         }
       />
 
@@ -470,17 +476,17 @@ export default function CasesScreen() {
       >
         <View style={{ flex: 1, backgroundColor: "#000" }}>
           <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "rgba(0,0,0,0.8)" }}>
-            <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Scan to Locate Case</Text>
+            <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: colors.textInverse }}>Scan to Locate Case</Text>
             <Pressable onPress={() => { setShowBarcodeLocate(false); setBarcodeLocateScanned(false); }}>
-              <Ionicons name="close" size={28} color="#FFF" />
+              <Ionicons name="close" size={28} color={colors.textInverse} />
             </Pressable>
           </View>
           {Platform.OS === "web" ? (
             <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 40 }}>
-              <Ionicons name="barcode-outline" size={60} color="#FFF" />
-              <Text style={{ color: "#FFF", fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center", marginTop: 16 }}>Barcode scanning requires a device camera.</Text>
-              <Pressable onPress={() => { setShowBarcodeLocate(false); setBarcodeLocateScanned(false); }} style={{ marginTop: 20, backgroundColor: Colors.light.tint, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12 }}>
-                <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Close</Text>
+              <Ionicons name="barcode-outline" size={60} color={colors.textInverse} />
+              <Text style={{ color: colors.textInverse, fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center", marginTop: 16 }}>Barcode scanning requires a device camera.</Text>
+              <Pressable onPress={() => { setShowBarcodeLocate(false); setBarcodeLocateScanned(false); }} style={{ marginTop: 20, backgroundColor: colors.tint, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12 }}>
+                <Text style={{ color: colors.textInverse, fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Close</Text>
               </Pressable>
             </View>
           ) : permission?.granted ? (
@@ -492,7 +498,7 @@ export default function CasesScreen() {
             >
               <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
                 <View style={{ width: 260, height: 160, borderWidth: 2, borderColor: "rgba(255,255,255,0.5)", borderRadius: 16, borderStyle: "dashed" }} />
-                <Text style={{ color: "#FFF", fontSize: 14, fontFamily: "Inter_500Medium", marginTop: 16 }}>Point camera at barcode</Text>
+                <Text style={{ color: colors.textInverse, fontSize: 14, fontFamily: "Inter_500Medium", marginTop: 16 }}>Point camera at barcode</Text>
               </View>
             </CameraView>
           ) : (
@@ -506,9 +512,9 @@ export default function CasesScreen() {
                     Alert.alert("Permission Denied", "Please enable camera access in your device settings.");
                   }
                 }}
-                style={({ pressed }) => ({ marginTop: 16, backgroundColor: Colors.light.tint, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12, opacity: pressed ? 0.8 : 1 })}
+                style={({ pressed }) => ({ marginTop: 16, backgroundColor: colors.tint, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12, opacity: pressed ? 0.8 : 1 })}
               >
-                <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Grant Camera Access</Text>
+                <Text style={{ color: colors.textInverse, fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Grant Camera Access</Text>
               </Pressable>
             </View>
           )}
@@ -604,7 +610,7 @@ export default function CasesScreen() {
   );
 }
 
-const locStyles = StyleSheet.create({
+const makeLocStyles = (colors: ThemeColors) => StyleSheet.create({
   overlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.55)",
@@ -613,7 +619,7 @@ const locStyles = StyleSheet.create({
     padding: 24,
   },
   card: {
-    backgroundColor: "#FFF",
+    backgroundColor: colors.surface,
     borderRadius: 20,
     padding: 24,
     width: "100%",
@@ -622,13 +628,13 @@ const locStyles = StyleSheet.create({
   title: {
     fontSize: 18,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
     textAlign: "center",
   },
   subtitle: {
     fontSize: 14,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     textAlign: "center",
     marginTop: 4,
     marginBottom: 8,
@@ -636,7 +642,7 @@ const locStyles = StyleSheet.create({
   prompt: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     marginBottom: 12,
     marginTop: 8,
   },
@@ -654,8 +660,8 @@ const locStyles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: 10,
     borderWidth: 1.5,
-    borderColor: Colors.light.border,
-    backgroundColor: Colors.light.surfaceSecondary,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceSecondary,
   },
   stationDot: {
     width: 8,
@@ -665,98 +671,99 @@ const locStyles = StyleSheet.create({
   stationLabel: {
     fontSize: 13,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.text,
+    color: colors.text,
   },
   cancelBtn: {
     alignItems: "center",
     paddingVertical: 12,
     borderRadius: 12,
-    backgroundColor: Colors.light.surfaceSecondary,
+    backgroundColor: colors.surfaceSecondary,
   },
   cancelText: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
 });
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.light.background,
+    backgroundColor: colors.background,
   },
   header: {
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.light.border,
+    borderBottomColor: colors.border,
     paddingHorizontal: 20,
     paddingBottom: 12,
   },
   title: {
     fontSize: 26,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
     marginBottom: 14,
   },
   searchRow: {
-    marginBottom: 12,
+    marginBottom: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.sm,
   },
   searchBox: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: Colors.light.surfaceSecondary,
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    gap: 10,
+    backgroundColor: colors.surfaceSecondary,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.md,
+    gap: Spacing.md,
   },
   searchInput: {
     flex: 1,
-    fontSize: 15,
-    fontFamily: "Inter_400Regular",
-    color: Colors.light.text,
+    ...Typography.bodyLg,
+    color: colors.text,
     padding: 0,
   },
   filterList: {
-    gap: 8,
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.lg,
   },
   filterChip: {
-    paddingHorizontal: 14,
-    paddingVertical: 7,
-    borderRadius: 20,
-    backgroundColor: Colors.light.surfaceSecondary,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.full,
+    backgroundColor: colors.surfaceSecondary,
   },
   filterChipActive: {
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
   },
   filterText: {
-    fontSize: 12,
-    fontFamily: "Inter_600SemiBold",
-    color: Colors.light.textSecondary,
+    ...Typography.captionSemibold,
+    color: colors.textSecondary,
   },
   filterTextActive: {
-    color: "#FFF",
+    color: colors.textInverse,
   },
   filterCountText: {
     fontSize: 11,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
   },
   listContent: {
-    padding: 20,
-    gap: 10,
+    padding: Spacing.lg,
+    gap: Spacing.md,
   },
   caseCard: {
-    backgroundColor: Colors.light.surface,
-    borderRadius: 18,
-    padding: 16,
+    backgroundColor: colors.surface,
+    borderRadius: Radius.lg,
+    padding: Spacing.lg,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
   },
   caseTop: {
     flexDirection: "row",
     justifyContent: "space-between",
-    marginBottom: 10,
+    marginBottom: Spacing.md,
   },
   caseLeft: {
     flex: 1,
@@ -769,18 +776,18 @@ const styles = StyleSheet.create({
   casePatient: {
     fontSize: 16,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   caseNumber: {
     fontSize: 12,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   rushBadge: {
     flexDirection: "row",
     alignItems: "center",
     gap: 2,
-    backgroundColor: Colors.light.errorLight,
+    backgroundColor: colors.errorLight,
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 6,
@@ -788,19 +795,19 @@ const styles = StyleSheet.create({
   rushText: {
     fontSize: 9,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.error,
+    color: colors.error,
     letterSpacing: 0.5,
   },
   caseDoctor: {
     fontSize: 13,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     marginTop: 2,
   },
   caseMeta: {
     fontSize: 12,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
     marginTop: 4,
   },
   caseRight: {
@@ -820,7 +827,7 @@ const styles = StyleSheet.create({
   casePrice: {
     fontSize: 14,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   caseBottom: {
     flexDirection: "row",
@@ -830,10 +837,10 @@ const styles = StyleSheet.create({
   caseDue: {
     fontSize: 12,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
   },
   remakeBadge: {
-    backgroundColor: "#EF4444",
+    backgroundColor: colors.error,
     borderRadius: 8,
     width: 16,
     height: 16,
@@ -844,7 +851,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 3,
-    backgroundColor: "#EFF6FF",
+    backgroundColor: colors.infoSurface,
     borderRadius: 8,
     paddingHorizontal: 6,
     paddingVertical: 2,
@@ -854,7 +861,7 @@ const styles = StyleSheet.create({
   chartHistoryChipText: {
     fontSize: 10,
     fontFamily: "Inter_700Bold",
-    color: "#3B82F6",
+    color: colors.info,
   },
   emptyState: {
     alignItems: "center",
@@ -865,14 +872,14 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 15,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
   },
   barcodeLocateBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    backgroundColor: Colors.light.tintLight,
+    backgroundColor: colors.tintLight,
     borderRadius: 12,
     paddingVertical: 10,
     marginTop: 8,
@@ -880,14 +887,14 @@ const styles = StyleSheet.create({
   barcodeLocateBtnText: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.tint,
+    color: colors.tint,
   },
   askAiBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    backgroundColor: "#F5F3FF",
+    backgroundColor: colors.violetLight,
     borderRadius: 12,
     paddingVertical: 10,
     marginTop: 8,
@@ -895,6 +902,6 @@ const styles = StyleSheet.create({
   askAiBtnText: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: "#7C3AED",
+    color: colors.violet,
   },
 });

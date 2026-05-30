@@ -22,7 +22,7 @@ import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
-import Colors from "@/constants/colors";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import type { ChatMessage, Conversation } from "@/lib/data";
 
 const MESSENGER_BLUE = "#0084FF";
@@ -93,6 +93,7 @@ function buildDirectConversationId(usernameA?: string | null, usernameB?: string
 }
 
 function SwipeableRow({ children, onDelete }: { children: React.ReactNode; onDelete: () => void }) {
+  const { colors } = useTheme();
   const translateX = useRef(new RNAnimated.Value(0)).current;
   const deleteThreshold = -80;
 
@@ -137,10 +138,10 @@ function SwipeableRow({ children, onDelete }: { children: React.ReactNode; onDel
       <View style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 120, flexDirection: "row", justifyContent: "flex-end" }}>
         <Pressable
           onPress={handleDelete}
-          style={{ width: 120, backgroundColor: "#EF4444", justifyContent: "center", alignItems: "center" }}
+          style={{ width: 120, backgroundColor: colors.error, justifyContent: "center", alignItems: "center" }}
         >
-          <Ionicons name="trash" size={22} color="#FFF" />
-          <Text style={{ color: "#FFF", fontSize: 12, fontFamily: "Inter_500Medium", marginTop: 4 }}>Delete</Text>
+          <Ionicons name="trash" size={22} color={colors.textInverse} />
+          <Text style={{ color: colors.textInverse, fontSize: 12, fontFamily: "Inter_500Medium", marginTop: 4 }}>Delete</Text>
         </Pressable>
       </View>
       <RNAnimated.View style={{ transform: [{ translateX }], backgroundColor: MESSENGER_BG }} {...panResponder.panHandlers}>
@@ -159,6 +160,8 @@ const STATUS_DOT_COLORS: Record<string, string> = {
 export function ChatButton() {
   const { conversations, chatMessages, sendChatMessage, markConversationRead, totalUnreadMessages, clients, addConversation, removeConversation, activeLabAffiliationKey } = useApp();
   const { currentUser, registeredUsers } = useAuth();
+  const { colors } = useTheme();
+  const styles = React.useMemo(() => makeStyles(colors), [colors]);
   const insets = useSafeAreaInsets();
   const [showChat, setShowChat] = useState(false);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -819,7 +822,7 @@ export function ChatButton() {
     <>
       <Pressable onPress={() => setShowChat(true)} style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}>
         <View style={styles.chatIconWrap}>
-          <Ionicons name="chatbubbles" size={24} color={Colors.light.tint} />
+          <Ionicons name="chatbubbles" size={24} color={colors.tint} />
           {totalUnreadMessages > 0 && (
             <View style={styles.chatBadge}>
               <Text style={styles.chatBadgeText}>
@@ -848,7 +851,7 @@ export function ChatButton() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   chatIconWrap: {
     position: "relative",
   },
@@ -856,7 +859,7 @@ const styles = StyleSheet.create({
     position: "absolute",
     top: -4,
     right: -6,
-    backgroundColor: "#EF4444",
+    backgroundColor: colors.error,
     borderRadius: 8,
     minWidth: 16,
     height: 16,
@@ -864,12 +867,12 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingHorizontal: 3,
     borderWidth: 1.5,
-    borderColor: "#FFF",
+    borderColor: colors.surface,
   },
   chatBadgeText: {
     fontSize: 9,
     fontFamily: "Inter_700Bold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
 });
 

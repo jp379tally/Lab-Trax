@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useMemo } from "react";
 import {
   Modal,
   View,
@@ -9,7 +9,7 @@ import {
   StyleSheet,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import Colors from "@/constants/colors";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 
 export interface LabelData {
   caseNumber: string;
@@ -48,6 +48,9 @@ export function LabelPrintModal(props: LabelPrintModalProps) {
     onDone,
   } = props;
 
+  const { colors } = useTheme();
+  const labelStyles = useMemo(() => makeLabelStyles(colors), [colors]);
+
   return (
     <Modal
       visible={visible}
@@ -61,7 +64,7 @@ export function LabelPrintModal(props: LabelPrintModalProps) {
           <View style={labelStyles.header}>
             <Text style={labelStyles.headerTitle}>Case Label</Text>
             <Pressable onPress={onDone} hitSlop={12}>
-              <Ionicons name="close" size={22} color={Colors.light.textSecondary} />
+              <Ionicons name="close" size={22} color={colors.textSecondary} />
             </Pressable>
           </View>
 
@@ -133,25 +136,25 @@ export function LabelPrintModal(props: LabelPrintModalProps) {
                 {labelData.toothDiagram && labelData.toothDiagram.length > 0 ? (
                   <>
                     <View style={labelStyles.divider} />
-                    <Text style={{ fontSize: 10, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, textTransform: "uppercase", marginBottom: 6, letterSpacing: 0.5 }}>Tooth Diagram</Text>
+                    <Text style={{ fontSize: 10, fontFamily: "Inter_600SemiBold", color: colors.textSecondary, textTransform: "uppercase", marginBottom: 6, letterSpacing: 0.5 }}>Tooth Diagram</Text>
                     <View style={{ alignItems: "center" }}>
                       <View style={{ flexDirection: "row", marginBottom: 2 }}>
                         {[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16].map(t => {
                           const active = labelData.toothDiagram!.includes(t);
                           return (
-                            <View key={t} style={{ width: 18, height: 18, borderRadius: 3, borderWidth: 1, borderColor: active ? "#22C55E" : "#E0E0E0", backgroundColor: active ? "#22C55E" : "transparent", justifyContent: "center", alignItems: "center", marginHorizontal: 0.5 }}>
-                              <Text style={{ fontSize: 7, fontFamily: active ? "Inter_700Bold" : "Inter_400Regular", color: active ? "#FFF" : "#BBB" }}>{t}</Text>
+                            <View key={t} style={{ width: 18, height: 18, borderRadius: 3, borderWidth: 1, borderColor: active ? colors.success : colors.surfaceAlt, backgroundColor: active ? colors.success : "transparent", justifyContent: "center", alignItems: "center", marginHorizontal: 0.5 }}>
+                              <Text style={{ fontSize: 7, fontFamily: active ? "Inter_700Bold" : "Inter_400Regular", color: active ? colors.textInverse : colors.textTertiary }}>{t}</Text>
                             </View>
                           );
                         })}
                       </View>
-                      <View style={{ width: "90%", height: 1, backgroundColor: "#DDD", marginVertical: 2 }} />
+                      <View style={{ width: "90%", height: 1, backgroundColor: colors.border, marginVertical: 2 }} />
                       <View style={{ flexDirection: "row" }}>
                         {[32,31,30,29,28,27,26,25,24,23,22,21,20,19,18,17].map(t => {
                           const active = labelData.toothDiagram!.includes(t);
                           return (
-                            <View key={t} style={{ width: 18, height: 18, borderRadius: 3, borderWidth: 1, borderColor: active ? "#22C55E" : "#E0E0E0", backgroundColor: active ? "#22C55E" : "transparent", justifyContent: "center", alignItems: "center", marginHorizontal: 0.5 }}>
-                              <Text style={{ fontSize: 7, fontFamily: active ? "Inter_700Bold" : "Inter_400Regular", color: active ? "#FFF" : "#BBB" }}>{t}</Text>
+                            <View key={t} style={{ width: 18, height: 18, borderRadius: 3, borderWidth: 1, borderColor: active ? colors.success : colors.surfaceAlt, backgroundColor: active ? colors.success : "transparent", justifyContent: "center", alignItems: "center", marginHorizontal: 0.5 }}>
+                              <Text style={{ fontSize: 7, fontFamily: active ? "Inter_700Bold" : "Inter_400Regular", color: active ? colors.textInverse : colors.textTertiary }}>{t}</Text>
                             </View>
                           );
                         })}
@@ -174,8 +177,8 @@ export function LabelPrintModal(props: LabelPrintModalProps) {
               })}
               onPress={onSelectPrinter}
             >
-              <Ionicons name="wifi" size={18} color={selectedPrinter ? "#22C55E" : "#9CA3AF"} />
-              <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 13, color: selectedPrinter ? "#22C55E" : "#9CA3AF" }}>
+              <Ionicons name="wifi" size={18} color={selectedPrinter ? colors.success : colors.textTertiary} />
+              <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 13, color: selectedPrinter ? colors.success : colors.textTertiary }}>
                 {selectedPrinter ? selectedPrinter.name : "Select Network Printer"}
               </Text>
               {selectedPrinter && (
@@ -192,7 +195,7 @@ export function LabelPrintModal(props: LabelPrintModalProps) {
                 if (labelData) onPrint(labelData);
               }}
             >
-              <Ionicons name="print-outline" size={20} color="#FFF" />
+              <Ionicons name="print-outline" size={20} color={colors.textInverse} />
               <Text style={labelStyles.printBtnText}>Print Label</Text>
             </Pressable>
             <Pressable
@@ -209,7 +212,7 @@ export function LabelPrintModal(props: LabelPrintModalProps) {
   );
 }
 
-const labelStyles = StyleSheet.create({
+const makeLabelStyles = (colors: ThemeColors) => StyleSheet.create({
   overlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.55)",
@@ -218,7 +221,7 @@ const labelStyles = StyleSheet.create({
     padding: 24,
   },
   container: {
-    backgroundColor: "#FFF",
+    backgroundColor: colors.surface,
     borderRadius: 20,
     width: "100%",
     maxWidth: 400,
@@ -236,16 +239,16 @@ const labelStyles = StyleSheet.create({
   headerTitle: {
     fontSize: 18,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   scroll: {
     paddingHorizontal: 20,
   },
   labelCard: {
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderRadius: 14,
     borderWidth: 1.5,
-    borderColor: Colors.light.borderLight,
+    borderColor: colors.borderLight,
     borderStyle: "dashed",
     padding: 18,
   },
@@ -258,11 +261,11 @@ const labelStyles = StyleSheet.create({
   labName: {
     fontSize: 16,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.tint,
+    color: colors.tint,
     letterSpacing: 1.5,
   },
   rushTag: {
-    backgroundColor: Colors.light.warningLight,
+    backgroundColor: colors.warningLight,
     paddingHorizontal: 10,
     paddingVertical: 3,
     borderRadius: 6,
@@ -270,12 +273,12 @@ const labelStyles = StyleSheet.create({
   rushTagText: {
     fontSize: 11,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.warning,
+    color: colors.warning,
     letterSpacing: 0.5,
   },
   divider: {
     height: 1,
-    backgroundColor: Colors.light.borderLight,
+    backgroundColor: colors.borderLight,
     marginVertical: 12,
   },
   labelRow: {
@@ -287,13 +290,13 @@ const labelStyles = StyleSheet.create({
   labelKey: {
     fontSize: 12,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     width: 80,
   },
   labelValue: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
     flex: 1,
     textAlign: "right",
   },
@@ -303,13 +306,13 @@ const labelStyles = StyleSheet.create({
   notesText: {
     fontSize: 12,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.text,
+    color: colors.text,
     lineHeight: 18,
   },
   labelFooter: {
     fontSize: 11,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
     textAlign: "center",
   },
   actions: {
@@ -324,26 +327,26 @@ const labelStyles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
     paddingVertical: 14,
     borderRadius: 12,
   },
   printBtnText: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
   doneBtn: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: Colors.light.surfaceSecondary,
+    backgroundColor: colors.surfaceSecondary,
     paddingVertical: 14,
     borderRadius: 12,
   },
   doneBtnText: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
 });

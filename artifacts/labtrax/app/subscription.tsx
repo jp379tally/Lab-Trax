@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useMemo } from "react";
 import {
   View,
   Text,
@@ -12,7 +12,7 @@ import {
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useTheme } from "@/lib/theme-context";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { resilientFetch } from "@/lib/query-client";
 import {
   isRevenueCatAvailable,
@@ -57,57 +57,57 @@ type StatusMeta = {
   desc: string;
 };
 
-const STATUS_META: Record<string, StatusMeta> = {
+const makeStatusMeta = (colors: ThemeColors): Record<string, StatusMeta> => ({
   trialing: {
     title: "Free Trial",
     icon: "time-outline",
-    color: "#2563EB",
-    bg: "#EFF6FF",
+    color: colors.info,
+    bg: colors.infoSurface,
     desc: "You're on a free trial. Add a payment method to keep access when it ends.",
   },
   active: {
     title: "Active",
     icon: "checkmark-circle",
-    color: "#16A34A",
-    bg: "#F0FDF4",
+    color: colors.successStrong,
+    bg: colors.successSurface,
     desc: "Your subscription is active and in good standing.",
   },
   past_due: {
     title: "Payment Issue",
     icon: "alert-circle",
-    color: "#D97706",
-    bg: "#FFFBEB",
+    color: colors.warningStrong,
+    bg: colors.warningSurface,
     desc: "Your last payment failed. Update your payment method to avoid losing access.",
   },
   grace: {
     title: "Grace Period",
     icon: "shield-outline",
-    color: "#EA580C",
-    bg: "#FFF7ED",
+    color: colors.orange,
+    bg: colors.orangeLight,
     desc: "Your trial ended. You have read-only access. Subscribe to restore full access.",
   },
   locked: {
     title: "Locked",
     icon: "lock-closed",
-    color: "#DC2626",
-    bg: "#FEF2F2",
+    color: colors.errorStrong,
+    bg: colors.errorSurface,
     desc: "Your account is locked. Subscribe to restore access to your data.",
   },
   canceled: {
     title: "Canceled",
     icon: "refresh-circle-outline",
-    color: "#6B7280",
-    bg: "#F9FAFB",
+    color: colors.textSecondary,
+    bg: colors.canvas,
     desc: "Your subscription was canceled. Subscribe again to restore access.",
   },
   legacy_free: {
     title: "Legacy Access",
     icon: "flash",
-    color: "#7C3AED",
-    bg: "#F5F3FF",
+    color: colors.violet,
+    bg: colors.violetLight,
     desc: "You have legacy free access — billing doesn't apply to your account.",
   },
-};
+});
 
 function fmtDate(iso: string | null): string {
   if (!iso) return "—";
@@ -146,6 +146,8 @@ export default function SubscriptionScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const STATUS_META = useMemo(() => makeStatusMeta(colors), [colors]);
   const [entitlement, setEntitlement] = useState<Entitlement | null>(null);
   const [plans, setPlans] = useState<Plan[]>([]);
   const [loading, setLoading] = useState(true);
@@ -299,7 +301,7 @@ export default function SubscriptionScreen() {
           {
             paddingTop: insets.top + 12,
             backgroundColor: colors.backgroundSolid,
-            borderBottomColor: isDark ? "#333" : "#E2E8F0",
+            borderBottomColor: colors.border,
           },
         ]}
       >
@@ -333,7 +335,7 @@ export default function SubscriptionScreen() {
           </View>
         ) : error ? (
           <View style={styles.errorBox}>
-            <Ionicons name="alert-circle" size={20} color="#DC2626" />
+            <Ionicons name="alert-circle" size={20} color={colors.errorStrong} />
             <Text style={styles.errorText}>{error}</Text>
           </View>
         ) : entitlement && meta ? (
@@ -363,10 +365,10 @@ export default function SubscriptionScreen() {
                       <View
                         style={[
                           styles.badge,
-                          { backgroundColor: "#DBEAFE" },
+                          { backgroundColor: colors.infoLight },
                         ]}
                       >
-                        <Text style={[styles.badgeText, { color: "#1D4ED8" }]}>
+                        <Text style={[styles.badgeText, { color: colors.infoStrong }]}>
                           {entitlement.trialDaysRemaining}d left
                         </Text>
                       </View>
@@ -376,16 +378,16 @@ export default function SubscriptionScreen() {
                       <View
                         style={[
                           styles.badge,
-                          { backgroundColor: "#FFEDD5" },
+                          { backgroundColor: colors.orangeLight },
                         ]}
                       >
-                        <Text style={[styles.badgeText, { color: "#C2410C" }]}>
+                        <Text style={[styles.badgeText, { color: colors.orange }]}>
                           {entitlement.graceDaysRemaining}d read-only
                         </Text>
                       </View>
                     )}
                 </View>
-                <Text style={[styles.statusDesc, { color: isDark ? "#AAA" : "#555" }]}>
+                <Text style={[styles.statusDesc, { color: colors.textSecondary }]}>
                   {meta.desc}
                 </Text>
               </View>
@@ -408,7 +410,7 @@ export default function SubscriptionScreen() {
                           styles.planCard,
                           {
                             backgroundColor: colors.backgroundSolid,
-                            borderColor: isDark ? "#444" : "#E2E8F0",
+                            borderColor: colors.border,
                           },
                           pressed && { opacity: 0.75 },
                         ]}
@@ -448,8 +450,8 @@ export default function SubscriptionScreen() {
                   </>
                 ) : (
                   <View style={styles.errorBox}>
-                    <Ionicons name="information-circle-outline" size={20} color="#6B7280" />
-                    <Text style={[styles.errorText, { color: "#6B7280" }]}>
+                    <Ionicons name="information-circle-outline" size={20} color={colors.textSecondary} />
+                    <Text style={[styles.errorText, { color: colors.textSecondary }]}>
                       No plans available. Please try again later.
                     </Text>
                   </View>
@@ -472,7 +474,7 @@ export default function SubscriptionScreen() {
                           styles.planCard,
                           {
                             backgroundColor: colors.backgroundSolid,
-                            borderColor: isDark ? "#444" : "#E2E8F0",
+                            borderColor: colors.border,
                           },
                           pressed && { opacity: 0.75 },
                         ]}
@@ -508,9 +510,9 @@ export default function SubscriptionScreen() {
                     disabled={actionLoading}
                   >
                     {actionLoading ? (
-                      <ActivityIndicator size="small" color="#FFF" />
+                      <ActivityIndicator size="small" color={colors.textInverse} />
                     ) : (
-                      <Ionicons name="arrow-forward-circle" size={20} color="#FFF" />
+                      <Ionicons name="arrow-forward-circle" size={20} color={colors.textInverse} />
                     )}
                     <Text style={styles.primaryBtnText}>
                       {entitlement.status === "locked" || entitlement.status === "canceled"
@@ -528,7 +530,7 @@ export default function SubscriptionScreen() {
                 style={({ pressed }) => [
                   styles.secondaryBtn,
                   {
-                    borderColor: isDark ? "#555" : "#D1D5DB",
+                    borderColor: colors.border,
                     backgroundColor: colors.backgroundSolid,
                   },
                   pressed && { opacity: 0.7 },
@@ -569,7 +571,7 @@ export default function SubscriptionScreen() {
                 styles.detailsCard,
                 {
                   backgroundColor: colors.backgroundSolid,
-                  borderColor: isDark ? "#333" : "#E2E8F0",
+                  borderColor: colors.border,
                 },
               ]}
             >
@@ -632,13 +634,14 @@ function DetailRow({
   colors: any;
   isDark: boolean;
 }) {
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   return (
     <View
       style={[
         styles.detailRow,
         !last && {
           borderBottomWidth: StyleSheet.hairlineWidth,
-          borderBottomColor: isDark ? "#333" : "#E5E7EB",
+          borderBottomColor: colors.border,
         },
       ]}
     >
@@ -648,7 +651,7 @@ function DetailRow({
       <Text
         style={[
           styles.detailValue,
-          { color: highlight ? "#16A34A" : colors.text },
+          { color: highlight ? colors.successStrong : colors.text },
         ]}
       >
         {value}
@@ -657,7 +660,7 @@ function DetailRow({
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   root: { flex: 1 },
   header: {
     flexDirection: "row",
@@ -681,10 +684,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 10,
     padding: 14,
-    backgroundColor: "#FEF2F2",
+    backgroundColor: colors.errorSurface,
     borderRadius: 12,
   },
-  errorText: { color: "#B91C1C", fontFamily: "Inter_500Medium", fontSize: 14, flex: 1 },
+  errorText: { color: colors.errorText, fontFamily: "Inter_500Medium", fontSize: 14, flex: 1 },
   statusCard: {
     flexDirection: "row",
     gap: 14,
@@ -751,7 +754,7 @@ const styles = StyleSheet.create({
   primaryBtnText: {
     fontFamily: "Inter_600SemiBold",
     fontSize: 15,
-    color: "#FFF",
+    color: colors.textInverse,
   },
   secondaryBtn: {
     flexDirection: "row",

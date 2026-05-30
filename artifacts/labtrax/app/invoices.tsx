@@ -12,6 +12,7 @@ import {
 import { Stack, router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/lib/theme-context";
+import { EmptyState } from "@/components/ui/EmptyState";
 import { AppHeader } from "@/components/ui/AppHeader";
 import { FilterBar } from "@/components/ui/FilterBar";
 import { SectionHeader } from "@/components/ui/SectionHeader";
@@ -171,10 +172,11 @@ export default function InvoicesScreen() {
           contentContainerStyle={{ paddingBottom: 40 }}
           showsVerticalScrollIndicator={false}
           ListEmptyComponent={
-            <View style={styles.center}>
-              <Ionicons name="receipt-outline" size={48} color={colors.textTertiary} />
-              <Text style={[styles.empty, { color: colors.textSecondary }]}>No invoices found</Text>
-            </View>
+            <EmptyState
+              icon="receipt-outline"
+              title="No invoices found"
+              description="Invoices you create or receive will appear here."
+            />
           }
           renderItem={({ item: inv }) => {
             const balance = Number(inv.balanceDue ?? 0);
@@ -184,7 +186,7 @@ export default function InvoicesScreen() {
               <Pressable
                 style={({ pressed }) => [
                   styles.row,
-                  { borderBottomColor: colors.border, backgroundColor: pressed ? (isDark ? colors.surfaceSecondary : "#F8FAFC") : colors.surface },
+                  { borderBottomColor: colors.border, backgroundColor: pressed ? (isDark ? colors.surfaceSecondary : colors.canvas) : colors.surface },
                 ]}
                 onPress={() => {
                   if (inv.caseId) {
@@ -208,7 +210,7 @@ export default function InvoicesScreen() {
                   />
                   <Text style={[styles.amount, { color: colors.text }]}>{fmtMoney(inv.total)}</Text>
                   {isOpen && balance > 0 && (
-                    <Text style={[styles.balance, { color: "#D97706" }]}>bal {fmtMoney(balance)}</Text>
+                    <Text style={[styles.balance, { color: colors.warningStrong }]}>bal {fmtMoney(balance)}</Text>
                   )}
                 </View>
                 <Ionicons name="chevron-forward" size={16} color={colors.textTertiary} style={{ marginLeft: 8 }} />

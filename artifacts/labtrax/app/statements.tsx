@@ -19,8 +19,7 @@ import * as Haptics from "expo-haptics";
 import { router, useFocusEffect } from "expo-router";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
-import { useTheme } from "@/lib/theme-context";
-import Colors from "@/constants/colors";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { resilientFetch } from "@/lib/query-client";
 import { AppHeader } from "@/components/ui/AppHeader";
 
@@ -285,8 +284,8 @@ export default function StatementsScreen() {
       >
 
         {!orgId && (
-          <View style={{ marginHorizontal: 20, padding: 20, backgroundColor: Colors.light.tintLight, borderRadius: 14, alignItems: "center" }}>
-            <Ionicons name="business-outline" size={32} color={Colors.light.tint} />
+          <View style={{ marginHorizontal: 20, padding: 20, backgroundColor: themeColors.tintLight, borderRadius: 14, alignItems: "center" }}>
+            <Ionicons name="business-outline" size={32} color={themeColors.tint} />
             <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: themeColors.text, marginTop: 12, textAlign: "center" }}>
               No lab organization found
             </Text>
@@ -298,7 +297,7 @@ export default function StatementsScreen() {
 
         {orgId && loading && !refreshing && (
           <View style={{ alignItems: "center", paddingTop: 40 }}>
-            <ActivityIndicator size="large" color={Colors.light.tint} />
+            <ActivityIndicator size="large" color={themeColors.tint} />
           </View>
         )}
 
@@ -306,27 +305,27 @@ export default function StatementsScreen() {
           <>
             {/* Summary Cards */}
             <View style={{ flexDirection: "row", paddingHorizontal: 20, gap: 10, marginBottom: 20 }}>
-              <View style={{ flex: 1, backgroundColor: Colors.light.tintLight, borderRadius: 14, padding: 16, alignItems: "center" }}>
-                <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.tint }}>
+              <View style={{ flex: 1, backgroundColor: themeColors.tintLight, borderRadius: 14, padding: 16, alignItems: "center" }}>
+                <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: themeColors.tint }}>
                   {practices.length}
                 </Text>
                 <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: themeColors.textSecondary, marginTop: 2, textAlign: "center" }}>
                   Practices
                 </Text>
               </View>
-              <View style={{ flex: 1, backgroundColor: "#FEF3C7", borderRadius: 14, padding: 16, alignItems: "center" }}>
-                <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: "#D97706" }}>
+              <View style={{ flex: 1, backgroundColor: themeColors.warningLight, borderRadius: 14, padding: 16, alignItems: "center" }}>
+                <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: themeColors.warningStrong }}>
                   {practicesWithBalance}
                 </Text>
-                <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: "#92400E", marginTop: 2, textAlign: "center" }}>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: themeColors.warningText, marginTop: 2, textAlign: "center" }}>
                   Open Balances
                 </Text>
               </View>
-              <View style={{ flex: 1, backgroundColor: "#FEE2E2", borderRadius: 14, padding: 16, alignItems: "center" }}>
-                <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#DC2626" }} numberOfLines={1} adjustsFontSizeToFit>
+              <View style={{ flex: 1, backgroundColor: themeColors.errorLight, borderRadius: 14, padding: 16, alignItems: "center" }}>
+                <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: themeColors.errorStrong }} numberOfLines={1} adjustsFontSizeToFit>
                   {formatCurrency(totalOpen)}
                 </Text>
-                <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: "#991B1B", marginTop: 2, textAlign: "center" }}>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: themeColors.errorText, marginTop: 2, textAlign: "center" }}>
                   Total Due
                 </Text>
               </View>
@@ -337,7 +336,7 @@ export default function StatementsScreen() {
               <Pressable
                 onPress={() => setShowWizard(true)}
                 style={({ pressed }) => ({
-                  backgroundColor: Colors.light.tint,
+                  backgroundColor: themeColors.tint,
                   borderRadius: 14,
                   paddingVertical: 16,
                   paddingHorizontal: 20,
@@ -348,8 +347,8 @@ export default function StatementsScreen() {
                   opacity: pressed ? 0.85 : 1,
                 })}
               >
-                <Ionicons name="send" size={20} color="#fff" />
-                <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>
+                <Ionicons name="send" size={20} color={themeColors.textInverse} />
+                <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: themeColors.textInverse }}>
                   Generate Statements
                 </Text>
               </Pressable>
@@ -369,14 +368,14 @@ export default function StatementsScreen() {
                   backgroundColor: pressed ? themeColors.backgroundSolid : "transparent",
                 })}
               >
-                <View style={{ width: 40, height: 40, borderRadius: 10, backgroundColor: "#E0E7FF", alignItems: "center", justifyContent: "center" }}>
-                  <Ionicons name="calendar-outline" size={20} color="#4F46E5" />
+                <View style={{ width: 40, height: 40, borderRadius: 10, backgroundColor: themeColors.indigoLight, alignItems: "center", justifyContent: "center" }}>
+                  <Ionicons name="calendar-outline" size={20} color={themeColors.indigo} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: themeColors.text }}>
                     Auto-send
                   </Text>
-                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: schedule?.enabled ? Colors.light.tint : themeColors.textSecondary, marginTop: 2 }}>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: schedule?.enabled ? themeColors.tint : themeColors.textSecondary, marginTop: 2 }}>
                     {scheduleNextLabel}
                   </Text>
                 </View>
@@ -397,8 +396,8 @@ export default function StatementsScreen() {
                   backgroundColor: pressed ? themeColors.backgroundSolid : "transparent",
                 })}
               >
-                <View style={{ width: 40, height: 40, borderRadius: 10, backgroundColor: "#D1FAE5", alignItems: "center", justifyContent: "center" }}>
-                  <Ionicons name="mail-outline" size={20} color="#059669" />
+                <View style={{ width: 40, height: 40, borderRadius: 10, backgroundColor: themeColors.successLight, alignItems: "center", justifyContent: "center" }}>
+                  <Ionicons name="mail-outline" size={20} color={themeColors.successStrong} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: themeColors.text }}>
@@ -425,8 +424,8 @@ export default function StatementsScreen() {
                   backgroundColor: pressed ? themeColors.backgroundSolid : "transparent",
                 })}
               >
-                <View style={{ width: 40, height: 40, borderRadius: 10, backgroundColor: "#CFFAFE", alignItems: "center", justifyContent: "center" }}>
-                  <Ionicons name="time-outline" size={20} color="#0891B2" />
+                <View style={{ width: 40, height: 40, borderRadius: 10, backgroundColor: themeColors.cyanLight, alignItems: "center", justifyContent: "center" }}>
+                  <Ionicons name="time-outline" size={20} color={themeColors.cyan} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: themeColors.text }}>
@@ -451,8 +450,8 @@ export default function StatementsScreen() {
                     <View key={p.id}>
                       {idx > 0 && <View style={{ height: 1, backgroundColor: themeColors.border }} />}
                       <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingVertical: 14, gap: 12 }}>
-                        <View style={{ width: 38, height: 38, borderRadius: 10, backgroundColor: Colors.light.tintLight, alignItems: "center", justifyContent: "center" }}>
-                          <Ionicons name="business-outline" size={18} color={Colors.light.tint} />
+                        <View style={{ width: 38, height: 38, borderRadius: 10, backgroundColor: themeColors.tintLight, alignItems: "center", justifyContent: "center" }}>
+                          <Ionicons name="business-outline" size={18} color={themeColors.tint} />
                         </View>
                         <View style={{ flex: 1 }}>
                           <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: themeColors.text }} numberOfLines={1}>
@@ -466,8 +465,8 @@ export default function StatementsScreen() {
                               </View>
                             ) : (
                               <View style={{ flexDirection: "row", alignItems: "center", gap: 3 }}>
-                                <Ionicons name="warning-outline" size={11} color="#F59E0B" />
-                                <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#F59E0B" }}>No email</Text>
+                                <Ionicons name="warning-outline" size={11} color={themeColors.warning} />
+                                <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: themeColors.warning }}>No email</Text>
                               </View>
                             )}
                             {p.phone && (
@@ -820,7 +819,7 @@ function GenerateWizard({
                 style={{
                   height: 4,
                   width: `${(step / 4) * 100}%`,
-                  backgroundColor: Colors.light.tint,
+                  backgroundColor: themeColors.tint,
                   borderRadius: 2,
                 }}
               />
@@ -863,7 +862,7 @@ function GenerateWizard({
                     opacity: pressed ? 0.7 : 1,
                   })}
                 >
-                  <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.tint }}>Select All</Text>
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: themeColors.tint }}>Select All</Text>
                 </Pressable>
                 <Pressable
                   onPress={deselectAll}
@@ -914,12 +913,12 @@ function GenerateWizard({
                           height: 22,
                           borderRadius: 6,
                           borderWidth: 2,
-                          borderColor: checked && !disabled ? Colors.light.tint : themeColors.border,
-                          backgroundColor: checked && !disabled ? Colors.light.tint : "transparent",
+                          borderColor: checked && !disabled ? themeColors.tint : themeColors.border,
+                          backgroundColor: checked && !disabled ? themeColors.tint : "transparent",
                           alignItems: "center",
                           justifyContent: "center",
                         }}>
-                          {checked && !disabled && <Ionicons name="checkmark" size={13} color="#fff" />}
+                          {checked && !disabled && <Ionicons name="checkmark" size={13} color={themeColors.textInverse} />}
                         </View>
                         <View style={{ flex: 1 }}>
                           <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: themeColors.text }} numberOfLines={1}>
@@ -939,9 +938,9 @@ function GenerateWizard({
                               </View>
                             )}
                             {disabled && (
-                              <View style={{ flexDirection: "row", alignItems: "center", gap: 3, backgroundColor: "#FEF3C7", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 }}>
-                                <Ionicons name="warning-outline" size={11} color="#D97706" />
-                                <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "#D97706" }}>No email or phone</Text>
+                              <View style={{ flexDirection: "row", alignItems: "center", gap: 3, backgroundColor: themeColors.warningLight, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 }}>
+                                <Ionicons name="warning-outline" size={11} color={themeColors.warningStrong} />
+                                <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: themeColors.warningStrong }}>No email or phone</Text>
                               </View>
                             )}
                           </View>
@@ -953,7 +952,7 @@ function GenerateWizard({
                                 </Text>
                               )}
                               {p.overdueBalance > 0 && (
-                                <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "#DC2626" }}>
+                                <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: themeColors.errorStrong }}>
                                   Overdue: {formatCurrency(p.overdueBalance)}
                                 </Text>
                               )}
@@ -995,13 +994,13 @@ function GenerateWizard({
                           height: 22,
                           borderRadius: 11,
                           borderWidth: 2,
-                          borderColor: invoiceScope === opt.value ? Colors.light.tint : themeColors.border,
-                          backgroundColor: invoiceScope === opt.value ? Colors.light.tint : "transparent",
+                          borderColor: invoiceScope === opt.value ? themeColors.tint : themeColors.border,
+                          backgroundColor: invoiceScope === opt.value ? themeColors.tint : "transparent",
                           alignItems: "center",
                           justifyContent: "center",
                         }}>
                           {invoiceScope === opt.value && (
-                            <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: "#fff" }} />
+                            <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: themeColors.textInverse }} />
                           )}
                         </View>
                         <View style={{ flex: 1 }}>
@@ -1058,8 +1057,8 @@ function GenerateWizard({
                     </Text>
                     {emailEnabled && practicesMissingEmail.length > 0 && (
                       <View style={{ flexDirection: "row", alignItems: "center", gap: 4, marginTop: 4 }}>
-                        <Ionicons name="warning-outline" size={13} color="#F59E0B" />
-                        <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: "#D97706" }}>
+                        <Ionicons name="warning-outline" size={13} color={themeColors.warning} />
+                        <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: themeColors.warningStrong }}>
                           {practicesMissingEmail.length} practice{practicesMissingEmail.length === 1 ? "" : "s"} missing email
                         </Text>
                       </View>
@@ -1068,8 +1067,8 @@ function GenerateWizard({
                   <Switch
                     value={emailEnabled}
                     onValueChange={setEmailEnabled}
-                    trackColor={{ false: themeColors.border, true: Colors.light.tint }}
-                    thumbColor="#fff"
+                    trackColor={{ false: themeColors.border, true: themeColors.tint }}
+                    thumbColor={themeColors.textInverse}
                   />
                 </View>
 
@@ -1087,7 +1086,7 @@ function GenerateWizard({
                       })}
                     >
                       <View style={{ flex: 1 }}>
-                        <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.tint }}>
+                        <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: themeColors.tint }}>
                           Customize email template for this batch
                         </Text>
                         <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: themeColors.textSecondary, marginTop: 1 }}>
@@ -1097,7 +1096,7 @@ function GenerateWizard({
                       <Ionicons
                         name={showTemplate ? "chevron-up" : "chevron-down"}
                         size={18}
-                        color={Colors.light.tint}
+                        color={themeColors.tint}
                       />
                     </Pressable>
                     {showTemplate && (
@@ -1175,8 +1174,8 @@ function GenerateWizard({
                     </Text>
                     {smsEnabled && practicesMissingSms.length > 0 && (
                       <View style={{ flexDirection: "row", alignItems: "center", gap: 4, marginTop: 4 }}>
-                        <Ionicons name="warning-outline" size={13} color="#F59E0B" />
-                        <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: "#D97706" }}>
+                        <Ionicons name="warning-outline" size={13} color={themeColors.warning} />
+                        <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: themeColors.warningStrong }}>
                           {practicesMissingSms.length} practice{practicesMissingSms.length === 1 ? "" : "s"} missing phone
                         </Text>
                       </View>
@@ -1185,8 +1184,8 @@ function GenerateWizard({
                   <Switch
                     value={smsEnabled}
                     onValueChange={setSmsEnabled}
-                    trackColor={{ false: themeColors.border, true: Colors.light.tint }}
-                    thumbColor="#fff"
+                    trackColor={{ false: themeColors.border, true: themeColors.tint }}
+                    thumbColor={themeColors.textInverse}
                   />
                 </View>
               </View>
@@ -1196,8 +1195,8 @@ function GenerateWizard({
           {/* ── Step 4: Review & Send ── */}
           {step === 4 && (
             <View style={{ gap: 16 }}>
-              <View style={{ backgroundColor: Colors.light.tintLight, borderRadius: 14, padding: 16 }}>
-                <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: Colors.light.tint, marginBottom: 8 }}>
+              <View style={{ backgroundColor: themeColors.tintLight, borderRadius: 14, padding: 16 }}>
+                <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: themeColors.tint, marginBottom: 8 }}>
                   SUMMARY
                 </Text>
                 <View style={{ gap: 6 }}>
@@ -1232,13 +1231,13 @@ function GenerateWizard({
                         <View style={{ flexDirection: "row", gap: 6, marginTop: 3, flexWrap: "wrap" }}>
                           {emailEnabled && (
                             p.email
-                              ? <StatusChip label="Email ✓" color="#059669" bg="#D1FAE5" />
-                              : <StatusChip label="No email" color="#D97706" bg="#FEF3C7" />
+                              ? <StatusChip label="Email ✓" color={themeColors.successStrong} bg={themeColors.successLight} />
+                              : <StatusChip label="No email" color={themeColors.warningStrong} bg={themeColors.warningLight} />
                           )}
                           {smsEnabled && (
                             p.phone
-                              ? <StatusChip label="SMS ✓" color="#0891B2" bg="#CFFAFE" />
-                              : <StatusChip label="No phone" color="#D97706" bg="#FEF3C7" />
+                              ? <StatusChip label="SMS ✓" color={themeColors.cyan} bg={themeColors.cyanLight} />
+                              : <StatusChip label="No phone" color={themeColors.warningStrong} bg={themeColors.warningLight} />
                           )}
                         </View>
                         {(p.openBalance > 0 || p.overdueBalance > 0) && (
@@ -1249,7 +1248,7 @@ function GenerateWizard({
                               </Text>
                             )}
                             {p.overdueBalance > 0 && (
-                              <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#DC2626" }}>
+                              <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: themeColors.errorStrong }}>
                                 Overdue: {formatCurrency(p.overdueBalance)}
                               </Text>
                             )}
@@ -1268,23 +1267,23 @@ function GenerateWizard({
             <View style={{ gap: 16 }}>
               {sending && (
                 <View style={{ alignItems: "center", paddingVertical: 32 }}>
-                  <ActivityIndicator size="large" color={Colors.light.tint} />
+                  <ActivityIndicator size="large" color={themeColors.tint} />
                   <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: themeColors.textSecondary, marginTop: 16 }}>
                     Sending {sendProgress} of {selectedIds.size}…
                   </Text>
                   <View style={{ width: 200, height: 4, backgroundColor: themeColors.border, borderRadius: 2, marginTop: 12, overflow: "hidden" }}>
-                    <View style={{ height: 4, backgroundColor: Colors.light.tint, borderRadius: 2, width: selectedIds.size > 0 ? `${Math.round((sendProgress / selectedIds.size) * 100)}%` : "0%" }} />
+                    <View style={{ height: 4, backgroundColor: themeColors.tint, borderRadius: 2, width: selectedIds.size > 0 ? `${Math.round((sendProgress / selectedIds.size) * 100)}%` : "0%" }} />
                   </View>
                 </View>
               )}
 
               {!sending && sendError && (
-                <View style={{ backgroundColor: "#FEE2E2", borderRadius: 14, padding: 16 }}>
+                <View style={{ backgroundColor: themeColors.errorLight, borderRadius: 14, padding: 16 }}>
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                    <Ionicons name="alert-circle" size={20} color="#DC2626" />
-                    <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#DC2626" }}>Send Failed</Text>
+                    <Ionicons name="alert-circle" size={20} color={themeColors.errorStrong} />
+                    <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: themeColors.errorStrong }}>Send Failed</Text>
                   </View>
-                  <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: "#991B1B" }}>{sendError}</Text>
+                  <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: themeColors.errorText }}>{sendError}</Text>
                 </View>
               )}
 
@@ -1295,20 +1294,20 @@ function GenerateWizard({
                     <ResultCard
                       count={sendResult.results.filter((r) => r.emailStatus === "sent" || r.smsStatus === "sent").length}
                       label="Sent"
-                      color="#059669"
-                      bg="#D1FAE5"
+                      color={themeColors.successStrong}
+                      bg={themeColors.successLight}
                     />
                     <ResultCard
                       count={sendResult.results.filter((r) => r.emailStatus === "failed" || r.smsStatus === "failed").length}
                       label="Failed"
-                      color="#DC2626"
-                      bg="#FEE2E2"
+                      color={themeColors.errorStrong}
+                      bg={themeColors.errorLight}
                     />
                     <ResultCard
                       count={sendResult.results.filter((r) => r.emailStatus !== "sent" && r.smsStatus !== "sent" && r.emailStatus !== "failed" && r.smsStatus !== "failed").length}
                       label="Skipped"
-                      color="#D97706"
-                      bg="#FEF3C7"
+                      color={themeColors.warningStrong}
+                      bg={themeColors.warningLight}
                     />
                   </View>
 
@@ -1326,8 +1325,8 @@ function GenerateWizard({
                           {idx > 0 && <View style={{ height: 1, backgroundColor: themeColors.border }} />}
                           <View style={{ paddingHorizontal: 14, paddingVertical: 12, gap: 6 }}>
                             <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-                              <View style={{ width: 28, height: 28, borderRadius: 7, backgroundColor: statusBg(composite), alignItems: "center", justifyContent: "center" }}>
-                                <Ionicons name={statusIcon(composite)} size={15} color={statusColor(composite)} />
+                              <View style={{ width: 28, height: 28, borderRadius: 7, backgroundColor: statusBg(composite, themeColors), alignItems: "center", justifyContent: "center" }}>
+                                <Ionicons name={statusIcon(composite)} size={15} color={statusColor(composite, themeColors)} />
                               </View>
                               <Text style={{ flex: 1, fontSize: 14, fontFamily: "Inter_600SemiBold", color: themeColors.text }} numberOfLines={1}>
                                 {r.practiceName}
@@ -1337,20 +1336,20 @@ function GenerateWizard({
                               {r.emailStatus !== null && (
                                 <StatusChip
                                   label={`Email: ${r.emailStatus}`}
-                                  color={statusColor(r.emailStatus)}
-                                  bg={statusBg(r.emailStatus)}
+                                  color={statusColor(r.emailStatus, themeColors)}
+                                  bg={statusBg(r.emailStatus, themeColors)}
                                 />
                               )}
                               {r.smsStatus !== null && (
                                 <StatusChip
                                   label={`SMS: ${r.smsStatus}`}
-                                  color={statusColor(r.smsStatus)}
-                                  bg={statusBg(r.smsStatus)}
+                                  color={statusColor(r.smsStatus, themeColors)}
+                                  bg={statusBg(r.smsStatus, themeColors)}
                                 />
                               )}
                             </View>
                             {(r.emailError || r.smsError) && (
-                              <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#DC2626", marginLeft: 38 }}>
+                              <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: themeColors.errorStrong, marginLeft: 38 }}>
                                 {[r.emailError, r.smsError].filter(Boolean).join(" · ")}
                               </Text>
                             )}
@@ -1365,7 +1364,7 @@ function GenerateWizard({
                     <Pressable
                       onPress={retryFailed}
                       style={({ pressed }) => ({
-                        backgroundColor: "#FEE2E2",
+                        backgroundColor: themeColors.errorLight,
                         borderRadius: 14,
                         paddingVertical: 14,
                         alignItems: "center",
@@ -1375,8 +1374,8 @@ function GenerateWizard({
                         opacity: pressed ? 0.85 : 1,
                       })}
                     >
-                      <Ionicons name="refresh" size={18} color="#DC2626" />
-                      <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#DC2626" }}>
+                      <Ionicons name="refresh" size={18} color={themeColors.errorStrong} />
+                      <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: themeColors.errorStrong }}>
                         Retry Failed ({sendResult.results.filter((r) => r.emailStatus === "failed" || r.smsStatus === "failed").length})
                       </Text>
                     </Pressable>
@@ -1410,7 +1409,7 @@ function GenerateWizard({
                 setStep((s) => (s + 1) as WizardStep);
               }}
               style={({ pressed }) => ({
-                backgroundColor: Colors.light.tint,
+                backgroundColor: themeColors.tint,
                 borderRadius: 14,
                 paddingVertical: 16,
                 alignItems: "center" as const,
@@ -1420,8 +1419,8 @@ function GenerateWizard({
                 opacity: pressed ? 0.85 : 1,
               })}
             >
-              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>Continue</Text>
-              <Ionicons name="chevron-forward" size={18} color="#fff" />
+              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: themeColors.textInverse }}>Continue</Text>
+              <Ionicons name="chevron-forward" size={18} color={themeColors.textInverse} />
             </Pressable>
           )}
           {step === 4 && (
@@ -1429,7 +1428,7 @@ function GenerateWizard({
               onPress={handleSend}
               disabled={sending}
               style={({ pressed }) => ({
-                backgroundColor: Colors.light.tint,
+                backgroundColor: themeColors.tint,
                 borderRadius: 14,
                 paddingVertical: 16,
                 alignItems: "center" as const,
@@ -1440,11 +1439,11 @@ function GenerateWizard({
               })}
             >
               {sending ? (
-                <ActivityIndicator size="small" color="#fff" />
+                <ActivityIndicator size="small" color={themeColors.textInverse} />
               ) : (
                 <>
-                  <Ionicons name="send" size={18} color="#fff" />
-                  <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>
+                  <Ionicons name="send" size={18} color={themeColors.textInverse} />
+                  <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: themeColors.textInverse }}>
                     Send Statements ({selectedIds.size})
                   </Text>
                 </>
@@ -1518,7 +1517,7 @@ function HistoryModal({
         <ScrollView contentContainerStyle={{ padding: 20, paddingBottom }}>
           {loading && (
             <View style={{ alignItems: "center", paddingTop: 40 }}>
-              <ActivityIndicator size="large" color={Colors.light.tint} />
+              <ActivityIndicator size="large" color={themeColors.tint} />
             </View>
           )}
           {!loading && runs.length === 0 && (
@@ -1550,8 +1549,8 @@ function HistoryModal({
                     gap: 12,
                   })}
                 >
-                  <View style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: statusBg(batchComposite), alignItems: "center", justifyContent: "center" }}>
-                    <Ionicons name={statusIcon(batchComposite)} size={18} color={statusColor(batchComposite)} />
+                  <View style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: statusBg(batchComposite, themeColors), alignItems: "center", justifyContent: "center" }}>
+                    <Ionicons name={statusIcon(batchComposite)} size={18} color={statusColor(batchComposite, themeColors)} />
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: themeColors.text }}>
@@ -1604,13 +1603,13 @@ function HistoryModal({
                       {idx > 0 && <View style={{ height: 1, backgroundColor: themeColors.border }} />}
                       <View style={{ paddingHorizontal: 14, paddingVertical: 13, gap: 6 }}>
                         <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-                          <View style={{ width: 28, height: 28, borderRadius: 7, backgroundColor: statusBg(run.status), alignItems: "center", justifyContent: "center" }}>
-                            <Ionicons name={statusIcon(run.status)} size={15} color={statusColor(run.status)} />
+                          <View style={{ width: 28, height: 28, borderRadius: 7, backgroundColor: statusBg(run.status, themeColors), alignItems: "center", justifyContent: "center" }}>
+                            <Ionicons name={statusIcon(run.status)} size={15} color={statusColor(run.status, themeColors)} />
                           </View>
                           <Text style={{ flex: 1, fontSize: 14, fontFamily: "Inter_600SemiBold", color: themeColors.text }} numberOfLines={1}>
                             {run.practiceName}
                           </Text>
-                          <StatusChip label={statusLabel(run.status)} color={statusColor(run.status)} bg={statusBg(run.status)} />
+                          <StatusChip label={statusLabel(run.status)} color={statusColor(run.status, themeColors)} bg={statusBg(run.status, themeColors)} />
                         </View>
                         {/* Channel + balance context */}
                         <View style={{ marginLeft: 38, gap: 3 }}>
@@ -1632,7 +1631,7 @@ function HistoryModal({
                             )}
                           </View>
                           {run.errorMessage && (
-                            <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#DC2626" }}>
+                            <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: themeColors.errorStrong }}>
                               {run.errorMessage}
                             </Text>
                           )}
@@ -1745,30 +1744,30 @@ function AutoSendModal({
         <ScrollView contentContainerStyle={{ padding: 20, paddingBottom }}>
           {!schedule && (
             <View style={{ alignItems: "center", paddingTop: 40 }}>
-              <ActivityIndicator size="large" color={Colors.light.tint} />
+              <ActivityIndicator size="large" color={themeColors.tint} />
             </View>
           )}
           {schedule && (
             <>
               {/* Enable/disable toggle */}
               <View style={{
-                backgroundColor: localEnabled ? Colors.light.tintLight : themeColors.surface,
+                backgroundColor: localEnabled ? themeColors.tintLight : themeColors.surface,
                 borderRadius: 16,
                 padding: 16,
                 marginBottom: 16,
                 borderWidth: 1,
-                borderColor: localEnabled ? Colors.light.tint + "40" : themeColors.border,
+                borderColor: localEnabled ? themeColors.tint + "40" : themeColors.border,
               }}>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
                   <View style={{
                     width: 40,
                     height: 40,
                     borderRadius: 10,
-                    backgroundColor: localEnabled ? Colors.light.tint : themeColors.border,
+                    backgroundColor: localEnabled ? themeColors.tint : themeColors.border,
                     alignItems: "center",
                     justifyContent: "center",
                   }}>
-                    <Ionicons name="calendar" size={20} color={localEnabled ? "#fff" : themeColors.textSecondary} />
+                    <Ionicons name="calendar" size={20} color={localEnabled ? themeColors.textInverse : themeColors.textSecondary} />
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: themeColors.text }}>
@@ -1781,12 +1780,12 @@ function AutoSendModal({
                     )}
                   </View>
                   {toggling
-                    ? <ActivityIndicator size="small" color={Colors.light.tint} />
+                    ? <ActivityIndicator size="small" color={themeColors.tint} />
                     : <Switch
                         value={localEnabled}
                         onValueChange={handleToggleEnabled}
-                        trackColor={{ false: themeColors.border, true: Colors.light.tint }}
-                        thumbColor="#fff"
+                        trackColor={{ false: themeColors.border, true: themeColors.tint }}
+                        thumbColor={themeColors.textInverse}
                       />
                   }
                 </View>
@@ -1804,9 +1803,9 @@ function AutoSendModal({
                   }
                 />
                 {practicesMissingEmail > 0 && (
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "#FEF3C7", borderRadius: 8, padding: 10 }}>
-                    <Ionicons name="warning-outline" size={16} color="#D97706" />
-                    <Text style={{ flex: 1, fontSize: 13, fontFamily: "Inter_500Medium", color: "#D97706" }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: themeColors.warningLight, borderRadius: 8, padding: 10 }}>
+                    <Ionicons name="warning-outline" size={16} color={themeColors.warningStrong} />
+                    <Text style={{ flex: 1, fontSize: 13, fontFamily: "Inter_500Medium", color: themeColors.warningStrong }}>
                       {practicesMissingEmail} targeted practice{practicesMissingEmail !== 1 ? "s are" : " is"} missing a billing email
                     </Text>
                   </View>
@@ -1822,7 +1821,7 @@ function AutoSendModal({
                   onPress={onRunNow}
                   disabled={running}
                   style={({ pressed }) => ({
-                    backgroundColor: Colors.light.tint,
+                    backgroundColor: themeColors.tint,
                     borderRadius: 14,
                     paddingVertical: 16,
                     alignItems: "center" as const,
@@ -1834,11 +1833,11 @@ function AutoSendModal({
                   })}
                 >
                   {running ? (
-                    <ActivityIndicator size="small" color="#fff" />
+                    <ActivityIndicator size="small" color={themeColors.textInverse} />
                   ) : (
                     <>
-                      <Ionicons name="play-circle" size={20} color="#fff" />
-                      <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>Run Now (Prior Month)</Text>
+                      <Ionicons name="play-circle" size={20} color={themeColors.textInverse} />
+                      <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: themeColors.textInverse }}>Run Now (Prior Month)</Text>
                     </>
                   )}
                 </Pressable>
@@ -1846,7 +1845,7 @@ function AutoSendModal({
 
               {/* Edit on desktop note */}
               <View style={{ backgroundColor: themeColors.surface, borderRadius: 14, borderWidth: 1, borderColor: themeColors.border, padding: 16, flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
-                <Ionicons name="information-circle-outline" size={18} color={Colors.light.tint} style={{ marginTop: 1 }} />
+                <Ionicons name="information-circle-outline" size={18} color={themeColors.tint} style={{ marginTop: 1 }} />
                 <Text style={{ flex: 1, fontSize: 13, fontFamily: "Inter_400Regular", color: themeColors.textSecondary, lineHeight: 20 }}>
                   To edit the full auto-send schedule (day of month, targeted practices, email template), use the desktop app's Statements page.
                 </Text>
@@ -1994,8 +1993,8 @@ function DefaultsModal({
               />
             </View>
 
-            <View style={{ backgroundColor: Colors.light.tintLight, borderRadius: 12, padding: 14 }}>
-              <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: Colors.light.tint, marginBottom: 8 }}>
+            <View style={{ backgroundColor: themeColors.tintLight, borderRadius: 12, padding: 14 }}>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: themeColors.tint, marginBottom: 8 }}>
                 AVAILABLE PLACEHOLDERS
               </Text>
               {[
@@ -2006,7 +2005,7 @@ function DefaultsModal({
                 ["{{totalBilled}}", "Total billed amount"],
               ].map(([placeholder, desc]) => (
                 <View key={placeholder} style={{ flexDirection: "row", gap: 8, marginTop: 6 }}>
-                  <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: Colors.light.tint, minWidth: 160 }}>{placeholder}</Text>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: themeColors.tint, minWidth: 160 }}>{placeholder}</Text>
                   <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: themeColors.textSecondary, flex: 1 }}>{desc}</Text>
                 </View>
               ))}
@@ -2027,7 +2026,7 @@ function DefaultsModal({
             onPress={handleSave}
             disabled={saving}
             style={({ pressed }) => ({
-              backgroundColor: Colors.light.tint,
+              backgroundColor: themeColors.tint,
               borderRadius: 14,
               paddingVertical: 16,
               alignItems: "center" as const,
@@ -2038,11 +2037,11 @@ function DefaultsModal({
             })}
           >
             {saving ? (
-              <ActivityIndicator size="small" color="#fff" />
+              <ActivityIndicator size="small" color={themeColors.textInverse} />
             ) : (
               <>
-                <Ionicons name="checkmark" size={18} color="#fff" />
-                <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>Save Defaults</Text>
+                <Ionicons name="checkmark" size={18} color={themeColors.textInverse} />
+                <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: themeColors.textInverse }}>Save Defaults</Text>
               </>
             )}
           </Pressable>
@@ -2102,23 +2101,23 @@ function statusLabel(status: string): string {
   }
 }
 
-function statusColor(status: string): string {
+function statusColor(status: string, colors: ThemeColors): string {
   switch (status) {
-    case "sent": return "#059669";
-    case "failed": return "#DC2626";
+    case "sent": return colors.successStrong;
+    case "failed": return colors.errorStrong;
     case "skipped_no_email":
-    case "skipped_opted_out": return "#D97706";
-    default: return "#6B7280";
+    case "skipped_opted_out": return colors.warningStrong;
+    default: return colors.textSecondary;
   }
 }
 
-function statusBg(status: string): string {
+function statusBg(status: string, colors: ThemeColors): string {
   switch (status) {
-    case "sent": return "#D1FAE5";
-    case "failed": return "#FEE2E2";
+    case "sent": return colors.successLight;
+    case "failed": return colors.errorLight;
     case "skipped_no_email":
-    case "skipped_opted_out": return "#FEF3C7";
-    default: return "#F3F4F6";
+    case "skipped_opted_out": return colors.warningLight;
+    default: return colors.surfaceAlt;
   }
 }
 

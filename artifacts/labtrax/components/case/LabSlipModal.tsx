@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useMemo } from "react";
 import {
   Modal,
   View,
@@ -10,7 +10,7 @@ import {
   Alert,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import Colors from "@/constants/colors";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { cleanDoctorDisplay, getStationInfo, type CaseStatus } from "@/lib/data";
 
 type ToothMapEntry = { num: number; type: string };
@@ -42,6 +42,8 @@ type Props = {
 };
 
 export function LabSlipModal({ visible, onClose, caseItem, customStationLabels }: Props) {
+  const { colors } = useTheme();
+  const labSlipStyles = useMemo(() => makeLabSlipStyles(colors), [colors]);
   return (
     <Modal visible={visible} animationType="slide" transparent>
       <View style={labSlipStyles.overlay}>
@@ -49,7 +51,7 @@ export function LabSlipModal({ visible, onClose, caseItem, customStationLabels }
           <View style={labSlipStyles.header}>
             <Text style={labSlipStyles.headerTitle}>Lab Slip</Text>
             <Pressable onPress={onClose}>
-              <Ionicons name="close" size={24} color={Colors.light.text} />
+              <Ionicons name="close" size={24} color={colors.text} />
             </Pressable>
           </View>
 
@@ -109,13 +111,13 @@ export function LabSlipModal({ visible, onClose, caseItem, customStationLabels }
               <View style={labSlipStyles.slipRow}>
                 <View style={labSlipStyles.slipCol}>
                   <Text style={labSlipStyles.slipLabel}>Rush</Text>
-                  <Text style={[labSlipStyles.slipValue, caseItem.isRush && { color: "#EF4444", fontFamily: "Inter_700Bold" }]}>
+                  <Text style={[labSlipStyles.slipValue, caseItem.isRush && { color: colors.error, fontFamily: "Inter_700Bold" }]}>
                     {caseItem.isRush ? "YES - RUSH" : "No"}
                   </Text>
                 </View>
                 <View style={labSlipStyles.slipCol}>
                   <Text style={labSlipStyles.slipLabel}>Remake</Text>
-                  <Text style={[labSlipStyles.slipValue, caseItem.isRemake && { color: "#F59E0B", fontFamily: "Inter_700Bold" }]}>
+                  <Text style={[labSlipStyles.slipValue, caseItem.isRemake && { color: colors.warning, fontFamily: "Inter_700Bold" }]}>
                     {caseItem.isRemake ? "YES" : "No"}
                   </Text>
                 </View>
@@ -174,7 +176,7 @@ export function LabSlipModal({ visible, onClose, caseItem, customStationLabels }
               pressed && { opacity: 0.85 },
             ]}
           >
-            <Ionicons name="print" size={20} color="#FFF" />
+            <Ionicons name="print" size={20} color={colors.textInverse} />
             <Text style={labSlipStyles.printBtnText}>Print Lab Slip</Text>
           </Pressable>
         </View>
@@ -183,24 +185,24 @@ export function LabSlipModal({ visible, onClose, caseItem, customStationLabels }
   );
 }
 
-const labSlipStyles = StyleSheet.create({
+const makeLabSlipStyles = (colors: ThemeColors) => StyleSheet.create({
   overlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)" },
-  container: { flex: 1, backgroundColor: "#FFF", marginTop: 60, borderTopLeftRadius: 20, borderTopRightRadius: 20 },
-  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 20, borderBottomWidth: 1, borderBottomColor: "#E2E8F0" },
-  headerTitle: { fontSize: 18, fontFamily: "Inter_700Bold", color: Colors.light.text },
+  container: { flex: 1, backgroundColor: colors.surface, marginTop: 60, borderTopLeftRadius: 20, borderTopRightRadius: 20 },
+  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 20, borderBottomWidth: 1, borderBottomColor: colors.border },
+  headerTitle: { fontSize: 18, fontFamily: "Inter_700Bold", color: colors.text },
   body: { flex: 1, padding: 20 },
-  slipCard: { backgroundColor: "#FAFAFA", borderRadius: 12, padding: 20, borderWidth: 1, borderColor: "#E2E8F0" },
+  slipCard: { backgroundColor: colors.surfaceSecondary, borderRadius: 12, padding: 20, borderWidth: 1, borderColor: colors.border },
   slipHeader: { alignItems: "center", marginBottom: 12 },
-  slipTitle: { fontSize: 18, fontFamily: "Inter_700Bold", color: Colors.light.text, letterSpacing: 1.5 },
-  slipCaseNum: { fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.tint, marginTop: 4 },
-  divider: { height: 1, backgroundColor: "#CBD5E1", marginVertical: 14 },
+  slipTitle: { fontSize: 18, fontFamily: "Inter_700Bold", color: colors.text, letterSpacing: 1.5 },
+  slipCaseNum: { fontSize: 14, fontFamily: "Inter_600SemiBold", color: colors.tint, marginTop: 4 },
+  divider: { height: 1, backgroundColor: colors.border, marginVertical: 14 },
   slipRow: { flexDirection: "row", marginBottom: 14, gap: 12 },
   slipCol: { flex: 1 },
   slipFullRow: { marginBottom: 14 },
-  slipLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#94A3B8", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 3 },
-  slipValue: { fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.text },
+  slipLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold", color: colors.textTertiary, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 3 },
+  slipValue: { fontSize: 14, fontFamily: "Inter_500Medium", color: colors.text },
   slipFooter: { flexDirection: "row", justifyContent: "space-between" },
-  footerText: { fontSize: 12, fontFamily: "Inter_400Regular", color: "#94A3B8" },
-  printBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: "#6366F1", paddingVertical: 16, margin: 20, borderRadius: 14 },
-  printBtnText: { fontSize: 16, fontFamily: "Inter_600SemiBold", color: "#FFF" },
+  footerText: { fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textTertiary },
+  printBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: colors.tint, paddingVertical: 16, margin: 20, borderRadius: 14 },
+  printBtnText: { fontSize: 16, fontFamily: "Inter_600SemiBold", color: colors.textInverse },
 });

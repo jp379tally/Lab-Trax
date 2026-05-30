@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import {
   StyleSheet,
   View,
@@ -19,7 +19,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
-import { useTheme } from "@/lib/theme-context";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import Colors from "@/constants/colors";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
@@ -42,6 +42,8 @@ export default function SettingsScreen() {
   const { mode, setMode, colors, isDark } = useTheme();
   const { sendGroupJoinRequest, leaveLab, deleteLab, isLabCreator, sendLabInvite, fetchLabDirectory, hardRefresh, allLabAffiliationKeysList } = useApp();
   const { currentUser, userType, registeredUsers, deleteAccount, updateUserProfile, changePassword, refreshUsers } = useAuth();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const joinStyles = useMemo(() => makeJoinStyles(colors), [colors]);
   const [refreshing, setRefreshing] = useState(false);
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [showEditLab, setShowEditLab] = useState(false);
@@ -499,11 +501,11 @@ export default function SettingsScreen() {
   }
 
   const statusConfig: { key: UserStatus; label: string; icon: keyof typeof Ionicons.glyphMap; color: string; bg: string }[] = [
-    { key: "active", label: "Active", icon: "checkmark-circle", color: "#16A34A", bg: "#DCFCE7" },
-    { key: "inactive", label: "Inactive", icon: "close-circle", color: "#9CA3AF", bg: "#F3F4F6" },
-    { key: "on_lunch", label: "On Lunch", icon: "restaurant", color: "#F59E0B", bg: "#FEF3C7" },
-    { key: "out_of_office", label: "Out of Office", icon: "airplane", color: "#6366F1", bg: "#EEF2FF" },
-    { key: "on_break", label: "On Break", icon: "cafe", color: "#D97706", bg: "#FEF9C3" },
+    { key: "active", label: "Active", icon: "checkmark-circle", color: colors.successStrong, bg: colors.successLight },
+    { key: "inactive", label: "Inactive", icon: "close-circle", color: colors.textTertiary, bg: colors.surfaceAlt },
+    { key: "on_lunch", label: "On Lunch", icon: "restaurant", color: colors.warning, bg: colors.warningLight },
+    { key: "out_of_office", label: "Out of Office", icon: "airplane", color: colors.indigo, bg: colors.indigoLight },
+    { key: "on_break", label: "On Break", icon: "cafe", color: colors.warningStrong, bg: colors.warningLight },
   ];
 
   const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
@@ -955,8 +957,8 @@ export default function SettingsScreen() {
           <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>APPEARANCE</Text>
           <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <View style={styles.menuItem}>
-              <View style={[styles.menuIcon, { backgroundColor: isDark ? "#334155" : "#1E293B" }]}>
-                <Ionicons name="moon" size={18} color={isDark ? "#FBBF24" : "#FFF"} />
+              <View style={[styles.menuIcon, { backgroundColor: isDark ? colors.textSecondary : colors.text }]}>
+                <Ionicons name="moon" size={18} color={isDark ? colors.warning : colors.textInverse} />
               </View>
               <View style={styles.menuInfo}>
                 <Text style={[styles.menuTitle, { color: colors.text }]}>Night Mode</Text>
@@ -970,7 +972,7 @@ export default function SettingsScreen() {
                   setMode(val ? "dark" : "light");
                 }}
                 trackColor={{ false: colors.border, true: colors.tint }}
-                thumbColor="#FFF"
+                thumbColor={colors.textInverse}
               />
             </View>
 
@@ -1021,7 +1023,7 @@ export default function SettingsScreen() {
                 ]}
               >
                 <View style={{ width: 32, height: 32, borderRadius: 10, justifyContent: "center", alignItems: "center", backgroundColor: userStatus === s.key ? s.color : colors.surfaceSecondary }}>
-                  <Ionicons name={s.icon} size={18} color={userStatus === s.key ? "#FFF" : colors.textSecondary} />
+                  <Ionicons name={s.icon} size={18} color={userStatus === s.key ? colors.textInverse : colors.textSecondary} />
                 </View>
                 <Text style={{ flex: 1, fontSize: 15, fontFamily: userStatus === s.key ? "Inter_700Bold" : "Inter_500Medium", color: userStatus === s.key ? s.color : colors.text }}>{s.label}</Text>
                 {userStatus === s.key && (
@@ -1042,8 +1044,8 @@ export default function SettingsScreen() {
                 setShowEditEmail(true);
               }}
             >
-              <View style={[styles.menuIcon, { backgroundColor: "#DBEAFE" }]}>
-                <Ionicons name="mail" size={18} color="#3B82F6" />
+              <View style={[styles.menuIcon, { backgroundColor: colors.infoLight }]}>
+                <Ionicons name="mail" size={18} color={colors.info} />
               </View>
               <View style={styles.menuInfo}>
                 <Text style={[styles.menuTitle, { color: colors.text }]}>Email</Text>
@@ -1092,7 +1094,7 @@ export default function SettingsScreen() {
                 value={true}
                 onValueChange={() => {}}
                 trackColor={{ false: colors.border, true: colors.tint }}
-                thumbColor="#FFF"
+                thumbColor={colors.textInverse}
               />
             </View>
           </View>
@@ -1103,8 +1105,8 @@ export default function SettingsScreen() {
             <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>MY PRACTICE</Text>
             <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
               <View style={styles.menuItem}>
-                <View style={[styles.menuIcon, { backgroundColor: "#DBEAFE", width: 44, height: 44, borderRadius: 10, marginRight: 12 }]}>
-                  <Ionicons name="business" size={22} color="#2563EB" />
+                <View style={[styles.menuIcon, { backgroundColor: colors.infoLight, width: 44, height: 44, borderRadius: 10, marginRight: 12 }]}>
+                  <Ionicons name="business" size={22} color={colors.info} />
                 </View>
                 <View style={[styles.menuInfo, { flex: 1 }]}>
                   <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: colors.text }}>{currentUserData.practiceName}</Text>
@@ -1140,8 +1142,8 @@ export default function SettingsScreen() {
                   router.push("/(tabs)");
                 }}
               >
-                <View style={[styles.menuIcon, { backgroundColor: "#FEF3C7" }]}>
-                  <Ionicons name="key" size={18} color="#D97706" />
+                <View style={[styles.menuIcon, { backgroundColor: colors.warningLight }]}>
+                  <Ionicons name="key" size={18} color={colors.warningStrong} />
                 </View>
                 <View style={styles.menuInfo}>
                   <Text style={[styles.menuTitle, { color: colors.text }]}>Admin Vault</Text>
@@ -1162,8 +1164,8 @@ export default function SettingsScreen() {
                 onPress={openAddLabModal}
                 testID="add-lab-btn"
               >
-                <View style={[styles.menuIcon, { backgroundColor: "#EDE9FE" }]}>
-                  <Ionicons name="flask" size={18} color="#7C3AED" />
+                <View style={[styles.menuIcon, { backgroundColor: colors.violetLight }]}>
+                  <Ionicons name="flask" size={18} color={colors.violet} />
                 </View>
                 <View style={styles.menuInfo}>
                   <Text style={[styles.menuTitle, { color: colors.text }]}>Add Lab</Text>
@@ -1195,8 +1197,8 @@ export default function SettingsScreen() {
                         resizeMode="cover"
                       />
                     ) : (
-                      <View style={[styles.menuIcon, { backgroundColor: "#EDE9FE", width: 44, height: 44, borderRadius: 10, marginRight: 12 }]}>
-                        <Ionicons name="flask" size={22} color="#7C3AED" />
+                      <View style={[styles.menuIcon, { backgroundColor: colors.violetLight, width: 44, height: 44, borderRadius: 10, marginRight: 12 }]}>
+                        <Ionicons name="flask" size={22} color={colors.violet} />
                       </View>
                     )}
                     <View style={[styles.menuInfo, { flex: 1 }]}>
@@ -1258,11 +1260,11 @@ export default function SettingsScreen() {
                         );
                       }}
                     >
-                      <View style={[styles.menuIcon, { backgroundColor: "#FEE2E2" }]}>
-                        <Ionicons name="log-out-outline" size={18} color="#DC2626" />
+                      <View style={[styles.menuIcon, { backgroundColor: colors.errorLight }]}>
+                        <Ionicons name="log-out-outline" size={18} color={colors.errorStrong} />
                       </View>
                       <View style={styles.menuInfo}>
-                        <Text style={[styles.menuTitle, { color: "#DC2626" }]}>Leave Lab</Text>
+                        <Text style={[styles.menuTitle, { color: colors.errorStrong }]}>Leave Lab</Text>
                         <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Remove yourself from this lab</Text>
                       </View>
                       <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
@@ -1280,8 +1282,8 @@ export default function SettingsScreen() {
                             setAddUserRole("user");
                           }}
                         >
-                          <View style={[styles.menuIcon, { backgroundColor: "#DBEAFE" }]}>
-                            <Ionicons name="person-add" size={18} color="#2563EB" />
+                          <View style={[styles.menuIcon, { backgroundColor: colors.infoLight }]}>
+                            <Ionicons name="person-add" size={18} color={colors.info} />
                           </View>
                           <View style={styles.menuInfo}>
                             <Text style={[styles.menuTitle, { color: colors.text }]}>Add User to Lab</Text>
@@ -1298,8 +1300,8 @@ export default function SettingsScreen() {
                       style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
                       onPress={openAddLabModal}
                     >
-                      <View style={[styles.menuIcon, { backgroundColor: "#DBEAFE" }]}>
-                        <Ionicons name="add-circle" size={18} color="#2563EB" />
+                      <View style={[styles.menuIcon, { backgroundColor: colors.infoLight }]}>
+                        <Ionicons name="add-circle" size={18} color={colors.info} />
                       </View>
                       <View style={styles.menuInfo}>
                         <Text style={[styles.menuTitle, { color: colors.text }]}>Join a Lab</Text>
@@ -1336,11 +1338,11 @@ export default function SettingsScreen() {
                             );
                           }}
                         >
-                          <View style={[styles.menuIcon, { backgroundColor: "#FEE2E2" }]}>
-                            <Ionicons name="trash" size={18} color="#DC2626" />
+                          <View style={[styles.menuIcon, { backgroundColor: colors.errorLight }]}>
+                            <Ionicons name="trash" size={18} color={colors.errorStrong} />
                           </View>
                           <View style={styles.menuInfo}>
-                            <Text style={[styles.menuTitle, { color: "#DC2626" }]}>Delete Lab</Text>
+                            <Text style={[styles.menuTitle, { color: colors.errorStrong }]}>Delete Lab</Text>
                             <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Remove all users and delete this lab</Text>
                           </View>
                           <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
@@ -1362,8 +1364,8 @@ export default function SettingsScreen() {
                     setShowEditLab(true);
                   }}
                 >
-                  <View style={[styles.menuIcon, { backgroundColor: "#DCFCE7" }]}>
-                    <Ionicons name="business" size={18} color="#16A34A" />
+                  <View style={[styles.menuIcon, { backgroundColor: colors.successLight }]}>
+                    <Ionicons name="business" size={18} color={colors.successStrong} />
                   </View>
                   <View style={styles.menuInfo}>
                     <Text style={[styles.menuTitle, { color: colors.text }]}>Create My Lab</Text>
@@ -1378,8 +1380,8 @@ export default function SettingsScreen() {
                   style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
                   onPress={openAddLabModal}
                 >
-                  <View style={[styles.menuIcon, { backgroundColor: "#DBEAFE" }]}>
-                    <Ionicons name="add-circle" size={18} color="#2563EB" />
+                  <View style={[styles.menuIcon, { backgroundColor: colors.infoLight }]}>
+                    <Ionicons name="add-circle" size={18} color={colors.info} />
                   </View>
                   <View style={styles.menuInfo}>
                     <Text style={[styles.menuTitle, { color: colors.text }]}>Join a Lab</Text>
@@ -1398,8 +1400,8 @@ export default function SettingsScreen() {
                 style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
                 onPress={() => setShowJoinModal(true)}
               >
-                <View style={[styles.menuIcon, { backgroundColor: "#DBEAFE" }]}>
-                  <Ionicons name="people-circle" size={18} color="#2563EB" />
+                <View style={[styles.menuIcon, { backgroundColor: colors.infoLight }]}>
+                  <Ionicons name="people-circle" size={18} color={colors.info} />
                 </View>
                 <View style={styles.menuInfo}>
                   <Text style={[styles.menuTitle, { color: colors.text }]}>Connect with a Lab</Text>
@@ -1442,8 +1444,8 @@ export default function SettingsScreen() {
                   const displayName = member.user?.username || member.userId || "Unknown";
                   const initials = displayName.substring(0, 2).toUpperCase();
                   const roleLabel = member.role === "owner" ? "Owner" : member.role === "admin" ? "Admin" : "User";
-                  const roleColor = member.role === "owner" ? "#7C3AED" : member.role === "admin" ? "#D97706" : "#2563EB";
-                  const roleBg = member.role === "owner" ? "#EDE9FE" : member.role === "admin" ? "#FEF3C7" : "#DBEAFE";
+                  const roleColor = member.role === "owner" ? colors.violet : member.role === "admin" ? colors.warningStrong : colors.info;
+                  const roleBg = member.role === "owner" ? colors.violetLight : member.role === "admin" ? colors.warningLight : colors.infoLight;
                   return (
                     <React.Fragment key={member.id}>
                       {idx > 0 && (
@@ -1514,22 +1516,22 @@ export default function SettingsScreen() {
                 disabled={backupNowLoading}
               >
                 {backupNowLoading
-                  ? <ActivityIndicator size="small" color="#fff" />
-                  : <Ionicons name="save-outline" size={15} color="#fff" />}
-                <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: "#fff" }}>
+                  ? <ActivityIndicator size="small" color={colors.textInverse} />
+                  : <Ionicons name="save-outline" size={15} color={colors.textInverse} />}
+                <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: colors.textInverse }}>
                   {backupNowLoading ? "Backing up…" : "Back up now"}
                 </Text>
               </Pressable>
               {backupNowSuccess && !backupNowLoading && (
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                  <Ionicons name="checkmark-circle" size={15} color="#16a34a" />
-                  <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "#16a34a" }}>Backup complete</Text>
+                  <Ionicons name="checkmark-circle" size={15} color={colors.successStrong} />
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.successStrong }}>Backup complete</Text>
                 </View>
               )}
               {backupNowError && (
                 <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
-                  <Ionicons name="alert-circle" size={15} color="#dc2626" style={{ marginTop: 1 }} />
-                  <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "#dc2626", flex: 1 }}>{backupNowError}</Text>
+                  <Ionicons name="alert-circle" size={15} color={colors.errorStrong} style={{ marginTop: 1 }} />
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: colors.errorStrong, flex: 1 }}>{backupNowError}</Text>
                 </View>
               )}
             </View>
@@ -1574,8 +1576,8 @@ export default function SettingsScreen() {
               ) : (
                 backupHistory.map((run, idx) => {
                   const isSuccess = run.status === "success";
-                  const statusColor = isSuccess ? "#16A34A" : "#DC2626";
-                  const statusBg = isSuccess ? "#DCFCE7" : "#FEE2E2";
+                  const statusColor = isSuccess ? colors.successStrong : colors.errorStrong;
+                  const statusBg = isSuccess ? colors.successLight : colors.errorLight;
                   const statusLabel = isSuccess ? "Success" : "Failed";
                   const statusIcon: keyof typeof Ionicons.glyphMap = isSuccess ? "checkmark-circle" : "close-circle";
                   const sizeLabel = run.sizeBytes != null
@@ -1609,7 +1611,7 @@ export default function SettingsScreen() {
                             {new Date(run.completedAt).toLocaleString()}
                           </Text>
                           {!isSuccess && run.error ? (
-                            <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#DC2626" }} numberOfLines={2}>
+                            <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.errorStrong }} numberOfLines={2}>
                               {run.error}
                             </Text>
                           ) : null}
@@ -1630,20 +1632,20 @@ export default function SettingsScreen() {
             <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
               {restoreSuccess ? (
                 <View style={{ padding: 14 }}>
-                  <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#16a34a", marginBottom: 4 }}>Restore complete</Text>
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.successStrong, marginBottom: 4 }}>Restore complete</Text>
                   <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textSecondary }}>
                     All data has been restored. Please restart the app to reload.
                   </Text>
                 </View>
               ) : restoreError ? (
                 <View style={{ padding: 14 }}>
-                  <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.error ?? "#dc2626", marginBottom: 4 }}>Restore failed</Text>
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.error, marginBottom: 4 }}>Restore failed</Text>
                   <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textSecondary }}>{restoreError}</Text>
                   <Pressable
                     style={{ marginTop: 10, paddingVertical: 8, paddingHorizontal: 14, borderRadius: 8, backgroundColor: colors.tint, alignSelf: "flex-start" }}
                     onPress={() => { setRestoreError(null); setRestorePhase("idle"); }}
                   >
-                    <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#fff" }}>Try again</Text>
+                    <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.textInverse }}>Try again</Text>
                   </Pressable>
                 </View>
               ) : restorePhase !== "idle" ? (
@@ -1651,7 +1653,7 @@ export default function SettingsScreen() {
                   <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.text }}>
                     {RESTORE_PHASE_LABELS[restorePhase]}
                   </Text>
-                  <View style={{ height: 4, borderRadius: 4, backgroundColor: colors.border ?? "#e5e7eb", overflow: "hidden" }}>
+                  <View style={{ height: 4, borderRadius: 4, backgroundColor: colors.border, overflow: "hidden" }}>
                     <View style={{ height: "100%", borderRadius: 4, backgroundColor: colors.tint, width: `${Math.min(100, (RESTORE_PHASE_STEP[restorePhase] / 5) * 100)}%` }} />
                   </View>
                   {restoreMessage ? (
@@ -1662,12 +1664,12 @@ export default function SettingsScreen() {
                 <View style={{ padding: 14, gap: 12 }}>
                   <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textSecondary, lineHeight: 18 }}>
                     Restore all lab data from a LabTrax <Text style={{ fontFamily: "Inter_600SemiBold" }}>.zip.enc</Text> backup file.{" "}
-                    <Text style={{ color: colors.error ?? "#dc2626", fontFamily: "Inter_600SemiBold" }}>All current data will be replaced.</Text>
+                    <Text style={{ color: colors.error, fontFamily: "Inter_600SemiBold" }}>All current data will be replaced.</Text>
                   </Text>
 
                   {/* Picked file name */}
                   {restorePickedFile ? (
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.border ?? "#f3f4f6", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6 }}>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.border, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6 }}>
                       <Ionicons name="document-outline" size={14} color={colors.textSecondary} />
                       <Text style={{ flex: 1, fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textSecondary }} numberOfLines={1}>{restorePickedFile.name}</Text>
                     </View>
@@ -1676,7 +1678,7 @@ export default function SettingsScreen() {
                   {/* Buttons row */}
                   <View style={{ gap: 8 }}>
                     <Pressable
-                      style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 9, paddingHorizontal: 14, borderRadius: 8, borderWidth: 1, borderColor: colors.border ?? "#e5e7eb", backgroundColor: colors.surface }}
+                      style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 9, paddingHorizontal: 14, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface }}
                       onPress={() => void pickRestoreFile()}
                     >
                       <Ionicons name="cloud-upload-outline" size={15} color={colors.tint} />
@@ -1685,15 +1687,15 @@ export default function SettingsScreen() {
 
                     <Pressable
                       disabled={!restorePickedFile}
-                      style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 8, backgroundColor: !restorePickedFile ? (colors.border ?? "#e5e7eb") : "#dc2626", opacity: pressed ? 0.8 : 1 })}
+                      style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 8, backgroundColor: !restorePickedFile ? (colors.border) : colors.errorStrong, opacity: pressed ? 0.8 : 1 })}
                       onPress={() => {
                         if (!restorePickedFile) return;
                         setRestoreConfirmStep(1);
                         setShowRestoreModal(true);
                       }}
                     >
-                      <Ionicons name="arrow-undo-outline" size={15} color="#fff" />
-                      <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#fff" }}>Restore</Text>
+                      <Ionicons name="arrow-undo-outline" size={15} color={colors.textInverse} />
+                      <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.textInverse }}>Restore</Text>
                     </Pressable>
                   </View>
                 </View>
@@ -1708,36 +1710,36 @@ export default function SettingsScreen() {
             <Pressable style={{ backgroundColor: colors.surface, borderRadius: 16, padding: 22, width: "88%", maxWidth: 400, gap: 14 }} onPress={(e) => e.stopPropagation()}>
               {restoreConfirmStep === 1 ? (
                 <>
-                  <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#dc2626" }}>Replace all data?</Text>
+                  <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: colors.errorStrong }}>Replace all data?</Text>
                   <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: colors.textSecondary, lineHeight: 20 }}>
                     Restoring this backup will <Text style={{ fontFamily: "Inter_600SemiBold" }}>permanently overwrite</Text> all current lab data — cases, invoices, media, users, and settings.
                   </Text>
-                  <View style={{ backgroundColor: "#fef3c7", borderRadius: 8, padding: 10 }}>
-                    <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: "#92400e" }}>
+                  <View style={{ backgroundColor: colors.warningLight, borderRadius: 8, padding: 10 }}>
+                    <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: colors.warningText }}>
                       Source: {restorePickedFile?.name ?? "selected file"}
                     </Text>
                   </View>
                   <View style={{ flexDirection: "row", gap: 10 }}>
-                    <Pressable style={{ flex: 1, paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: colors.border ?? "#e5e7eb", alignItems: "center" }} onPress={() => setShowRestoreModal(false)}>
+                    <Pressable style={{ flex: 1, paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: colors.border, alignItems: "center" }} onPress={() => setShowRestoreModal(false)}>
                       <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: colors.text }}>Cancel</Text>
                     </Pressable>
-                    <Pressable style={{ flex: 1, paddingVertical: 10, borderRadius: 8, backgroundColor: "#dc2626", alignItems: "center" }} onPress={() => setRestoreConfirmStep(2)}>
-                      <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: "#fff" }}>Continue</Text>
+                    <Pressable style={{ flex: 1, paddingVertical: 10, borderRadius: 8, backgroundColor: colors.errorStrong, alignItems: "center" }} onPress={() => setRestoreConfirmStep(2)}>
+                      <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: colors.textInverse }}>Continue</Text>
                     </Pressable>
                   </View>
                 </>
               ) : (
                 <>
-                  <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#dc2626" }}>Final confirmation</Text>
+                  <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: colors.errorStrong }}>Final confirmation</Text>
                   <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: colors.textSecondary, lineHeight: 20 }}>
                     Are you absolutely sure? This action <Text style={{ fontFamily: "Inter_600SemiBold" }}>cannot be undone</Text>. All current data will be replaced.
                   </Text>
                   <View style={{ flexDirection: "row", gap: 10 }}>
-                    <Pressable style={{ flex: 1, paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: colors.border ?? "#e5e7eb", alignItems: "center" }} onPress={() => setShowRestoreModal(false)}>
+                    <Pressable style={{ flex: 1, paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: colors.border, alignItems: "center" }} onPress={() => setShowRestoreModal(false)}>
                       <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: colors.text }}>Cancel</Text>
                     </Pressable>
-                    <Pressable style={{ flex: 1, paddingVertical: 10, borderRadius: 8, backgroundColor: "#dc2626", alignItems: "center" }} onPress={() => void runMobileRestore()}>
-                      <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: "#fff" }}>Yes, restore now</Text>
+                    <Pressable style={{ flex: 1, paddingVertical: 10, borderRadius: 8, backgroundColor: colors.errorStrong, alignItems: "center" }} onPress={() => void runMobileRestore()}>
+                      <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: colors.textInverse }}>Yes, restore now</Text>
                     </Pressable>
                   </View>
                 </>
@@ -1765,8 +1767,8 @@ export default function SettingsScreen() {
                   label: "Lab invitations",
                   sub: "Receive invitation emails when added to a lab",
                   icon: "person-add" as const,
-                  iconBg: "#DBEAFE",
-                  iconColor: "#2563EB",
+                  iconBg: colors.infoLight,
+                  iconColor: colors.info,
                 },
                 {
                   key: "statementEmails" as const,
@@ -1781,8 +1783,8 @@ export default function SettingsScreen() {
                   label: "Billing reminders",
                   sub: "Trial expiry, payment due, and account status alerts",
                   icon: "card" as const,
-                  iconBg: "#FEF3C7",
-                  iconColor: "#D97706",
+                  iconBg: colors.warningLight,
+                  iconColor: colors.warningStrong,
                 },
               ] as const
             ).map(({ key, label, sub, icon, iconBg, iconColor }, idx) => (
@@ -1803,7 +1805,7 @@ export default function SettingsScreen() {
                     onValueChange={(val) => updateEmailPref(key, val)}
                     disabled={!!emailPrefsSaving[key]}
                     trackColor={{ false: colors.border, true: colors.tint }}
-                    thumbColor="#FFF"
+                    thumbColor={colors.textInverse}
                   />
                 </View>
               </React.Fragment>
@@ -1819,8 +1821,8 @@ export default function SettingsScreen() {
                   label: "Lab link invites",
                   sub: "Text when another lab adds you and wants to link your accounts",
                   icon: "link" as const,
-                  iconBg: "#EDE9FE",
-                  iconColor: "#7C3AED",
+                  iconBg: colors.violetLight,
+                  iconColor: colors.violet,
                 },
                 {
                   key: "caseNoteNotifications" as const,
@@ -1835,8 +1837,8 @@ export default function SettingsScreen() {
                   label: "Billing reminders",
                   sub: "Trial expiry, payment due, and account status alerts via text",
                   icon: "card" as const,
-                  iconBg: "#FEF3C7",
-                  iconColor: "#D97706",
+                  iconBg: colors.warningLight,
+                  iconColor: colors.warningStrong,
                 },
               ] as const
             ).map(({ key, label, sub, icon, iconBg, iconColor }, idx) => (
@@ -1857,7 +1859,7 @@ export default function SettingsScreen() {
                     onValueChange={(val) => updateSmsPref(key, val)}
                     disabled={!!smsPrefsSaving[key]}
                     trackColor={{ false: colors.border, true: colors.tint }}
-                    thumbColor="#FFF"
+                    thumbColor={colors.textInverse}
                   />
                 </View>
               </React.Fragment>
@@ -1908,22 +1910,22 @@ export default function SettingsScreen() {
                     if (!run) return null;
                     if (run.status === "in_progress" || run.status === "queued") {
                       return (
-                        <View style={{ paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, backgroundColor: "#FEF3C7" }}>
-                          <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#92400E" }}>Building…</Text>
+                        <View style={{ paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, backgroundColor: colors.warningLight }}>
+                          <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: colors.warningText }}>Building…</Text>
                         </View>
                       );
                     }
                     if (run.status === "completed" && run.conclusion === "success") {
                       return (
-                        <View style={{ paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, backgroundColor: "#DCFCE7" }}>
-                          <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#166534" }}>Build passed</Text>
+                        <View style={{ paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, backgroundColor: colors.successLight }}>
+                          <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: colors.successStrong }}>Build passed</Text>
                         </View>
                       );
                     }
                     if (run.status === "completed" && run.conclusion !== "success") {
                       return (
-                        <View style={{ paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, backgroundColor: "#FEE2E2" }}>
-                          <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#991B1B" }}>Build failed</Text>
+                        <View style={{ paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, backgroundColor: colors.errorLight }}>
+                          <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: colors.errorText }}>Build failed</Text>
                         </View>
                       );
                     }
@@ -1943,8 +1945,8 @@ export default function SettingsScreen() {
                     {liveBuildInfo.expoVersion &&
                       mobileBuildVersionHistory.length > 0 &&
                       liveBuildInfo.expoVersion === mobileBuildVersionHistory[0].version && (
-                        <View style={{ paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, backgroundColor: "#EDE9FE" }}>
-                          <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#7C3AED" }}>Latest</Text>
+                        <View style={{ paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, backgroundColor: colors.violetLight }}>
+                          <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: colors.violet }}>Latest</Text>
                         </View>
                       )}
                   </View>
@@ -1974,8 +1976,8 @@ export default function SettingsScreen() {
                         <View style={[styles.menuDivider, { backgroundColor: colors.borderLight, marginLeft: 0 }]} />
                       )}
                       <View style={[styles.menuItem, { paddingVertical: 14 }]}>
-                        <View style={[styles.menuIcon, { backgroundColor: "#EDE9FE" }]}>
-                          <Ionicons name="git-commit" size={18} color="#7C3AED" />
+                        <View style={[styles.menuIcon, { backgroundColor: colors.violetLight }]}>
+                          <Ionicons name="git-commit" size={18} color={colors.violet} />
                         </View>
                         <View style={styles.menuInfo}>
                           <Text style={[styles.menuTitle, { color: colors.text }]}>v{entry.version}</Text>
@@ -1984,8 +1986,8 @@ export default function SettingsScreen() {
                           </Text>
                         </View>
                         {idx === 0 && (
-                          <View style={{ paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, backgroundColor: "#EDE9FE" }}>
-                            <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#7C3AED" }}>Latest</Text>
+                          <View style={{ paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, backgroundColor: colors.violetLight }}>
+                            <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: colors.violet }}>Latest</Text>
                           </View>
                         )}
                       </View>
@@ -2004,8 +2006,8 @@ export default function SettingsScreen() {
               style={({ pressed }) => [{
                 borderRadius: 14,
                 borderWidth: 1,
-                borderColor: "#F59E0B",
-                backgroundColor: pressed ? "#FFFBEB" : "#FFFDE7",
+                borderColor: colors.warning,
+                backgroundColor: pressed ? colors.warningLight : colors.warningSurface,
                 padding: 14,
                 gap: 10,
               }]}
@@ -2025,12 +2027,12 @@ export default function SettingsScreen() {
               }}
             >
               <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
-                <Ionicons name="warning" size={18} color="#D97706" style={{ marginTop: 1 }} />
+                <Ionicons name="warning" size={18} color={colors.warningStrong} style={{ marginTop: 1 }} />
                 <View style={{ flex: 1, gap: 4 }}>
-                  <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: "#92400E" }}>
+                  <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: colors.warningText }}>
                     Build counter may be out of sync
                   </Text>
-                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#B45309", lineHeight: 18 }}>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: colors.warningStrong, lineHeight: 18 }}>
                     {"A recent CI build"}
                     {buildCounterWarning.attemptedBuildNumber !== null
                       ? ` (build #${buildCounterWarning.attemptedBuildNumber})`
@@ -2042,23 +2044,23 @@ export default function SettingsScreen() {
                   </Text>
                   <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 4 }}>
                     {buildCounterWarning.runUrl && (
-                      <View style={{ flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "#FEF3C7", borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 }}>
-                        <Ionicons name="open-outline" size={12} color="#D97706" />
-                        <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#D97706" }}>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: colors.warningLight, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 }}>
+                        <Ionicons name="open-outline" size={12} color={colors.warningStrong} />
+                        <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: colors.warningStrong }}>
                           {"View failed run"}
                           {buildCounterWarning.runId ? ` #${buildCounterWarning.runId}` : ""}
                         </Text>
                       </View>
                     )}
                     {!buildCounterWarning.runUrl && (
-                      <View style={{ flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "#FEF3C7", borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 }}>
-                        <Ionicons name="book-outline" size={12} color="#D97706" />
-                        <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#D97706" }}>Recovery guide</Text>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: colors.warningLight, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 }}>
+                        <Ionicons name="book-outline" size={12} color={colors.warningStrong} />
+                        <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: colors.warningStrong }}>Recovery guide</Text>
                       </View>
                     )}
                     {buildCounterWarning.ref && (
-                      <View style={{ backgroundColor: "#FEF3C7", borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 }}>
-                        <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#92400E" }}>
+                      <View style={{ backgroundColor: colors.warningLight, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 }}>
+                        <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.warningText }}>
                           branch: {buildCounterWarning.ref}
                         </Text>
                       </View>
@@ -2071,15 +2073,15 @@ export default function SettingsScreen() {
                       paddingHorizontal: 12,
                       paddingVertical: 6,
                       borderRadius: 8,
-                      backgroundColor: pressed ? "#FDE68A" : "#FEF3C7",
+                      backgroundColor: pressed ? colors.warning : colors.warningLight,
                       borderWidth: 1,
-                      borderColor: "#F59E0B",
+                      borderColor: colors.warning,
                       opacity: isDismissingBuildCounterWarning ? 0.6 : 1,
                     })}
                     onPress={() => { void dismissBuildCounterWarning(); }}
                     disabled={isDismissingBuildCounterWarning}
                   >
-                    <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#92400E" }}>
+                    <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: colors.warningText }}>
                       {isDismissingBuildCounterWarning ? "Dismissing…" : "Mark as resolved"}
                     </Text>
                   </Pressable>
@@ -2112,17 +2114,17 @@ export default function SettingsScreen() {
                 }}
                 disabled={mobileBuildTriggering}
               >
-                <View style={[styles.menuIcon, { backgroundColor: mobileBuildTriggerSuccess ? "#D1FAE5" : "#EDE9FE" }]}>
+                <View style={[styles.menuIcon, { backgroundColor: mobileBuildTriggerSuccess ? colors.successLight : colors.violetLight }]}>
                   {mobileBuildTriggering ? (
-                    <ActivityIndicator size="small" color="#7C3AED" />
+                    <ActivityIndicator size="small" color={colors.violet} />
                   ) : mobileBuildTriggerSuccess ? (
-                    <Ionicons name="checkmark-circle" size={18} color="#059669" />
+                    <Ionicons name="checkmark-circle" size={18} color={colors.successStrong} />
                   ) : (
-                    <Ionicons name="rocket" size={18} color="#7C3AED" />
+                    <Ionicons name="rocket" size={18} color={colors.violet} />
                   )}
                 </View>
                 <View style={styles.menuInfo}>
-                  <Text style={[styles.menuTitle, { color: mobileBuildTriggerSuccess ? "#059669" : colors.text }]}>
+                  <Text style={[styles.menuTitle, { color: mobileBuildTriggerSuccess ? colors.successStrong : colors.text }]}>
                     {mobileBuildTriggering ? "Triggering…" : mobileBuildTriggerSuccess ? "Build triggered!" : "Trigger EAS build"}
                   </Text>
                   <Text style={[styles.menuSub, { color: colors.textSecondary }]}>
@@ -2139,7 +2141,7 @@ export default function SettingsScreen() {
               </Pressable>
             </View>
             {mobileBuildTriggerError && (
-              <Text style={{ marginTop: 8, fontSize: 13, color: "#DC2626", paddingHorizontal: 4 }}>
+              <Text style={{ marginTop: 8, fontSize: 13, color: colors.errorStrong, paddingHorizontal: 4 }}>
                 {mobileBuildTriggerError}
               </Text>
             )}
@@ -2153,8 +2155,8 @@ export default function SettingsScreen() {
               style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
               onPress={() => router.push("/privacy-policy")}
             >
-              <View style={[styles.menuIcon, { backgroundColor: "#EDE9FE" }]}>
-                <Ionicons name="document-text" size={18} color="#7C3AED" />
+              <View style={[styles.menuIcon, { backgroundColor: colors.violetLight }]}>
+                <Ionicons name="document-text" size={18} color={colors.violet} />
               </View>
               <View style={styles.menuInfo}>
                 <Text style={[styles.menuTitle, { color: colors.text }]}>Privacy Policy</Text>
@@ -2169,8 +2171,8 @@ export default function SettingsScreen() {
               style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
               onPress={() => router.push("/terms-of-service")}
             >
-              <View style={[styles.menuIcon, { backgroundColor: "#DBEAFE" }]}>
-                <Ionicons name="reader" size={18} color="#2563EB" />
+              <View style={[styles.menuIcon, { backgroundColor: colors.infoLight }]}>
+                <Ionicons name="reader" size={18} color={colors.info} />
               </View>
               <View style={styles.menuInfo}>
                 <Text style={[styles.menuTitle, { color: colors.text }]}>Terms of Service</Text>
@@ -2217,8 +2219,8 @@ export default function SettingsScreen() {
               gap: 8,
             }, pressed && { opacity: 0.7 }]}
           >
-            <Ionicons name="trash-outline" size={18} color="#EF4444" />
-            <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#EF4444" }}>Delete Account</Text>
+            <Ionicons name="trash-outline" size={18} color={colors.error} />
+            <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: colors.error }}>Delete Account</Text>
           </Pressable>
         </View>
       </ScrollView>
@@ -2246,7 +2248,7 @@ export default function SettingsScreen() {
 
             {passwordSuccess ? (
               <View style={{ alignItems: "center", paddingVertical: 32 }}>
-                <Ionicons name="checkmark-circle" size={48} color="#16A34A" />
+                <Ionicons name="checkmark-circle" size={48} color={colors.successStrong} />
                 <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: colors.text, marginTop: 12 }}>Password Changed</Text>
               </View>
             ) : (
@@ -2292,7 +2294,7 @@ export default function SettingsScreen() {
                   style={({ pressed }) => [joinStyles.sendBtn, pressed && { opacity: 0.85 }]}
                   testID="change-password-btn"
                 >
-                  <Ionicons name="lock-closed" size={18} color="#FFF" />
+                  <Ionicons name="lock-closed" size={18} color={colors.textInverse} />
                   <Text style={joinStyles.sendBtnText}>Update Password</Text>
                 </Pressable>
               </>
@@ -2352,7 +2354,7 @@ export default function SettingsScreen() {
                 }
               }}
             >
-              <Ionicons name="send" size={18} color="#FFF" />
+              <Ionicons name="send" size={18} color={colors.textInverse} />
               <Text style={joinStyles.sendBtnText}>Send Request</Text>
             </Pressable>
           </View>
@@ -2423,21 +2425,21 @@ export default function SettingsScreen() {
                     const alreadyMember = allLabAffiliationKeysList.includes(`org:${lab.organizationId}`);
                     return (
                       <View key={lab.username} style={{ flexDirection: "row", alignItems: "center", padding: 14, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary, marginBottom: 8, gap: 12 }}>
-                        <View style={{ width: 42, height: 42, borderRadius: 12, backgroundColor: "#EDE9FE", justifyContent: "center", alignItems: "center" }}>
-                          <Ionicons name="flask" size={20} color="#7C3AED" />
+                        <View style={{ width: 42, height: 42, borderRadius: 12, backgroundColor: colors.violetLight, justifyContent: "center", alignItems: "center" }}>
+                          <Ionicons name="flask" size={20} color={colors.violet} />
                         </View>
                         <View style={{ flex: 1 }}>
                           <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: colors.text }}>{lab.practiceName}</Text>
                           {lab.practiceAddress && <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textSecondary, marginTop: 2 }}>{lab.practiceAddress}</Text>}
                         </View>
                         {alreadyMember ? (
-                          <View style={{ backgroundColor: "#D1FAE5", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 }}>
-                            <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#059669" }}>Connected</Text>
+                          <View style={{ backgroundColor: colors.successLight, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 }}>
+                            <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: colors.successStrong }}>Connected</Text>
                           </View>
                         ) : (
                           <Pressable
                             style={({ pressed }) => [
-                              { backgroundColor: "#7C3AED", paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10 },
+                              { backgroundColor: colors.violet, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10 },
                               addLabSending && { opacity: 0.5 },
                               pressed && { opacity: 0.85 },
                             ]}
@@ -2472,7 +2474,7 @@ export default function SettingsScreen() {
                             }}
                             testID={`join-lab-${lab.organizationId}`}
                           >
-                            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>Join</Text>
+                            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.textInverse }}>Join</Text>
                           </Pressable>
                         )}
                       </View>
@@ -2718,8 +2720,8 @@ export default function SettingsScreen() {
                               setAddUserRole("user");
                             }}
                           >
-                            <View style={{ width: 42, height: 42, borderRadius: 21, backgroundColor: "#DBEAFE", justifyContent: "center", alignItems: "center" }}>
-                              <Ionicons name="person" size={20} color="#2563EB" />
+                            <View style={{ width: 42, height: 42, borderRadius: 21, backgroundColor: colors.infoLight, justifyContent: "center", alignItems: "center" }}>
+                              <Ionicons name="person" size={20} color={colors.info} />
                             </View>
                             <View style={{ flex: 1 }}>
                               <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: colors.text }}>{u.username}</Text>
@@ -2752,8 +2754,8 @@ export default function SettingsScreen() {
             ) : (
               <View style={{ gap: 16 }}>
                 <View style={{ flexDirection: "row", alignItems: "center", padding: 14, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary, gap: 12 }}>
-                  <View style={{ width: 42, height: 42, borderRadius: 21, backgroundColor: "#DBEAFE", justifyContent: "center", alignItems: "center" }}>
-                    <Ionicons name="person" size={20} color="#2563EB" />
+                  <View style={{ width: 42, height: 42, borderRadius: 21, backgroundColor: colors.infoLight, justifyContent: "center", alignItems: "center" }}>
+                    <Ionicons name="person" size={20} color={colors.info} />
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: colors.text }}>{addUserSelected.username}</Text>
@@ -2769,25 +2771,25 @@ export default function SettingsScreen() {
                   <Pressable
                     style={({ pressed }) => [{
                       flex: 1, paddingVertical: 14, borderRadius: 12, borderWidth: 2, alignItems: "center", gap: 4,
-                      borderColor: addUserRole === "user" ? "#2563EB" : colors.border,
-                      backgroundColor: addUserRole === "user" ? "#EFF6FF" : colors.surfaceSecondary,
+                      borderColor: addUserRole === "user" ? colors.info : colors.border,
+                      backgroundColor: addUserRole === "user" ? colors.infoSurface : colors.surfaceSecondary,
                     }, pressed && { opacity: 0.7 }]}
                     onPress={() => setAddUserRole("user")}
                   >
-                    <Ionicons name="person-outline" size={22} color={addUserRole === "user" ? "#2563EB" : colors.textSecondary} />
-                    <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: addUserRole === "user" ? "#2563EB" : colors.text }}>User</Text>
+                    <Ionicons name="person-outline" size={22} color={addUserRole === "user" ? colors.info : colors.textSecondary} />
+                    <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: addUserRole === "user" ? colors.info : colors.text }}>User</Text>
                     <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textSecondary, textAlign: "center" }}>Standard access</Text>
                   </Pressable>
                   <Pressable
                     style={({ pressed }) => [{
                       flex: 1, paddingVertical: 14, borderRadius: 12, borderWidth: 2, alignItems: "center", gap: 4,
-                      borderColor: addUserRole === "admin" ? "#F59E0B" : colors.border,
-                      backgroundColor: addUserRole === "admin" ? "#FFFBEB" : colors.surfaceSecondary,
+                      borderColor: addUserRole === "admin" ? colors.warning : colors.border,
+                      backgroundColor: addUserRole === "admin" ? colors.warningSurface : colors.surfaceSecondary,
                     }, pressed && { opacity: 0.7 }]}
                     onPress={() => setAddUserRole("admin")}
                   >
-                    <Ionicons name="shield-outline" size={22} color={addUserRole === "admin" ? "#F59E0B" : colors.textSecondary} />
-                    <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: addUserRole === "admin" ? "#F59E0B" : colors.text }}>Admin</Text>
+                    <Ionicons name="shield-outline" size={22} color={addUserRole === "admin" ? colors.warning : colors.textSecondary} />
+                    <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: addUserRole === "admin" ? colors.warning : colors.text }}>Admin</Text>
                     <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textSecondary, textAlign: "center" }}>Full access</Text>
                   </Pressable>
                 </View>
@@ -2819,7 +2821,7 @@ export default function SettingsScreen() {
                     );
                   }}
                 >
-                  <Ionicons name="send" size={18} color="#FFF" />
+                  <Ionicons name="send" size={18} color={colors.textInverse} />
                   <Text style={joinStyles.sendBtnText}>Send Invitation</Text>
                 </Pressable>
               </View>
@@ -2836,13 +2838,13 @@ export default function SettingsScreen() {
       >
         <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" }}>
           <View style={{ backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 24, paddingBottom: insets.bottom + 28, paddingTop: 16 }}>
-            <View style={{ width: 36, height: 5, borderRadius: 3, backgroundColor: "#CBD5E1", alignSelf: "center", marginBottom: 20 }} />
+            <View style={{ width: 36, height: 5, borderRadius: 3, backgroundColor: colors.border, alignSelf: "center", marginBottom: 20 }} />
 
             {selectedMember && (() => {
               const displayName = selectedMember.user?.username || selectedMember.userId || "Unknown";
               const roleLabel = selectedMember.role === "admin" ? "Admin" : "User";
-              const roleColor = selectedMember.role === "admin" ? "#D97706" : "#2563EB";
-              const roleBg = selectedMember.role === "admin" ? "#FEF3C7" : "#DBEAFE";
+              const roleColor = selectedMember.role === "admin" ? colors.warningStrong : colors.info;
+              const roleBg = selectedMember.role === "admin" ? colors.warningLight : colors.infoLight;
               const initials = displayName.substring(0, 2).toUpperCase();
               return (
                 <>
@@ -2871,29 +2873,29 @@ export default function SettingsScreen() {
                     <Pressable
                       style={({ pressed }) => [{
                         flex: 1, paddingVertical: 14, borderRadius: 14, borderWidth: 2, alignItems: "center", gap: 4,
-                        borderColor: selectedMember.role === "user" ? "#2563EB" : colors.border,
-                        backgroundColor: selectedMember.role === "user" ? "#EFF6FF" : colors.surfaceSecondary,
+                        borderColor: selectedMember.role === "user" ? colors.info : colors.border,
+                        backgroundColor: selectedMember.role === "user" ? colors.infoSurface : colors.surfaceSecondary,
                         opacity: memberActionLoading || selectedMember.role === "user" ? 0.6 : 1,
                       }, pressed && { opacity: 0.7 }]}
                       disabled={memberActionLoading || selectedMember.role === "user"}
                       onPress={() => handleChangeMemberRole(selectedMember, "user")}
                     >
-                      <Ionicons name="person-outline" size={22} color={selectedMember.role === "user" ? "#2563EB" : colors.textSecondary} />
-                      <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: selectedMember.role === "user" ? "#2563EB" : colors.text }}>User</Text>
+                      <Ionicons name="person-outline" size={22} color={selectedMember.role === "user" ? colors.info : colors.textSecondary} />
+                      <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: selectedMember.role === "user" ? colors.info : colors.text }}>User</Text>
                       <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textSecondary }}>Standard access</Text>
                     </Pressable>
                     <Pressable
                       style={({ pressed }) => [{
                         flex: 1, paddingVertical: 14, borderRadius: 14, borderWidth: 2, alignItems: "center", gap: 4,
-                        borderColor: selectedMember.role === "admin" ? "#D97706" : colors.border,
-                        backgroundColor: selectedMember.role === "admin" ? "#FFFBEB" : colors.surfaceSecondary,
+                        borderColor: selectedMember.role === "admin" ? colors.warningStrong : colors.border,
+                        backgroundColor: selectedMember.role === "admin" ? colors.warningSurface : colors.surfaceSecondary,
                         opacity: memberActionLoading || selectedMember.role === "admin" ? 0.6 : 1,
                       }, pressed && { opacity: 0.7 }]}
                       disabled={memberActionLoading || selectedMember.role === "admin"}
                       onPress={() => handleChangeMemberRole(selectedMember, "admin")}
                     >
-                      <Ionicons name="shield-outline" size={22} color={selectedMember.role === "admin" ? "#D97706" : colors.textSecondary} />
-                      <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: selectedMember.role === "admin" ? "#D97706" : colors.text }}>Admin</Text>
+                      <Ionicons name="shield-outline" size={22} color={selectedMember.role === "admin" ? colors.warningStrong : colors.textSecondary} />
+                      <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: selectedMember.role === "admin" ? colors.warningStrong : colors.text }}>Admin</Text>
                       <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textSecondary }}>Full access</Text>
                     </Pressable>
                   </View>
@@ -2901,18 +2903,18 @@ export default function SettingsScreen() {
                   <Pressable
                     style={({ pressed }) => [{
                       flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
-                      backgroundColor: "#FEE2E2", borderRadius: 14, height: 50,
+                      backgroundColor: colors.errorLight, borderRadius: 14, height: 50,
                       opacity: memberActionLoading ? 0.5 : 1,
                     }, pressed && { opacity: 0.7 }]}
                     disabled={memberActionLoading}
                     onPress={() => handleRemoveMember(selectedMember)}
                   >
                     {memberActionLoading ? (
-                      <ActivityIndicator size="small" color="#DC2626" />
+                      <ActivityIndicator size="small" color={colors.errorStrong} />
                     ) : (
                       <>
-                        <Ionicons name="person-remove" size={18} color="#DC2626" />
-                        <Text style={{ color: "#DC2626", fontSize: 16, fontFamily: "Inter_600SemiBold" }}>Remove from Lab</Text>
+                        <Ionicons name="person-remove" size={18} color={colors.errorStrong} />
+                        <Text style={{ color: colors.errorStrong, fontSize: 16, fontFamily: "Inter_600SemiBold" }}>Remove from Lab</Text>
                       </>
                     )}
                   </Pressable>
@@ -2926,7 +2928,7 @@ export default function SettingsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -2996,7 +2998,7 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   sendBtn: {
-    backgroundColor: "#145DA0",
+    backgroundColor: colors.tint,
     borderRadius: 12,
     paddingVertical: 14,
     alignItems: "center" as const,
@@ -3005,11 +3007,11 @@ const styles = StyleSheet.create({
   sendBtnText: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
 });
 
-const joinStyles = StyleSheet.create({
+const makeJoinStyles = (colors: ThemeColors) => StyleSheet.create({
   sheet: {
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
@@ -3020,7 +3022,7 @@ const joinStyles = StyleSheet.create({
     width: 36,
     height: 5,
     borderRadius: 3,
-    backgroundColor: "#CBD5E1",
+    backgroundColor: colors.border,
     alignSelf: "center",
     marginTop: 10,
     marginBottom: 8,
@@ -3055,12 +3057,12 @@ const joinStyles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    backgroundColor: "#2563EB",
+    backgroundColor: colors.info,
     borderRadius: 14,
     height: 50,
   },
   sendBtnText: {
-    color: "#FFF",
+    color: colors.textInverse,
     fontSize: 16,
     fontFamily: "Inter_600SemiBold",
   },

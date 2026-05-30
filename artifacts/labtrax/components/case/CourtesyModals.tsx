@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useMemo } from "react";
 import {
   Modal,
   View,
@@ -13,7 +13,7 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import Colors from "@/constants/colors";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 
 export type CourtesyTextModalProps = {
   visible: boolean;
@@ -24,30 +24,32 @@ export type CourtesyTextModalProps = {
 };
 
 export function CourtesyTextModal({ visible, onClose, message, onChangeMessage, onSend }: CourtesyTextModalProps) {
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeCtStyles(colors), [colors]);
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
-        style={ctStyles.modalOverlay}
+        style={styles.modalOverlay}
       >
-        <View style={ctStyles.modalCard}>
-          <View style={ctStyles.modalHeader}>
-            <Text style={ctStyles.modalTitle}>Courtesy Text</Text>
+        <View style={styles.modalCard}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Courtesy Text</Text>
             <Pressable onPress={onClose}>
-              <Ionicons name="close" size={24} color={Colors.light.textSecondary} />
+              <Ionicons name="close" size={24} color={colors.textSecondary} />
             </Pressable>
           </View>
-          <Text style={ctStyles.modalSubtitle}>
+          <Text style={styles.modalSubtitle}>
             Send a delay notification to the doctor. You can edit the message before sending.
           </Text>
           <TextInput
-            style={ctStyles.messageInput}
+            style={styles.messageInput}
             value={message}
             onChangeText={onChangeMessage}
             multiline
             textAlignVertical="top"
             placeholder="Courtesy message..."
-            placeholderTextColor="#94A3B8"
+            placeholderTextColor={colors.textTertiary}
           />
           <Pressable
             onPress={() => {
@@ -57,10 +59,10 @@ export function CourtesyTextModal({ visible, onClose, message, onChangeMessage, 
                 Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               }
             }}
-            style={({ pressed }) => [ctStyles.sendBtn, pressed && { opacity: 0.85 }]}
+            style={({ pressed }) => [styles.sendBtn, pressed && { opacity: 0.85 }]}
           >
-            <Ionicons name="send" size={20} color="#FFF" />
-            <Text style={ctStyles.sendBtnText}>Send Courtesy Text</Text>
+            <Ionicons name="send" size={20} color={colors.textInverse} />
+            <Text style={styles.sendBtnText}>Send Courtesy Text</Text>
           </Pressable>
         </View>
       </KeyboardAvoidingView>
@@ -91,31 +93,33 @@ export function ExocadLinkModal<T>({
   onLink,
   onShareAfterLink,
 }: ExocadLinkModalProps<T>) {
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeCtStyles(colors), [colors]);
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
-        style={ctStyles.modalOverlay}
+        style={styles.modalOverlay}
       >
-        <View style={ctStyles.modalCard}>
-          <View style={ctStyles.modalHeader}>
+        <View style={styles.modalCard}>
+          <View style={styles.modalHeader}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <Ionicons name="cube-outline" size={22} color="#7C3AED" />
-              <Text style={ctStyles.modalTitle}>Link ExoCAD Design</Text>
+              <Ionicons name="cube-outline" size={22} color={colors.violet} />
+              <Text style={styles.modalTitle}>Link ExoCAD Design</Text>
             </View>
             <Pressable onPress={onClose}>
-              <Ionicons name="close" size={24} color={Colors.light.textSecondary} />
+              <Ionicons name="close" size={24} color={colors.textSecondary} />
             </Pressable>
           </View>
-          <Text style={ctStyles.modalSubtitle}>
+          <Text style={styles.modalSubtitle}>
             Paste the ExoCAD WebView URL to share the 3D design with the provider.
           </Text>
           <TextInput
-            style={[ctStyles.dateInput, { marginBottom: 12 }]}
+            style={[styles.dateInput, { marginBottom: 12 }]}
             value={urlInput}
             onChangeText={onChangeUrlInput}
             placeholder="https://webview.exocad.com/..."
-            placeholderTextColor="#94A3B8"
+            placeholderTextColor={colors.textTertiary}
             autoCapitalize="none"
             autoCorrect={false}
             keyboardType="url"
@@ -153,10 +157,10 @@ export function ExocadLinkModal<T>({
                 ],
               );
             }}
-            style={({ pressed }) => [ctStyles.sendBtn, { backgroundColor: "#7C3AED" }, pressed && { opacity: 0.85 }]}
+            style={({ pressed }) => [styles.sendBtn, { backgroundColor: colors.violet }, pressed && { opacity: 0.85 }]}
           >
-            <Ionicons name="link" size={20} color="#FFF" />
-            <Text style={ctStyles.sendBtnText}>Link Design</Text>
+            <Ionicons name="link" size={20} color={colors.textInverse} />
+            <Text style={styles.sendBtnText}>Link Design</Text>
           </Pressable>
         </View>
       </KeyboardAvoidingView>
@@ -175,37 +179,39 @@ export type ProposeDateModalProps = {
 };
 
 export function ProposeDateModal({ visible, onClose, date, time, onChangeDate, onChangeTime, onPropose }: ProposeDateModalProps) {
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeCtStyles(colors), [colors]);
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
-        style={ctStyles.modalOverlay}
+        style={styles.modalOverlay}
       >
-        <View style={ctStyles.modalCard}>
-          <View style={ctStyles.modalHeader}>
-            <Text style={ctStyles.modalTitle}>Propose Delivery Date</Text>
+        <View style={styles.modalCard}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Propose Delivery Date</Text>
             <Pressable onPress={onClose}>
-              <Ionicons name="close" size={24} color={Colors.light.textSecondary} />
+              <Ionicons name="close" size={24} color={colors.textSecondary} />
             </Pressable>
           </View>
-          <Text style={ctStyles.modalSubtitle}>
+          <Text style={styles.modalSubtitle}>
             Provide an updated delivery date and time for the client to review.
           </Text>
-          <Text style={ctStyles.inputLabel}>Date (MM/DD/YYYY)</Text>
+          <Text style={styles.inputLabel}>Date (MM/DD/YYYY)</Text>
           <TextInput
-            style={ctStyles.dateInput}
+            style={styles.dateInput}
             value={date}
             onChangeText={onChangeDate}
             placeholder="03/15/2026"
-            placeholderTextColor="#94A3B8"
+            placeholderTextColor={colors.textTertiary}
           />
-          <Text style={ctStyles.inputLabel}>Time</Text>
+          <Text style={styles.inputLabel}>Time</Text>
           <TextInput
-            style={ctStyles.dateInput}
+            style={styles.dateInput}
             value={time}
             onChangeText={onChangeTime}
             placeholder="2:00 PM"
-            placeholderTextColor="#94A3B8"
+            placeholderTextColor={colors.textTertiary}
           />
           <Pressable
             onPress={() => {
@@ -216,10 +222,10 @@ export function ProposeDateModal({ visible, onClose, date, time, onChangeDate, o
                 Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               }
             }}
-            style={({ pressed }) => [ctStyles.sendBtn, { backgroundColor: "#3B82F6" }, pressed && { opacity: 0.85 }]}
+            style={({ pressed }) => [styles.sendBtn, { backgroundColor: colors.info }, pressed && { opacity: 0.85 }]}
           >
-            <Ionicons name="calendar" size={20} color="#FFF" />
-            <Text style={ctStyles.sendBtnText}>Propose Date</Text>
+            <Ionicons name="calendar" size={20} color={colors.textInverse} />
+            <Text style={styles.sendBtnText}>Propose Date</Text>
           </Pressable>
         </View>
       </KeyboardAvoidingView>
@@ -236,40 +242,42 @@ export type DeclineDateModalProps = {
 };
 
 export function DeclineDateModal({ visible, onClose, note, onChangeNote, onDecline }: DeclineDateModalProps) {
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeCtStyles(colors), [colors]);
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
-        style={ctStyles.modalOverlay}
+        style={styles.modalOverlay}
       >
-        <View style={ctStyles.modalCard}>
-          <View style={ctStyles.modalHeader}>
-            <Text style={ctStyles.modalTitle}>Decline Proposed Date</Text>
+        <View style={styles.modalCard}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Decline Proposed Date</Text>
             <Pressable onPress={onClose}>
-              <Ionicons name="close" size={24} color={Colors.light.textSecondary} />
+              <Ionicons name="close" size={24} color={colors.textSecondary} />
             </Pressable>
           </View>
-          <Text style={ctStyles.modalSubtitle}>
+          <Text style={styles.modalSubtitle}>
             Let the lab know why this date doesn&apos;t work so they can propose a better one.
           </Text>
           <TextInput
-            style={ctStyles.messageInput}
+            style={styles.messageInput}
             value={note}
             onChangeText={onChangeNote}
             multiline
             textAlignVertical="top"
             placeholder="Optional note..."
-            placeholderTextColor="#94A3B8"
+            placeholderTextColor={colors.textTertiary}
           />
           <Pressable
             onPress={() => {
               onDecline(note.trim());
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
             }}
-            style={({ pressed }) => [ctStyles.sendBtn, { backgroundColor: "#EF4444" }, pressed && { opacity: 0.85 }]}
+            style={({ pressed }) => [styles.sendBtn, { backgroundColor: colors.error }, pressed && { opacity: 0.85 }]}
           >
-            <Ionicons name="close-circle" size={20} color="#FFF" />
-            <Text style={ctStyles.sendBtnText}>Decline &amp; Request New Date</Text>
+            <Ionicons name="close-circle" size={20} color={colors.textInverse} />
+            <Text style={styles.sendBtnText}>Decline &amp; Request New Date</Text>
           </Pressable>
         </View>
       </KeyboardAvoidingView>
@@ -298,40 +306,42 @@ export function ProviderDateRequestModal({
   onSubmit,
   submitting = false,
 }: ProviderDateRequestModalProps) {
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeCtStyles(colors), [colors]);
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
-        style={ctStyles.modalOverlay}
+        style={styles.modalOverlay}
       >
-        <View style={ctStyles.modalCard}>
-          <View style={ctStyles.modalHeader}>
-            <Text style={ctStyles.modalTitle}>Request Delivery Date Change</Text>
+        <View style={styles.modalCard}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Request Delivery Date Change</Text>
             <Pressable onPress={onClose}>
-              <Ionicons name="close" size={24} color={Colors.light.textSecondary} />
+              <Ionicons name="close" size={24} color={colors.textSecondary} />
             </Pressable>
           </View>
-          <Text style={ctStyles.modalSubtitle}>
+          <Text style={styles.modalSubtitle}>
             Enter your preferred delivery date. The lab will accept, counter, or contact you.
           </Text>
-          <Text style={ctStyles.inputLabel}>Preferred Date (MM/DD/YYYY)</Text>
+          <Text style={styles.inputLabel}>Preferred Date (MM/DD/YYYY)</Text>
           <TextInput
-            style={ctStyles.dateInput}
+            style={styles.dateInput}
             value={date}
             onChangeText={onChangeDate}
             placeholder="03/15/2026"
-            placeholderTextColor="#94A3B8"
+            placeholderTextColor={colors.textTertiary}
             keyboardType="numbers-and-punctuation"
           />
-          <Text style={ctStyles.inputLabel}>Note (optional)</Text>
+          <Text style={styles.inputLabel}>Note (optional)</Text>
           <TextInput
-            style={ctStyles.messageInput}
+            style={styles.messageInput}
             value={note}
             onChangeText={onChangeNote}
             multiline
             textAlignVertical="top"
             placeholder="e.g. Patient appointment moved to next week"
-            placeholderTextColor="#94A3B8"
+            placeholderTextColor={colors.textTertiary}
           />
           <Pressable
             onPress={() => {
@@ -343,14 +353,14 @@ export function ProviderDateRequestModal({
               }
             }}
             style={({ pressed }) => [
-              ctStyles.sendBtn,
-              { backgroundColor: "#8B5CF6" },
+              styles.sendBtn,
+              { backgroundColor: colors.violet },
               pressed && { opacity: 0.85 },
               (submitting || !date.trim()) && { opacity: 0.45 },
             ]}
           >
-            <Ionicons name="calendar-outline" size={20} color="#FFF" />
-            <Text style={ctStyles.sendBtnText}>{submitting ? "Sending…" : "Send Request"}</Text>
+            <Ionicons name="calendar-outline" size={20} color={colors.textInverse} />
+            <Text style={styles.sendBtnText}>{submitting ? "Sending…" : "Send Request"}</Text>
           </Pressable>
         </View>
       </KeyboardAvoidingView>
@@ -358,7 +368,7 @@ export function ProviderDateRequestModal({
   );
 }
 
-const ctStyles = StyleSheet.create({
+const makeCtStyles = (colors: ThemeColors) => StyleSheet.create({
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.55)",
@@ -367,7 +377,7 @@ const ctStyles = StyleSheet.create({
     padding: 20,
   },
   modalCard: {
-    backgroundColor: "#FFF",
+    backgroundColor: colors.surface,
     borderRadius: 20,
     padding: 24,
     width: "100%",
@@ -382,46 +392,46 @@ const ctStyles = StyleSheet.create({
   modalTitle: {
     fontSize: 18,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   modalSubtitle: {
     fontSize: 13,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     lineHeight: 19,
   },
   messageInput: {
-    backgroundColor: Colors.light.background,
+    backgroundColor: colors.background,
     borderRadius: 12,
     padding: 14,
     fontSize: 14,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.text,
+    color: colors.text,
     minHeight: 120,
     borderWidth: 1,
-    borderColor: Colors.light.borderLight,
+    borderColor: colors.borderLight,
   },
   dateInput: {
-    backgroundColor: Colors.light.background,
+    backgroundColor: colors.background,
     borderRadius: 12,
     padding: 14,
     fontSize: 14,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.text,
+    color: colors.text,
     borderWidth: 1,
-    borderColor: Colors.light.borderLight,
+    borderColor: colors.borderLight,
   },
   inputLabel: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   sendBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    backgroundColor: "#F59E0B",
+    backgroundColor: colors.warning,
     paddingVertical: 14,
     borderRadius: 14,
     marginTop: 4,
@@ -429,6 +439,6 @@ const ctStyles = StyleSheet.create({
   sendBtnText: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
 });

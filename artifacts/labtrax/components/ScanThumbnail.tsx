@@ -8,7 +8,7 @@ import {
   buildThumbnailHtml,
   type ScanFormat,
 } from "@workspace/scan-viewer";
-import Colors from "@/constants/colors";
+import { useTheme } from "@/lib/theme-context";
 
 interface ScanThumbnailProps {
   cacheKey: string;
@@ -85,6 +85,7 @@ export default function ScanThumbnail({
   authToken,
   size = 40,
 }: ScanThumbnailProps) {
+  const { colors } = useTheme();
   const initialStatus = useMemo<Status>(() => {
     if (thumbCache.has(cacheKey)) return "ready";
     if (failed.has(cacheKey)) return "error";
@@ -190,8 +191,8 @@ export default function ScanThumbnail({
     height: size,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: Colors.light.border,
-    backgroundColor: "#F1F5F9",
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceAlt,
     alignItems: "center" as const,
     justifyContent: "center" as const,
     overflow: "hidden" as const,
@@ -209,7 +210,7 @@ export default function ScanThumbnail({
         <Ionicons
           name="cube-outline"
           size={Math.round(size * 0.5)}
-          color={Colors.light.textSecondary}
+          color={colors.textSecondary}
         />
       )}
       {status === "rendering" && html != null && (

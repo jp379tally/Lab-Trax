@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   StyleSheet,
   View,
@@ -16,7 +16,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import { apiRequest } from "@/lib/query-client";
-import Colors from "@/constants/colors";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 
 interface TrustedDevice {
   id: string;
@@ -50,6 +50,8 @@ type Phase = "loading" | "status" | "setup-start" | "setup-confirm" | "backup-co
 
 export default function TwoFactorScreen() {
   const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const [phase, setPhase] = useState<Phase>("loading");
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
   const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string | null>(null);
@@ -289,13 +291,13 @@ export default function TwoFactorScreen() {
       <View style={[styles.container, { paddingTop: insets.top }]}>
         <View style={styles.header}>
           <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.backBtn, pressed && { opacity: 0.7 }]}>
-            <Ionicons name="chevron-back" size={24} color={Colors.light.text} />
+            <Ionicons name="chevron-back" size={24} color={colors.text} />
           </Pressable>
           <Text style={styles.title}>Two-Factor Auth</Text>
           <View style={{ width: 40 }} />
         </View>
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
-          <ActivityIndicator size="large" color={Colors.light.tint} />
+          <ActivityIndicator size="large" color={colors.tint} />
         </View>
       </View>
     );
@@ -315,7 +317,7 @@ export default function TwoFactorScreen() {
           }}
           style={({ pressed }) => [styles.backBtn, pressed && { opacity: 0.7 }]}
         >
-          <Ionicons name="chevron-back" size={24} color={Colors.light.text} />
+          <Ionicons name="chevron-back" size={24} color={colors.text} />
         </Pressable>
         <Text style={styles.title}>Two-Factor Auth</Text>
         <View style={{ width: 40 }} />
@@ -330,11 +332,11 @@ export default function TwoFactorScreen() {
         {phase === "status" && (
           <View style={{ gap: 16 }}>
             <View style={styles.statusCard}>
-              <View style={[styles.statusIconWrap, { backgroundColor: twoFactorEnabled ? "#D1FAE5" : "#F3F4F6" }]}>
+              <View style={[styles.statusIconWrap, { backgroundColor: twoFactorEnabled ? colors.successLight : colors.surfaceAlt }]}>
                 <Ionicons
                   name={twoFactorEnabled ? "shield-checkmark" : "shield-outline"}
                   size={32}
-                  color={twoFactorEnabled ? "#059669" : "#6B7280"}
+                  color={twoFactorEnabled ? colors.successStrong : colors.textSecondary}
                 />
               </View>
               <Text style={styles.statusTitle}>
@@ -353,14 +355,14 @@ export default function TwoFactorScreen() {
                   onPress={() => { setRegenCode(""); setError(null); setPhase("regen-confirm"); }}
                   style={({ pressed }) => [styles.outlineBtn, pressed && { opacity: 0.85 }]}
                 >
-                  <Ionicons name="refresh-outline" size={16} color={Colors.light.tint} />
+                  <Ionicons name="refresh-outline" size={16} color={colors.tint} />
                   <Text style={styles.outlineBtnText}>Regenerate Backup Codes</Text>
                 </Pressable>
                 <Pressable
                   onPress={() => { setDisableCode(""); setError(null); setPhase("disable-confirm"); }}
                   style={({ pressed }) => [styles.dangerBtn, pressed && { opacity: 0.85 }]}
                 >
-                  <Ionicons name="shield-outline" size={18} color="#DC2626" />
+                  <Ionicons name="shield-outline" size={18} color={colors.errorStrong} />
                   <Text style={styles.dangerBtnText}>Disable Two-Factor Auth</Text>
                 </Pressable>
               </>
@@ -371,10 +373,10 @@ export default function TwoFactorScreen() {
                 style={({ pressed }) => [styles.primaryBtn, pressed && { opacity: 0.85 }, isLoading && { opacity: 0.6 }]}
               >
                 {isLoading ? (
-                  <ActivityIndicator size="small" color="#FFF" />
+                  <ActivityIndicator size="small" color={colors.textInverse} />
                 ) : (
                   <>
-                    <Ionicons name="shield-checkmark-outline" size={18} color="#FFF" />
+                    <Ionicons name="shield-checkmark-outline" size={18} color={colors.textInverse} />
                     <Text style={styles.primaryBtnText}>Enable Two-Factor Auth</Text>
                   </>
                 )}
@@ -383,29 +385,29 @@ export default function TwoFactorScreen() {
 
             {/* Lab admin: device trust period */}
             {labOrgId !== null && (
-              <View style={{ marginTop: 4, backgroundColor: "#F9FAFB", borderRadius: 12, borderWidth: 1, borderColor: "#E5E7EB", padding: 14, gap: 10 }}>
+              <View style={{ marginTop: 4, backgroundColor: colors.canvas, borderRadius: 12, borderWidth: 1, borderColor: colors.border, padding: 14, gap: 10 }}>
                 <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-                  <Text style={{ fontSize: 13, fontWeight: "600", color: Colors.light.text }}>
+                  <Text style={{ fontSize: 13, fontWeight: "600", color: colors.text }}>
                     Device trust period
                   </Text>
                   {labTtlHasOverride ? (
-                    <View style={{ paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, backgroundColor: "#EDE9FE" }}>
-                      <Text style={{ fontSize: 10, fontWeight: "600", color: "#7C3AED" }}>Custom</Text>
+                    <View style={{ paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, backgroundColor: colors.violetLight }}>
+                      <Text style={{ fontSize: 10, fontWeight: "600", color: colors.violet }}>Custom</Text>
                     </View>
                   ) : (
-                    <View style={{ paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, backgroundColor: "#F3F4F6" }}>
-                      <Text style={{ fontSize: 10, fontWeight: "600", color: "#6B7280" }}>Default {GLOBAL_TTL_DEFAULT}d</Text>
+                    <View style={{ paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, backgroundColor: colors.surfaceAlt }}>
+                      <Text style={{ fontSize: 10, fontWeight: "600", color: colors.textSecondary }}>Default {GLOBAL_TTL_DEFAULT}d</Text>
                     </View>
                   )}
                 </View>
-                <Text style={{ fontSize: 11, color: Colors.light.tabIconDefault }}>
+                <Text style={{ fontSize: 11, color: colors.tabIconDefault }}>
                   {labOrgName ? `${labOrgName}: ` : ""}How long trusted devices can skip the 2FA challenge. Shorter periods are better for shared workstations.
                 </Text>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
                   <TextInput
                     style={{
                       borderWidth: 1,
-                      borderColor: "#D1D5DB",
+                      borderColor: colors.border,
                       borderRadius: 8,
                       paddingHorizontal: 10,
                       paddingVertical: 6,
@@ -413,15 +415,15 @@ export default function TwoFactorScreen() {
                       fontWeight: "600",
                       width: 64,
                       textAlign: "center",
-                      backgroundColor: "#FFFFFF",
-                      color: Colors.light.text,
+                      backgroundColor: colors.surface,
+                      color: colors.text,
                     }}
                     value={labTtlInput}
                     onChangeText={(t) => setLabTtlInput(t.replace(/[^0-9]/g, ""))}
                     keyboardType="number-pad"
                     maxLength={3}
                   />
-                  <Text style={{ fontSize: 12, color: Colors.light.tabIconDefault }}>days</Text>
+                  <Text style={{ fontSize: 12, color: colors.tabIconDefault }}>days</Text>
                   <Pressable
                     onPress={() => {
                       const v = parseInt(labTtlInput, 10);
@@ -436,14 +438,14 @@ export default function TwoFactorScreen() {
                       paddingHorizontal: 14,
                       paddingVertical: 7,
                       borderRadius: 8,
-                      backgroundColor: pressed ? "#4F46E5" : Colors.light.tint,
+                      backgroundColor: pressed ? colors.indigo : colors.tint,
                       opacity: labTtlSaving ? 0.6 : 1,
                     })}
                   >
                     {labTtlSaving ? (
-                      <ActivityIndicator size="small" color="#FFF" />
+                      <ActivityIndicator size="small" color={colors.textInverse} />
                     ) : (
-                      <Text style={{ fontSize: 12, fontWeight: "600", color: "#FFF" }}>Save</Text>
+                      <Text style={{ fontSize: 12, fontWeight: "600", color: colors.textInverse }}>Save</Text>
                     )}
                   </Pressable>
                   {labTtlHasOverride && (
@@ -458,18 +460,18 @@ export default function TwoFactorScreen() {
                         paddingVertical: 7,
                         borderRadius: 8,
                         borderWidth: 1,
-                        borderColor: "#D1D5DB",
-                        backgroundColor: pressed ? "#F3F4F6" : "#FFFFFF",
+                        borderColor: colors.border,
+                        backgroundColor: pressed ? colors.surfaceAlt : colors.surface,
                         opacity: labTtlSaving ? 0.6 : 1,
                       })}
                     >
-                      <Text style={{ fontSize: 12, color: "#6B7280" }}>Reset</Text>
+                      <Text style={{ fontSize: 12, color: colors.textSecondary }}>Reset</Text>
                     </Pressable>
                   )}
                   {labTtlSaved && (
                     <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-                      <Ionicons name="checkmark-circle" size={14} color="#059669" />
-                      <Text style={{ fontSize: 11, color: "#059669" }}>Saved</Text>
+                      <Ionicons name="checkmark-circle" size={14} color={colors.successStrong} />
+                      <Text style={{ fontSize: 11, color: colors.successStrong }}>Saved</Text>
                     </View>
                   )}
                 </View>
@@ -479,20 +481,20 @@ export default function TwoFactorScreen() {
             {/* Trusted devices list */}
             {twoFactorEnabled && trustedDevices.length > 0 && (
               <View style={{ marginTop: 4, gap: 10 }}>
-                <Text style={{ fontSize: 14, fontWeight: "600", color: Colors.light.text }}>
+                <Text style={{ fontSize: 14, fontWeight: "600", color: colors.text }}>
                   Trusted devices
                 </Text>
-                <Text style={{ fontSize: 12, color: Colors.light.tabIconDefault, marginTop: -6 }}>
+                <Text style={{ fontSize: 12, color: colors.tabIconDefault, marginTop: -6 }}>
                   These devices skip the 2FA challenge for {labTtlDays} day{labTtlDays === 1 ? "" : "s"}. Revoke any you don't recognise.
                 </Text>
                 {trustedDevices.map((d) => (
                   <View
                     key={d.id}
                     style={{
-                      backgroundColor: "#F9FAFB",
+                      backgroundColor: colors.canvas,
                       borderRadius: 10,
                       borderWidth: 1,
-                      borderColor: "#E5E7EB",
+                      borderColor: colors.border,
                       padding: 12,
                       flexDirection: "row",
                       alignItems: "center",
@@ -500,15 +502,15 @@ export default function TwoFactorScreen() {
                     }}
                   >
                     <View style={{ flex: 1 }}>
-                      <Text style={{ fontSize: 13, fontWeight: "600", color: Colors.light.text }}>
+                      <Text style={{ fontSize: 13, fontWeight: "600", color: colors.text }}>
                         {d.deviceName || (d.userAgent?.includes("Mobile") ? "Mobile app" : "Desktop / Browser")}
                       </Text>
                       {d.ipAddress ? (
-                        <Text style={{ fontSize: 11, color: Colors.light.tabIconDefault, marginTop: 1 }}>
+                        <Text style={{ fontSize: 11, color: colors.tabIconDefault, marginTop: 1 }}>
                           {d.ipAddress}
                         </Text>
                       ) : null}
-                      <Text style={{ fontSize: 11, color: Colors.light.tabIconDefault, marginTop: 1 }}>
+                      <Text style={{ fontSize: 11, color: colors.tabIconDefault, marginTop: 1 }}>
                         Trusted {formatRelativeDate(d.createdAt)}
                         {d.lastUsedAt ? ` · used ${formatRelativeDate(d.lastUsedAt)}` : ""}
                         {" · "}expires {formatRelativeDate(d.expiresAt)}
@@ -521,16 +523,16 @@ export default function TwoFactorScreen() {
                         paddingHorizontal: 10,
                         paddingVertical: 6,
                         borderRadius: 6,
-                        backgroundColor: pressed ? "#FEE2E2" : "#FEF2F2",
+                        backgroundColor: pressed ? colors.errorLight : colors.errorSurface,
                         borderWidth: 1,
-                        borderColor: "#FECACA",
+                        borderColor: colors.errorLight,
                         opacity: revokingId === d.id ? 0.5 : 1,
                       })}
                     >
                       {revokingId === d.id ? (
-                        <ActivityIndicator size="small" color="#DC2626" />
+                        <ActivityIndicator size="small" color={colors.errorStrong} />
                       ) : (
-                        <Text style={{ fontSize: 12, fontWeight: "600", color: "#DC2626" }}>Revoke</Text>
+                        <Text style={{ fontSize: 12, fontWeight: "600", color: colors.errorStrong }}>Revoke</Text>
                       )}
                     </Pressable>
                   </View>
@@ -562,7 +564,7 @@ export default function TwoFactorScreen() {
                   <Text style={styles.secretLabel}>Or enter manually:</Text>
                   <Pressable onPress={copySecret} style={styles.secretCopyRow}>
                     <Text style={styles.secretText} selectable>{secretKey}</Text>
-                    <Ionicons name={copiedSecret ? "checkmark" : "copy-outline"} size={16} color={Colors.light.tint} />
+                    <Ionicons name={copiedSecret ? "checkmark" : "copy-outline"} size={16} color={colors.tint} />
                   </Pressable>
                 </View>
               )}
@@ -587,7 +589,7 @@ export default function TwoFactorScreen() {
               </Text>
               {error && (
                 <View style={styles.errorBox}>
-                  <Ionicons name="alert-circle-outline" size={15} color="#DC2626" />
+                  <Ionicons name="alert-circle-outline" size={15} color={colors.errorStrong} />
                   <Text style={styles.errorText}>{error}</Text>
                 </View>
               )}
@@ -609,13 +611,13 @@ export default function TwoFactorScreen() {
               style={({ pressed }) => [styles.primaryBtn, pressed && { opacity: 0.85 }, (isLoading || confirmCode.length < 6) && { opacity: 0.6 }]}
             >
               {isLoading ? (
-                <ActivityIndicator size="small" color="#FFF" />
+                <ActivityIndicator size="small" color={colors.textInverse} />
               ) : (
                 <Text style={styles.primaryBtnText}>Confirm and enable</Text>
               )}
             </Pressable>
             <Pressable onPress={() => { setPhase("setup-start"); setError(null); }} style={({ pressed }) => [pressed && { opacity: 0.7 }]}>
-              <Text style={{ textAlign: "center", color: Colors.light.tint, fontFamily: "Inter_500Medium", fontSize: 14 }}>
+              <Text style={{ textAlign: "center", color: colors.tint, fontFamily: "Inter_500Medium", fontSize: 14 }}>
                 ← Back to QR code
               </Text>
             </Pressable>
@@ -625,10 +627,10 @@ export default function TwoFactorScreen() {
         {/* BACKUP CODES PHASE */}
         {phase === "backup-codes" && (
           <View style={{ gap: 16 }}>
-            <View style={[styles.card, { borderColor: "#6EE7B7", borderWidth: 1.5 }]}>
+            <View style={[styles.card, { borderColor: colors.success, borderWidth: 1.5 }]}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                <Ionicons name="checkmark-circle" size={20} color="#059669" />
-                <Text style={[styles.cardTitle, { color: "#059669" }]}>2FA enabled!</Text>
+                <Ionicons name="checkmark-circle" size={20} color={colors.successStrong} />
+                <Text style={[styles.cardTitle, { color: colors.successStrong }]}>2FA enabled!</Text>
               </View>
               <Text style={styles.cardSub}>
                 Save these backup codes somewhere safe. Each code can only be used once, if you lose access to your authenticator app.
@@ -641,7 +643,7 @@ export default function TwoFactorScreen() {
                 ))}
               </View>
               <Pressable onPress={copyBackupCodes} style={({ pressed }) => [styles.outlineBtn, pressed && { opacity: 0.7 }, { marginTop: 8 }]}>
-                <Ionicons name="copy-outline" size={16} color={Colors.light.tint} />
+                <Ionicons name="copy-outline" size={16} color={colors.tint} />
                 <Text style={styles.outlineBtnText}>Copy all codes</Text>
               </Pressable>
             </View>
@@ -658,14 +660,14 @@ export default function TwoFactorScreen() {
         {/* REGEN-CONFIRM PHASE */}
         {phase === "regen-confirm" && (
           <View style={{ gap: 16 }}>
-            <View style={[styles.card, { borderColor: "#BAE6FD", borderWidth: 1.5 }]}>
+            <View style={[styles.card, { borderColor: colors.cyanLight, borderWidth: 1.5 }]}>
               <Text style={styles.cardTitle}>Regenerate backup codes</Text>
               <Text style={styles.cardSub}>
                 Enter the 6-digit code from your authenticator app to confirm. Your existing backup codes will be permanently invalidated.
               </Text>
               {error && (
                 <View style={styles.errorBox}>
-                  <Ionicons name="alert-circle-outline" size={15} color="#DC2626" />
+                  <Ionicons name="alert-circle-outline" size={15} color={colors.errorStrong} />
                   <Text style={styles.errorText}>{error}</Text>
                 </View>
               )}
@@ -687,10 +689,10 @@ export default function TwoFactorScreen() {
               style={({ pressed }) => [styles.primaryBtn, pressed && { opacity: 0.85 }, (isLoading || regenCode.length < 6) && { opacity: 0.6 }]}
             >
               {isLoading ? (
-                <ActivityIndicator size="small" color="#FFF" />
+                <ActivityIndicator size="small" color={colors.textInverse} />
               ) : (
                 <>
-                  <Ionicons name="refresh-outline" size={18} color="#FFF" />
+                  <Ionicons name="refresh-outline" size={18} color={colors.textInverse} />
                   <Text style={styles.primaryBtnText}>Generate new codes</Text>
                 </>
               )}
@@ -701,10 +703,10 @@ export default function TwoFactorScreen() {
         {/* REGEN-CODES PHASE */}
         {phase === "regen-codes" && (
           <View style={{ gap: 16 }}>
-            <View style={[styles.card, { borderColor: "#BAE6FD", borderWidth: 1.5 }]}>
+            <View style={[styles.card, { borderColor: colors.cyanLight, borderWidth: 1.5 }]}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                <Ionicons name="checkmark-circle" size={20} color="#0284C7" />
-                <Text style={[styles.cardTitle, { color: "#0284C7" }]}>New codes generated!</Text>
+                <Ionicons name="checkmark-circle" size={20} color={colors.cyan} />
+                <Text style={[styles.cardTitle, { color: colors.cyan }]}>New codes generated!</Text>
               </View>
               <Text style={styles.cardSub}>
                 Your old backup codes are no longer valid. Save these new codes somewhere safe — each can only be used once.
@@ -717,7 +719,7 @@ export default function TwoFactorScreen() {
                 ))}
               </View>
               <Pressable onPress={copyBackupCodes} style={({ pressed }) => [styles.outlineBtn, pressed && { opacity: 0.7 }, { marginTop: 8 }]}>
-                <Ionicons name="copy-outline" size={16} color={Colors.light.tint} />
+                <Ionicons name="copy-outline" size={16} color={colors.tint} />
                 <Text style={styles.outlineBtnText}>Copy all codes</Text>
               </Pressable>
             </View>
@@ -734,14 +736,14 @@ export default function TwoFactorScreen() {
         {/* DISABLE-CONFIRM PHASE */}
         {phase === "disable-confirm" && (
           <View style={{ gap: 16 }}>
-            <View style={[styles.card, { borderColor: "#FCA5A5", borderWidth: 1.5 }]}>
+            <View style={[styles.card, { borderColor: colors.errorLight, borderWidth: 1.5 }]}>
               <Text style={styles.cardTitle}>Disable 2FA</Text>
               <Text style={styles.cardSub}>
                 Enter the 6-digit code from your authenticator app (or a backup code) to confirm you want to disable two-factor authentication.
               </Text>
               {error && (
                 <View style={styles.errorBox}>
-                  <Ionicons name="alert-circle-outline" size={15} color="#DC2626" />
+                  <Ionicons name="alert-circle-outline" size={15} color={colors.errorStrong} />
                   <Text style={styles.errorText}>{error}</Text>
                 </View>
               )}
@@ -760,13 +762,13 @@ export default function TwoFactorScreen() {
             <Pressable
               onPress={handleDisable}
               disabled={isLoading || !disableCode.trim()}
-              style={({ pressed }) => [styles.dangerBtn, { backgroundColor: "#FEE2E2" }, pressed && { opacity: 0.85 }, (isLoading || !disableCode.trim()) && { opacity: 0.6 }]}
+              style={({ pressed }) => [styles.dangerBtn, { backgroundColor: colors.errorLight }, pressed && { opacity: 0.85 }, (isLoading || !disableCode.trim()) && { opacity: 0.6 }]}
             >
               {isLoading ? (
-                <ActivityIndicator size="small" color="#DC2626" />
+                <ActivityIndicator size="small" color={colors.errorStrong} />
               ) : (
                 <>
-                  <Ionicons name="shield-outline" size={18} color="#DC2626" />
+                  <Ionicons name="shield-outline" size={18} color={colors.errorStrong} />
                   <Text style={styles.dangerBtnText}>Disable Two-Factor Auth</Text>
                 </>
               )}
@@ -778,10 +780,10 @@ export default function TwoFactorScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.light.background,
+    backgroundColor: colors.background,
   },
   header: {
     flexDirection: "row",
@@ -790,7 +792,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.light.border,
+    borderBottomColor: colors.border,
   },
   backBtn: {
     width: 40,
@@ -801,16 +803,16 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 17,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   statusCard: {
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderRadius: 16,
     padding: 24,
     alignItems: "center",
     gap: 10,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
   },
   statusIconWrap: {
     width: 72,
@@ -823,33 +825,33 @@ const styles = StyleSheet.create({
   statusTitle: {
     fontSize: 18,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
     textAlign: "center",
   },
   statusSub: {
     fontSize: 14,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     textAlign: "center",
     lineHeight: 20,
   },
   card: {
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderRadius: 16,
     padding: 20,
     gap: 8,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
   },
   cardTitle: {
     fontSize: 16,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   cardSub: {
     fontSize: 14,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     lineHeight: 20,
   },
   secretRow: {
@@ -859,35 +861,35 @@ const styles = StyleSheet.create({
   secretLabel: {
     fontSize: 12,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   secretCopyRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    backgroundColor: Colors.light.backgroundSolid,
+    backgroundColor: colors.backgroundSolid,
     borderRadius: 8,
     padding: 10,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
   },
   secretText: {
     flex: 1,
     fontSize: 13,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.text,
+    color: colors.text,
     letterSpacing: 1,
   },
   codeInput: {
     height: 52,
     borderRadius: 10,
     borderWidth: 1.5,
-    borderColor: Colors.light.border,
-    backgroundColor: Colors.light.backgroundSolid,
+    borderColor: colors.border,
+    backgroundColor: colors.backgroundSolid,
     fontSize: 24,
     fontFamily: "Inter_600SemiBold",
     letterSpacing: 8,
-    color: Colors.light.text,
+    color: colors.text,
     marginTop: 8,
   },
   backupCodesGrid: {
@@ -897,26 +899,26 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
   backupCodeItem: {
-    backgroundColor: Colors.light.backgroundSolid,
+    backgroundColor: colors.backgroundSolid,
     borderRadius: 8,
     paddingVertical: 6,
     paddingHorizontal: 12,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
     width: "47%",
     alignItems: "center",
   },
   backupCodeText: {
     fontSize: 13,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.text,
+    color: colors.text,
     letterSpacing: 1,
   },
   errorBox: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    backgroundColor: "#FEF2F2",
+    backgroundColor: colors.errorSurface,
     borderRadius: 8,
     padding: 10,
     marginTop: 4,
@@ -925,14 +927,14 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 13,
     fontFamily: "Inter_400Regular",
-    color: "#DC2626",
+    color: colors.errorStrong,
   },
   primaryBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
     borderRadius: 12,
     height: 50,
     paddingHorizontal: 20,
@@ -940,7 +942,7 @@ const styles = StyleSheet.create({
   primaryBtnText: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
   outlineBtn: {
     flexDirection: "row",
@@ -951,12 +953,12 @@ const styles = StyleSheet.create({
     height: 44,
     paddingHorizontal: 20,
     borderWidth: 1.5,
-    borderColor: Colors.light.tint,
+    borderColor: colors.tint,
   },
   outlineBtnText: {
     fontSize: 14,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.tint,
+    color: colors.tint,
   },
   dangerBtn: {
     flexDirection: "row",
@@ -967,11 +969,11 @@ const styles = StyleSheet.create({
     height: 50,
     paddingHorizontal: 20,
     borderWidth: 1.5,
-    borderColor: "#FCA5A5",
+    borderColor: colors.errorLight,
   },
   dangerBtnText: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
-    color: "#DC2626",
+    color: colors.errorStrong,
   },
 });

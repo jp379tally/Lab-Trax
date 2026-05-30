@@ -11,7 +11,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useApp } from "@/lib/app-context";
-import Colors from "@/constants/colors";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { getStationInfo, formatInvNum } from "@/lib/data";
 
 export default function ChartHistoryScreen() {
@@ -19,6 +19,8 @@ export default function ChartHistoryScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { cases, invoices, role, adminUnlocked, customStationLabels } = useApp();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
 
   const isAdmin = role === "admin" && adminUnlocked;
 
@@ -44,7 +46,7 @@ export default function ChartHistoryScreen() {
     <View style={[styles.container, { paddingTop: Platform.OS === "web" ? 67 : insets.top }]}>
       <View style={styles.header}>
         <Pressable onPress={() => router.back()} style={styles.backBtn}>
-          <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
+          <Ionicons name="arrow-back" size={24} color={colors.text} />
         </Pressable>
         <View style={{ flex: 1 }}>
           <Text style={styles.headerTitle}>Entire Chart History</Text>
@@ -81,7 +83,7 @@ export default function ChartHistoryScreen() {
       >
         {patientCases.length === 0 ? (
           <View style={styles.emptyState}>
-            <Ionicons name="document-text-outline" size={48} color={Colors.light.textTertiary} />
+            <Ionicons name="document-text-outline" size={48} color={colors.textTertiary} />
             <Text style={styles.emptyText}>No cases found for this patient.</Text>
           </View>
         ) : (
@@ -110,13 +112,13 @@ export default function ChartHistoryScreen() {
                     <Text style={styles.caseNumber}>{c.caseNumber}</Text>
                     {c.isRemake && (
                       <View style={styles.remakeBadge}>
-                        <Ionicons name="refresh" size={10} color="#FFF" />
+                        <Ionicons name="refresh" size={10} color={colors.textInverse} />
                         <Text style={styles.remakeBadgeText}>REMAKE</Text>
                       </View>
                     )}
                     {c.isRush && (
                       <View style={styles.rushBadge}>
-                        <Ionicons name="flash" size={10} color="#EF4444" />
+                        <Ionicons name="flash" size={10} color={colors.error} />
                       </View>
                     )}
                   </View>
@@ -130,19 +132,19 @@ export default function ChartHistoryScreen() {
 
                 <View style={styles.caseDetails}>
                   <View style={styles.detailRow}>
-                    <Ionicons name="medkit-outline" size={14} color={Colors.light.textTertiary} />
+                    <Ionicons name="medkit-outline" size={14} color={colors.textTertiary} />
                     <Text style={styles.detailText}>{c.caseType || "General"}</Text>
                   </View>
                   <View style={styles.detailRow}>
-                    <Ionicons name="grid-outline" size={14} color={Colors.light.textTertiary} />
+                    <Ionicons name="grid-outline" size={14} color={colors.textTertiary} />
                     <Text style={styles.detailText}>{c.toothIndices || "N/A"}</Text>
                   </View>
                   <View style={styles.detailRow}>
-                    <Ionicons name="color-palette-outline" size={14} color={Colors.light.textTertiary} />
+                    <Ionicons name="color-palette-outline" size={14} color={colors.textTertiary} />
                     <Text style={styles.detailText}>{c.shade || "N/A"} / {c.material || "N/A"}</Text>
                   </View>
                   <View style={styles.detailRow}>
-                    <Ionicons name="person-outline" size={14} color={Colors.light.textTertiary} />
+                    <Ionicons name="person-outline" size={14} color={colors.textTertiary} />
                     <Text style={styles.detailText}>{c.doctorName}</Text>
                   </View>
                 </View>
@@ -156,7 +158,7 @@ export default function ChartHistoryScreen() {
                   )}
                   {linkedInvoice && (
                     <View style={styles.invoiceBadge}>
-                      <Ionicons name="receipt-outline" size={12} color="#3B82F6" />
+                      <Ionicons name="receipt-outline" size={12} color={colors.info} />
                       <Text style={styles.invoiceBadgeText}>{formatInvNum(linkedInvoice.invoiceNumber)}</Text>
                     </View>
                   )}
@@ -193,10 +195,10 @@ export default function ChartHistoryScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.light.background,
+    backgroundColor: colors.background,
   },
   header: {
     flexDirection: "row",
@@ -205,7 +207,7 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     gap: 12,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.light.border,
+    borderBottomColor: colors.border,
   },
   backBtn: {
     padding: 4,
@@ -213,26 +215,26 @@ const styles = StyleSheet.create({
   headerTitle: {
     fontSize: 18,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   headerSubtitle: {
     fontSize: 13,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     marginTop: 2,
   },
   avatarCircle: {
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
     justifyContent: "center",
     alignItems: "center",
   },
   avatarText: {
     fontSize: 14,
     fontFamily: "Inter_700Bold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
   summaryRow: {
     flexDirection: "row",
@@ -242,22 +244,22 @@ const styles = StyleSheet.create({
   },
   summaryCard: {
     flex: 1,
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderRadius: 12,
     padding: 12,
     alignItems: "center",
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
   },
   summaryNum: {
     fontSize: 22,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   summaryLabel: {
     fontSize: 11,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     marginTop: 2,
   },
   scrollArea: {
@@ -272,15 +274,15 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 15,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
   },
   caseCard: {
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderRadius: 14,
     padding: 16,
     marginBottom: 12,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
   },
   caseCardHeader: {
     flexDirection: "row",
@@ -296,13 +298,13 @@ const styles = StyleSheet.create({
   caseNumber: {
     fontSize: 16,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   remakeBadge: {
     flexDirection: "row",
     alignItems: "center",
     gap: 3,
-    backgroundColor: "#EF4444",
+    backgroundColor: colors.error,
     borderRadius: 6,
     paddingHorizontal: 6,
     paddingVertical: 2,
@@ -310,10 +312,10 @@ const styles = StyleSheet.create({
   remakeBadgeText: {
     fontSize: 9,
     fontFamily: "Inter_700Bold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
   rushBadge: {
-    backgroundColor: "#FEF2F2",
+    backgroundColor: colors.errorSurface,
     borderRadius: 6,
     padding: 3,
   },
@@ -346,31 +348,31 @@ const styles = StyleSheet.create({
   detailText: {
     fontSize: 13,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   caseFooter: {
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
     borderTopWidth: 1,
-    borderTopColor: Colors.light.border,
+    borderTopColor: colors.border,
     paddingTop: 10,
   },
   dateText: {
     fontSize: 12,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
   },
   priceText: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   invoiceBadge: {
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
-    backgroundColor: "#EFF6FF",
+    backgroundColor: colors.infoSurface,
     borderRadius: 6,
     paddingHorizontal: 6,
     paddingVertical: 2,
@@ -379,12 +381,12 @@ const styles = StyleSheet.create({
   invoiceBadgeText: {
     fontSize: 10,
     fontFamily: "Inter_600SemiBold",
-    color: "#3B82F6",
+    color: colors.info,
   },
   notesPreview: {
     fontSize: 12,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
     marginTop: 8,
     fontStyle: "italic",
   },
@@ -406,12 +408,12 @@ const styles = StyleSheet.create({
   miniLine: {
     width: 16,
     height: 2,
-    backgroundColor: Colors.light.border,
+    backgroundColor: colors.border,
   },
   moreStations: {
     fontSize: 10,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
     marginLeft: 4,
   },
 });

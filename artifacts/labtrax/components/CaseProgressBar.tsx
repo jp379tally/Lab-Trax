@@ -1,6 +1,7 @@
 import React from "react";
 import { View, Text, StyleSheet } from "react-native";
 import Colors from "@/constants/colors";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 
 /**
  * Maps each case status string to a progress fraction [0, 1].
@@ -62,7 +63,7 @@ export function getDueDateLabel(
     // Past due
     const overdueDays = Math.floor(-diffMs / MS_PER_DAY);
     const text = overdueDays === 0 ? "Due today" : `${overdueDays}d overdue`;
-    return { text, color: "#EF4444" };
+    return { text, color: Colors.light.error };
   }
 
   if (diffMs < MS_PER_DAY) {
@@ -102,6 +103,8 @@ function getDayDelta(refDateStr: string): number | null {
 }
 
 export function CaseProgressBar({ status, dueDate, expectedDeliveryDate }: Props) {
+  const { colors } = useTheme();
+  const styles = React.useMemo(() => makeStyles(colors), [colors]);
   const rawProgress = STATUS_PROGRESS[status] ?? 0.05;
   const isComplete = status === "COMPLETE";
 
@@ -116,10 +119,10 @@ export function CaseProgressBar({ status, dueDate, expectedDeliveryDate }: Props
   }
 
   const fillColor = isComplete
-    ? Colors.light.success
+    ? colors.success
     : isOverdue
-      ? "#EF4444"
-      : Colors.light.tint;
+      ? colors.error
+      : colors.tint;
 
   const fillPercent = Math.round(rawProgress * 100);
 
@@ -150,7 +153,7 @@ export function CaseProgressBar({ status, dueDate, expectedDeliveryDate }: Props
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   row: {
     flexDirection: "row",
     alignItems: "center",
@@ -160,7 +163,7 @@ const styles = StyleSheet.create({
   track: {
     flex: 1,
     height: 3,
-    backgroundColor: "#E2E8F0",
+    backgroundColor: colors.border,
     borderRadius: 2,
     overflow: "hidden",
   },
@@ -175,9 +178,9 @@ const styles = StyleSheet.create({
     textAlign: "right",
   },
   labelOnTrack: {
-    color: "#94A3B8",
+    color: colors.textTertiary,
   },
   labelOverdue: {
-    color: "#EF4444",
+    color: colors.error,
   },
 });

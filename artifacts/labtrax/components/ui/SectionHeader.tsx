@@ -1,6 +1,7 @@
 import React from "react";
 import { View, Text, Pressable, StyleSheet } from "react-native";
 import { useTheme } from "@/lib/theme-context";
+import { Spacing, Typography } from "@/constants/tokens";
 
 interface SectionHeaderProps {
   title: string;
@@ -30,14 +31,12 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 16,
-    paddingTop: 20,
-    paddingBottom: 8,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.xl,
+    paddingBottom: Spacing.sm,
   },
   title: {
-    fontSize: 11,
-    fontFamily: "Inter_600SemiBold",
-    letterSpacing: 0.8,
+    ...Typography.label,
   },
   action: {
     fontSize: 13,

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   StyleSheet,
   View,
@@ -30,7 +30,7 @@ import { useFocusEffect, useRouter, useLocalSearchParams } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
-import Colors from "@/constants/colors";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { ActivityEntry, generateId, ToothEntry, ToothType, MATERIAL_PRICES, formatAcctNum, formatPhone, cleanDoctorDisplay } from "@/lib/data";
 import { resolvePriceForCase } from "@/lib/pricing";
 import { fetch as expoFetch } from "expo/fetch";
@@ -106,6 +106,8 @@ const formatTimestamp = formatActivityTimestamp;
 type LabelData = import("@/components/scan/LabelPrintModal").LabelData;
 
 export default function ScanScreen() {
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const isFocused = useIsFocused();
@@ -1909,14 +1911,14 @@ export default function ScanScreen() {
         <div style="display:flex;justify-content:center;gap:1px;margin-bottom:2px;">
           ${[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16].map(t => {
             const active = label.toothDiagram!.includes(t);
-            return `<div style="width:16px;height:16px;border:1px solid ${active ? '#22C55E' : '#DDD'};border-radius:2px;background:${active ? '#22C55E' : 'transparent'};display:flex;align-items:center;justify-content:center;font-size:6px;color:${active ? '#FFF' : '#CCC'};font-weight:${active ? '700' : '400'};">${t}</div>`;
+            return `<div style="width:16px;height:16px;border:1px solid ${active ? '#22C55E' : '#DDD'};border-radius:2px;background:${active ? '#22C55E' : 'transparent'};display:flex;align-items:center;justify-content:center;font-size:6px;color:${active ? '#FFF' : '#CCC'};font-weight:${active ? '700' : '400'};">${t}</div>`; // hex-allow: printed label HTML template (paper output, not themed UI)
           }).join('')}
         </div>
         <div style="width:90%;height:1px;background:#DDD;margin:2px auto;"></div>
         <div style="display:flex;justify-content:center;gap:1px;">
           ${[32,31,30,29,28,27,26,25,24,23,22,21,20,19,18,17].map(t => {
             const active = label.toothDiagram!.includes(t);
-            return `<div style="width:16px;height:16px;border:1px solid ${active ? '#22C55E' : '#DDD'};border-radius:2px;background:${active ? '#22C55E' : 'transparent'};display:flex;align-items:center;justify-content:center;font-size:6px;color:${active ? '#FFF' : '#CCC'};font-weight:${active ? '700' : '400'};">${t}</div>`;
+            return `<div style="width:16px;height:16px;border:1px solid ${active ? '#22C55E' : '#DDD'};border-radius:2px;background:${active ? '#22C55E' : 'transparent'};display:flex;align-items:center;justify-content:center;font-size:6px;color:${active ? '#FFF' : '#CCC'};font-weight:${active ? '700' : '400'};">${t}</div>`; // hex-allow: printed label HTML template (paper output, not themed UI)
           }).join('')}
         </div>
       </div>` : '';
@@ -2822,12 +2824,12 @@ export default function ScanScreen() {
 
   if (phase === "form") {
     return (
-      <View style={[styles.container, { backgroundColor: Colors.light.backgroundSolid }]}>
+      <View style={[styles.container, { backgroundColor: colors.backgroundSolid }]}>
         {(Platform.OS as string) === "web" && webDragOver && (
-          <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(37,99,235,0.12)", zIndex: 999, justifyContent: "center", alignItems: "center", borderWidth: 3, borderColor: "#2563EB", borderStyle: "dashed", borderRadius: 16 }} pointerEvents="none">
-            <Ionicons name="arrow-down-circle" size={48} color="#2563EB" />
-            <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#2563EB", marginTop: 12 }}>Drop files to attach</Text>
-            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "#4B7BDB", marginTop: 4 }}>Files will be added as attachments</Text>
+          <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(37,99,235,0.12)", zIndex: 999, justifyContent: "center", alignItems: "center", borderWidth: 3, borderColor: colors.info, borderStyle: "dashed", borderRadius: 16 }} pointerEvents="none">
+            <Ionicons name="arrow-down-circle" size={48} color={colors.info} />
+            <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: colors.info, marginTop: 12 }}>Drop files to attach</Text>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: colors.info, marginTop: 4 }}>Files will be added as attachments</Text>
           </View>
         )}
         <View
@@ -2837,7 +2839,7 @@ export default function ScanScreen() {
           ]}
         >
           <Pressable onPress={resetForm} style={styles.backBtn}>
-            <Ionicons name="close" size={24} color={Colors.light.text} />
+            <Ionicons name="close" size={24} color={colors.text} />
           </Pressable>
           <Text style={styles.formTitle}>New Case</Text>
           <Pressable
@@ -2853,17 +2855,17 @@ export default function ScanScreen() {
           >
             <View pointerEvents="none">
               {isSubmittingCase ? (
-                <ActivityIndicator color="#FFF" size="small" />
+                <ActivityIndicator color={colors.textInverse} size="small" />
               ) : (
-                <Ionicons name="checkmark" size={22} color="#FFF" />
+                <Ionicons name="checkmark" size={22} color={colors.textInverse} />
               )}
             </View>
           </Pressable>
         </View>
         {isAnalyzing && (
-          <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: "#EFF6FF", paddingHorizontal: 16, paddingVertical: 10, gap: 10 }}>
-            <ActivityIndicator size="small" color="#2563EB" />
-            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#2563EB" }}>
+          <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: colors.infoSurface, paddingHorizontal: 16, paddingVertical: 10, gap: 10 }}>
+            <ActivityIndicator size="small" color={colors.info} />
+            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.info }}>
               Analyzing prescription...
             </Text>
           </View>
@@ -2878,8 +2880,8 @@ export default function ScanScreen() {
         >
           {pendingBarcode && (
             <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: "rgba(139,92,246,0.1)", borderRadius: 10, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: "rgba(139,92,246,0.3)" }}>
-              <Ionicons name="barcode-outline" size={20} color="#8B5CF6" />
-              <Text style={{ marginLeft: 8, fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#8B5CF6", flex: 1 }}>
+              <Ionicons name="barcode-outline" size={20} color={colors.violet} />
+              <Text style={{ marginLeft: 8, fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.violet, flex: 1 }}>
                 Barcode "{pendingBarcode}" will be attached to this case
               </Text>
               <Pressable onPress={() => setPendingBarcode(null)} hitSlop={8}>
@@ -2901,14 +2903,14 @@ export default function ScanScreen() {
                         {item.kind === "image" ? (
                           <Image source={{ uri: item.uri }} style={styles.photoThumb} contentFit="cover" />
                         ) : item.kind === "video" ? (
-                          <View style={[styles.photoThumb, { justifyContent: "center", alignItems: "center", backgroundColor: "#CBD5E1" }]}>
-                            <Ionicons name="play-circle" size={34} color="#1E293B" />
-                            <Text style={{ fontSize: 11, marginTop: 4, color: "#1E293B", fontFamily: "Inter_600SemiBold" }}>Video</Text>
+                          <View style={[styles.photoThumb, { justifyContent: "center", alignItems: "center", backgroundColor: colors.border }]}>
+                            <Ionicons name="play-circle" size={34} color={colors.text} />
+                            <Text style={{ fontSize: 11, marginTop: 4, color: colors.text, fontFamily: "Inter_600SemiBold" }}>Video</Text>
                           </View>
                         ) : (
-                          <View style={[styles.photoThumb, { justifyContent: "center", alignItems: "center", backgroundColor: "#E2E8F0" }]}>
-                            <Ionicons name="document-text-outline" size={28} color="#334155" />
-                            <Text style={{ fontSize: 11, marginTop: 4, color: "#334155", fontFamily: "Inter_600SemiBold" }}>PDF</Text>
+                          <View style={[styles.photoThumb, { justifyContent: "center", alignItems: "center", backgroundColor: colors.border }]}>
+                            <Ionicons name="document-text-outline" size={28} color={colors.textSecondary} />
+                            <Text style={{ fontSize: 11, marginTop: 4, color: colors.textSecondary, fontFamily: "Inter_600SemiBold" }}>PDF</Text>
                           </View>
                         )}
                         <Pressable
@@ -2919,7 +2921,7 @@ export default function ScanScreen() {
                           }}
                           style={styles.photoRemoveBtn}
                         >
-                          <Ionicons name="close-circle" size={20} color="#EF4444" />
+                          <Ionicons name="close-circle" size={20} color={colors.error} />
                         </Pressable>
                       </View>
                     ))
@@ -2933,12 +2935,12 @@ export default function ScanScreen() {
                           }}
                           style={styles.photoRemoveBtn}
                         >
-                          <Ionicons name="close-circle" size={20} color="#EF4444" />
+                          <Ionicons name="close-circle" size={20} color={colors.error} />
                         </Pressable>
                       </View>
                     ))}
                 <Pressable onPress={handleTakePhotoPrompt} style={styles.addPhotoThumb}>
-                  <Ionicons name="add" size={28} color={Colors.light.tint} />
+                  <Ionicons name="add" size={28} color={colors.tint} />
                 </Pressable>
               </ScrollView>
             </View>
@@ -2947,9 +2949,9 @@ export default function ScanScreen() {
               <Ionicons
                 name="camera-outline"
                 size={20}
-                color={Colors.light.textSecondary}
+                color={colors.textSecondary}
               />
-              <Text style={[styles.detectedText, { color: Colors.light.textSecondary }]}>
+              <Text style={[styles.detectedText, { color: colors.textSecondary }]}>
                 Tap "Add Prescription" to scan and auto-fill
               </Text>
             </View>
@@ -2962,14 +2964,14 @@ export default function ScanScreen() {
                   onPress={handleWebUploadRx}
                   style={({ pressed }) => [styles.addMorePhotosBtn, pressed && { opacity: 0.8 }]}
                 >
-                  <Ionicons name="cloud-upload-outline" size={18} color={Colors.light.tint} />
+                  <Ionicons name="cloud-upload-outline" size={18} color={colors.tint} />
                   <Text style={styles.addMorePhotosBtnText}>Upload RX</Text>
                 </Pressable>
                 <Pressable
                   onPress={handleAttachFiles}
                   style={({ pressed }) => [styles.addMorePhotosBtn, pressed && { opacity: 0.8 }]}
                 >
-                  <Ionicons name="attach" size={18} color={Colors.light.tint} />
+                  <Ionicons name="attach" size={18} color={colors.tint} />
                   <Text style={styles.addMorePhotosBtnText}>Attach Files</Text>
                 </Pressable>
               </>
@@ -2979,21 +2981,21 @@ export default function ScanScreen() {
                   onPress={handleAddPrescription}
                   style={({ pressed }) => [styles.addMorePhotosBtn, pressed && { opacity: 0.8 }]}
                 >
-                  <Ionicons name="scan-outline" size={18} color={Colors.light.tint} />
+                  <Ionicons name="scan-outline" size={18} color={colors.tint} />
                   <Text style={styles.addMorePhotosBtnText}>Add Prescription</Text>
                 </Pressable>
                 <Pressable
                   onPress={handleTakePhotoPrompt}
                   style={({ pressed }) => [styles.addMorePhotosBtn, pressed && { opacity: 0.8 }]}
                 >
-                  <Ionicons name="camera-outline" size={18} color={Colors.light.tint} />
+                  <Ionicons name="camera-outline" size={18} color={colors.tint} />
                   <Text style={styles.addMorePhotosBtnText}>Take Photo</Text>
                 </Pressable>
                 <Pressable
                   onPress={handleAttachFiles}
                   style={({ pressed }) => [styles.addMorePhotosBtn, pressed && { opacity: 0.8 }]}
                 >
-                  <Ionicons name="attach" size={18} color={Colors.light.tint} />
+                  <Ionicons name="attach" size={18} color={colors.tint} />
                   <Text style={styles.addMorePhotosBtnText}>Attach Files</Text>
                 </Pressable>
               </>
@@ -3010,13 +3012,13 @@ export default function ScanScreen() {
               style={[styles.formInput, styles.dropdownTrigger]}
               testID="doctor-dropdown-trigger"
             >
-              <Text style={[styles.dropdownTriggerText, !doctorName && { color: Colors.light.textTertiary }]}>
+              <Text style={[styles.dropdownTriggerText, !doctorName && { color: colors.textTertiary }]}>
                 {doctorName ? cleanDoctorDisplay(doctorName) : "Select Doctor"}
               </Text>
               <Ionicons
                 name={doctorDropdownOpen ? "chevron-up" : "chevron-down"}
                 size={18}
-                color={Colors.light.textSecondary}
+                color={colors.textSecondary}
               />
             </Pressable>
             {doctorDropdownOpen && (
@@ -3024,18 +3026,18 @@ export default function ScanScreen() {
                 {!addingNewDoctor ? (
                   <>
                     <View style={styles.dropdownSearchWrap}>
-                      <Ionicons name="search" size={16} color={Colors.light.textTertiary} />
+                      <Ionicons name="search" size={16} color={colors.textTertiary} />
                       <TextInput
                         style={styles.dropdownSearchInput}
                         value={doctorSearch}
                         onChangeText={setDoctorSearch}
                         placeholder="Search by name..."
-                        placeholderTextColor={Colors.light.textTertiary}
+                        placeholderTextColor={colors.textTertiary}
                         autoFocus
                       />
                       {doctorSearch.length > 0 && (
                         <Pressable onPress={() => setDoctorSearch("")}>
-                          <Ionicons name="close-circle" size={16} color={Colors.light.textTertiary} />
+                          <Ionicons name="close-circle" size={16} color={colors.textTertiary} />
                         </Pressable>
                       )}
                     </View>
@@ -3052,7 +3054,7 @@ export default function ScanScreen() {
                       style={({ pressed }) => [styles.addNewPatientBtn, pressed && { opacity: 0.7 }]}
                       testID="add-new-doctor-btn"
                     >
-                      <Ionicons name="person-add-outline" size={18} color={Colors.light.tint} />
+                      <Ionicons name="person-add-outline" size={18} color={colors.tint} />
                       <Text style={styles.addNewPatientBtnText}>Add New Doctor</Text>
                     </Pressable>
                     <ScrollView style={styles.dropdownList} nestedScrollEnabled keyboardShouldPersistTaps="handled">
@@ -3077,13 +3079,13 @@ export default function ScanScreen() {
                               ]}
                             >
                               <View style={styles.dropdownItemLeft}>
-                                <View style={[styles.dropdownAvatar, isSelected && { backgroundColor: Colors.light.tint }]}>
-                                  <Text style={[styles.dropdownAvatarText, isSelected && { color: "#FFF" }]}>
+                                <View style={[styles.dropdownAvatar, isSelected && { backgroundColor: colors.tint }]}>
+                                  <Text style={[styles.dropdownAvatarText, isSelected && { color: colors.textInverse }]}>
                                     {entry.providerName.replace(/^Dr\.\s*/i, "").charAt(0)}
                                   </Text>
                                 </View>
                                 <View style={{ flex: 1 }}>
-                                  <Text style={[styles.dropdownItemName, isSelected && { color: Colors.light.tint }]}>
+                                  <Text style={[styles.dropdownItemName, isSelected && { color: colors.tint }]}>
                                     {cleanDoctorDisplay(entry.providerName)}{entry.accountNumber && !entry.providerName.includes(entry.accountNumber) ? ` ${formatAcctNum(entry.accountNumber)}` : ""}
                                   </Text>
                                   <Text style={styles.dropdownItemSub}>{entry.practiceName}</Text>
@@ -3091,7 +3093,7 @@ export default function ScanScreen() {
                                 </View>
                               </View>
                               {isSelected && (
-                                <Ionicons name="checkmark-circle" size={20} color={Colors.light.tint} />
+                                <Ionicons name="checkmark-circle" size={20} color={colors.tint} />
                               )}
                             </Pressable>
                           );
@@ -3103,59 +3105,59 @@ export default function ScanScreen() {
                   <ScrollView style={styles.addNewPatientPanel} nestedScrollEnabled keyboardShouldPersistTaps="handled">
                     <Text style={styles.addNewPatientTitle}>New Doctor</Text>
                     <View style={styles.dropdownSearchWrap}>
-                      <Ionicons name="person-outline" size={16} color={Colors.light.textTertiary} />
+                      <Ionicons name="person-outline" size={16} color={colors.textTertiary} />
                       <TextInput
                         style={styles.dropdownSearchInput}
                         value={newDoctorInput}
                         onChangeText={setNewDoctorInput}
                         placeholder="Doctor name..."
-                        placeholderTextColor={Colors.light.textTertiary}
+                        placeholderTextColor={colors.textTertiary}
                         autoCapitalize="words"
                         autoFocus
                         testID="new-doctor-name-input"
                       />
                     </View>
                     <View style={styles.dropdownSearchWrap}>
-                      <Ionicons name="business-outline" size={16} color={Colors.light.textTertiary} />
+                      <Ionicons name="business-outline" size={16} color={colors.textTertiary} />
                       <TextInput
                         style={styles.dropdownSearchInput}
                         value={newDoctorPractice}
                         onChangeText={setNewDoctorPractice}
                         placeholder="Practice name..."
-                        placeholderTextColor={Colors.light.textTertiary}
+                        placeholderTextColor={colors.textTertiary}
                         autoCapitalize="words"
                       />
                     </View>
                     <View style={styles.dropdownSearchWrap}>
-                      <Ionicons name="location-outline" size={16} color={Colors.light.textTertiary} />
+                      <Ionicons name="location-outline" size={16} color={colors.textTertiary} />
                       <TextInput
                         style={styles.dropdownSearchInput}
                         value={newDoctorAddress}
                         onChangeText={setNewDoctorAddress}
                         placeholder="Address..."
-                        placeholderTextColor={Colors.light.textTertiary}
+                        placeholderTextColor={colors.textTertiary}
                         autoCapitalize="words"
                       />
                     </View>
                     <View style={styles.dropdownSearchWrap}>
-                      <Ionicons name="call-outline" size={16} color={Colors.light.textTertiary} />
+                      <Ionicons name="call-outline" size={16} color={colors.textTertiary} />
                       <TextInput
                         style={styles.dropdownSearchInput}
                         value={newDoctorPhone}
                         onChangeText={(v) => setNewDoctorPhone(formatPhone(v))}
                         placeholder="000-000-0000"
-                        placeholderTextColor={Colors.light.textTertiary}
+                        placeholderTextColor={colors.textTertiary}
                         keyboardType="phone-pad"
                       />
                     </View>
                     <View style={styles.dropdownSearchWrap}>
-                      <Ionicons name="mail-outline" size={16} color={Colors.light.textTertiary} />
+                      <Ionicons name="mail-outline" size={16} color={colors.textTertiary} />
                       <TextInput
                         style={styles.dropdownSearchInput}
                         value={newDoctorEmail}
                         onChangeText={setNewDoctorEmail}
                         placeholder="Email address..."
-                        placeholderTextColor={Colors.light.textTertiary}
+                        placeholderTextColor={colors.textTertiary}
                         keyboardType="email-address"
                         autoCapitalize="none"
                       />
@@ -3221,13 +3223,13 @@ export default function ScanScreen() {
               style={[styles.formInput, styles.dropdownTrigger]}
               testID="patient-dropdown-trigger"
             >
-              <Text style={[styles.dropdownTriggerText, !patientName && { color: Colors.light.textTertiary }]}>
+              <Text style={[styles.dropdownTriggerText, !patientName && { color: colors.textTertiary }]}>
                 {patientName || "Select Patient"}
               </Text>
               <Ionicons
                 name={patientDropdownOpen ? "chevron-up" : "chevron-down"}
                 size={18}
-                color={Colors.light.textSecondary}
+                color={colors.textSecondary}
               />
             </Pressable>
             {patientDropdownOpen && (
@@ -3235,18 +3237,18 @@ export default function ScanScreen() {
                 {!addingNewPatient ? (
                   <>
                     <View style={styles.dropdownSearchWrap}>
-                      <Ionicons name="search" size={16} color={Colors.light.textTertiary} />
+                      <Ionicons name="search" size={16} color={colors.textTertiary} />
                       <TextInput
                         style={styles.dropdownSearchInput}
                         value={patientSearch}
                         onChangeText={setPatientSearch}
                         placeholder="Search patients..."
-                        placeholderTextColor={Colors.light.textTertiary}
+                        placeholderTextColor={colors.textTertiary}
                         autoFocus
                       />
                       {patientSearch.length > 0 && (
                         <Pressable onPress={() => setPatientSearch("")}>
-                          <Ionicons name="close-circle" size={16} color={Colors.light.textTertiary} />
+                          <Ionicons name="close-circle" size={16} color={colors.textTertiary} />
                         </Pressable>
                       )}
                     </View>
@@ -3259,7 +3261,7 @@ export default function ScanScreen() {
                       style={({ pressed }) => [styles.addNewPatientBtn, pressed && { opacity: 0.7 }]}
                       testID="add-new-patient-btn"
                     >
-                      <Ionicons name="person-add-outline" size={18} color={Colors.light.tint} />
+                      <Ionicons name="person-add-outline" size={18} color={colors.tint} />
                       <Text style={styles.addNewPatientBtnText}>Add New Patient</Text>
                     </Pressable>
                     <ScrollView style={styles.dropdownList} nestedScrollEnabled keyboardShouldPersistTaps="handled">
@@ -3286,13 +3288,13 @@ export default function ScanScreen() {
                               ]}
                             >
                               <View style={styles.dropdownItemLeft}>
-                                <View style={[styles.dropdownAvatar, patientName === name && { backgroundColor: Colors.light.tint }]}>
-                                  <Text style={[styles.dropdownAvatarText, patientName === name && { color: "#FFF" }]}>
+                                <View style={[styles.dropdownAvatar, patientName === name && { backgroundColor: colors.tint }]}>
+                                  <Text style={[styles.dropdownAvatarText, patientName === name && { color: colors.textInverse }]}>
                                     {name.charAt(0).toUpperCase()}
                                   </Text>
                                 </View>
                                 <View>
-                                  <Text style={[styles.dropdownItemName, patientName === name && { color: Colors.light.tint }]}>
+                                  <Text style={[styles.dropdownItemName, patientName === name && { color: colors.tint }]}>
                                     {name}
                                   </Text>
                                   <Text style={styles.dropdownItemSub}>
@@ -3301,7 +3303,7 @@ export default function ScanScreen() {
                                 </View>
                               </View>
                               {patientName === name && (
-                                <Ionicons name="checkmark-circle" size={20} color={Colors.light.tint} />
+                                <Ionicons name="checkmark-circle" size={20} color={colors.tint} />
                               )}
                             </Pressable>
                           );
@@ -3313,35 +3315,35 @@ export default function ScanScreen() {
                   <View style={styles.addNewPatientPanel}>
                     <Text style={styles.addNewPatientTitle}>New Patient</Text>
                     <View style={styles.dropdownSearchWrap}>
-                      <Ionicons name="person-outline" size={16} color={Colors.light.textTertiary} />
+                      <Ionicons name="person-outline" size={16} color={colors.textTertiary} />
                       <TextInput
                         style={styles.dropdownSearchInput}
                         value={newPatientFirst}
                         onChangeText={setNewPatientFirst}
                         placeholder="First name"
-                        placeholderTextColor={Colors.light.textTertiary}
+                        placeholderTextColor={colors.textTertiary}
                         autoFocus
                         testID="new-patient-first-input"
                       />
                     </View>
                     <View style={[styles.dropdownSearchWrap, { marginTop: 8 }]}>
-                      <Ionicons name="person-outline" size={16} color={Colors.light.textTertiary} />
+                      <Ionicons name="person-outline" size={16} color={colors.textTertiary} />
                       <TextInput
                         style={styles.dropdownSearchInput}
                         value={newPatientMiddle}
                         onChangeText={setNewPatientMiddle}
                         placeholder="Middle name (optional)"
-                        placeholderTextColor={Colors.light.textTertiary}
+                        placeholderTextColor={colors.textTertiary}
                       />
                     </View>
                     <View style={[styles.dropdownSearchWrap, { marginTop: 8 }]}>
-                      <Ionicons name="person-outline" size={16} color={Colors.light.textTertiary} />
+                      <Ionicons name="person-outline" size={16} color={colors.textTertiary} />
                       <TextInput
                         style={styles.dropdownSearchInput}
                         value={newPatientLast}
                         onChangeText={setNewPatientLast}
                         placeholder="Last name"
-                        placeholderTextColor={Colors.light.textTertiary}
+                        placeholderTextColor={colors.textTertiary}
                         testID="new-patient-last-input"
                       />
                     </View>
@@ -3375,7 +3377,7 @@ export default function ScanScreen() {
                         testID="confirm-add-patient-btn"
                       >
                         <View pointerEvents="none">
-                          <Ionicons name="checkmark" size={18} color="#FFF" />
+                          <Ionicons name="checkmark" size={18} color={colors.textInverse} />
                         </View>
                         <Text style={styles.addNewPatientConfirmText}>Add</Text>
                       </Pressable>
@@ -3392,13 +3394,13 @@ export default function ScanScreen() {
               onPress={() => setCaseTypeOpen(!caseTypeOpen)}
               style={[styles.formInput, styles.dropdownTrigger]}
             >
-              <Text style={[styles.dropdownTriggerText, !caseType && { color: Colors.light.textTertiary }]}>
+              <Text style={[styles.dropdownTriggerText, !caseType && { color: colors.textTertiary }]}>
                 {caseType || "Select case type"}
               </Text>
               <Ionicons
                 name={caseTypeOpen ? "chevron-up" : "chevron-down"}
                 size={18}
-                color={Colors.light.textSecondary}
+                color={colors.textSecondary}
               />
             </Pressable>
             {caseTypeOpen && (
@@ -3434,7 +3436,7 @@ export default function ScanScreen() {
                       {type}
                     </Text>
                     {caseType === type && (
-                      <Ionicons name="checkmark-circle" size={18} color={Colors.light.tint} />
+                      <Ionicons name="checkmark-circle" size={18} color={colors.tint} />
                     )}
                   </Pressable>
                 ))}
@@ -3449,13 +3451,13 @@ export default function ScanScreen() {
                 onPress={() => setRemovableSubtypeOpen(!removableSubtypeOpen)}
                 style={[styles.formInput, styles.dropdownTrigger]}
               >
-                <Text style={[styles.dropdownTriggerText, !removableSubtype && { color: Colors.light.textTertiary }]}>
+                <Text style={[styles.dropdownTriggerText, !removableSubtype && { color: colors.textTertiary }]}>
                   {removableSubtype || "Select removable type"}
                 </Text>
                 <Ionicons
                   name={removableSubtypeOpen ? "chevron-up" : "chevron-down"}
                   size={18}
-                  color={Colors.light.textSecondary}
+                  color={colors.textSecondary}
                 />
               </Pressable>
               {removableSubtypeOpen && (
@@ -3475,11 +3477,11 @@ export default function ScanScreen() {
                           pressed && { opacity: 0.7 },
                         ]}
                       >
-                        <Text style={[styles.dropdownItemName, removableSubtype === sub && { color: Colors.light.tint }]}>
+                        <Text style={[styles.dropdownItemName, removableSubtype === sub && { color: colors.tint }]}>
                           {sub}
                         </Text>
                         {removableSubtype === sub && (
-                          <Ionicons name="checkmark-circle" size={20} color={Colors.light.tint} />
+                          <Ionicons name="checkmark-circle" size={20} color={colors.tint} />
                         )}
                       </Pressable>
                     ))}
@@ -3507,8 +3509,8 @@ export default function ScanScreen() {
                         borderRadius: 8,
                         borderWidth: 1.5,
                         alignItems: "center" as const,
-                        borderColor: removableArch === arch ? Colors.light.tint : Colors.light.border,
-                        backgroundColor: removableArch === arch ? Colors.light.tint + "18" : Colors.light.background,
+                        borderColor: removableArch === arch ? colors.tint : colors.border,
+                        backgroundColor: removableArch === arch ? colors.tint + "18" : colors.background,
                         opacity: pressed ? 0.7 : 1,
                       },
                     ]}
@@ -3517,7 +3519,7 @@ export default function ScanScreen() {
                       style={{
                         fontSize: 14,
                         fontWeight: removableArch === arch ? "700" : "500",
-                        color: removableArch === arch ? Colors.light.tint : Colors.light.textSecondary,
+                        color: removableArch === arch ? colors.tint : colors.textSecondary,
                       }}
                     >
                       {arch}
@@ -3543,13 +3545,13 @@ export default function ScanScreen() {
                 onPress={() => { setRemovableStageOpen(!removableStageOpen); setRemovableSubtypeOpen(false); }}
                 style={[styles.formInput, styles.dropdownTrigger]}
               >
-                <Text style={[styles.dropdownTriggerText, !removableStage && { color: Colors.light.textTertiary }]}>
+                <Text style={[styles.dropdownTriggerText, !removableStage && { color: colors.textTertiary }]}>
                   {removableStage || "Select stage"}
                 </Text>
                 <Ionicons
                   name={removableStageOpen ? "chevron-up" : "chevron-down"}
                   size={18}
-                  color={Colors.light.textSecondary}
+                  color={colors.textSecondary}
                 />
               </Pressable>
               {removableStageOpen && (
@@ -3569,11 +3571,11 @@ export default function ScanScreen() {
                           pressed && { opacity: 0.7 },
                         ]}
                       >
-                        <Text style={[styles.dropdownItemName, removableStage === stage && { color: Colors.light.tint }]}>
+                        <Text style={[styles.dropdownItemName, removableStage === stage && { color: colors.tint }]}>
                           {stage}
                         </Text>
                         {removableStage === stage && (
-                          <Ionicons name="checkmark-circle" size={20} color={Colors.light.tint} />
+                          <Ionicons name="checkmark-circle" size={20} color={colors.tint} />
                         )}
                       </Pressable>
                     ))}
@@ -3590,19 +3592,19 @@ export default function ScanScreen() {
                 onPress={() => { setDueDateOpen(!dueDateOpen); setTimeDueOpen(false); }}
                 style={[styles.formInput, styles.dropdownTrigger]}
               >
-                <Text style={[styles.dropdownTriggerText, !dueDate && { color: Colors.light.textTertiary }]}>
+                <Text style={[styles.dropdownTriggerText, !dueDate && { color: colors.textTertiary }]}>
                   {dueDateDisplay || "Select date"}
                 </Text>
                 <Ionicons
                   name={dueDateOpen ? "chevron-up" : "chevron-down"}
                   size={18}
-                  color={Colors.light.textSecondary}
+                  color={colors.textSecondary}
                 />
               </Pressable>
               {dueDateOpen && (
                 <View style={styles.dueDateDropdown}>
                   <Pressable style={styles.quickDateBtn} onPress={() => { setDueDateOneWeek(); }}>
-                    <Ionicons name="time-outline" size={16} color={Colors.light.tint} />
+                    <Ionicons name="time-outline" size={16} color={colors.tint} />
                     <Text style={styles.quickDateText}>1 Week</Text>
                     <Text style={styles.quickDateSub}>
                       {(() => {
@@ -3618,14 +3620,14 @@ export default function ScanScreen() {
                         if (calendarMonth === 0) { setCalendarMonth(11); setCalendarYear(calendarYear - 1); }
                         else setCalendarMonth(calendarMonth - 1);
                       }}>
-                        <Ionicons name="chevron-back" size={20} color={Colors.light.tint} />
+                        <Ionicons name="chevron-back" size={20} color={colors.tint} />
                       </Pressable>
                       <Text style={styles.calendarMonthText}>{calendarMonthLabel}</Text>
                       <Pressable onPress={() => {
                         if (calendarMonth === 11) { setCalendarMonth(0); setCalendarYear(calendarYear + 1); }
                         else setCalendarMonth(calendarMonth + 1);
                       }}>
-                        <Ionicons name="chevron-forward" size={20} color={Colors.light.tint} />
+                        <Ionicons name="chevron-forward" size={20} color={colors.tint} />
                       </Pressable>
                     </View>
                     <View style={styles.calendarWeekRow}>
@@ -3668,13 +3670,13 @@ export default function ScanScreen() {
                 onPress={() => { setTimeDueOpen(!timeDueOpen); setDueDateOpen(false); }}
                 style={[styles.formInput, styles.dropdownTrigger]}
               >
-                <Text style={[styles.dropdownTriggerText, !timeDue && { color: Colors.light.textTertiary }]}>
+                <Text style={[styles.dropdownTriggerText, !timeDue && { color: colors.textTertiary }]}>
                   {timeDue || "Time"}
                 </Text>
                 <Ionicons
                   name={timeDueOpen ? "chevron-up" : "chevron-down"}
                   size={18}
-                  color={Colors.light.textSecondary}
+                  color={colors.textSecondary}
                 />
               </Pressable>
               {timeDueOpen && (
@@ -3684,11 +3686,11 @@ export default function ScanScreen() {
                       <Text style={styles.timePickerLabel}>Hour</Text>
                       <View style={styles.timeSpinnerRow}>
                         <Pressable onPress={() => setTimeDueHour(timeDueHour <= 1 ? 12 : timeDueHour - 1)} style={styles.timeSpinBtn}>
-                          <Ionicons name="chevron-up" size={18} color={Colors.light.tint} />
+                          <Ionicons name="chevron-up" size={18} color={colors.tint} />
                         </Pressable>
                         <Text style={styles.timeSpinValue}>{String(timeDueHour).padStart(2, "0")}</Text>
                         <Pressable onPress={() => setTimeDueHour(timeDueHour >= 12 ? 1 : timeDueHour + 1)} style={styles.timeSpinBtn}>
-                          <Ionicons name="chevron-down" size={18} color={Colors.light.tint} />
+                          <Ionicons name="chevron-down" size={18} color={colors.tint} />
                         </Pressable>
                       </View>
                     </View>
@@ -3697,11 +3699,11 @@ export default function ScanScreen() {
                       <Text style={styles.timePickerLabel}>Min</Text>
                       <View style={styles.timeSpinnerRow}>
                         <Pressable onPress={() => setTimeDueMinute(timeDueMinute <= 0 ? 55 : timeDueMinute - 5)} style={styles.timeSpinBtn}>
-                          <Ionicons name="chevron-up" size={18} color={Colors.light.tint} />
+                          <Ionicons name="chevron-up" size={18} color={colors.tint} />
                         </Pressable>
                         <Text style={styles.timeSpinValue}>{String(timeDueMinute).padStart(2, "0")}</Text>
                         <Pressable onPress={() => setTimeDueMinute(timeDueMinute >= 55 ? 0 : timeDueMinute + 5)} style={styles.timeSpinBtn}>
-                          <Ionicons name="chevron-down" size={18} color={Colors.light.tint} />
+                          <Ionicons name="chevron-down" size={18} color={colors.tint} />
                         </Pressable>
                       </View>
                     </View>
@@ -3737,13 +3739,13 @@ export default function ScanScreen() {
               onPress={() => setToothChartOpen(!toothChartOpen)}
               style={[styles.formInput, styles.dropdownTrigger]}
             >
-              <Text style={[styles.dropdownTriggerText, selectedTeeth.length === 0 && { color: Colors.light.textTertiary }]}>
+              <Text style={[styles.dropdownTriggerText, selectedTeeth.length === 0 && { color: colors.textTertiary }]}>
                 {selectedTeeth.length > 0 ? toothIndices || "Select teeth" : "Select teeth"}
               </Text>
               <Ionicons
                 name={toothChartOpen ? "chevron-up" : "chevron-down"}
                 size={18}
-                color={Colors.light.textSecondary}
+                color={colors.textSecondary}
               />
             </Pressable>
             {toothChartOpen && (
@@ -3767,15 +3769,15 @@ export default function ScanScreen() {
 
                 <View style={styles.toothChartLegend}>
                   <View style={styles.legendItem}>
-                    <View style={[styles.legendDot, { backgroundColor: "#22C55E" }]} />
+                    <View style={[styles.legendDot, { backgroundColor: colors.success }]} />
                     <Text style={styles.legendText}>Normal</Text>
                   </View>
                   <View style={styles.legendItem}>
-                    <View style={[styles.legendDot, { backgroundColor: "#EAB308" }]} />
+                    <View style={[styles.legendDot, { backgroundColor: colors.warning }]} />
                     <Text style={styles.legendText}>Pontic</Text>
                   </View>
                   <View style={styles.legendItem}>
-                    <View style={[styles.legendDot, { backgroundColor: "#EF4444" }]} />
+                    <View style={[styles.legendDot, { backgroundColor: colors.error }]} />
                     <Text style={styles.legendText}>Missing</Text>
                   </View>
                   <Text style={styles.legendHint}>Hold to set type</Text>
@@ -3822,9 +3824,9 @@ export default function ScanScreen() {
                       { num: 32, x: 26, y: 210 },
                     ];
 
-                    const normalColor = "#22C55E";
-                    const ponticColor = "#EAB308";
-                    const missingColor = "#EF4444";
+                    const normalColor = colors.success;
+                    const ponticColor = colors.warning;
+                    const missingColor = colors.error;
 
                     const upperAdj = [[1,2],[2,3],[3,4],[4,5],[5,6],[6,7],[7,8],[8,9],[9,10],[10,11],[11,12],[12,13],[13,14],[14,15],[15,16]];
                     const lowerAdj = [[17,18],[18,19],[19,20],[20,21],[21,22],[22,23],[23,24],[24,25],[25,26],[26,27],[27,28],[28,29],[29,30],[30,31],[31,32]];
@@ -3888,9 +3890,9 @@ export default function ScanScreen() {
                                 width: DOT_SZ,
                                 height: DOT_SZ,
                                 borderRadius: DOT_SZ / 2,
-                                backgroundColor: isActive ? Colors.light.tint : "#D1D5DB",
+                                backgroundColor: isActive ? colors.tint : colors.border,
                                 borderWidth: isActive ? 0 : 1,
-                                borderColor: "#B0B7C3",
+                                borderColor: colors.border,
                               }} />
                             </Pressable>
                           );
@@ -3902,9 +3904,9 @@ export default function ScanScreen() {
                           let borderCol = "transparent";
                           let textColor = "transparent";
                           if (isSelected) {
-                            if (tType === "normal") { bgColor = normalColor + "CC"; borderCol = normalColor; textColor = "#FFF"; }
-                            else if (tType === "bridge") { bgColor = ponticColor + "CC"; borderCol = ponticColor; textColor = "#FFF"; }
-                            else if (tType === "missing") { bgColor = "#FEE2E2CC"; borderCol = missingColor; textColor = missingColor; }
+                            if (tType === "normal") { bgColor = normalColor + "CC"; borderCol = normalColor; textColor = colors.textInverse; }
+                            else if (tType === "bridge") { bgColor = ponticColor + "CC"; borderCol = ponticColor; textColor = colors.textInverse; }
+                            else if (tType === "missing") { bgColor = colors.errorLight + "CC"; borderCol = missingColor; textColor = missingColor; }
                           }
                           return (
                             <Pressable
@@ -3948,7 +3950,7 @@ export default function ScanScreen() {
                 {selectedTeeth.length > 0 && (
                   <View style={styles.toothChartSummary}>
                     <View style={styles.toothSummaryRow}>
-                      <Ionicons name="checkmark-circle" size={16} color={Colors.light.tint} />
+                      <Ionicons name="checkmark-circle" size={16} color={colors.tint} />
                       <Text style={styles.toothChartSummaryText}>
                         {toothIndices}
                       </Text>
@@ -3974,13 +3976,13 @@ export default function ScanScreen() {
                 onPress={() => setShadeOpen(!shadeOpen)}
                 style={[styles.formInput, styles.dropdownTrigger]}
               >
-                <Text style={[styles.dropdownTriggerText, !shade && { color: Colors.light.textTertiary }]}>
+                <Text style={[styles.dropdownTriggerText, !shade && { color: colors.textTertiary }]}>
                   {shade || "Select Shade"}
                 </Text>
                 <Ionicons
                   name={shadeOpen ? "chevron-up" : "chevron-down"}
                   size={18}
-                  color={Colors.light.textSecondary}
+                  color={colors.textSecondary}
                 />
               </Pressable>
               {shadeOpen && (
@@ -4012,11 +4014,11 @@ export default function ScanScreen() {
                           pressed && { opacity: 0.7 },
                         ]}
                       >
-                        <Text style={[styles.dropdownItemName, shade === s && { color: Colors.light.tint }]}>
+                        <Text style={[styles.dropdownItemName, shade === s && { color: colors.tint }]}>
                           {s}
                         </Text>
                         {shade === s && (
-                          <Ionicons name="checkmark-circle" size={20} color={Colors.light.tint} />
+                          <Ionicons name="checkmark-circle" size={20} color={colors.tint} />
                         )}
                       </Pressable>
                     ))}
@@ -4060,10 +4062,10 @@ export default function ScanScreen() {
             <Ionicons
               name="flash"
               size={18}
-              color={isRush ? "#EF4444" : Colors.light.textTertiary}
+              color={isRush ? colors.error : colors.textTertiary}
             />
             <Text
-              style={[styles.rushToggleText, isRush && { color: "#EF4444" }]}
+              style={[styles.rushToggleText, isRush && { color: colors.error }]}
             >
               Rush Order
             </Text>
@@ -4084,7 +4086,7 @@ export default function ScanScreen() {
               value={notes}
               onChangeText={setNotes}
               placeholder="Additional instructions..."
-              placeholderTextColor={Colors.light.textTertiary}
+              placeholderTextColor={colors.textTertiary}
               multiline
               numberOfLines={3}
             />
@@ -4093,7 +4095,7 @@ export default function ScanScreen() {
           {activityEntries.length > 0 && (
             <View style={styles.activitySection}>
               <View style={styles.activityHeader}>
-                <Ionicons name="time-outline" size={16} color={Colors.light.textSecondary} />
+                <Ionicons name="time-outline" size={16} color={colors.textSecondary} />
                 <Text style={styles.activityHeaderText}>Activity Log</Text>
                 <View style={styles.activityBadge}>
                   <Text style={styles.activityBadgeText}>{activityEntries.length}</Text>
@@ -4126,14 +4128,14 @@ export default function ScanScreen() {
 
   if ((Platform.OS as string) === "web" && phase === "camera") {
     return (
-      <View style={[styles.container, { paddingTop: 67 + 16, backgroundColor: Colors.light.backgroundSolid }]}>
+      <View style={[styles.container, { paddingTop: 67 + 16, backgroundColor: colors.backgroundSolid }]}>
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 32 }}>
           <View style={{ width: "100%", maxWidth: 420, alignItems: "center" }}>
             <View style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: "rgba(37,99,235,0.1)", justifyContent: "center", alignItems: "center", marginBottom: 24 }}>
-              <Ionicons name="document-text-outline" size={40} color={Colors.light.tint} />
+              <Ionicons name="document-text-outline" size={40} color={colors.tint} />
             </View>
-            <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 8, textAlign: "center" }}>AI Intake</Text>
-            <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, textAlign: "center", marginBottom: 32, lineHeight: 20 }}>
+            <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: colors.text, marginBottom: 8, textAlign: "center" }}>AI Intake</Text>
+            <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: colors.textSecondary, textAlign: "center", marginBottom: 32, lineHeight: 20 }}>
               Upload a prescription image or document and AI will automatically read and fill in the case details.
             </Text>
 
@@ -4143,7 +4145,7 @@ export default function ScanScreen() {
               style={({ pressed }) => ({
                 width: "100%",
                 borderWidth: 2,
-                borderColor: webDragOver ? "#2563EB" : Colors.light.tint,
+                borderColor: webDragOver ? colors.info : colors.tint,
                 borderStyle: "dashed" as const,
                 borderRadius: 16,
                 paddingVertical: 36,
@@ -4154,22 +4156,22 @@ export default function ScanScreen() {
               })}
               testID="upload-rx-btn"
             >
-              <Ionicons name={webDragOver ? "arrow-down-circle" : "cloud-upload-outline"} size={36} color={webDragOver ? "#2563EB" : Colors.light.tint} />
-              <Text style={{ fontSize: 17, fontFamily: "Inter_700Bold", color: webDragOver ? "#2563EB" : Colors.light.tint, marginTop: 12 }}>
+              <Ionicons name={webDragOver ? "arrow-down-circle" : "cloud-upload-outline"} size={36} color={webDragOver ? colors.info : colors.tint} />
+              <Text style={{ fontSize: 17, fontFamily: "Inter_700Bold", color: webDragOver ? colors.info : colors.tint, marginTop: 12 }}>
                 {webDragOver ? "Drop Files Here" : "Upload RX"}
               </Text>
-              <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 6, textAlign: "center" }}>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: colors.textSecondary, marginTop: 6, textAlign: "center" }}>
                 {webDragOver ? "Release to upload your files" : "Drag & drop files here, or click to browse"}
               </Text>
-              <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 8 }}>
+              <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textTertiary, marginTop: 8 }}>
                 Supports JPG, PNG, PDF, HEIC, TIFF, BMP, WebP
               </Text>
             </Pressable>
 
             <View style={{ flexDirection: "row", alignItems: "center", marginTop: 24, gap: 16, width: "100%" }}>
-              <View style={{ flex: 1, height: 1, backgroundColor: Colors.light.border }} />
-              <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.textTertiary }}>OR</Text>
-              <View style={{ flex: 1, height: 1, backgroundColor: Colors.light.border }} />
+              <View style={{ flex: 1, height: 1, backgroundColor: colors.border }} />
+              <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: colors.textTertiary }}>OR</Text>
+              <View style={{ flex: 1, height: 1, backgroundColor: colors.border }} />
             </View>
 
             <Pressable
@@ -4183,15 +4185,15 @@ export default function ScanScreen() {
                 paddingVertical: 14,
                 paddingHorizontal: 24,
                 borderRadius: 12,
-                backgroundColor: pressed ? Colors.light.surfaceSecondary : Colors.light.surface,
+                backgroundColor: pressed ? colors.surfaceSecondary : colors.surface,
                 borderWidth: 1,
-                borderColor: Colors.light.border,
+                borderColor: colors.border,
                 marginTop: 16,
               })}
               testID="manual-entry-btn"
             >
-              <MaterialCommunityIcons name="text-box-outline" size={20} color={Colors.light.text} />
-              <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>Manual Entry</Text>
+              <MaterialCommunityIcons name="text-box-outline" size={20} color={colors.text} />
+              <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: colors.text }}>Manual Entry</Text>
             </Pressable>
 
             <Pressable
@@ -4205,14 +4207,14 @@ export default function ScanScreen() {
                 paddingVertical: 14,
                 paddingHorizontal: 24,
                 borderRadius: 12,
-                backgroundColor: pressed ? Colors.light.surfaceSecondary : Colors.light.surface,
+                backgroundColor: pressed ? colors.surfaceSecondary : colors.surface,
                 borderWidth: 1,
-                borderColor: Colors.light.border,
+                borderColor: colors.border,
                 marginTop: 10,
               })}
             >
-              <Ionicons name="barcode-outline" size={20} color={Colors.light.text} />
-              <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>Enter Barcode</Text>
+              <Ionicons name="barcode-outline" size={20} color={colors.text} />
+              <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: colors.text }}>Enter Barcode</Text>
             </Pressable>
           </View>
         </View>
@@ -4220,18 +4222,18 @@ export default function ScanScreen() {
         <Modal visible={showBarcodeScanner} animationType="slide" onRequestClose={() => setShowBarcodeScanner(false)}>
           <View style={{ flex: 1, backgroundColor: "#000" }}>
             <View style={{ paddingTop: 67, paddingHorizontal: 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-              <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Enter Barcode</Text>
+              <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: colors.textInverse }}>Enter Barcode</Text>
               <Pressable onPress={() => setShowBarcodeScanner(false)}>
-                <Ionicons name="close" size={28} color="#FFF" />
+                <Ionicons name="close" size={28} color={colors.textInverse} />
               </Pressable>
             </View>
             <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 40 }}>
-              <Ionicons name="barcode-outline" size={64} color="#666" />
-              <Text style={{ color: "#999", marginTop: 16, fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center" }}>Enter a barcode manually:</Text>
+              <Ionicons name="barcode-outline" size={64} color={colors.textSecondary} />
+              <Text style={{ color: colors.textTertiary, marginTop: 16, fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center" }}>Enter a barcode manually:</Text>
               <TextInput
-                style={{ borderWidth: 1, borderColor: "#555", borderRadius: 10, color: "#FFF", padding: 12, width: "80%", marginTop: 12, fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center" }}
+                style={{ borderWidth: 1, borderColor: colors.textSecondary, borderRadius: 10, color: colors.textInverse, padding: 12, width: "80%", marginTop: 12, fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center" }}
                 placeholder="Enter barcode..."
-                placeholderTextColor="#666"
+                placeholderTextColor={colors.textSecondary}
                 value={webBarcodeInput}
                 onChangeText={setWebBarcodeInput}
                 onSubmitEditing={() => {
@@ -4247,16 +4249,16 @@ export default function ScanScreen() {
                   if (val) { setWebBarcodeInput(""); handleBarcodeScanned({ data: val }); }
                 }}
                 style={({ pressed }) => ({
-                  marginTop: 16, backgroundColor: Colors.light.tint, paddingHorizontal: 32, paddingVertical: 14, borderRadius: 12,
+                  marginTop: 16, backgroundColor: colors.tint, paddingHorizontal: 32, paddingVertical: 14, borderRadius: 12,
                   opacity: pressed ? 0.85 : 1,
                 })}
                 testID="barcode-submit-btn"
               >
-                <Text style={{ color: "#FFF", fontSize: 16, fontFamily: "Inter_600SemiBold" }}>Look Up Barcode</Text>
+                <Text style={{ color: colors.textInverse, fontSize: 16, fontFamily: "Inter_600SemiBold" }}>Look Up Barcode</Text>
               </Pressable>
             </View>
             <View style={{ padding: 20, paddingBottom: 34, alignItems: "center" }}>
-              <Text style={{ color: "#999", fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center" }}>Enter the barcode number from the case label</Text>
+              <Text style={{ color: colors.textTertiary, fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center" }}>Enter the barcode number from the case label</Text>
             </View>
           </View>
         </Modal>
@@ -4278,7 +4280,7 @@ export default function ScanScreen() {
       <View style={[styles.container, styles.permissionContainer]}>
         <View style={styles.permissionContent}>
           <View style={styles.permissionIconWrap}>
-            <Ionicons name="camera" size={48} color={Colors.light.tint} />
+            <Ionicons name="camera" size={48} color={colors.tint} />
           </View>
           <Text style={styles.permissionTitle}>Camera Access Required</Text>
           <Text style={styles.permissionDesc}>
@@ -4296,7 +4298,7 @@ export default function ScanScreen() {
             }}
             style={({ pressed }) => [styles.permissionBtn, pressed && { opacity: 0.85 }]}
           >
-            <Ionicons name={canAskAgain ? "camera" : "settings-outline"} size={20} color="#FFF" />
+            <Ionicons name={canAskAgain ? "camera" : "settings-outline"} size={20} color={colors.textInverse} />
             <Text style={styles.permissionBtnText}>{canAskAgain ? "Enable Camera" : "Open Settings"}</Text>
           </Pressable>
           <Pressable
@@ -4311,9 +4313,9 @@ export default function ScanScreen() {
         <Modal visible={showBarcodeScanner} animationType="slide" onRequestClose={() => setShowBarcodeScanner(false)}>
           <View style={{ flex: 1, backgroundColor: "#000" }}>
             <View style={{ paddingTop: (Platform.OS as string) === "web" ? 67 : insets.top + 10, paddingHorizontal: 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-              <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Scan Barcode</Text>
+              <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: colors.textInverse }}>Scan Barcode</Text>
               <Pressable onPress={() => setShowBarcodeScanner(false)}>
-                <Ionicons name="close" size={28} color="#FFF" />
+                <Ionicons name="close" size={28} color={colors.textInverse} />
               </Pressable>
             </View>
             <CameraView
@@ -4335,22 +4337,22 @@ export default function ScanScreen() {
                 <View style={{ flexDirection: "row", height: SCAN_TARGET_HEIGHT }}>
                   <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
                   <View style={{ width: SCAN_TARGET_WIDTH, height: SCAN_TARGET_HEIGHT, borderRadius: 16, overflow: "hidden" }}>
-                    <View style={{ position: "absolute", top: 0, left: 0, width: 30, height: 30, borderTopWidth: 3, borderLeftWidth: 3, borderColor: "#22C55E", borderTopLeftRadius: 16 }} />
-                    <View style={{ position: "absolute", top: 0, right: 0, width: 30, height: 30, borderTopWidth: 3, borderRightWidth: 3, borderColor: "#22C55E", borderTopRightRadius: 16 }} />
-                    <View style={{ position: "absolute", bottom: 0, left: 0, width: 30, height: 30, borderBottomWidth: 3, borderLeftWidth: 3, borderColor: "#22C55E", borderBottomLeftRadius: 16 }} />
-                    <View style={{ position: "absolute", bottom: 0, right: 0, width: 30, height: 30, borderBottomWidth: 3, borderRightWidth: 3, borderColor: "#22C55E", borderBottomRightRadius: 16 }} />
+                    <View style={{ position: "absolute", top: 0, left: 0, width: 30, height: 30, borderTopWidth: 3, borderLeftWidth: 3, borderColor: colors.success, borderTopLeftRadius: 16 }} />
+                    <View style={{ position: "absolute", top: 0, right: 0, width: 30, height: 30, borderTopWidth: 3, borderRightWidth: 3, borderColor: colors.success, borderTopRightRadius: 16 }} />
+                    <View style={{ position: "absolute", bottom: 0, left: 0, width: 30, height: 30, borderBottomWidth: 3, borderLeftWidth: 3, borderColor: colors.success, borderBottomLeftRadius: 16 }} />
+                    <View style={{ position: "absolute", bottom: 0, right: 0, width: 30, height: 30, borderBottomWidth: 3, borderRightWidth: 3, borderColor: colors.success, borderBottomRightRadius: 16 }} />
                     <View style={{ position: "absolute", top: "50%", left: 16, right: 16, height: 2, backgroundColor: "rgba(34,197,94,0.4)", marginTop: -1 }} />
                   </View>
                   <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
                 </View>
                 <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", alignItems: "center", paddingTop: 20 }}>
-                  <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Position barcode inside the frame</Text>
+                  <Text style={{ color: colors.textInverse, fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Position barcode inside the frame</Text>
                   <Text style={{ color: "rgba(255,255,255,0.5)", fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 4 }}>Hold steady and aim the barcode at the frame</Text>
                 </View>
               </View>
             </CameraView>
             <View style={{ padding: 20, paddingBottom: insets.bottom + 10, alignItems: "center" }}>
-              <Text style={{ color: "#999", fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center" }}>Point the camera at a barcode or QR code on the case label</Text>
+              <Text style={{ color: colors.textTertiary, fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center" }}>Point the camera at a barcode or QR code on the case label</Text>
             </View>
           </View>
         </Modal>
@@ -4372,9 +4374,9 @@ export default function ScanScreen() {
           />
         )}
         {phase === "camera" && cameraPaused && (
-          <View style={[StyleSheet.absoluteFill, { backgroundColor: "#0F172A", justifyContent: "center", alignItems: "center" }]}>
-            <ActivityIndicator size="large" color={Colors.light.tint} />
-            <Text style={{ color: "#FFF", fontFamily: "Inter_500Medium", fontSize: 14, marginTop: 12 }}>Selecting files...</Text>
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: "#0F172A" /* hex-allow: fixed dark camera-paused scrim */, justifyContent: "center", alignItems: "center" }]}>
+            <ActivityIndicator size="large" color={colors.tint} />
+            <Text style={{ color: colors.textInverse, fontFamily: "Inter_500Medium", fontSize: 14, marginTop: 12 }}>Selecting files...</Text>
           </View>
         )}
 
@@ -4406,7 +4408,7 @@ export default function ScanScreen() {
             <MaterialCommunityIcons
               name="file-document-outline"
               size={56}
-              color={Colors.light.tint}
+              color={colors.tint}
             />
             <View style={styles.detectingBadge}>
               <Text style={styles.detectingText}>DETECTING RX...</Text>
@@ -4462,7 +4464,7 @@ export default function ScanScreen() {
             }}
             accessibilityLabel="Close camera"
           >
-            <Ionicons name="close" size={22} color="#FFF" />
+            <Ionicons name="close" size={22} color={colors.textInverse} />
           </Pressable>
         )}
 
@@ -4495,7 +4497,7 @@ export default function ScanScreen() {
                   pressed && { opacity: 0.7 },
                 ]}
               >
-                <Ionicons name="images-outline" size={24} color="#FFF" />
+                <Ionicons name="images-outline" size={24} color={colors.textInverse} />
                 <Text style={styles.secondaryBtnText}>Gallery</Text>
               </Pressable>
 
@@ -4538,14 +4540,14 @@ export default function ScanScreen() {
               style={({ pressed }) => [styles.barcodeBtn, pressed && { opacity: 0.85 }]}
               testID="attach-files-btn"
             >
-              <Ionicons name="attach" size={22} color="#FFF" />
+              <Ionicons name="attach" size={22} color={colors.textInverse} />
               <Text style={styles.barcodeBtnText}>Attach Files</Text>
             </Pressable>
             <Pressable
               onPress={openBarcodeScanner}
               style={({ pressed }) => [styles.barcodeBtn, pressed && { opacity: 0.85 }]}
             >
-              <Ionicons name="barcode-outline" size={22} color="#FFF" />
+              <Ionicons name="barcode-outline" size={22} color={colors.textInverse} />
               <Text style={styles.barcodeBtnText}>Scan Barcode</Text>
             </Pressable>
           </View>
@@ -4567,8 +4569,8 @@ export default function ScanScreen() {
                 (selectedReviewPhotos.length === 0 || isAnalyzing) && { opacity: 0.45 },
               ]}
             >
-              <Ionicons name="trash-outline" size={22} color="#FCA5A5" />
-              <Text style={[styles.actionBtnText, { color: "#FCA5A5" }]}>
+              <Ionicons name="trash-outline" size={22} color={colors.error} />
+              <Text style={[styles.actionBtnText, { color: colors.error }]}>
                 {selectedReviewPhotos.length > 0 ? `Delete (${selectedReviewPhotos.length})` : "Delete"}
               </Text>
             </Pressable>
@@ -4580,8 +4582,8 @@ export default function ScanScreen() {
                 pressed && { opacity: 0.7 },
               ]}
             >
-              <Ionicons name="crop" size={22} color="#5EEAD4" />
-              <Text style={[styles.actionBtnText, { color: "#5EEAD4" }]}>Crop Photo</Text>
+              <Ionicons name="crop" size={22} color={colors.cyan} />
+              <Text style={[styles.actionBtnText, { color: colors.cyan }]}>Crop Photo</Text>
             </Pressable>
             <Pressable
               onPress={handleAddMoreFromReview}
@@ -4591,7 +4593,7 @@ export default function ScanScreen() {
                 pressed && { opacity: 0.7 },
               ]}
             >
-              <Ionicons name="camera" size={22} color="#FFF" />
+              <Ionicons name="camera" size={22} color={colors.textInverse} />
               <Text style={styles.actionBtnText}>Add Page</Text>
             </Pressable>
             <Pressable
@@ -4605,11 +4607,11 @@ export default function ScanScreen() {
               ]}
             >
               {isSavingPdf ? (
-                <ActivityIndicator size="small" color="#A78BFA" />
+                <ActivityIndicator size="small" color={colors.violet} />
               ) : (
-                <Ionicons name="document-text" size={22} color="#A78BFA" />
+                <Ionicons name="document-text" size={22} color={colors.violet} />
               )}
-              <Text style={[styles.actionBtnText, { color: "#A78BFA" }]}>{isSavingPdf ? "Saving..." : "Save PDF"}</Text>
+              <Text style={[styles.actionBtnText, { color: colors.violet }]}>{isSavingPdf ? "Saving..." : "Save PDF"}</Text>
             </Pressable>
             <Pressable
               onPress={() => { handleFinishedReview(); }}
@@ -4622,9 +4624,9 @@ export default function ScanScreen() {
               ]}
             >
               {isAnalyzing ? (
-                <ActivityIndicator size="small" color="#FFF" />
+                <ActivityIndicator size="small" color={colors.textInverse} />
               ) : (
-                <Ionicons name="checkmark-circle" size={22} color="#FFF" />
+                <Ionicons name="checkmark-circle" size={22} color={colors.textInverse} />
               )}
               <Text style={styles.actionBtnText}>{isAnalyzing ? "Analyzing..." : "Finished"}</Text>
             </Pressable>
@@ -4639,8 +4641,8 @@ export default function ScanScreen() {
               backgroundColor: "rgba(30,30,30,0.95)", borderRadius: 16, padding: 32,
               alignItems: "center", gap: 16, borderWidth: 1, borderColor: "rgba(255,255,255,0.1)",
             }}>
-              <ActivityIndicator size="large" color="#4F8EF7" />
-              <Text style={{ color: "#FFF", fontSize: 18, fontFamily: "Inter_600SemiBold" }}>Analyzing Prescription</Text>
+              <ActivityIndicator size="large" color={colors.info} />
+              <Text style={{ color: colors.textInverse, fontSize: 18, fontFamily: "Inter_600SemiBold" }}>Analyzing Prescription</Text>
               <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" }}>
                 AI is reading the document...
               </Text>
@@ -4652,9 +4654,9 @@ export default function ScanScreen() {
       <Modal visible={showBarcodeScanner} animationType="slide" onRequestClose={() => setShowBarcodeScanner(false)}>
         <View style={{ flex: 1, backgroundColor: "#000" }}>
           <View style={{ paddingTop: (Platform.OS as string) === "web" ? 67 : insets.top + 10, paddingHorizontal: 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-            <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Scan Barcode</Text>
+            <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: colors.textInverse }}>Scan Barcode</Text>
             <Pressable onPress={() => setShowBarcodeScanner(false)}>
-              <Ionicons name="close" size={28} color="#FFF" />
+              <Ionicons name="close" size={28} color={colors.textInverse} />
             </Pressable>
           </View>
           {(Platform.OS as string) !== "web" && permission?.granted ? (
@@ -4677,29 +4679,29 @@ export default function ScanScreen() {
                 <View style={{ flexDirection: "row", height: SCAN_TARGET_HEIGHT }}>
                   <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
                   <View style={{ width: SCAN_TARGET_WIDTH, height: SCAN_TARGET_HEIGHT, borderRadius: 16, overflow: "hidden" }}>
-                    <View style={{ position: "absolute", top: 0, left: 0, width: 30, height: 30, borderTopWidth: 3, borderLeftWidth: 3, borderColor: "#22C55E", borderTopLeftRadius: 16 }} />
-                    <View style={{ position: "absolute", top: 0, right: 0, width: 30, height: 30, borderTopWidth: 3, borderRightWidth: 3, borderColor: "#22C55E", borderTopRightRadius: 16 }} />
-                    <View style={{ position: "absolute", bottom: 0, left: 0, width: 30, height: 30, borderBottomWidth: 3, borderLeftWidth: 3, borderColor: "#22C55E", borderBottomLeftRadius: 16 }} />
-                    <View style={{ position: "absolute", bottom: 0, right: 0, width: 30, height: 30, borderBottomWidth: 3, borderRightWidth: 3, borderColor: "#22C55E", borderBottomRightRadius: 16 }} />
+                    <View style={{ position: "absolute", top: 0, left: 0, width: 30, height: 30, borderTopWidth: 3, borderLeftWidth: 3, borderColor: colors.success, borderTopLeftRadius: 16 }} />
+                    <View style={{ position: "absolute", top: 0, right: 0, width: 30, height: 30, borderTopWidth: 3, borderRightWidth: 3, borderColor: colors.success, borderTopRightRadius: 16 }} />
+                    <View style={{ position: "absolute", bottom: 0, left: 0, width: 30, height: 30, borderBottomWidth: 3, borderLeftWidth: 3, borderColor: colors.success, borderBottomLeftRadius: 16 }} />
+                    <View style={{ position: "absolute", bottom: 0, right: 0, width: 30, height: 30, borderBottomWidth: 3, borderRightWidth: 3, borderColor: colors.success, borderBottomRightRadius: 16 }} />
                     <View style={{ position: "absolute", top: "50%", left: 16, right: 16, height: 2, backgroundColor: "rgba(34,197,94,0.4)", marginTop: -1 }} />
                   </View>
                   <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
                 </View>
                 <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", alignItems: "center", paddingTop: 20 }}>
-                  <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Position barcode inside the frame</Text>
+                  <Text style={{ color: colors.textInverse, fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Position barcode inside the frame</Text>
                   <Text style={{ color: "rgba(255,255,255,0.5)", fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 4 }}>Hold steady and aim the barcode at the frame</Text>
                 </View>
               </View>
             </CameraView>
           ) : (
             <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 40 }}>
-              <Ionicons name="barcode-outline" size={64} color="#666" />
-              <Text style={{ color: "#999", marginTop: 16, fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center" }}>Barcode scanning requires a device camera</Text>
-              <Text style={{ color: "#999", marginTop: 8, fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" }}>Enter a barcode manually:</Text>
+              <Ionicons name="barcode-outline" size={64} color={colors.textSecondary} />
+              <Text style={{ color: colors.textTertiary, marginTop: 16, fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center" }}>Barcode scanning requires a device camera</Text>
+              <Text style={{ color: colors.textTertiary, marginTop: 8, fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" }}>Enter a barcode manually:</Text>
               <TextInput
-                style={{ borderWidth: 1, borderColor: "#555", borderRadius: 10, color: "#FFF", padding: 12, width: "80%", marginTop: 12, fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center" }}
+                style={{ borderWidth: 1, borderColor: colors.textSecondary, borderRadius: 10, color: colors.textInverse, padding: 12, width: "80%", marginTop: 12, fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center" }}
                 placeholder="Enter barcode..."
-                placeholderTextColor="#666"
+                placeholderTextColor={colors.textSecondary}
                 onSubmitEditing={(e) => {
                   const val = e.nativeEvent.text.trim();
                   if (val) handleBarcodeScanned({ data: val });
@@ -4709,7 +4711,7 @@ export default function ScanScreen() {
             </View>
           )}
           <View style={{ padding: 20, paddingBottom: (Platform.OS as string) === "web" ? 34 : insets.bottom + 10, alignItems: "center" }}>
-            <Text style={{ color: "#999", fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center" }}>Point the camera at a barcode or QR code on the case label</Text>
+            <Text style={{ color: colors.textTertiary, fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center" }}>Point the camera at a barcode or QR code on the case label</Text>
           </View>
         </View>
       </Modal>
@@ -4763,30 +4765,30 @@ export default function ScanScreen() {
         onRequestClose={() => setProviderPickerOpen(false)}
       >
         <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "center", padding: 20 }}>
-          <View style={{ backgroundColor: "#FFF", borderRadius: 16, maxHeight: "80%", overflow: "hidden" }}>
-            <View style={{ padding: 16, borderBottomWidth: 1, borderBottomColor: Colors.light.borderLight, flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: Colors.light.text }}>
+          <View style={{ backgroundColor: colors.surface, borderRadius: 16, maxHeight: "80%", overflow: "hidden" }}>
+            <View style={{ padding: 16, borderBottomWidth: 1, borderBottomColor: colors.borderLight, flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: colors.text }}>
                 Select Existing Provider
               </Text>
               <Pressable onPress={() => setProviderPickerOpen(false)} hitSlop={10}>
-                <Ionicons name="close" size={22} color={Colors.light.textSecondary} />
+                <Ionicons name="close" size={22} color={colors.textSecondary} />
               </Pressable>
             </View>
-            <View style={{ padding: 12, borderBottomWidth: 1, borderBottomColor: Colors.light.borderLight }}>
-              <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: Colors.light.surfaceSecondary, borderRadius: 10, paddingHorizontal: 12 }}>
-                <Ionicons name="search" size={16} color={Colors.light.textTertiary} />
+            <View style={{ padding: 12, borderBottomWidth: 1, borderBottomColor: colors.borderLight }}>
+              <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: colors.surfaceSecondary, borderRadius: 10, paddingHorizontal: 12 }}>
+                <Ionicons name="search" size={16} color={colors.textTertiary} />
                 <TextInput
                   value={providerPickerSearch}
                   onChangeText={setProviderPickerSearch}
                   placeholder="Type to search providers…"
-                  placeholderTextColor={Colors.light.textTertiary}
+                  placeholderTextColor={colors.textTertiary}
                   autoFocus
-                  style={{ flex: 1, paddingVertical: 10, paddingHorizontal: 8, fontSize: 15, fontFamily: "Inter_400Regular", color: Colors.light.text }}
+                  style={{ flex: 1, paddingVertical: 10, paddingHorizontal: 8, fontSize: 15, fontFamily: "Inter_400Regular", color: colors.text }}
                   testID="provider-picker-search"
                 />
                 {providerPickerSearch.length > 0 && (
                   <Pressable onPress={() => setProviderPickerSearch("")} hitSlop={8}>
-                    <Ionicons name="close-circle" size={16} color={Colors.light.textTertiary} />
+                    <Ionicons name="close-circle" size={16} color={colors.textTertiary} />
                   </Pressable>
                 )}
               </View>
@@ -4804,7 +4806,7 @@ export default function ScanScreen() {
                 if (list.length === 0) {
                   return (
                     <View style={{ padding: 24, alignItems: "center" }}>
-                      <Text style={{ fontSize: 14, color: Colors.light.textSecondary, fontFamily: "Inter_400Regular" }}>
+                      <Text style={{ fontSize: 14, color: colors.textSecondary, fontFamily: "Inter_400Regular" }}>
                         No providers found
                       </Text>
                     </View>
@@ -4820,16 +4822,16 @@ export default function ScanScreen() {
                       if ((Platform.OS as string) !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     }}
                     style={({ pressed }) => [
-                      { paddingVertical: 12, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: Colors.light.borderLight },
-                      pressed && { backgroundColor: Colors.light.surfaceSecondary },
+                      { paddingVertical: 12, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: colors.borderLight },
+                      pressed && { backgroundColor: colors.surfaceSecondary },
                     ]}
                     testID={`provider-picker-${e.clientId}`}
                   >
-                    <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>
+                    <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: colors.text }}>
                       {e.providerName}
                     </Text>
                     {!!e.practiceName && (
-                      <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 2 }}>
+                      <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textSecondary, marginTop: 2 }}>
                         {e.practiceName}
                       </Text>
                     )}
@@ -4845,7 +4847,7 @@ export default function ScanScreen() {
 }
 
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#000",
@@ -4866,7 +4868,7 @@ const styles = StyleSheet.create({
   scanTitle: {
     fontSize: 22,
     fontFamily: "Inter_700Bold",
-    color: "#FFF",
+    color: colors.textInverse,
     textShadowColor: "rgba(0,0,0,0.5)",
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 4,
@@ -4898,15 +4900,15 @@ const styles = StyleSheet.create({
     left: 30,
     right: 30,
     height: 3,
-    backgroundColor: Colors.light.tint,
-    shadowColor: Colors.light.tint,
+    backgroundColor: colors.tint,
+    shadowColor: colors.tint,
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.8,
     shadowRadius: 10,
     zIndex: 10,
   },
   detectingBadge: {
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 8,
@@ -4915,7 +4917,7 @@ const styles = StyleSheet.create({
   detectingText: {
     fontSize: 11,
     fontFamily: "Inter_700Bold",
-    color: "#FFF",
+    color: colors.textInverse,
     letterSpacing: 1,
   },
   detectedOverlay: {
@@ -4948,7 +4950,7 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.3)",
   },
   reviewThumbSelected: {
-    borderColor: Colors.light.tint,
+    borderColor: colors.tint,
     borderWidth: 3,
   },
   reviewThumbBadge: {
@@ -4963,7 +4965,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   reviewThumbBadgeSelected: {
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
   },
   reviewActionBtn: {
     flexGrow: 1,
@@ -4978,7 +4980,7 @@ const styles = StyleSheet.create({
   detectedViewText: {
     fontSize: 16,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.success,
+    color: colors.success,
   },
   detectedSubText: {
     fontSize: 13,
@@ -5054,7 +5056,7 @@ const styles = StyleSheet.create({
     height: 72,
     borderRadius: 36,
     borderWidth: 4,
-    borderColor: "#FFF",
+    borderColor: colors.textInverse,
     justifyContent: "center",
     alignItems: "center",
     padding: 4,
@@ -5063,7 +5065,7 @@ const styles = StyleSheet.create({
     width: "100%",
     height: "100%",
     borderRadius: 30,
-    backgroundColor: "#FFF",
+    backgroundColor: colors.textInverse,
     justifyContent: "center",
     alignItems: "center",
   },
@@ -5071,7 +5073,7 @@ const styles = StyleSheet.create({
     width: 20,
     height: 20,
     borderRadius: 10,
-    backgroundColor: Colors.light.error,
+    backgroundColor: colors.error,
   },
   scanningIndicator: {
     alignItems: "center",
@@ -5103,12 +5105,12 @@ const styles = StyleSheet.create({
   },
   actionBtnPrimary: {
     flex: 1,
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
   },
   actionBtnText: {
     fontSize: 16,
     fontFamily: "Inter_700Bold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
   permissionContainer: {
     justifyContent: "center",
@@ -5123,7 +5125,7 @@ const styles = StyleSheet.create({
     width: 96,
     height: 96,
     borderRadius: 48,
-    backgroundColor: Colors.light.tintLight,
+    backgroundColor: colors.tintLight,
     justifyContent: "center",
     alignItems: "center",
     marginBottom: 8,
@@ -5131,7 +5133,7 @@ const styles = StyleSheet.create({
   permissionTitle: {
     fontSize: 22,
     fontFamily: "Inter_700Bold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
   permissionDesc: {
     fontSize: 14,
@@ -5145,7 +5147,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
     paddingVertical: 16,
     paddingHorizontal: 32,
     borderRadius: 16,
@@ -5155,7 +5157,7 @@ const styles = StyleSheet.create({
   permissionBtnText: {
     fontSize: 16,
     fontFamily: "Inter_700Bold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
   permissionSkipBtn: {
     paddingVertical: 12,
@@ -5178,7 +5180,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingBottom: 12,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.light.borderLight,
+    borderBottomColor: colors.borderLight,
   },
   backBtn: {
     width: 40,
@@ -5189,13 +5191,13 @@ const styles = StyleSheet.create({
   formTitle: {
     fontSize: 18,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   submitBtn: {
     width: 40,
     height: 40,
     borderRadius: 14,
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
     justifyContent: "center",
     alignItems: "center",
   },
@@ -5228,13 +5230,13 @@ const styles = StyleSheet.create({
   previewText: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.success,
+    color: colors.success,
   },
   detectedBanner: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    backgroundColor: Colors.light.successLight,
+    backgroundColor: colors.successLight,
     padding: 14,
     borderRadius: 14,
     marginBottom: 20,
@@ -5242,15 +5244,15 @@ const styles = StyleSheet.create({
   detectedText: {
     fontSize: 14,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.success,
+    color: colors.success,
   },
   formGroup: {
     marginBottom: 18,
   },
   caseTypeDropdown: {
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
     borderRadius: 14,
     marginTop: 6,
     overflow: "hidden" as const,
@@ -5262,18 +5264,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 14,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.light.borderLight,
+    borderBottomColor: colors.borderLight,
   },
   caseTypeItemSelected: {
-    backgroundColor: Colors.light.tintLight,
+    backgroundColor: colors.tintLight,
   },
   caseTypeItemText: {
     fontSize: 15,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.text,
+    color: colors.text,
   },
   caseTypeItemTextSelected: {
-    color: Colors.light.tint,
+    color: colors.tint,
     fontFamily: "Inter_600SemiBold",
   },
   dueDateRow: {
@@ -5290,14 +5292,14 @@ const styles = StyleSheet.create({
   optionalLabel: {
     fontSize: 10,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
     textTransform: "none" as const,
     letterSpacing: 0,
   },
   dueDateDropdown: {
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
     borderRadius: 14,
     marginTop: 6,
     overflow: "hidden" as const,
@@ -5309,18 +5311,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.light.borderLight,
+    borderBottomColor: colors.borderLight,
   },
   quickDateText: {
     fontSize: 14,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.tint,
+    color: colors.tint,
     flex: 1,
   },
   quickDateSub: {
     fontSize: 12,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
   },
   calendarContainer: {
     padding: 10,
@@ -5335,7 +5337,7 @@ const styles = StyleSheet.create({
   calendarMonthText: {
     fontSize: 14,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   calendarWeekRow: {
     flexDirection: "row",
@@ -5346,7 +5348,7 @@ const styles = StyleSheet.create({
     textAlign: "center" as const,
     fontSize: 10,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
     paddingVertical: 4,
   },
   calendarGrid: {
@@ -5361,29 +5363,29 @@ const styles = StyleSheet.create({
     borderRadius: 20,
   },
   calendarDaySelected: {
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
   },
   calendarDayToday: {
     borderWidth: 1,
-    borderColor: Colors.light.tint,
+    borderColor: colors.tint,
   },
   calendarDayText: {
     fontSize: 13,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.text,
+    color: colors.text,
   },
   calendarDayTextSelected: {
-    color: "#FFF",
+    color: colors.textInverse,
     fontFamily: "Inter_700Bold",
   },
   calendarDayTextToday: {
-    color: Colors.light.tint,
+    color: colors.tint,
     fontFamily: "Inter_600SemiBold",
   },
   timeDueDropdown: {
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
     borderRadius: 14,
     marginTop: 6,
     padding: 10,
@@ -5400,7 +5402,7 @@ const styles = StyleSheet.create({
   timePickerLabel: {
     fontSize: 9,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
     textTransform: "uppercase" as const,
     letterSpacing: 0.5,
     marginBottom: 4,
@@ -5415,21 +5417,21 @@ const styles = StyleSheet.create({
   timeSpinValue: {
     fontSize: 20,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
     minWidth: 32,
     textAlign: "center" as const,
   },
   timeColon: {
     fontSize: 20,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
     paddingTop: 16,
   },
   amPmToggle: {
     borderRadius: 8,
     overflow: "hidden" as const,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
     marginTop: 2,
   },
   amPmBtn: {
@@ -5437,19 +5439,19 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   amPmBtnActive: {
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
   },
   amPmText: {
     fontSize: 12,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     textAlign: "center" as const,
   },
   amPmTextActive: {
-    color: "#FFF",
+    color: colors.textInverse,
   },
   timeApplyBtn: {
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
     borderRadius: 8,
     paddingVertical: 8,
     alignItems: "center" as const,
@@ -5458,26 +5460,26 @@ const styles = StyleSheet.create({
   timeApplyText: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
   formLabel: {
     fontSize: 12,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     textTransform: "uppercase" as const,
     letterSpacing: 1,
     marginBottom: 8,
   },
   formInput: {
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
     borderRadius: 14,
     paddingHorizontal: 16,
     paddingVertical: 14,
     fontSize: 15,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.text,
+    color: colors.text,
   },
   dropdownTrigger: {
     flexDirection: "row",
@@ -5487,12 +5489,12 @@ const styles = StyleSheet.create({
   dropdownTriggerText: {
     fontSize: 15,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.text,
+    color: colors.text,
   },
   dropdownPanel: {
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
     borderRadius: 14,
     marginTop: 6,
     overflow: "hidden",
@@ -5504,13 +5506,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.light.borderLight,
+    borderBottomColor: colors.borderLight,
   },
   dropdownSearchInput: {
     flex: 1,
     fontSize: 14,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.text,
+    color: colors.text,
     paddingVertical: 0,
   },
   dropdownList: {
@@ -5519,7 +5521,7 @@ const styles = StyleSheet.create({
   dropdownEmpty: {
     fontSize: 13,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
     textAlign: "center",
     paddingVertical: 20,
   },
@@ -5530,10 +5532,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.light.borderLight,
+    borderBottomColor: colors.borderLight,
   },
   dropdownItemSelected: {
-    backgroundColor: Colors.light.tintLight,
+    backgroundColor: colors.tintLight,
   },
   dropdownItemLeft: {
     flexDirection: "row",
@@ -5544,30 +5546,30 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: Colors.light.surfaceSecondary,
+    backgroundColor: colors.surfaceSecondary,
     alignItems: "center",
     justifyContent: "center",
   },
   dropdownAvatarText: {
     fontSize: 13,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   dropdownItemName: {
     fontSize: 14,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   dropdownItemSub: {
     fontSize: 11,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     marginTop: 1,
   },
   dropdownItemAddr: {
     fontSize: 10,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
     marginTop: 1,
   },
   addNewPatientBtn: {
@@ -5577,13 +5579,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.light.borderLight,
-    backgroundColor: Colors.light.tintLight,
+    borderBottomColor: colors.borderLight,
+    backgroundColor: colors.tintLight,
   },
   addNewPatientBtnText: {
     fontSize: 14,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.tint,
+    color: colors.tint,
   },
   addNewPatientPanel: {
     padding: 12,
@@ -5592,7 +5594,7 @@ const styles = StyleSheet.create({
   addNewPatientTitle: {
     fontSize: 14,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   addNewPatientActions: {
     flexDirection: "row",
@@ -5604,12 +5606,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 10,
-    backgroundColor: Colors.light.surfaceSecondary,
+    backgroundColor: colors.surfaceSecondary,
   },
   addNewPatientCancelText: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   addNewPatientConfirmBtn: {
     flexDirection: "row",
@@ -5618,17 +5620,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 10,
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
   },
   addNewPatientConfirmText: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
   toothChartPanel: {
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
     borderRadius: 14,
     marginTop: 6,
     padding: 12,
@@ -5643,17 +5645,17 @@ const styles = StyleSheet.create({
   toothChartTitle: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   toothChartClear: {
     fontSize: 12,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.error,
+    color: colors.error,
   },
   toothChartSectionLabel: {
     fontSize: 10,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
     textTransform: "uppercase" as const,
     letterSpacing: 0.5,
     marginBottom: 2,
@@ -5661,7 +5663,7 @@ const styles = StyleSheet.create({
   archContainer: {
     alignItems: "center" as const,
     paddingVertical: 10,
-    backgroundColor: "#EFF4FB",
+    backgroundColor: colors.surfaceAlt,
     borderRadius: 16,
     paddingHorizontal: 12,
     marginVertical: 4,
@@ -5669,7 +5671,7 @@ const styles = StyleSheet.create({
   archSectionTitle: {
     fontSize: 11,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.tint,
+    color: colors.tint,
     letterSpacing: 2,
     marginBottom: 4,
     marginTop: 4,
@@ -5688,22 +5690,22 @@ const styles = StyleSheet.create({
   archGapLine: {
     width: "100%",
     height: 1,
-    backgroundColor: Colors.light.border,
+    backgroundColor: colors.border,
   },
   archToothBtn: {
     width: 30,
     height: 30,
     borderRadius: 15,
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     alignItems: "center" as const,
     justifyContent: "center" as const,
     borderWidth: 1.5,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
   },
   archToothText: {
     fontSize: 10,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   toothRow: {
     flexDirection: "row",
@@ -5714,37 +5716,37 @@ const styles = StyleSheet.create({
     width: 34,
     height: 34,
     borderRadius: 8,
-    backgroundColor: Colors.light.surfaceSecondary,
+    backgroundColor: colors.surfaceSecondary,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: Colors.light.borderLight,
+    borderColor: colors.borderLight,
   },
   toothBtnSelected: {
-    backgroundColor: "#22C55E",
-    borderColor: "#22C55E",
+    backgroundColor: colors.success,
+    borderColor: colors.success,
   },
   toothBtnBridge: {
-    backgroundColor: "#EAB308",
-    borderColor: "#EAB308",
+    backgroundColor: colors.warning,
+    borderColor: colors.warning,
   },
   toothBtnMissing: {
-    backgroundColor: "#FEE2E2",
-    borderColor: "#EF4444",
+    backgroundColor: colors.errorLight,
+    borderColor: colors.error,
   },
   toothBtnText: {
     fontSize: 12,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   toothBtnTextSelected: {
-    color: "#FFF",
+    color: colors.textInverse,
   },
   toothBtnTextBridge: {
-    color: "#FFF",
+    color: colors.textInverse,
   },
   toothBtnTextMissing: {
-    color: Colors.light.error,
+    color: colors.error,
     fontSize: 11,
   },
   toothMissingWrap: {
@@ -5768,7 +5770,7 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     paddingHorizontal: 4,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.light.borderLight,
+    borderBottomColor: colors.borderLight,
     marginBottom: 4,
   },
   legendItem: {
@@ -5784,24 +5786,24 @@ const styles = StyleSheet.create({
   legendText: {
     fontSize: 10,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   legendHint: {
     fontSize: 9,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
     fontStyle: "italic" as const,
     marginLeft: "auto",
   },
   toothChartDivider: {
     height: 1,
-    backgroundColor: Colors.light.borderLight,
+    backgroundColor: colors.borderLight,
     marginVertical: 4,
   },
   toothChartSummary: {
     paddingTop: 8,
     borderTopWidth: 1,
-    borderTopColor: Colors.light.borderLight,
+    borderTopColor: colors.borderLight,
     marginTop: 4,
     gap: 6,
   },
@@ -5813,14 +5815,14 @@ const styles = StyleSheet.create({
   toothChartSummaryText: {
     fontSize: 12,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.tint,
+    color: colors.tint,
     flex: 1,
   },
   toothPricingRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    backgroundColor: Colors.light.tintLight,
+    backgroundColor: colors.tintLight,
     borderRadius: 8,
     paddingHorizontal: 10,
     paddingVertical: 8,
@@ -5828,12 +5830,12 @@ const styles = StyleSheet.create({
   toothPricingLabel: {
     fontSize: 11,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   toothPricingTotal: {
     fontSize: 16,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.tint,
+    color: colors.tint,
   },
   formTextArea: {
     minHeight: 80,
@@ -5852,21 +5854,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 10,
-    backgroundColor: Colors.light.surfaceSecondary,
+    backgroundColor: colors.surfaceSecondary,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
   },
   materialChipActive: {
-    backgroundColor: Colors.light.tintLight,
-    borderColor: Colors.light.tint,
+    backgroundColor: colors.tintLight,
+    borderColor: colors.tint,
   },
   materialText: {
     fontSize: 12,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   materialTextActive: {
-    color: Colors.light.tint,
+    color: colors.tint,
   },
   rushToggle: {
     flexDirection: "row",
@@ -5874,9 +5876,9 @@ const styles = StyleSheet.create({
     gap: 10,
     padding: 16,
     borderRadius: 14,
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
     marginBottom: 18,
   },
   rushToggleActive: {
@@ -5887,13 +5889,13 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 14,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   rushToggleSwitch: {
     width: 46,
     height: 26,
     borderRadius: 13,
-    backgroundColor: Colors.light.surfaceSecondary,
+    backgroundColor: colors.surfaceSecondary,
     padding: 3,
     justifyContent: "center",
   },
@@ -5901,11 +5903,11 @@ const styles = StyleSheet.create({
     width: 20,
     height: 20,
     borderRadius: 10,
-    backgroundColor: Colors.light.textTertiary,
+    backgroundColor: colors.textTertiary,
   },
   rushToggleDotActive: {
     alignSelf: "flex-end" as const,
-    backgroundColor: "#EF4444",
+    backgroundColor: colors.error,
   },
   photoStripSection: {
     marginBottom: 16,
@@ -5940,11 +5942,11 @@ const styles = StyleSheet.create({
     height: 80,
     borderRadius: 12,
     borderWidth: 2,
-    borderColor: Colors.light.tint + "40",
+    borderColor: colors.tint + "40",
     borderStyle: "dashed" as const,
     justifyContent: "center",
     alignItems: "center",
-    backgroundColor: Colors.light.tintLight,
+    backgroundColor: colors.tintLight,
   },
   addPhotoBtnRow: {
     flexDirection: "row",
@@ -5959,20 +5961,20 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingVertical: 12,
     borderRadius: 12,
-    backgroundColor: Colors.light.tintLight,
+    backgroundColor: colors.tintLight,
     borderWidth: 1,
-    borderColor: Colors.light.tint + "30",
+    borderColor: colors.tint + "30",
   },
   addMorePhotosBtnText: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.tint,
+    color: colors.tint,
   },
   activitySection: {
     marginTop: 8,
     paddingTop: 20,
     borderTopWidth: 1,
-    borderTopColor: Colors.light.borderLight,
+    borderTopColor: colors.borderLight,
   },
   activityHeader: {
     flexDirection: "row",
@@ -5983,11 +5985,11 @@ const styles = StyleSheet.create({
   activityHeaderText: {
     fontSize: 14,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
+    color: colors.text,
     flex: 1,
   },
   activityBadge: {
-    backgroundColor: Colors.light.tintLight,
+    backgroundColor: colors.tintLight,
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 10,
@@ -5995,7 +5997,7 @@ const styles = StyleSheet.create({
   activityBadgeText: {
     fontSize: 11,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.tint,
+    color: colors.tint,
   },
   activityRow: {
     flexDirection: "row",
@@ -6003,7 +6005,7 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.light.borderLight,
+    borderBottomColor: colors.borderLight,
   },
   activityIconWrap: {
     width: 32,
@@ -6019,12 +6021,12 @@ const styles = StyleSheet.create({
   activityDesc: {
     fontSize: 13,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.text,
+    color: colors.text,
   },
   activityTime: {
     fontSize: 11,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
   },
   activityThumb: {
     width: 36,
@@ -6052,14 +6054,14 @@ const styles = StyleSheet.create({
     width: 20,
     height: 20,
     borderRadius: 10,
-    backgroundColor: Colors.light.success,
+    backgroundColor: colors.success,
     justifyContent: "center",
     alignItems: "center",
   },
   photoBadgeText: {
     fontSize: 11,
     fontFamily: "Inter_700Bold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
   manualEntryLink: {
     flexDirection: "row",
@@ -6077,7 +6079,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    backgroundColor: "#6366F1",
+    backgroundColor: colors.indigo,
     borderRadius: 14,
     paddingVertical: 14,
     marginTop: 8,
@@ -6085,12 +6087,12 @@ const styles = StyleSheet.create({
   barcodeBtnText: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
   archChartWrap: {
     alignItems: "center" as const,
     paddingVertical: 12,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: colors.surface,
     borderRadius: 16,
     marginVertical: 4,
     overflow: "hidden" as const,
@@ -6106,7 +6108,7 @@ const styles = StyleSheet.create({
   adaQuadrantLabel: {
     fontSize: 10,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
     letterSpacing: 0.5,
     textTransform: "uppercase" as const,
   },
@@ -6123,9 +6125,9 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     justifyContent: "center" as const,
     alignItems: "center" as const,
-    backgroundColor: Colors.light.surfaceSecondary,
+    backgroundColor: colors.surfaceSecondary,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
   },
   adaToothBtnMidline: {
     marginRight: 8,
@@ -6133,12 +6135,12 @@ const styles = StyleSheet.create({
   adaToothText: {
     fontSize: 11,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
   },
   adaMidline: {
     width: 1,
     height: 32,
-    backgroundColor: Colors.light.textTertiary,
+    backgroundColor: colors.textTertiary,
     marginHorizontal: 2,
   },
   adaDividerRow: {
@@ -6148,6 +6150,6 @@ const styles = StyleSheet.create({
   adaDividerLine: {
     height: 1,
     width: "90%",
-    backgroundColor: Colors.light.borderLight,
+    backgroundColor: colors.borderLight,
   },
 });

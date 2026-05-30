@@ -21,6 +21,7 @@ import * as FileSystem from "expo-file-system";
 import { useEmailInvoice, useSmsInvoice } from "@workspace/api-client-react";
 import type { Invoice, InvoiceLineItem } from "@/lib/data";
 import { formatInvNum } from "@/lib/data";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 
 export const PRICE_LIST_ITEMS = [
   { key: "zirconia_crown", label: "Zirconia Crown" },
@@ -97,6 +98,8 @@ function formatCurrency(amount: number) {
 
 export default function InvoicePDFViewer({ visible, onClose, invoice, editable = false, onSave, doctorPricing, companyLogo, labName, labAddress, labPhone, invoiceTemplate, isAdmin = false, practiceEmail = "", practicePhone = "", serverId }: InvoicePDFViewerProps) {
   const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const s = useMemo(() => makeStyles(colors), [colors]);
   const emailMutation = useEmailInvoice();
   const smsMutation = useSmsInvoice();
   const isSending = emailMutation.isPending || smsMutation.isPending;
@@ -199,10 +202,10 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
   }
 
   const statusColor =
-    invoice.status === "paid" ? "#10B981" :
-    invoice.status === "overdue" ? "#EF4444" :
-    invoice.status === "sent" ? "#3B82F6" :
-    "#F59E0B";
+    invoice.status === "paid" ? colors.success :
+    invoice.status === "overdue" ? colors.error :
+    invoice.status === "sent" ? colors.info :
+    colors.warning;
 
   function handleEditItem(idx: number) {
     setEditingIdx(idx);
@@ -638,7 +641,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
         <View style={[s.container, { paddingTop: Platform.OS === "web" ? 67 : insets.top }]}>
           <View style={s.header}>
             <Pressable onPress={() => { if (editMode && hasChanges) { handleCancelEdit(); } else { onClose(); } }} style={s.closeBtn}>
-              <Ionicons name="arrow-back" size={22} color="#1E293B" />
+              <Ionicons name="arrow-back" size={22} color={colors.text} />
             </Pressable>
             <Text style={s.headerTitle}>{editMode ? "Edit Invoice" : "Invoice"}</Text>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -648,18 +651,18 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                   style={s.editBtn}
                   testID="invoice-print-btn"
                 >
-                  <Ionicons name="print-outline" size={18} color="#2563EB" />
+                  <Ionicons name="print-outline" size={18} color={colors.info} />
                   <Text style={s.editBtnText}>Print</Text>
                 </Pressable>
               )}
               {isAdmin && !editMode && (
                 <Pressable
                   onPress={handleOpenSend}
-                  style={[s.editBtn, { backgroundColor: "#F0FDF4" }]}
+                  style={[s.editBtn, { backgroundColor: colors.successSurface }]}
                   testID="invoice-send-btn"
                 >
-                  <Ionicons name="paper-plane-outline" size={18} color="#16A34A" />
-                  <Text style={[s.editBtnText, { color: "#16A34A" }]}>Send</Text>
+                  <Ionicons name="paper-plane-outline" size={18} color={colors.successStrong} />
+                  <Text style={[s.editBtnText, { color: colors.successStrong }]}>Send</Text>
                 </Pressable>
               )}
               {editable && !editMode ? (
@@ -667,13 +670,13 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                   onPress={() => setEditMode(true)}
                   style={s.editBtn}
                 >
-                  <Ionicons name="create-outline" size={18} color="#2563EB" />
+                  <Ionicons name="create-outline" size={18} color={colors.info} />
                   <Text style={s.editBtnText}>Edit</Text>
                 </Pressable>
               ) : editMode ? (
                 <Pressable onPress={handleCancelEdit} style={s.editBtn}>
-                  <Ionicons name="close" size={18} color="#EF4444" />
-                  <Text style={[s.editBtnText, { color: "#EF4444" }]}>Cancel</Text>
+                  <Ionicons name="close" size={18} color={colors.error} />
+                  <Text style={[s.editBtnText, { color: colors.error }]}>Cancel</Text>
                 </Pressable>
               ) : null}
             </View>
@@ -737,11 +740,11 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                     <Text style={s.billToLabel}>BILL TO</Text>
                     {editMode ? (
                       <TextInput
-                        style={[s.billToName, { borderBottomWidth: 1, borderBottomColor: "#3B82F6", paddingVertical: 4, minWidth: 120 }]}
+                        style={[s.billToName, { borderBottomWidth: 1, borderBottomColor: colors.info, paddingVertical: 4, minWidth: 120 }]}
                         value={editBillTo}
                         onChangeText={(v) => { setEditBillTo(v); setHasChanges(true); }}
                         placeholder="Provider name"
-                        placeholderTextColor="#94A3B8"
+                        placeholderTextColor={colors.textTertiary}
                       />
                     ) : (
                       <Text style={s.billToName} numberOfLines={2}>{invoice.billTo}</Text>
@@ -799,34 +802,34 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                     {editMode && (
                       <View style={s.rowActions}>
                         <Pressable onPress={() => handleEditItem(idx)} hitSlop={8}>
-                          <Ionicons name="pencil" size={14} color="#3B82F6" />
+                          <Ionicons name="pencil" size={14} color={colors.info} />
                         </Pressable>
                         <Pressable onPress={() => handleOpenDiscount(idx)} hitSlop={8}>
-                          <Ionicons name="pricetag" size={14} color="#F59E0B" />
+                          <Ionicons name="pricetag" size={14} color={colors.warning} />
                         </Pressable>
                         <Pressable onPress={() => handleRemoveItem(idx)} hitSlop={8}>
-                          <Ionicons name="trash" size={14} color="#EF4444" />
+                          <Ionicons name="trash" size={14} color={colors.error} />
                         </Pressable>
                       </View>
                     )}
                   </View>
                   {(li.subItems ?? []).map((sub, sidx) => (
-                    <View key={`sub-${sidx}`} style={{ flexDirection: "row", alignItems: "center", paddingVertical: 4, paddingLeft: 20, backgroundColor: "#F8FAFC", borderTopWidth: 1, borderTopColor: "#E5E7EB" }}>
+                    <View key={`sub-${sidx}`} style={{ flexDirection: "row", alignItems: "center", paddingVertical: 4, paddingLeft: 20, backgroundColor: colors.canvas, borderTopWidth: 1, borderTopColor: colors.border }}>
                       <View style={s.colItem2}>
-                        <Text style={[s.tableCell, { color: "#475569", fontSize: 11 }]} numberOfLines={1}>
+                        <Text style={[s.tableCell, { color: colors.textSecondary, fontSize: 11 }]} numberOfLines={1}>
                           ↳ {sub.toothNumber != null ? `#${sub.toothNumber} ` : ""}{sub.item}
                         </Text>
                         {sub.description && sub.description !== sub.item ? (
                           <Text style={[s.tableCellDesc, { fontSize: 10 }]} numberOfLines={1}>{sub.description}</Text>
                         ) : null}
                       </View>
-                      <Text style={[s.tableCell, s.colQty2, { color: "#64748B", fontSize: 11 }]}>{sub.qty}</Text>
-                      <Text style={[s.tableCell, s.colRate2, { color: "#64748B", fontSize: 11 }]}>{formatCurrency(sub.rate)}</Text>
-                      <Text style={[s.tableCell, s.colAmount2, { color: "#334155", fontSize: 11 }]}>{formatCurrency(sub.amount)}</Text>
+                      <Text style={[s.tableCell, s.colQty2, { color: colors.textSecondary, fontSize: 11 }]}>{sub.qty}</Text>
+                      <Text style={[s.tableCell, s.colRate2, { color: colors.textSecondary, fontSize: 11 }]}>{formatCurrency(sub.rate)}</Text>
+                      <Text style={[s.tableCell, s.colAmount2, { color: colors.textSecondary, fontSize: 11 }]}>{formatCurrency(sub.amount)}</Text>
                       {editMode && (
                         <View style={[s.rowActions, { width: 32 }]}>
                           <Pressable onPress={() => handleRemoveSubItem(idx, sidx)} hitSlop={8}>
-                            <Ionicons name="trash" size={13} color="#EF4444" />
+                            <Ionicons name="trash" size={13} color={colors.error} />
                           </Pressable>
                         </View>
                       )}
@@ -835,10 +838,10 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                   {editMode && (
                     <Pressable
                       onPress={() => { resetItemForm(); setSubItemParentIdx(idx); setShowAddItem(true); }}
-                      style={{ flexDirection: "row", alignItems: "center", paddingLeft: 24, paddingVertical: 5, backgroundColor: "#F8FAFC", borderTopWidth: 1, borderTopColor: "#E5E7EB" }}
+                      style={{ flexDirection: "row", alignItems: "center", paddingLeft: 24, paddingVertical: 5, backgroundColor: colors.canvas, borderTopWidth: 1, borderTopColor: colors.border }}
                     >
-                      <Ionicons name="add-circle-outline" size={14} color="#2563EB" />
-                      <Text style={{ fontSize: 11, color: "#2563EB", marginLeft: 4 }}>Add Sub-item</Text>
+                      <Ionicons name="add-circle-outline" size={14} color={colors.info} />
+                      <Text style={{ fontSize: 11, color: colors.info, marginLeft: 4 }}>Add Sub-item</Text>
                     </Pressable>
                   )}
                   </React.Fragment>
@@ -849,7 +852,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                     onPress={() => { resetItemForm(); setShowAddItem(true); }}
                     style={s.addItemBtn}
                   >
-                    <Ionicons name="add-circle" size={18} color="#2563EB" />
+                    <Ionicons name="add-circle" size={18} color={colors.info} />
                     <Text style={s.addItemBtnText}>Add Line Item</Text>
                   </Pressable>
                 )}
@@ -863,7 +866,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                   {credits > 0 && (
                     <View style={s.totalRow}>
                       <Text style={s.totalLabel}>Credits</Text>
-                      <Text style={[s.totalValue, { color: "#10B981" }]}>-{formatCurrency(credits)}</Text>
+                      <Text style={[s.totalValue, { color: colors.success }]}>-{formatCurrency(credits)}</Text>
                     </View>
                   )}
                   <View style={s.totalDivider} />
@@ -878,11 +881,11 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                   <View style={s.notesSection}>
                     <Text style={s.notesLabel}>NOTES</Text>
                     <TextInput
-                      style={[s.notesText, { borderWidth: 1, borderColor: "#3B82F6", borderRadius: 8, padding: 10, minHeight: 80, textAlignVertical: "top" }]}
+                      style={[s.notesText, { borderWidth: 1, borderColor: colors.info, borderRadius: 8, padding: 10, minHeight: 80, textAlignVertical: "top" }]}
                       value={editNotes}
                       onChangeText={(v) => { setEditNotes(v); setHasChanges(true); }}
                       placeholder="Add notes..."
-                      placeholderTextColor="#94A3B8"
+                      placeholderTextColor={colors.textTertiary}
                       multiline
                     />
                   </View>
@@ -897,11 +900,11 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                   <View style={s.notesSection}>
                     <Text style={s.notesLabel}>INVOICE NOTES</Text>
                     <TextInput
-                      style={[s.notesText, { borderWidth: 1, borderColor: "#3B82F6", borderRadius: 8, padding: 10, minHeight: 80, textAlignVertical: "top" }]}
+                      style={[s.notesText, { borderWidth: 1, borderColor: colors.info, borderRadius: 8, padding: 10, minHeight: 80, textAlignVertical: "top" }]}
                       value={editInvoiceNotes}
                       onChangeText={(v) => { setEditInvoiceNotes(v); setHasChanges(true); }}
                       placeholder="Add invoice notes..."
-                      placeholderTextColor="#94A3B8"
+                      placeholderTextColor={colors.textTertiary}
                       multiline
                     />
                   </View>
@@ -947,7 +950,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                 onPress={handleSaveAll}
                 style={({ pressed }) => [s.saveBtn, pressed && { opacity: 0.85 }]}
               >
-                <Ionicons name="checkmark-circle" size={20} color="#FFF" />
+                <Ionicons name="checkmark-circle" size={20} color={colors.textInverse} />
                 <Text style={s.saveBtnText}>Save Changes</Text>
               </Pressable>
             )}
@@ -971,14 +974,14 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                       value={newItemName}
                       onChangeText={handleItemNameChange}
                       placeholder="e.g. Zirconia Crown"
-                      placeholderTextColor="#94A3B8"
+                      placeholderTextColor={colors.textTertiary}
                     />
                     {pricedItems.length > 0 && (
                       <Pressable
                         onPress={() => setShowItemDropdown(!showItemDropdown)}
                         style={s.dropdownArrow}
                       >
-                        <Ionicons name={showItemDropdown ? "chevron-up" : "chevron-down"} size={20} color="#64748B" />
+                        <Ionicons name={showItemDropdown ? "chevron-up" : "chevron-down"} size={20} color={colors.textSecondary} />
                       </Pressable>
                     )}
                   </Pressable>
@@ -988,7 +991,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                         {pricedItems.map((item) => (
                           <Pressable
                             key={item.key}
-                            style={({ pressed }) => [s.dropdownItem, pressed && { backgroundColor: "#F1F5F9" }]}
+                            style={({ pressed }) => [s.dropdownItem, pressed && { backgroundColor: colors.surfaceAlt }]}
                             onPress={() => handleSelectPricedItem(item)}
                           >
                             <Text style={s.dropdownItemLabel}>{item.label}</Text>
@@ -1006,7 +1009,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                   value={newItemDesc}
                   onChangeText={setNewItemDesc}
                   placeholder="e.g. Full contour zirconia - tooth #14"
-                  placeholderTextColor="#94A3B8"
+                  placeholderTextColor={colors.textTertiary}
                 />
 
                 <View style={s.fieldRow}>
@@ -1017,7 +1020,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                       value={newItemQty}
                       onChangeText={setNewItemQty}
                       keyboardType="number-pad"
-                      placeholderTextColor="#94A3B8"
+                      placeholderTextColor={colors.textTertiary}
                     />
                   </View>
                   <View style={{ flex: 1 }}>
@@ -1028,7 +1031,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                       onChangeText={setNewItemRate}
                       keyboardType="decimal-pad"
                       placeholder="0.00"
-                      placeholderTextColor="#94A3B8"
+                      placeholderTextColor={colors.textTertiary}
                     />
                   </View>
                 </View>
@@ -1084,7 +1087,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                 onChangeText={setDiscountValue}
                 keyboardType="decimal-pad"
                 placeholder={discountType === "percent" ? "e.g. 10" : "e.g. 25.00"}
-                placeholderTextColor="#94A3B8"
+                placeholderTextColor={colors.textTertiary}
               />
 
               {discountIdx !== null && discountValue ? (
@@ -1116,7 +1119,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                 {!practiceEmail ? (
                   <>
                     <View style={s.sendWarnBox}>
-                      <Ionicons name="warning-outline" size={15} color="#D97706" />
+                      <Ionicons name="warning-outline" size={15} color={colors.warningStrong} />
                       <Text style={s.sendWarnText}>
                         No billing email on file for this practice. Update it in the practice profile before sending.
                       </Text>
@@ -1138,7 +1141,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                       value={sendToEmail}
                       onChangeText={setSendToEmail}
                       placeholder="billing@practice.com"
-                      placeholderTextColor="#94A3B8"
+                      placeholderTextColor={colors.textTertiary}
                       keyboardType="email-address"
                       autoCapitalize="none"
                       editable={!isSending}
@@ -1150,7 +1153,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                       value={sendEmailSubject}
                       onChangeText={setSendEmailSubject}
                       placeholder="Invoice subject"
-                      placeholderTextColor="#94A3B8"
+                      placeholderTextColor={colors.textTertiary}
                       editable={!isSending}
                     />
 
@@ -1160,7 +1163,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                       value={sendEmailMessage}
                       onChangeText={setSendEmailMessage}
                       placeholder="Message body"
-                      placeholderTextColor="#94A3B8"
+                      placeholderTextColor={colors.textTertiary}
                       multiline
                       editable={!isSending}
                     />
@@ -1175,7 +1178,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                         disabled={!sendToEmail.trim() || isSending}
                       >
                         {isSending
-                          ? <ActivityIndicator size="small" color="#FFF" />
+                          ? <ActivityIndicator size="small" color={colors.textInverse} />
                           : <Text style={s.modalBtnSaveText}>Send Email</Text>}
                       </Pressable>
                     </View>
@@ -1195,7 +1198,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                 {!practicePhone ? (
                   <>
                     <View style={s.sendWarnBox}>
-                      <Ionicons name="warning-outline" size={15} color="#D97706" />
+                      <Ionicons name="warning-outline" size={15} color={colors.warningStrong} />
                       <Text style={s.sendWarnText}>
                         No phone number on file for this practice. Update it in the practice profile before sending.
                       </Text>
@@ -1217,7 +1220,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                       value={sendToPhone}
                       onChangeText={setSendToPhone}
                       placeholder="+1 (555) 000-0000"
-                      placeholderTextColor="#94A3B8"
+                      placeholderTextColor={colors.textTertiary}
                       keyboardType="phone-pad"
                       editable={!isSending}
                     />
@@ -1228,7 +1231,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                       value={sendSmsMessage}
                       onChangeText={setSendSmsMessage}
                       placeholder="Message text"
-                      placeholderTextColor="#94A3B8"
+                      placeholderTextColor={colors.textTertiary}
                       multiline
                       editable={!isSending}
                     />
@@ -1243,7 +1246,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                         disabled={!sendToPhone.trim() || isSending}
                       >
                         {isSending
-                          ? <ActivityIndicator size="small" color="#FFF" />
+                          ? <ActivityIndicator size="small" color={colors.textInverse} />
                           : <Text style={s.modalBtnSaveText}>Send Text</Text>}
                       </Pressable>
                     </View>
@@ -1258,10 +1261,10 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
   );
 }
 
-const s = StyleSheet.create({
+const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#F1F5F9",
+    backgroundColor: colors.surfaceAlt,
   },
   header: {
     flexDirection: "row",
@@ -1269,9 +1272,9 @@ const s = StyleSheet.create({
     justifyContent: "space-between",
     paddingHorizontal: 16,
     paddingVertical: 12,
-    backgroundColor: "#FFF",
+    backgroundColor: colors.surface,
     borderBottomWidth: 1,
-    borderBottomColor: "#E2E8F0",
+    borderBottomColor: colors.border,
   },
   closeBtn: {
     width: 40,
@@ -1283,7 +1286,7 @@ const s = StyleSheet.create({
   headerTitle: {
     fontSize: 17,
     fontFamily: "Inter_700Bold",
-    color: "#1E293B",
+    color: colors.text,
   },
   editBtn: {
     flexDirection: "row",
@@ -1292,19 +1295,19 @@ const s = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 8,
-    backgroundColor: "#EFF6FF",
+    backgroundColor: colors.infoSurface,
   },
   editBtnText: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: "#2563EB",
+    color: colors.info,
   },
   scroll: {
     flex: 1,
   },
   paper: {
     margin: 16,
-    backgroundColor: "#FFF",
+    backgroundColor: colors.surface,
     borderRadius: 12,
     overflow: "hidden",
     ...Platform.select({
@@ -1314,7 +1317,7 @@ const s = StyleSheet.create({
   },
   paperTopStripe: {
     height: 6,
-    backgroundColor: "#2563EB",
+    backgroundColor: colors.info,
   },
   paperContent: {
     padding: 20,
@@ -1341,13 +1344,13 @@ const s = StyleSheet.create({
   labName: {
     fontSize: 18,
     fontFamily: "Inter_700Bold",
-    color: "#1E293B",
+    color: colors.text,
     marginBottom: 1,
   },
   labDetail: {
     fontSize: 11,
     fontFamily: "Inter_400Regular",
-    color: "#64748B",
+    color: colors.textSecondary,
     lineHeight: 16,
   },
   invoiceBadgeCol: {
@@ -1357,13 +1360,13 @@ const s = StyleSheet.create({
   invoiceLabel: {
     fontSize: 22,
     fontFamily: "Inter_700Bold",
-    color: "#2563EB",
+    color: colors.info,
     letterSpacing: 2,
   },
   invoiceNumber: {
     fontSize: 12,
     fontFamily: "Inter_600SemiBold",
-    color: "#64748B",
+    color: colors.textSecondary,
     marginTop: 2,
   },
   statusPill: {
@@ -1387,7 +1390,7 @@ const s = StyleSheet.create({
   },
   divider: {
     height: 1,
-    backgroundColor: "#E2E8F0",
+    backgroundColor: colors.border,
     marginVertical: 16,
   },
   datesRow: {
@@ -1399,7 +1402,7 @@ const s = StyleSheet.create({
   dateLabel: {
     fontSize: 10,
     fontFamily: "Inter_600SemiBold",
-    color: "#94A3B8",
+    color: colors.textTertiary,
     textTransform: "uppercase",
     letterSpacing: 0.5,
     marginBottom: 3,
@@ -1407,12 +1410,12 @@ const s = StyleSheet.create({
   dateValue: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: "#1E293B",
+    color: colors.text,
   },
   billToSection: {
     flexDirection: "row",
     marginBottom: 16,
-    backgroundColor: "#F8FAFC",
+    backgroundColor: colors.canvas,
     padding: 14,
     borderRadius: 10,
     alignItems: "flex-start",
@@ -1420,31 +1423,31 @@ const s = StyleSheet.create({
   billToCol: {},
   billToDivider: {
     width: 1,
-    backgroundColor: "#E2E8F0",
+    backgroundColor: colors.border,
     alignSelf: "stretch",
     marginHorizontal: 14,
   },
   billToLabel: {
     fontSize: 9,
     fontFamily: "Inter_700Bold",
-    color: "#94A3B8",
+    color: colors.textTertiary,
     letterSpacing: 1,
     marginBottom: 4,
   },
   billToName: {
     fontSize: 14,
     fontFamily: "Inter_700Bold",
-    color: "#1E293B",
+    color: colors.text,
     marginBottom: 2,
   },
   billToDetail: {
     fontSize: 12,
     fontFamily: "Inter_400Regular",
-    color: "#64748B",
+    color: colors.textSecondary,
   },
   caseInfoBar: {
     flexDirection: "row",
-    backgroundColor: "#EFF6FF",
+    backgroundColor: colors.infoSurface,
     borderRadius: 10,
     padding: 12,
     marginBottom: 20,
@@ -1457,12 +1460,12 @@ const s = StyleSheet.create({
   caseInfoDivider: {
     width: 1,
     height: 28,
-    backgroundColor: "#BFDBFE",
+    backgroundColor: colors.infoLight,
   },
   caseInfoLabel: {
     fontSize: 9,
     fontFamily: "Inter_600SemiBold",
-    color: "#3B82F6",
+    color: colors.info,
     textTransform: "uppercase",
     letterSpacing: 0.5,
     marginBottom: 2,
@@ -1470,11 +1473,11 @@ const s = StyleSheet.create({
   caseInfoValue: {
     fontSize: 13,
     fontFamily: "Inter_700Bold",
-    color: "#1E40AF",
+    color: colors.infoStrong,
   },
   tableHeader: {
     flexDirection: "row",
-    backgroundColor: "#1E293B",
+    backgroundColor: colors.text,
     paddingVertical: 10,
     paddingHorizontal: 10,
     borderTopLeftRadius: 8,
@@ -1483,7 +1486,7 @@ const s = StyleSheet.create({
   tableHeaderText: {
     fontSize: 9,
     fontFamily: "Inter_700Bold",
-    color: "#FFF",
+    color: colors.textInverse,
     textTransform: "uppercase",
     letterSpacing: 0.5,
   },
@@ -1492,26 +1495,26 @@ const s = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 10,
     borderBottomWidth: 1,
-    borderBottomColor: "#F1F5F9",
+    borderBottomColor: colors.surfaceAlt,
     alignItems: "center",
   },
   tableRowAlt: {
-    backgroundColor: "#F8FAFC",
+    backgroundColor: colors.canvas,
   },
   tableCell: {
     fontSize: 12,
     fontFamily: "Inter_400Regular",
-    color: "#334155",
+    color: colors.textSecondary,
   },
   tableCellBold: {
     fontSize: 12,
     fontFamily: "Inter_600SemiBold",
-    color: "#1E293B",
+    color: colors.text,
   },
   tableCellDesc: {
     fontSize: 10,
     fontFamily: "Inter_400Regular",
-    color: "#94A3B8",
+    color: colors.textTertiary,
     marginTop: 1,
   },
   colItem2: {
@@ -1545,7 +1548,7 @@ const s = StyleSheet.create({
     gap: 6,
     paddingVertical: 12,
     borderWidth: 1.5,
-    borderColor: "#2563EB",
+    borderColor: colors.info,
     borderStyle: "dashed",
     borderRadius: 8,
     marginTop: 8,
@@ -1553,7 +1556,7 @@ const s = StyleSheet.create({
   addItemBtnText: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: "#2563EB",
+    color: colors.info,
   },
   totalsSection: {
     marginTop: 16,
@@ -1569,16 +1572,16 @@ const s = StyleSheet.create({
   totalLabel: {
     fontSize: 12,
     fontFamily: "Inter_500Medium",
-    color: "#64748B",
+    color: colors.textSecondary,
   },
   totalValue: {
     fontSize: 12,
     fontFamily: "Inter_600SemiBold",
-    color: "#1E293B",
+    color: colors.text,
   },
   totalDivider: {
     height: 1,
-    backgroundColor: "#E2E8F0",
+    backgroundColor: colors.border,
     marginVertical: 6,
   },
   grandTotalRow: {
@@ -1587,32 +1590,32 @@ const s = StyleSheet.create({
   grandTotalLabel: {
     fontSize: 15,
     fontFamily: "Inter_700Bold",
-    color: "#1E293B",
+    color: colors.text,
   },
   grandTotalValue: {
     fontSize: 18,
     fontFamily: "Inter_700Bold",
-    color: "#2563EB",
+    color: colors.info,
   },
   notesSection: {
     marginTop: 20,
     padding: 14,
-    backgroundColor: "#FFFBEB",
+    backgroundColor: colors.warningSurface,
     borderRadius: 10,
     borderLeftWidth: 3,
-    borderLeftColor: "#F59E0B",
+    borderLeftColor: colors.warning,
   },
   notesLabel: {
     fontSize: 9,
     fontFamily: "Inter_700Bold",
-    color: "#92400E",
+    color: colors.warningText,
     letterSpacing: 1,
     marginBottom: 4,
   },
   notesText: {
     fontSize: 12,
     fontFamily: "Inter_400Regular",
-    color: "#78350F",
+    color: colors.warningText,
     lineHeight: 18,
   },
   textBlocksSection: {
@@ -1620,13 +1623,13 @@ const s = StyleSheet.create({
   },
   textBlocksDivider: {
     height: 1,
-    backgroundColor: "#E2E8F0",
+    backgroundColor: colors.border,
     marginBottom: 14,
   },
   textBlockText: {
     fontSize: 12,
     fontFamily: "Inter_400Regular",
-    color: "#1E293B",
+    color: colors.text,
     lineHeight: 18,
     marginBottom: 10,
     whiteSpace: "pre-wrap",
@@ -1647,18 +1650,18 @@ const s = StyleSheet.create({
   footerDivider: {
     width: "60%",
     height: 1,
-    backgroundColor: "#E2E8F0",
+    backgroundColor: colors.border,
     marginBottom: 12,
   },
   footerText: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: "#64748B",
+    color: colors.textSecondary,
   },
   footerSub: {
     fontSize: 11,
     fontFamily: "Inter_400Regular",
-    color: "#94A3B8",
+    color: colors.textTertiary,
     marginTop: 2,
   },
   saveBtn: {
@@ -1671,12 +1674,12 @@ const s = StyleSheet.create({
     marginBottom: 20,
     paddingVertical: 16,
     borderRadius: 12,
-    backgroundColor: "#10B981",
+    backgroundColor: colors.success,
   },
   saveBtnText: {
     fontSize: 16,
     fontFamily: "Inter_700Bold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
   modalOverlay: {
     flex: 1,
@@ -1685,33 +1688,33 @@ const s = StyleSheet.create({
     padding: 24,
   },
   modalCard: {
-    backgroundColor: "#FFF",
+    backgroundColor: colors.surface,
     borderRadius: 16,
     padding: 20,
   },
   modalTitle: {
     fontSize: 18,
     fontFamily: "Inter_700Bold",
-    color: "#1E293B",
+    color: colors.text,
     marginBottom: 16,
   },
   fieldLabel: {
     fontSize: 12,
     fontFamily: "Inter_600SemiBold",
-    color: "#64748B",
+    color: colors.textSecondary,
     marginBottom: 4,
     marginTop: 8,
   },
   fieldInput: {
     borderWidth: 1,
-    borderColor: "#E2E8F0",
+    borderColor: colors.border,
     borderRadius: 10,
     paddingHorizontal: 14,
     paddingVertical: 10,
     fontSize: 14,
     fontFamily: "Inter_500Medium",
-    color: "#1E293B",
-    backgroundColor: "#F8FAFC",
+    color: colors.text,
+    backgroundColor: colors.canvas,
   },
   fieldRow: {
     flexDirection: "row",
@@ -1720,7 +1723,7 @@ const s = StyleSheet.create({
   previewAmt: {
     fontSize: 14,
     fontFamily: "Inter_700Bold",
-    color: "#2563EB",
+    color: colors.info,
     marginTop: 12,
     textAlign: "right",
   },
@@ -1736,30 +1739,30 @@ const s = StyleSheet.create({
     alignItems: "center",
   },
   modalBtnCancel: {
-    backgroundColor: "#F1F5F9",
+    backgroundColor: colors.surfaceAlt,
   },
   modalBtnCancelText: {
     fontSize: 14,
     fontFamily: "Inter_600SemiBold",
-    color: "#64748B",
+    color: colors.textSecondary,
   },
   modalBtnSave: {
-    backgroundColor: "#2563EB",
+    backgroundColor: colors.info,
   },
   modalBtnSaveText: {
     fontSize: 14,
     fontFamily: "Inter_700Bold",
-    color: "#FFF",
+    color: colors.textInverse,
   },
   discountItemName: {
     fontSize: 14,
     fontFamily: "Inter_600SemiBold",
-    color: "#1E293B",
+    color: colors.text,
     marginBottom: 12,
   },
   discountToggle: {
     flexDirection: "row",
-    backgroundColor: "#F1F5F9",
+    backgroundColor: colors.surfaceAlt,
     borderRadius: 10,
     padding: 3,
     marginBottom: 12,
@@ -1771,7 +1774,7 @@ const s = StyleSheet.create({
     alignItems: "center",
   },
   discountToggleBtnActive: {
-    backgroundColor: "#FFF",
+    backgroundColor: colors.surface,
     ...Platform.select({
       web: { boxShadow: "0 1px 3px rgba(0,0,0,0.1)" },
       default: {},
@@ -1780,11 +1783,11 @@ const s = StyleSheet.create({
   discountToggleText: {
     fontSize: 13,
     fontFamily: "Inter_500Medium",
-    color: "#64748B",
+    color: colors.textSecondary,
   },
   discountToggleTextActive: {
     fontFamily: "Inter_700Bold",
-    color: "#1E293B",
+    color: colors.text,
   },
   dropdownTrigger: {
     flexDirection: "row",
@@ -1800,9 +1803,9 @@ const s = StyleSheet.create({
   },
   dropdownList: {
     borderWidth: 1,
-    borderColor: "#E2E8F0",
+    borderColor: colors.border,
     borderRadius: 10,
-    backgroundColor: "#FFF",
+    backgroundColor: colors.surface,
     marginTop: 4,
     marginBottom: 4,
     ...Platform.select({
@@ -1817,34 +1820,34 @@ const s = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#E2E8F0",
+    borderBottomColor: colors.border,
   },
   dropdownItemLabel: {
     fontSize: 14,
     fontFamily: "Inter_500Medium",
-    color: "#1E293B",
+    color: colors.text,
   },
   dropdownItemPrice: {
     fontSize: 14,
     fontFamily: "Inter_700Bold",
-    color: "#2563EB",
+    color: colors.info,
   },
   sendWarnBox: {
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 6,
-    backgroundColor: "#FFFBEB",
+    backgroundColor: colors.warningSurface,
     borderRadius: 8,
     padding: 10,
     marginBottom: 8,
     borderWidth: 1,
-    borderColor: "#FDE68A",
+    borderColor: colors.warning,
   },
   sendWarnText: {
     flex: 1,
     fontSize: 12,
     fontFamily: "Inter_400Regular",
-    color: "#92400E",
+    color: colors.warningText,
     lineHeight: 17,
   },
 });

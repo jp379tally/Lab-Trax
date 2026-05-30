@@ -13,7 +13,7 @@ import {
 } from "react-native";
 import { Stack, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import Colors from "@/constants/colors";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { apiRequest, resilientFetch } from "@/lib/query-client";
 import {
   type OpenInvoice,
@@ -31,6 +31,8 @@ function fmtMoney(v: string | number) {
 
 export default function ReceivePaymentsScreen() {
   const router = useRouter();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const [labId, setLabId] = useState<string | null>(null);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [providerId, setProviderId] = useState<string | null>(null);
@@ -232,7 +234,7 @@ export default function ReceivePaymentsScreen() {
 
   return (
     <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: Colors.light.background }}
+      style={{ flex: 1, backgroundColor: colors.background }}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
       <Stack.Screen
@@ -354,7 +356,7 @@ export default function ReceivePaymentsScreen() {
                 ))}
               </View>
             ) : (
-              <Text style={[styles.label, { color: "#B91C1C" }]}>
+              <Text style={[styles.label, { color: colors.errorText }]}>
                 No active bank accounts. Add one in the desktop app first.
               </Text>
             )}
@@ -407,7 +409,7 @@ export default function ReceivePaymentsScreen() {
                       accessibilityLabel={`Select ${inv.invoiceNumber}`}
                     >
                       {selected ? (
-                        <Ionicons name="checkmark" size={14} color="#fff" />
+                        <Ionicons name="checkmark" size={14} color={colors.textInverse} />
                       ) : null}
                     </Pressable>
                     <View style={{ flex: 1 }}>
@@ -440,7 +442,7 @@ export default function ReceivePaymentsScreen() {
                 pressed && { opacity: 0.7 },
               ]}
             >
-              <Ionicons name="checkmark-circle" size={18} color="#fff" />
+              <Ionicons name="checkmark-circle" size={18} color={colors.textInverse} />
               <Text style={styles.saveBtnText}>
                 {saving ? "Saving…" : `Record ${fmtMoney(appliedSum)}`}
               </Text>
@@ -453,6 +455,8 @@ export default function ReceivePaymentsScreen() {
 }
 
 function SumRow({ label, value, bold }: { label: string; value: string; bold?: boolean }) {
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   return (
     <View style={styles.sumRow}>
       <Text style={styles.sumLabel}>{label}</Text>
@@ -461,13 +465,13 @@ function SumRow({ label, value, bold }: { label: string; value: string; bold?: b
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   content: { padding: 16, paddingBottom: 80 },
-  muted: { color: Colors.light.textSecondary, marginVertical: 24, textAlign: "center" },
+  muted: { color: colors.textSecondary, marginVertical: 24, textAlign: "center" },
   label: {
     fontSize: 11,
     fontWeight: "600",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     textTransform: "uppercase",
     marginTop: 16,
     marginBottom: 8,
@@ -476,88 +480,90 @@ const styles = StyleSheet.create({
   input: {
     height: 44,
     paddingHorizontal: 12,
-    backgroundColor: "#fff",
+    backgroundColor: colors.surface,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: "#E5E7EB",
+    borderColor: colors.border,
     fontSize: 15,
+    color: colors.text,
   },
   row2: { flexDirection: "row", gap: 10 },
   pillRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   pill: {
     paddingHorizontal: 14,
     paddingVertical: 8,
-    backgroundColor: "#F3F4F6",
+    backgroundColor: colors.surfaceAlt,
     borderRadius: 999,
   },
   pillSm: {
     paddingHorizontal: 12,
     paddingVertical: 6,
-    backgroundColor: "#F3F4F6",
+    backgroundColor: colors.surfaceAlt,
     borderRadius: 999,
   },
-  pillActive: { backgroundColor: Colors.light.tint },
-  pillText: { fontSize: 13, color: Colors.light.text },
-  pillTextActive: { color: "#fff", fontWeight: "600" },
+  pillActive: { backgroundColor: colors.tint },
+  pillText: { fontSize: 13, color: colors.text },
+  pillTextActive: { color: colors.textInverse, fontWeight: "600" },
   summary: {
     marginTop: 16,
-    backgroundColor: "#fff",
+    backgroundColor: colors.surface,
     borderRadius: 12,
     padding: 14,
     borderWidth: 1,
-    borderColor: "#E5E7EB",
+    borderColor: colors.border,
   },
   sumRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 4 },
-  sumLabel: { color: Colors.light.textSecondary, fontSize: 13 },
-  sumValue: { fontVariant: ["tabular-nums"], fontSize: 13 },
+  sumLabel: { color: colors.textSecondary, fontSize: 13 },
+  sumValue: { fontVariant: ["tabular-nums"], fontSize: 13, color: colors.text },
   invoiceCard: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
     paddingVertical: 12,
     paddingHorizontal: 14,
-    backgroundColor: "#fff",
+    backgroundColor: colors.surface,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: "#E5E7EB",
+    borderColor: colors.border,
     marginTop: 8,
   },
-  invoiceNum: { fontFamily: Platform.select({ ios: "Menlo", android: "monospace" }), fontSize: 13, fontWeight: "600" },
-  invoiceMeta: { fontSize: 12, color: Colors.light.textSecondary, marginTop: 2 },
+  invoiceNum: { fontFamily: Platform.select({ ios: "Menlo", android: "monospace" }), fontSize: 13, fontWeight: "600", color: colors.text },
+  invoiceMeta: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
   checkbox: {
     width: 20,
     height: 20,
     borderRadius: 4,
     borderWidth: 1,
-    borderColor: "#9CA3AF",
+    borderColor: colors.border,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#fff",
+    backgroundColor: colors.surface,
   },
   checkboxOn: {
-    backgroundColor: Colors.light.tint,
-    borderColor: Colors.light.tint,
+    backgroundColor: colors.tint,
+    borderColor: colors.tint,
   },
   amtInput: {
     width: 96,
     height: 38,
     paddingHorizontal: 10,
     borderWidth: 1,
-    borderColor: "#E5E7EB",
+    borderColor: colors.border,
     borderRadius: 8,
     textAlign: "right",
     fontVariant: ["tabular-nums"],
-    backgroundColor: "#fff",
+    backgroundColor: colors.surface,
+    color: colors.text,
   },
   saveBtn: {
     marginTop: 24,
     height: 50,
     borderRadius: 12,
-    backgroundColor: Colors.light.tint,
+    backgroundColor: colors.tint,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
   },
-  saveBtnText: { color: "#fff", fontWeight: "700", fontSize: 15 },
+  saveBtnText: { color: colors.textInverse, fontWeight: "700", fontSize: 15 },
 });

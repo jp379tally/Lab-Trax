@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useMemo } from "react";
 import {
   View,
   Text,
@@ -9,9 +9,10 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { useTheme } from "@/lib/theme-context";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { useDrawer } from "@/lib/drawer-context";
 import { useProviderFilteredNotifications } from "@/lib/useFilteredNotifications";
+import { Spacing, Radius, Typography } from "@/constants/tokens";
 
 interface AppHeaderProps {
   title: string;
@@ -33,6 +34,7 @@ export function AppHeader({
   transparent = false,
 }: AppHeaderProps) {
   const { colors, isDark } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const { openDrawer } = useDrawer();
   const insets = useSafeAreaInsets();
   const notifications = useProviderFilteredNotifications();
@@ -111,49 +113,49 @@ export function AppHeader({
   );
 }
 
-const styles = StyleSheet.create({
-  header: {
-    paddingBottom: 10,
-    paddingHorizontal: 4,
-  },
-  inner: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 8,
-    gap: 8,
-  },
-  iconBtn: {
-    width: 40,
-    height: 40,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: 20,
-    position: "relative",
-  },
-  title: {
-    flex: 1,
-    fontSize: 18,
-    fontFamily: "Inter_700Bold",
-  },
-  actions: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 2,
-  },
-  badge: {
-    position: "absolute",
-    top: 6,
-    right: 6,
-    minWidth: 16,
-    height: 16,
-    borderRadius: 8,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 3,
-  },
-  badgeText: {
-    fontSize: 9,
-    fontFamily: "Inter_700Bold",
-    color: "#FFF",
-  },
-});
+const makeStyles = (colors: ThemeColors) =>
+  StyleSheet.create({
+    header: {
+      paddingBottom: Spacing.md,
+      paddingHorizontal: Spacing.xs,
+    },
+    inner: {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingHorizontal: Spacing.sm,
+      gap: Spacing.sm,
+    },
+    iconBtn: {
+      width: 40,
+      height: 40,
+      alignItems: "center",
+      justifyContent: "center",
+      borderRadius: Radius.full,
+      position: "relative",
+    },
+    title: {
+      flex: 1,
+      ...Typography.h2,
+    },
+    actions: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 2,
+    },
+    badge: {
+      position: "absolute",
+      top: 6,
+      right: 6,
+      minWidth: 16,
+      height: 16,
+      borderRadius: Radius.full,
+      alignItems: "center",
+      justifyContent: "center",
+      paddingHorizontal: 3,
+    },
+    badgeText: {
+      fontSize: 9,
+      fontFamily: "Inter_700Bold",
+      color: colors.textInverse,
+    },
+  });

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
   Modal,
   View,
@@ -12,6 +12,7 @@ import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import * as FileSystem from "expo-file-system";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
 
 interface StlViewerModalProps {
   visible: boolean;
@@ -338,6 +339,8 @@ export default function StlViewerModal({
   onFallback,
 }: StlViewerModalProps) {
   const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const [loadState, setLoadState] = useState<LoadState>("downloading");
   const [htmlSource, setHtmlSource] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>("");
@@ -432,7 +435,7 @@ export default function StlViewerModal({
       onRequestClose={onClose}
       statusBarTranslucent
     >
-      <StatusBar barStyle="light-content" backgroundColor="#18181b" />
+      <StatusBar barStyle="light-content" backgroundColor={colors.text} />
       <View style={[styles.container, { paddingTop: insets.top }]}>
         {/* Header */}
         <View style={styles.header}>
@@ -447,7 +450,7 @@ export default function StlViewerModal({
               accessibilityLabel="Reset view"
               accessibilityRole="button"
             >
-              <Ionicons name="locate-outline" size={20} color="#f4f4f5" />
+              <Ionicons name="locate-outline" size={20} color={colors.surfaceAlt} />
             </Pressable>
           )}
           <Pressable
@@ -455,7 +458,7 @@ export default function StlViewerModal({
             style={({ pressed }) => [styles.headerBtn, pressed && styles.headerBtnPressed]}
             hitSlop={12}
           >
-            <Ionicons name="close" size={22} color="#f4f4f5" />
+            <Ionicons name="close" size={22} color={colors.surfaceAlt} />
           </Pressable>
         </View>
 
@@ -463,20 +466,20 @@ export default function StlViewerModal({
         <View style={styles.webviewContainer}>
           {loadState === "downloading" && (
             <View style={styles.center}>
-              <ActivityIndicator size="large" color="#a1a1aa" />
+              <ActivityIndicator size="large" color={colors.textTertiary} />
               <Text style={styles.statusText}>Downloading…</Text>
             </View>
           )}
 
           {loadState === "error" && (
             <View style={styles.center}>
-              <Ionicons name="alert-circle-outline" size={48} color="#f87171" />
+              <Ionicons name="alert-circle-outline" size={48} color={colors.error} />
               <Text style={styles.errorText}>{errorMsg || "Could not load the STL file."}</Text>
               <Pressable
                 style={({ pressed }) => [styles.fallbackBtn, pressed && { opacity: 0.7 }]}
                 onPress={handleFallback}
               >
-                <Ionicons name="share-outline" size={16} color="#fff" />
+                <Ionicons name="share-outline" size={16} color={colors.textInverse} />
                 <Text style={styles.fallbackBtnText}>Open with another app</Text>
               </Pressable>
             </View>
@@ -516,7 +519,7 @@ export default function StlViewerModal({
               onPress={cycleDisplayMode}
               accessibilityLabel={`Display mode: ${MODE_LABELS[displayMode]}. Tap to cycle.`}
             >
-              <Ionicons name={MODE_ICONS[displayMode]} size={16} color="#e4e4e7" />
+              <Ionicons name={MODE_ICONS[displayMode]} size={16} color={colors.surfaceAlt} />
               <Text style={styles.modeBtnText}>{MODE_LABELS[displayMode]}</Text>
             </Pressable>
 
@@ -528,7 +531,7 @@ export default function StlViewerModal({
               style={({ pressed }) => [styles.shareBtn, pressed && { opacity: 0.7 }]}
               onPress={handleFallback}
             >
-              <Ionicons name="share-outline" size={16} color="#a1a1aa" />
+              <Ionicons name="share-outline" size={16} color={colors.textTertiary} />
               <Text style={styles.shareBtnText}>Open with another app</Text>
             </Pressable>
           </View>
@@ -538,10 +541,10 @@ export default function StlViewerModal({
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#18181b",
+    backgroundColor: colors.text,
   },
   header: {
     flexDirection: "row",
@@ -554,7 +557,7 @@ const styles = StyleSheet.create({
   },
   title: {
     flex: 1,
-    color: "#f4f4f5",
+    color: colors.surfaceAlt,
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
   },
@@ -574,7 +577,7 @@ const styles = StyleSheet.create({
   },
   webview: {
     flex: 1,
-    backgroundColor: "#18181b",
+    backgroundColor: colors.text,
   },
   center: {
     flex: 1,
@@ -584,12 +587,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 32,
   },
   statusText: {
-    color: "#a1a1aa",
+    color: colors.textTertiary,
     fontSize: 14,
     fontFamily: "Inter_400Regular",
   },
   errorText: {
-    color: "#f87171",
+    color: colors.error,
     fontSize: 14,
     fontFamily: "Inter_400Regular",
     textAlign: "center",
@@ -598,14 +601,14 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    backgroundColor: "#3f3f46",
+    backgroundColor: colors.textSecondary,
     paddingHorizontal: 16,
     paddingVertical: 10,
     borderRadius: 8,
     marginTop: 4,
   },
   fallbackBtnText: {
-    color: "#fff",
+    color: colors.textInverse,
     fontSize: 14,
     fontFamily: "Inter_500Medium",
   },
@@ -628,7 +631,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.08)",
   },
   modeBtnText: {
-    color: "#e4e4e7",
+    color: colors.surfaceAlt,
     fontSize: 13,
     fontFamily: "Inter_500Medium",
   },
@@ -642,7 +645,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   shareBtnText: {
-    color: "#a1a1aa",
+    color: colors.textTertiary,
     fontSize: 13,
     fontFamily: "Inter_400Regular",
   },

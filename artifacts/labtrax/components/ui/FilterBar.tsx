@@ -1,6 +1,7 @@
 import React from "react";
 import { ScrollView, Pressable, Text, StyleSheet, View } from "react-native";
 import { useTheme } from "@/lib/theme-context";
+import { Spacing, Radius, Typography } from "@/constants/tokens";
 
 interface FilterChip<T extends string> {
   id: T;
@@ -51,7 +52,7 @@ export function FilterBar<T extends string>({
             <Text
               style={[
                 styles.label,
-                { color: active ? "#FFF" : colors.textSecondary },
+                { color: active ? colors.textInverse : colors.textSecondary },
               ]}
             >
               {f.label}
@@ -73,15 +74,15 @@ const styles = StyleSheet.create({
     flexGrow: 0,
   },
   container: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    gap: 8,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    gap: Spacing.sm,
     flexDirection: "row",
   },
   chip: {
-    paddingHorizontal: 14,
-    paddingVertical: 7,
-    borderRadius: 20,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.full,
     borderWidth: 1,
   },
   label: {
@@ -89,7 +90,6 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_500Medium",
   },
   count: {
-    fontSize: 12,
-    fontFamily: "Inter_400Regular",
+    ...Typography.caption,
   },
 });

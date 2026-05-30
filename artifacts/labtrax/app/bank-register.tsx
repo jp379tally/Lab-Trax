@@ -11,6 +11,7 @@ import {
 import { Stack } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/lib/theme-context";
+import { EmptyState } from "@/components/ui/EmptyState";
 import { AppHeader } from "@/components/ui/AppHeader";
 import { FilterBar } from "@/components/ui/FilterBar";
 import { SectionHeader } from "@/components/ui/SectionHeader";
@@ -200,10 +201,11 @@ export default function BankRegisterScreen() {
               contentContainerStyle={{ paddingBottom: 40 }}
               showsVerticalScrollIndicator={false}
               ListEmptyComponent={
-                <View style={styles.center}>
-                  <Ionicons name="bar-chart-outline" size={48} color={colors.textTertiary} />
-                  <Text style={[styles.empty, { color: colors.textSecondary }]}>No transactions yet</Text>
-                </View>
+                <EmptyState
+                  icon="bar-chart-outline"
+                  title="No transactions yet"
+                  description="Transactions for this account will show up here."
+                />
               }
               renderItem={({ item: entry }) => {
                 const amount = Number(entry.amount) || 0;

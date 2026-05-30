@@ -12,7 +12,7 @@ import {
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import Colors from "@/constants/colors";
+import { useTheme } from "@/lib/theme-context";
 import { CaseTypeValue, ToothType, SHADE_OPTIONS, Client, PricingTier } from "@/lib/data";
 import { resolvePriceForCase } from "@/lib/pricing";
 
@@ -150,6 +150,8 @@ export function AddItemModal(props: AddItemModalProps) {
     styles,
   } = props;
 
+  const { colors } = useTheme();
+
   return (
     <Modal
       visible={visible}
@@ -197,7 +199,7 @@ export function AddItemModal(props: AddItemModalProps) {
                 setAddItemStep("caseType");
               }
             }}>
-              <Ionicons name={addItemStep === "caseType" ? "close" : "arrow-back"} size={24} color={Colors.light.textSecondary} />
+              <Ionicons name={addItemStep === "caseType" ? "close" : "arrow-back"} size={24} color={colors.textSecondary} />
             </Pressable>
             <Text style={styles.addItemTitle}>
               {addItemStep === "caseType" ? "Select Case Type" :
@@ -243,13 +245,13 @@ export function AddItemModal(props: AddItemModalProps) {
                     <Ionicons
                       name={type === "Restorative" ? "construct" : type === "Removable" ? "swap-horizontal" : type === "Appliance" ? "hardware-chip" : "timer"}
                       size={20}
-                      color={itemCaseType === type ? Colors.light.tint : Colors.light.textSecondary}
+                      color={itemCaseType === type ? colors.tint : colors.textSecondary}
                     />
                   </View>
                   <Text style={[styles.addItemCaseTypeText, itemCaseType === type && styles.addItemCaseTypeTextSelected]}>
                     {type}
                   </Text>
-                  <Ionicons name="chevron-forward" size={18} color={Colors.light.textTertiary} />
+                  <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
                 </Pressable>
               ))}
             </View>
@@ -258,7 +260,7 @@ export function AddItemModal(props: AddItemModalProps) {
           {(addItemStep === "toothChart" || addItemStep === "applianceEssexTeeth") && (
             <ScrollView showsVerticalScrollIndicator={false} style={styles.addItemToothScroll}>
               <View style={styles.addItemSelectedType}>
-                <Ionicons name="pricetag" size={14} color={Colors.light.tint} />
+                <Ionicons name="pricetag" size={14} color={colors.tint} />
                 <Text style={styles.addItemSelectedTypeText}>
                   {itemCaseType}{removableSubtype ? ` - ${removableSubtype}` : ""}{applianceSubtype ? ` - ${applianceSubtype}` : ""}
                 </Text>
@@ -279,21 +281,21 @@ export function AddItemModal(props: AddItemModalProps) {
 
                 <View style={styles.aiToothChartLegend}>
                   <View style={styles.aiLegendItem}>
-                    <View style={[styles.aiLegendDot, { backgroundColor: Colors.light.tint }]} />
+                    <View style={[styles.aiLegendDot, { backgroundColor: colors.tint }]} />
                     <Text style={styles.aiLegendText}>Normal</Text>
                   </View>
                   <View style={styles.aiLegendItem}>
-                    <View style={[styles.aiLegendDot, { backgroundColor: Colors.light.accent }]} />
+                    <View style={[styles.aiLegendDot, { backgroundColor: colors.accent }]} />
                     <Text style={styles.aiLegendText}>Pontic</Text>
                   </View>
                   <View style={styles.aiLegendItem}>
-                    <View style={[styles.aiLegendDot, { backgroundColor: Colors.light.error }]} />
+                    <View style={[styles.aiLegendDot, { backgroundColor: colors.error }]} />
                     <Text style={styles.aiLegendText}>Missing</Text>
                   </View>
                   <Text style={styles.aiLegendHint}>Hold to set type</Text>
                 </View>
 
-                <View style={{ alignItems: "center" as const, paddingVertical: 8, backgroundColor: "#FFFFFF", borderRadius: 12, overflow: "hidden" as const }}>
+                <View style={{ alignItems: "center" as const, paddingVertical: 8, backgroundColor: colors.surface, borderRadius: 12, overflow: "hidden" as const }}>
                   {(() => {
                     const IMG_W = 290;
                     const IMG_H = 345;
@@ -335,9 +337,9 @@ export function AddItemModal(props: AddItemModalProps) {
                       { num: 32, x: 26 * scale, y: 210 * scale },
                     ];
 
-                    const normalColor = Colors.light.tint;
-                    const ponticColor = Colors.light.accent;
-                    const missingColor = Colors.light.error;
+                    const normalColor = colors.tint;
+                    const ponticColor = colors.accent;
+                    const missingColor = colors.error;
 
                     return (
                       <View style={{ width: IMG_W, height: IMG_H, position: "relative" }}>
@@ -353,9 +355,9 @@ export function AddItemModal(props: AddItemModalProps) {
                           let borderCol = "transparent";
                           let textColor = "transparent";
                           if (isSelected) {
-                            if (tType === "normal") { bgColor = normalColor + "CC"; borderCol = normalColor; textColor = "#FFF"; }
-                            else if (tType === "bridge") { bgColor = ponticColor + "CC"; borderCol = ponticColor; textColor = "#FFF"; }
-                            else if (tType === "missing") { bgColor = "#FEE2E2CC"; borderCol = missingColor; textColor = missingColor; }
+                            if (tType === "normal") { bgColor = normalColor + "CC"; borderCol = normalColor; textColor = colors.textInverse; }
+                            else if (tType === "bridge") { bgColor = ponticColor + "CC"; borderCol = ponticColor; textColor = colors.textInverse; }
+                            else if (tType === "missing") { bgColor = colors.errorLight + "CC"; borderCol = missingColor; textColor = missingColor; }
                           }
                           return (
                             <Pressable
@@ -399,7 +401,7 @@ export function AddItemModal(props: AddItemModalProps) {
                 {itemSelectedTeeth.length > 0 && (
                   <View style={styles.aiToothChartSummary}>
                     <View style={styles.aiToothSummaryRow}>
-                      <Ionicons name="checkmark-circle" size={16} color={Colors.light.tint} />
+                      <Ionicons name="checkmark-circle" size={16} color={colors.tint} />
                       <Text style={styles.aiToothChartSummaryText}>{itemToothDisplay}</Text>
                     </View>
                   </View>
@@ -427,13 +429,13 @@ export function AddItemModal(props: AddItemModalProps) {
                 }}
                 style={({ pressed }) => [
                   styles.aiSaveItemBtn,
-                  { backgroundColor: Colors.light.tint },
+                  { backgroundColor: colors.tint },
                   itemSelectedTeeth.length === 0 && { opacity: 0.5 },
                   pressed && { opacity: 0.85 },
                 ]}
                 disabled={itemSelectedTeeth.length === 0}
               >
-                <Ionicons name="arrow-forward" size={20} color="#FFF" />
+                <Ionicons name="arrow-forward" size={20} color={colors.textInverse} />
                 <Text style={styles.aiSaveItemBtnText}>Next</Text>
               </Pressable>
             </ScrollView>
@@ -442,7 +444,7 @@ export function AddItemModal(props: AddItemModalProps) {
           {addItemStep === "material" && (
             <ScrollView showsVerticalScrollIndicator={false} style={styles.addItemToothScroll}>
               <View style={styles.addItemSelectedType}>
-                <Ionicons name="pricetag" size={14} color={Colors.light.tint} />
+                <Ionicons name="pricetag" size={14} color={colors.tint} />
                 <Text style={styles.addItemSelectedTypeText}>{itemCaseType} - {itemToothDisplay}</Text>
               </View>
 
@@ -483,7 +485,7 @@ export function AddItemModal(props: AddItemModalProps) {
                   pressed && { opacity: 0.85 },
                 ]}
               >
-                <Ionicons name="checkmark" size={20} color="#FFF" />
+                <Ionicons name="checkmark" size={20} color={colors.textInverse} />
                 <Text style={styles.aiSaveItemBtnText}>Complete</Text>
               </Pressable>
             </ScrollView>
@@ -516,13 +518,13 @@ export function AddItemModal(props: AddItemModalProps) {
                     <Ionicons
                       name={iconMap[sub] || "ellipsis-horizontal"}
                       size={20}
-                      color={removableSubtype === sub ? Colors.light.tint : Colors.light.textSecondary}
+                      color={removableSubtype === sub ? colors.tint : colors.textSecondary}
                     />
                   </View>
                   <Text style={[styles.addItemCaseTypeText, removableSubtype === sub && styles.addItemCaseTypeTextSelected]}>
                     {sub}
                   </Text>
-                  <Ionicons name="chevron-forward" size={18} color={Colors.light.textTertiary} />
+                  <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
                 </Pressable>
                 );
               })}
@@ -532,7 +534,7 @@ export function AddItemModal(props: AddItemModalProps) {
           {addItemStep === "removableMaterial" && (
             <ScrollView showsVerticalScrollIndicator={false} style={styles.addItemToothScroll}>
               <View style={styles.addItemSelectedType}>
-                <Ionicons name="pricetag" size={14} color={Colors.light.tint} />
+                <Ionicons name="pricetag" size={14} color={colors.tint} />
                 <Text style={styles.addItemSelectedTypeText}>Removable - {removableSubtype}</Text>
               </View>
 
@@ -554,7 +556,7 @@ export function AddItemModal(props: AddItemModalProps) {
                       <Ionicons
                         name={mat === "Acrylic" ? "color-palette" : mat === "Flexible" ? "water" : mat === "Cast Metal" ? "hammer" : "ellipsis-horizontal"}
                         size={20}
-                        color={removableMaterial === mat ? Colors.light.tint : Colors.light.textSecondary}
+                        color={removableMaterial === mat ? colors.tint : colors.textSecondary}
                       />
                     </View>
                     <Text style={[styles.addItemCaseTypeText, removableMaterial === mat && styles.addItemCaseTypeTextSelected]}>
@@ -566,9 +568,9 @@ export function AddItemModal(props: AddItemModalProps) {
 
               {removableMaterial === "Other" && (
                 <TextInput
-                  style={{ borderWidth: 1, borderColor: "#E0E0E0", borderRadius: 8, padding: 12, marginTop: 12, fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.text }}
+                  style={{ borderWidth: 1, borderColor: colors.surfaceAlt, borderRadius: 8, padding: 12, marginTop: 12, fontSize: 14, fontFamily: "Inter_400Regular", color: colors.text }}
                   placeholder="Describe custom material..."
-                  placeholderTextColor={Colors.light.textTertiary}
+                  placeholderTextColor={colors.textTertiary}
                   value={removableCustomMaterial}
                   onChangeText={setRemovableCustomMaterial}
                 />
@@ -578,13 +580,13 @@ export function AddItemModal(props: AddItemModalProps) {
                 onPress={() => setAddItemStep("gingivaShade")}
                 style={({ pressed }) => [
                   styles.aiSaveItemBtn,
-                  { backgroundColor: Colors.light.tint, marginTop: 16 },
+                  { backgroundColor: colors.tint, marginTop: 16 },
                   !removableMaterial && { opacity: 0.5 },
                   pressed && { opacity: 0.85 },
                 ]}
                 disabled={!removableMaterial}
               >
-                <Ionicons name="arrow-forward" size={20} color="#FFF" />
+                <Ionicons name="arrow-forward" size={20} color={colors.textInverse} />
                 <Text style={styles.aiSaveItemBtnText}>Next</Text>
               </Pressable>
             </ScrollView>
@@ -593,7 +595,7 @@ export function AddItemModal(props: AddItemModalProps) {
           {addItemStep === "gingivaShade" && (
             <ScrollView showsVerticalScrollIndicator={false} style={styles.addItemToothScroll}>
               <View style={styles.addItemSelectedType}>
-                <Ionicons name="pricetag" size={14} color={Colors.light.tint} />
+                <Ionicons name="pricetag" size={14} color={colors.tint} />
                 <Text style={styles.addItemSelectedTypeText}>Removable - {removableSubtype} - {removableMaterial === "Other" && removableCustomMaterial ? removableCustomMaterial : removableMaterial}</Text>
               </View>
 
@@ -615,7 +617,7 @@ export function AddItemModal(props: AddItemModalProps) {
                       <Ionicons
                         name={shade === "Other" ? "ellipsis-horizontal" : "color-fill"}
                         size={20}
-                        color={gingivaShade === shade ? Colors.light.tint : Colors.light.textSecondary}
+                        color={gingivaShade === shade ? colors.tint : colors.textSecondary}
                       />
                     </View>
                     <Text style={[styles.addItemCaseTypeText, gingivaShade === shade && styles.addItemCaseTypeTextSelected]}>
@@ -627,9 +629,9 @@ export function AddItemModal(props: AddItemModalProps) {
 
               {gingivaShade === "Other" && (
                 <TextInput
-                  style={{ borderWidth: 1, borderColor: "#E0E0E0", borderRadius: 8, padding: 12, marginTop: 12, fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.text }}
+                  style={{ borderWidth: 1, borderColor: colors.surfaceAlt, borderRadius: 8, padding: 12, marginTop: 12, fontSize: 14, fontFamily: "Inter_400Regular", color: colors.text }}
                   placeholder="Describe custom gingiva shade..."
-                  placeholderTextColor={Colors.light.textTertiary}
+                  placeholderTextColor={colors.textTertiary}
                   value={gingivaCustomNote}
                   onChangeText={setGingivaCustomNote}
                 />
@@ -645,11 +647,11 @@ export function AddItemModal(props: AddItemModalProps) {
                   }}
                   style={({ pressed }) => [
                     styles.aiSaveItemBtn,
-                    { backgroundColor: "#F5A623", marginTop: 12 },
+                    { backgroundColor: colors.warning, marginTop: 12 },
                     pressed && { opacity: 0.85 },
                   ]}
                 >
-                  <Ionicons name="document-text" size={18} color="#FFF" />
+                  <Ionicons name="document-text" size={18} color={colors.textInverse} />
                   <Text style={styles.aiSaveItemBtnText}>Add to Case Notes</Text>
                 </Pressable>
               )}
@@ -664,7 +666,7 @@ export function AddItemModal(props: AddItemModalProps) {
                 ]}
                 disabled={!gingivaShade}
               >
-                <Ionicons name="checkmark" size={20} color="#FFF" />
+                <Ionicons name="checkmark" size={20} color={colors.textInverse} />
                 <Text style={styles.aiSaveItemBtnText}>Complete</Text>
               </Pressable>
             </ScrollView>
@@ -701,12 +703,12 @@ export function AddItemModal(props: AddItemModalProps) {
                   ]}
                 >
                   <View style={styles.addItemCaseTypeIcon}>
-                    <Ionicons name={icon} size={20} color={applianceSubtype === label ? Colors.light.tint : Colors.light.textSecondary} />
+                    <Ionicons name={icon} size={20} color={applianceSubtype === label ? colors.tint : colors.textSecondary} />
                   </View>
                   <Text style={[styles.addItemCaseTypeText, applianceSubtype === label && styles.addItemCaseTypeTextSelected]}>
                     {label}
                   </Text>
-                  <Ionicons name="chevron-forward" size={18} color={Colors.light.textTertiary} />
+                  <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
                 </Pressable>
               ))}
             </View>
@@ -715,7 +717,7 @@ export function AddItemModal(props: AddItemModalProps) {
           {addItemStep === "applianceArch" && (
             <View style={styles.addItemCaseTypeList}>
               <View style={{ paddingHorizontal: 4, paddingBottom: 8 }}>
-                <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>
+                <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.textSecondary }}>
                   {applianceSubtype} · Select arch
                 </Text>
               </View>
@@ -741,7 +743,7 @@ export function AddItemModal(props: AddItemModalProps) {
                     <Ionicons
                       name={arch === "Upper" ? "arrow-up-circle" : arch === "Lower" ? "arrow-down-circle" : "swap-vertical"}
                       size={20}
-                      color={applianceArch === arch ? Colors.light.tint : Colors.light.textSecondary}
+                      color={applianceArch === arch ? colors.tint : colors.textSecondary}
                     />
                   </View>
                   <View style={{ flex: 1 }}>
@@ -749,12 +751,12 @@ export function AddItemModal(props: AddItemModalProps) {
                       {arch}
                     </Text>
                     {arch === "Both" && (
-                      <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 1 }}>
+                      <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textTertiary, marginTop: 1 }}>
                         Bills as 2 line items
                       </Text>
                     )}
                   </View>
-                  <Ionicons name="chevron-forward" size={18} color={Colors.light.textTertiary} />
+                  <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
                 </Pressable>
               ))}
             </View>
@@ -763,7 +765,7 @@ export function AddItemModal(props: AddItemModalProps) {
           {addItemStep === "applianceNightGuardType" && (
             <View style={styles.addItemCaseTypeList}>
               <View style={{ paddingHorizontal: 4, paddingBottom: 8 }}>
-                <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>
+                <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.textSecondary }}>
                   Night Guard · {applianceArch} · Select type
                 </Text>
               </View>
@@ -790,13 +792,13 @@ export function AddItemModal(props: AddItemModalProps) {
                   ]}
                 >
                   <View style={styles.addItemCaseTypeIcon}>
-                    <Ionicons name={icon} size={20} color={applianceVariant === label ? Colors.light.tint : Colors.light.textSecondary} />
+                    <Ionicons name={icon} size={20} color={applianceVariant === label ? colors.tint : colors.textSecondary} />
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={[styles.addItemCaseTypeText, applianceVariant === label && styles.addItemCaseTypeTextSelected]}>
                       {label}
                     </Text>
-                    <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 1 }}>{desc}</Text>
+                    <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textTertiary, marginTop: 1 }}>{desc}</Text>
                   </View>
                 </Pressable>
               ))}
@@ -806,7 +808,7 @@ export function AddItemModal(props: AddItemModalProps) {
           {addItemStep === "applianceRetainerType" && (
             <View style={styles.addItemCaseTypeList}>
               <View style={{ paddingHorizontal: 4, paddingBottom: 8 }}>
-                <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>
+                <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.textSecondary }}>
                   Retainer · {applianceArch} · Select type
                 </Text>
               </View>
@@ -832,13 +834,13 @@ export function AddItemModal(props: AddItemModalProps) {
                   ]}
                 >
                   <View style={styles.addItemCaseTypeIcon}>
-                    <Ionicons name={icon} size={20} color={applianceVariant === label ? Colors.light.tint : Colors.light.textSecondary} />
+                    <Ionicons name={icon} size={20} color={applianceVariant === label ? colors.tint : colors.textSecondary} />
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={[styles.addItemCaseTypeText, applianceVariant === label && styles.addItemCaseTypeTextSelected]}>
                       {label}
                     </Text>
-                    <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 1 }}>{desc}</Text>
+                    <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textTertiary, marginTop: 1 }}>{desc}</Text>
                   </View>
                 </Pressable>
               ))}
@@ -848,7 +850,7 @@ export function AddItemModal(props: AddItemModalProps) {
           {addItemStep === "applianceEssexShade" && (
             <ScrollView showsVerticalScrollIndicator={false} style={styles.addItemToothScroll}>
               <View style={styles.addItemSelectedType}>
-                <Ionicons name="pricetag" size={14} color={Colors.light.tint} />
+                <Ionicons name="pricetag" size={14} color={colors.tint} />
                 <Text style={styles.addItemSelectedTypeText}>Appliance - Essex - {itemToothDisplay}</Text>
               </View>
 
@@ -884,7 +886,7 @@ export function AddItemModal(props: AddItemModalProps) {
                 ]}
                 disabled={!essexShade}
               >
-                <Ionicons name="checkmark" size={20} color="#FFF" />
+                <Ionicons name="checkmark" size={20} color={colors.textInverse} />
                 <Text style={styles.aiSaveItemBtnText}>Complete</Text>
               </Pressable>
             </ScrollView>

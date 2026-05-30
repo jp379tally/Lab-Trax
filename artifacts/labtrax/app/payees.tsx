@@ -13,7 +13,8 @@ import {
 import { Stack } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Colors from "@/constants/colors";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
+import { EmptyState } from "@/components/ui/EmptyState";
 import { getAccessToken, getApiUrl } from "@/lib/query-client";
 
 type VendorType = "vendor" | "employee" | "item";
@@ -39,11 +40,13 @@ const TYPE_ICON: Record<VendorType, keyof typeof Ionicons.glyphMap> = {
   item: "cube-outline",
 };
 
-const TYPE_COLOR: Record<VendorType, { icon: string; bg: string }> = {
-  vendor: { icon: "#0284C7", bg: "#E0F2FE" },
-  employee: { icon: "#7C3AED", bg: "#EDE9FE" },
-  item: { icon: "#059669", bg: "#D1FAE5" },
-};
+const getTypeColor = (
+  colors: ThemeColors,
+): Record<VendorType, { icon: string; bg: string }> => ({
+  vendor: { icon: colors.cyan, bg: colors.cyanLight },
+  employee: { icon: colors.violet, bg: colors.violetLight },
+  item: { icon: colors.successStrong, bg: colors.successLight },
+});
 
 async function apiFetch<T>(path: string): Promise<T> {
   const token = await getAccessToken();
@@ -78,28 +81,30 @@ async function getLabOrgId(): Promise<string | null> {
 }
 
 function VendorCard({ vendor }: { vendor: Vendor }) {
-  const colors = TYPE_COLOR[vendor.vendorType];
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const typeColor = getTypeColor(colors)[vendor.vendorType];
   return (
     <View style={styles.card}>
-      <View style={[styles.cardIcon, { backgroundColor: colors.bg }]}>
-        <Ionicons name={TYPE_ICON[vendor.vendorType]} size={20} color={colors.icon} />
+      <View style={[styles.cardIcon, { backgroundColor: typeColor.bg }]}>
+        <Ionicons name={TYPE_ICON[vendor.vendorType]} size={20} color={typeColor.icon} />
       </View>
       <View style={styles.cardBody}>
         <Text style={styles.cardName} numberOfLines={1}>{vendor.name}</Text>
         {vendor.phone ? (
           <View style={styles.cardRow}>
-            <Ionicons name="call-outline" size={13} color={Colors.light.textSecondary} />
+            <Ionicons name="call-outline" size={13} color={colors.textSecondary} />
             <Text style={styles.cardMeta}>{vendor.phone}</Text>
           </View>
         ) : null}
         {vendor.address ? (
           <View style={styles.cardRow}>
-            <Ionicons name="location-outline" size={13} color={Colors.light.textSecondary} />
+            <Ionicons name="location-outline" size={13} color={colors.textSecondary} />
             <Text style={styles.cardMeta} numberOfLines={2}>{vendor.address}</Text>
           </View>
         ) : null}
         {!vendor.phone && !vendor.address ? (
-          <Text style={[styles.cardMeta, { color: Colors.light.textTertiary }]}>No contact info</Text>
+          <Text style={[styles.cardMeta, { color: colors.textTertiary }]}>No contact info</Text>
         ) : null}
       </View>
     </View>
@@ -108,6 +113,8 @@ function VendorCard({ vendor }: { vendor: Vendor }) {
 
 export default function PayeesScreen() {
   const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -189,11 +196,11 @@ export default function PayeesScreen() {
       >
         <View style={styles.searchRow}>
           <View style={styles.searchBox}>
-            <Ionicons name="search" size={16} color={Colors.light.textSecondary} style={{ marginRight: 8 }} />
+            <Ionicons name="search" size={16} color={colors.textSecondary} style={{ marginRight: 8 }} />
             <TextInput
               style={styles.searchInput}
               placeholder="Search by name, phone, or address…"
-              placeholderTextColor={Colors.light.textTertiary}
+              placeholderTextColor={colors.textTertiary}
               value={search}
               onChangeText={setSearch}
               autoCapitalize="none"
@@ -203,7 +210,7 @@ export default function PayeesScreen() {
             />
             {search.length > 0 && Platform.OS !== "ios" ? (
               <Pressable onPress={() => setSearch("")} hitSlop={8}>
-                <Ionicons name="close-circle" size={16} color={Colors.light.textSecondary} />
+                <Ionicons name="close-circle" size={16} color={colors.textSecondary} />
               </Pressable>
             ) : null}
           </View>
@@ -229,25 +236,23 @@ export default function PayeesScreen() {
 
         {loading ? (
           <View style={styles.center}>
-            <ActivityIndicator color={Colors.light.tint} size="large" />
+            <ActivityIndicator color={colors.tint} size="large" />
           </View>
         ) : error ? (
           <View style={styles.center}>
-            <Ionicons name="alert-circle-outline" size={40} color={Colors.light.error} />
+            <Ionicons name="alert-circle-outline" size={40} color={colors.error} />
             <Text style={styles.errorText}>{error}</Text>
           </View>
         ) : sections.length === 0 ? (
-          <View style={styles.center}>
-            <Ionicons name="people-outline" size={48} color={Colors.light.textTertiary} />
-            <Text style={styles.emptyTitle}>
-              {search || activeFilter !== "all" ? "No matches found" : "No payees yet"}
-            </Text>
-            <Text style={styles.emptySubtitle}>
-              {search || activeFilter !== "all"
-                ? "Try a different search or filter"
-                : "Payees are managed from the desktop app"}
-            </Text>
-          </View>
+          <EmptyState
+            icon="people-outline"
+            title={search || activeFilter !== "all" ? "No matches found" : "No payees yet"}
+            description={
+              search || activeFilter !== "all"
+                ? "Try a different search or filter."
+                : "Payees are managed from the desktop app."
+            }
+          />
         ) : (
           <SectionList
             sections={sections}
@@ -262,11 +267,11 @@ export default function PayeesScreen() {
             }
             renderSectionHeader={({ section }) => (
               <View style={styles.sectionHeader}>
-                <View style={[styles.sectionIconWrap, { backgroundColor: TYPE_COLOR[section.type as VendorType].bg }]}>
+                <View style={[styles.sectionIconWrap, { backgroundColor: getTypeColor(colors)[section.type as VendorType].bg }]}>
                   <Ionicons
                     name={TYPE_ICON[section.type as VendorType]}
                     size={14}
-                    color={TYPE_COLOR[section.type as VendorType].icon}
+                    color={getTypeColor(colors)[section.type as VendorType].icon}
                   />
                 </View>
                 <Text style={styles.sectionTitle}>{section.title}</Text>
@@ -281,10 +286,10 @@ export default function PayeesScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.light.backgroundSolid,
+    backgroundColor: colors.backgroundSolid,
   },
   searchRow: {
     paddingHorizontal: 16,
@@ -293,10 +298,10 @@ const styles = StyleSheet.create({
   searchBox: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
     paddingHorizontal: 12,
     paddingVertical: Platform.OS === "ios" ? 10 : 8,
   },
@@ -304,7 +309,7 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 15,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.text,
+    color: colors.text,
   },
   filterRow: {
     flexDirection: "row",
@@ -316,26 +321,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 6,
     borderRadius: 20,
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
   },
   filterChipActive: {
-    backgroundColor: Colors.light.tint,
-    borderColor: Colors.light.tint,
+    backgroundColor: colors.tint,
+    borderColor: colors.tint,
   },
   filterChipText: {
     fontSize: 13,
     fontFamily: "Inter_500Medium",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
   },
   filterChipTextActive: {
-    color: "#FFF",
+    color: colors.textInverse,
   },
   countLabel: {
     fontSize: 13,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
     marginBottom: 12,
   },
   sectionHeader: {
@@ -356,22 +361,22 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 13,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     textTransform: "uppercase",
     letterSpacing: 0.5,
   },
   sectionCount: {
     fontSize: 12,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textTertiary,
+    color: colors.textTertiary,
   },
   card: {
     flexDirection: "row",
     alignItems: "flex-start",
-    backgroundColor: Colors.light.surface,
+    backgroundColor: colors.surface,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: Colors.light.border,
+    borderColor: colors.border,
     padding: 14,
     marginBottom: 8,
   },
@@ -391,7 +396,7 @@ const styles = StyleSheet.create({
   cardName: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
     marginBottom: 2,
   },
   cardRow: {
@@ -403,7 +408,7 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 13,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     lineHeight: 18,
   },
   center: {
@@ -416,19 +421,19 @@ const styles = StyleSheet.create({
   errorText: {
     fontSize: 14,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.error,
+    color: colors.error,
     textAlign: "center",
   },
   emptyTitle: {
     fontSize: 16,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: colors.text,
     textAlign: "center",
   },
   emptySubtitle: {
     fontSize: 13,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
+    color: colors.textSecondary,
     textAlign: "center",
   },
 });
