@@ -3,6 +3,10 @@ import { logger } from "./lib/logger";
 import { setupMessengerWebSocket } from "./lib/messenger-ws";
 import { scheduleVendorLinkBackfillIfNeeded } from "./lib/vendor-link-backfill";
 import { ensureDbConstraints } from "./lib/db-constraints";
+import {
+  ensureLegacyCaseMediaTable,
+  backfillLegacyCaseMedia,
+} from "./lib/case-media";
 
 const rawPort = process.env["PORT"];
 
@@ -49,6 +53,27 @@ const server = app.listen(port, (err) => {
       "DB constraint setup failed — server is running but invoice_line_items integrity trigger is NOT installed",
     );
   });
+
+  // Fire-and-forget: ensure the legacy_case_media ledger table exists, then
+  // backfill it from existing lab_cases and recover any legacy media files a
+  // prior orphan-cleanup moved to .trash/. Restores blank legacy-case photos
+  // on deploy with no manual migration. Never gates the listener or crashes.
+  ensureLegacyCaseMediaTable()
+    .then(() => backfillLegacyCaseMedia())
+    .then((r) =>
+      logger.info(r, "legacy_case_media: ensure + backfill complete"),
+    )
+    .catch((err) => {
+      process.stderr.write(
+        `[startup] legacy_case_media ensure/backfill failed (server still running): ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      );
+      logger.error(
+        { err },
+        "legacy_case_media ensure/backfill failed — legacy-case photos may remain blank until next successful run",
+      );
+    });
 });
 
 setupMessengerWebSocket(server);

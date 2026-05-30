@@ -18,6 +18,7 @@ import {
   iteroImportedOrders,
   iteroImportSessions,
   labCases,
+  legacyCaseMedia,
   notifications,
   organizationConnections,
   organizationMemberships,
@@ -389,9 +390,20 @@ router.get(
       (r) => extractMediaFileName(r.storageKey) === filename,
     );
 
-    // Reject ambiguous matches.
-    if (matching.length !== 1) {
+    // >1 canonical record claiming the same filename is ambiguous (a crafted
+    // storageKey alongside the legitimate one) — refuse.
+    if (matching.length > 1) {
       throw new HttpError(404, "Attachment not found.");
+    }
+
+    // No canonical attachment row: this is a legacy mobile-case file. Legacy
+    // cases live in `lab_cases` and cannot have `case_attachments` rows (FK to
+    // cases.id), so the only authoritative tenant binding is the
+    // `legacy_case_media` ledger. Authorize against that binding (NOT against
+    // any case the caller can craft), then serve from disk / .trash / storage.
+    if (matching.length === 0) {
+      await serveLegacyCaseMediaFile(req, res, filename);
+      return;
     }
 
     const attachment = matching[0]!;
@@ -433,6 +445,84 @@ router.get(
     return res.sendFile(resolvedPath);
   })
 );
+
+// Serve a media file referenced by a LEGACY mobile case (a row in `lab_cases`,
+// which cannot have a `case_attachments` row). Authorization is derived from
+// the `legacy_case_media` ledger — the first legacy case to reference a
+// filename owns it (first-writer-wins), so a later crafted caseData cannot
+// claim another tenant's file. The caller must be that case's owner or an
+// active member of its lab — the exact predicate used by GET /legacy/cases.
+async function serveLegacyCaseMediaFile(
+  req: Request,
+  res: Response,
+  filename: string,
+): Promise<void> {
+  const userId = (req as any).auth.userId as string;
+
+  const binding = await db.query.legacyCaseMedia.findFirst({
+    where: eq(legacyCaseMedia.fileName, filename),
+  });
+  if (!binding) {
+    throw new HttpError(404, "File not found.");
+  }
+
+  const isOwner = binding.ownerId === userId;
+  let isLabMember = false;
+  if (!isOwner && binding.organizationId) {
+    const labIds = await fetchUserActiveLabIds(userId);
+    isLabMember = labIds.includes(binding.organizationId);
+  }
+  if (!isOwner && !isLabMember) {
+    throw new HttpError(403, "You do not have access to this file.");
+  }
+
+  // The ledger key IS the validated basename, but resolve defensively anyway.
+  const resolvedPath = path.resolve(caseMediaDir, filename);
+  if (
+    resolvedPath === caseMediaDir ||
+    !resolvedPath.startsWith(caseMediaDir + path.sep)
+  ) {
+    throw new HttpError(400, "Invalid file path.");
+  }
+
+  if (fs.existsSync(resolvedPath)) {
+    res.sendFile(resolvedPath);
+    return;
+  }
+
+  // Live copy missing — a prior orphan cleanup may have moved it to .trash/
+  // (named `<stamp>__<filename>`). Serve the most recent trashed copy.
+  const trashDir = path.resolve(caseMediaDir, ".trash");
+  if (fs.existsSync(trashDir)) {
+    const trashed = fs
+      .readdirSync(trashDir)
+      .filter((e) => e.endsWith(`__${filename}`))
+      .sort()
+      .reverse();
+    for (const candidate of trashed) {
+      const trashedPath = path.resolve(trashDir, candidate);
+      if (
+        trashedPath.startsWith(trashDir + path.sep) &&
+        fs.existsSync(trashedPath)
+      ) {
+        res.sendFile(trashedPath);
+        return;
+      }
+    }
+  }
+
+  // Last resort: object storage (large files offloaded off local disk).
+  const objStream = await openCaseMediaObjectStream(filename, undefined);
+  if (!objStream) {
+    throw new HttpError(404, "File not found.");
+  }
+  res.setHeader("Content-Type", objStream.contentType);
+  res.setHeader(
+    "Content-Disposition",
+    `inline; filename="${encodeURIComponent(filename)}"`,
+  );
+  objStream.stream.pipe(res);
+}
 
 async function assertCaseAccess(userId: string, caseId: string) {
   const access = await assertCaseAccessWithMemberships(userId, caseId);

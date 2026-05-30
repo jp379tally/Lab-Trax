@@ -89,6 +89,32 @@ export const labCases = pgTable("lab_cases", {
   deletedBy: varchar("deleted_by"),
 });
 
+// Tenant-binding ledger for media files referenced by legacy mobile cases
+// (rows in `lab_cases`). Those cases CANNOT have `case_attachments` rows —
+// that table's `case_id` has a hard FK to `cases.id` (canonical desktop
+// cases only). Without this ledger the file-serving route has no record to
+// authorize against, so legacy-case photos 404 (blank thumbnails), and the
+// nightly orphan-media cleanup treats the files as unreferenced and trashes
+// them. Binding is FIRST-WRITER-WINS (fileName PK, insert ON CONFLICT DO
+// NOTHING): the first legacy case that references a filename owns it, so a
+// later crafted caseData cannot rebind another tenant's file.
+export const legacyCaseMedia = pgTable(
+  "legacy_case_media",
+  {
+    fileName: varchar("file_name").primaryKey(),
+    labCaseId: varchar("lab_case_id").notNull(),
+    organizationId: varchar("organization_id"),
+    ownerId: varchar("owner_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => ({
+    labCaseIdx: index("legacy_case_media_lab_case_idx").on(table.labCaseId),
+    orgIdx: index("legacy_case_media_org_idx").on(table.organizationId),
+  })
+);
+
 export const labPendingFiles = pgTable(
   "lab_pending_files",
   {

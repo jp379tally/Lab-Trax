@@ -19,7 +19,7 @@ import { runDesktopInstallerHealthCheck } from "../lib/desktop-installer-health"
 import { getDownloadInterruptionStats } from "../lib/download-interruptions";
 import { runBackup, generateBackupForDownload, streamBackupDownload, getBackupHourUtc, getBackupScheduleConfig, getLastSuccessfulBackupAt, getBackupStaleAlertSettings, getBackupHistoryRetentionDays, restartScheduledBackupJob, runScheduledBackupNow, executeRestore, getRestoreState, SETTING_BACKUP_HOUR_UTC, SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, SETTING_BACKUP_SCHEDULE_DESTINATION, SETTING_BACKUP_SCHEDULE_PATH, SETTING_BACKUP_SCHEDULE_ENABLED, SETTING_BACKUP_LAST_SUCCESSFUL_AT, SETTING_BACKUP_HISTORY_RETENTION_DAYS, SETTING_BACKUP_HISTORY_MAX_ROWS, ALL_SCHEDULE_SETTINGS, SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS, SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS, SETTING_BACKUP_STALE_DAYS, DEFAULT_BACKUP_STALE_DAYS, type BackupDestination } from "../lib/backup";
 import { sendInstallerPublishFailureAlertEmail, sendMail, getAppBaseUrl } from "../lib/mail";
-import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, getCleanupProgress, getCleanupStuckTimeoutMinutes, cancelCleanup, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC, SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES } from "../lib/case-media";
+import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, getCleanupProgress, getCleanupStuckTimeoutMinutes, cancelCleanup, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC, SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES, bindLegacyCaseMedia, extractMediaFilenamesFromText } from "../lib/case-media";
 import multer from "multer";
 import OpenAI, { toFile } from "openai";
 import nodemailer from "nodemailer";
@@ -1645,6 +1645,37 @@ export async function registerRoutes(): Promise<IRouter> {
           .status(result.authError.status)
           .json({ error: result.authError.message });
       }
+
+      // Bind every media file referenced by this legacy case to it
+      // (first-writer-wins) so the file-serving route can authorize them and
+      // the orphan cleanup never trashes them. Best-effort — a binding
+      // failure must not fail the case save. Uses the persisted, merged
+      // caseData (so previously-uploaded photos stay bound on re-sync).
+      try {
+        const persisted = (result as any).normalizedCaseData;
+        if (persisted) {
+          const fileNames = extractMediaFilenamesFromText(
+            JSON.stringify(persisted),
+          );
+          if (fileNames.length > 0) {
+            await bindLegacyCaseMedia({
+              labCaseId: id,
+              organizationId:
+                ((result as any).organizationIdFromKey as string | null) ??
+                null,
+              ownerId: ((result as any).normalizedCaseData?.ownerId ??
+                callerUserId) as string,
+              fileNames,
+            });
+          }
+        }
+      } catch (bindErr: any) {
+        req.log?.warn?.(
+          { err: bindErr?.message || String(bindErr) },
+          "legacy_case_media_bind_failed",
+        );
+      }
+
       return res.json({ success: true, restoredFromTrash: !!result.restoredFromTrash });
     } catch (error: any) {
       console.error("Legacy upsert case error:", error?.message || error);

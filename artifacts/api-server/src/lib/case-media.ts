@@ -2,7 +2,8 @@ import * as fs from "node:fs";
 import { promises as fsp } from "node:fs";
 import * as path from "node:path";
 import { and, eq, lt, sql } from "drizzle-orm";
-import { db, caseAttachments, mediaCleanupRuns, systemSettings, users } from "@workspace/db";
+import { db, caseAttachments, mediaCleanupRuns, systemSettings, users, legacyCaseMedia, labCases } from "@workspace/db";
+import { isNull } from "drizzle-orm";
 import { logger } from "./logger";
 import { sendCleanupAlertEmail, sendCleanupRecoveryAlertEmail } from "./mail";
 import { filterEmailsByPref } from "./email-prefs";
@@ -261,6 +262,196 @@ export function extractMediaFileName(storageKey: string): string | null {
   return fileName || null;
 }
 
+/**
+ * Extract every case-media filename referenced anywhere in a blob of text
+ * (typically a legacy case's `caseData` JSON string). Finds both
+ * `/uploads/case-media/<f>` and `/api/cases/attachment-file/<f>` URL forms.
+ * Returns a de-duplicated list of basenames.
+ */
+export function extractMediaFilenamesFromText(text: string): string[] {
+  if (!text) return [];
+  const out = new Set<string>();
+  const re =
+    /\/(?:uploads\/case-media|api\/cases\/attachment-file)\/([^"'\\?#\s)]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    let raw = m[1];
+    if (!raw) continue;
+    try {
+      raw = decodeURIComponent(raw);
+    } catch {
+      // keep raw
+    }
+    const base = path.basename(raw);
+    if (base && !base.includes("..")) out.add(base);
+  }
+  return Array.from(out);
+}
+
+/**
+ * Idempotently ensure the `legacy_case_media` table exists. Run at startup so
+ * production gets the table on deploy without a manual Drizzle push — the
+ * serving fallback, ledger upsert, and cleanup all depend on it. Kept in sync
+ * with the Drizzle definition in `lib/db/src/schema/schema.ts`.
+ */
+export async function ensureLegacyCaseMediaTable(): Promise<void> {
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS legacy_case_media (
+      file_name varchar PRIMARY KEY,
+      lab_case_id varchar NOT NULL,
+      organization_id varchar,
+      owner_id varchar NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(
+    sql`CREATE INDEX IF NOT EXISTS legacy_case_media_lab_case_idx ON legacy_case_media (lab_case_id)`,
+  );
+  await db.execute(
+    sql`CREATE INDEX IF NOT EXISTS legacy_case_media_org_idx ON legacy_case_media (organization_id)`,
+  );
+}
+
+/**
+ * Bind every media filename referenced by a legacy case to that case
+ * (first-writer-wins). Best-effort: never throws — a binding failure must not
+ * block the case write. Returns the number of new bindings inserted.
+ */
+export async function bindLegacyCaseMedia(args: {
+  labCaseId: string;
+  organizationId: string | null;
+  ownerId: string;
+  fileNames: string[];
+}): Promise<number> {
+  const unique = Array.from(new Set(args.fileNames)).filter(Boolean);
+  if (unique.length === 0) return 0;
+  let inserted = 0;
+  for (const fileName of unique) {
+    try {
+      const r = await db
+        .insert(legacyCaseMedia)
+        .values({
+          fileName,
+          labCaseId: args.labCaseId,
+          organizationId: args.organizationId,
+          ownerId: args.ownerId,
+        })
+        .onConflictDoNothing({ target: legacyCaseMedia.fileName })
+        .returning({ fileName: legacyCaseMedia.fileName });
+      inserted += r.length;
+    } catch (err) {
+      logger.warn(
+        { err: err instanceof Error ? err.message : String(err), fileName },
+        "bindLegacyCaseMedia: failed to insert binding",
+      );
+    }
+  }
+  return inserted;
+}
+
+/**
+ * Look in `uploads/case-media/.trash/` for a trashed copy of `fileName`
+ * (named `<stamp>__<fileName>`) and move it back to the live media dir if the
+ * live copy is missing. Reverses a false-positive orphan cleanup. Returns true
+ * if a file was restored.
+ */
+async function restoreFromTrashIfPresent(fileName: string): Promise<boolean> {
+  const live = path.resolve(caseMediaDir, fileName);
+  if (
+    live === caseMediaDir ||
+    !(live + "").startsWith(caseMediaDir + path.sep)
+  ) {
+    return false;
+  }
+  try {
+    await fsp.access(live);
+    return false; // live copy already present
+  } catch {
+    // not present — look in trash
+  }
+  const trashDir = path.resolve(caseMediaDir, ".trash");
+  let entries: string[];
+  try {
+    entries = await fsp.readdir(trashDir);
+  } catch {
+    return false;
+  }
+  // Trashed names are `<iso-stamp>__<fileName>`. Prefer the most recent.
+  const matches = entries
+    .filter((e) => e.endsWith(`__${fileName}`))
+    .sort()
+    .reverse();
+  for (const candidate of matches) {
+    const from = path.resolve(trashDir, candidate);
+    if (!(from + "").startsWith(trashDir + path.sep)) continue;
+    try {
+      await fsp.rename(from, live);
+      return true;
+    } catch {
+      // try next candidate
+    }
+  }
+  return false;
+}
+
+/**
+ * Backfill the `legacy_case_media` ledger from all non-deleted `lab_cases`,
+ * and restore any referenced files that a prior cleanup moved to `.trash/`.
+ * Idempotent (first-writer-wins inserts) and safe to run on every startup.
+ */
+export async function backfillLegacyCaseMedia(): Promise<{
+  scannedCases: number;
+  boundFiles: number;
+  restoredFromTrash: number;
+}> {
+  const result = { scannedCases: 0, boundFiles: 0, restoredFromTrash: 0 };
+  let rows: Array<{
+    id: string;
+    ownerId: string;
+    organizationId: string | null;
+    caseData: string;
+  }>;
+  try {
+    rows = await db
+      .select({
+        id: labCases.id,
+        ownerId: labCases.ownerId,
+        organizationId: labCases.organizationId,
+        caseData: labCases.caseData,
+      })
+      .from(labCases)
+      .where(isNull(labCases.deletedAt));
+  } catch (err) {
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "backfillLegacyCaseMedia: scan failed",
+    );
+    return result;
+  }
+  result.scannedCases = rows.length;
+  for (const row of rows) {
+    const fileNames = extractMediaFilenamesFromText(row.caseData);
+    if (fileNames.length === 0) continue;
+    result.boundFiles += await bindLegacyCaseMedia({
+      labCaseId: row.id,
+      organizationId: row.organizationId,
+      ownerId: row.ownerId,
+      fileNames,
+    });
+    for (const fileName of fileNames) {
+      try {
+        if (await restoreFromTrashIfPresent(fileName)) {
+          result.restoredFromTrash += 1;
+        }
+      } catch {
+        // best-effort
+      }
+    }
+  }
+  logger.info(result, "backfillLegacyCaseMedia: complete");
+  return result;
+}
+
 export interface OrphanedMediaReport {
   dryRun: boolean;
   mediaDirExists: boolean;
@@ -342,6 +533,43 @@ export async function cleanupOrphanedCaseMedia(
     const name = extractMediaFileName(row.storageKey);
     if (name) referenced.add(name);
   }
+
+  // Legacy mobile cases (rows in `lab_cases`) cannot have `case_attachments`
+  // rows, so their media would be wrongly classified as orphans and trashed.
+  // Treat every filename bound in the `legacy_case_media` ledger AND every
+  // filename referenced by a live, non-deleted `lab_cases.caseData` blob as
+  // in-use. The live-caseData scan is defense-in-depth so a file is protected
+  // even if the ledger missed it (e.g. before backfill ran).
+  try {
+    const ledgerRows = await db
+      .select({ fileName: legacyCaseMedia.fileName })
+      .from(legacyCaseMedia);
+    for (const row of ledgerRows) {
+      if (row.fileName) referenced.add(row.fileName);
+    }
+  } catch (err) {
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "cleanupOrphanedCaseMedia: legacy_case_media scan failed — skipping ledger protection",
+    );
+  }
+  try {
+    const legacyCaseRows = await db
+      .select({ caseData: labCases.caseData })
+      .from(labCases)
+      .where(isNull(labCases.deletedAt));
+    for (const row of legacyCaseRows) {
+      for (const name of extractMediaFilenamesFromText(row.caseData)) {
+        referenced.add(name);
+      }
+    }
+  } catch (err) {
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "cleanupOrphanedCaseMedia: lab_cases caseData scan failed — skipping live-reference protection",
+    );
+  }
+
   report.referencedFiles = referenced.size;
 
   checkCancellation();
