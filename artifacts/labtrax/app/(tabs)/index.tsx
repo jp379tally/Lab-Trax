@@ -48,6 +48,8 @@ import { apiRequest, getApiUrl, getAccessToken } from "@/lib/query-client";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
 import { useColumnWidths } from "@/hooks/useColumnWidths";
+import { StatTile } from "@/components/ui/StatTile";
+import { Card } from "@/components/ui/Card";
 
 function formatCurrency(amount: number): string {
   return `$${amount.toFixed(2)}`;
@@ -819,6 +821,30 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
             <Text style={{ color: colors.textInverse, fontSize: 13, fontWeight: "600" }}>Master Hub</Text>
           </Pressable>
         ) : null}
+      </View>
+
+      <View style={styles.summaryTileRow}>
+        <StatTile
+          label="Intake"
+          value={intakeCases.length}
+          icon="enter-outline"
+          accent={colors.tint}
+          testID="stat-intake"
+        />
+        <StatTile
+          label="In Progress"
+          value={inProgressCases.length}
+          icon="construct-outline"
+          accent={colors.warningStrong}
+          testID="stat-progress"
+        />
+        <StatTile
+          label="Shipped"
+          value={shippedCases.length}
+          icon="airplane-outline"
+          accent={colors.success}
+          testID="stat-shipped"
+        />
       </View>
 
       <LabFileDropZone
@@ -2108,10 +2134,11 @@ function AdminDashboard() {
 
         <View style={adm.menuSection}>
           {menuItems.map((item) => (
-            <Pressable
+            <Card
               key={item.view}
-              style={({ pressed }) => [adm.menuItem, pressed && { opacity: 0.7 }]}
+              padding="md"
               onPress={() => setAdminView(item.view)}
+              style={{ flexDirection: "row", alignItems: "center", gap: 14 }}
             >
               <View style={[adm.menuIcon, { backgroundColor: item.bg }]}>
                 <Ionicons name={item.icon as any} size={20} color={item.color} />
@@ -2121,7 +2148,7 @@ function AdminDashboard() {
                 <Text style={adm.menuSub}>{item.sub}</Text>
               </View>
               <Feather name="chevron-right" size={18} color={colors.textTertiary} />
-            </Pressable>
+            </Card>
           ))}
         </View>
       </ScrollView>
@@ -2150,10 +2177,11 @@ function AdminDashboard() {
         {renderBackHeader("Providers")}
         <View style={adm.menuSection}>
           {clientMenuItems.map((item) => (
-            <Pressable
+            <Card
               key={item.view}
-              style={({ pressed }) => [adm.menuItem, pressed && { opacity: 0.7 }]}
+              padding="md"
               onPress={() => setAdminView(item.view)}
+              style={{ flexDirection: "row", alignItems: "center", gap: 14 }}
             >
               <View style={[adm.menuIcon, { backgroundColor: item.bg }]}>
                 <Ionicons name={item.icon as any} size={20} color={item.color} />
@@ -2163,7 +2191,7 @@ function AdminDashboard() {
                 <Text style={adm.menuSub}>{item.sub}</Text>
               </View>
               <Feather name="chevron-right" size={18} color={colors.textTertiary} />
-            </Pressable>
+            </Card>
           ))}
         </View>
       </ScrollView>
@@ -2187,10 +2215,11 @@ function AdminDashboard() {
         {renderBackHeader("Users")}
         <View style={adm.menuSection}>
           {userMenuItems.map((item) => (
-            <Pressable
+            <Card
               key={item.view}
-              style={({ pressed }) => [adm.menuItem, pressed && { opacity: 0.7 }]}
+              padding="md"
               onPress={() => setAdminView(item.view)}
+              style={{ flexDirection: "row", alignItems: "center", gap: 14 }}
             >
               <View style={[adm.menuIcon, { backgroundColor: item.bg }]}>
                 <Ionicons name={item.icon as any} size={20} color={item.color} />
@@ -2200,7 +2229,7 @@ function AdminDashboard() {
                 <Text style={adm.menuSub}>{item.sub}</Text>
               </View>
               <Feather name="chevron-right" size={18} color={colors.textTertiary} />
-            </Pressable>
+            </Card>
           ))}
         </View>
 
@@ -9368,6 +9397,12 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "flex-start",
+    paddingHorizontal: 20,
+    marginBottom: 20,
+  },
+  summaryTileRow: {
+    flexDirection: "row",
+    gap: 12,
     paddingHorizontal: 20,
     marginBottom: 20,
   },
