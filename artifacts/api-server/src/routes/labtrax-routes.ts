@@ -20,6 +20,7 @@ import { getDownloadInterruptionStats } from "../lib/download-interruptions";
 import { runBackup, generateBackupForDownload, streamBackupDownload, getBackupHourUtc, getBackupScheduleConfig, getLastSuccessfulBackupAt, getBackupStaleAlertSettings, getBackupHistoryRetentionDays, restartScheduledBackupJob, runScheduledBackupNow, executeRestore, getRestoreState, SETTING_BACKUP_HOUR_UTC, SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, SETTING_BACKUP_SCHEDULE_DESTINATION, SETTING_BACKUP_SCHEDULE_PATH, SETTING_BACKUP_SCHEDULE_ENABLED, SETTING_BACKUP_LAST_SUCCESSFUL_AT, SETTING_BACKUP_HISTORY_RETENTION_DAYS, SETTING_BACKUP_HISTORY_MAX_ROWS, ALL_SCHEDULE_SETTINGS, SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS, SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS, SETTING_BACKUP_STALE_DAYS, DEFAULT_BACKUP_STALE_DAYS, type BackupDestination } from "../lib/backup";
 import { sendInstallerPublishFailureAlertEmail, sendMail, getAppBaseUrl } from "../lib/mail";
 import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, getCleanupProgress, getCleanupStuckTimeoutMinutes, cancelCleanup, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC, SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES, bindLegacyCaseMedia, extractMediaFilenamesFromText } from "../lib/case-media";
+import { writeCaseMediaToObjectStorage, caseMediaObjectStorageAvailable } from "../lib/case-media-object-storage";
 import multer from "multer";
 import OpenAI, { toFile } from "openai";
 import nodemailer from "nodemailer";
@@ -793,6 +794,7 @@ export async function registerRoutes(): Promise<IRouter> {
     req.on("error", handleError);
 
     writeStream.on("finish", () => {
+      void (async () => {
       if (aborted) {
         if (!res.headersSent) {
           res.status(400).json({
@@ -812,6 +814,27 @@ export async function registerRoutes(): Promise<IRouter> {
           console.error("Failed to finalize upload:", error?.message || error);
           return res.status(500).json({ error: "Failed to finalize upload" });
         }
+        // Persist to App Storage so the file survives autoscale redeploys and is
+        // reachable from every instance (local disk is ephemeral + per-instance).
+        if (caseMediaObjectStorageAvailable()) {
+          try {
+            const buffer = await readFile(finalPath);
+            const contentType = meta.mimeType || "application/octet-stream";
+            const ok = await writeCaseMediaToObjectStorage(meta.finalName, buffer, contentType);
+            if (!ok) {
+              throw new Error("writeCaseMediaToObjectStorage returned false");
+            }
+          } catch (storageErr: any) {
+            console.error(
+              "Chunked upload: failed to persist to object storage:",
+              storageErr?.message || storageErr,
+            );
+            if (!res.headersSent) {
+              return res.status(500).json({ error: "Failed to persist upload" });
+            }
+            return;
+          }
+        }
         return res.json({
           sessionId,
           uploadedBytes: meta.fileSize,
@@ -828,16 +851,46 @@ export async function registerRoutes(): Promise<IRouter> {
         fileSize: meta.fileSize,
         complete: false,
       });
+      })().catch((err: unknown) => {
+        console.error(
+          "Chunked upload finalize failed:",
+          (err as any)?.message || err,
+        );
+        if (!res.headersSent) {
+          res.status(500).json({ error: "Failed to finalize upload" });
+        }
+      });
     });
 
     req.pipe(writeStream);
     return;
   });
 
-  router.post("/media/upload", requireAuth, caseMediaUpload.single("file"), (req, res) => {
+  router.post("/media/upload", requireAuth, caseMediaUpload.single("file"), async (req, res) => {
     try {
       if (!req.file) {
         return res.status(400).json({ error: "No file uploaded" });
+      }
+      // Persist to App Storage so the file survives autoscale redeploys and is
+      // reachable from every instance (local disk is ephemeral + per-instance).
+      // We must await this before reporting success, otherwise the serving
+      // route on a different instance would 404 on the URL we just returned.
+      if (caseMediaObjectStorageAvailable()) {
+        try {
+          const diskPath = path.resolve(casMediaDir, req.file.filename);
+          const buffer = await readFile(diskPath);
+          const contentType = req.file.mimetype || "application/octet-stream";
+          const ok = await writeCaseMediaToObjectStorage(req.file.filename, buffer, contentType);
+          if (!ok) {
+            throw new Error("writeCaseMediaToObjectStorage returned false");
+          }
+        } catch (storageErr: any) {
+          console.error(
+            "Media upload: failed to persist to object storage:",
+            storageErr?.message || storageErr,
+          );
+          return res.status(500).json({ error: "Failed to persist upload" });
+        }
       }
       const forwardedHost = req.header("x-forwarded-host");
       const host = forwardedHost || req.get("host") || "localhost";
