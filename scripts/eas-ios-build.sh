@@ -55,8 +55,14 @@ export EXPO_APPLE_TEAM_TYPE=COMPANY_OR_ORGANIZATION
 eas build --platform ios --profile production --non-interactive
 
 # ── 3. Persist the bumped build number BEFORE submitting ────────────────────
-# Once the build above returns successfully the number is effectively spent, so
-# commit it now. A submit failure after this point must NOT revert it.
+# The moment the build above succeeds, App Store Connect has effectively
+# consumed this build number — a later commit/push/submit failure must NEVER
+# roll it back, or the next run reuses a number Apple has already seen and
+# collides forever ("CFBundleVersion must be higher than NNN"). So flip the
+# persisted flag RIGHT NOW, before any fallible git/submit step, so the cleanup
+# trap never reverts a spent number.
+persisted=true
+
 echo ""
 echo "==> Build succeeded. Committing bumped build number..."
 cd "$REPO_ROOT"
@@ -65,22 +71,26 @@ cd "$REPO_ROOT"
 git config user.email "ci@labtrax.app" 2>/dev/null || true
 git config user.name "LabTrax CI" 2>/dev/null || true
 
-git add "$APP_JSON"
-
 build_num=$(node -p "JSON.parse(require('fs').readFileSync('$APP_JSON','utf8')).expo.ios.buildNumber")
 
-git commit -m "chore: bump iOS build number to $build_num [skip ci]"
+git add "$APP_JSON"
+git commit -m "chore: bump iOS build number to $build_num [skip ci]" \
+  || echo "Nothing to commit (build number already committed)."
 
-# Push to the current branch's upstream explicitly to avoid detached-HEAD surprises.
-branch="$(git rev-parse --abbrev-ref HEAD)"
-git push origin "$branch"
-
-# Build number is now persisted; the cleanup trap will skip the revert even if
-# the submit step below fails.
-persisted=true
+# Push only when an 'origin' remote exists (e.g. GitHub Actions CI). In the
+# Replit workspace there is no 'origin' remote (the checkpoint system persists
+# the commit), so a missing or failing push must NOT abort the run before the
+# submit step below — that is exactly what stranded a successful build 155.
+if git remote get-url origin >/dev/null 2>&1; then
+  branch="$(git rev-parse --abbrev-ref HEAD)"
+  git push origin "$branch" \
+    || echo "WARNING: git push failed — continuing (build number committed locally)."
+else
+  echo "No 'origin' remote — skipping push (commit persisted locally / via checkpoint)."
+fi
 
 echo ""
-echo "==> Build number $build_num committed and pushed to origin/$branch."
+echo "==> Build number $build_num committed."
 
 # ── 4. Submit the latest build to App Store Connect ─────────────────────────
 echo ""
