@@ -5,4 +5,5 @@
 - [Replit GCS sidecar auth](replit-gcs-sidecar.md) — federated creds can't sign URLs and sidecar `/token` is POST-only; use `storageClient.authClient.getClient().getAccessToken()` to build direct GCS URLs that bypass the Replit proxy on large downloads.
 - [Installer e2e shared slot](installer-e2e-shared-slot.md) — installer-publish-e2e & installer-storage-e2e race on one fixed live storage slot; serialize via advisory lock, don't loosen flaky size/503 asserts.
 - [iTero import test flake](itero-import-test-flake.md) — "no-AI stub path" tests must force AI key OFF themselves (it's set in Replit envs); live AI call on fake PDF intermittently 500s.
+- [Expo native upload](expo-native-upload.md) — expo/fetch rejects RN `{uri,name,type}` FormData parts ("Unsupported FormDataPart implementation"); use XHR uploadCaseMedia, never resilientFetch, for file uploads.
 - [Legacy mobile case blob merge](legacy-mobile-case-blob-merge.md) — mobile lab_cases history/photos collapsed to one event; list endpoint strips arrays + blob-replace upsert wiped them; fix = append-only union merge server-side.

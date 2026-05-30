@@ -9,7 +9,7 @@ import React, {
 } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system";
-import { getApiUrl, resilientFetch, getAccessToken } from "./query-client";
+import { getApiUrl, resilientFetch, getAccessToken, uploadCaseMedia } from "./query-client";
 import {
   enqueuePhoto,
   enqueueNote,
@@ -568,34 +568,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
     mimeType: string
   ): Promise<string | null> {
     try {
-      const uploadUrl = new URL("/api/media/upload", getApiUrl()).toString();
-      const token = getAccessToken();
-      const headers: Record<string, string> = {};
-      if (token) headers["Authorization"] = `Bearer ${token}`;
-
-      const formData = new FormData();
-      if (fileBlob) {
-        formData.append("file", fileBlob, filename);
-      } else if (nativeUri) {
-        formData.append("file", {
-          uri: nativeUri,
-          type: mimeType,
-          name: filename,
-        } as any);
-      } else {
-        return null;
+      // Web: materialize the Blob into an object URL so the shared uploader
+      // (XHR-based) can stream it. Native: pass the file:// uri directly.
+      let fileUri: string | null = nativeUri;
+      let objectUrl: string | null = null;
+      if (!fileUri && fileBlob && typeof URL?.createObjectURL === "function") {
+        objectUrl = URL.createObjectURL(fileBlob);
+        fileUri = objectUrl;
       }
+      if (!fileUri) return null;
 
-      const globalFetch = globalThis.fetch;
-      const response = await globalFetch(uploadUrl, {
-        method: "POST",
-        headers,
-        body: formData,
-      });
-
-      if (!response.ok) return null;
-      const data = await response.json();
-      return data?.url || null;
+      try {
+        const res = await uploadCaseMedia("/api/media/upload", fileUri, filename, mimeType);
+        if (!res.ok) return null;
+        const data = await res.json();
+        return data?.url || null;
+      } finally {
+        if (objectUrl) {
+          try {
+            URL.revokeObjectURL(objectUrl);
+          } catch {
+            /* ignore */
+          }
+        }
+      }
     } catch {
       return null;
     }
@@ -2318,14 +2314,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     mimeType: string
   ): Promise<boolean> {
     try {
-      const formData = new FormData();
-      if (Platform.OS === "web") {
-        const blob = await globalThis.fetch(photoUri).then((r) => r.blob());
-        formData.append("file", blob as any, fileName);
-      } else {
-        (formData as any).append("file", { uri: photoUri, name: fileName, type: mimeType });
-      }
-      const uploadRes = await resilientFetch("/api/media/upload", { method: "POST", body: formData });
+      // Use uploadCaseMedia (XHR), NOT resilientFetch — expo/fetch rejects the
+      // native { uri, name, type } file descriptor.
+      const uploadRes = await uploadCaseMedia("/api/media/upload", photoUri, fileName, mimeType);
       if (!uploadRes?.ok) return false;
       const { url } = await uploadRes.json();
       const attachRes = await resilientFetch(

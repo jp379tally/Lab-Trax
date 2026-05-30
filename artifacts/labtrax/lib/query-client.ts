@@ -322,6 +322,104 @@ export async function apiRequest(
 type UnauthorizedBehavior = "returnNull" | "throw";
 export { resilientFetch };
 
+// ── Multipart file upload ──────────────────────────────────────────────────
+// IMPORTANT: do NOT route file uploads through `resilientFetch`. That helper is
+// built on `expo/fetch`, whose FormData implementation rejects React Native's
+// native file descriptor `{ uri, name, type }` with the runtime error
+// "Unsupported FormDataPart implementation" — which is exactly why attaching
+// photos/files was failing. We instead upload with XMLHttpRequest, which uses
+// React Native's own networking + Blob module that fully supports the native
+// file descriptor (and works identically on web with a Blob). This is immune
+// to whichever `fetch` implementation happens to be active.
+export type MediaUploadResult = {
+  ok: boolean;
+  status: number;
+  json: () => Promise<any>;
+};
+
+function buildUploadHeaders(token: string | null): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  if (Platform.OS === "web") {
+    const csrf = getCsrfToken();
+    if (csrf) headers["x-csrf-token"] = csrf;
+  }
+  return headers;
+}
+
+async function buildUploadBody(
+  fileUri: string,
+  fileName: string,
+  mimeType: string,
+): Promise<FormData> {
+  const formData = new FormData();
+  if (Platform.OS === "web") {
+    // On web `fileUri` may be a blob:/data: URL — materialize it into a Blob
+    // so the standard FormData.append(name, Blob, filename) overload is used.
+    const blob = await globalThis.fetch(fileUri).then((r) => r.blob());
+    formData.append("file", blob, fileName);
+  } else {
+    // React Native's FormData runtime accepts the native file descriptor.
+    (formData as any).append("file", { uri: fileUri, name: fileName, type: mimeType });
+  }
+  return formData;
+}
+
+function xhrUpload(
+  url: string,
+  formData: FormData,
+  headers: Record<string, string>,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    if (Platform.OS === "web") xhr.withCredentials = true;
+    // Never set Content-Type manually — the runtime adds the multipart boundary.
+    for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
+    xhr.onload = () => resolve({ status: xhr.status, body: xhr.responseText });
+    xhr.onerror = () => reject(new Error("Network request failed"));
+    xhr.send(formData as any);
+  });
+}
+
+export async function uploadCaseMedia(
+  path: string,
+  fileUri: string,
+  fileName: string,
+  mimeType: string,
+): Promise<MediaUploadResult> {
+  const fullUrl = new URL(path, getApiUrl()).toString();
+  const run = async (token: string | null) => {
+    // Rebuild the body on each attempt — a consumed Blob cannot be re-sent.
+    const formData = await buildUploadBody(fileUri, fileName, mimeType);
+    return xhrUpload(fullUrl, formData, buildUploadHeaders(token));
+  };
+
+  let res = await run(_accessToken);
+  if (res.status === 401 && _refreshToken) {
+    const newToken = await refreshAccessToken();
+    if (newToken) res = await run(newToken);
+  }
+
+  let parsed: any;
+  let didParse = false;
+  return {
+    ok: res.status >= 200 && res.status < 300,
+    status: res.status,
+    json: async () => {
+      if (!didParse) {
+        try {
+          parsed = JSON.parse(res.body);
+        } catch {
+          parsed = {};
+        }
+        didParse = true;
+      }
+      return parsed;
+    },
+  };
+}
+
 export const getQueryFn: <T>(options: {
   on401: UnauthorizedBehavior;
 }) => QueryFunction<T> =

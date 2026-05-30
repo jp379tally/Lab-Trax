@@ -30,7 +30,7 @@ import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { useApp } from "@/lib/app-context";
-import { resilientFetch, getAccessToken, getApiUrl } from "@/lib/query-client";
+import { resilientFetch, getAccessToken, getApiUrl, uploadCaseMedia } from "@/lib/query-client";
 import { caseMediaSource, isSameApiOrigin } from "@/lib/case-media-source";
 import * as FileSystem from "expo-file-system";
 import * as LegacyFileSystem from "expo-file-system/legacy";
@@ -89,6 +89,52 @@ const SCAN_MIME_TYPES = new Set([
   "application/dicom",
 ]);
 const SCAN_EXTENSIONS = new Set(["stl", "obj", "ply", "dcm", "3ds", "dae"]);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Append-only union helpers (client mirror of the server's unionActivityLog).
+// The case detail screen holds TWO views of the same case: the live in-memory
+// case (updated instantly when the user adds a note/photo/barcode/station) and
+// `fullCaseData`, a heavier server snapshot fetched once on mount. We must show
+// the union of both so freshly-added events/photos appear immediately and the
+// server's full history is never dropped.
+// ─────────────────────────────────────────────────────────────────────────────
+function unionStrings(a?: string[] | null, b?: string[] | null): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of [...(a ?? []), ...(b ?? [])]) {
+    if (typeof item !== "string") continue;
+    if (seen.has(item)) continue;
+    seen.add(item);
+    out.push(item);
+  }
+  return out;
+}
+
+function activityEntryKey(e: ActivityEntry): string {
+  if (e && e.id != null && String(e.id) !== "") return `id:${String(e.id)}`;
+  return [
+    "sig",
+    e?.type ?? "",
+    e?.timestamp ?? "",
+    e?.description ?? "",
+    e?.imageUri ?? "",
+    e?.attachmentId ?? "",
+    e?.user ?? "",
+  ].join("|");
+}
+
+function unionActivity(a?: ActivityEntry[] | null, b?: ActivityEntry[] | null): ActivityEntry[] {
+  const out: ActivityEntry[] = [];
+  const seen = new Set<string>();
+  for (const e of [...(a ?? []), ...(b ?? [])]) {
+    if (!e) continue;
+    const k = activityEntryKey(e);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(e);
+  }
+  return out;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // QrCard — compact card with the case QR code. Tap the QR to expand it
@@ -344,9 +390,14 @@ export default function CaseDetailScreen() {
   const caseItem = caseItemBase && fullCaseData
     ? {
         ...caseItemBase,
-        photos: (fullCaseData.photos ?? caseItemBase.photos) as string[],
-        videos: (fullCaseData.videos ?? caseItemBase.videos) as string[] | undefined,
-        activityLog: (fullCaseData.activityLog ?? caseItemBase.activityLog) as ActivityEntry[],
+        // Union the server snapshot (fullCaseData, fetched once on mount) with
+        // the live in-memory case. Using `fullCaseData.x ?? base.x` would hide
+        // every event/photo the user adds AFTER mount (notes, photos, barcode
+        // & station changes) until the next refetch — that was the
+        // "events/photos not showing up in history" bug. Union keeps both.
+        photos: unionStrings(caseItemBase.photos, fullCaseData.photos) as string[],
+        videos: unionStrings(caseItemBase.videos, fullCaseData.videos) as string[] | undefined,
+        activityLog: unionActivity(caseItemBase.activityLog, fullCaseData.activityLog) as ActivityEntry[],
         restorations: ((fullCaseData as { restorations?: LabCase["restorations"] }).restorations
           ?? caseItemBase.restorations) as LabCase["restorations"],
       }
@@ -385,36 +436,13 @@ export default function CaseDetailScreen() {
 
   type ApiErrorBody = { error?: string };
 
-  /**
-   * Models React Native's runtime extension of the FormData API, which
-   * additionally accepts a native file descriptor `{ uri, name, type }`
-   * instead of a standard `Blob`. TypeScript's built-in FormData type
-   * does not include this overload, so we model it as a standalone
-   * interface and narrow to it only on the native code path.
-   */
-  interface RNFormDataNativeAppend {
-    append(name: string, value: { uri: string; name: string; type: string }): void;
-  }
-
   async function uploadAttachment(uri: string, name: string, mimeType: string) {
     setUploadingAttachment(true);
     try {
-      const formData = new FormData();
-      if (Platform.OS === "web") {
-        // On web, uri may be a data URL (from FileReader) — convert to Blob
-        // so standard FormData.append(name, Blob, filename) is used.
-        const blob = await globalThis.fetch(uri).then((r) => r.blob());
-        formData.append("file", blob, name);
-      } else {
-        // React Native's FormData runtime accepts { uri, name, type } for
-        // native file uploads. We narrow to the typed interface that models
-        // this platform-specific overload.
-        (formData as unknown as RNFormDataNativeAppend).append("file", { uri, name, type: mimeType });
-      }
-      const uploadRes = await resilientFetch("/api/media/upload", {
-        method: "POST",
-        body: formData,
-      });
+      // Uploads go through uploadCaseMedia (XHR), NOT resilientFetch — the
+      // latter uses expo/fetch which rejects React Native's native file
+      // descriptor with "Unsupported FormDataPart implementation".
+      const uploadRes = await uploadCaseMedia("/api/media/upload", uri, name, mimeType);
       if (!uploadRes.ok) {
         const err: ApiErrorBody = await uploadRes.json().catch(() => ({}));
         throw new Error(err.error || "Upload failed");
