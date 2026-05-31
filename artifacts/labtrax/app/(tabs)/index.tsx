@@ -829,6 +829,8 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
           value={intakeCases.length}
           icon="enter-outline"
           accent={colors.tint}
+          active={activeFilter === "intake"}
+          onPress={() => setActiveFilter((prev) => (prev === "intake" ? null : "intake"))}
           testID="stat-intake"
         />
         <StatTile
@@ -836,6 +838,8 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
           value={inProgressCases.length}
           icon="construct-outline"
           accent={colors.warningStrong}
+          active={activeFilter === "progress"}
+          onPress={() => setActiveFilter((prev) => (prev === "progress" ? null : "progress"))}
           testID="stat-progress"
         />
         <StatTile
@@ -843,6 +847,8 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
           value={shippedCases.length}
           icon="airplane-outline"
           accent={colors.success}
+          active={activeFilter === "shipped"}
+          onPress={() => setActiveFilter((prev) => (prev === "shipped" ? null : "shipped"))}
           testID="stat-shipped"
         />
       </View>
