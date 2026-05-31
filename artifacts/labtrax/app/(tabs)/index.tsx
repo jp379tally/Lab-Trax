@@ -2999,21 +2999,25 @@ function AdminDashboard() {
       >
         {renderBackHeader("Invoices", "invoices-hub")}
         <View style={adm.listArea}>
-          <View style={adm.invoiceSummary}>
-            <View style={adm.invoiceSummaryItem}>
-              <Text style={adm.invoiceSummaryNum}>{invoices.filter((i) => i.status === "open").length}</Text>
-              <Text style={adm.invoiceSummaryLabel}>Open</Text>
-            </View>
-            <View style={adm.invoiceSummaryDivider} />
-            <View style={adm.invoiceSummaryItem}>
-              <Text style={adm.invoiceSummaryNum}>{invoices.filter((i) => i.status === "overdue").length}</Text>
-              <Text style={[adm.invoiceSummaryLabel, { color: colors.error }]}>Overdue</Text>
-            </View>
-            <View style={adm.invoiceSummaryDivider} />
-            <View style={adm.invoiceSummaryItem}>
-              <Text style={adm.invoiceSummaryNum}>{invoices.filter((i) => i.status === "paid").length}</Text>
-              <Text style={[adm.invoiceSummaryLabel, { color: colors.success }]}>Paid</Text>
-            </View>
+          <View style={{ flexDirection: "row", gap: 10, marginBottom: 12 }}>
+            <StatTile
+              label="Open"
+              value={invoices.filter((i) => i.status === "open").length}
+              icon="mail-open-outline"
+              accent={colors.tint}
+            />
+            <StatTile
+              label="Overdue"
+              value={invoices.filter((i) => i.status === "overdue").length}
+              icon="alert-circle-outline"
+              accent={colors.error}
+            />
+            <StatTile
+              label="Paid"
+              value={invoices.filter((i) => i.status === "paid").length}
+              icon="checkmark-circle-outline"
+              accent={colors.success}
+            />
           </View>
 
           {invoices.map((inv) => {
@@ -3919,10 +3923,11 @@ function AdminDashboard() {
 
         <View style={adm.menuSection}>
           {financialItems.map((item) => (
-            <Pressable
+            <Card
               key={item.title}
-              style={({ pressed }) => [adm.menuItem, pressed && { opacity: 0.7 }]}
+              padding="md"
               onPress={() => item.push ? router.push(item.push as any) : item.view && setAdminView(item.view)}
+              style={{ flexDirection: "row", alignItems: "center", gap: 14 }}
             >
               <View style={[adm.menuIcon, { backgroundColor: item.bg }]}>
                 <Ionicons name={item.icon as any} size={20} color={item.color} />
@@ -3932,7 +3937,7 @@ function AdminDashboard() {
                 <Text style={adm.menuSub}>{item.sub}</Text>
               </View>
               <Feather name="chevron-right" size={18} color={colors.textTertiary} />
-            </Pressable>
+            </Card>
           ))}
         </View>
       </ScrollView>
@@ -3951,21 +3956,25 @@ function AdminDashboard() {
       >
         {renderBackHeader("Invoices", "financial-hub")}
         <View style={adm.listArea}>
-          <View style={adm.invoiceSummary}>
-            <View style={adm.invoiceSummaryItem}>
-              <Text style={adm.invoiceSummaryNum}>{openCount}</Text>
-              <Text style={adm.invoiceSummaryLabel}>Open</Text>
-            </View>
-            <View style={adm.invoiceSummaryDivider} />
-            <View style={adm.invoiceSummaryItem}>
-              <Text style={adm.invoiceSummaryNum}>{overdueCount}</Text>
-              <Text style={[adm.invoiceSummaryLabel, { color: colors.error }]}>Overdue</Text>
-            </View>
-            <View style={adm.invoiceSummaryDivider} />
-            <View style={adm.invoiceSummaryItem}>
-              <Text style={adm.invoiceSummaryNum}>{allCount}</Text>
-              <Text style={[adm.invoiceSummaryLabel, { color: colors.success }]}>Total</Text>
-            </View>
+          <View style={{ flexDirection: "row", gap: 10, marginBottom: 12 }}>
+            <StatTile
+              label="Open"
+              value={openCount}
+              icon="mail-open-outline"
+              accent={colors.tint}
+            />
+            <StatTile
+              label="Overdue"
+              value={overdueCount}
+              icon="alert-circle-outline"
+              accent={colors.error}
+            />
+            <StatTile
+              label="Total"
+              value={allCount}
+              icon="documents-outline"
+              accent={colors.success}
+            />
           </View>
 
           <View style={{ backgroundColor: colors.tint, borderRadius: 14, marginBottom: 12, overflow: "hidden" as const }}>
@@ -4628,25 +4637,33 @@ function AdminDashboard() {
         </View>
 
         <View style={{ flexDirection: "row", marginHorizontal: 16, marginBottom: 12, gap: 10 }}>
-          <View style={{ flex: 1, backgroundColor: openBalance > 0 ? colors.warningLight : colors.successLight, borderRadius: 14, padding: 14 }}>
-            <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: openBalance > 0 ? colors.warningText : colors.successStrong }}>Open Balance</Text>
-            <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: openBalance > 0 ? colors.warningStrong : colors.successStrong, marginTop: 4 }}>{formatCurrency(openBalance)}</Text>
-          </View>
-          <View style={{ flex: 1, backgroundColor: colors.infoSurface, borderRadius: 14, padding: 14 }}>
-            <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: colors.infoStrong }}>Paid to Date</Text>
-            <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: colors.info, marginTop: 4 }}>{formatCurrency(paidTotal)}</Text>
-          </View>
+          <StatTile
+            label="Open Balance"
+            value={formatCurrency(openBalance)}
+            icon="wallet-outline"
+            accent={openBalance > 0 ? colors.warningStrong : colors.success}
+          />
+          <StatTile
+            label="Paid to Date"
+            value={formatCurrency(paidTotal)}
+            icon="checkmark-done-outline"
+            accent={colors.info}
+          />
         </View>
 
         <View style={{ flexDirection: "row", marginHorizontal: 16, marginBottom: 12, gap: 10 }}>
-          <View style={{ flex: 1, backgroundColor: colors.surfaceAlt, borderRadius: 14, padding: 14 }}>
-            <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: colors.subText }}>Active Cases</Text>
-            <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: colors.text, marginTop: 4 }}>{clientCases.filter((c) => c.status !== "COMPLETE").length}</Text>
-          </View>
-          <View style={{ flex: 1, backgroundColor: colors.surfaceAlt, borderRadius: 14, padding: 14 }}>
-            <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: colors.subText }}>Total Cases</Text>
-            <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: colors.text, marginTop: 4 }}>{clientCases.length}</Text>
-          </View>
+          <StatTile
+            label="Active Cases"
+            value={clientCases.filter((c) => c.status !== "COMPLETE").length}
+            icon="construct-outline"
+            accent={colors.tint}
+          />
+          <StatTile
+            label="Total Cases"
+            value={clientCases.length}
+            icon="albums-outline"
+            accent={colors.cyan}
+          />
         </View>
 
         <View style={{ marginHorizontal: 16, marginBottom: 12, gap: 8 }}>
@@ -5740,16 +5757,18 @@ function AdminDashboard() {
 
         <View style={{ paddingHorizontal: 20, marginBottom: 16 }}>
           <View style={{ flexDirection: "row", gap: 10 }}>
-            <View style={[invStyles.summaryCard, { flex: 1, backgroundColor: colors.successSurface }]}>
-              <Ionicons name="cube" size={22} color={colors.success} />
-              <Text style={[invStyles.summaryNum, { color: colors.success }]}>{inventory.length}</Text>
-              <Text style={invStyles.summaryLabel}>Total Items</Text>
-            </View>
-            <View style={[invStyles.summaryCard, { flex: 1, backgroundColor: lowStockCount > 0 ? colors.errorSurface : colors.successSurface }]}>
-              <Ionicons name="warning" size={22} color={lowStockCount > 0 ? colors.error : colors.success} />
-              <Text style={[invStyles.summaryNum, { color: lowStockCount > 0 ? colors.error : colors.success }]}>{lowStockCount}</Text>
-              <Text style={invStyles.summaryLabel}>Low Stock</Text>
-            </View>
+            <StatTile
+              label="Total Items"
+              value={inventory.length}
+              icon="cube"
+              accent={colors.success}
+            />
+            <StatTile
+              label="Low Stock"
+              value={lowStockCount}
+              icon="warning"
+              accent={lowStockCount > 0 ? colors.error : colors.success}
+            />
           </View>
         </View>
 
@@ -6081,13 +6100,14 @@ function AdminDashboard() {
 
         <View style={adm.menuSection}>
           {paymentCards.map((item) => (
-            <Pressable
+            <Card
               key={item.title}
-              style={({ pressed }) => [adm.menuItem, pressed && { opacity: 0.7 }]}
+              padding="md"
               onPress={() => {
                 if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                 Alert.alert(item.title, "This feature is coming soon.");
               }}
+              style={{ flexDirection: "row", alignItems: "center", gap: 14 }}
             >
               <View style={[adm.menuIcon, { backgroundColor: item.bg }]}>
                 <Ionicons name={item.icon} size={20} color={item.color} />
@@ -6097,7 +6117,7 @@ function AdminDashboard() {
                 <Text style={adm.menuSub}>{item.sub}</Text>
               </View>
               <Feather name="chevron-right" size={18} color={colors.textTertiary} />
-            </Pressable>
+            </Card>
           ))}
         </View>
       </ScrollView>
@@ -7049,10 +7069,11 @@ function AdminDashboard() {
               {activeCases.map((c) => {
                 const stationInfo = getStationInfo(c.status, customStationLabels);
                 return (
-                  <Pressable
+                  <Card
                     key={c.id}
-                    style={({ pressed }) => [adm.menuItem, pressed && { opacity: 0.7 }]}
+                    padding="md"
                     onPress={() => { setDeleteCaseTarget(c); setShowDeleteConfirm(true); }}
+                    style={{ flexDirection: "row", alignItems: "center", gap: 14 }}
                   >
                     <View style={[adm.menuIcon, { backgroundColor: colors.errorLight }]}>
                       <Ionicons name="document-text" size={20} color={colors.error} />
@@ -7064,7 +7085,7 @@ function AdminDashboard() {
                       </Text>
                     </View>
                     <Ionicons name="trash-outline" size={18} color={colors.error} />
-                  </Pressable>
+                  </Card>
                 );
               })}
             </View>
@@ -7667,15 +7688,22 @@ function ProviderDashboard() {
         >
           <Text style={[styles.heroLabel, { opacity: 0.7 }]}>YOUR CASES</Text>
           <Text style={styles.heroCount}>{myCases.length}</Text>
-          <View style={{ flexDirection: "row", gap: 12, marginTop: 8 }}>
-            <View style={{ backgroundColor: "rgba(255,255,255,0.15)", paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12 }}>
-              <Text style={{ color: colors.textInverse, fontSize: 12, fontFamily: "Inter_500Medium" }}>{inProgressCount} Active</Text>
-            </View>
-            <View style={{ backgroundColor: "rgba(255,255,255,0.15)", paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12 }}>
-              <Text style={{ color: colors.textInverse, fontSize: 12, fontFamily: "Inter_500Medium" }}>{completedCount} Completed</Text>
-            </View>
-          </View>
         </LinearGradient>
+
+        <View style={[styles.summaryTileRow, { marginTop: 16, marginBottom: 0 }]}>
+          <StatTile
+            label="Active"
+            value={inProgressCount}
+            icon="construct-outline"
+            accent={colors.warningStrong}
+          />
+          <StatTile
+            label="Completed"
+            value={completedCount}
+            icon="checkmark-circle-outline"
+            accent={colors.success}
+          />
+        </View>
 
         <View style={{ paddingHorizontal: 20, marginTop: 16 }}>
           <Pressable
@@ -9029,10 +9057,11 @@ function MasterAdminDashboard({ onExitHub }: { onExitHub: () => void }) {
             { icon: "flask" as const, color: colors.cyan, bg: colors.cyanLight, title: "Lab Portal", sub: `${cases.length} cases · ${clients.length} clients`, view: "lab-portal" as MasterView },
             { icon: "medical" as const, color: colors.info, bg: colors.infoLight, title: "Provider Portal", sub: "View provider accounts", view: "provider-portal" as MasterView },
           ].map((item) => (
-            <Pressable
+            <Card
               key={item.view}
-              style={({ pressed }) => [adm.menuItem, pressed && { opacity: 0.7 }]}
+              padding="md"
               onPress={() => setMasterView(item.view)}
+              style={{ flexDirection: "row", alignItems: "center", gap: 14 }}
             >
               <View style={[adm.menuIcon, { backgroundColor: item.bg }]}>
                 <Ionicons name={item.icon} size={20} color={item.color} />
@@ -9042,7 +9071,7 @@ function MasterAdminDashboard({ onExitHub }: { onExitHub: () => void }) {
                 <Text style={adm.menuSub}>{item.sub}</Text>
               </View>
               <Feather name="chevron-right" size={18} color={colors.textTertiary} />
-            </Pressable>
+            </Card>
           ))}
         </View>
       </ScrollView>

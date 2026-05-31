@@ -11,3 +11,4 @@
 - [Case media needs attachment row](case-media-attachment-row.md) — a bare /api/media/upload URL 404s on the auth-gated serving routes; persisted media must be backed by a caseAttachments row (upload→attach→store id-based URL).
 - [LabTrax mobile theming](labtrax-theming.md) — tokens via useTheme, but ThemeProvider wraps only the authed tree (login/lock can't use it); most screens hardcode Colors.light, full migration is a big rewrite.
 - [LabTrax deployment target](labtrax-deployment-target.md) — must run as Reserved VM (vm), not autoscale; autoscale scale-to-zero caused overnight outages and skipped cron jobs.
+- [LabTrax design-system adoption](labtrax-design-system.md) — dashboard metric rows use StatTile; hub/menu lists use Card+inline (not the MenuItem component) to stay visually consistent.
