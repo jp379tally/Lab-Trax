@@ -317,7 +317,6 @@ const makeDrawerStyles = (colors: ThemeColors) => StyleSheet.create({
 });
 
 function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void } = {}) {
-  "use no memo";
   const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus, groupJoinRequests, respondToGroupJoinRequest, customStationLabels, userIsAffiliated, invoices, refreshCases, hardRefresh, clients, addCasePhoto } = useApp();
   const [refreshing, setRefreshing] = useState(false);
   const { logout, profilePicUri, setProfilePicUri, currentUser, registeredUsers } = useAuth();
