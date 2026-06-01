@@ -56,7 +56,14 @@ export function StatTile({
           <Ionicons name={icon} size={18} color={accentColor} />
         </View>
       ) : null}
-      <Text style={[styles.value, { color: colors.text }]}>{value}</Text>
+      <Text
+        style={[styles.value, { color: colors.text }]}
+        numberOfLines={1}
+        adjustsFontSizeToFit
+        minimumFontScale={0.6}
+      >
+        {value}
+      </Text>
       <Text style={[styles.label, { color: colors.textSecondary }]} numberOfLines={1}>
         {label}
       </Text>
