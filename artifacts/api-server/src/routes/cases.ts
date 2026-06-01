@@ -3104,6 +3104,32 @@ router.post(
           .onConflictDoNothing();
       }
 
+      // Append an "attachment_added" event to the legacy activityLog so the
+      // mobile History tab reflects attachments added from the desktop.
+      const legacyCaseData =
+        mobileRow.caseData && typeof mobileRow.caseData === "object"
+          ? { ...(mobileRow.caseData as any) }
+          : {};
+      if (!Array.isArray(legacyCaseData.activityLog))
+        legacyCaseData.activityLog = [];
+      legacyCaseData.activityLog.push({
+        id: legacyAttachment.id,
+        type: "document",
+        timestamp: Date.now(),
+        user: (req as any).user?.initials || "",
+        description: legacyInput.fileName,
+        attachmentId: legacyAttachment.id,
+        fileType: legacyInput.fileType,
+        imageUri: legacyInput.storageKey,
+      });
+      await db
+        .update(labCases)
+        .set({
+          caseData: JSON.stringify(legacyCaseData),
+          updatedAt: new Date(),
+        })
+        .where(eq(labCases.id, mobileRow.id));
+
       await writeAuditLog({
         req,
         organizationId: mobileRow.organizationId,
