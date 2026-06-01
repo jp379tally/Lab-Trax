@@ -38,3 +38,23 @@ beta, for a business case-tracking app with recurring user-facing crashes.
 **absence** of the `React Compiler enabled` line in the Expo startup log. Toggling
 this flag needs a Metro cache clear (`rm -rf .expo node_modules/.cache` + metro tmp)
 because `babel.config.js` uses `api.cache(true)`.
+
+## Confound: zombie console errors from stale iframes
+After disabling the compiler, the `Invalid hook call` kept appearing in the
+captured browser console — but it was a **zombie**, not a live failure. The canvas
+often has **multiple iframes** of the labtrax app open at once, and Expo runs in
+**CI mode (`CI=1`) which disables auto-reload**. So iframes that don't happen to
+reload keep executing the *old* bundle and re-throw the stale error. Tell-tale
+sign: the error timestamp falls a few seconds *before* a fresh
+`Running application "main"` boot line (old iframe dying on its way out). To get a
+trustworthy console reading after a Metro/config change: restart the expo workflow,
+then force a fresh load (e.g. screenshot the app_preview) and read *that* boot's
+console — don't trust lingering errors that predate the latest boot.
+
+## Ruling out the three official "Invalid hook call" causes (kept current)
+- react `19.1.0` === react-dom `19.1.0` (matched renderer), scheduler `0.26.0`,
+  react-native-web `0.21.2` — all React-19-correct.
+- single React in the tree; `react-test-renderer` is **devDependencies only** and
+  never imported in source, so it is NOT in the runtime web bundle (a bundled 2nd
+  renderer would fight react-dom over the dispatcher = null-dispatcher errors).
+- no static Rules-of-Hooks violations in TechDashboard or its render subtree.
