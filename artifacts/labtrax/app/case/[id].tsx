@@ -276,6 +276,7 @@ export default function CaseDetailScreen() {
   const [pausedAttachments, setPausedAttachments] = useState<Map<string, { resumable: DownloadResumable; progress: number }>>(new Map());
   const activeDownloadResumableRef = useRef<Map<string, DownloadResumable>>(new Map());
   const [attachmentsFetchError, setAttachmentsFetchError] = useState(false);
+  const [deletingAttachmentId, setDeletingAttachmentId] = useState<string | null>(null);
   const [canonicalCaseData, setCanonicalCaseData] = useState<{
     statusHistory?: TimelineEntry[];
     expectedDeliveryDate?: string | null;
@@ -438,6 +439,42 @@ export default function CaseDetailScreen() {
       }
       setAttachmentsFetchError(true);
     }
+  }
+
+  async function handleDeleteAttachment(attachmentId: string, fileName: string) {
+    return new Promise<void>((resolve) => {
+      Alert.alert(
+        "Delete attachment",
+        `Remove "${fileName}" from this case? This cannot be undone.`,
+        [
+          { text: "Cancel", style: "cancel", onPress: () => resolve() },
+          {
+            text: "Delete",
+            style: "destructive",
+            onPress: async () => {
+              setDeletingAttachmentId(attachmentId);
+              try {
+                const res = await resilientFetch(
+                  `/api/cases/${encodeURIComponent(String(id))}/attachments/${encodeURIComponent(attachmentId)}`,
+                  { method: "DELETE" }
+                );
+                if (res.ok) {
+                  setServerAttachments((prev) => prev.filter((a) => a.id !== attachmentId));
+                } else {
+                  const body = await res.json().catch(() => ({})) as { error?: string };
+                  Alert.alert("Could not delete", body.error ?? "An error occurred. Please try again.");
+                }
+              } catch {
+                Alert.alert("Could not delete", "A network error occurred. Please try again.");
+              } finally {
+                setDeletingAttachmentId(null);
+                resolve();
+              }
+            },
+          },
+        ]
+      );
+    });
   }
 
   type ApiErrorBody = { error?: string };
@@ -2903,7 +2940,22 @@ export default function CaseDetailScreen() {
                             <Ionicons name="play-circle-outline" size={22} color={colors.orange} />
                           </Pressable>
                         ) : (
-                          <Ionicons name={is3D ? "share-outline" : "open-outline"} size={16} color={colors.textTertiary} />
+                          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                            {deletingAttachmentId === att.id ? (
+                              <ActivityIndicator size="small" color={colors.error} />
+                            ) : (
+                              <Pressable
+                                hitSlop={10}
+                                onPress={(e) => {
+                                  e.stopPropagation?.();
+                                  void handleDeleteAttachment(att.id, att.fileName);
+                                }}
+                              >
+                                <Ionicons name="trash-outline" size={18} color={colors.error} />
+                              </Pressable>
+                            )}
+                            <Ionicons name={is3D ? "share-outline" : "open-outline"} size={16} color={colors.textTertiary} />
+                          </View>
                         )}
                       </>
                     );
