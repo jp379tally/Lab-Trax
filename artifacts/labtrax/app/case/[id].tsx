@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo, type ComponentProps } from "react";
+import React, { useState, useRef, useEffect, useMemo, useCallback, type ComponentProps } from "react";
 import QRCode from "react-native-qrcode-svg";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
@@ -18,11 +18,12 @@ import {
   Linking,
   RefreshControl,
   ActivityIndicator,
+  AppState,
 } from "react-native";
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
-import { router, useLocalSearchParams } from "expo-router";
+import { router, useLocalSearchParams, useFocusEffect } from "expo-router";
 import * as Haptics from "expo-haptics";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
@@ -531,6 +532,49 @@ export default function CaseDetailScreen() {
       .catch(() => {});
     return () => { cancelled = true; };
   }, [id]);
+
+  // Poll the full case every 30 s while the screen is in focus so desktop-
+  // added attachments and activity events appear without a manual refresh.
+  // Polling pauses automatically when the app is backgrounded.
+  const ACTIVITY_POLL_MS = 30_000;
+  useFocusEffect(
+    useCallback(() => {
+      if (!id) return;
+      let timer: ReturnType<typeof setInterval> | null = null;
+
+      function poll() {
+        resilientFetch(`/api/legacy/cases/${encodeURIComponent(id as string)}`)
+          .then((res) => (res.ok ? res.json() : null))
+          .then((data) => {
+            if (data?.case) setFullCaseData(data.case);
+          })
+          .catch(() => {});
+      }
+
+      function startPolling() {
+        if (timer !== null) return;
+        timer = setInterval(poll, ACTIVITY_POLL_MS);
+      }
+      function stopPolling() {
+        if (timer !== null) {
+          clearInterval(timer);
+          timer = null;
+        }
+      }
+
+      const appStateSub = AppState.addEventListener("change", (nextState) => {
+        if (nextState === "active") startPolling();
+        else stopPolling();
+      });
+
+      startPolling();
+
+      return () => {
+        stopPolling();
+        appStateSub.remove();
+      };
+    }, [id])
+  );
 
   // Fetch the original case's activity log so the history section can show
   // the full timeline (original case history → remake history).

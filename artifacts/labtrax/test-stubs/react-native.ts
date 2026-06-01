@@ -126,6 +126,11 @@ export const Share = {
   share: vi.fn(async () => ({ action: "dismissedAction" })),
 };
 
+export const AppState = {
+  currentState: "active" as const,
+  addEventListener: vi.fn(() => ({ remove: (): void => {} })),
+};
+
 class AnimatedValue {
   setValue(): void {}
   interpolate(): AnimatedValue {
@@ -175,6 +180,7 @@ const reactNativeStub = {
   Linking,
   Share,
   Animated,
+  AppState,
 };
 
 export default reactNativeStub;
