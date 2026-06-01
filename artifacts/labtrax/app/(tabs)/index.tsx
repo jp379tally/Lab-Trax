@@ -9165,7 +9165,7 @@ function MasterAdminDashboard({ onExitHub }: { onExitHub: () => void }) {
       >
         {renderBackHeader("All Users")}
         {registeredUsers.filter((u) => (u.userType as string) !== "master_admin").map((u, idx) => (
-            <View key={u.username + idx} style={[adm.menuItem, { marginHorizontal: 20 }]}>
+            <View key={u.username + idx} style={{ flexDirection: "row", alignItems: "center", backgroundColor: colors.surface, borderRadius: 18, padding: 16, borderWidth: 1, borderColor: colors.border, gap: 14, marginHorizontal: 20 }}>
               <View style={[adm.menuIcon, { backgroundColor: u.userType === "provider" ? colors.infoLight : u.userType === "master_admin" ? colors.warningLight : colors.cyanLight }]}>
                 <Ionicons name={u.userType === "provider" ? "medical" : u.userType === "master_admin" ? "shield-checkmark" : "person"} size={20} color={u.userType === "provider" ? colors.info : u.userType === "master_admin" ? colors.warningStrong : colors.cyan} />
               </View>
@@ -9927,16 +9927,6 @@ const makeAdm = (colors: ThemeColors) => StyleSheet.create({
     paddingHorizontal: 20,
     gap: 8,
   },
-  menuItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: colors.surface,
-    borderRadius: 18,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: colors.border,
-    gap: 14,
-  },
   menuIcon: {
     width: 44,
     height: 44,
@@ -10215,35 +10205,6 @@ const makeAdm = (colors: ThemeColors) => StyleSheet.create({
     fontFamily: "Inter_700Bold",
     color: colors.text,
   },
-  invoiceSummary: {
-    flexDirection: "row",
-    backgroundColor: colors.surface,
-    borderRadius: 18,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: colors.border,
-    marginBottom: 16,
-  },
-  invoiceSummaryItem: {
-    flex: 1,
-    alignItems: "center",
-  },
-  invoiceSummaryNum: {
-    fontSize: 22,
-    fontFamily: "Inter_700Bold",
-    color: colors.text,
-  },
-  invoiceSummaryLabel: {
-    fontSize: 11,
-    fontFamily: "Inter_600SemiBold",
-    color: colors.textSecondary,
-    marginTop: 2,
-  },
-  invoiceSummaryDivider: {
-    width: 1,
-    height: 36,
-    backgroundColor: colors.border,
-  },
   invoiceCard: {
     backgroundColor: colors.surface,
     borderRadius: 16,
@@ -10414,21 +10375,6 @@ const makeAdm = (colors: ThemeColors) => StyleSheet.create({
 });
 
 const makeInvStyles = (colors: ThemeColors) => StyleSheet.create({
-  summaryCard: {
-    borderRadius: 16,
-    padding: 16,
-    alignItems: "center",
-    gap: 4,
-  },
-  summaryNum: {
-    fontSize: 24,
-    fontFamily: "Inter_700Bold",
-  },
-  summaryLabel: {
-    fontSize: 12,
-    fontFamily: "Inter_400Regular",
-    color: colors.textSecondary,
-  },
   qtyBtn: {
     width: 28,
     height: 28,
