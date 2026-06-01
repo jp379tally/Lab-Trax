@@ -42,6 +42,7 @@ const PROTECTED_DRIZZLE_EXPORTS: ReadonlyArray<string> = [
   "organizationMemberships",
   "users",
   "subscriptions",
+  "vendorTypes",
 ];
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));

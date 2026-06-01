@@ -2916,7 +2916,10 @@ router.get(
     if (canonicalAccess) {
       isLabMember = !!canonicalAccess.labMembership;
       attachments = await db.query.caseAttachments.findMany({
-        where: eq(caseAttachments.caseId, canonicalAccess.case.id),
+        where: and(
+          eq(caseAttachments.caseId, canonicalAccess.case.id),
+          isNull(caseAttachments.deletedAt)
+        ),
         orderBy: [desc(caseAttachments.createdAt)],
       });
     } else {
@@ -2932,7 +2935,10 @@ router.get(
       }
       isLabMember = true;
       attachments = await db.query.caseAttachments.findMany({
-        where: eq(caseAttachments.labCaseId, req.params.caseId),
+        where: and(
+          eq(caseAttachments.labCaseId, req.params.caseId),
+          isNull(caseAttachments.deletedAt)
+        ),
         orderBy: [desc(caseAttachments.createdAt)],
       });
     }
@@ -3004,12 +3010,11 @@ router.patch(
   })
 );
 
-// Best-effort removal of the underlying file backing a case attachment.
-// The DB row's `storageKey` is the public URL the file was uploaded to
-// (e.g. https://host/uploads/case-media/<filename>). We only ever delete
-// inside `uploads/case-media/` and resolve paths defensively so a crafted
-// storageKey can't escape the media directory.
-function removeAttachmentFile(
+// Best-effort move of the underlying file backing a case attachment into the
+// trash folder (`uploads/case-media/.trash/`) so it can be recovered if the
+// deletion was accidental. Uses the same naming convention as the orphan-
+// cleanup job: `<iso-stamp>__<filename>`.
+function trashAttachmentFile(
   req: any,
   storageKey: string | null | undefined
 ): void {
@@ -3019,15 +3024,20 @@ function removeAttachmentFile(
     if (!fileName) return;
     const resolved = path.resolve(caseMediaDir, fileName);
     if (
-      resolved !== caseMediaDir &&
-      (resolved + path.sep).startsWith(caseMediaDir + path.sep)
+      resolved === caseMediaDir ||
+      !(resolved + path.sep).startsWith(caseMediaDir + path.sep)
     ) {
-      fs.rmSync(resolved, { force: true });
+      return;
     }
+    const trashDir = path.resolve(caseMediaDir, ".trash");
+    fs.mkdirSync(trashDir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const trashedName = `${stamp}__${fileName}`;
+    fs.renameSync(resolved, path.resolve(trashDir, trashedName));
   } catch (err: any) {
     req.log?.warn?.(
       { err: err?.message || String(err), storageKey },
-      "Failed to remove underlying attachment file"
+      "Failed to trash underlying attachment file"
     );
   }
 }
@@ -3219,13 +3229,22 @@ router.delete(
       const attachment = await db.query.caseAttachments.findFirst({
         where: and(
           eq(caseAttachments.id, req.params.attachmentId),
-          eq(caseAttachments.caseId, canonicalFound.id)
+          eq(caseAttachments.caseId, canonicalFound.id),
+          isNull(caseAttachments.deletedAt)
         ),
       });
       if (!attachment) throw new HttpError(404, "Attachment not found.");
 
-      await db.delete(caseAttachments).where(eq(caseAttachments.id, attachment.id));
-      removeAttachmentFile(req, attachment.storageKey);
+      await softDeleteById({
+        table: caseAttachments,
+        id: attachment.id,
+        actorUserId: userId,
+        req,
+        organizationId: canonicalFound.labOrganizationId,
+        entityType: "case_attachment",
+        beforeJson: attachment,
+      });
+      trashAttachmentFile(req, attachment.storageKey);
 
       const attachmentDeleter = (req as any).user;
       await db.insert(caseEvents).values({
@@ -3240,15 +3259,6 @@ router.delete(
           fileType: attachment.fileType,
         },
       });
-
-      await writeAuditLog({
-        req,
-        organizationId: canonicalFound.labOrganizationId,
-        action: "case_attachment_deleted",
-        entityType: "case_attachment",
-        entityId: attachment.id,
-        beforeJson: attachment,
-      });
     } else {
       // Legacy mobile case — look up attachment by labCaseId, require lab membership.
       const mobileRow = await db.query.labCases.findFirst({
@@ -3261,22 +3271,22 @@ router.delete(
       const attachment = await db.query.caseAttachments.findFirst({
         where: and(
           eq(caseAttachments.id, req.params.attachmentId),
-          eq(caseAttachments.labCaseId, mobileRow.id)
+          eq(caseAttachments.labCaseId, mobileRow.id),
+          isNull(caseAttachments.deletedAt)
         ),
       });
       if (!attachment) throw new HttpError(404, "Attachment not found.");
 
-      await db.delete(caseAttachments).where(eq(caseAttachments.id, attachment.id));
-      removeAttachmentFile(req, attachment.storageKey);
-
-      await writeAuditLog({
+      await softDeleteById({
+        table: caseAttachments,
+        id: attachment.id,
+        actorUserId: userId,
         req,
         organizationId: mobileRow.organizationId,
-        action: "case_attachment_deleted",
         entityType: "case_attachment",
-        entityId: attachment.id,
         beforeJson: attachment,
       });
+      trashAttachmentFile(req, attachment.storageKey);
     }
 
     return ok(res, { deleted: true });

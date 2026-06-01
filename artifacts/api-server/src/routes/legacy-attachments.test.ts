@@ -300,7 +300,8 @@ maybe("Legacy mobile case attachment routes (/:caseId/attachments)", () => {
       .select()
       .from(caseAttachments)
       .where(eq(caseAttachments.id, attachment.id));
-    expect(row).toBeUndefined();
+    expect(row).toBeDefined();
+    expect(row.deletedAt).not.toBeNull();
 
     const afterList = await request(app)
       .get(`/api/cases/${encodeURIComponent(labCaseId)}/attachments`)
