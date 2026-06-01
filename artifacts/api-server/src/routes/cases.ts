@@ -873,6 +873,44 @@ async function tryProjectLegacyCaseForDesktop(
   const attachments: any[] = [];
   const photos = Array.isArray(parsed?.photos) ? parsed.photos : [];
   const videos = Array.isArray(parsed?.videos) ? parsed.videos : [];
+  // Each mobile photo/video is added at a different time, but the legacy
+  // `photos`/`videos` arrays only store URLs — not when each file was added.
+  // The per-file capture time lives in the matching activityLog entry
+  // (imageUri + timestamp). Map URL -> ms so the Files tab shows the real
+  // "added" date for each item instead of stamping them all with the case's
+  // createdAt — which made every mobile photo read "Nd ago" identically and
+  // hid which one was added most recently.
+  const mediaMsByUrl = new Map<string, number>();
+  for (const e of log) {
+    if (e && typeof e === "object" && typeof e.imageUri === "string" && e.imageUri) {
+      const ms = Number(e.timestamp);
+      if (Number.isFinite(ms)) mediaMsByUrl.set(e.imageUri, ms);
+    }
+  }
+  // Resolve a file's added-time: prefer the activityLog timestamp, then a
+  // timestamp embedded in the uploaded filename (e.g.
+  // `…-media-1780274505902.jpg` or a leading `1780274507168-…`), then fall
+  // back to the case createdAt for inline data: URIs with no stamp.
+  // `msToISO` guards against malformed/out-of-range stamps so a bad value can
+  // never throw a RangeError and 500 the case fetch.
+  const msToISO = (ms: number): string | null => {
+    if (!Number.isSafeInteger(ms) || ms <= 0) return null;
+    const t = new Date(ms).getTime();
+    return Number.isFinite(t) ? new Date(t).toISOString() : null;
+  };
+  const resolveMediaISO = (url: string): string => {
+    const fromLog = mediaMsByUrl.get(url);
+    if (fromLog !== undefined) {
+      const iso = msToISO(fromLog);
+      if (iso) return iso;
+    }
+    const m = url.match(/media-(\d{12,})/) || url.match(/(?:^|\/)(\d{12,})-/);
+    if (m) {
+      const iso = msToISO(Number(m[1]));
+      if (iso) return iso;
+    }
+    return createdISO;
+  };
   let idx = 0;
   for (const url of photos) {
     if (typeof url !== "string" || !url) continue;
@@ -885,7 +923,7 @@ async function tryProjectLegacyCaseForDesktop(
       storageKey: url,
       fileType: url.startsWith("data:") ? url.slice(5, url.indexOf(";")) : "image/jpeg",
       visibility: "shared_with_provider",
-      createdAt: createdISO,
+      createdAt: resolveMediaISO(url),
       uploaderName: null,
       // Direct URL for renderers that prefer a fully-qualified src.
       url,
@@ -904,7 +942,7 @@ async function tryProjectLegacyCaseForDesktop(
       storageKey: url,
       fileType: url.startsWith("data:") ? url.slice(5, url.indexOf(";")) : "video/mp4",
       visibility: "shared_with_provider",
-      createdAt: createdISO,
+      createdAt: resolveMediaISO(url),
       uploaderName: null,
       url,
     });
@@ -914,7 +952,10 @@ async function tryProjectLegacyCaseForDesktop(
   // Also include any canonical case_attachments rows stored via the new
   // labCaseId FK (files attached by lab staff after the feature was enabled).
   const dbAttachments = await db.query.caseAttachments.findMany({
-    where: eq(caseAttachments.labCaseId, legacyRow.id),
+    where: and(
+      eq(caseAttachments.labCaseId, legacyRow.id),
+      isNull(caseAttachments.deletedAt),
+    ),
     orderBy: [desc(caseAttachments.createdAt)],
   });
   for (const a of dbAttachments) {
