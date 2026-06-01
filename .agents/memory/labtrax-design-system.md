@@ -17,13 +17,11 @@ The shared UI primitives live in `artifacts/labtrax/components/ui/`: `StatTile`,
   cannot be reproduced — use an `accent`-tinted icon instead.
 
 - **Hub / action menu lists use `Card` with inline children**, NOT the
-  `MenuItem` component. A row is a `Card` (padding `md`, row layout) wrapping the
-  existing `adm.menuIcon` / `adm.menuInfo` / `adm.menuTitle` /
+  `MenuItem` component. Each row is:
+  `<Card padding="md" onPress={…} style={{ flexDirection: "row", alignItems: "center", gap: 14 }}>`
+  wrapping the existing `adm.menuIcon` / `adm.menuInfo` / `adm.menuTitle` /
   `adm.menuSub` markup and a trailing `Feather chevron-right` (or a custom
   trailing icon, e.g. the trash icon on the delete-case list).
-  `<Card padding="md" onPress={…} style={{ flexDirection: "row", alignItems: "center", gap: 14 }}>`
-  wrapping the existing `adm.menu*` markup and a trailing chevron (or a custom trailing icon,
-  e.g. the trash icon on the delete-case list).
 
 **Why:** the first menus converted on the admin hub chose `Card`+inline, so every
 later menu (financial hub, payment "coming soon", delete-case, master hub) must
