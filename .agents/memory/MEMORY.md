@@ -13,3 +13,4 @@
 - [LabTrax mobile theming](labtrax-theming.md) — tokens via useTheme, but ThemeProvider wraps only the authed tree (login/lock can't use it); most screens hardcode Colors.light, full migration is a big rewrite.
 - [LabTrax deployment target](labtrax-deployment-target.md) — must run as Reserved VM (vm), not autoscale; autoscale scale-to-zero caused overnight outages and skipped cron jobs.
 - [LabTrax design-system adoption](labtrax-design-system.md) — dashboard metric rows use StatTile; hub/menu lists use Card+inline (not the MenuItem component) to stay visually consistent.
+- [Expo drift vs maturity window](expo-drift-maturity-window.md) — newest Expo-expected patches are blocked ~24h by minimumReleaseAge; wait, don't add minimumReleaseAgeExclude.
