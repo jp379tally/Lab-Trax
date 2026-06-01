@@ -9487,14 +9487,6 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
-  adminBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 14,
-    backgroundColor: colors.tintLight,
-    justifyContent: "center",
-    alignItems: "center",
-  },
   headerRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -9562,43 +9554,12 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     color: colors.textInverse,
     marginBottom: 4,
   },
-  heroSub: {
-    fontSize: 13,
-    fontFamily: "Inter_400Regular",
-    color: "rgba(255,255,255,0.6)",
-    marginBottom: 20,
-  },
   heroStats: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "rgba(255,255,255,0.12)",
     borderRadius: 16,
     padding: 14,
-  },
-  heroStat: {
-    flex: 1,
-    alignItems: "center",
-    paddingVertical: 6,
-    borderRadius: 8,
-  },
-  heroStatActive: {
-    backgroundColor: "rgba(255,255,255,0.15)",
-  },
-  heroStatNum: {
-    fontSize: 20,
-    fontFamily: "Inter_700Bold",
-    color: colors.textInverse,
-  },
-  heroStatLabel: {
-    fontSize: 10,
-    fontFamily: "Inter_500Medium",
-    color: "rgba(255,255,255,0.6)",
-    marginTop: 2,
-  },
-  heroStatDivider: {
-    width: 1,
-    height: 30,
-    backgroundColor: "rgba(255,255,255,0.15)",
   },
   filterSection: {
     paddingHorizontal: 20,
@@ -9635,12 +9596,6 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     fontSize: 11,
     fontFamily: "Inter_600SemiBold",
     color: colors.indigo,
-  },
-  quickActions: {
-    flexDirection: "row",
-    paddingHorizontal: 20,
-    gap: 12,
-    marginBottom: 28,
   },
   quickBtn: {
     flex: 1,

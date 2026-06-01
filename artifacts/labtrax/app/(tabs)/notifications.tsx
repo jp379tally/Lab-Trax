@@ -474,18 +474,6 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
   },
-  header: {
-    paddingHorizontal: 20,
-    paddingBottom: 16,
-    backgroundColor: colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-  },
-  title: {
-    fontSize: 26,
-    fontFamily: "Inter_700Bold",
-    color: colors.text,
-  },
   listContent: {
     padding: 20,
     gap: 10,
@@ -597,17 +585,6 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     borderRadius: 4,
     backgroundColor: colors.tint,
     marginTop: 4,
-  },
-  emptyState: {
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 60,
-    gap: 12,
-  },
-  emptyText: {
-    fontSize: 15,
-    fontFamily: "Inter_500Medium",
-    color: colors.textTertiary,
   },
   confirmOverlay: {
     flex: 1,

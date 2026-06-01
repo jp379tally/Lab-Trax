@@ -691,19 +691,6 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
   },
-  header: {
-    backgroundColor: colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-    paddingHorizontal: 20,
-    paddingBottom: 12,
-  },
-  title: {
-    fontSize: 26,
-    fontFamily: "Inter_700Bold",
-    color: colors.text,
-    marginBottom: 14,
-  },
   searchRow: {
     marginBottom: Spacing.md,
     paddingHorizontal: Spacing.lg,
@@ -777,11 +764,6 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     fontSize: 16,
     fontFamily: "Inter_700Bold",
     color: colors.text,
-  },
-  caseNumber: {
-    fontSize: 12,
-    fontFamily: "Inter_600SemiBold",
-    color: colors.textSecondary,
   },
   rushBadge: {
     flexDirection: "row",
@@ -862,17 +844,6 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     fontSize: 10,
     fontFamily: "Inter_700Bold",
     color: colors.info,
-  },
-  emptyState: {
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 60,
-    gap: 12,
-  },
-  emptyText: {
-    fontSize: 15,
-    fontFamily: "Inter_500Medium",
-    color: colors.textTertiary,
   },
   barcodeLocateBtn: {
     flexDirection: "row",
