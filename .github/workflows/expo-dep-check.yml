@@ -1,0 +1,58 @@
+name: Expo dependency drift check
+
+# Surfaces drift between the LabTrax mobile app's installed Expo packages and
+# the versions Expo expects, classified against the workspace's supply-chain
+# maturity policy (`minimumReleaseAge` in pnpm-workspace.yaml):
+#
+#   • ACTIONABLE  — a newer in-range version exists and is past the maturity
+#                   window → the job FAILS so maintainers are notified to bump.
+#   • IN-WINDOW   — the only newer versions are still inside the maturity
+#                   window → informational annotation only, job stays green.
+#                   (We never weaken minimumReleaseAge to clear this.)
+#
+# The check NEVER weakens minimumReleaseAge; in-window drift is reported but
+# treated as "wait for the window", not "act now".
+#
+# Runs daily on a schedule and on demand via workflow_dispatch. It is
+# intentionally separate from ci.yml so routine drift never blocks PR merges —
+# only the scheduled run (and its failure email) signals an actionable bump.
+
+on:
+  schedule:
+    # 06:30 UTC daily — after most Expo patch batches have aged past the
+    # 1-day (1440m) maturity window, so "actionable" is meaningful.
+    - cron: '30 6 * * *'
+  workflow_dispatch:
+    inputs:
+      soft:
+        description: 'Soft mode — report drift but never fail the job'
+        type: boolean
+        default: false
+
+jobs:
+  expo-dep-check:
+    name: Check mobile Expo dependency drift
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Exits 1 when an ACTIONABLE (mature) update exists, 0 when up to date or
+      # only IN-WINDOW drift remains, 2 on tooling/registry failure. The script
+      # writes a Markdown table to the run summary and emits ::error/::notice::
+      # annotations. `--soft` (manual runs) keeps the job green while still
+      # reporting.
+      - name: Check Expo dependency drift
+        run: pnpm --filter @workspace/scripts run check-expo-deps ${{ inputs.soft && '-- --soft' || '' }}

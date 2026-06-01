@@ -26,6 +26,15 @@ forcing brand-new packages through defeats it. A patch bump to Expo's
 are still < 24h old, the task is genuinely blocked on time — report it and let
 it be re-run after the window, rather than excluding packages.
 
+**Automated check:** `pnpm --filter @workspace/scripts run check-expo-deps`
+(scheduled daily via `.github/workflows/expo-dep-check.yml`) runs
+`expo install --check --json`, then for each outdated package queries the npm
+registry publish time to classify drift as **actionable** (a newer in-range
+version is past the maturity window → safe to bump, job fails) vs **in-window**
+(only newer versions are still < `minimumReleaseAge` → informational, job
+stays green). It reads the window from `pnpm-workspace.yaml` and never weakens
+it. So a drift-bump task is "actionable" only once the check says so.
+
 **Side note:** the auto-triggered "EAS iOS Build + Submit" workflow runs
 independently and has its own pre-existing flakiness (e.g. "Failed to upload
 metadata to EAS Build … 400", generic "Unknown error" in the remote install

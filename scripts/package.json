@@ -18,16 +18,19 @@
     "seed-stripe-products": "tsx ./src/seedStripeProducts.ts",
     "seed-revenuecat": "tsx ./src/seedRevenueCat.ts",
     "bump-build-number": "tsx ./src/bump-build-number.ts",
+    "check-expo-deps": "tsx ./src/check-expo-deps.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.19.0",
     "@replit/revenuecat-sdk": "^4.2.0",
     "@workspace/db": "workspace:*",
-    "drizzle-orm": "catalog:"
+    "drizzle-orm": "catalog:",
+    "semver": "^7.8.1"
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "@types/semver": "^7.7.1",
     "google-auth-library": "^10.6.2",
     "tsx": "catalog:"
   }
