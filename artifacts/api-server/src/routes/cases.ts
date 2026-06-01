@@ -294,29 +294,59 @@ async function writeReciprocalRemadeBy(
 // then derives the on-disk filename from storageKey via extractMediaFileName.
 // The served file path comes from the authoritative DB record, never from the
 // raw URL, preventing any decoupled-authorization / confused-deputy attacks.
+// Also handles legacy mobile cases (lab_cases rows) where the attachment was
+// stored with labCaseId instead of caseId.
 router.get(
   "/:caseId/attachments/:attachmentId/file",
   asyncHandler(async (req: Request, res: Response) => {
     const caseId = String(req.params["caseId"] ?? "");
     const attachmentId = String(req.params["attachmentId"] ?? "");
+    const userId = (req as any).auth.userId as string;
 
-    const { labMembership } = await assertCaseAccessWithMemberships(
-      (req as any).auth.userId,
-      caseId,
-    );
+    let attachment: any = null;
+    let isLabMember = false;
 
-    const attachment = await db.query.caseAttachments.findFirst({
-      where: and(
-        eq(caseAttachments.id, attachmentId),
-        eq(caseAttachments.caseId, caseId),
-      ),
-    });
+    // Try canonical case first.
+    let canonicalAccess: Awaited<ReturnType<typeof assertCaseAccessWithMemberships>> | null = null;
+    try {
+      canonicalAccess = await assertCaseAccessWithMemberships(userId, caseId);
+    } catch (e: any) {
+      if (e.statusCode !== 404) throw e;
+    }
+
+    if (canonicalAccess) {
+      isLabMember = !!canonicalAccess.labMembership;
+      attachment = await db.query.caseAttachments.findFirst({
+        where: and(
+          eq(caseAttachments.id, attachmentId),
+          eq(caseAttachments.caseId, caseId),
+        ),
+      });
+    } else {
+      // Legacy mobile case — look up by labCaseId, authorize via lab membership.
+      const mobileRow = await db.query.labCases.findFirst({
+        where: and(eq(labCases.id, caseId), isNull(labCases.deletedAt)),
+      });
+      if (!mobileRow) throw new HttpError(404, "Case not found.");
+      if (!mobileRow.organizationId) throw new HttpError(422, "Case has no associated organization.");
+      const labIds = await fetchUserActiveLabIds(userId);
+      if (!labIds.includes(mobileRow.organizationId)) {
+        throw new HttpError(403, "You do not have access to this case.");
+      }
+      isLabMember = true;
+      attachment = await db.query.caseAttachments.findFirst({
+        where: and(
+          eq(caseAttachments.id, attachmentId),
+          eq(caseAttachments.labCaseId, caseId),
+        ),
+      });
+    }
 
     if (!attachment) {
       throw new HttpError(404, "Attachment not found.");
     }
 
-    if (attachment.visibility === "internal_lab_only" && !labMembership) {
+    if (attachment.visibility === "internal_lab_only" && !isLabMember) {
       throw new HttpError(403, "You do not have access to this file.");
     }
 
@@ -409,10 +439,27 @@ router.get(
     const attachment = matching[0]!;
 
     // Auth check before any response — no case/attachment IDs exposed.
-    const { labMembership } = await assertCaseAccessWithMemberships(
-      (req as any).auth.userId,
-      attachment.caseId,
-    );
+    // For legacy mobile-case attachments caseId is null; authorize via labCaseId.
+    let labMembership: any = null;
+    if (attachment.caseId) {
+      const access = await assertCaseAccessWithMemberships(
+        (req as any).auth.userId,
+        attachment.caseId,
+      );
+      labMembership = access.labMembership;
+    } else if (attachment.labCaseId) {
+      const legacyRow = await db.query.labCases.findFirst({
+        where: and(eq(labCases.id, attachment.labCaseId), isNull(labCases.deletedAt)),
+      });
+      if (!legacyRow?.organizationId) throw new HttpError(403, "You do not have access to this file.");
+      const labIds = await fetchUserActiveLabIds((req as any).auth.userId);
+      if (!labIds.includes(legacyRow.organizationId)) {
+        throw new HttpError(403, "You do not have access to this file.");
+      }
+      labMembership = { labId: legacyRow.organizationId };
+    } else {
+      throw new HttpError(403, "You do not have access to this file.");
+    }
 
     if (attachment.visibility === "internal_lab_only" && !labMembership) {
       throw new HttpError(403, "You do not have access to this file.");
@@ -864,6 +911,19 @@ async function tryProjectLegacyCaseForDesktop(
     idx++;
   }
 
+  // Also include any canonical case_attachments rows stored via the new
+  // labCaseId FK (files attached by lab staff after the feature was enabled).
+  const dbAttachments = await db.query.caseAttachments.findMany({
+    where: eq(caseAttachments.labCaseId, legacyRow.id),
+    orderBy: [desc(caseAttachments.createdAt)],
+  });
+  for (const a of dbAttachments) {
+    attachments.push({
+      ...a,
+      uploaderName: null,
+    });
+  }
+
   // Status history: synthesize from the createdAt + any station_change
   // events so the Overview timeline ribbon has content.
   const STATUS_LABELS: Record<string, string> = {
@@ -949,7 +1009,7 @@ async function tryProjectLegacyCaseForDesktop(
     remakeOriginal: null,
     remakeChildren: [],
     viewerIsLabMember: isLabMember,
-    viewerCanManageAttachments: false,
+    viewerCanManageAttachments: isLabMember,
     statusHistory,
   };
 }
@@ -2840,15 +2900,43 @@ router.get(
 router.get(
   "/:caseId/attachments",
   asyncHandler(async (req, res) => {
-    const access = await assertCaseAccessWithMemberships(
-      (req as any).auth.userId,
-      req.params.caseId
-    );
-    const found = access.case;
-    const attachments = await db.query.caseAttachments.findMany({
-      where: eq(caseAttachments.caseId, found.id),
-      orderBy: [desc(caseAttachments.createdAt)],
-    });
+    const userId = (req as any).auth.userId;
+
+    let isLabMember = false;
+    let attachments: any[];
+
+    // Try canonical case first; fall through to legacy on 404.
+    let canonicalAccess: Awaited<ReturnType<typeof assertCaseAccessWithMemberships>> | null = null;
+    try {
+      canonicalAccess = await assertCaseAccessWithMemberships(userId, req.params.caseId);
+    } catch (e: any) {
+      if (e.statusCode !== 404) throw e;
+    }
+
+    if (canonicalAccess) {
+      isLabMember = !!canonicalAccess.labMembership;
+      attachments = await db.query.caseAttachments.findMany({
+        where: eq(caseAttachments.caseId, canonicalAccess.case.id),
+        orderBy: [desc(caseAttachments.createdAt)],
+      });
+    } else {
+      // Legacy mobile case — look up attachments by labCaseId.
+      const mobileRow = await db.query.labCases.findFirst({
+        where: and(eq(labCases.id, req.params.caseId), isNull(labCases.deletedAt)),
+      });
+      if (!mobileRow) throw new HttpError(404, "Case not found.");
+      if (!mobileRow.organizationId) throw new HttpError(422, "Case has no associated organization.");
+      const labIds = await fetchUserActiveLabIds(userId);
+      if (!labIds.includes(mobileRow.organizationId)) {
+        throw new HttpError(403, "You do not have access to this case.");
+      }
+      isLabMember = true;
+      attachments = await db.query.caseAttachments.findMany({
+        where: eq(caseAttachments.labCaseId, req.params.caseId),
+        orderBy: [desc(caseAttachments.createdAt)],
+      });
+    }
+
     const uploaderIds = Array.from(
       new Set(attachments.map((a: any) => a.uploadedByUserId).filter(Boolean))
     );
@@ -2866,7 +2954,6 @@ router.get(
         : null;
       return { ...a, uploaderName: name };
     });
-    const isLabMember = !!access.labMembership;
     return ok(res, visibleAttachmentsFor(enriched, isLabMember));
   })
 );
@@ -2960,10 +3047,9 @@ router.post(
     }
 
     if (!found) {
-      // Mobile case path: verify the caller is a member of the lab that owns
-      // this lab_cases row, then surface a clear error. The caseAttachments
-      // table has a FK to cases.id (not lab_cases.id), so we cannot store
-      // attachments for mobile cases without a schema migration.
+      // Legacy mobile case — store the attachment with labCaseId instead of
+      // caseId. The caseAttachments table now has a nullable labCaseId FK so
+      // attachments can be recorded for lab_cases rows without touching caseId.
       const mobileRow = await db.query.labCases.findFirst({
         where: and(
           eq(labCases.id, req.params.caseId),
@@ -2978,10 +3064,56 @@ router.post(
         (req as any).auth.userId,
         mobileRow.organizationId
       );
-      throw new HttpError(
-        422,
-        "File attachments cannot be added to legacy mobile cases. Open this case on the mobile app to add files."
-      );
+
+      const legacyInput = z
+        .object({
+          storageKey: z.string().min(1),
+          fileName: z.string().min(1),
+          fileType: z.string().default("application/octet-stream"),
+          visibility: z
+            .enum(["internal_lab_only", "shared_with_provider"] as const)
+            .default("shared_with_provider"),
+        })
+        .parse(req.body);
+
+      const [legacyAttachment] = await db
+        .insert(caseAttachments)
+        .values({
+          labCaseId: mobileRow.id,
+          uploadedByUserId: (req as any).auth.userId,
+          uploadedByOrganizationId: mobileRow.organizationId,
+          fileName: legacyInput.fileName,
+          storageKey: legacyInput.storageKey,
+          fileType: legacyInput.fileType,
+          visibility: legacyInput.visibility,
+        })
+        .returning();
+
+      // Register in legacy_case_media ledger so the file-serving route can
+      // authorize the download (first-writer-wins, safe to re-insert).
+      const legacyFileName = extractMediaFileName(legacyInput.storageKey);
+      if (legacyFileName) {
+        await db
+          .insert(legacyCaseMedia)
+          .values({
+            fileName: legacyFileName,
+            labCaseId: mobileRow.id,
+            organizationId: mobileRow.organizationId,
+            ownerId: mobileRow.ownerId,
+          })
+          .onConflictDoNothing();
+      }
+
+      await writeAuditLog({
+        req,
+        organizationId: mobileRow.organizationId,
+        action: "case_attachment_created",
+        entityType: "case_attachment",
+        entityId: legacyAttachment.id,
+        afterJson: legacyAttachment,
+      });
+
+      return ok(res, legacyAttachment, 201);
     }
 
     await requireMembership(
@@ -3046,53 +3178,81 @@ router.post(
 router.delete(
   "/:caseId/attachments/:attachmentId",
   asyncHandler(async (req, res) => {
-    const found = await assertCaseAccess(
-      (req as any).auth.userId,
-      req.params.caseId
-    );
-    await requireMembership(
-      (req as any).auth.userId,
-      found.labOrganizationId
-    );
-    const attachment = await db.query.caseAttachments.findFirst({
-      where: and(
-        eq(caseAttachments.id, req.params.attachmentId),
-        eq(caseAttachments.caseId, found.id)
-      ),
-    });
-    if (!attachment) throw new HttpError(404, "Attachment not found.");
+    const userId = (req as any).auth.userId;
 
-    await db
-      .delete(caseAttachments)
-      .where(eq(caseAttachments.id, attachment.id));
+    // Try canonical case first; fall through to legacy on 404.
+    let canonicalFound: Awaited<ReturnType<typeof assertCaseAccess>> | null = null;
+    try {
+      canonicalFound = await assertCaseAccess(userId, req.params.caseId);
+    } catch (e: any) {
+      if (e.statusCode !== 404) throw e;
+    }
 
-    // Remove the file from disk after the DB row is gone. Failures are
-    // logged but don't surface to the caller — the DB delete already
-    // succeeded and a stray file is preferable to an inconsistent state.
-    removeAttachmentFile(req, attachment.storageKey);
+    if (canonicalFound) {
+      await requireMembership(userId, canonicalFound.labOrganizationId);
+      const attachment = await db.query.caseAttachments.findFirst({
+        where: and(
+          eq(caseAttachments.id, req.params.attachmentId),
+          eq(caseAttachments.caseId, canonicalFound.id)
+        ),
+      });
+      if (!attachment) throw new HttpError(404, "Attachment not found.");
 
-    const attachmentDeleter = (req as any).user;
-    await db.insert(caseEvents).values({
-      caseId: found.id,
-      eventType: "case_attachment_deleted",
-      actorUserId: (req as any).auth.userId,
-      actorOrganizationId: found.labOrganizationId,
-      actorInitials: attachmentDeleter?.initials || "SYS",
-      metadataJson: {
-        attachmentId: attachment.id,
-        fileName: attachment.fileName,
-        fileType: attachment.fileType,
-      },
-    });
+      await db.delete(caseAttachments).where(eq(caseAttachments.id, attachment.id));
+      removeAttachmentFile(req, attachment.storageKey);
 
-    await writeAuditLog({
-      req,
-      organizationId: found.labOrganizationId,
-      action: "case_attachment_deleted",
-      entityType: "case_attachment",
-      entityId: attachment.id,
-      beforeJson: attachment,
-    });
+      const attachmentDeleter = (req as any).user;
+      await db.insert(caseEvents).values({
+        caseId: canonicalFound.id,
+        eventType: "case_attachment_deleted",
+        actorUserId: userId,
+        actorOrganizationId: canonicalFound.labOrganizationId,
+        actorInitials: attachmentDeleter?.initials || "SYS",
+        metadataJson: {
+          attachmentId: attachment.id,
+          fileName: attachment.fileName,
+          fileType: attachment.fileType,
+        },
+      });
+
+      await writeAuditLog({
+        req,
+        organizationId: canonicalFound.labOrganizationId,
+        action: "case_attachment_deleted",
+        entityType: "case_attachment",
+        entityId: attachment.id,
+        beforeJson: attachment,
+      });
+    } else {
+      // Legacy mobile case — look up attachment by labCaseId, require lab membership.
+      const mobileRow = await db.query.labCases.findFirst({
+        where: and(eq(labCases.id, req.params.caseId), isNull(labCases.deletedAt)),
+      });
+      if (!mobileRow) throw new HttpError(404, "Case not found.");
+      if (!mobileRow.organizationId) throw new HttpError(422, "Case has no associated organization.");
+      await requireMembership(userId, mobileRow.organizationId);
+
+      const attachment = await db.query.caseAttachments.findFirst({
+        where: and(
+          eq(caseAttachments.id, req.params.attachmentId),
+          eq(caseAttachments.labCaseId, mobileRow.id)
+        ),
+      });
+      if (!attachment) throw new HttpError(404, "Attachment not found.");
+
+      await db.delete(caseAttachments).where(eq(caseAttachments.id, attachment.id));
+      removeAttachmentFile(req, attachment.storageKey);
+
+      await writeAuditLog({
+        req,
+        organizationId: mobileRow.organizationId,
+        action: "case_attachment_deleted",
+        entityType: "case_attachment",
+        entityId: attachment.id,
+        beforeJson: attachment,
+      });
+    }
+
     return ok(res, { deleted: true });
   })
 );

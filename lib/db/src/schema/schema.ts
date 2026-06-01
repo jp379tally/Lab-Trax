@@ -719,8 +719,9 @@ export const caseAttachments = pgTable("case_attachments", {
     .primaryKey()
     .default(sql`gen_random_uuid()`),
   caseId: varchar("case_id")
-    .notNull()
     .references(() => cases.id, { onDelete: "cascade" }),
+  labCaseId: varchar("lab_case_id")
+    .references(() => labCases.id, { onDelete: "cascade" }),
   uploadedByUserId: varchar("uploaded_by_user_id")
     .notNull()
     .references(() => users.id, { onDelete: "restrict" }),
