@@ -3116,10 +3116,20 @@ router.post(
 
       // Append an "attachment_added" event to the legacy activityLog so the
       // mobile History tab reflects attachments added from the desktop.
-      const legacyCaseData =
-        mobileRow.caseData && typeof mobileRow.caseData === "object"
-          ? { ...(mobileRow.caseData as any) }
-          : {};
+      // caseData is stored as a JSON text string (not a jsonb column), so we
+      // must parse it first — typeof would always be "string" otherwise and
+      // every attach would silently reset the activityLog to {}.
+      let legacyCaseData: Record<string, any> = {};
+      if (mobileRow.caseData) {
+        try {
+          const parsed = JSON.parse(mobileRow.caseData as string);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            legacyCaseData = { ...parsed };
+          }
+        } catch {
+          // malformed JSON — start fresh
+        }
+      }
       if (!Array.isArray(legacyCaseData.activityLog))
         legacyCaseData.activityLog = [];
       legacyCaseData.activityLog.push({
