@@ -332,7 +332,7 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
   const [shippingModalVisible, setShippingModalVisible] = useState(false);
   const [shippingCaseId, setShippingCaseId] = useState("");
   const [shippingAddress, setShippingAddress] = useState("");
-  const [activeFilter, setActiveFilter] = useState<"intake" | "progress" | "shipped" | null>(null);
+  const [activeFilter, setActiveFilter] = useState<"intake" | "progress" | "shipped" | "rush" | "overdue" | null>(null);
   const [batchLocateOpen, setBatchLocateOpen] = useState(false);
   const [batchScannedCases, setBatchScannedCases] = useState<{id: string, caseNumber: string, patientName: string}[]>([]);
   const [batchScanning, setBatchScanning] = useState(true);
@@ -369,6 +369,14 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
   const shippedCases = cases.filter(
     (c) => c.status === "SHIP" || c.status === "COMPLETE",
   );
+  const rushCases = cases.filter((c) => c.isRush && c.status !== "COMPLETE" && c.status !== "SHIP");
+  const overdueCases = useMemo(() => {
+    const today = new Date();
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+    return cases.filter(
+      (c) => c.dueDate && c.dueDate < todayStr && c.status !== "COMPLETE" && c.status !== "SHIP",
+    );
+  }, [cases]);
 
   function handleAdminFromDrawer() {
     setDrawerOpen(false);
@@ -853,6 +861,27 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
         />
       </View>
 
+      <View style={styles.summaryTileRow}>
+        <StatTile
+          label="Rush"
+          value={rushCases.length}
+          icon="flash"
+          accent={colors.error}
+          active={activeFilter === "rush"}
+          onPress={() => setActiveFilter((prev) => (prev === "rush" ? null : "rush"))}
+          testID="stat-rush"
+        />
+        <StatTile
+          label="Overdue"
+          value={overdueCases.length}
+          icon="time-outline"
+          accent={colors.orange}
+          active={activeFilter === "overdue"}
+          onPress={() => setActiveFilter((prev) => (prev === "overdue" ? null : "overdue"))}
+          testID="stat-overdue"
+        />
+      </View>
+
       <LabFileDropZone
         cases={cases}
         clients={clients}
@@ -912,64 +941,102 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
         <View style={styles.filterSection}>
           <View style={styles.filterHeader}>
             <Text style={styles.filterTitle}>
-              {activeFilter === "intake" ? "Intake Cases" : activeFilter === "progress" ? "In Progress Cases" : "Completed Cases"}
+              {activeFilter === "intake"
+                ? "Intake Cases"
+                : activeFilter === "progress"
+                ? "In Progress Cases"
+                : activeFilter === "shipped"
+                ? "Completed Cases"
+                : activeFilter === "rush"
+                ? "Rush Cases"
+                : "Overdue Cases"}
             </Text>
             <Pressable onPress={() => setActiveFilter(null)}>
               <Ionicons name="close-circle" size={22} color={colors.textTertiary} />
             </Pressable>
           </View>
-          {(activeFilter === "intake" ? intakeCases : activeFilter === "progress" ? inProgressCases : shippedCases).length === 0 ? (
-            <View style={styles.filterEmpty}>
-              <Ionicons name="file-tray-outline" size={28} color={colors.textTertiary} />
-              <Text style={styles.filterEmptyText}>
-                No {activeFilter === "intake" ? "intake" : activeFilter === "progress" ? "in progress" : "completed"} cases
-              </Text>
-            </View>
-          ) : (
-            <View style={styles.caseList}>
-              {(activeFilter === "intake" ? intakeCases : activeFilter === "progress" ? inProgressCases : shippedCases).map((c) => {
-                const si = getStationInfo(c.status, customStationLabels);
-                return (
-                  <Pressable
-                    key={c.id}
-                    style={({ pressed }) => [styles.caseCard, pressed && { opacity: 0.7 }]}
-                    onPress={() => router.push({ pathname: "/case/[id]", params: { id: c.id } })}
-                  >
-                    <View style={styles.caseCardTop}>
-                      <View style={styles.caseInfo}>
-                        <Text style={styles.casePatient}>{c.patientName || c.patientInitials}</Text>
-                        <Text style={styles.caseDoctor}>{c.doctorName}</Text>
-                        {c.isRush && (
-                          <View style={styles.rushBadge}>
-                            <Ionicons name="flash" size={10} color={colors.error} />
-                            <Text style={styles.rushText}>RUSH</Text>
+          {(() => {
+            const filteredList =
+              activeFilter === "intake"
+                ? intakeCases
+                : activeFilter === "progress"
+                ? inProgressCases
+                : activeFilter === "shipped"
+                ? shippedCases
+                : activeFilter === "rush"
+                ? rushCases
+                : overdueCases;
+            const emptyLabel =
+              activeFilter === "intake"
+                ? "intake"
+                : activeFilter === "progress"
+                ? "in progress"
+                : activeFilter === "shipped"
+                ? "completed"
+                : activeFilter === "rush"
+                ? "rush"
+                : "overdue";
+            if (filteredList.length === 0) {
+              return (
+                <View style={styles.filterEmpty}>
+                  <Ionicons name="file-tray-outline" size={28} color={colors.textTertiary} />
+                  <Text style={styles.filterEmptyText}>No {emptyLabel} cases</Text>
+                </View>
+              );
+            }
+            return (
+              <View style={styles.caseList}>
+                {filteredList.map((c) => {
+                  const si = getStationInfo(c.status, customStationLabels);
+                  return (
+                    <Pressable
+                      key={c.id}
+                      style={({ pressed }) => [styles.caseCard, pressed && { opacity: 0.7 }]}
+                      onPress={() => router.push({ pathname: "/case/[id]", params: { id: c.id } })}
+                    >
+                      <View style={styles.caseCardTop}>
+                        <View style={styles.caseInfo}>
+                          <Text style={styles.casePatient}>{c.patientName || c.patientInitials}</Text>
+                          <Text style={styles.caseDoctor}>{c.doctorName}</Text>
+                          {c.isRush && (
+                            <View style={styles.rushBadge}>
+                              <Ionicons name="flash" size={10} color={colors.error} />
+                              <Text style={styles.rushText}>RUSH</Text>
+                            </View>
+                          )}
+                        </View>
+                        <View style={[styles.statusBadge, { backgroundColor: si.color + "18" }]}>
+                          <Text style={[styles.statusText, { color: si.color }]}>{si.label.toUpperCase()}</Text>
+                        </View>
+                      </View>
+                      <View style={styles.caseCardBottom}>
+                        <Text style={styles.caseMeta}>
+                          {c.toothIndices} · {c.shade} · {c.material}
+                        </Text>
+                        {activeFilter === "shipped" && (c.trackingNumbers?.length ?? 0) > 0 ? (
+                          <View style={styles.trackingRow}>
+                            <Ionicons name="navigate" size={12} color={colors.indigo} />
+                            <Text style={styles.trackingText} numberOfLines={1}>
+                              {c.trackingNumbers!.join(", ")}
+                            </Text>
                           </View>
+                        ) : activeFilter === "overdue" ? (
+                          <View style={styles.trackingRow}>
+                            <Ionicons name="time-outline" size={12} color={colors.orange} />
+                            <Text style={[styles.trackingText, { color: colors.orange }]} numberOfLines={1}>
+                              Due {c.dueDate}
+                            </Text>
+                          </View>
+                        ) : (
+                          <Feather name="chevron-right" size={16} color={colors.textTertiary} />
                         )}
                       </View>
-                      <View style={[styles.statusBadge, { backgroundColor: si.color + "18" }]}>
-                        <Text style={[styles.statusText, { color: si.color }]}>{si.label.toUpperCase()}</Text>
-                      </View>
-                    </View>
-                    <View style={styles.caseCardBottom}>
-                      <Text style={styles.caseMeta}>
-                        {c.toothIndices} · {c.shade} · {c.material}
-                      </Text>
-                      {activeFilter === "shipped" && (c.trackingNumbers?.length ?? 0) > 0 ? (
-                        <View style={styles.trackingRow}>
-                          <Ionicons name="navigate" size={12} color={colors.indigo} />
-                          <Text style={styles.trackingText} numberOfLines={1}>
-                            {c.trackingNumbers!.join(", ")}
-                          </Text>
-                        </View>
-                      ) : (
-                        <Feather name="chevron-right" size={16} color={colors.textTertiary} />
-                      )}
-                    </View>
-                  </Pressable>
-                );
-              })}
-            </View>
-          )}
+                    </Pressable>
+                  );
+                })}
+              </View>
+            );
+          })()}
         </View>
       )}
 
