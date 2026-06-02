@@ -15,7 +15,12 @@ maybe("cross-lab doctor + allocator (db integration)", () => {
   let allocator: typeof import("./platform-account-number.js");
   let crossLab: typeof import("./cross-lab-doctor.js");
 
-  const SENTINEL_YEAR = 2999; // won't collide with real data
+  // Per-process sentinel year so that two concurrent test runs sharing the same
+  // dev DATABASE_URL (e.g. the validation harness runs the api-server suite
+  // twice in parallel) don't race on the same (year, entity) sequence rows.
+  // Kept far beyond real data and ending in 99 so the YY component of the
+  // expected account numbers below ("199JW", etc.) stays 99.
+  const SENTINEL_YEAR = 2099 + 100 * (process.pid % 95); // won't collide with real data
 
   beforeAll(async () => {
     dbMod = await import("@workspace/db");
