@@ -3595,25 +3595,35 @@ Important rules:
         { role: "user" as const, content: userContent },
       ];
 
+      // Resilient model chain. gpt-4o / gpt-4o-mini are LEGACY models on the
+      // Replit AI proxy and have been the recurring cause of this feature
+      // "working then breaking again" — when the proxy drops a legacy model,
+      // both the primary and the old fallback fail at once. We keep gpt-4o
+      // first (fast, strong vision, proven) but end the chain on a current-gen
+      // model (gpt-5.4) so a legacy-model removal can never take the AI reader
+      // down. gpt-5+/o-series reject `temperature` and spend reasoning tokens,
+      // so those calls omit temperature and get more completion headroom.
+      const MODEL_CHAIN = ["gpt-4o", "gpt-4o-mini", "gpt-5.4"];
       let response: any;
-      try {
-        response = await openai.chat.completions.create({
-          model: "gpt-4o",
+      let lastModelErr: any;
+      for (const model of MODEL_CHAIN) {
+        const isLegacy = model.startsWith("gpt-4o");
+        const params: any = {
+          model,
           messages: baseMessages,
-          max_completion_tokens: 1000,
-          temperature: 0.1,
-        });
-        console.log("AI analyze-prescription: used gpt-4o");
-      } catch (modelErr: any) {
-        console.log("AI analyze-prescription: gpt-4o failed, falling back to gpt-4o-mini:", modelErr?.message);
-        response = await openai.chat.completions.create({
-          model: "gpt-4o-mini",
-          messages: baseMessages,
-          max_completion_tokens: 1000,
-          temperature: 0.1,
-        });
-        console.log("AI analyze-prescription: used gpt-4o-mini (fallback)");
+          max_completion_tokens: isLegacy ? 1000 : 8192,
+        };
+        if (isLegacy) params.temperature = 0.1;
+        try {
+          response = await openai.chat.completions.create(params);
+          console.log("AI analyze-prescription: used", model);
+          break;
+        } catch (modelErr: any) {
+          lastModelErr = modelErr;
+          console.log(`AI analyze-prescription: ${model} failed:`, modelErr?.message);
+        }
       }
+      if (!response) throw lastModelErr ?? new Error("All prescription models failed");
 
       const text = response.choices?.[0]?.message?.content || "";
       const jsonMatch = text.match(/\{[\s\S]*\}/);

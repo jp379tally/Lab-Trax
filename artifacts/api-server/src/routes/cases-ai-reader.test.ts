@@ -415,4 +415,19 @@ maybe("Cases AI reader endpoints (db integration)", () => {
 
     await cleanCase(caseId);
   });
+
+  // ── POST /api/analyze-prescription (mobile "AI reader") ──────────────────
+  // This suite runs with AI_INTEGRATIONS_OPENAI_API_KEY deleted (see beforeAll),
+  // so it deterministically guards the "AI not configured" branch. The happy
+  // path (with a mocked OpenAI client) lives in analyze-prescription.test.ts.
+
+  it("POST /api/analyze-prescription: returns 503 when AI is not configured", async () => {
+    const r = await request(appMod.default)
+      .post("/api/analyze-prescription")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({ imageBase64: `data:image/jpeg;base64,${"A".repeat(6000)}` });
+
+    expect(r.status).toBe(503);
+    expect(r.body.success).toBe(false);
+  });
 });
