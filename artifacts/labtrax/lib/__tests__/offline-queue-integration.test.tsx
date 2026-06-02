@@ -397,6 +397,104 @@ describe("offline changes survive a full app restart (cold boot)", () => {
     });
   });
 
+  it("does NOT drop a queued status item when the drain runs before cases hydrate", async () => {
+    // Regression: on a cold boot the mount drain effect and loadData() both run
+    // at mount. If the drain wins the race against case hydration, the status
+    // executor used to look the case up in an empty cache, NOT find it, and
+    // return true — silently removing the queued station change WITHOUT ever
+    // syncing it. The fix distinguishes "cache not hydrated yet" (keep queued)
+    // from "case genuinely deleted" (drop). This test forces the drain-first
+    // ordering by gating the CASES_KEY read so the drain reaches the executor
+    // before the cache loads.
+
+    // Seed the persisted cache exactly as a real relaunch would: a queued
+    // status item plus the case it targets (already at its latest station).
+    await AsyncStorage.setItem(
+      CASES_KEY,
+      JSON.stringify([{ ...baseLegacyCase, status: "MILLING" }]),
+    );
+    await AsyncStorage.setItem(
+      PENDING_UPLOADS_KEY,
+      JSON.stringify([
+        {
+          id: `status-${baseLegacyCase.id}`,
+          type: "status",
+          caseId: baseLegacyCase.id,
+          createdAt: Date.now(),
+        },
+      ]),
+    );
+
+    // Hold the CASES_KEY read until we release it, so loadData() (and thus case
+    // hydration) cannot complete before the mount drain reaches rawSyncCaseStatus.
+    let releaseCases: () => void = () => {};
+    const casesGate = new Promise<void>((resolve) => {
+      releaseCases = resolve;
+    });
+    const getItemMock = AsyncStorage.getItem as unknown as {
+      getMockImplementation: () => (k: string) => Promise<string | null>;
+      mockImplementation: (fn: (k: string) => Promise<string | null>) => void;
+    };
+    const origGetItem = getItemMock.getMockImplementation();
+    getItemMock.mockImplementation(async (k: string) => {
+      if (k === CASES_KEY) await casesGate;
+      return origGetItem(k);
+    });
+
+    try {
+      online = true;
+      ctx = null;
+      // Render WITHOUT renderProvider's "wait for cases" guard — the whole point
+      // is that cases have not hydrated yet.
+      const { unmount } = render(
+        React.createElement(AppProvider, null, React.createElement(CaptureContext)),
+      );
+
+      // Let the mount drain run to completion while the cache is still gated.
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+        await new Promise((r) => setTimeout(r, 0));
+      });
+
+      // The drain ran before hydration: the case was NOT found, but the item is
+      // held (not dropped) and was NOT synced to the server.
+      expect(await readQueue()).toHaveLength(1);
+      const prematureWrites = serverCalls.filter(
+        (c) => c.path.startsWith("/api/legacy/cases") && c.method === "POST",
+      );
+      expect(prematureWrites).toHaveLength(0);
+
+      // Now let the cache hydrate, then fire a later drain trigger (as the
+      // foreground/interval/AppState path would in production).
+      releaseCases();
+      await waitFor(() => {
+        expect(ctx?.cases.length).toBeGreaterThan(0);
+      });
+
+      serverCalls.length = 0;
+      await simulateReconnect();
+
+      const writes = serverCalls.filter(
+        (c) => c.path.startsWith("/api/legacy/cases") && c.method === "POST",
+      );
+      expect(writes.length).toBeGreaterThan(0);
+      const syncedStatuses = writes.map((w) => {
+        const outer = JSON.parse(w.body ?? "{}");
+        const inner = JSON.parse(outer.caseData ?? "{}");
+        return inner.status as string;
+      });
+      expect(syncedStatuses).toContain("MILLING");
+
+      await waitFor(async () => {
+        expect(await readQueue()).toHaveLength(0);
+      });
+
+      unmount();
+    } finally {
+      getItemMock.mockImplementation(origGetItem);
+    }
+  });
+
   it("re-hydrates a queued photo + note and pushes them to the server after relaunch", async () => {
     // ── Session 1: enqueue an offline photo+note, then "close" the app ──
     await AsyncStorage.setItem(CASES_KEY, JSON.stringify([{ ...baseCanonicalCase }]));

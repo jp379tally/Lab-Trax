@@ -1152,6 +1152,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // (which is captured by long-lived AppState/interval handlers) can sync the
   // freshest local state of a case rather than a stale closure snapshot.
   const allCasesRef = useRef<LabCase[]>([]);
+  // Flips true once loadData() has finished hydrating cases from the local
+  // cache. Until then, a case "not found" in allCasesRef means the cache simply
+  // hasn't loaded yet (cold-boot race with the offline drain) — NOT that the
+  // case was deleted. The status drain uses this to avoid discarding a queued
+  // station change before its case has hydrated.
+  const casesHydratedRef = useRef(false);
   const syncReadyRef = useRef(false);
   const fetchingRef = useRef(false);
   const inFlightSyncIdsRef = useRef<Set<string>>(new Set());
@@ -1991,12 +1997,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (savedCases) {
         try {
           const parsedCases: LabCase[] = JSON.parse(savedCases);
-          setAllCases((prev) => (prev.length === 0 ? parsedCases : prev));
+          setAllCases((prev) => {
+            const next = prev.length === 0 ? parsedCases : prev;
+            // Keep the drain executor's mirror in lockstep so a drain that
+            // wins the race against the post-render allCasesRef effect still
+            // sees the hydrated case the moment casesHydratedRef flips below.
+            allCasesRef.current = next;
+            return next;
+          });
         } catch {
           // Corrupted cache — leave state alone; the server fetch will
           // populate it.
         }
       }
+
+      // Cache hydration for cases is complete (whether or not anything was
+      // cached). From here on, a status item whose case is absent from
+      // allCasesRef refers to a genuinely deleted case and may be dropped;
+      // before this point it could just be the cold-boot hydration race.
+      casesHydratedRef.current = true;
 
       if (savedRole && savedRole !== "admin") {
         setRoleState(savedRole as UserRole);
@@ -2388,11 +2407,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Sync a queued case status/station change. Re-reads the case's latest local
   // state (via the ref so long-lived drain handlers aren't stuck on a stale
   // closure) and pushes it through the same canonical/legacy path as the
-  // hot-path. If the case no longer exists locally (deleted), the item is
-  // considered done so it doesn't wedge the queue.
+  // hot-path.
+  //
+  // Crucially, "case not found in allCasesRef" is ambiguous on a cold boot: it
+  // can mean the case was deleted, OR that loadData() simply hasn't hydrated the
+  // cache yet (the mount drain effect can win the race against case loading). We
+  // must NOT drop the queued item in the latter case, or an offline station
+  // change made before a restart vanishes silently. So:
+  //   - case found            → sync it.
+  //   - not found, not hydrated → return false (keep it queued; a later drain
+  //                               trigger retries once the cache has loaded).
+  //   - not found, hydrated    → the case is genuinely gone (deleted); return
+  //                               true so the item doesn't wedge the queue.
   async function rawSyncCaseStatus(caseId: string): Promise<boolean> {
     const labCase = allCasesRef.current.find((c) => c.id === caseId);
-    if (!labCase) return true;
+    if (!labCase) return casesHydratedRef.current ? true : false;
     return syncCaseToServer(labCase);
   }
 
