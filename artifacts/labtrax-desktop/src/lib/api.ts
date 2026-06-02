@@ -440,11 +440,21 @@ async function refreshAccessToken(): Promise<boolean> {
     return false;
   }
   refreshInFlight = (async () => {
+    // Bound the refresh with a hard timeout. Without this, a refresh request
+    // that stalls at the proxy (connection held open with no response) leaves
+    // refreshInFlight pending forever, and every caller awaiting it — e.g. the
+    // post-upload refresh()/auth/me — hangs indefinitely (button stuck on
+    // "Uploading…"). Aborting after the timeout surfaces a recoverable failure
+    // instead of an infinite spinner, and tokens are preserved so a later
+    // attempt can still succeed.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
     try {
       const r = await fetch(apiUrl("/auth/refresh"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ refreshToken: current.refreshToken }),
+        signal: controller.signal,
       });
       if (!r.ok) {
         persistTokens(null);
@@ -471,10 +481,11 @@ async function refreshAccessToken(): Promise<boolean> {
       });
       return true;
     } catch {
-      // Network blip — keep tokens so a subsequent retry can succeed, but
-      // signal that this attempt did not refresh.
+      // Network blip or timeout/abort — keep tokens so a subsequent retry can
+      // succeed, but signal that this attempt did not refresh.
       return false;
     } finally {
+      clearTimeout(timeout);
       refreshInFlight = null;
     }
   })();

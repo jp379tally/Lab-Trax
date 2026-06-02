@@ -18,7 +18,8 @@ import {
   SheetTitle,
   SheetDescription,
 } from "@/components/ui/sheet";
-import { apiFetch, apiFetchArrayBuffer, ApiError, notifySessionCleared, getApiOrigin } from "@/lib/api";
+import { apiFetch, apiFetchArrayBuffer, apiUploadWithProgress, ApiError, notifySessionCleared, getApiOrigin } from "@/lib/api";
+import { AuthedImage } from "@/components/AuthedMedia";
 import {
   DEFAULT_DUP_SIMILARITY_THRESHOLD,
   buildDuplicateClusters,
@@ -355,23 +356,40 @@ function ProfilePanel() {
       return;
     }
     setLogoUploading(true);
+    // Guard the upload with a hard timeout/abort. The XHR-based uploader
+    // (apiUploadWithProgress) always fires a terminal event — onload / onerror
+    // / onabort — so the "Uploading…" state can never spin forever the way a
+    // hung fetch() can. The timeout abort covers the remaining case where the
+    // request stalls at the proxy with no response at all.
+    const controller = new AbortController();
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, 60_000);
     try {
       const fd = new FormData();
       fd.append("file", file);
-      await apiFetch(
+      await apiUploadWithProgress(
         `/organizations/${user.practiceOrganizationId}/logo`,
-        // apiFetch sets JSON headers by default; pass FormData and let
-        // the browser set the multipart boundary automatically.
-        { method: "POST", body: fd, headers: {} as any },
+        fd,
+        { signal: controller.signal },
       );
+      // Pull the freshly-stamped practiceLogoUrl (with its new ?v= cache
+      // buster) so the preview and downstream documents pick up the replacement
+      // without a manual reload. refresh() is bounded by the refresh-token
+      // timeout in api.ts, so it can't hang the uploading state.
       await refresh();
     } catch (err) {
       setLogoError(
-        err instanceof ApiError
+        timedOut
+          ? "The upload timed out. Check your connection and try again."
+          : err instanceof ApiError
           ? (err.body as any)?.error || err.message
           : (err as Error).message || "Could not upload logo.",
       );
     } finally {
+      clearTimeout(timeout);
       setLogoUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
@@ -390,8 +408,14 @@ function ProfilePanel() {
         <div className="flex items-center gap-4">
           <div className="w-20 h-20 rounded-lg bg-background border border-border overflow-hidden flex items-center justify-center text-xs text-muted-foreground">
             {user?.practiceLogoUrl ? (
-              <img
-                src={user.practiceLogoUrl}
+              // The logo endpoint is bearer-auth-gated, so a plain <img> can't
+              // authenticate from the cross-origin Electron renderer (and is
+              // fragile after a session change). AuthedImage fetches it with the
+              // access token and renders the result via an object URL. The ?v=
+              // cache buster in practiceLogoUrl changes on every replace, so the
+              // new logo is re-fetched automatically.
+              <AuthedImage
+                url={user.practiceLogoUrl}
                 alt="Lab logo"
                 className="max-w-full max-h-full object-contain"
               />
