@@ -2,35 +2,87 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const PENDING_UPLOADS_KEY = "@labtrax_pending_uploads_v1";
 
-export type PendingPhotoItem = {
+// Number of failed sync attempts after which an item is considered "stuck".
+// A stuck item is no longer retried automatically and stops blocking the rest
+// of the queue (the drain skips past it). The user is then surfaced a clear
+// "couldn't sync — tap to retry" prompt and can manually retry or discard it.
+export const MAX_SYNC_ATTEMPTS = 3;
+
+type PendingItemBase = {
   id: string;
-  type: "photo";
   caseId: string;
+  createdAt: number;
+  // Number of consecutive failed drain attempts. Absent/0 until the first
+  // failure. Reset to 0 by a manual retry.
+  attempts?: number;
+  // Short, human-readable reason the last attempt failed (best-effort).
+  lastError?: string;
+  // Timestamp of the most recent failed attempt.
+  lastAttemptAt?: number;
+};
+
+export type PendingPhotoItem = PendingItemBase & {
+  type: "photo";
   photoUri: string;
   fileName: string;
   mimeType: string;
-  createdAt: number;
 };
 
-export type PendingNoteItem = {
-  id: string;
+export type PendingNoteItem = PendingItemBase & {
   type: "note";
-  caseId: string;
   noteText: string;
-  createdAt: number;
 };
 
-export type PendingStatusItem = {
-  id: string;
+export type PendingStatusItem = PendingItemBase & {
   type: "status";
-  caseId: string;
-  createdAt: number;
 };
 
 export type PendingUploadItem =
   | PendingPhotoItem
   | PendingNoteItem
   | PendingStatusItem;
+
+// Lightweight view of a stuck item handed to the UI so it can describe what
+// couldn't sync and offer retry/discard without exposing the full payload.
+export type StuckQueueItem = {
+  id: string;
+  type: PendingUploadItem["type"];
+  caseId: string;
+  attempts: number;
+  lastError?: string;
+  createdAt: number;
+};
+
+// Snapshot of the queue's state, broadcast to subscribers after every change.
+export type QueueSummary = {
+  // Total items still queued (including stuck ones).
+  total: number;
+  // Items that have exhausted their automatic-retry budget.
+  stuckCount: number;
+  stuckItems: StuckQueueItem[];
+};
+
+function attemptsOf(item: PendingUploadItem): number {
+  return item.attempts ?? 0;
+}
+
+function isStuck(item: PendingUploadItem): boolean {
+  return attemptsOf(item) >= MAX_SYNC_ATTEMPTS;
+}
+
+function summarize(items: PendingUploadItem[]): QueueSummary {
+  const stuckItems: StuckQueueItem[] = items
+    .filter(isStuck)
+    .map((item) => ({
+      id: item.id,
+      type: item.type,
+      caseId: item.caseId,
+      attempts: attemptsOf(item),
+      createdAt: item.createdAt,
+      ...(item.lastError ? { lastError: item.lastError } : {}),
+    }));
+  return { total: items.length, stuckCount: stuckItems.length, stuckItems };
+}
 
 // ─── Mutex ────────────────────────────────────────────────────────────────────
 // All queue reads and writes are funnelled through a promise-chain mutex so
@@ -68,39 +120,41 @@ async function saveQueue(items: PendingUploadItem[]): Promise<void> {
   try {
     await AsyncStorage.setItem(PENDING_UPLOADS_KEY, JSON.stringify(items));
   } catch {}
-  // Notify subscribers of the new pending count after every mutation. Done
+  // Notify subscribers of the new queue state after every mutation. Done
   // outside the try so the indicator still updates even if persistence failed.
-  notifyListeners(items.length);
+  notifyListeners(items);
 }
 
-// ─── Pending-count subscription ───────────────────────────────────────────────
-// Lets the UI react to queue changes (enqueue/drain) without polling. Every
-// mutation funnels through saveQueue, which notifies all listeners with the new
-// length. Listeners receive the current count immediately on subscribe.
+// ─── Queue-state subscription ─────────────────────────────────────────────────
+// Lets the UI react to queue changes (enqueue/drain/retry/discard) without
+// polling. Every mutation funnels through saveQueue, which notifies all
+// listeners with a fresh summary. Listeners receive the current summary
+// immediately on subscribe.
 
-type PendingCountListener = (count: number) => void;
+type QueueSummaryListener = (summary: QueueSummary) => void;
 
-const _listeners = new Set<PendingCountListener>();
+const _listeners = new Set<QueueSummaryListener>();
 
-function notifyListeners(count: number): void {
+function notifyListeners(items: PendingUploadItem[]): void {
+  const summary = summarize(items);
   for (const listener of _listeners) {
     try {
-      listener(count);
+      listener(summary);
     } catch {}
   }
 }
 
 /**
- * Subscribe to pending-queue size changes. The listener is invoked immediately
- * with the current count, then again after every enqueue or drain. Returns an
- * unsubscribe function.
+ * Subscribe to queue-state changes. The listener is invoked immediately with
+ * the current summary, then again after every enqueue, drain, retry, or
+ * discard. Returns an unsubscribe function.
  */
-export function subscribeToPendingCount(
-  listener: PendingCountListener
+export function subscribeToQueueSummary(
+  listener: QueueSummaryListener
 ): () => void {
   _listeners.add(listener);
-  void getPendingCount()
-    .then((count) => listener(count))
+  void getQueueSummary()
+    .then((summary) => listener(summary))
     .catch(() => {});
   return () => {
     _listeners.delete(listener);
@@ -195,8 +249,13 @@ let _drainQueued = false;
  * succeeds (before the next item is attempted), so a force-close mid-drain
  * cannot replay already-sent operations on relaunch.
  *
- * On the first failure the drain stops to preserve ordering; the next trigger
+ * Ordering & stuck items: the drain processes the first item that still has
+ * automatic-retry budget left. On a failure that item's attempt count is
+ * incremented and the drain stops to preserve ordering; the next trigger
  * (foreground, AppState change, or periodic timer) retries from that point.
+ * Once an item has failed `MAX_SYNC_ATTEMPTS` times it is considered "stuck":
+ * it is left in the queue (so the user can retry or discard it) but is skipped
+ * by the drain so it no longer blocks the items behind it.
  */
 export function drainQueue(
   uploadPhoto: (
@@ -217,8 +276,14 @@ export function drainQueue(
       const queue = await loadQueue();
       if (queue.length === 0) break;
 
-      const item = queue[0];
+      // Process the first item that still has retry budget. Stuck items are
+      // skipped so a single wedged item can't block everything behind it.
+      const index = queue.findIndex((item) => !isStuck(item));
+      if (index === -1) break;
+
+      const item = queue[index];
       let succeeded = false;
+      let errorMessage: string | undefined;
       try {
         if (item.type === "photo") {
           succeeded = await uploadPhoto(
@@ -232,16 +297,85 @@ export function drainQueue(
         } else {
           succeeded = await syncStatus(item.caseId);
         }
-      } catch {}
+      } catch (e: any) {
+        errorMessage = String(e?.message || e).slice(0, 200);
+      }
 
       if (succeeded) {
         // Persist removal atomically before the next iteration.
         // A crash here at worst replays one already-sent item (bounded by 1).
-        await saveQueue(queue.slice(1));
-      } else {
-        break;
+        const next = queue.slice();
+        next.splice(index, 1);
+        await saveQueue(next);
+        continue;
       }
+
+      // Record the failed attempt against this item.
+      const attempts = attemptsOf(item) + 1;
+      const next = queue.slice();
+      next[index] = {
+        ...item,
+        attempts,
+        lastError: errorMessage ?? "Couldn't reach the server",
+        lastAttemptAt: Date.now(),
+      };
+      await saveQueue(next);
+
+      if (attempts >= MAX_SYNC_ATTEMPTS) {
+        // Now stuck — skip it on the next loop and keep draining the rest.
+        continue;
+      }
+      // Still has budget — stop to preserve ordering; a later trigger retries.
+      break;
     }
+  });
+}
+
+/**
+ * Reset a single stuck item's attempt count so the next drain retries it.
+ * No-op if the id isn't present.
+ */
+export function retryItem(id: string): Promise<void> {
+  return withQueueLock(async () => {
+    const queue = await loadQueue();
+    let changed = false;
+    const next = queue.map((item) => {
+      if (item.id !== id || attemptsOf(item) === 0) return item;
+      changed = true;
+      const { attempts, lastError, lastAttemptAt, ...rest } = item;
+      return rest;
+    });
+    if (changed) await saveQueue(next);
+  });
+}
+
+/**
+ * Reset every stuck item so the next drain retries them all.
+ */
+export function retryAllStuck(): Promise<void> {
+  return withQueueLock(async () => {
+    const queue = await loadQueue();
+    let changed = false;
+    const next = queue.map((item) => {
+      if (!isStuck(item)) return item;
+      changed = true;
+      const { attempts, lastError, lastAttemptAt, ...rest } = item;
+      return rest;
+    });
+    if (changed) await saveQueue(next);
+  });
+}
+
+/**
+ * Permanently remove an item from the queue (discarding the offline change).
+ * Used to clear a permanently-failing item so it stops blocking the queue.
+ * No-op if the id isn't present.
+ */
+export function discardItem(id: string): Promise<void> {
+  return withQueueLock(async () => {
+    const queue = await loadQueue();
+    const next = queue.filter((item) => item.id !== id);
+    if (next.length !== queue.length) await saveQueue(next);
   });
 }
 
@@ -249,5 +383,12 @@ export function getPendingCount(): Promise<number> {
   return withQueueLock(async () => {
     const queue = await loadQueue();
     return queue.length;
+  });
+}
+
+export function getQueueSummary(): Promise<QueueSummary> {
+  return withQueueLock(async () => {
+    const queue = await loadQueue();
+    return summarize(queue);
   });
 }

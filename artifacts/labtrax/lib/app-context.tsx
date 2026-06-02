@@ -15,7 +15,11 @@ import {
   enqueueNote,
   enqueueStatus,
   drainQueue,
-  subscribeToPendingCount,
+  subscribeToQueueSummary,
+  retryItem,
+  retryAllStuck,
+  discardItem,
+  type StuckQueueItem,
 } from "./offline-queue";
 import { AppState, Platform } from "react-native";
 import {
@@ -159,6 +163,15 @@ interface AppContextValue {
   // Number of offline changes (photos, notes, status moves) still queued and
   // waiting to sync to the server. 0 when everything is up to date.
   pendingSyncCount: number;
+  // Offline changes that have repeatedly failed to sync and are no longer
+  // retried automatically. Surfaced to the user so they can manually retry or
+  // discard them. Empty when nothing is stuck.
+  stuckSyncItems: StuckQueueItem[];
+  // Reset stuck items so the next drain retries them. Pass an id to retry a
+  // single item, or omit to retry all stuck items. Triggers a drain.
+  retrySync: (id?: string) => void;
+  // Permanently drop a stuck offline change so it stops blocking the queue.
+  discardSync: (id: string) => void;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -297,6 +310,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [deletedClientInvoices, setDeletedClientInvoices] = useState<DeletedClientInvoice[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [pendingSyncCount, setPendingSyncCount] = useState(0);
+  const [stuckSyncItems, setStuckSyncItems] = useState<StuckQueueItem[]>([]);
   const [invoiceTemplate, setInvoiceTemplate] = useState<{ customTexts: any[]; defaultTextBlocks: any[] } | null>(null);
   const invoiceTemplateFetchedAtRef = useRef<number>(0);
   const INVOICE_TEMPLATE_TTL_MS = 10 * 60 * 1000;
@@ -930,13 +944,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [currentUserId]);
 
   // ─── Pending-sync indicator ────────────────────────────────────────────────
-  // Mirror the offline queue's size into React state so the UI can show a
-  // "waiting to sync" indicator. subscribeToPendingCount fires immediately with
-  // the current count and again after every enqueue/drain mutation.
+  // Mirror the offline queue's state into React state so the UI can show a
+  // "waiting to sync" indicator and, when changes repeatedly fail, a
+  // "couldn't sync — tap to retry" prompt. subscribeToQueueSummary fires
+  // immediately with the current summary and again after every enqueue, drain,
+  // retry, or discard mutation.
   useEffect(() => {
-    const unsubscribe = subscribeToPendingCount(setPendingSyncCount);
+    const unsubscribe = subscribeToQueueSummary((summary) => {
+      setPendingSyncCount(summary.total);
+      setStuckSyncItems(summary.stuckItems);
+    });
     return unsubscribe;
   }, []);
+
+  // Reset stuck items (one or all) and kick off a drain so they retry now.
+  function retrySync(id?: string) {
+    void (async () => {
+      if (id) {
+        await retryItem(id);
+      } else {
+        await retryAllStuck();
+      }
+      triggerQueueDrain();
+    })();
+  }
+
+  // Permanently discard a stuck offline change so it stops blocking the queue.
+  function discardSync(id: string) {
+    void (async () => {
+      await discardItem(id);
+      // Discarding the wedged head item may unblock the rest of the queue.
+      triggerQueueDrain();
+    })();
+  }
 
   function mapJoinRequestStatus(status?: string): GroupJoinRequest["status"] {
     if (status === "approved" || status === "accepted") {
@@ -3978,8 +4018,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       invoiceTemplate,
       fetchInvoiceTemplate,
       pendingSyncCount,
+      stuckSyncItems,
+      retrySync,
+      discardSync,
     }),
-    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, pendingInvoiceEditId, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers, allLabOrganizationIds, activeLabAffiliationKey, activeLabAffiliationName, allLabAffiliationKeysList, invoiceTemplate, pendingSyncCount],
+    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, pendingInvoiceEditId, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers, allLabOrganizationIds, activeLabAffiliationKey, activeLabAffiliationName, allLabAffiliationKeysList, invoiceTemplate, pendingSyncCount, stuckSyncItems],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

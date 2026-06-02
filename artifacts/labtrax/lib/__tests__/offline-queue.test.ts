@@ -6,6 +6,12 @@ import {
   enqueueStatus,
   drainQueue,
   getPendingCount,
+  getQueueSummary,
+  retryItem,
+  retryAllStuck,
+  discardItem,
+  subscribeToQueueSummary,
+  MAX_SYNC_ATTEMPTS,
   type PendingUploadItem,
 } from "../offline-queue";
 
@@ -227,6 +233,142 @@ describe("offline-queue crash-safe removal-after-success", () => {
 
     const queue = await readRawQueue();
     expect(queue.map((i) => i.id)).toEqual(["note-2"]);
+  });
+});
+
+describe("offline-queue stuck-item tracking", () => {
+  it("records attempt count and lastError on each failed drain", async () => {
+    await enqueueNote("note-1", "case-1", "first");
+
+    await drainQueue(okPhoto, async () => false, okStatus);
+
+    const queue = await readRawQueue();
+    expect(queue).toHaveLength(1);
+    expect(queue[0].attempts).toBe(1);
+    expect(queue[0].lastError).toBeTruthy();
+    expect(queue[0].lastAttemptAt).toBeTypeOf("number");
+  });
+
+  it("captures a thrown error message as lastError", async () => {
+    await enqueueNote("note-1", "case-1", "first");
+
+    await drainQueue(okPhoto, async () => {
+      throw new Error("boom-network");
+    }, okStatus);
+
+    const queue = await readRawQueue();
+    expect(queue[0].lastError).toContain("boom-network");
+  });
+
+  it("marks an item stuck after MAX_SYNC_ATTEMPTS failed drains", async () => {
+    await enqueueNote("note-1", "case-1", "first");
+
+    for (let i = 0; i < MAX_SYNC_ATTEMPTS; i++) {
+      await drainQueue(okPhoto, async () => false, okStatus);
+    }
+
+    const summary = await getQueueSummary();
+    expect(summary.total).toBe(1);
+    expect(summary.stuckCount).toBe(1);
+    expect(summary.stuckItems[0]).toMatchObject({ id: "note-1", attempts: MAX_SYNC_ATTEMPTS });
+  });
+
+  it("skips a stuck head item so it no longer blocks items behind it", async () => {
+    await enqueueNote("note-1", "case-1", "stuck");
+    await enqueueNote("note-2", "case-2", "behind");
+
+    // Drive note-1 to stuck; note-2 keeps getting blocked until then.
+    const noteExec = async (caseId: string) => caseId !== "case-1";
+    for (let i = 0; i < MAX_SYNC_ATTEMPTS; i++) {
+      await drainQueue(okPhoto, noteExec, okStatus);
+    }
+
+    // note-1 is now stuck; the drain that pushed it over the threshold also
+    // continued on to drain note-2.
+    const queue = await readRawQueue();
+    expect(queue.map((i) => i.id)).toEqual(["note-1"]);
+    const summary = await getQueueSummary();
+    expect(summary.stuckCount).toBe(1);
+  });
+
+  it("does not block when a stuck item sits ahead of a healthy one", async () => {
+    await enqueueNote("note-1", "case-1", "stuck");
+    await enqueueNote("note-2", "case-2", "healthy");
+
+    const failHead = async (caseId: string) => caseId !== "case-1";
+    for (let i = 0; i < MAX_SYNC_ATTEMPTS; i++) {
+      await drainQueue(okPhoto, failHead, okStatus);
+    }
+    // note-2 already drained above; only the stuck note-1 remains.
+    expect((await readRawQueue()).map((i) => i.id)).toEqual(["note-1"]);
+  });
+});
+
+describe("offline-queue manual retry / discard", () => {
+  it("retryItem resets a stuck item so the next drain retries it", async () => {
+    await enqueueNote("note-1", "case-1", "first");
+    for (let i = 0; i < MAX_SYNC_ATTEMPTS; i++) {
+      await drainQueue(okPhoto, async () => false, okStatus);
+    }
+    expect((await getQueueSummary()).stuckCount).toBe(1);
+
+    await retryItem("note-1");
+    const afterReset = await readRawQueue();
+    expect(afterReset[0].attempts ?? 0).toBe(0);
+    expect(afterReset[0].lastError).toBeUndefined();
+
+    // Now succeed — the reset item drains.
+    await drainQueue(okPhoto, okNote, okStatus);
+    expect(await getPendingCount()).toBe(0);
+  });
+
+  it("retryAllStuck resets every stuck item", async () => {
+    await enqueueNote("note-1", "case-1", "a");
+    await enqueueNote("note-2", "case-2", "b");
+    // An item only accrues attempts once it reaches the drain head, so it
+    // takes MAX attempts to wedge note-1, then MAX more to wedge note-2.
+    for (let i = 0; i < MAX_SYNC_ATTEMPTS * 2; i++) {
+      await drainQueue(okPhoto, async () => false, okStatus);
+    }
+    expect((await getQueueSummary()).stuckCount).toBe(2);
+
+    await retryAllStuck();
+    expect((await getQueueSummary()).stuckCount).toBe(0);
+    expect(await getPendingCount()).toBe(2);
+  });
+
+  it("discardItem permanently removes a stuck item and unblocks the queue", async () => {
+    await enqueueNote("note-1", "case-1", "stuck");
+    await enqueueNote("note-2", "case-2", "behind");
+    const failHead = async (caseId: string) => caseId !== "case-1";
+    for (let i = 0; i < MAX_SYNC_ATTEMPTS; i++) {
+      await drainQueue(okPhoto, failHead, okStatus);
+    }
+    // note-2 drained; note-1 stuck.
+    expect((await readRawQueue()).map((i) => i.id)).toEqual(["note-1"]);
+
+    await discardItem("note-1");
+    expect(await getPendingCount()).toBe(0);
+  });
+});
+
+describe("offline-queue summary subscription", () => {
+  it("notifies subscribers with total and stuck counts on mutation", async () => {
+    const summaries: { total: number; stuckCount: number }[] = [];
+    const unsubscribe = subscribeToQueueSummary((s) =>
+      summaries.push({ total: s.total, stuckCount: s.stuckCount })
+    );
+    // Allow the immediate-on-subscribe async notification to land.
+    await getQueueSummary();
+
+    await enqueueNote("note-1", "case-1", "first");
+    for (let i = 0; i < MAX_SYNC_ATTEMPTS; i++) {
+      await drainQueue(okPhoto, async () => false, okStatus);
+    }
+
+    unsubscribe();
+    const last = summaries[summaries.length - 1];
+    expect(last).toEqual({ total: 1, stuckCount: 1 });
   });
 });
 
