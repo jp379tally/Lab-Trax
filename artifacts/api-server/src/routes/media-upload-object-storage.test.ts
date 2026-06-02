@@ -32,8 +32,9 @@ vi.mock("../lib/case-media.js", async (importOriginal) => {
 });
 
 const writeSpy = vi.fn().mockResolvedValue(true);
+let storageAvailable = true;
 vi.mock("../lib/case-media-object-storage.js", () => ({
-  caseMediaObjectStorageAvailable: () => true,
+  caseMediaObjectStorageAvailable: () => storageAvailable,
   writeCaseMediaToObjectStorage: (
     name: string,
     data: Buffer,
@@ -162,5 +163,66 @@ maybe("case-media uploads persist to object storage (autoscale durability)", () 
     expect(Buffer.isBuffer(data)).toBe(true);
     expect((data as Buffer).equals(bytes)).toBe(true);
     expect(contentType).toBe("image/jpeg");
+  });
+
+  it("single-shot /media/upload fails loudly (500) when object storage is unavailable", async () => {
+    writeSpy.mockClear();
+    storageAvailable = false;
+    try {
+      const app = appMod.default;
+
+      const res = await request(app)
+        .post("/api/media/upload")
+        .set("Authorization", `Bearer ${token}`)
+        .attach("file", randomBytes(1024), {
+          filename: "ephemeral.jpg",
+          contentType: "image/jpeg",
+        });
+
+      // Must NOT return 200 with a disk-only URL that 404s after a redeploy.
+      expect(res.status).toBe(500);
+      expect(res.body.url).toBeUndefined();
+      expect(res.body.filename).toBeUndefined();
+      // The fail-loud guard runs before any object-storage write is attempted.
+      expect(writeSpy).not.toHaveBeenCalled();
+    } finally {
+      storageAvailable = true;
+    }
+  });
+
+  it("resumable /media/upload-session finalize fails loudly (500) when object storage is unavailable", async () => {
+    writeSpy.mockClear();
+    const app = appMod.default;
+    const bytes = randomBytes(4096);
+
+    const startRes = await request(app)
+      .post("/api/media/upload-session")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        fileName: "ephemeral-scan.jpg",
+        fileSize: bytes.length,
+        mimeType: "image/jpeg",
+      });
+    expect([200, 201]).toContain(startRes.status);
+    const sessionId = startRes.body.sessionId as string;
+    expect(typeof sessionId).toBe("string");
+
+    storageAvailable = false;
+    try {
+      const patchRes = await request(app)
+        .patch(`/api/media/upload-session/${sessionId}`)
+        .set("Authorization", `Bearer ${token}`)
+        .set("Upload-Offset", "0")
+        .set("Content-Type", "application/octet-stream")
+        .send(bytes);
+
+      // The finalize step must reject instead of reporting a phantom URL.
+      expect(patchRes.status).toBe(500);
+      expect(patchRes.body.url).toBeUndefined();
+      expect(patchRes.body.complete).not.toBe(true);
+      expect(writeSpy).not.toHaveBeenCalled();
+    } finally {
+      storageAvailable = true;
+    }
   });
 });
