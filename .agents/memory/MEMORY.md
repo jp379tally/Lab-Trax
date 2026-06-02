@@ -11,6 +11,7 @@
 - [Expo native upload](expo-native-upload.md) — expo/fetch rejects RN `{uri,name,type}` FormData parts ("Unsupported FormDataPart implementation"); use XHR uploadCaseMedia, never resilientFetch, for file uploads.
 - [Legacy mobile case blob merge](legacy-mobile-case-blob-merge.md) — mobile lab_cases history/photos collapsed to one event; list endpoint strips arrays + blob-replace upsert wiped them; fix = append-only union merge server-side.
 - [Case media needs attachment row](case-media-attachment-row.md) — a bare /api/media/upload URL 404s on the auth-gated serving routes; persisted media must be backed by a caseAttachments row (upload→attach→store id-based URL).
+- [Legacy-photo synthetic id serving](legacy-photo-synthetic-id-serving.md) — legacy `legacy-photo-<caseId>-<idx>` ids have no DB row; id-based serve route must resolve from lab_cases blob + authorize file via legacy_case_media ledger (IDOR risk).
 - [LabTrax mobile theming](labtrax-theming.md) — tokens via useTheme, but ThemeProvider wraps only the authed tree (login/lock can't use it); most screens hardcode Colors.light, full migration is a big rewrite.
 - [LabTrax deployment target](labtrax-deployment-target.md) — must run as Reserved VM (vm), not autoscale; autoscale scale-to-zero caused overnight outages and skipped cron jobs.
 - [LabTrax design-system adoption](labtrax-design-system.md) — dashboard metric rows use StatTile; hub/menu lists use Card+inline (not the MenuItem component) to stay visually consistent.

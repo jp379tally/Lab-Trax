@@ -303,6 +303,55 @@ router.get(
     const attachmentId = String(req.params["attachmentId"] ?? "");
     const userId = (req as any).auth.userId as string;
 
+    // Synthetic legacy attachment ids (`legacy-photo-<caseId>-<idx>` /
+    // `legacy-video-<caseId>-<idx>`) are projected by the case-detail transform
+    // for a lab_cases row's photos/videos arrays and have NO case_attachments
+    // row — so the lookups below would always 404 them (the cause of blank
+    // mobile photos on desktop/web). Resolve the file from the legacy case's
+    // own caseData, authorize via the legacy case (owner or active lab member),
+    // and serve from the durable disk → .trash → object-storage chain.
+    const syntheticMatch = attachmentId.match(/^legacy-(photo|video)-(.+)-(\d+)$/);
+    if (syntheticMatch && syntheticMatch[2] === caseId) {
+      const kind = syntheticMatch[1];
+      const mediaIdx = Number(syntheticMatch[3]);
+      const legacyRow = await db.query.labCases.findFirst({
+        where: and(eq(labCases.id, caseId), isNull(labCases.deletedAt)),
+      });
+      if (!legacyRow) throw new HttpError(404, "Case not found.");
+      let authorized = legacyRow.ownerId === userId;
+      if (!authorized && legacyRow.organizationId) {
+        const labIds = await fetchUserActiveLabIds(userId);
+        authorized = labIds.includes(legacyRow.organizationId);
+      }
+      if (!authorized) {
+        throw new HttpError(403, "You do not have access to this file.");
+      }
+      let parsed: any;
+      try {
+        parsed =
+          typeof legacyRow.caseData === "string"
+            ? JSON.parse(legacyRow.caseData)
+            : (legacyRow.caseData ?? {});
+      } catch {
+        throw new HttpError(404, "File not found.");
+      }
+      const arr = kind === "photo" ? parsed?.photos : parsed?.videos;
+      const url = Array.isArray(arr) ? arr[mediaIdx] : undefined;
+      // data: URIs are self-contained; renderers shouldn't proxy them here.
+      if (typeof url !== "string" || !url || url.startsWith("data:")) {
+        throw new HttpError(404, "File not found.");
+      }
+      const fn = extractMediaFileName(url);
+      if (!fn) throw new HttpError(404, "File not found.");
+      // Authorize the FILE itself via the legacy_case_media ledger
+      // (first-writer-wins), not merely the requesting case. Otherwise a
+      // crafted caseData referencing another tenant's filename could disclose
+      // it. serveLegacyCaseMediaFile performs the authoritative ledger-based
+      // owner/lab-member check before streaming from durable storage.
+      await serveLegacyCaseMediaFile(req, res, fn);
+      return;
+    }
+
     let attachment: any = null;
     let isLabMember = false;
 
@@ -493,6 +542,59 @@ router.get(
   })
 );
 
+// Stream a case-media file by basename from the durable storage chain:
+// live disk → .trash/ (false-positive orphan-cleanup recovery) → object
+// storage (the autoscale-safe persistent copy). Returns false when the file is
+// absent from every tier. Performs NO authorization — callers MUST authorize
+// the requester against the file's owning case/tenant before calling this.
+async function streamCaseMediaFile(
+  res: Response,
+  filename: string,
+  fileType?: string,
+): Promise<boolean> {
+  const resolvedPath = path.resolve(caseMediaDir, filename);
+  if (
+    resolvedPath === caseMediaDir ||
+    !resolvedPath.startsWith(caseMediaDir + path.sep)
+  ) {
+    return false;
+  }
+  if (fs.existsSync(resolvedPath)) {
+    res.sendFile(resolvedPath);
+    return true;
+  }
+  // Live copy missing — a prior orphan cleanup may have moved it to .trash/
+  // (named `<stamp>__<filename>`). Serve the most recent trashed copy.
+  const trashDir = path.resolve(caseMediaDir, ".trash");
+  if (fs.existsSync(trashDir)) {
+    const trashed = fs
+      .readdirSync(trashDir)
+      .filter((e) => e.endsWith(`__${filename}`))
+      .sort()
+      .reverse();
+    for (const candidate of trashed) {
+      const trashedPath = path.resolve(trashDir, candidate);
+      if (
+        trashedPath.startsWith(trashDir + path.sep) &&
+        fs.existsSync(trashedPath)
+      ) {
+        res.sendFile(trashedPath);
+        return true;
+      }
+    }
+  }
+  // Last resort: object storage (large files / autoscale-wiped local disk).
+  const objStream = await openCaseMediaObjectStream(filename, fileType);
+  if (!objStream) return false;
+  res.setHeader("Content-Type", objStream.contentType);
+  res.setHeader(
+    "Content-Disposition",
+    `inline; filename="${encodeURIComponent(filename)}"`,
+  );
+  objStream.stream.pipe(res);
+  return true;
+}
+
 // Serve a media file referenced by a LEGACY mobile case (a row in `lab_cases`,
 // which cannot have a `case_attachments` row). Authorization is derived from
 // the `legacy_case_media` ledger — the first legacy case to reference a
@@ -523,52 +625,11 @@ async function serveLegacyCaseMediaFile(
     throw new HttpError(403, "You do not have access to this file.");
   }
 
-  // The ledger key IS the validated basename, but resolve defensively anyway.
-  const resolvedPath = path.resolve(caseMediaDir, filename);
-  if (
-    resolvedPath === caseMediaDir ||
-    !resolvedPath.startsWith(caseMediaDir + path.sep)
-  ) {
-    throw new HttpError(400, "Invalid file path.");
-  }
-
-  if (fs.existsSync(resolvedPath)) {
-    res.sendFile(resolvedPath);
-    return;
-  }
-
-  // Live copy missing — a prior orphan cleanup may have moved it to .trash/
-  // (named `<stamp>__<filename>`). Serve the most recent trashed copy.
-  const trashDir = path.resolve(caseMediaDir, ".trash");
-  if (fs.existsSync(trashDir)) {
-    const trashed = fs
-      .readdirSync(trashDir)
-      .filter((e) => e.endsWith(`__${filename}`))
-      .sort()
-      .reverse();
-    for (const candidate of trashed) {
-      const trashedPath = path.resolve(trashDir, candidate);
-      if (
-        trashedPath.startsWith(trashDir + path.sep) &&
-        fs.existsSync(trashedPath)
-      ) {
-        res.sendFile(trashedPath);
-        return;
-      }
-    }
-  }
-
-  // Last resort: object storage (large files offloaded off local disk).
-  const objStream = await openCaseMediaObjectStream(filename, undefined);
-  if (!objStream) {
+  // The ledger key IS the validated basename. Serve from the durable storage
+  // chain (disk → .trash → object storage).
+  if (!(await streamCaseMediaFile(res, filename))) {
     throw new HttpError(404, "File not found.");
   }
-  res.setHeader("Content-Type", objStream.contentType);
-  res.setHeader(
-    "Content-Disposition",
-    `inline; filename="${encodeURIComponent(filename)}"`,
-  );
-  objStream.stream.pipe(res);
 }
 
 async function assertCaseAccess(userId: string, caseId: string) {

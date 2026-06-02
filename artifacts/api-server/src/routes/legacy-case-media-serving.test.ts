@@ -51,6 +51,7 @@ maybe("GET /api/cases/attachment-file/:filename — legacy case media", () => {
   const ownerUserId = rid("uowner");
   const strangerUserId = rid("ustranger");
   const caseId = `${Date.now()}${randomBytes(4).toString("hex")}`;
+  const crafterCaseId = `${Date.now()}${randomBytes(4).toString("hex")}c`;
   const fileName = `${rid("legacyphoto")}.jpg`;
   const fileBytes = randomBytes(2048);
   let filePath = "";
@@ -98,7 +99,7 @@ maybe("GET /api/cases/attachment-file/:filename — legacy case media", () => {
     if (!SHOULD_RUN) return;
     const { db, users, labCases, userSessions, legacyCaseMedia } = dbMod as any;
     await db.delete(legacyCaseMedia).where(eq(legacyCaseMedia.fileName, fileName));
-    await db.delete(labCases).where(eq(labCases.id, caseId));
+    await db.delete(labCases).where(inArray(labCases.id, [caseId, crafterCaseId]));
     await db
       .delete(userSessions)
       .where(inArray(userSessions.userId, [ownerUserId, strangerUserId]));
@@ -167,6 +168,70 @@ maybe("GET /api/cases/attachment-file/:filename — legacy case media", () => {
     const app = appMod.default;
     const getRes = await request(app)
       .get(`/api/cases/attachment-file/${fileName}`)
+      .set("Authorization", `Bearer ${strangerToken}`);
+    expect(getRes.status).toBe(403);
+  });
+
+  // The desktop/web client renders legacy photos via the id-based route using
+  // the SYNTHETIC attachment id projected by the case-detail transform
+  // (`legacy-photo-<caseId>-<idx>`). That id has no case_attachments row, so the
+  // route must resolve it from the legacy case's own photos[] array. This was
+  // the root cause of "can't see mobile pics on desktop/web".
+  it("serves a synthetic legacy-photo id to the owner via the id-based route", async () => {
+    const app = appMod.default;
+    const getRes = await request(app)
+      .get(`/api/cases/${caseId}/attachments/legacy-photo-${caseId}-0/file`)
+      .set("Authorization", `Bearer ${ownerToken}`)
+      .buffer(true)
+      .parse((res, cb) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => cb(null, Buffer.concat(chunks)));
+      });
+    expect(getRes.status).toBe(200);
+    expect(Buffer.isBuffer(getRes.body)).toBe(true);
+    expect((getRes.body as Buffer).equals(fileBytes)).toBe(true);
+  });
+
+  it("denies a cross-tenant user on the synthetic id route (403)", async () => {
+    const app = appMod.default;
+    const getRes = await request(app)
+      .get(`/api/cases/${caseId}/attachments/legacy-photo-${caseId}-0/file`)
+      .set("Authorization", `Bearer ${strangerToken}`);
+    expect(getRes.status).toBe(403);
+  });
+
+  it("404s a synthetic id whose index is out of range", async () => {
+    const app = appMod.default;
+    const getRes = await request(app)
+      .get(`/api/cases/${caseId}/attachments/legacy-photo-${caseId}-9/file`)
+      .set("Authorization", `Bearer ${ownerToken}`);
+    expect(getRes.status).toBe(404);
+  });
+
+  // Confused-deputy guard: a stranger crafts THEIR OWN legacy case whose
+  // photos[] references another tenant's filename, then requests it via the
+  // synthetic id route. Case-level auth passes (they own the crafted case), so
+  // the serving path MUST additionally enforce the legacy_case_media ledger
+  // (which bound the file to the original owner) and deny — never serve.
+  it("denies a crafted caseData referencing another tenant's file (403)", async () => {
+    const app = appMod.default;
+    const craftedData = {
+      id: crafterCaseId,
+      ownerId: strangerUserId,
+      caseNumber: "26-CRAFT",
+      patientName: "Crafted",
+      status: "INTAKE",
+      photos: [`/api/cases/attachment-file/${fileName}`],
+    };
+    const createRes = await request(app)
+      .post("/api/legacy/cases")
+      .set("Authorization", `Bearer ${strangerToken}`)
+      .send({ id: crafterCaseId, ownerId: strangerUserId, caseData: craftedData });
+    expect(createRes.status).toBe(200);
+
+    const getRes = await request(app)
+      .get(`/api/cases/${crafterCaseId}/attachments/legacy-photo-${crafterCaseId}-0/file`)
       .set("Authorization", `Bearer ${strangerToken}`);
     expect(getRes.status).toBe(403);
   });
