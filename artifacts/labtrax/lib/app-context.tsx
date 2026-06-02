@@ -15,6 +15,7 @@ import {
   enqueueNote,
   enqueueStatus,
   drainQueue,
+  subscribeToPendingCount,
 } from "./offline-queue";
 import { AppState, Platform } from "react-native";
 import {
@@ -155,6 +156,9 @@ interface AppContextValue {
   updateWorkStatus: (status: "available" | "break" | "out_of_office") => Promise<{ success: boolean; error?: string }>;
   invoiceTemplate: { customTexts: any[]; defaultTextBlocks: any[] } | null;
   fetchInvoiceTemplate: () => Promise<void>;
+  // Number of offline changes (photos, notes, status moves) still queued and
+  // waiting to sync to the server. 0 when everything is up to date.
+  pendingSyncCount: number;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -292,6 +296,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [customStationLabels, setCustomStationLabels] = useState<Record<string, string>>({});
   const [deletedClientInvoices, setDeletedClientInvoices] = useState<DeletedClientInvoice[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [pendingSyncCount, setPendingSyncCount] = useState(0);
   const [invoiceTemplate, setInvoiceTemplate] = useState<{ customTexts: any[]; defaultTextBlocks: any[] } | null>(null);
   const invoiceTemplateFetchedAtRef = useRef<number>(0);
   const INVOICE_TEMPLATE_TTL_MS = 10 * 60 * 1000;
@@ -923,6 +928,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUserId]);
+
+  // ─── Pending-sync indicator ────────────────────────────────────────────────
+  // Mirror the offline queue's size into React state so the UI can show a
+  // "waiting to sync" indicator. subscribeToPendingCount fires immediately with
+  // the current count and again after every enqueue/drain mutation.
+  useEffect(() => {
+    const unsubscribe = subscribeToPendingCount(setPendingSyncCount);
+    return unsubscribe;
+  }, []);
 
   function mapJoinRequestStatus(status?: string): GroupJoinRequest["status"] {
     if (status === "approved" || status === "accepted") {
@@ -3934,8 +3948,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       updateWorkStatus,
       invoiceTemplate,
       fetchInvoiceTemplate,
+      pendingSyncCount,
     }),
-    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, pendingInvoiceEditId, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers, allLabOrganizationIds, activeLabAffiliationKey, activeLabAffiliationName, allLabAffiliationKeysList, invoiceTemplate],
+    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, pendingInvoiceEditId, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers, allLabOrganizationIds, activeLabAffiliationKey, activeLabAffiliationName, allLabAffiliationKeysList, invoiceTemplate, pendingSyncCount],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

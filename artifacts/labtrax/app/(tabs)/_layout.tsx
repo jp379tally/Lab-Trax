@@ -10,6 +10,7 @@ import { useProviderFilteredNotifications } from "@/lib/useFilteredNotifications
 import { useEntitlement } from "@/lib/useEntitlement";
 import { SubscriptionPaywall } from "@/components/SubscriptionPaywall";
 import { GracePeriodBanner } from "@/components/GracePeriodBanner";
+import { PendingSyncBanner } from "@/components/PendingSyncBanner";
 import { useMessenger } from "@/lib/messenger-context";
 
 function ClassicTabLayout() {
@@ -85,6 +86,7 @@ function ClassicTabLayout() {
           onDismiss={() => setBannerDismissed(true)}
         />
       )}
+      <PendingSyncBanner />
       <Tabs
         screenOptions={{
           tabBarActiveTintColor: colors.tint,

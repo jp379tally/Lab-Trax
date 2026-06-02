@@ -68,6 +68,43 @@ async function saveQueue(items: PendingUploadItem[]): Promise<void> {
   try {
     await AsyncStorage.setItem(PENDING_UPLOADS_KEY, JSON.stringify(items));
   } catch {}
+  // Notify subscribers of the new pending count after every mutation. Done
+  // outside the try so the indicator still updates even if persistence failed.
+  notifyListeners(items.length);
+}
+
+// ─── Pending-count subscription ───────────────────────────────────────────────
+// Lets the UI react to queue changes (enqueue/drain) without polling. Every
+// mutation funnels through saveQueue, which notifies all listeners with the new
+// length. Listeners receive the current count immediately on subscribe.
+
+type PendingCountListener = (count: number) => void;
+
+const _listeners = new Set<PendingCountListener>();
+
+function notifyListeners(count: number): void {
+  for (const listener of _listeners) {
+    try {
+      listener(count);
+    } catch {}
+  }
+}
+
+/**
+ * Subscribe to pending-queue size changes. The listener is invoked immediately
+ * with the current count, then again after every enqueue or drain. Returns an
+ * unsubscribe function.
+ */
+export function subscribeToPendingCount(
+  listener: PendingCountListener
+): () => void {
+  _listeners.add(listener);
+  void getPendingCount()
+    .then((count) => listener(count))
+    .catch(() => {});
+  return () => {
+    _listeners.delete(listener);
+  };
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
