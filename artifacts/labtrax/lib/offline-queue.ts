@@ -20,7 +20,17 @@ export type PendingNoteItem = {
   createdAt: number;
 };
 
-export type PendingUploadItem = PendingPhotoItem | PendingNoteItem;
+export type PendingStatusItem = {
+  id: string;
+  type: "status";
+  caseId: string;
+  createdAt: number;
+};
+
+export type PendingUploadItem =
+  | PendingPhotoItem
+  | PendingNoteItem
+  | PendingStatusItem;
 
 // ─── Mutex ────────────────────────────────────────────────────────────────────
 // All queue reads and writes are funnelled through a promise-chain mutex so
@@ -113,6 +123,29 @@ export function enqueueNote(
   });
 }
 
+/**
+ * Enqueue a case status/station change. Idempotent per case — the queue id is
+ * derived purely from `caseId`, so repeated offline status changes to the same
+ * case collapse to a single entry. At drain time the executor re-reads the
+ * case's latest local state and syncs that, so collapsing never loses the most
+ * recent station.
+ */
+export function enqueueStatus(caseId: string): Promise<void> {
+  return withQueueLock(async () => {
+    const queue = await loadQueue();
+    const id = `status-${caseId}`;
+    if (queue.some((item) => item.id === id)) return;
+    const item: PendingStatusItem = {
+      id,
+      type: "status",
+      caseId,
+      createdAt: Date.now(),
+    };
+    queue.push(item);
+    await saveQueue(queue);
+  });
+}
+
 // Track whether a drain is already queued so additional drain triggers during
 // an in-progress drain don't pile up in the mutex — one pending drain is enough.
 let _drainQueued = false;
@@ -135,7 +168,8 @@ export function drainQueue(
     fileName: string,
     mimeType: string
   ) => Promise<boolean>,
-  postNote: (caseId: string, noteText: string) => Promise<boolean>
+  postNote: (caseId: string, noteText: string) => Promise<boolean>,
+  syncStatus: (caseId: string) => Promise<boolean>
 ): Promise<void> {
   if (_drainQueued) return Promise.resolve();
   _drainQueued = true;
@@ -156,8 +190,10 @@ export function drainQueue(
             item.fileName,
             item.mimeType
           );
-        } else {
+        } else if (item.type === "note") {
           succeeded = await postNote(item.caseId, item.noteText);
+        } else {
+          succeeded = await syncStatus(item.caseId);
         }
       } catch {}
 

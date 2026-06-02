@@ -13,6 +13,7 @@ import { getApiUrl, resilientFetch, getAccessToken, uploadCaseMedia } from "./qu
 import {
   enqueuePhoto,
   enqueueNote,
+  enqueueStatus,
   drainQueue,
 } from "./offline-queue";
 import { AppState, Platform } from "react-native";
@@ -898,13 +899,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!currentUserId) return;
 
-    void drainQueue(rawUploadPhotoToCase, rawPostNoteToCase);
+    void drainQueue(rawUploadPhotoToCase, rawPostNoteToCase, rawSyncCaseStatus);
 
     const appStateSubscription = AppState.addEventListener(
       "change",
       (nextState) => {
         if (nextState === "active") {
-          void drainQueue(rawUploadPhotoToCase, rawPostNoteToCase);
+          void drainQueue(rawUploadPhotoToCase, rawPostNoteToCase, rawSyncCaseStatus);
         }
       }
     );
@@ -912,7 +913,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const DRAIN_INTERVAL_MS = 30_000;
     const intervalId = setInterval(() => {
       if (AppState.currentState === "active") {
-        void drainQueue(rawUploadPhotoToCase, rawPostNoteToCase);
+        void drainQueue(rawUploadPhotoToCase, rawPostNoteToCase, rawSyncCaseStatus);
       }
     }, DRAIN_INTERVAL_MS);
 
@@ -1133,6 +1134,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [currentUserId, currentUser, conversationsStorageKey, chatMessagesStorageKey]);
 
   const prevCasesRef = useRef<LabCase[]>([]);
+  // Always mirrors the latest `allCases` so the offline status-drain executor
+  // (which is captured by long-lived AppState/interval handlers) can sync the
+  // freshest local state of a case rather than a stale closure snapshot.
+  const allCasesRef = useRef<LabCase[]>([]);
   const syncReadyRef = useRef(false);
   const fetchingRef = useRef(false);
   const inFlightSyncIdsRef = useRef<Set<string>>(new Set());
@@ -1919,6 +1924,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => clearInterval(interval);
   }, [currentUserId]);
 
+  // Keep the latest-cases mirror current on every cases change so the offline
+  // status drain always syncs the freshest local state of a case.
+  useEffect(() => {
+    allCasesRef.current = allCases;
+  }, [allCases]);
+
   useEffect(() => {
     if (!syncReadyRef.current || fetchingRef.current || !currentUserId) return;
     const prev = prevCasesRef.current;
@@ -2238,7 +2249,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
             ],
             activityLog: [...(c.activityLog || []), ...extraEntries],
           };
-          syncCaseToServer(updatedCase);
+          // Attempt the status sync immediately; if it fails (offline or a
+          // transient error) enqueue it so the offline drain retries it on
+          // reconnect — mirroring how photos/notes already drain. Without this
+          // the local UI would update but the station change could be silently
+          // lost, leaving web/desktop on the old station.
+          void (async () => {
+            const ok = await syncCaseToServer(updatedCase);
+            if (!ok) {
+              await enqueueStatus(caseId);
+            }
+          })();
           return updatedCase;
         }
         return c;
@@ -2350,8 +2371,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  // Sync a queued case status/station change. Re-reads the case's latest local
+  // state (via the ref so long-lived drain handlers aren't stuck on a stale
+  // closure) and pushes it through the same canonical/legacy path as the
+  // hot-path. If the case no longer exists locally (deleted), the item is
+  // considered done so it doesn't wedge the queue.
+  async function rawSyncCaseStatus(caseId: string): Promise<boolean> {
+    const labCase = allCasesRef.current.find((c) => c.id === caseId);
+    if (!labCase) return true;
+    return syncCaseToServer(labCase);
+  }
+
   function triggerQueueDrain() {
-    void drainQueue(rawUploadPhotoToCase, rawPostNoteToCase);
+    void drainQueue(rawUploadPhotoToCase, rawPostNoteToCase, rawSyncCaseStatus);
   }
 
   // ─── Public wrappers: attempt immediately, enqueue on failure ────────────
