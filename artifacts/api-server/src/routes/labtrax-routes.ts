@@ -816,24 +816,33 @@ export async function registerRoutes(): Promise<IRouter> {
         }
         // Persist to App Storage so the file survives autoscale redeploys and is
         // reachable from every instance (local disk is ephemeral + per-instance).
-        if (caseMediaObjectStorageAvailable()) {
-          try {
-            const buffer = await readFile(finalPath);
-            const contentType = meta.mimeType || "application/octet-stream";
-            const ok = await writeCaseMediaToObjectStorage(meta.finalName, buffer, contentType);
-            if (!ok) {
-              throw new Error("writeCaseMediaToObjectStorage returned false");
-            }
-          } catch (storageErr: any) {
-            console.error(
-              "Chunked upload: failed to persist to object storage:",
-              storageErr?.message || storageErr,
-            );
-            if (!res.headersSent) {
-              return res.status(500).json({ error: "Failed to persist upload" });
-            }
-            return;
+        if (!caseMediaObjectStorageAvailable()) {
+          // Same silent-data-loss guard as the single-shot /media/upload path:
+          // a disk-only file 404s on other instances and after a redeploy.
+          console.error(
+            "Chunked upload: object storage unavailable (PRIVATE_OBJECT_DIR unset); refusing disk-only storage of case media.",
+          );
+          if (!res.headersSent) {
+            return res.status(500).json({ error: "Media storage is not configured" });
           }
+          return;
+        }
+        try {
+          const buffer = await readFile(finalPath);
+          const contentType = meta.mimeType || "application/octet-stream";
+          const ok = await writeCaseMediaToObjectStorage(meta.finalName, buffer, contentType);
+          if (!ok) {
+            throw new Error("writeCaseMediaToObjectStorage returned false");
+          }
+        } catch (storageErr: any) {
+          console.error(
+            "Chunked upload: failed to persist to object storage:",
+            storageErr?.message || storageErr,
+          );
+          if (!res.headersSent) {
+            return res.status(500).json({ error: "Failed to persist upload" });
+          }
+          return;
         }
         return res.json({
           sessionId,
@@ -875,22 +884,31 @@ export async function registerRoutes(): Promise<IRouter> {
       // reachable from every instance (local disk is ephemeral + per-instance).
       // We must await this before reporting success, otherwise the serving
       // route on a different instance would 404 on the URL we just returned.
-      if (caseMediaObjectStorageAvailable()) {
-        try {
-          const diskPath = path.resolve(casMediaDir, req.file.filename);
-          const buffer = await readFile(diskPath);
-          const contentType = req.file.mimetype || "application/octet-stream";
-          const ok = await writeCaseMediaToObjectStorage(req.file.filename, buffer, contentType);
-          if (!ok) {
-            throw new Error("writeCaseMediaToObjectStorage returned false");
-          }
-        } catch (storageErr: any) {
-          console.error(
-            "Media upload: failed to persist to object storage:",
-            storageErr?.message || storageErr,
-          );
-          return res.status(500).json({ error: "Failed to persist upload" });
+      if (!caseMediaObjectStorageAvailable()) {
+        // Without object storage the file lives only on this instance's
+        // ephemeral disk: it 404s on other instances and is wiped on the
+        // next redeploy. Returning a URL anyway is silent data loss (this is
+        // how mobile-uploaded case photos went missing on web/desktop), so we
+        // fail loudly instead of handing back a link that will break.
+        console.error(
+          "Media upload: object storage unavailable (PRIVATE_OBJECT_DIR unset); refusing disk-only storage of case media.",
+        );
+        return res.status(500).json({ error: "Media storage is not configured" });
+      }
+      try {
+        const diskPath = path.resolve(casMediaDir, req.file.filename);
+        const buffer = await readFile(diskPath);
+        const contentType = req.file.mimetype || "application/octet-stream";
+        const ok = await writeCaseMediaToObjectStorage(req.file.filename, buffer, contentType);
+        if (!ok) {
+          throw new Error("writeCaseMediaToObjectStorage returned false");
         }
+      } catch (storageErr: any) {
+        console.error(
+          "Media upload: failed to persist to object storage:",
+          storageErr?.message || storageErr,
+        );
+        return res.status(500).json({ error: "Failed to persist upload" });
       }
       const forwardedHost = req.header("x-forwarded-host");
       const host = forwardedHost || req.get("host") || "localhost";

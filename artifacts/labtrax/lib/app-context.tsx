@@ -37,6 +37,7 @@ import {
 import { resolvePriceForCase } from "@/lib/pricing";
 import {
   generateId,
+  isCanonicalCase,
   getStationInfo,
   formatAcctNum,
   formatInvNum,
@@ -420,7 +421,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // Syncing them via the legacy POST endpoint would try to create a
       // duplicate row in lab_cases and fail with a 403. Use PATCH instead,
       // converting the mobile status token back to the desktop enum value.
-      if ((labCase as any)._sourceTable === "cases") {
+      if (isCanonicalCase(labCase as any)) {
         const MOBILE_TO_DESKTOP_STATUS: Record<string, string> = {
           INTAKE: "received",
           DESIGN: "in_design",
@@ -2416,7 +2417,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const now = Date.now();
     const isVid = isVideoUri(photoUri);
     const targetCase = cases.find((c) => c.id === caseId);
-    const isCanonical = (targetCase as any)?._sourceTable === "cases";
+    const isCanonical = isCanonicalCase(targetCase as any);
 
     // Decide what URI to persist. For canonical server cases we MUST store a
     // URL backed by a real caseAttachments row (see uploadPhotoAndCreateAttachment),
@@ -2495,7 +2496,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             activityLog: [...(c.activityLog || []), noteEntry],
           };
           void syncCaseToServer(updatedCase);
-          if ((c as any)._sourceTable === "cases") {
+          if (isCanonicalCase(c as any)) {
             void addNoteToCanonicalCase(caseId, note);
           }
           return updatedCase;
@@ -2510,7 +2511,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   async function addCasePhotosWithNote(caseId: string, photoUris: string[], note: string, user?: string) {
     const now = Date.now();
     const targetCase = cases.find((c) => c.id === caseId);
-    const isCanonical = (targetCase as any)?._sourceTable === "cases";
+    const isCanonical = isCanonicalCase(targetCase as any);
 
     // Resolve each local uri to a renderable, persistable uri. For canonical
     // server cases this uploads + creates the attachment row so the serving
