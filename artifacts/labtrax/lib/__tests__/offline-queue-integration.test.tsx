@@ -29,6 +29,10 @@ type ServerCall = { path: string; method?: string; body?: string };
 // Flip to false to simulate "offline": case-write endpoints fail; flip back to
 // true to simulate reconnect.
 let online = true;
+// When set, the notes endpoint returns this HTTP status instead of 200 even
+// while "online" — used to exercise the categorized (non-throwing) failure path
+// where the executor resolves to a SyncFailure object rather than throwing.
+let forceNoteStatus: number | null = null;
 const serverCalls: ServerCall[] = [];
 
 function isCaseWrite(path: string, method?: string): boolean {
@@ -48,6 +52,15 @@ const resilientFetchMock = vi.fn(async (path: string, init?: RequestInit) => {
   });
   if (!online && isCaseWrite(path, init?.method)) {
     throw new Error("simulated offline");
+  }
+  // Categorized (non-throwing) failure: server reachable but rejects the note
+  // POST with an HTTP error. The note executor must resolve to a SyncFailure
+  // object (truthy) — callers must treat it as failure, not success.
+  if (forceNoteStatus !== null && /\/notes$/.test(path) && (init?.method ?? "GET") === "POST") {
+    return new Response(JSON.stringify({ error: "rejected" }), {
+      status: forceNoteStatus,
+      headers: { "content-type": "application/json" },
+    });
   }
   // Default OK JSON for mount fetches and successful writes. Keep the shape
   // broad enough to satisfy every boot fetch (memberships/invites/cases) so no
@@ -181,6 +194,7 @@ const baseCanonicalCase = {
 
 beforeEach(async () => {
   online = true;
+  forceNoteStatus = null;
   serverCalls.length = 0;
   resilientFetchMock.mockClear();
   uploadCaseMediaMock.mockClear();
@@ -274,6 +288,39 @@ describe("photo & note hot-paths enqueue on failure (integration)", () => {
     // addCasePhotosWithNote spawned (addNoteToCanonicalCase) is queued too.
     expect(types).toEqual(["note", "photo"]);
     expect(q.every((i) => i.caseId === baseCanonicalCase.id)).toBe(true);
+  });
+
+  it("enqueues a note the server rejects with an HTTP error (categorized failure, online)", async () => {
+    // Regression: rawPostNoteToCase now returns a SyncResult — `true` on success
+    // or a truthy SyncFailure object on an HTTP error. addNoteToCanonicalCase must
+    // treat that object as failure (via isSyncSuccess), not as success. A naive
+    // `if (!result)` check would see the truthy object, skip the enqueue, and
+    // silently DROP the note. Here the server is reachable (online) but rejects the
+    // note POST with a 4xx; the photo upload still succeeds.
+    await AsyncStorage.setItem(CASES_KEY, JSON.stringify([{ ...baseCanonicalCase }]));
+    await renderProvider();
+
+    online = true;
+    forceNoteStatus = 403;
+    await act(async () => {
+      await ctx!.addCasePhotosWithNote(
+        baseCanonicalCase.id,
+        ["file:///tmp/photo.jpg"],
+        "remake please",
+        "user-1",
+      );
+    });
+
+    // The note must have been enqueued for retry, not dropped. The photo upload
+    // succeeded online, so only the note is queued.
+    await waitFor(async () => {
+      const q = await readQueue();
+      const types = q.map((i) => i.type);
+      expect(types).toContain("note");
+    });
+    const q = await readQueue();
+    expect(q.some((i) => i.type === "note" && i.caseId === baseCanonicalCase.id)).toBe(true);
+    expect(q.some((i) => i.type === "photo")).toBe(false);
   });
 
   it("does not enqueue when the photo upload and note both succeed (online)", async () => {

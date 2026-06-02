@@ -12,6 +12,10 @@ import {
   discardItem,
   subscribeToQueueSummary,
   MAX_SYNC_ATTEMPTS,
+  categorizeSyncStatus,
+  syncFailureFromStatus,
+  isSyncSuccess,
+  messageForCategory,
   type PendingUploadItem,
 } from "../offline-queue";
 
@@ -301,6 +305,87 @@ describe("offline-queue stuck-item tracking", () => {
     }
     // note-2 already drained above; only the stuck note-1 remains.
     expect((await readRawQueue()).map((i) => i.id)).toEqual(["note-1"]);
+  });
+});
+
+describe("offline-queue categorized failures", () => {
+  it("categorizeSyncStatus maps statuses to the right category", () => {
+    expect(categorizeSyncStatus(500)).toBe("server");
+    expect(categorizeSyncStatus(503)).toBe("server");
+    expect(categorizeSyncStatus(408)).toBe("server");
+    expect(categorizeSyncStatus(429)).toBe("server");
+    expect(categorizeSyncStatus(400)).toBe("validation");
+    expect(categorizeSyncStatus(422)).toBe("validation");
+    expect(categorizeSyncStatus(403)).toBe("rejected");
+    expect(categorizeSyncStatus(404)).toBe("rejected");
+    expect(categorizeSyncStatus(0)).toBe("network");
+  });
+
+  it("isSyncSuccess only treats `true` as success", () => {
+    expect(isSyncSuccess(true)).toBe(true);
+    expect(isSyncSuccess(false)).toBe(false);
+    expect(isSyncSuccess({ ok: false, category: "rejected" })).toBe(false);
+  });
+
+  it("a bare false failure is recorded as a transient network reason", async () => {
+    await enqueueNote("note-1", "case-1", "first");
+    await drainQueue(okPhoto, async () => false, okStatus);
+
+    const queue = await readRawQueue();
+    expect(queue[0].attempts).toBe(1);
+    expect(queue[0].lastErrorCategory).toBe("network");
+    expect(queue[0].lastError).toBe(messageForCategory("network"));
+  });
+
+  it("a permanent rejection (4xx) wedges the item immediately", async () => {
+    await enqueueNote("note-1", "case-1", "first");
+
+    // One drain with a 403 should mark it stuck without burning all retries.
+    await drainQueue(okPhoto, async () => syncFailureFromStatus(403), okStatus);
+
+    const summary = await getQueueSummary();
+    expect(summary.stuckCount).toBe(1);
+    expect(summary.stuckItems[0]).toMatchObject({
+      attempts: MAX_SYNC_ATTEMPTS,
+      lastErrorCategory: "rejected",
+      lastError: messageForCategory("rejected"),
+    });
+  });
+
+  it("a validation failure (422) wedges the item immediately", async () => {
+    await enqueueNote("note-1", "case-1", "first");
+    await drainQueue(okPhoto, async () => syncFailureFromStatus(422), okStatus);
+
+    const summary = await getQueueSummary();
+    expect(summary.stuckCount).toBe(1);
+    expect(summary.stuckItems[0].lastErrorCategory).toBe("validation");
+  });
+
+  it("a transient server error (5xx) keeps retrying instead of wedging", async () => {
+    await enqueueNote("note-1", "case-1", "first");
+    await drainQueue(okPhoto, async () => syncFailureFromStatus(503), okStatus);
+
+    const queue = await readRawQueue();
+    // Only one attempt burned — still has retry budget left, not stuck yet.
+    expect(queue[0].attempts).toBe(1);
+    expect(queue[0].lastErrorCategory).toBe("server");
+    expect((await getQueueSummary()).stuckCount).toBe(0);
+  });
+
+  it("a permanent rejection at the head does not block items behind it", async () => {
+    await enqueueNote("note-1", "case-1", "rejected");
+    await enqueueNote("note-2", "case-2", "healthy");
+
+    // note-1 is permanently rejected (wedged immediately); the same drain then
+    // continues on to drain the healthy note-2.
+    await drainQueue(
+      okPhoto,
+      async (caseId) => (caseId === "case-1" ? syncFailureFromStatus(404) : true),
+      okStatus
+    );
+
+    expect((await readRawQueue()).map((i) => i.id)).toEqual(["note-1"]);
+    expect((await getQueueSummary()).stuckCount).toBe(1);
   });
 });
 

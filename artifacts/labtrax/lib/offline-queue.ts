@@ -8,6 +8,82 @@ const PENDING_UPLOADS_KEY = "@labtrax_pending_uploads_v1";
 // "couldn't sync — tap to retry" prompt and can manually retry or discard it.
 export const MAX_SYNC_ATTEMPTS = 3;
 
+// ─── Categorized sync outcomes ────────────────────────────────────────────────
+// Raw executors no longer return a bare boolean. They return a SyncResult so the
+// drain can tell apart a transient drop (keep retrying) from a permanent server
+// rejection (stop retrying immediately and surface a clear reason to the user).
+//
+//   - "network"    — the request never reached the server (offline, DNS, reset,
+//                    thrown fetch). Transient: keep retrying.
+//   - "server"     — the server answered with 5xx / 408 / 429. Transient: the
+//                    server had a hiccup or is overloaded; keep retrying.
+//   - "rejected"   — the server answered with a permanent 4xx (e.g. case
+//                    deleted → 404, no longer a lab member → 403). The change
+//                    will never succeed as-is; mark it stuck immediately.
+//   - "validation" — the server rejected the payload itself (400 / 422). Also
+//                    permanent; mark it stuck immediately.
+export type SyncFailureCategory =
+  | "network"
+  | "server"
+  | "rejected"
+  | "validation";
+
+export type SyncFailure = {
+  ok: false;
+  category: SyncFailureCategory;
+  // Optional override for the user-facing message; falls back to the default
+  // plain-language copy for the category.
+  message?: string;
+};
+
+// Executors return `true` on success, or a SyncFailure describing why it failed.
+// A bare `false` is still accepted (treated as an unknown/transient network
+// failure) so simpler call sites and tests don't have to build a full object.
+export type SyncResult = boolean | SyncFailure;
+
+// Permanent failures are wedged immediately instead of burning through the
+// automatic-retry budget first — retrying a 4xx just fails again N times.
+function isPermanentCategory(category: SyncFailureCategory): boolean {
+  return category === "rejected" || category === "validation";
+}
+
+const CATEGORY_MESSAGES: Record<SyncFailureCategory, string> = {
+  network: "Lost connection — will keep trying",
+  server: "The server had a problem — will keep trying",
+  rejected: "The lab rejected this change",
+  validation: "This change was rejected as invalid",
+};
+
+/** Plain-language reason for a failure category, shown in the sync banner. */
+export function messageForCategory(category: SyncFailureCategory): string {
+  return CATEGORY_MESSAGES[category];
+}
+
+/**
+ * Map an HTTP status code to a failure category. Treats 408 (timeout) and 429
+ * (rate limit) as transient server hiccups rather than permanent rejections so
+ * they keep retrying. 400/422 are validation errors; any other 4xx is a
+ * permanent rejection.
+ */
+export function categorizeSyncStatus(status: number): SyncFailureCategory {
+  if (status >= 500 || status === 408 || status === 429) return "server";
+  if (status === 400 || status === 422) return "validation";
+  if (status >= 400) return "rejected";
+  // Anything else (including a bogus 0 from a failed XHR) is treated as a
+  // never-reached-the-server network failure.
+  return "network";
+}
+
+/** Build a SyncFailure from an HTTP status code. */
+export function syncFailureFromStatus(status: number): SyncFailure {
+  return { ok: false, category: categorizeSyncStatus(status) };
+}
+
+/** True only when the executor reported a clean success. */
+export function isSyncSuccess(result: SyncResult): boolean {
+  return result === true;
+}
+
 type PendingItemBase = {
   id: string;
   caseId: string;
@@ -17,6 +93,9 @@ type PendingItemBase = {
   attempts?: number;
   // Short, human-readable reason the last attempt failed (best-effort).
   lastError?: string;
+  // Category of the last failure, so the UI can distinguish "wait" from
+  // "discard" without parsing the message string.
+  lastErrorCategory?: SyncFailureCategory;
   // Timestamp of the most recent failed attempt.
   lastAttemptAt?: number;
 };
@@ -50,6 +129,7 @@ export type StuckQueueItem = {
   caseId: string;
   attempts: number;
   lastError?: string;
+  lastErrorCategory?: SyncFailureCategory;
   createdAt: number;
 };
 
@@ -80,6 +160,9 @@ function summarize(items: PendingUploadItem[]): QueueSummary {
       attempts: attemptsOf(item),
       createdAt: item.createdAt,
       ...(item.lastError ? { lastError: item.lastError } : {}),
+      ...(item.lastErrorCategory
+        ? { lastErrorCategory: item.lastErrorCategory }
+        : {}),
     }));
   return { total: items.length, stuckCount: stuckItems.length, stuckItems };
 }
@@ -263,9 +346,9 @@ export function drainQueue(
     photoUri: string,
     fileName: string,
     mimeType: string
-  ) => Promise<boolean>,
-  postNote: (caseId: string, noteText: string) => Promise<boolean>,
-  syncStatus: (caseId: string) => Promise<boolean>
+  ) => Promise<SyncResult>,
+  postNote: (caseId: string, noteText: string) => Promise<SyncResult>,
+  syncStatus: (caseId: string) => Promise<SyncResult>
 ): Promise<void> {
   if (_drainQueued) return Promise.resolve();
   _drainQueued = true;
@@ -282,26 +365,29 @@ export function drainQueue(
       if (index === -1) break;
 
       const item = queue[index];
-      let succeeded = false;
-      let errorMessage: string | undefined;
+      let result: SyncResult = false;
+      let thrownMessage: string | undefined;
       try {
         if (item.type === "photo") {
-          succeeded = await uploadPhoto(
+          result = await uploadPhoto(
             item.caseId,
             item.photoUri,
             item.fileName,
             item.mimeType
           );
         } else if (item.type === "note") {
-          succeeded = await postNote(item.caseId, item.noteText);
+          result = await postNote(item.caseId, item.noteText);
         } else {
-          succeeded = await syncStatus(item.caseId);
+          result = await syncStatus(item.caseId);
         }
       } catch (e: any) {
-        errorMessage = String(e?.message || e).slice(0, 200);
+        // A thrown executor means the request never completed — a network
+        // failure by definition.
+        thrownMessage = String(e?.message || e).slice(0, 200);
+        result = { ok: false, category: "network", message: thrownMessage };
       }
 
-      if (succeeded) {
+      if (result === true) {
         // Persist removal atomically before the next iteration.
         // A crash here at worst replays one already-sent item (bounded by 1).
         const next = queue.slice();
@@ -310,13 +396,25 @@ export function drainQueue(
         continue;
       }
 
-      // Record the failed attempt against this item.
-      const attempts = attemptsOf(item) + 1;
+      // Normalize the failure. A bare `false` is an unknown/transient network
+      // failure; a SyncFailure carries the categorized reason.
+      const failure: SyncFailure =
+        result === false ? { ok: false, category: "network" } : result;
+      const category = failure.category;
+      const message = failure.message ?? messageForCategory(category);
+
+      // Permanent failures (4xx) are wedged immediately — retrying a rejected
+      // change just fails again. Transient failures burn one retry at a time.
+      const attempts = isPermanentCategory(category)
+        ? MAX_SYNC_ATTEMPTS
+        : attemptsOf(item) + 1;
+
       const next = queue.slice();
       next[index] = {
         ...item,
         attempts,
-        lastError: errorMessage ?? "Couldn't reach the server",
+        lastError: message,
+        lastErrorCategory: category,
         lastAttemptAt: Date.now(),
       };
       await saveQueue(next);
@@ -342,7 +440,8 @@ export function retryItem(id: string): Promise<void> {
     const next = queue.map((item) => {
       if (item.id !== id || attemptsOf(item) === 0) return item;
       changed = true;
-      const { attempts, lastError, lastAttemptAt, ...rest } = item;
+      const { attempts, lastError, lastErrorCategory, lastAttemptAt, ...rest } =
+        item;
       return rest;
     });
     if (changed) await saveQueue(next);
@@ -359,7 +458,8 @@ export function retryAllStuck(): Promise<void> {
     const next = queue.map((item) => {
       if (!isStuck(item)) return item;
       changed = true;
-      const { attempts, lastError, lastAttemptAt, ...rest } = item;
+      const { attempts, lastError, lastErrorCategory, lastAttemptAt, ...rest } =
+        item;
       return rest;
     });
     if (changed) await saveQueue(next);

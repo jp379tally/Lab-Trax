@@ -19,7 +19,10 @@ import {
   retryItem,
   retryAllStuck,
   discardItem,
+  isSyncSuccess,
+  syncFailureFromStatus,
   type StuckQueueItem,
+  type SyncResult,
 } from "./offline-queue";
 import { AppState, Platform } from "react-native";
 import {
@@ -435,7 +438,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setAllCases(updater);
   }
 
-  async function syncCaseToServer(labCase: LabCase): Promise<boolean> {
+  async function syncCaseToServer(labCase: LabCase): Promise<SyncResult> {
     try {
       // Canonical (desktop) cases live in the `cases` table, not `lab_cases`.
       // Syncing them via the legacy POST endpoint would try to create a
@@ -473,7 +476,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             body: JSON.stringify({ status: desktopStatus }),
           }
         );
-        return !!res?.ok;
+        return res?.ok ? true : syncFailureFromStatus(res?.status ?? 0);
       }
 
       const normalizedCase: LabCase = {
@@ -490,9 +493,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
           caseData: JSON.stringify(normalizedCase),
         }),
       });
-      return !!res?.ok;
+      return res?.ok ? true : syncFailureFromStatus(res?.status ?? 0);
     } catch (e) {
       console.log("Could not sync case to server:", e);
+      // Thrown fetch — never reached the server (transient network failure).
       return false;
     }
   }
@@ -1224,7 +1228,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     inFlightSyncIdsRef.current.add(c.id);
     void (async () => {
       try {
-        const ok = await syncCaseToServer(c);
+        const ok = isSyncSuccess(await syncCaseToServer(c));
         if (!ok) return;
         const localInvoice = invoicesRef.current.find((inv) =>
           inv.caseIds?.includes(c.id)
@@ -2265,7 +2269,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setAllCases(updated);
     AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
     void (async () => {
-      const ok = await syncCaseToServer(newCase);
+      const ok = isSyncSuccess(await syncCaseToServer(newCase));
       if (!ok) return;
       await generateServerInvoiceForCase(newCase.id, newInvoice.id);
     })();
@@ -2328,7 +2332,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // the local UI would update but the station change could be silently
           // lost, leaving web/desktop on the old station.
           void (async () => {
-            const ok = await syncCaseToServer(updatedCase);
+            const ok = isSyncSuccess(await syncCaseToServer(updatedCase));
             if (!ok) {
               await enqueueStatus(caseId);
             }
@@ -2407,12 +2411,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     photoUri: string,
     fileName: string,
     mimeType: string
-  ): Promise<boolean> {
+  ): Promise<SyncResult> {
     try {
       // Use uploadCaseMedia (XHR), NOT resilientFetch — expo/fetch rejects the
       // native { uri, name, type } file descriptor.
       const uploadRes = await uploadCaseMedia("/api/media/upload", photoUri, fileName, mimeType);
-      if (!uploadRes?.ok) return false;
+      if (!uploadRes?.ok) return syncFailureFromStatus(uploadRes?.status ?? 0);
       const { url } = await uploadRes.json();
       const attachRes = await resilientFetch(
         `/api/cases/${encodeURIComponent(caseId)}/attachments`,
@@ -2422,13 +2426,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
           body: JSON.stringify({ storageKey: url, fileName, fileType: mimeType }),
         }
       );
-      return !!attachRes?.ok;
+      return attachRes?.ok ? true : syncFailureFromStatus(attachRes?.status ?? 0);
     } catch {
+      // Thrown fetch — never reached the server (transient network failure).
       return false;
     }
   }
 
-  async function rawPostNoteToCase(caseId: string, noteText: string): Promise<boolean> {
+  async function rawPostNoteToCase(caseId: string, noteText: string): Promise<SyncResult> {
     try {
       const res = await resilientFetch(
         `/api/cases/${encodeURIComponent(caseId)}/notes`,
@@ -2438,8 +2443,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
           body: JSON.stringify({ noteText }),
         }
       );
-      return !!res?.ok;
+      return res?.ok ? true : syncFailureFromStatus(res?.status ?? 0);
     } catch {
+      // Thrown fetch — never reached the server (transient network failure).
       return false;
     }
   }
@@ -2459,7 +2465,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   //                               trigger retries once the cache has loaded).
   //   - not found, hydrated    → the case is genuinely gone (deleted); return
   //                               true so the item doesn't wedge the queue.
-  async function rawSyncCaseStatus(caseId: string): Promise<boolean> {
+  async function rawSyncCaseStatus(caseId: string): Promise<SyncResult> {
     const labCase = allCasesRef.current.find((c) => c.id === caseId);
     if (!labCase) return casesHydratedRef.current ? true : false;
     return syncCaseToServer(labCase);
@@ -2474,7 +2480,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   async function addNoteToCanonicalCase(caseId: string, noteText: string): Promise<void> {
     const itemId = `note-${caseId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-    const succeeded = await rawPostNoteToCase(caseId, noteText);
+    const succeeded = isSyncSuccess(await rawPostNoteToCase(caseId, noteText));
     if (!succeeded) {
       await enqueueNote(itemId, caseId, noteText);
     }

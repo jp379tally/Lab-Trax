@@ -11,6 +11,34 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { useApp } from "@/lib/app-context";
+import {
+  messageForCategory,
+  type StuckQueueItem,
+  type SyncFailureCategory,
+} from "@/lib/offline-queue";
+
+// Build a single plain-language reason for the stuck items. A permanent
+// rejection (the lab said no) is more actionable than "lost connection", so it
+// wins when the stuck items are a mix. Falls back to the per-item lastError
+// message, then to a generic line.
+function stuckReason(items: StuckQueueItem[]): string {
+  if (items.length === 0) return "";
+  const order: SyncFailureCategory[] = [
+    "rejected",
+    "validation",
+    "server",
+    "network",
+  ];
+  const present = new Set(
+    items
+      .map((i) => i.lastErrorCategory)
+      .filter((c): c is SyncFailureCategory => !!c)
+  );
+  for (const category of order) {
+    if (present.has(category)) return messageForCategory(category);
+  }
+  return items[0].lastError ?? "Couldn't reach the server";
+}
 
 export function PendingSyncBanner() {
   const insets = useSafeAreaInsets();
@@ -29,6 +57,7 @@ export function PendingSyncBanner() {
       stuckCount === 1
         ? "1 change couldn't sync"
         : `${stuckCount} changes couldn't sync`;
+    const reason = stuckReason(stuckSyncItems);
 
     const confirmDiscard = () => {
       const single = stuckCount === 1;
@@ -60,9 +89,14 @@ export function PendingSyncBanner() {
           color={colors.errorText}
           style={styles.icon}
         />
-        <Text style={styles.errorText} numberOfLines={1}>
-          {label}
-        </Text>
+        <View style={styles.errorTextColumn}>
+          <Text style={styles.errorText} numberOfLines={1}>
+            {label}
+          </Text>
+          <Text style={styles.errorReason} numberOfLines={2}>
+            {reason}
+          </Text>
+        </View>
         <Pressable
           onPress={() => retrySync()}
           hitSlop={8}
@@ -140,11 +174,20 @@ const makeStyles = (colors: ThemeColors) =>
       fontFamily: "Inter_500Medium",
       color: colors.info,
     },
-    errorText: {
+    errorTextColumn: {
       flex: 1,
+      gap: 1,
+    },
+    errorText: {
       fontSize: 12,
       fontFamily: "Inter_600SemiBold",
       color: colors.errorText,
+    },
+    errorReason: {
+      fontSize: 11,
+      fontFamily: "Inter_500Medium",
+      color: colors.errorText,
+      opacity: 0.85,
     },
     action: {
       flexShrink: 0,
