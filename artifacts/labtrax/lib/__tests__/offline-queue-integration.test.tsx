@@ -118,11 +118,14 @@ async function renderProvider() {
   // act() trips "Can't access .root on unmounted test renderer" on
   // react-test-renderer 19. Call it directly and drive async effects with
   // waitFor instead.
-  render(React.createElement(AppProvider, null, React.createElement(CaptureContext)));
+  const { unmount } = render(
+    React.createElement(AppProvider, null, React.createElement(CaptureContext)),
+  );
   // Wait for loadData() to hydrate the seeded case from the cache.
   await waitFor(() => {
     expect(ctx?.cases.length).toBeGreaterThan(0);
   });
+  return { unmount };
 }
 
 async function readQueue() {
@@ -311,6 +314,115 @@ describe("photo & note hot-paths enqueue on failure (integration)", () => {
 
     // The note drain hit the canonical notes endpoint and the photo drain
     // re-attempted the upload (uploadCaseMedia) + attachment create.
+    const notePosts = serverCalls.filter(
+      (c) => /\/notes$/.test(c.path) && c.method === "POST",
+    );
+    expect(notePosts.length).toBeGreaterThan(0);
+    expect(uploadCaseMediaMock).toHaveBeenCalled();
+
+    await waitFor(async () => {
+      expect(await readQueue()).toHaveLength(0);
+    });
+  });
+});
+
+describe("offline changes survive a full app restart (cold boot)", () => {
+  // The reconnect tests above keep the SAME provider instance mounted across the
+  // offline → online transition. These tests cover the harder durability case:
+  // the user makes an offline change, then FULLY closes and relaunches the app
+  // before connectivity returns. We simulate the relaunch by unmounting the
+  // provider entirely and mounting a fresh AppProvider — only the persisted
+  // AsyncStorage queue (`@labtrax_pending_uploads_v1`) and the cached cases
+  // survive the boundary, exactly as on a real cold boot. The fresh provider
+  // must re-hydrate that queue and drain it to the server.
+
+  async function relaunch() {
+    // Forget the previous session's AppState listeners so simulateReconnect only
+    // fires the fresh provider's drain handler, never a stale unmounted one.
+    (AppState.addEventListener as unknown as { mockClear: () => void }).mockClear();
+    ctx = null;
+    return renderProvider();
+  }
+
+  it("re-hydrates a queued status change and pushes it to the server after relaunch", async () => {
+    // ── Session 1: enqueue an offline status change, then "close" the app ──
+    await AsyncStorage.setItem(CASES_KEY, JSON.stringify([{ ...baseLegacyCase }]));
+    const { unmount } = await renderProvider();
+
+    online = false;
+    await act(async () => {
+      ctx!.updateCaseStatus(baseLegacyCase.id, "DESIGN" as any, "user-1");
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    await act(async () => {
+      ctx!.updateCaseStatus(baseLegacyCase.id, "MILLING" as any, "user-1");
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    await waitFor(async () => {
+      const q = await readQueue();
+      expect(q).toHaveLength(1);
+      expect(q[0]).toMatchObject({ id: `status-${baseLegacyCase.id}`, type: "status" });
+    });
+
+    // Force-close the app. The provider (and all its in-memory state, drain
+    // timers, and AppState listeners) is gone; only AsyncStorage persists.
+    unmount();
+
+    // ── Session 2: relaunch with connectivity restored ──
+    serverCalls.length = 0;
+    online = true;
+    await relaunch();
+
+    // The fresh provider re-hydrated the persisted queue and drained it once
+    // connectivity was restored.
+    await simulateReconnect();
+
+    const writes = serverCalls.filter(
+      (c) => c.path.startsWith("/api/legacy/cases") && c.method === "POST",
+    );
+    expect(writes.length).toBeGreaterThan(0);
+
+    // The latest station (MILLING), re-read from the re-hydrated case cache,
+    // reached the server — not a stale value lost across the restart.
+    const syncedStatuses = writes.map((w) => {
+      const outer = JSON.parse(w.body ?? "{}");
+      const inner = JSON.parse(outer.caseData ?? "{}");
+      return inner.status as string;
+    });
+    expect(syncedStatuses).toContain("MILLING");
+
+    await waitFor(async () => {
+      expect(await readQueue()).toHaveLength(0);
+    });
+  });
+
+  it("re-hydrates a queued photo + note and pushes them to the server after relaunch", async () => {
+    // ── Session 1: enqueue an offline photo+note, then "close" the app ──
+    await AsyncStorage.setItem(CASES_KEY, JSON.stringify([{ ...baseCanonicalCase }]));
+    const { unmount } = await renderProvider();
+
+    online = false;
+    await act(async () => {
+      await ctx!.addCasePhotosWithNote(
+        baseCanonicalCase.id,
+        ["file:///tmp/photo.jpg"],
+        "remake please",
+        "user-1",
+      );
+    });
+    expect((await readQueue()).length).toBe(2);
+
+    unmount();
+
+    // ── Session 2: relaunch with connectivity restored ──
+    serverCalls.length = 0;
+    uploadCaseMediaMock.mockClear();
+    online = true;
+    await relaunch();
+
+    await simulateReconnect();
+
     const notePosts = serverCalls.filter(
       (c) => /\/notes$/.test(c.path) && c.method === "POST",
     );
