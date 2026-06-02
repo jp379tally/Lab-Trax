@@ -3501,7 +3501,7 @@ export async function registerRoutes(): Promise<IRouter> {
       const openai = getOpenAIClient();
       if (!openai) return res.status(503).json({ success: false, error: "AI integrations are not configured." });
 
-      const { imageBase64, additionalImages } = req.body;
+      const { imageBase64, additionalImages, fast } = req.body;
       if (!imageBase64) return res.status(400).json({ success: false, error: "No image provided" });
 
       // Strip the data URI prefix to measure the raw base64 payload.
@@ -3588,7 +3588,8 @@ export async function registerRoutes(): Promise<IRouter> {
   "notes": "any additional notes or special instructions",
   "practiceName": "dental practice or office name",
   "practiceAddress": "practice address",
-  "practicePhone": "practice phone number"
+  "practicePhone": "practice phone number",
+  "confidence": 0.0
 }
 
 Important rules:
@@ -3601,6 +3602,7 @@ Important rules:
 - Extract the shade exactly as written on the prescription, including handwritten shade values
 - MATERIAL: Common handwritten abbreviations — "PFM" = PFM, "Zirc" or "Zr" = Zirconia, "GC" or "Gold" = Gold, "Emax" or "E.max" = E max
 - NAME FORMAT: If a patient name or doctor name contains a comma (e.g. "Kidder, Daniel"), it is Last, First format. Swap to First Last and remove the comma.
+- CONFIDENCE: set "confidence" to a number from 0 to 1 reflecting your overall certainty that the extracted fields are correct (1 = fully legible and certain; below 0.5 = blurry, partial, or mostly illegible). Be honest — the app uses this to decide whether a live-camera read is good enough to keep.
 - Return ONLY the JSON object, no other text`;
 
       const userContent: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail: "high" } }> = [
@@ -3613,27 +3615,76 @@ Important rules:
         { role: "user" as const, content: userContent },
       ];
 
-      // Resilient model chain. gpt-4o / gpt-4o-mini are LEGACY models on the
-      // Replit AI proxy and have been the recurring cause of this feature
-      // "working then breaking again" — when the proxy drops a legacy model,
-      // both the primary and the old fallback fail at once. We keep gpt-4o
-      // first (fast, strong vision, proven) but end the chain on a current-gen
-      // model (gpt-5.4) so a legacy-model removal can never take the AI reader
-      // down. gpt-5+/o-series reject `temperature` and spend reasoning tokens,
-      // so those calls omit temperature and get more completion headroom.
-      const MODEL_CHAIN = ["gpt-4o", "gpt-4o-mini", "gpt-5.4"];
+      // Forcing a strict json_schema response guarantees parseable JSON with
+      // exactly these keys — this eliminates the old "No JSON found in response"
+      // failure mode that made the reader unreliable. `confidence` (0-1) lets
+      // the mobile live scanner decide when a read is trustworthy enough to
+      // auto-fill without a manual capture.
+      const nullableString = { type: ["string", "null"] as const };
+      const PRESCRIPTION_SCHEMA = {
+        name: "dental_prescription",
+        strict: true,
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            doctorName: nullableString,
+            patientName: nullableString,
+            patientInitials: nullableString,
+            caseType: nullableString,
+            toothIndices: nullableString,
+            shade: nullableString,
+            material: nullableString,
+            dueDate: nullableString,
+            isRush: { type: ["boolean", "null"] as const },
+            notes: nullableString,
+            practiceName: nullableString,
+            practiceAddress: nullableString,
+            practicePhone: nullableString,
+            confidence: { type: "number" as const },
+          },
+          required: [
+            "doctorName",
+            "patientName",
+            "patientInitials",
+            "caseType",
+            "toothIndices",
+            "shade",
+            "material",
+            "dueDate",
+            "isRush",
+            "notes",
+            "practiceName",
+            "practiceAddress",
+            "practicePhone",
+            "confidence",
+          ],
+        },
+      };
+
+      // Current-generation multimodal models only. The previous chain led with
+      // the legacy gpt-4o family, which the Replit AI proxy periodically drops —
+      // the recurring cause of this reader "working then breaking again". The
+      // gpt-5.x models are multimodal and reject `temperature`/`max_tokens`
+      // (use max_completion_tokens). gpt-5-mini is the fast, cheap safety net.
+      //
+      // `fast` mode (used by the mobile live-camera scanner for its continuous
+      // detection ticks) leads with the quick gpt-5-mini so the live preview
+      // stays responsive; the final, accurate read of the captured still always
+      // runs through the full chain below.
+      const MODEL_CHAIN = fast
+        ? ["gpt-5-mini", "gpt-5"]
+        : ["gpt-5.4", "gpt-5", "gpt-5-mini"];
       let response: any;
       let lastModelErr: any;
       for (const model of MODEL_CHAIN) {
-        const isLegacy = model.startsWith("gpt-4o");
-        const params: any = {
-          model,
-          messages: baseMessages,
-          max_completion_tokens: isLegacy ? 1000 : 8192,
-        };
-        if (isLegacy) params.temperature = 0.1;
         try {
-          response = await openai.chat.completions.create(params);
+          response = await openai.chat.completions.create({
+            model,
+            messages: baseMessages,
+            max_completion_tokens: 8192,
+            response_format: { type: "json_schema", json_schema: PRESCRIPTION_SCHEMA },
+          });
           console.log("AI analyze-prescription: used", model);
           break;
         } catch (modelErr: any) {
@@ -3643,14 +3694,25 @@ Important rules:
       }
       if (!response) throw lastModelErr ?? new Error("All prescription models failed");
 
-      const text = response.choices?.[0]?.message?.content || "";
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        console.log("AI analyze-prescription: No JSON found in response:", text.substring(0, 200));
-        return res.json({ success: false, error: "AI could not parse the prescription" });
+      const message = response.choices?.[0]?.message;
+      if (message?.refusal) {
+        console.log("AI analyze-prescription: model refused:", message.refusal);
+        return res.json({ success: false, error: "AI could not read the prescription. Please retake the photo." });
       }
-
-      const data = JSON.parse(jsonMatch[0]);
+      const text = message?.content || "";
+      let data: any;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        // Defensive fallback: if a fallback model ever ignores json_schema,
+        // salvage the first JSON object embedded in the text.
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) {
+          console.log("AI analyze-prescription: No JSON found in response:", text.substring(0, 200));
+          return res.json({ success: false, error: "AI could not parse the prescription" });
+        }
+        data = JSON.parse(jsonMatch[0]);
+      }
 
       function fixNameOrder(name: string | null | undefined): string | null | undefined {
         if (!name || typeof name !== "string") return name;

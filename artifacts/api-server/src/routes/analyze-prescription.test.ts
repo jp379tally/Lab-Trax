@@ -109,6 +109,7 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
         caseType: "Crown & Bridge",
         shade: "A2",
         isRush: false,
+        confidence: 0.92,
       })
     );
 
@@ -121,14 +122,34 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
     expect(r.body.data.doctorName).toBe("John Smith");
     expect(r.body.data.patientName).toBe("Jane Doe");
     expect(r.body.data.shade).toBe("A2");
+    // Confidence drives the mobile live-scan auto-fill gate; it must survive
+    // the server-side cleanup and reach the client.
+    expect(r.body.data.confidence).toBe(0.92);
     expect(mockCreate).toHaveBeenCalledTimes(1);
-    expect(mockCreate.mock.calls[0][0].model).toBe("gpt-4o");
+    // Leads with the current-gen high-accuracy model, not a legacy gpt-4o.
+    expect(mockCreate.mock.calls[0][0].model).toBe("gpt-5.4");
+    // gpt-5+ rejects `temperature`; it must never be sent.
+    expect(mockCreate.mock.calls[0][0].temperature).toBeUndefined();
   });
 
-  it("falls through legacy models to a current-gen model that omits temperature", async () => {
+  it("uses the fast (gpt-5-mini) chain for live-scan detection requests", async () => {
+    mockCreate.mockResolvedValueOnce(aiJson({ patientName: "Pat Roe", confidence: 0.4 }));
+
+    const r = await request(appMod.default)
+      .post("/api/analyze-prescription")
+      .send({ imageBase64: VALID_IMAGE, fast: true });
+
+    expect(r.status).toBe(200);
+    expect(r.body.success).toBe(true);
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    // Fast mode leads with the quick model so the live preview stays responsive.
+    expect(mockCreate.mock.calls[0][0].model).toBe("gpt-5-mini");
+  });
+
+  it("falls through the model chain to a current-gen model that omits temperature", async () => {
     mockCreate
-      .mockRejectedValueOnce(new Error("model gpt-4o not available"))
-      .mockRejectedValueOnce(new Error("model gpt-4o-mini not available"))
+      .mockRejectedValueOnce(new Error("model gpt-5.4 not available"))
+      .mockRejectedValueOnce(new Error("model gpt-5 not available"))
       .mockResolvedValueOnce(aiJson({ patientName: "Pat Roe" }));
 
     const r = await request(appMod.default)
@@ -140,7 +161,7 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
     expect(r.body.data.patientName).toBe("Pat Roe");
     expect(mockCreate).toHaveBeenCalledTimes(3);
 
-    // The final (current-gen) attempt must NOT send temperature — gpt-5+ rejects it.
+    // The final attempt must NOT send temperature — gpt-5+ rejects it.
     const finalParams = mockCreate.mock.calls[2][0];
     expect(finalParams.model).not.toMatch(/^gpt-4o/);
     expect(finalParams.temperature).toBeUndefined();

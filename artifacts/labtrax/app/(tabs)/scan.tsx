@@ -184,6 +184,8 @@ export default function ScanScreen() {
   const [isSubmittingCase, setIsSubmittingCase] = useState(false);
   const [activityEntries, setActivityEntries] = useState<ActivityEntry[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [liveScanEnabled, setLiveScanEnabled] = useState(false);
+  const [liveStatus, setLiveStatus] = useState("");
   const [doctorDropdownOpen, setDoctorDropdownOpen] = useState(false);
   const [doctorSearch, setDoctorSearch] = useState("");
   const [providerPickerOpen, setProviderPickerOpen] = useState(false);
@@ -534,6 +536,9 @@ export default function ScanScreen() {
 
   const cropDoneRef = useRef(false);
   const autoAnalyzedRef = useRef(false);
+  // Live-camera auto-scan loop control.
+  const liveBusyRef = useRef(false);
+  const liveActiveRef = useRef(false);
 
   useEffect(() => {
     if (phase === "scanning") {
@@ -600,6 +605,13 @@ export default function ScanScreen() {
   }
 
   async function handleTakePhoto() {
+    // Manual shutter takes over: stop any live auto-scan loop so the two paths
+    // never fight over the camera.
+    if (liveActiveRef.current || liveScanEnabled) {
+      liveActiveRef.current = false;
+      setLiveScanEnabled(false);
+      setLiveStatus("");
+    }
     // Auto-fire AI only on the first/single page of a fresh capture session.
     // If there are already pages (user came back via "Add more" in the
     // Review screen), let the existing scanning -> review flow run so the
@@ -1301,11 +1313,16 @@ export default function ScanScreen() {
     }
   }
 
-  async function sendToAI(base64Data: string, additionalImages?: string[]): Promise<{ success: boolean; data?: any; error?: string }> {
+  async function sendToAI(
+    base64Data: string,
+    additionalImages?: string[],
+    opts?: { fast?: boolean; timeoutMs?: number },
+  ): Promise<{ success: boolean; data?: any; error?: string }> {
     const payload: any = { imageBase64: base64Data };
     if (additionalImages && additionalImages.length > 0) {
       payload.additionalImages = additionalImages;
     }
+    if (opts?.fast) payload.fast = true;
     const jsonBody = JSON.stringify(payload);
     console.log("AI: Sending request, body size:", jsonBody.length, "platform:", Platform.OS);
 
@@ -1328,7 +1345,7 @@ export default function ScanScreen() {
 
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 90000);
+      const timeoutId = setTimeout(() => controller.abort(), opts?.timeoutMs ?? 90000);
       let res: any;
       try {
         res = await fetchFn(primaryUrl, {
@@ -1374,8 +1391,9 @@ export default function ScanScreen() {
       console.log("AI: Parsed result success:", result?.success, "fields:", result?.data ? Object.keys(result.data).join(",") : "none");
       return result;
     } catch (err: any) {
+      const timeoutSecs = Math.round((opts?.timeoutMs ?? 90000) / 1000);
       const msg = err?.name === "AbortError"
-        ? "AI request timed out after 90s"
+        ? `AI request timed out after ${timeoutSecs}s`
         : err?.message || String(err);
       console.log("AI: Request failed:", msg);
       return { success: false, error: msg };
@@ -1885,6 +1903,122 @@ export default function ScanScreen() {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Live-camera auto-scan.
+  //
+  // When the user turns on "Live scan", we run a hands-free detection loop: every
+  // tick we grab a downscaled frame and send it to /api/analyze-prescription with
+  // `fast: true` (quick gpt-5-mini detection). As soon as a frame comes back with
+  // high confidence AND at least one key field, we capture a crisp still and route
+  // it through the exact same proven `handleFinishedReview` pipeline (full
+  // high-accuracy engine) — so the final extraction quality is identical to a
+  // manual shutter capture, with no extra code path to drift out of sync.
+  // Native-only; the shutter button remains the manual fallback at all times.
+  useEffect(() => {
+    if ((Platform.OS as string) === "web") return;
+    if (!liveScanEnabled) return;
+    if (phase !== "camera") return;
+    if (!cameraReady) return;
+    if (!permission?.granted) return;
+    if (cameraPaused) return;
+
+    let cancelled = false;
+    liveActiveRef.current = true;
+    let attempts = 0;
+    const MAX_ATTEMPTS = 6;
+    const CONFIDENCE = 0.8;
+    let timer: ReturnType<typeof setTimeout>;
+
+    const schedule = (ms: number) => {
+      if (cancelled || !liveActiveRef.current) return;
+      timer = setTimeout(run, ms);
+    };
+
+    const run = async () => {
+      if (cancelled || !liveActiveRef.current) return;
+      if (liveBusyRef.current) { schedule(600); return; }
+      if (attempts >= MAX_ATTEMPTS) {
+        liveActiveRef.current = false;
+        setLiveScanEnabled(false);
+        setLiveStatus("");
+        Alert.alert(
+          "Live scan",
+          "Couldn't read a prescription automatically. Hold the page flat and steady in good light, or tap the RX button to capture it yourself.",
+        );
+        return;
+      }
+
+      liveBusyRef.current = true;
+      attempts += 1;
+      try {
+        let frameUri: string | null = null;
+        if (cameraRef.current) {
+          const frame = await cameraRef.current.takePictureAsync({ quality: 0.6, base64: true, skipProcessing: true });
+          if (frame?.base64) frameUri = `data:image/jpeg;base64,${frame.base64}`;
+          else if (frame?.uri) frameUri = frame.uri;
+        }
+        if (cancelled || !liveActiveRef.current) return;
+
+        if (frameUri) {
+          let b64: string;
+          try { b64 = await compressImageForAI(frameUri); }
+          catch { b64 = frameUri; }
+
+          const result = await sendToAI(b64, undefined, { fast: true, timeoutMs: 30000 });
+          if (cancelled || !liveActiveRef.current) return;
+
+          if (result.success && result.data) {
+            const conf = typeof result.data.confidence === "number" ? result.data.confidence : 0;
+            const hasKey = !!(result.data.patientName || result.data.patientInitials || result.data.doctorName || result.data.toothIndices);
+
+            if (conf >= CONFIDENCE && hasKey) {
+              // Locked on. Stop the loop and capture a crisp still for the
+              // accurate final read through the standard pipeline.
+              liveActiveRef.current = false;
+              setLiveScanEnabled(false);
+              setLiveStatus("Prescription found — reading…");
+              if ((Platform.OS as string) !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+              let finalUri = frameUri;
+              try {
+                const still = await cameraRef.current?.takePictureAsync({ quality: 0.85, base64: true });
+                if (still?.base64) finalUri = `data:image/jpeg;base64,${still.base64}`;
+                else if (still?.uri) finalUri = still.uri;
+              } catch { /* fall back to the detection frame */ }
+
+              autoAnalyzedRef.current = true;
+              cropDoneRef.current = true;
+              setCapturedUri(finalUri);
+              setCasePhotos((prev) => (prev.includes(finalUri) ? prev : [...prev, finalUri]));
+              setLiveStatus("");
+              await handleFinishedReview([finalUri]);
+              return;
+            }
+
+            setLiveStatus(hasKey ? "Hold steady — almost there…" : "Point the camera at the prescription");
+          } else {
+            setLiveStatus("Point the camera at the prescription");
+          }
+        }
+      } catch (e: any) {
+        console.log("Live scan tick failed:", e?.message || e);
+      } finally {
+        liveBusyRef.current = false;
+      }
+      schedule(700);
+    };
+
+    setLiveStatus("Looking for a prescription…");
+    timer = setTimeout(run, 1000);
+
+    return () => {
+      cancelled = true;
+      liveActiveRef.current = false;
+      clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveScanEnabled, phase, cameraReady, cameraPaused, permission?.granted]);
 
   async function handleSelectPrinter() {
     if (Platform.OS === "ios") {
@@ -4476,6 +4610,13 @@ export default function ScanScreen() {
             <View style={styles.cornerBR} />
           </View>
         )}
+
+        {phase === "camera" && liveScanEnabled && !isAnalyzing && !!liveStatus && (
+          <View style={styles.liveStatusWrap} pointerEvents="none">
+            <ActivityIndicator size="small" color={colors.textInverse} />
+            <Text style={styles.liveStatusText}>{liveStatus}</Text>
+          </View>
+        )}
       </View>
 
       <View
@@ -4489,6 +4630,29 @@ export default function ScanScreen() {
       >
         {phase === "camera" && (
           <View style={styles.cameraControlsWrap}>
+            {(Platform.OS as string) !== "web" && (
+              <Pressable
+                onPress={() => {
+                  const next = !liveScanEnabled;
+                  if (!next) { liveActiveRef.current = false; setLiveStatus(""); }
+                  setLiveScanEnabled(next);
+                  if ((Platform.OS as string) !== "web") Haptics.selectionAsync();
+                }}
+                disabled={isAnalyzing}
+                style={({ pressed }) => [
+                  styles.liveToggle,
+                  liveScanEnabled && styles.liveToggleOn,
+                  pressed && { opacity: 0.85 },
+                  isAnalyzing && { opacity: 0.5 },
+                ]}
+                testID="live-scan-toggle"
+              >
+                <View style={[styles.liveDot, liveScanEnabled && styles.liveDotOn]} />
+                <Text style={[styles.liveToggleText, liveScanEnabled && styles.liveToggleTextOn]}>
+                  {liveScanEnabled ? "Live scan ON — point at the Rx" : "Live scan — read automatically"}
+                </Text>
+              </Pressable>
+            )}
             <View style={styles.readyActions}>
               <Pressable
                 onPress={handlePickImage}
@@ -6036,6 +6200,58 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   cameraControlsWrap: {
     alignItems: "center",
     gap: 12,
+  },
+  liveToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    backgroundColor: "rgba(15,23,42,0.55)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.18)",
+  },
+  liveToggleOn: {
+    backgroundColor: "rgba(20,184,166,0.22)",
+    borderColor: colors.cyan,
+  },
+  liveDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.5)",
+  },
+  liveDotOn: {
+    backgroundColor: colors.cyan,
+  },
+  liveToggleText: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: "rgba(255,255,255,0.7)",
+  },
+  liveToggleTextOn: {
+    color: colors.textInverse,
+  },
+  liveStatusWrap: {
+    position: "absolute",
+    bottom: 24,
+    left: 0,
+    right: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+  },
+  liveStatusText: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: colors.textInverse,
+    textShadowColor: "rgba(0,0,0,0.6)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
   },
   captureBtnWrap: {
     alignItems: "center",
