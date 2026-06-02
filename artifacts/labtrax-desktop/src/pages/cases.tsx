@@ -5638,6 +5638,14 @@ function AttachmentRow({
           authToken={getAccessToken()}
           size={44}
         />
+      ) : isImage && href ? (
+        <div className="mt-0.5 h-11 w-11 shrink-0 overflow-hidden rounded bg-secondary">
+          <AuthedImage
+            url={href}
+            alt={attachment.fileName}
+            className="h-full w-full object-cover"
+          />
+        </div>
       ) : (
         <div className="mt-0.5 text-muted-foreground">
           {isScan ? <Box size={14} /> : <Paperclip size={14} />}
