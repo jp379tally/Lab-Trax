@@ -319,6 +319,7 @@ const makeDrawerStyles = (colors: ThemeColors) => StyleSheet.create({
 function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void } = {}) {
   const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus, groupJoinRequests, respondToGroupJoinRequest, customStationLabels, userIsAffiliated, invoices, refreshCases, hardRefresh, clients, addCasePhoto } = useApp();
   const [refreshing, setRefreshing] = useState(false);
+  const [pastDueCollapsed, setPastDueCollapsed] = useState(false);
   const { logout, profilePicUri, setProfilePicUri, currentUser, registeredUsers } = useAuth();
   const { colors: themeColors, isDark: isDarkMode } = useTheme();
   const colors = themeColors;
@@ -879,12 +880,26 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
 
       {overdueCases.length > 0 && (
         <>
-          <View style={styles.sectionHeader}>
-            <Text style={[styles.sectionTitle, { color: themeColors.text }]}>Past Due</Text>
+          <Pressable
+            style={styles.sectionHeader}
+            onPress={() => setPastDueCollapsed((prev) => !prev)}
+            testID="past-due-toggle"
+            accessibilityRole="button"
+            accessibilityState={{ expanded: !pastDueCollapsed }}
+          >
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <Ionicons
+                name={pastDueCollapsed ? "chevron-forward" : "chevron-down"}
+                size={18}
+                color={themeColors.textSecondary}
+              />
+              <Text style={[styles.sectionTitle, { color: themeColors.text }]}>Past Due</Text>
+            </View>
             <View style={[styles.dueTodayBadge, { backgroundColor: colors.error }]}>
               <Text style={styles.dueTodayBadgeText}>{overdueCases.length}</Text>
             </View>
-          </View>
+          </Pressable>
+          {!pastDueCollapsed && (
           <View style={styles.caseList}>
             {overdueCases.map((c) => {
               const stationInfo = getStationInfo(c.status, customStationLabels);
@@ -926,6 +941,7 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
               );
             })}
           </View>
+          )}
         </>
       )}
 
