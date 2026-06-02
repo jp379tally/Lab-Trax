@@ -1,4 +1,4 @@
-import { useEffect, useState, type MouseEventHandler } from "react";
+import { useEffect, useState, type MouseEventHandler, type ReactNode } from "react";
 import { getAccessToken, getApiOrigin } from "@/lib/api";
 
 // True only when `url` is an absolute URL whose origin matches our API origin.
@@ -78,15 +78,19 @@ export function AuthedImage({
   className,
   title,
   onClick,
+  fallback,
 }: {
   url: string;
   alt?: string;
   className?: string;
   title?: string;
   onClick?: MouseEventHandler<HTMLImageElement>;
+  // Rendered when the file can't be loaded (e.g. bytes permanently lost). When
+  // omitted, the component renders nothing on error (legacy behavior).
+  fallback?: ReactNode;
 }) {
   const { src, loading, error } = useAuthedObjectUrl(url);
-  if (error) return null;
+  if (error) return fallback ? <>{fallback}</> : null;
   if (loading || !src)
     return <div className={className} aria-busy={loading ? true : undefined} />;
   return (

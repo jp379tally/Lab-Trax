@@ -18,6 +18,7 @@ import {
   EyeOff,
   FileUp,
   Filter,
+  ImageOff,
   Loader2,
   Lock,
   Paperclip,
@@ -4852,6 +4853,12 @@ export function CaseDrawer({
                                           url={src}
                                           alt={String(metadata.fileName ?? "attachment")}
                                           className="w-20 h-20 object-cover rounded-md border border-border group-hover:border-primary/50 transition-colors"
+                                          fallback={
+                                            <div className="w-20 h-20 flex flex-col items-center justify-center gap-1 rounded-md border border-dashed border-border bg-secondary text-muted-foreground">
+                                              <ImageOff size={16} />
+                                              <span className="text-[9px] leading-tight">Unavailable</span>
+                                            </div>
+                                          }
                                         />
                                       </button>
                                     ) : isVid ? (
@@ -5644,6 +5651,11 @@ function AttachmentRow({
             url={href}
             alt={attachment.fileName}
             className="h-full w-full object-cover"
+            fallback={
+              <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+                <ImageOff size={14} />
+              </div>
+            }
           />
         </div>
       ) : (
