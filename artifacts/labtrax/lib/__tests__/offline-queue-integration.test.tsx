@@ -495,6 +495,164 @@ describe("offline changes survive a full app restart (cold boot)", () => {
     }
   });
 
+  it("does NOT drop a queued photo when the drain runs before cases hydrate", async () => {
+    // Companion to the status regression above. The photo executor
+    // (rawUploadPhotoToCase) carries its full payload — uri, filename, mimetype —
+    // inside the queue item itself and never reads the case cache, so it must be
+    // immune to the cold-boot drain-vs-hydration race that bit the status path.
+    // This locks that guarantee in: even when the mount drain wins the race and
+    // the case cache is still empty, the queued photo is neither dropped nor
+    // wedged — it reaches the server. A future change that made the executor
+    // depend on hydrated case state would fail here.
+
+    // Seed the persisted cache exactly as a real relaunch would: the queued photo
+    // item plus the (not-yet-hydrated) case it targets.
+    await AsyncStorage.setItem(CASES_KEY, JSON.stringify([{ ...baseCanonicalCase }]));
+    await AsyncStorage.setItem(
+      PENDING_UPLOADS_KEY,
+      JSON.stringify([
+        {
+          id: `photo-${baseCanonicalCase.id}-1`,
+          type: "photo",
+          caseId: baseCanonicalCase.id,
+          photoUri: "file:///tmp/queued-photo.jpg",
+          fileName: "queued-photo.jpg",
+          mimeType: "image/jpeg",
+          createdAt: Date.now(),
+        },
+      ]),
+    );
+
+    // Hold the CASES_KEY read until we release it, so loadData() (and thus case
+    // hydration) cannot complete before the mount drain reaches the photo executor.
+    let releaseCases: () => void = () => {};
+    const casesGate = new Promise<void>((resolve) => {
+      releaseCases = resolve;
+    });
+    const getItemMock = AsyncStorage.getItem as unknown as {
+      getMockImplementation: () => (k: string) => Promise<string | null>;
+      mockImplementation: (fn: (k: string) => Promise<string | null>) => void;
+    };
+    const origGetItem = getItemMock.getMockImplementation();
+    getItemMock.mockImplementation(async (k: string) => {
+      if (k === CASES_KEY) await casesGate;
+      return origGetItem(k);
+    });
+
+    try {
+      online = true;
+      ctx = null;
+      const { unmount } = render(
+        React.createElement(AppProvider, null, React.createElement(CaptureContext)),
+      );
+
+      // Let the mount drain run to completion while the case cache is still gated.
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+        await new Promise((r) => setTimeout(r, 0));
+      });
+
+      // The drain ran before hydration, yet the self-contained photo payload was
+      // uploaded and its attachment created — the item was not dropped or stalled
+      // waiting on case state.
+      expect(uploadCaseMediaMock).toHaveBeenCalled();
+      const attachmentWrites = serverCalls.filter(
+        (c) => /\/attachments$/.test(c.path) && c.method === "POST",
+      );
+      expect(attachmentWrites.length).toBeGreaterThan(0);
+
+      await waitFor(async () => {
+        expect(await readQueue()).toHaveLength(0);
+      });
+
+      // Release the gate so the rest of the boot can settle cleanly.
+      releaseCases();
+      await waitFor(() => {
+        expect(ctx?.cases.length).toBeGreaterThan(0);
+      });
+
+      unmount();
+    } finally {
+      getItemMock.mockImplementation(origGetItem);
+    }
+  });
+
+  it("does NOT drop a queued note when the drain runs before cases hydrate", async () => {
+    // Same guarantee as above for the note executor (rawPostNoteToCase): the note
+    // text lives in the queue item, so the drain can push it to the server
+    // regardless of whether the case cache has hydrated yet.
+
+    await AsyncStorage.setItem(CASES_KEY, JSON.stringify([{ ...baseCanonicalCase }]));
+    await AsyncStorage.setItem(
+      PENDING_UPLOADS_KEY,
+      JSON.stringify([
+        {
+          id: `note-${baseCanonicalCase.id}-1`,
+          type: "note",
+          caseId: baseCanonicalCase.id,
+          noteText: "queued before restart",
+          createdAt: Date.now(),
+        },
+      ]),
+    );
+
+    let releaseCases: () => void = () => {};
+    const casesGate = new Promise<void>((resolve) => {
+      releaseCases = resolve;
+    });
+    const getItemMock = AsyncStorage.getItem as unknown as {
+      getMockImplementation: () => (k: string) => Promise<string | null>;
+      mockImplementation: (fn: (k: string) => Promise<string | null>) => void;
+    };
+    const origGetItem = getItemMock.getMockImplementation();
+    getItemMock.mockImplementation(async (k: string) => {
+      if (k === CASES_KEY) await casesGate;
+      return origGetItem(k);
+    });
+
+    try {
+      online = true;
+      ctx = null;
+      const { unmount } = render(
+        React.createElement(AppProvider, null, React.createElement(CaptureContext)),
+      );
+
+      // Let the mount drain run to completion while the case cache is still gated.
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+        await new Promise((r) => setTimeout(r, 0));
+      });
+
+      // The note reached the canonical notes endpoint before hydration and the
+      // item was removed from the queue — not dropped, not stalled.
+      const notePosts = serverCalls.filter(
+        (c) => /\/notes$/.test(c.path) && c.method === "POST",
+      );
+      expect(notePosts.length).toBeGreaterThan(0);
+      const sentNote = notePosts.find((c) => {
+        try {
+          return JSON.parse(c.body ?? "{}").noteText === "queued before restart";
+        } catch {
+          return false;
+        }
+      });
+      expect(sentNote).toBeTruthy();
+
+      await waitFor(async () => {
+        expect(await readQueue()).toHaveLength(0);
+      });
+
+      releaseCases();
+      await waitFor(() => {
+        expect(ctx?.cases.length).toBeGreaterThan(0);
+      });
+
+      unmount();
+    } finally {
+      getItemMock.mockImplementation(origGetItem);
+    }
+  });
+
   it("re-hydrates a queued photo + note and pushes them to the server after relaunch", async () => {
     // ── Session 1: enqueue an offline photo+note, then "close" the app ──
     await AsyncStorage.setItem(CASES_KEY, JSON.stringify([{ ...baseCanonicalCase }]));
