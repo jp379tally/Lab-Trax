@@ -26,7 +26,7 @@ args = "regression-tests"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "Apple Login Sync"
+args = "EAS iOS Build + Submit"
 
 [[workflows.workflow]]
 name = "api-server-tests"
@@ -51,12 +51,12 @@ args = "pnpm --filter @workspace/api-server run test && pnpm --filter @workspace
 isValidation = true
 
 [[workflows.workflow]]
-name = "Apple Login Sync"
+name = "EAS iOS Build + Submit"
 author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "python3 scripts/eas-apple-login-drive.py"
+args = "bash scripts/eas-ios-build.sh"
 
 [workflows.workflow.metadata]
 outputType = "console"
