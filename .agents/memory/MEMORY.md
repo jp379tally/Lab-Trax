@@ -16,4 +16,5 @@
 - [LabTrax deployment target](labtrax-deployment-target.md) — must run as Reserved VM (vm), not autoscale; autoscale scale-to-zero caused overnight outages and skipped cron jobs.
 - [LabTrax design-system adoption](labtrax-design-system.md) — dashboard metric rows use StatTile; hub/menu lists use Card+inline (not the MenuItem component) to stay visually consistent.
 - [Expo drift vs maturity window](expo-drift-maturity-window.md) — newest Expo-expected patches are blocked ~24h by minimumReleaseAge; wait, don't add minimumReleaseAgeExclude.
+- [Expo share-sheet is plugin-gated](expo-share-intent-share-sheet.md) — LabTrax vanishes from the iOS/Android share sheet if the expo-share-intent block is dropped from app.json plugins; native-only, guarded by a firewall test.
 - [Mobile cookie-jar CSRF trap](mobile-cookie-jar-csrf-trap.md) — bearer clients must never get Set-Cookie; RN fetch jar + missing in-memory token → cookie-only POST → CSRF 403 wedges syncs as "lab rejected".
