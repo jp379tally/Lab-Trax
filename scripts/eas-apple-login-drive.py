@@ -47,7 +47,7 @@ logf = open(LOG, "wb", buffering=0)
 pw = env.get("FASTLANE_PASSWORD", "")
 sent_login = False
 sent_pw = False
-sent_method = False
+sent_method = True  # driven manually via /tmp/eas_input after inspecting the live widget
 sent_phone = False
 sent_code = False
 buf = b""
