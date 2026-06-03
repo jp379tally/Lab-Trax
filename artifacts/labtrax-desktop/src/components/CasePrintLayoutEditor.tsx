@@ -1,6 +1,6 @@
-// Advanced case-print-label layout editor.
+// Case-print-label layout editor (drag & resize, per-lab).
 //
-// Modal opened from the basic PrintLayoutEditor's "Advanced layout…" button.
+// Opened from the "Layout" button on the case detail panel.
 // Provides drag/resize boxes (header, case details, RX summary, tooth chart,
 // notes, barcode) plus uploaded extra images (logos, signatures, stamps).
 //

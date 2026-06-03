@@ -80,11 +80,9 @@ import {
 import ScanViewerModal from "@/components/ScanViewerModal";
 import ScanThumbnail from "@/components/ScanThumbnail";
 import type { ScanFormat } from "@workspace/scan-viewer";
-import { PrintLayoutEditor } from "@/components/PrintLayoutEditor";
 import { CasePrintLayoutEditor } from "@/components/CasePrintLayoutEditor";
 import {
   type PrintLayoutConfig,
-  isDefaultLayout,
   loadPrintLayoutConfig,
 } from "@/lib/print-layout";
 import {
@@ -2079,9 +2077,8 @@ export function CaseDrawer({
   >(null);
   const setLightboxUrl = (url: string | null) => setLightbox(url ? { url, kind: "image" } : null);
   const [confirmDeleteCase, setConfirmDeleteCase] = useState(false);
-  const [showPrintLayoutEditor, setShowPrintLayoutEditor] = useState(false);
   const [showCaseAdvancedEditor, setShowCaseAdvancedEditor] = useState(false);
-  const [printLayout, setPrintLayout] = useState<PrintLayoutConfig>(() => loadPrintLayoutConfig());
+  const [printLayout] = useState<PrintLayoutConfig>(() => loadPrintLayoutConfig());
 
   // Per-lab advanced (drag/scale) print template. Null = no custom layout
   // yet — the Print button keeps the existing list-based lab slip.
@@ -3518,14 +3515,14 @@ export function CaseDrawer({
                         Staged
                       </span>
                     )}
-                    {!isDefaultLayout(printLayout) && (
+                    {hasAdvancedTemplate && (
                       <span className="inline-flex items-center gap-1 text-[10px] font-medium text-primary bg-primary/10 px-1.5 py-0.5 rounded">
                         Customized
                       </span>
                     )}
                     <button
                       type="button"
-                      onClick={() => setShowPrintLayoutEditor(true)}
+                      onClick={() => setShowCaseAdvancedEditor(true)}
                       className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs text-muted-foreground hover:text-foreground transition-colors"
                       title="Customize print layout"
                     >
@@ -5010,21 +5007,7 @@ export function CaseDrawer({
         <InvoiceEditor invoice={viewingInvoice} onClose={() => setViewingInvoice(null)} />
       )}
 
-      {/* Print Layout Editor */}
-      {showPrintLayoutEditor && (
-        <PrintLayoutEditor
-          onClose={() => setShowPrintLayoutEditor(false)}
-          config={printLayout}
-          onChange={(next) => setPrintLayout(next)}
-          hasCustomAdvancedTemplate={hasAdvancedTemplate}
-          onOpenAdvanced={() => {
-            setShowPrintLayoutEditor(false);
-            setShowCaseAdvancedEditor(true);
-          }}
-        />
-      )}
-
-      {/* Advanced (drag & resize) per-lab Print Layout Editor */}
+      {/* Print Layout Editor (drag & resize, per-lab) */}
       {showCaseAdvancedEditor && (
         <CasePrintLayoutEditor
           onClose={() => setShowCaseAdvancedEditor(false)}
