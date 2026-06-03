@@ -895,8 +895,8 @@ export default function CasesPage() {
   });
 
   const bulkStatusMutation = useMutation({
-    mutationFn: (body: { caseIds: string[]; status: string }) =>
-      apiFetch<{ updatedCount: number }>("/cases/bulk-status", {
+    mutationFn: (body: { caseIds: string[]; status: string; allowPartial?: boolean }) =>
+      apiFetch<{ updatedCount: number; missingIds?: string[] }>("/cases/bulk-status", {
         method: "POST",
         body: JSON.stringify(body),
       }),
@@ -906,12 +906,25 @@ export default function CasesPage() {
       setShowBulkStatusModal(false);
       setBulkStatusValue("");
       const label = STATUS_FILTERS.find((s) => s.value === bulkStatusValue)?.label ?? bulkStatusValue;
-      setBulkToast(`${result.updatedCount} case${result.updatedCount !== 1 ? "s" : ""} marked as ${label}.`);
+      const skipped = result.missingIds?.length ?? 0;
+      const base = `${result.updatedCount} case${result.updatedCount !== 1 ? "s" : ""} marked as ${label}`;
+      setBulkToast(
+        skipped > 0
+          ? `${base} (${skipped} not found, skipped).`
+          : `${base}.`,
+      );
     },
     onError: (e: Error) => {
       setBulkToastError(e.message);
     },
   });
+
+  // True when the last attempt failed because some selected cases no longer
+  // exist — lets us offer "Apply to found cases only".
+  const bulkStatusNotFound =
+    bulkStatusMutation.isError &&
+    bulkStatusMutation.error instanceof Error &&
+    /not found/i.test(bulkStatusMutation.error.message);
 
   const [bulkToast, setBulkToast] = useState<string | null>(null);
   const [bulkToastError, setBulkToastError] = useState<string | null>(null);
@@ -1670,11 +1683,31 @@ export default function CasesPage() {
                 </select>
               </div>
               {bulkStatusMutation.isError && (
-                <p className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md">
-                  {bulkStatusMutation.error instanceof Error
-                    ? bulkStatusMutation.error.message
-                    : "An error occurred."}
-                </p>
+                <div className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md space-y-2">
+                  <p>
+                    {bulkStatusMutation.error instanceof Error
+                      ? bulkStatusMutation.error.message
+                      : "An error occurred."}
+                  </p>
+                  {bulkStatusNotFound && (
+                    <button
+                      type="button"
+                      disabled={bulkStatusMutation.isPending}
+                      onClick={() => {
+                        if (!bulkStatusValue) return;
+                        bulkStatusMutation.mutate({
+                          caseIds: Array.from(selectedIds),
+                          status: bulkStatusValue,
+                          allowPartial: true,
+                        });
+                      }}
+                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-destructive text-destructive-foreground font-medium hover:bg-destructive/90 disabled:opacity-60"
+                    >
+                      {bulkStatusMutation.isPending && <Loader2 size={12} className="animate-spin" />}
+                      Apply to found cases only
+                    </button>
+                  )}
+                </div>
               )}
             </div>
             <div className="flex gap-3 px-6 pb-5">

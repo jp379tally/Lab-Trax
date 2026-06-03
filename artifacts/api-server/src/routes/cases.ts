@@ -1653,6 +1653,9 @@ const VALID_BULK_STATUSES = [
 const bulkStatusSchema = z.object({
   caseIds: z.array(z.string().min(1)).min(1).max(500),
   status: z.enum(VALID_BULK_STATUSES),
+  // When true, silently skip case IDs that can't be found instead of
+  // failing the whole request, and report them back as `missingIds`.
+  allowPartial: z.boolean().optional().default(false),
 });
 
 router.post(
@@ -1663,20 +1666,20 @@ router.post(
 
     const uniqueCaseIds = Array.from(new Set(input.caseIds));
 
-    const firstCase = await db.query.cases.findFirst({
-      where: and(eq(cases.id, uniqueCaseIds[0]!), notDeleted(cases)),
-    });
-    if (!firstCase) {
-      throw new HttpError(404, "No matching cases found.");
-    }
-    const labOrganizationId = firstCase.labOrganizationId;
-
-    await requireMembership(userId, labOrganizationId);
-
     const casesToUpdate = await db
       .select({ id: cases.id, labOrganizationId: cases.labOrganizationId, caseNumber: cases.caseNumber })
       .from(cases)
       .where(and(inArray(cases.id, uniqueCaseIds), notDeleted(cases)));
+
+    if (casesToUpdate.length === 0) {
+      throw new HttpError(404, "No matching cases found.");
+    }
+
+    // Anchor authorization on the first FOUND case so a missing leading ID
+    // doesn't abort a partial application.
+    const labOrganizationId = casesToUpdate[0]!.labOrganizationId;
+
+    await requireMembership(userId, labOrganizationId);
 
     const unauthorizedIds = casesToUpdate
       .filter((c) => c.labOrganizationId !== labOrganizationId)
@@ -1685,16 +1688,10 @@ router.post(
       throw new HttpError(403, "Some cases do not belong to your lab.");
     }
 
-    if (casesToUpdate.length !== uniqueCaseIds.length) {
-      const foundIds = new Set(casesToUpdate.map((c) => c.id));
-      const missing = uniqueCaseIds.filter((id) => !foundIds.has(id));
-      if (missing.length > 0) {
-        throw new HttpError(404, `Cases not found: ${missing.slice(0, 5).join(", ")}`);
-      }
-    }
-
-    if (casesToUpdate.length === 0) {
-      return ok(res, { updatedCount: 0 });
+    const foundIds = new Set(casesToUpdate.map((c) => c.id));
+    const missing = uniqueCaseIds.filter((id) => !foundIds.has(id));
+    if (missing.length > 0 && !input.allowPartial) {
+      throw new HttpError(404, `Cases not found: ${missing.slice(0, 5).join(", ")}`);
     }
 
     const ids = casesToUpdate.map((c) => c.id);
@@ -1715,10 +1712,11 @@ router.post(
         caseNumbers: casesToUpdate.map((c) => c.caseNumber),
         status: input.status,
         count: ids.length,
+        skippedCount: missing.length,
       },
     });
 
-    return ok(res, { updatedCount: ids.length });
+    return ok(res, { updatedCount: ids.length, missingIds: missing });
   })
 );
 
