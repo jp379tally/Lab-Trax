@@ -43,11 +43,12 @@ if pid == 0:
                         "--profile", "production"], env)
     os._exit(127)
 
-logf = open(LOG, "ab", buffering=0)
+logf = open(LOG, "wb", buffering=0)
 pw = env.get("FASTLANE_PASSWORD", "")
 sent_login = False
 sent_pw = False
 sent_method = False
+sent_phone = False
 sent_code = False
 buf = b""
 
@@ -104,10 +105,20 @@ while True:
             sent_pw = True
             logf.write(b"\n<<driver: sent password>>\n")
         elif (not sent_method) and "how do you want to validate your account" in tail:
-            time.sleep(0.5)
+            time.sleep(0.6)
+            os.write(master, b"\x1b[B")  # arrow down -> select "sms"
+            time.sleep(0.7)
             os.write(master, b"\r")
             sent_method = True
-            logf.write(b"\n<<driver: method=device>>\n")
+            logf.write(b"\n<<driver: method=sms>>\n")
+        elif (not sent_phone) and ("trusted phone number" in tail or
+                                   "select a phone" in tail or
+                                   "phone number to use" in tail or
+                                   "which phone number" in tail):
+            time.sleep(0.5)
+            os.write(master, b"\r")
+            sent_phone = True
+            logf.write(b"\n<<driver: phone select default>>\n")
         elif (not sent_code) and "enter the" in tail and "code" in tail:
             logf.write(b"\n<<driver: awaiting 2FA code at /tmp/eas_2fa_code>>\n")
             code = None
