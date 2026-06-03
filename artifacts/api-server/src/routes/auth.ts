@@ -521,9 +521,15 @@ router.post(
 
     const [hydratedUser] = await hydrateUsersWithActiveMemberships([user]);
 
-    setAuthCookies(req, res, accessToken, rawRefreshToken);
-
     const useCookies = input.clientType === "web";
+    // Only browser (cookie) clients should receive Set-Cookie. Mobile and
+    // desktop are bearer-token clients; issuing cookies to them causes React
+    // Native's fetch cookie jar to silently attach an auth cookie on later
+    // POSTs, which trips the CSRF guard (403) whenever the in-memory bearer
+    // token is momentarily absent (e.g. the offline-queue drain at launch).
+    if (useCookies) {
+      setAuthCookies(req, res, accessToken, rawRefreshToken);
+    }
     return res.json({
       success: true,
       ...(useCookies ? {} : { accessToken, refreshToken: rawRefreshToken }),
@@ -664,9 +670,15 @@ router.post(
 
     const [hydratedUser] = await hydrateUsersWithActiveMemberships([user]);
 
-    setAuthCookies(req, res, accessToken, rawRefreshToken);
-
     const useCookies = input.clientType === "web";
+    // Only browser (cookie) clients should receive Set-Cookie. Mobile and
+    // desktop are bearer-token clients; issuing cookies to them causes React
+    // Native's fetch cookie jar to silently attach an auth cookie on later
+    // POSTs, which trips the CSRF guard (403) whenever the in-memory bearer
+    // token is momentarily absent (e.g. the offline-queue drain at launch).
+    if (useCookies) {
+      setAuthCookies(req, res, accessToken, rawRefreshToken);
+    }
     return res.json({
       success: true,
       ...(useCookies ? {} : { accessToken, refreshToken: rawRefreshToken }),
@@ -785,10 +797,13 @@ router.post(
       .where(eq(userSessions.id, payload.sid));
 
     const accessToken = signAccessToken(payload.sub, payload.sid);
-    setAuthCookies(req, res, accessToken, newRefreshToken);
     if (fromBody) {
+      // Bearer client (mobile/desktop) supplied the refresh token in the
+      // body. Echo the rotated tokens in JSON and do NOT issue cookies — see
+      // the note in the login handler about the native cookie-jar CSRF trap.
       return ok(res, { accessToken, refreshToken: newRefreshToken });
     }
+    setAuthCookies(req, res, accessToken, newRefreshToken);
     return ok(res, { refreshed: true });
   })
 );

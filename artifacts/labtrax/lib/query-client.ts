@@ -238,6 +238,30 @@ async function resilientFetch(
   path: string,
   options?: RequestInit,
 ): Promise<Response> {
+  // Native clients authenticate with a bearer token. If the in-memory token
+  // isn't populated yet — e.g. the offline-queue drain fires at launch before
+  // loadTokens() has run, or after a transient clear — hydrate it from secure
+  // storage (and refresh if needed) BEFORE sending. Otherwise the request goes
+  // out with no Authorization header but with the auth cookie that React
+  // Native's fetch jar auto-attaches, which the server's CSRF guard rejects
+  // with a 403 on every state-changing request (POST/PUT/PATCH/DELETE) —
+  // silently wedging case-status/photo/note syncs as "lab rejected".
+  if (Platform.OS !== "web" && !_accessToken) {
+    await loadTokens();
+    if (!_accessToken && _refreshToken) {
+      await refreshAccessToken();
+    }
+    // Still no bearer after hydrating + refreshing: the user is effectively
+    // logged out (token store empty/corrupt) but a stale auth cookie may
+    // linger in React Native's fetch jar. Sending now would go out cookie-only
+    // and earn a CSRF 403, which the offline queue records as a PERMANENT
+    // "lab rejected this change". Fail fast instead — a thrown fetch is treated
+    // as a transient/retryable error, so the change stays recoverable until the
+    // user re-authenticates.
+    if (!_accessToken) {
+      throw new Error("Not authenticated: no bearer token available.");
+    }
+  }
   const primaryUrl = getApiUrl();
   const primaryFullUrl = new URL(path, primaryUrl).toString();
   const authedOptions = injectAuthHeaders(options) as any;
