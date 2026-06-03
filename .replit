@@ -28,10 +28,6 @@ args = "EAS iOS Build + Submit"
 task = "workflow.run"
 args = "regression-tests"
 
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "Apple Login Sync"
-
 [[workflows.workflow]]
 name = "api-server-tests"
 author = "agent"
@@ -64,17 +60,6 @@ args = "pnpm --filter @workspace/api-server run test && pnpm --filter @workspace
 
 [workflows.workflow.metadata]
 isValidation = true
-
-[[workflows.workflow]]
-name = "Apple Login Sync"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "python3 scripts/eas-apple-login-drive.py"
-
-[workflows.workflow.metadata]
-outputType = "console"
 
 [agent]
 stack = "PNPM_WORKSPACE"
