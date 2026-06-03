@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
-"""One-shot driver: run `eas build` under a PTY using Apple ID (cookie) auth so
-EAS can create/link the App Group capability. Auto-sends the Apple ID password
-from the APPLE_ID_PASSWORD secret; relays anything written to /tmp/eas_in
-(e.g. the 2FA code) into the child. Logs everything to /tmp/eas_interactive.log.
+"""Run `eas build` under a PTY using Apple ID (cookie) auth so EAS can
+create/link the App Group capability on the App IDs.
+
+Designed to run as a persistent Replit *workflow* (survives across agent turns).
+Auto-handles: Apple-login confirm (y), Apple ID password (from APPLE_ID_PASSWORD),
+and the 2FA delivery-method select (defaults to "device"). The only human step is
+the 6-digit code: write it to /tmp/eas_2fa_code (e.g. `echo 123456 > /tmp/eas_2fa_code`)
+and the driver feeds it in. An escape hatch for any unexpected prompt: write raw
+text (with newline) to /tmp/eas_input. All child output is mirrored to
+/tmp/eas_interactive.log.
 """
 import os
 import pty
@@ -10,13 +16,15 @@ import select
 import time
 
 LOG = "/tmp/eas_interactive.log"
-INFIFO = "/tmp/eas_in"
+CODEFILE = "/tmp/eas_2fa_code"
+MANUAL = "/tmp/eas_input"
 WORKDIR = "/home/runner/workspace/artifacts/labtrax"
 
-try:
-    os.mkfifo(INFIFO)
-except FileExistsError:
-    pass
+for f in (CODEFILE, MANUAL):
+    try:
+        os.remove(f)
+    except FileNotFoundError:
+        pass
 
 env = os.environ.copy()
 env["EAS_NO_VCS"] = "1"
@@ -36,19 +44,43 @@ if pid == 0:
     os._exit(127)
 
 logf = open(LOG, "ab", buffering=0)
-infd = os.open(INFIFO, os.O_RDONLY | os.O_NONBLOCK)
-inwr = os.open(INFIFO, os.O_WRONLY | os.O_NONBLOCK)  # keep writer end open
-
 pw = env.get("FASTLANE_PASSWORD", "")
+sent_login = False
 sent_pw = False
-sent_login_yes = False
+sent_method = False
+sent_code = False
 buf = b""
 
-while True:
+
+def drain_once():
     try:
-        r, _, _ = select.select([master, infd], [], [], 1.0)
+        rr, _, _ = select.select([master], [], [], 0.0)
+        if master in rr:
+            d = os.read(master, 4096)
+            if d:
+                logf.write(d)
+    except OSError:
+        pass
+
+
+while True:
+    # manual escape hatch for any unexpected prompt
+    if os.path.exists(MANUAL):
+        try:
+            with open(MANUAL) as f:
+                m = f.read()
+            os.remove(MANUAL)
+            if m:
+                os.write(master, m.encode())
+                logf.write(b"\n<<driver: manual input>>\n")
+        except OSError:
+            pass
+
+    try:
+        r, _, _ = select.select([master], [], [], 1.0)
     except OSError:
         break
+
     if master in r:
         try:
             data = os.read(master, 4096)
@@ -57,37 +89,59 @@ while True:
         if not data:
             break
         logf.write(data)
-        buf += data
-        tail = buf[-400:].decode("utf-8", "ignore").lower()
-        if (not sent_login_yes) and "log in to your apple account" in tail:
+        buf = (buf + data)[-4000:]
+        tail = buf[-600:].decode("utf-8", "ignore").lower()
+
+        if (not sent_login) and "log in to your apple account" in tail:
             time.sleep(0.3)
             os.write(master, b"y\n")
-            sent_login_yes = True
-            logf.write(b"\n<<driver: answered apple-login y>>\n")
-        if (not sent_pw) and pw and "password" in tail and (
-            "apple" in tail or "enter your" in tail or "password:" in tail
-        ):
+            sent_login = True
+            logf.write(b"\n<<driver: login y>>\n")
+        elif (not sent_pw) and pw and ("password (for" in tail or
+                                       "enter your apple" in tail):
             time.sleep(0.3)
             os.write(master, (pw + "\n").encode())
             sent_pw = True
             logf.write(b"\n<<driver: sent password>>\n")
-    if infd in r:
-        try:
-            d = os.read(infd, 4096)
-            if d:
-                os.write(master, d)
-                logf.write(b"\n<<driver: forwarded input>>\n")
-        except OSError:
-            pass
+        elif (not sent_method) and "how do you want to validate your account" in tail:
+            time.sleep(0.5)
+            os.write(master, b"\r")
+            sent_method = True
+            logf.write(b"\n<<driver: method=device>>\n")
+        elif (not sent_code) and "enter the" in tail and "code" in tail:
+            logf.write(b"\n<<driver: awaiting 2FA code at /tmp/eas_2fa_code>>\n")
+            code = None
+            for _ in range(900):  # up to ~15 min
+                if os.path.exists(CODEFILE):
+                    try:
+                        with open(CODEFILE) as f:
+                            code = f.read().strip()
+                    except OSError:
+                        code = None
+                    try:
+                        os.remove(CODEFILE)
+                    except OSError:
+                        pass
+                    if code:
+                        break
+                drain_once()
+                time.sleep(1.0)
+            if code:
+                os.write(master, (code + "\n").encode())
+                sent_code = True
+                logf.write(b"\n<<driver: sent 2FA code>>\n")
+            else:
+                logf.write(b"\n<<driver: TIMEOUT waiting for 2FA code>>\n")
+
     try:
         wpid, _ = os.waitpid(pid, os.WNOHANG)
         if wpid == pid:
             try:
                 while True:
-                    data = os.read(master, 4096)
-                    if not data:
+                    d = os.read(master, 4096)
+                    if not d:
                         break
-                    logf.write(data)
+                    logf.write(d)
             except OSError:
                 pass
             break
