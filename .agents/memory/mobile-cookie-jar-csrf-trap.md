@@ -37,6 +37,21 @@ without forcing a re-login.
 wrapper, preserve "bearer clients never receive cookies" and "never send a native
 authed request without first ensuring a bearer is attached."
 
+**Trap: the no-bearer guard must exempt PUBLIC pre-auth endpoints.** The native
+guard that throws `"Not authenticated: no bearer token available."` when no
+access token is present will also block the very endpoints used to *obtain* a
+token (`/api/auth/login`, `/api/auth/register`, `/api/auth/2fa/challenge`) —
+they are called before any token exists. Symptom: a red "Connection error: Not
+authenticated: no bearer token available.. Server: …" banner on the login
+screen, surfaced because auth-context wraps the thrown error. Fix: keep an
+exact-match allowlist of public paths (`lib/unauthenticated-paths.ts`) that
+bypass the guard; never use prefix/substring matching (an authed path must never
+be mis-classified as public). The exemption is safe for these endpoints because
+they're unauthenticated server-side and carry no cookie on a clean install.
+**Why:** the guard and the public-auth surface live in different files, so adding
+or tightening one silently breaks the other; a regression test pins the
+allowlist in both directions.
+
 **Rescuing already-installed apps (no app-store update):** the server cookie-gate
 and the client bearer-hydrate fix only help *new* logins / *new* builds. An app
 already on a user's phone keeps a stale cookie in its RN fetch jar and can't be

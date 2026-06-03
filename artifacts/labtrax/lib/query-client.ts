@@ -3,6 +3,7 @@ import { QueryClient, QueryFunction } from "@tanstack/react-query";
 import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
+import { isUnauthenticatedPath } from "./unauthenticated-paths";
 
 let cachedBaseUrl: string | null = null;
 
@@ -246,7 +247,7 @@ async function resilientFetch(
   // Native's fetch jar auto-attaches, which the server's CSRF guard rejects
   // with a 403 on every state-changing request (POST/PUT/PATCH/DELETE) —
   // silently wedging case-status/photo/note syncs as "lab rejected".
-  if (Platform.OS !== "web" && !_accessToken) {
+  if (Platform.OS !== "web" && !_accessToken && !isUnauthenticatedPath(path)) {
     await loadTokens();
     if (!_accessToken && _refreshToken) {
       await refreshAccessToken();
