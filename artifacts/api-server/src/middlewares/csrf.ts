@@ -63,14 +63,42 @@ export function requireCsrf(req: Request, _res: Response, next: NextFunction) {
 
   const cookieToken = cookies[CSRF_COOKIE_NAME];
   const headerValue = req.get(CSRF_HEADER_NAME);
-  if (
-    !cookieToken ||
-    typeof headerValue !== "string" ||
-    !headerValue ||
-    !timingSafeEqualStrings(cookieToken, headerValue)
-  ) {
-    return next(new HttpError(403, "Invalid or missing CSRF token."));
+  const hasValidCsrfToken =
+    !!cookieToken &&
+    typeof headerValue === "string" &&
+    !!headerValue &&
+    timingSafeEqualStrings(cookieToken, headerValue);
+  if (hasValidCsrfToken) {
+    // Browser (web) client presented a valid double-submit token.
+    return next();
   }
 
-  return next();
+  // No valid CSRF token. A cross-site request forged by a logged-in user's
+  // browser carries browser-set headers it cannot suppress: `Origin` and/or
+  // `Referer` on state-changing fetch/XHR/form POSTs, plus a Fetch-Metadata
+  // `Sec-Fetch-Site` header on every request in modern browsers. A
+  // cookie-authenticated unsafe request that carries NONE of these is not a
+  // browser request: it's a native client (React Native's fetch sets no
+  // Origin/Referer/Sec-Fetch-Site), curl, or server-to-server, and therefore
+  // cannot be a browser CSRF vector. Allow it. (Auth cookies are also
+  // SameSite=Lax+Secure, which already blocks most cross-site attachment on
+  // unsafe methods — this is defense in depth, not the only control.)
+  //
+  // This is the lever that lets an already-installed mobile app recover WITHOUT
+  // an app-store update: its fetch cookie jar may still hold a stale auth
+  // cookie while momentarily lacking an in-memory bearer to attach, producing a
+  // cookie-only POST that previously 403'd and wedged the offline queue as
+  // "the lab rejected this change". The legitimate web client always sends a
+  // valid CSRF token (handled above) and any browser request carrying these
+  // headers without a token is still rejected below. Treat this branch as a
+  // compatibility bridge for the legacy mobile population.
+  const hasBrowserSignals =
+    !!req.get("origin") ||
+    !!req.get("referer") ||
+    !!req.get("sec-fetch-site");
+  if (!hasBrowserSignals) {
+    return next();
+  }
+
+  return next(new HttpError(403, "Invalid or missing CSRF token."));
 }

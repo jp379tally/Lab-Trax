@@ -36,3 +36,16 @@ without forcing a re-login.
 **How to apply:** any time you touch auth cookie issuance or the native fetch
 wrapper, preserve "bearer clients never receive cookies" and "never send a native
 authed request without first ensuring a bearer is attached."
+
+**Rescuing already-installed apps (no app-store update):** the server cookie-gate
+and the client bearer-hydrate fix only help *new* logins / *new* builds. An app
+already on a user's phone keeps a stale cookie in its RN fetch jar and can't be
+changed without a store update. The server-side lever that heals it: in
+`requireCsrf`, when a cookie-authed unsafe request has no valid double-submit
+token, allow it if it carries **neither `Origin` nor `Referer`** (native/curl/
+server-to-server) and only 403 when a browser origin IS present. A browser-forged
+cross-site request always carries Origin (browser-set, unsuppressable), so this
+keeps web CSRF protection intact while unblocking native cookie-only POSTs. The
+request still falls through to `requireAuth` (JWT/session validated), so authz is
+unchanged. **Deploy note:** mobile points at prod — the fix only takes effect
+after the API server is republished; stuck queue items then clear via "Retry all".
