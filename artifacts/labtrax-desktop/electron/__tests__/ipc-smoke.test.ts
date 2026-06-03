@@ -51,6 +51,7 @@ const EXPECTED_CHANNELS = [
   "backup:save-to-folder",
   "dialog:show-folder",
   "dialog:showOpenDialog",
+  "dialog:read-file",
   "shell:open-external",
 ];
 

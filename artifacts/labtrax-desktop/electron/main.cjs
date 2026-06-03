@@ -429,6 +429,27 @@ ipcMain.handle("dialog:showOpenDialog", async (_event, opts) => {
   return result.canceled ? null : result.filePaths;
 });
 
+// Read a file from disk by absolute path. The renderer cannot reliably read
+// local files itself (fetch("file://…") is blocked under the renderer's
+// security policy), so it delegates here after picking a path.
+ipcMain.handle("dialog:read-file", async (_event, filePath) => {
+  try {
+    if (typeof filePath !== "string" || filePath.length === 0) {
+      return { ok: false, error: "No file path provided." };
+    }
+    const data = fs.readFileSync(filePath);
+    return {
+      ok: true,
+      name: path.basename(filePath),
+      // Return a plain ArrayBuffer so structured clone hands the renderer a
+      // Uint8Array-friendly payload.
+      data: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
+    };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+});
+
 ipcMain.handle("shell:open-external", async (_event, url) => {
   if (typeof url !== "string") return false;
   try {
