@@ -31,7 +31,8 @@ export function resolveItemPrice(
   material: string,
   caseType: string | undefined,
   client: Client | undefined,
-  pricingTiers: PricingTier[]
+  pricingTiers: PricingTier[],
+  customMaterials?: Record<string, number>
 ): number {
   const key = materialToPriceKey(material, caseType);
   if (key && client?.customPricing && client.customPricing[key] !== undefined && client.customPricing[key] > 0) {
@@ -46,6 +47,11 @@ export function resolveItemPrice(
       return tier.prices[key];
     }
   }
+  // User-defined billable items extend the default catalog. They have no
+  // pricing-key/tier mapping, so their saved price is the source of truth.
+  if (customMaterials && customMaterials[material] !== undefined) {
+    return customMaterials[material];
+  }
   return MATERIAL_PRICES[material] ?? 250;
 }
 
@@ -54,8 +60,9 @@ export function resolvePriceForCase(
   caseType: string | undefined,
   doctorName: string,
   clients: Client[],
-  pricingTiers: PricingTier[]
+  pricingTiers: PricingTier[],
+  customMaterials?: Record<string, number>
 ): number {
   const client = findClientByDoctor(doctorName, clients);
-  return resolveItemPrice(material, caseType, client, pricingTiers);
+  return resolveItemPrice(material, caseType, client, pricingTiers, customMaterials);
 }

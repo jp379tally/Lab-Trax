@@ -206,7 +206,7 @@ function QrCard({ caseQrUrl, caseNumber }: { caseQrUrl: string; caseNumber: stri
 
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addCasePhotosWithNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, addInvoice, updateCase, clients, pricingTiers, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate, assignBarcodeToCase, findCaseByBarcode, customStationLabels, addNotification, hardRefresh, hydrateInvoiceFromServer, allLabOrganizationIds, invoiceTemplate, fetchInvoiceTemplate } = useApp();
+  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addCasePhotosWithNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, addInvoice, updateCase, clients, pricingTiers, customMaterials, addCustomMaterial, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate, assignBarcodeToCase, findCaseByBarcode, customStationLabels, addNotification, hardRefresh, hydrateInvoiceFromServer, allLabOrganizationIds, invoiceTemplate, fetchInvoiceTemplate } = useApp();
   const { currentUser, userType, registeredUsers } = useAuth();
   const currentRegisteredUser = registeredUsers.find(
     (user) => user.username?.toLowerCase() === (currentUser || "").toLowerCase()
@@ -310,6 +310,7 @@ export default function CaseDetailScreen() {
   const [itemSelectedTeeth, setItemSelectedTeeth] = useState<number[]>([]);
   const [itemToothTypes, setItemToothTypes] = useState<Record<number, ToothType>>({});
   const [itemMaterial, setItemMaterial] = useState("Zirconia");
+  const [pendingCustomItem, setPendingCustomItem] = useState<{ name: string; price: number } | null>(null);
   const [removableSubtype, setRemovableSubtype] = useState("");
   const [removableMaterial, setRemovableMaterial] = useState("");
   const [gingivaShade, setGingivaShade] = useState("");
@@ -1184,10 +1185,19 @@ export default function CaseDetailScreen() {
     [itemSelectedTeeth, itemToothTypes],
   );
 
+  // Saved custom billable items plus the in-progress (not-yet-saved) one, keyed
+  // by name → price, so price resolution honors user-defined items.
+  const effectiveMaterialPrices = React.useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const m of customMaterials) map[m.name] = m.price;
+    if (pendingCustomItem) map[pendingCustomItem.name] = pendingCustomItem.price;
+    return map;
+  }, [customMaterials, pendingCustomItem]);
+
   const itemCalculatedPrice = React.useMemo(() => {
-    const unitPrice = resolvePriceForCase(itemMaterial, itemCaseType, caseItem?.doctorName || "", clients, pricingTiers);
+    const unitPrice = resolvePriceForCase(itemMaterial, itemCaseType, caseItem?.doctorName || "", clients, pricingTiers, effectiveMaterialPrices);
     return unitPrice * Math.max(itemBillableCount, 1);
-  }, [itemMaterial, itemCaseType, itemBillableCount, caseItem?.doctorName, clients, pricingTiers]);
+  }, [itemMaterial, itemCaseType, itemBillableCount, caseItem?.doctorName, clients, pricingTiers, effectiveMaterialPrices]);
 
   const itemToothDisplay = React.useMemo(
     () => formatToothDisplay(itemSelectedTeeth, itemToothTypes),
@@ -1200,6 +1210,7 @@ export default function CaseDetailScreen() {
     setItemSelectedTeeth([]);
     setItemToothTypes({});
     setItemMaterial("Zirconia");
+    setPendingCustomItem(null);
     setRemovableSubtype("");
     setRemovableMaterial("");
     setGingivaShade("");
@@ -1250,11 +1261,11 @@ export default function CaseDetailScreen() {
       extras = { applianceSubType: applianceSubtype, nightGuardType: nightGuardType || undefined };
     }
 
-    addCaseItem(caseItem!.id, itemCaseType, itemSelectedTeeth, itemToothTypes, mat, extras);
+    addCaseItem(caseItem!.id, itemCaseType, itemSelectedTeeth, itemToothTypes, mat, extras, effectiveMaterialPrices);
 
     const linkedInvoice = caseItem!.invoiceId ? invoices.find((inv) => inv.id === caseItem!.invoiceId) : undefined;
     if (linkedInvoice) {
-      const unitPrice = resolvePriceForCase(mat, itemCaseType, caseItem?.doctorName || "", clients, pricingTiers);
+      const unitPrice = resolvePriceForCase(mat, itemCaseType, caseItem?.doctorName || "", clients, pricingTiers, effectiveMaterialPrices);
       const toothCount = Math.max(itemSelectedTeeth.length, 1);
       const newLineItem = {
         qty: toothCount,
@@ -1272,6 +1283,25 @@ export default function CaseDetailScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     }
     setShowAddItemModal(false);
+
+    // If the user added a brand-new custom item to this case, offer to save it
+    // to the lab's billable items list for reuse on future cases.
+    const pc = pendingCustomItem;
+    if (
+      pc &&
+      mat === pc.name &&
+      !customMaterials.some((m) => m.name.trim().toLowerCase() === pc.name.trim().toLowerCase())
+    ) {
+      Alert.alert(
+        "Save to Billable Items?",
+        `Add "${pc.name}" ($${pc.price}) to your billable items list so you can reuse it on future cases?`,
+        [
+          { text: "Not Now", style: "cancel" },
+          { text: "Add Permanently", onPress: () => addCustomMaterial(pc.name, pc.price) },
+        ],
+      );
+    }
+    setPendingCustomItem(null);
   }
 
   function handleAttachFile() {
@@ -4249,6 +4279,12 @@ export default function CaseDetailScreen() {
         doctorName={caseItem?.doctorName || ""}
         clients={clients}
         pricingTiers={pricingTiers}
+        customMaterialNames={customMaterials.map((m) => m.name)}
+        customMaterialPrices={effectiveMaterialPrices}
+        onCreateCustomItem={(name, price) => {
+          setPendingCustomItem({ name, price });
+          setItemMaterial(name);
+        }}
         addItemStep={addItemStep}
         setAddItemStep={setAddItemStep}
         itemCaseType={itemCaseType}

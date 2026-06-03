@@ -40,6 +40,9 @@ export type AddItemModalProps = {
   doctorName: string;
   clients: Client[];
   pricingTiers: PricingTier[];
+  customMaterialNames: string[];
+  customMaterialPrices: Record<string, number>;
+  onCreateCustomItem: (name: string, price: number) => void;
 
   addItemStep: AddItemStep;
   setAddItemStep: React.Dispatch<React.SetStateAction<AddItemStep>>;
@@ -109,6 +112,9 @@ export function AddItemModal(props: AddItemModalProps) {
     doctorName,
     clients,
     pricingTiers,
+    customMaterialNames,
+    customMaterialPrices,
+    onCreateCustomItem,
     addItemStep,
     setAddItemStep,
     itemCaseType,
@@ -151,6 +157,45 @@ export function AddItemModal(props: AddItemModalProps) {
   } = props;
 
   const { colors } = useTheme();
+
+  const [showCustomItemForm, setShowCustomItemForm] = React.useState(false);
+  const [customItemName, setCustomItemName] = React.useState("");
+  const [customItemPrice, setCustomItemPrice] = React.useState("");
+
+  // Reset the inline custom-item form whenever the modal closes/reopens.
+  React.useEffect(() => {
+    if (!visible) {
+      setShowCustomItemForm(false);
+      setCustomItemName("");
+      setCustomItemPrice("");
+    }
+  }, [visible]);
+
+  // Base catalog plus saved custom items, plus the currently-selected item if it
+  // isn't already present (e.g. a just-created custom item) so it renders selected.
+  const baseMaterials = ["Zirconia", "E.max", "PFM", "Gold", "Semi Precious", "Full Cast", "Diagnostic Wax Up", "Other"];
+  const materialChips = React.useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const m of [...baseMaterials, ...customMaterialNames, itemMaterial]) {
+      if (!m) continue;
+      const key = m.trim().toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(m);
+    }
+    return out;
+  }, [customMaterialNames, itemMaterial]);
+
+  function submitCustomItem() {
+    const name = customItemName.trim();
+    const price = parseFloat(customItemPrice);
+    if (!name || !Number.isFinite(price) || price < 0) return;
+    onCreateCustomItem(name, price);
+    setShowCustomItemForm(false);
+    setCustomItemName("");
+    setCustomItemPrice("");
+  }
 
   return (
     <Modal
@@ -411,7 +456,7 @@ export function AddItemModal(props: AddItemModalProps) {
               {(itemCaseType === "Restorative" || itemCaseType === "Temporary") && itemSelectedTeeth.length > 0 && showPrice && (
                 <View style={styles.aiPricingRow}>
                   <Text style={styles.aiPricingLabel}>
-                    {itemBillableCount} billable {itemBillableCount === 1 ? "tooth" : "teeth"} x ${resolvePriceForCase(itemMaterial, itemCaseType, doctorName, clients, pricingTiers)}/{itemMaterial}
+                    {itemBillableCount} billable {itemBillableCount === 1 ? "tooth" : "teeth"} x ${resolvePriceForCase(itemMaterial, itemCaseType, doctorName, clients, pricingTiers, customMaterialPrices)}/{itemMaterial}
                   </Text>
                   <Text style={styles.aiPricingTotal}>${itemCalculatedPrice.toLocaleString()}</Text>
                 </View>
@@ -451,7 +496,7 @@ export function AddItemModal(props: AddItemModalProps) {
               <View style={styles.aiMaterialSection}>
                 <Text style={styles.aiMaterialLabel}>Material</Text>
                 <View style={styles.aiMaterialSelector}>
-                  {["Zirconia", "E.max", "PFM", "Gold", "Semi Precious", "Full Cast", "Diagnostic Wax Up", "Other"].map((m) => (
+                  {materialChips.map((m) => (
                     <Pressable
                       key={m}
                       onPress={() => setItemMaterial(m)}
@@ -466,13 +511,100 @@ export function AddItemModal(props: AddItemModalProps) {
                       ]}>{m}</Text>
                     </Pressable>
                   ))}
+                  <Pressable
+                    onPress={() => setShowCustomItemForm((v) => !v)}
+                    style={[
+                      styles.aiMaterialChip,
+                      {
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 4,
+                        borderStyle: "dashed",
+                        borderColor: colors.tint,
+                        backgroundColor: "transparent",
+                      },
+                    ]}
+                  >
+                    <Ionicons name="add" size={16} color={colors.tint} />
+                    <Text style={[styles.aiMaterialText, { color: colors.tint }]}>Add New Item</Text>
+                  </Pressable>
                 </View>
+
+                {showCustomItemForm && (
+                  <View
+                    style={{
+                      marginTop: 12,
+                      padding: 12,
+                      borderRadius: 12,
+                      borderWidth: 1,
+                      borderColor: colors.border,
+                      backgroundColor: colors.surface,
+                      gap: 10,
+                    }}
+                  >
+                    <TextInput
+                      value={customItemName}
+                      onChangeText={setCustomItemName}
+                      placeholder="Item name"
+                      placeholderTextColor={colors.textSecondary}
+                      style={{
+                        borderWidth: 1,
+                        borderColor: colors.border,
+                        borderRadius: 8,
+                        paddingHorizontal: 12,
+                        paddingVertical: 10,
+                        color: colors.text,
+                        backgroundColor: colors.surfaceSecondary,
+                      }}
+                    />
+                    <TextInput
+                      value={customItemPrice}
+                      onChangeText={setCustomItemPrice}
+                      placeholder="Price"
+                      placeholderTextColor={colors.textSecondary}
+                      keyboardType="decimal-pad"
+                      style={{
+                        borderWidth: 1,
+                        borderColor: colors.border,
+                        borderRadius: 8,
+                        paddingHorizontal: 12,
+                        paddingVertical: 10,
+                        color: colors.text,
+                        backgroundColor: colors.surfaceSecondary,
+                      }}
+                    />
+                    <Pressable
+                      onPress={submitCustomItem}
+                      disabled={!customItemName.trim() || !Number.isFinite(parseFloat(customItemPrice)) || parseFloat(customItemPrice) < 0}
+                      style={({ pressed }) => [
+                        {
+                          flexDirection: "row",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: 6,
+                          paddingVertical: 11,
+                          borderRadius: 8,
+                          backgroundColor: colors.tint,
+                          opacity:
+                            !customItemName.trim() || !Number.isFinite(parseFloat(customItemPrice)) || parseFloat(customItemPrice) < 0
+                              ? 0.5
+                              : pressed
+                              ? 0.85
+                              : 1,
+                        },
+                      ]}
+                    >
+                      <Ionicons name="checkmark" size={18} color={colors.textInverse} />
+                      <Text style={{ color: colors.textInverse, fontWeight: "600" }}>Use Item</Text>
+                    </Pressable>
+                  </View>
+                )}
               </View>
 
               {itemSelectedTeeth.length > 0 && showPrice && (
                 <View style={styles.aiPricingRow}>
                   <Text style={styles.aiPricingLabel}>
-                    {itemBillableCount} billable {itemBillableCount === 1 ? "tooth" : "teeth"} x ${resolvePriceForCase(itemMaterial, itemCaseType, doctorName, clients, pricingTiers)}/{itemMaterial}
+                    {itemBillableCount} billable {itemBillableCount === 1 ? "tooth" : "teeth"} x ${resolvePriceForCase(itemMaterial, itemCaseType, doctorName, clients, pricingTiers, customMaterialPrices)}/{itemMaterial}
                   </Text>
                   <Text style={styles.aiPricingTotal}>${itemCalculatedPrice.toLocaleString()}</Text>
                 </View>

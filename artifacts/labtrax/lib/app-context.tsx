@@ -42,6 +42,7 @@ import {
   ToothType,
   CaseTypeValue,
   MATERIAL_PRICES,
+  CustomMaterial,
 } from "@/lib/data";
 import { resolvePriceForCase } from "@/lib/pricing";
 import {
@@ -75,7 +76,7 @@ interface AppContextValue {
   addCaseNote: (caseId: string, note: string, user?: string) => void;
   addCasePhotosWithNote: (caseId: string, photoUris: string[], note: string, user?: string) => Promise<void>;
   addTrackingNumber: (caseId: string, tracking: string) => void;
-  addCaseItem: (caseId: string, caseType: CaseTypeValue, selectedTeeth: number[], toothTypes: Record<number, ToothType>, material: string, extras?: { subType?: string; gingivaShade?: string; customNotes?: string; applianceSubType?: string; nightGuardType?: string }) => void;
+  addCaseItem: (caseId: string, caseType: CaseTypeValue, selectedTeeth: number[], toothTypes: Record<number, ToothType>, material: string, extras?: { subType?: string; gingivaShade?: string; customNotes?: string; applianceSubType?: string; nightGuardType?: string }, customMaterialPriceOverrides?: Record<string, number>) => void;
   notifications: Notification[];
   markNotificationRead: (id: string) => void;
   markAllNotificationsRead: () => void;
@@ -90,6 +91,8 @@ interface AppContextValue {
   pricingTiers: PricingTier[];
   updateTierPricing: (tierId: string, prices: Record<string, number>) => void;
   addPricingTier: (name: string) => void;
+  customMaterials: CustomMaterial[];
+  addCustomMaterial: (name: string, price: number) => void;
   users: LabUser[];
   addUser: (u: Omit<LabUser, "id" | "createdAt">) => void;
   updateUser: (id: string, u: Partial<LabUser>) => void;
@@ -189,6 +192,7 @@ const SHIPPING_KEY = "@drivesync_shipping";
 const CONVERSATIONS_KEY = "@drivesync_conversations";
 const CHAT_MESSAGES_KEY = "@drivesync_chat_messages";
 const PRICING_TIERS_KEY = "@drivesync_pricing_tiers";
+const CUSTOM_MATERIALS_KEY = "@drivesync_custom_materials";
 const BARCODE_ASSIGNMENTS_KEY = "@drivesync_barcode_assignments";
 const STATION_LABELS_KEY = "@drivesync_station_labels";
 const DELETED_CLIENT_INVOICES_KEY = "@drivesync_deleted_client_invoices";
@@ -306,6 +310,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [pricingTiers, setPricingTiers] = useState<PricingTier[]>(DEFAULT_PRICING_TIERS);
+  const [customMaterials, setCustomMaterials] = useState<CustomMaterial[]>([]);
   const [groupJoinRequests, setGroupJoinRequests] = useState<GroupJoinRequest[]>([]);
   const [labInvitations, setLabInvitations] = useState<LabInvitation[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
@@ -2117,6 +2122,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
         await AsyncStorage.setItem(PRICING_TIERS_KEY, JSON.stringify(DEFAULT_PRICING_TIERS));
       }
 
+      const savedCustomMaterials = await AsyncStorage.getItem(CUSTOM_MATERIALS_KEY);
+      if (savedCustomMaterials) {
+        try {
+          const parsed = JSON.parse(savedCustomMaterials);
+          if (Array.isArray(parsed)) setCustomMaterials(parsed);
+        } catch {
+          // ignore malformed cache
+        }
+      }
+
       const savedStationLabels = await AsyncStorage.getItem(STATION_LABELS_KEY);
       if (savedStationLabels) {
         setCustomStationLabels(JSON.parse(savedStationLabels));
@@ -2738,7 +2753,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }
 
-  function addCaseItem(caseId: string, caseType: CaseTypeValue, selectedTeeth: number[], toothTypesMap: Record<number, ToothType>, mat: string, extras?: { subType?: string; gingivaShade?: string; customNotes?: string; applianceSubType?: string; nightGuardType?: string }) {
+  function addCaseItem(caseId: string, caseType: CaseTypeValue, selectedTeeth: number[], toothTypesMap: Record<number, ToothType>, mat: string, extras?: { subType?: string; gingivaShade?: string; customNotes?: string; applianceSubType?: string; nightGuardType?: string }, customMaterialPriceOverrides?: Record<string, number>) {
     setCases((prevCases) => {
       const updated = prevCases.map((c) => {
         if (c.id === caseId) {
@@ -2765,7 +2780,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const hasPontic = selectedTeeth.some((t) => (toothTypesMap[t] || "normal") === "bridge");
           const billable = normalCount + (hasPontic ? 1 : 0);
           const caseForPrice = cases.find(cc => cc.id === caseId);
-          const unitPrice = resolvePriceForCase(mat, caseType, caseForPrice?.doctorName || "", clients, pricingTiers);
+          const customMaterialPrices: Record<string, number> = {};
+          for (const m of customMaterials) customMaterialPrices[m.name] = m.price;
+          if (customMaterialPriceOverrides) Object.assign(customMaterialPrices, customMaterialPriceOverrides);
+          const unitPrice = resolvePriceForCase(mat, caseType, caseForPrice?.doctorName || "", clients, pricingTiers, customMaterialPrices);
           const price = unitPrice * Math.max(billable, 1);
 
           let descParts = [`Item added: ${caseType}`];
@@ -3320,6 +3338,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const updated = [...prev, newTier];
       AsyncStorage.setItem(PRICING_TIERS_KEY, JSON.stringify(updated));
       return updated;
+    });
+  }
+
+  function addCustomMaterial(name: string, price: number) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const safePrice = Number.isFinite(price) && price >= 0 ? price : 0;
+    setCustomMaterials(prev => {
+      const idx = prev.findIndex(m => m.name.trim().toLowerCase() === trimmed.toLowerCase());
+      const next = idx >= 0
+        ? prev.map((m, i) => (i === idx ? { name: trimmed, price: safePrice } : m))
+        : [...prev, { name: trimmed, price: safePrice }];
+      AsyncStorage.setItem(CUSTOM_MATERIALS_KEY, JSON.stringify(next));
+      return next;
     });
   }
 
@@ -3957,6 +3989,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       pricingTiers,
       updateTierPricing,
       addPricingTier,
+      customMaterials,
+      addCustomMaterial,
       users,
       addUser,
       updateUser,
@@ -4028,7 +4062,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       retrySync,
       discardSync,
     }),
-    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, pendingInvoiceEditId, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers, allLabOrganizationIds, activeLabAffiliationKey, activeLabAffiliationName, allLabAffiliationKeysList, invoiceTemplate, pendingSyncCount, stuckSyncItems],
+    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, customMaterials, users, invoices, pendingInvoiceEditId, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers, allLabOrganizationIds, activeLabAffiliationKey, activeLabAffiliationName, allLabAffiliationKeysList, invoiceTemplate, pendingSyncCount, stuckSyncItems],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
