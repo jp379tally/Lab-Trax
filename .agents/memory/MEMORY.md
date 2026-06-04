@@ -12,6 +12,7 @@
 - [Legacy mobile case blob merge](legacy-mobile-case-blob-merge.md) — mobile lab_cases history/photos collapsed to one event; list endpoint strips arrays + blob-replace upsert wiped them; fix = append-only union merge server-side.
 - [Case media needs attachment row](case-media-attachment-row.md) — a bare /api/media/upload URL 404s on the auth-gated serving routes; persisted media must be backed by a caseAttachments row (upload→attach→store id-based URL).
 - [Desktop media fetch must refresh on 401](desktop-media-auth-refresh.md) — raw bearer media fetches go blank after 15-min token expiry while data silently refreshes; route all media through authedMediaFetch.
+- [Idle auto-logout architecture](idle-autologout.md) — desktop: interval-based timer in AppLayout + sessionStorage flag for login notice; mobile: PanResponder feeds resetInactivityTimer → lock screen (not full logout).
 - [Legacy-photo synthetic id serving](legacy-photo-synthetic-id-serving.md) — legacy `legacy-photo-<caseId>-<idx>` ids have no DB row; id-based serve route must resolve from lab_cases blob + authorize file via legacy_case_media ledger (IDOR risk).
 - [LabTrax mobile theming](labtrax-theming.md) — tokens via useTheme, but ThemeProvider wraps only the authed tree (login/lock can't use it); most screens hardcode Colors.light, full migration is a big rewrite.
 - [LabTrax deployment target](labtrax-deployment-target.md) — must run as Reserved VM (vm), not autoscale; autoscale scale-to-zero caused overnight outages and skipped cron jobs.

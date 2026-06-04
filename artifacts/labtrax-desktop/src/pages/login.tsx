@@ -55,6 +55,11 @@ export default function LoginPage() {
       setError("Please enter your username and password.");
       return;
     }
+    if (rememberUsername) {
+      localStorage.setItem("labtrax_desktop_remembered_username", username.trim());
+    } else {
+      localStorage.removeItem("labtrax_desktop_remembered_username");
+    }
     setSubmitting(true);
     setError(null);
     try {
@@ -238,6 +243,11 @@ export default function LoginPage() {
                   </button>
                 </div>
               )}
+              {autoLoggedOut && (
+                <div className="mb-4 text-sm text-sky-800 bg-sky-50 border border-sky-200 px-3 py-2 rounded-md">
+                  You were signed out automatically after 2 minutes of inactivity.
+                </div>
+              )}
               <form onSubmit={onSubmit} className="space-y-4">
                 <div>
                   <label className="block text-xs font-medium text-foreground mb-1.5">
@@ -266,6 +276,15 @@ export default function LoginPage() {
                     placeholder="••••••••"
                   />
                 </div>
+                <label className="flex items-center gap-2.5 cursor-pointer select-none -mt-1">
+                  <input
+                    type="checkbox"
+                    checked={rememberUsername}
+                    onChange={(e) => setRememberUsername(e.target.checked)}
+                    className="h-4 w-4 rounded border-input accent-primary cursor-pointer"
+                  />
+                  <span className="text-sm text-muted-foreground">Remember my username</span>
+                </label>
                 {error && (
                   <div className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">
                     {error}

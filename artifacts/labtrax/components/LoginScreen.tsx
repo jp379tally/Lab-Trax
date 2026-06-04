@@ -2618,6 +2618,29 @@ export default function LoginScreen() {
               </View>
             </View>
 
+            <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 4, marginTop: 10, marginBottom: 2 }}>
+              <Pressable
+                onPress={() => setRememberUsername(!rememberUsername)}
+                style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
+              >
+                <View style={{
+                  width: 18,
+                  height: 18,
+                  borderRadius: 4,
+                  borderWidth: 1.5,
+                  borderColor: rememberUsername ? "#60A5FA" : "rgba(255,255,255,0.3)",
+                  backgroundColor: rememberUsername ? "#60A5FA" : "transparent",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}>
+                  {rememberUsername && <Ionicons name="checkmark" size={12} color="#FFF" />}
+                </View>
+                <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.7)" }}>
+                  Remember my username
+                </Text>
+              </Pressable>
+            </View>
+
             <View style={{ flexDirection: "row", justifyContent: "space-between", paddingHorizontal: 4, marginTop: 4, marginBottom: 12 }}>
               <Pressable onPress={openForgotPassword} style={({ pressed }) => [pressed && { opacity: 0.7 }]}>
                 <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "#60A5FA" }}>Forgot Password?</Text>
