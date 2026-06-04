@@ -31,6 +31,26 @@ straight from API data) is the cleanest probe: if it's blank in the user's
 screenshot but present in current code, the client is running an old bundle. Image
 thumbnails can fail for auth/CORS reasons, but plain text cannot.
 
+## Detecting a stale *server* deploy (API), not just a stale client
+
+Same principle applies to the API server: "the fix is in the code but the user
+(on prod) still sees the bug" is usually a **prod deploy that predates the fix**,
+not a code bug. The mobile app points at prod, so server fixes that heal
+already-installed apps (e.g. the CSRF cookie-jar rescue, legacy history
+union-merge) do **nothing** until the API is republished.
+
+**How to confirm the deployed commit without guessing:**
+1. Pick a fix that logs a unique marker at startup or behaves observably
+   (e.g. `legacy_case_media: ensure + backfill complete` proves that commit is
+   live; a recently-uploaded case-media file serving 200 proves the
+   object-storage durability mirror is live).
+2. Compare against a fix that should also be live but isn't behaving
+   (e.g. cookie-only mobile `POST`s still 403 in ~1ms ⇒ the CSRF rescue is absent).
+3. Use `git log -S "<marker>" -- <file>` + `git merge-base --is-ancestor A B`
+   and commit dates to bracket the deployed code between "has X, missing Y."
+   If a needed fix is newer than the deployed bracket → **republish**, no code
+   change and no new mobile build required.
+
 ## Web vs. installed desktop (Electron) distribution
 
 **Why:** the Electron desktop app bundles its **own** copy of the frontend at
