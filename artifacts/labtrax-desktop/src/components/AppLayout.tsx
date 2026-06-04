@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { MessengerDock } from "./messenger/MessengerDock";
 import { UpdateBanner } from "./UpdateBanner";
+import { WebUpdateBanner } from "./WebUpdateBanner";
 import { Link, useLocation } from "wouter";
 import {
   AlertTriangle,
@@ -662,6 +663,7 @@ export function AppLayout({ children }: Props) {
           </div>
         </header>
         <UpdateBanner />
+        <WebUpdateBanner />
         <main className="flex-1 overflow-y-auto scrollbar-thin">{children}</main>
       </div>
       <MessengerDock />
