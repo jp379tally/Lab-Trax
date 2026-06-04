@@ -5,6 +5,7 @@ import {
   buildThumbnailHtml,
   type ScanFormat,
 } from "@workspace/scan-viewer";
+import { authedMediaFetch } from "@/lib/api";
 
 interface ScanThumbnailProps {
   cacheKey: string;
@@ -63,9 +64,8 @@ async function fetchAndRender(
   const promise = (async () => {
     await acquireSlot();
     try {
-      const headers: Record<string, string> = {};
-      if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
-      const res = await fetch(fileUrl, { headers });
+      void authToken; // auth (incl. 401 refresh) handled by authedMediaFetch
+      const res = await authedMediaFetch(fileUrl);
       if (!res.ok) throw new Error(`status ${res.status}`);
       const buffer = await res.arrayBuffer();
       const base64 = arrayBufferToBase64(buffer);

@@ -7,6 +7,7 @@ import {
   type ScanDisplayMode,
   type ScanFormat,
 } from "@workspace/scan-viewer";
+import { authedMediaFetch } from "@/lib/api";
 
 interface ScanViewerModalProps {
   open: boolean;
@@ -62,9 +63,8 @@ export default function ScanViewerModal({
     const controller = new AbortController();
     (async () => {
       try {
-        const headers: Record<string, string> = {};
-        if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
-        const res = await fetch(fileUrl, { headers, signal: controller.signal });
+        void authToken; // auth (incl. 401 refresh) handled by authedMediaFetch
+        const res = await authedMediaFetch(fileUrl, { signal: controller.signal });
         if (!res.ok) {
           setLoadState("error");
           setErrorMsg(`Download failed (status ${res.status}).`);

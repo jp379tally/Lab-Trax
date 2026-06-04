@@ -35,7 +35,7 @@ import {
   X,
 } from "lucide-react";
 import QRCodeSVG from "react-qr-code";
-import { apiFetch, getAccessToken, getApiOrigin } from "@/lib/api";
+import { apiFetch, authedMediaFetch, getAccessToken, getApiOrigin } from "@/lib/api";
 import { AuthedImage, AuthedVideo, isSameApiOrigin } from "@/components/AuthedMedia";
 import type {
   CaseAttachment,
@@ -4933,14 +4933,10 @@ export function CaseDrawer({
                                             return;
                                           }
                                           try {
-                                            const token = getAccessToken();
                                             const sameOrigin = isSameApiOrigin(src);
-                                            const resp = await fetch(
-                                              src,
-                                              sameOrigin && token
-                                                ? { headers: { Authorization: `Bearer ${token}` } }
-                                                : undefined,
-                                            );
+                                            const resp = sameOrigin
+                                              ? await authedMediaFetch(src)
+                                              : await fetch(src);
                                             if (!resp.ok) throw new Error(String(resp.status));
                                             const blob = await resp.blob();
                                             const objUrl = URL.createObjectURL(blob);
@@ -5496,10 +5492,7 @@ function PriceHistoryPanel({
 }
 
 async function openFileAuthenticated(url: string): Promise<void> {
-  const token = getAccessToken();
-  const res = await fetch(url, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  });
+  const res = await authedMediaFetch(url);
   if (!res.ok) {
     window.alert("Could not open file. Please try again.");
     return;
@@ -5523,10 +5516,7 @@ async function previewAttachmentInElectron(
   const electronAPI = (window as any).electronAPI;
   if (!electronAPI?.previewFile || !attachment.id) return;
   const href = `${getApiOrigin()}/api/cases/${caseId}/attachments/${attachment.id}/file`;
-  const token = getAccessToken();
-  const res = await fetch(href, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  });
+  const res = await authedMediaFetch(href);
   if (!res.ok) throw new Error(`Failed to fetch file: ${res.status}`);
   const buffer = await res.arrayBuffer();
   const mimeType =
