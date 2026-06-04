@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useState, useEffect, type FormEvent } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { ApiError, TwoFactorRequiredError, getApiOrigin } from "@/lib/api";
 import { describeAuthRestoreStatus } from "@/lib/auth-restore-status";
@@ -18,6 +18,22 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [rememberUsername, setRememberUsername] = useState(false);
+  const [autoLoggedOut, setAutoLoggedOut] = useState(false);
+
+  useEffect(() => {
+    const saved = localStorage.getItem("labtrax_desktop_remembered_username");
+    if (saved) {
+      setUsername(saved);
+      setRememberUsername(true);
+    }
+    try {
+      if (sessionStorage.getItem("labtrax_auto_logout") === "1") {
+        sessionStorage.removeItem("labtrax_auto_logout");
+        setAutoLoggedOut(true);
+      }
+    } catch { /* ignore */ }
+  }, []);
 
   // Two-factor auth challenge state
   const [pendingToken, setPendingToken] = useState<string | null>(null);

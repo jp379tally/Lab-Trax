@@ -48,6 +48,7 @@ export default function LoginScreen() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [rememberUsername, setRememberUsername] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [biometricAvailable, setBiometricAvailable] = useState(false);
@@ -226,12 +227,28 @@ export default function LoginScreen() {
     }
   }
 
+  useEffect(() => {
+    AsyncStorage.getItem("@labtrax_remembered_username")
+      .then((saved) => {
+        if (saved) {
+          setUsername(saved);
+          setRememberUsername(true);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   async function handleLogin() {
     if (!username.trim() || !password.trim()) {
       setError("Please enter both username and password.");
       return;
     }
     setError(null);
+    if (rememberUsername) {
+      AsyncStorage.setItem("@labtrax_remembered_username", username.trim()).catch(() => {});
+    } else {
+      AsyncStorage.removeItem("@labtrax_remembered_username").catch(() => {});
+    }
     setIsLoggingIn(true);
     const result = await login(username.trim(), password.trim());
     setIsLoggingIn(false);

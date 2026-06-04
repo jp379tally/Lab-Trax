@@ -128,10 +128,29 @@ function relativeTime(dateStr: string): string {
 
 const POLL_INTERVAL_MS = 60_000;
 
+const IDLE_TIMEOUT_MS = 2 * 60 * 1000;
+
 export function AppLayout({ children }: Props) {
   const [location] = useLocation();
   const { user, logout } = useAuth();
   const isAdmin = user?.role === "admin";
+
+  const lastActivityRef = useRef(Date.now());
+  useEffect(() => {
+    const onActivity = () => { lastActivityRef.current = Date.now(); };
+    const events = ["mousemove", "mousedown", "keydown", "wheel", "touchstart"] as const;
+    events.forEach((ev) => window.addEventListener(ev, onActivity, { passive: true }));
+    const interval = setInterval(() => {
+      if (Date.now() - lastActivityRef.current >= IDLE_TIMEOUT_MS) {
+        try { sessionStorage.setItem("labtrax_auto_logout", "1"); } catch { /* ignore */ }
+        void logout();
+      }
+    }, 10_000);
+    return () => {
+      clearInterval(interval);
+      events.forEach((ev) => window.removeEventListener(ev, onActivity));
+    };
+  }, [logout]);
   const [menuOpen, setMenuOpen] = useState(false);
   const [uploadsOpen, setUploadsOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);

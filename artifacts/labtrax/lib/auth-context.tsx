@@ -69,7 +69,7 @@ const AUTH_PASSWORD_KEY = "@drivesync_auth_password";
 const BIOMETRIC_USER_KEY = "@drivesync_biometric_user";
 const TRUSTED_DEVICE_KEY = "@labtrax_trusted_device_v1";
 
-const INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000;
+const INACTIVITY_TIMEOUT_MS = 2 * 60 * 1000;
 
 type SessionStore = {
   getItem: (key: string) => string | null;
