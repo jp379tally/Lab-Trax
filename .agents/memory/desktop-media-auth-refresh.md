@@ -1,27 +1,29 @@
 ---
 name: Desktop media fetch must refresh on 401
-description: Why raw bearer fetches for case media go blank after token expiry, and the required helper.
+description: Why raw bearer fetches for case media go blank after token expiry, and the isSameApiOrigin bug in web mode.
 ---
 
-# Desktop/web media fetches must use `authedMediaFetch`
+# Desktop/web media fetches must use `authedFetch`
 
-In `artifacts/labtrax-desktop`, the JSON data layer (`apiFetch` / `apiFetchArrayBuffer`)
-transparently does **401 → `refreshAccessToken()` → retry**. Access tokens have a
-**15-minute TTL** (`ACCESS_TOKEN_TTL="15m"` in api-server). Any media/file fetcher that
-does a one-shot raw `fetch()` with the in-memory bearer and **no refresh-on-401** will
-return blank images/scans/files once the token ages past 15 min — while all text/data
-keeps loading, because those calls silently refresh. The pre-handler 401 is ~1ms, so it
-is NOT a serving-logic bug; it is purely missing token refresh on the client.
+In `artifacts/labtrax-desktop`, the JSON data layer (`apiFetch`) transparently does
+**401 → `refreshAccessToken()` → retry**. Access tokens have a **15-minute TTL**.
+Any media/file fetcher that does a one-shot raw `fetch()` with the in-memory bearer and
+**no refresh-on-401** will return blank images/scans/files once the token ages past 15 min.
 
-**Rule:** every same-origin, bearer-gated media/file fetch in the desktop client must go
-through the exported `authedMediaFetch(url, init?)` in `src/lib/api.ts` (awaits
-`waitForTokenHydration()`, attaches `authHeader()`, refreshes+retries once on 401).
-Cross-origin URLs must use a plain `fetch` with **no** bearer (never leak the token to a
-third-party host).
+**Critical bug in web/dev mode (`isSameApiOrigin`):** when `VITE_API_BASE_URL` is empty,
+`getApiOrigin()` returns `""`. `new URL("")` throws, so `isSameApiOrigin` always returns
+`false` → auth is NEVER added to relative `/api/…` URLs → every media fetch 401s → blank.
+Fix: relative URLs (no `://`) are always same-origin; empty API origin = compare against
+`window.location.origin`. Both cases are now handled in `AuthedMedia.tsx`.
 
-**Why:** symptom is misleading — "photos broke after a republish" looks like a server/deploy
-regression, but the republish just reset the clock so the user freshly crossed 15 min.
+**Rule:** route all same-origin bearer-gated media/file fetches through the exported
+`authedFetch(url, signal?)` in `src/lib/api.ts` (awaits `waitForTokenHydration()`,
+attaches bearer, refreshes+retries once on 401). `AuthedImage` / `AuthedVideo` already
+do this via `useAuthedObjectUrl`. Cross-origin URLs must use plain `fetch` — never attach
+the bearer to a third-party host.
 
-**How to apply:** when adding any new `<AuthedImage>`-style fetch, scan-viewer download,
-or attachment open/download, route it through `authedMediaFetch`. Grep for raw
-`fetch(... Authorization: Bearer` / `getAccessToken()` + `fetch(` to catch regressions.
+**Why:** symptom looks like a server regression, but is a client-side auth failure:
+in Electron the absolute URL origin-match works; in web mode it silently skips auth.
+
+**How to apply:** when adding any new media fetch, scan-viewer download, or attachment
+open, use `authedFetch`. Grep for raw `getAccessToken()` + `fetch(` to catch regressions.

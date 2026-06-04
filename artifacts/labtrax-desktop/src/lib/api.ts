@@ -497,6 +497,30 @@ function authHeader(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+/**
+ * Fetch a URL with the current bearer token, retrying once after a token
+ * refresh on 401. Use for media/file downloads that need the raw Response
+ * (i.e. cases where apiFetch — which expects JSON — isn't suitable).
+ */
+export async function authedFetch(
+  url: string,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const makeRequest = () => {
+    const token = _tokens?.accessToken;
+    return fetch(url, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      signal,
+    });
+  };
+  let resp = await makeRequest();
+  if (resp.status === 401 && _tokens?.refreshToken) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) resp = await makeRequest();
+  }
+  return resp;
+}
+
 // Network-level fetch can throw TypeError("Failed to fetch") on transient
 // connectivity blips, captive-portal redirects, sleep/wake, or the
 // renderer briefly losing its proxy. We retry GET/HEAD once after 800 ms

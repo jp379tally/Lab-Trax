@@ -1,12 +1,28 @@
 import { useEffect, useState, type MouseEventHandler, type ReactNode } from "react";
-import { getAccessToken, getApiOrigin } from "@/lib/api";
+import { authedFetch, getApiOrigin, waitForTokenHydration } from "@/lib/api";
 
-// True only when `url` is an absolute URL whose origin matches our API origin.
-// The bearer token must NEVER be sent to a third-party host, so we validate the
-// origin before attaching the Authorization header.
+// True only when `url` is a relative path (always same-origin) or an absolute
+// URL whose origin matches our API origin. The bearer token must NEVER be sent
+// to a third-party host, so we validate the origin before attaching the
+// Authorization header.
+//
+// Key cases handled:
+//   • Relative URLs ("/api/…") — always same-origin; return true.
+//   • Absolute URL + empty API origin (web/dev mode, VITE_API_BASE_URL="") —
+//     compare against window.location.origin.
+//   • Absolute URL + configured API origin (Electron) — compare origins.
 export function isSameApiOrigin(url: string): boolean {
   try {
-    return new URL(url).origin === new URL(getApiOrigin()).origin;
+    // Relative URLs have no scheme and always route to the page's own origin.
+    if (!url.includes("://")) return true;
+    const apiOrigin = getApiOrigin();
+    if (!apiOrigin) {
+      // Web/dev mode: API is same-origin with the page.
+      return typeof window !== "undefined"
+        ? new URL(url).origin === window.location.origin
+        : false;
+    }
+    return new URL(url).origin === new URL(apiOrigin).origin;
   } catch {
     return false;
   }
@@ -46,14 +62,16 @@ function useAuthedObjectUrl(url: string | null | undefined): {
     }
     let cancelled = false;
     let objectUrl: string | null = null;
+    const controller = new AbortController();
     setState({ src: null, loading: true, error: false });
     (async () => {
       try {
-        const token = getAccessToken();
-        const resp = await fetch(
-          url,
-          token ? { headers: { Authorization: `Bearer ${token}` } } : undefined,
-        );
+        // Wait for the token store to finish loading from localStorage/keychain
+        // before the first fetch, so we never send an unauthenticated request
+        // due to a startup race between hydration and the first render.
+        await waitForTokenHydration();
+        if (cancelled) return;
+        const resp = await authedFetch(url, controller.signal);
         if (!resp.ok) throw new Error(`status ${resp.status}`);
         const blob = await resp.blob();
         if (cancelled) return;
@@ -65,6 +83,7 @@ function useAuthedObjectUrl(url: string | null | undefined): {
     })();
     return () => {
       cancelled = true;
+      controller.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [url]);
