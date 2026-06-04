@@ -2067,7 +2067,6 @@ export function CaseDrawer({
   const { openPanel: openAiPanel } = useAiPanel();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [fileDragOver, setFileDragOver] = useState(false);
-  const fileDragCounterRef = useRef(0);
 
   const [activeTab, setActiveTab] = useState<CaseTab>("lab-slip");
   const [historySortOrder, setHistorySortOrder] = useState<"asc" | "desc">("asc");
@@ -2956,27 +2955,23 @@ export function CaseDrawer({
 
   function handleFileDragEnter(e: React.DragEvent) {
     e.preventDefault();
-    e.stopPropagation();
-    fileDragCounterRef.current += 1;
-    if (fileDragCounterRef.current === 1) setFileDragOver(true);
+    if (e.dataTransfer.types.includes("Files")) setFileDragOver(true);
   }
 
   function handleFileDragLeave(e: React.DragEvent) {
-    e.preventDefault();
-    e.stopPropagation();
-    fileDragCounterRef.current -= 1;
-    if (fileDragCounterRef.current === 0) setFileDragOver(false);
+    // Only clear when the drag truly leaves the outer drop zone div,
+    // not when moving between child elements inside it.
+    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+      setFileDragOver(false);
+    }
   }
 
   function handleFileDragOver(e: React.DragEvent) {
     e.preventDefault();
-    e.stopPropagation();
   }
 
   function handleFileDrop(e: React.DragEvent) {
     e.preventDefault();
-    e.stopPropagation();
-    fileDragCounterRef.current = 0;
     setFileDragOver(false);
     const files = Array.from(e.dataTransfer.files);
     if (files.length > 0) void uploadFiles(files);
@@ -4540,10 +4535,6 @@ export function CaseDrawer({
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  onDragEnter={handleFileDragEnter}
-                  onDragLeave={handleFileDragLeave}
-                  onDragOver={handleFileDragOver}
-                  onDrop={handleFileDrop}
                   className={`w-full flex items-center justify-center gap-2 py-3 rounded-lg border-2 border-dashed transition-colors cursor-pointer text-center ${
                     fileDragOver
                       ? "border-primary bg-primary/8 text-primary"
