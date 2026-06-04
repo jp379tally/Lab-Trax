@@ -2909,12 +2909,20 @@ export function CaseDrawer({
     setUploadError(null);
     const errors: string[] = [];
     for (const file of files) {
+      // Bound each upload. apiFetch has no request timeout, and a stalled
+      // server/proxy (e.g. a restarting or zombie API instance) otherwise
+      // leaves the POST hanging forever with the UI stuck on "Uploading…".
+      // Aborting surfaces a recoverable error instead. 90s is generous for
+      // large media over a slow link.
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 90_000);
       try {
         const fd = new FormData();
         fd.append("file", file);
         const { url } = await apiFetch<{ url: string }>("/media/upload", {
           method: "POST",
           body: fd,
+          signal: controller.signal,
         });
         await apiFetch(`/cases/${labCase.id}/attachments`, {
           method: "POST",
@@ -2923,9 +2931,16 @@ export function CaseDrawer({
             fileName: file.name,
             fileType: file.type || "application/octet-stream",
           }),
+          signal: controller.signal,
         });
       } catch (err: any) {
-        errors.push(`${file.name}: ${err?.message || "Upload failed."}`);
+        const msg =
+          err?.name === "AbortError"
+            ? "Upload timed out. Please check your connection and try again."
+            : err?.message || "Upload failed.";
+        errors.push(`${file.name}: ${msg}`);
+      } finally {
+        clearTimeout(timeout);
       }
     }
     qc.invalidateQueries({ queryKey: ["case", labCase.id] });

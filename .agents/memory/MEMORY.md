@@ -16,6 +16,7 @@
 - [LabTrax deployment target](labtrax-deployment-target.md) — must run as Reserved VM (vm), not autoscale; autoscale scale-to-zero caused overnight outages and skipped cron jobs.
 - [LabTrax design-system adoption](labtrax-design-system.md) — dashboard metric rows use StatTile; hub/menu lists use Card+inline (not the MenuItem component) to stay visually consistent.
 - [Expo drift vs maturity window](expo-drift-maturity-window.md) — newest Expo-expected patches are blocked ~24h by minimumReleaseAge; wait, don't add minimumReleaseAgeExclude.
+- [apiFetch has no timeout](apifetch-no-timeout-hangs.md) — desktop apiFetch never times out; stalled mutations hang the spinner forever — bound them with a caller AbortController.
 - [Electron renderer file reads](electron-renderer-file-read.md) — renderer can't read local files via fetch("file://"); read picked files in main over IPC, don't swallow the error.
 - [LabTrax add-item dual pricing](labtrax-add-item-dual-pricing.md) — case.price (addCaseItem) and invoice line rate (handleSaveItem) resolve price independently; thread any pricing input to BOTH.
 - [Expo share-sheet is plugin-gated](expo-share-intent-share-sheet.md) — LabTrax vanishes from the iOS/Android share sheet if the expo-share-intent block is dropped from app.json plugins; native-only, guarded by a firewall test.
