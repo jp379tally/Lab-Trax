@@ -3,6 +3,23 @@ name: Canonical-case photo display requires an app-created attachment row
 description: Why blank case photos on the mobile app can only be fixed app-side, never server-side
 ---
 
+# Blank photos have THREE distinct root causes — rule each out separately
+
+When triaging "case photos are blank," the cause is one (or more) of three independent layers. A perfect fix in one layer still leaves photos blank if another is broken:
+1. **Authorization** — no `caseAttachments` row (canonical) or `legacy_case_media` ledger row (legacy) → serve 404s. (sections below)
+2. **Durability** — bytes never mirrored to object storage; ephemeral/redeploy disk wipe → serve 404s even with a valid row. (section below)
+3. **Client image-auth token timing** — the file request reaches the server but 401s because the native client sent no/stale bearer; image renders blank. (next section)
+
+# Client-side cause: native <Image> sends the bearer token synchronously, with no 401 retry
+
+**Symptom that fingerprints THIS layer:** case *history/notes* (JSON) loads fine but *every* photo is blank with "Failed · Retry", and the server/data are provably healthy (file serves 200 when you replay the request with a fresh token). Reinstalling/rebuilding does not help because the code is byte-identical across builds — it is pre-existing, not a build regression.
+
+**Root cause:** expo-image attaches the auth header synchronously from the in-memory access token at render time (via `caseMediaSource()` → `getAccessToken()`). If that in-memory token is missing (cold start before `loadTokens()` ran) or expired, the image file request goes out unauthenticated/stale, 401s, and expo-image renders blank with **no retry**. This is the asymmetry that explains "history recovers but photos don't": `resilientFetch` (JSON) hydrates+refreshes+retries on 401; raw `<Image>` requests never did.
+
+**Why:** image-load failures are terminal in expo-image — there is no built-in refresh-and-retry like the fetch wrapper has. Token availability is a *timing* property (memory may not be hydrated yet), independent of authorization rows and byte durability.
+
+**The fix pattern:** wrap auth-gated media in a self-healing component (`AuthedImage`) that, on load error, force-refreshes the token once (hydrate from secure store if empty, then rotate) and forces an expo-image reload with fresh headers (recompute the source + bump `recyclingKey`). Gate the retry to first-party media only (`isCaseMediaUrl`) so third-party/broken URLs don't trigger pointless token churn, make it one-shot per URI, and reset the one-shot when the URI changes (lists reuse instances via `key={idx}`). The shared refresh already de-dupes concurrent calls, so a grid of failing images triggers a single token refresh.
+
 # Canonical-case photos: the display link must be created by the app
 
 **Symptom:** Photos added to a case show as blank gray thumbnails (and blank on tap) in production. Production logs show `POST /api/media/upload` → 200 immediately followed by `GET /api/cases/attachment-file/<that-file>` → 404, forever, on the same persistent server instance.

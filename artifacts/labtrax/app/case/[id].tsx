@@ -32,7 +32,8 @@ import * as DocumentPicker from "expo-document-picker";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { useApp } from "@/lib/app-context";
 import { resilientFetch, getAccessToken, getApiUrl, uploadCaseMedia } from "@/lib/query-client";
-import { caseMediaSource, isSameApiOrigin } from "@/lib/case-media-source";
+import { isSameApiOrigin } from "@/lib/case-media-source";
+import { AuthedImage } from "@/components/AuthedImage";
 import * as FileSystem from "expo-file-system";
 import * as LegacyFileSystem from "expo-file-system/legacy";
 import { useAuth } from "@/lib/auth-context";
@@ -2531,8 +2532,8 @@ export default function CaseDetailScreen() {
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 4 }}>
               {caseItem.photos!.map((uri, idx) => (
                 <Pressable key={idx} onPress={() => setFullScreenPhoto(uri)}>
-                  <Image
-                    source={caseMediaSource(uri)}
+                  <AuthedImage
+                    uri={uri}
                     style={styles.photoThumb}
                   />
                 </Pressable>
@@ -2612,8 +2613,8 @@ export default function CaseDetailScreen() {
                               onPress={() => setFullScreenPhoto(fullUrl)}
                               style={({ pressed }) => ({ opacity: pressed ? 0.85 : 1 })}
                             >
-                              <Image
-                                source={caseMediaSource(fullUrl)}
+                              <AuthedImage
+                                uri={fullUrl}
                                 style={{ width: 88, height: 88, borderRadius: 8, backgroundColor: colors.border }}
                               />
                             </Pressable>
@@ -3458,8 +3459,8 @@ export default function CaseDetailScreen() {
                         {entry.description}
                       </Text>
                       {isPhoto && entry.imageUri && (
-                        <Image
-                          source={caseMediaSource(entry.imageUri)}
+                        <AuthedImage
+                          uri={entry.imageUri}
                           style={{
                             width: "100%",
                             height: 120,
@@ -3929,7 +3930,7 @@ export default function CaseDetailScreen() {
 
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.photoStrip}>
               {capturedPhotos.map((uri, idx) => (
-                <Image key={idx} source={caseMediaSource(uri)} style={styles.previewPhoto} />
+                <AuthedImage key={idx} uri={uri} style={styles.previewPhoto} />
               ))}
             </ScrollView>
 
@@ -4232,8 +4233,8 @@ export default function CaseDetailScreen() {
                         <View style={styles.completePhotoGrid}>
                           {uniquePhotos.map((uri, idx) => (
                             <Pressable key={idx} onPress={() => setFullScreenPhoto(uri)}>
-                              <Image
-                                source={caseMediaSource(uri)}
+                              <AuthedImage
+                                uri={uri}
                                 style={styles.completePhoto}
                                 resizeMode="cover"
                               />
@@ -4746,8 +4747,8 @@ export default function CaseDetailScreen() {
           </View>
           <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 8 }}>
             {fullScreenPhoto && (
-              <Image
-                source={caseMediaSource(fullScreenPhoto)}
+              <AuthedImage
+                uri={fullScreenPhoto}
                 style={{ width: "100%", height: "100%" }}
                 resizeMode="contain"
               />

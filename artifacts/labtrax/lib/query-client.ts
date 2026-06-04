@@ -142,6 +142,29 @@ export function getAccessToken() {
   return _accessToken;
 }
 
+// Force-refresh the auth token for rendering auth-gated case media
+// (images/video). Native <Image> attaches the bearer token synchronously via
+// caseMediaSource(); when that in-memory token is missing (cold start before
+// loadTokens ran) or expired, the file request 401s and the image renders
+// blank with NO retry — unlike resilientFetch JSON calls, which refresh and
+// retry. The AuthedImage component calls this on a load error to hydrate +
+// rotate the token, then re-renders with fresh headers. Returns the current
+// access token (native) or null when refresh failed / user is logged out.
+export async function refreshAuthForMedia(): Promise<string | null> {
+  if (Platform.OS === "web") {
+    const ok = await refreshAccessTokenViaCookie();
+    return ok ? _accessToken : null;
+  }
+  if (!_accessToken && !_refreshToken) {
+    await loadTokens();
+  }
+  if (_refreshToken) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) return refreshed;
+  }
+  return _accessToken;
+}
+
 async function refreshAccessToken(): Promise<string | null> {
   if (!_refreshToken) return null;
   if (_refreshPromise) return _refreshPromise;
