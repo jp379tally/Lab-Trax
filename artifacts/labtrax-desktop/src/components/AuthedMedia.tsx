@@ -5,6 +5,7 @@ import { authedMediaFetch, getApiOrigin } from "@/lib/api";
 // The bearer token must NEVER be sent to a third-party host, so we validate the
 // origin before attaching the Authorization header.
 export function isSameApiOrigin(url: string): boolean {
+  if (url.startsWith("/")) return true;
   try {
     return new URL(url).origin === new URL(getApiOrigin()).origin;
   } catch {
