@@ -20,14 +20,16 @@ import {
   EyeOff,
   ImageIcon,
   Loader2,
+  Printer,
   RotateCcw,
   Trash2,
   Upload,
   X,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
-import { fetchTemplateImageAsDataUrl } from "@/lib/print";
+import { fetchTemplateImageAsDataUrl, printCaseCardAdvanced } from "@/lib/print";
 import { useAuth } from "@/lib/auth-context";
+import type { CaseRestoration, LabCase } from "@/lib/types";
 import {
   coerceCasePrintTemplate,
   DEFAULT_CASE_PRINT_TEMPLATE,
@@ -119,6 +121,78 @@ function applyDrag(
     h: Math.round(bh),
   };
 }
+
+// Representative placeholder data so the on-demand Preview shows realistic
+// content in every section without needing a real case. `labOrganizationId`
+// is filled in at call time so uploaded template images still resolve.
+function buildSampleCase(labOrganizationId: string): LabCase {
+  const now = new Date();
+  const due = new Date(now.getTime() + 1000 * 60 * 60 * 24 * 5);
+  return {
+    id: "preview-sample",
+    caseNumber: "10042",
+    labOrganizationId,
+    providerOrganizationId: "preview-provider",
+    patientFirstName: "Jordan",
+    patientLastName: "Maxwell",
+    doctorName: "Dr. Avery Chen",
+    status: "in_design",
+    priority: "normal",
+    dueDate: due.toISOString(),
+    createdAt: now.toISOString(),
+    restorationTypes: "Crown",
+    restorationMaterials: "Zirconia, E.max",
+    teeth: "8, 9, 14",
+    casePanBarcode: "10042",
+    caseNotes: "Match adjacent shade; high translucency at incisal edge.",
+  };
+}
+
+const SAMPLE_RESTORATIONS: CaseRestoration[] = [
+  {
+    id: "preview-r1",
+    caseId: "preview-sample",
+    toothNumber: "8",
+    restorationType: "Crown",
+    material: "Zirconia",
+    shade: "A2",
+    quantity: 1,
+    unitPrice: 0,
+  },
+  {
+    id: "preview-r2",
+    caseId: "preview-sample",
+    toothNumber: "9",
+    restorationType: "Crown",
+    material: "Zirconia",
+    shade: "A2",
+    quantity: 1,
+    unitPrice: 0,
+  },
+  {
+    id: "preview-r3",
+    caseId: "preview-sample",
+    toothNumber: "14",
+    restorationType: "Crown",
+    material: "E.max",
+    shade: "B1",
+    quantity: 1,
+    unitPrice: 0,
+  },
+];
+
+const SAMPLE_NOTES = [
+  {
+    noteText: "Match adjacent shade; high translucency at incisal edge.",
+    visibility: "shared_with_provider",
+    createdAt: new Date().toISOString(),
+  },
+  {
+    noteText: "Patient prefers a slightly warmer hue — confirmed at scan.",
+    visibility: "internal_lab_only",
+    createdAt: new Date().toISOString(),
+  },
+];
 
 interface CasePrintLayoutEditorProps {
   onClose: () => void;
@@ -374,6 +448,22 @@ export function CasePrintLayoutEditor({
     setSelected(null);
   }
 
+  async function handlePreview() {
+    if (!orgId) return;
+    setSaveError(null);
+    try {
+      await printCaseCardAdvanced(
+        buildSampleCase(orgId),
+        { restorations: SAMPLE_RESTORATIONS, notes: SAMPLE_NOTES },
+        draft,
+      );
+    } catch (e) {
+      setSaveError(
+        e instanceof Error ? e.message : "Failed to open preview.",
+      );
+    }
+  }
+
   function handleFile(file: File | null | undefined) {
     if (!file) return;
     if (draft.extraImages.length >= 8) {
@@ -467,6 +557,15 @@ export function CasePrintLayoutEditor({
             </p>
           </div>
           <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={handlePreview}
+              className="h-8 px-2.5 rounded-md hover:bg-secondary text-muted-foreground hover:text-foreground inline-flex items-center gap-1.5 text-xs font-medium"
+              title="Open a print preview of the current layout with sample case data"
+            >
+              <Printer size={13} />
+              Preview
+            </button>
             <button
               type="button"
               onClick={resetToDefaults}
