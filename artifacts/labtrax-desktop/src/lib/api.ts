@@ -497,34 +497,6 @@ function authHeader(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-/**
- * Fetch a same-origin, bearer-gated media/file URL with the same
- * 401 → refresh → retry behavior as apiFetch. Plain media fetchers
- * (AuthedImage/AuthedVideo, ScanThumbnail, file open/download) previously did a
- * one-shot fetch with the in-memory access token; once that 15-minute token
- * expired they 401'd and rendered blank while ordinary data calls kept working
- * via apiFetch's transparent refresh. Routing every media fetch through here
- * keeps images/scans/files alive across access-token expiry. Awaits token
- * hydration first so a hard reload doesn't race the keychain/localStorage read.
- */
-export async function authedMediaFetch(
-  url: string,
-  init: RequestInit = {},
-  retried = false,
-): Promise<Response> {
-  await waitForTokenHydration();
-  const headers: Record<string, string> = {
-    ...(init.headers as Record<string, string> | undefined),
-    ...authHeader(),
-  };
-  const res = await fetch(url, { ...init, headers });
-  if (res.status === 401 && !retried && _tokens?.refreshToken) {
-    const refreshed = await refreshAccessToken();
-    if (refreshed) return authedMediaFetch(url, init, true);
-  }
-  return res;
-}
-
 // Network-level fetch can throw TypeError("Failed to fetch") on transient
 // connectivity blips, captive-portal redirects, sleep/wake, or the
 // renderer briefly losing its proxy. We retry GET/HEAD once after 800 ms

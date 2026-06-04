@@ -3,7 +3,6 @@ import { QueryClient, QueryFunction } from "@tanstack/react-query";
 import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
-import { isUnauthenticatedPath } from "./unauthenticated-paths";
 
 let cachedBaseUrl: string | null = null;
 
@@ -142,29 +141,6 @@ export function getAccessToken() {
   return _accessToken;
 }
 
-// Force-refresh the auth token for rendering auth-gated case media
-// (images/video). Native <Image> attaches the bearer token synchronously via
-// caseMediaSource(); when that in-memory token is missing (cold start before
-// loadTokens ran) or expired, the file request 401s and the image renders
-// blank with NO retry — unlike resilientFetch JSON calls, which refresh and
-// retry. The AuthedImage component calls this on a load error to hydrate +
-// rotate the token, then re-renders with fresh headers. Returns the current
-// access token (native) or null when refresh failed / user is logged out.
-export async function refreshAuthForMedia(): Promise<string | null> {
-  if (Platform.OS === "web") {
-    const ok = await refreshAccessTokenViaCookie();
-    return ok ? _accessToken : null;
-  }
-  if (!_accessToken && !_refreshToken) {
-    await loadTokens();
-  }
-  if (_refreshToken) {
-    const refreshed = await refreshAccessToken();
-    if (refreshed) return refreshed;
-  }
-  return _accessToken;
-}
-
 async function refreshAccessToken(): Promise<string | null> {
   if (!_refreshToken) return null;
   if (_refreshPromise) return _refreshPromise;
@@ -270,7 +246,7 @@ async function resilientFetch(
   // Native's fetch jar auto-attaches, which the server's CSRF guard rejects
   // with a 403 on every state-changing request (POST/PUT/PATCH/DELETE) —
   // silently wedging case-status/photo/note syncs as "lab rejected".
-  if (Platform.OS !== "web" && !_accessToken && !isUnauthenticatedPath(path)) {
+  if (Platform.OS !== "web" && !_accessToken) {
     await loadTokens();
     if (!_accessToken && _refreshToken) {
       await refreshAccessToken();

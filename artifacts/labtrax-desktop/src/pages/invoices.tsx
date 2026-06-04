@@ -29,7 +29,7 @@ import {
   X,
 } from "lucide-react";
 import QRCodeLib from "qrcode";
-import { apiFetch, ApiError, authedMediaFetch, getApiOrigin, getAccessToken } from "@/lib/api";
+import { apiFetch, ApiError, getApiOrigin, getAccessToken } from "@/lib/api";
 import type {
   CaseAttachment,
   CaseRestoration,
@@ -1077,7 +1077,10 @@ export function InvoiceEditor({
 
   async function openAttachmentFile(att: CaseAttachment) {
     const url = `${getApiOrigin()}/api/cases/${att.caseId}/attachments/${att.id}/file`;
-    const res = await authedMediaFetch(url);
+    const token = getAccessToken();
+    const res = await fetch(url, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
     if (!res.ok) { window.alert("Could not open file."); return; }
     const blob = await res.blob();
     const blobUrl = URL.createObjectURL(blob);

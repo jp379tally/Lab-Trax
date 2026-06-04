@@ -1192,13 +1192,6 @@ export type PricingTier = {
   prices: Record<string, number>;
 };
 
-// User-defined billable line items added on the fly from the Add Item flow
-// and optionally saved to the lab's billable items list for reuse.
-export interface CustomMaterial {
-  name: string;
-  price: number;
-}
-
 export const SHADE_OPTIONS = ["A2", "A3", "A3.5", "A4", "B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D2", "D3", "D4", "0M1", "0M2", "0M3", "BL1", "BL2", "BL3", "Custom", "Other"];
 
 export const DEFAULT_TIER_ITEMS = [

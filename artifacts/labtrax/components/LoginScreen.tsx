@@ -48,7 +48,6 @@ export default function LoginScreen() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [rememberUsername, setRememberUsername] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [biometricAvailable, setBiometricAvailable] = useState(false);
@@ -227,28 +226,12 @@ export default function LoginScreen() {
     }
   }
 
-  useEffect(() => {
-    AsyncStorage.getItem("@labtrax_remembered_username")
-      .then((saved) => {
-        if (saved) {
-          setUsername(saved);
-          setRememberUsername(true);
-        }
-      })
-      .catch(() => {});
-  }, []);
-
   async function handleLogin() {
     if (!username.trim() || !password.trim()) {
       setError("Please enter both username and password.");
       return;
     }
     setError(null);
-    if (rememberUsername) {
-      AsyncStorage.setItem("@labtrax_remembered_username", username.trim()).catch(() => {});
-    } else {
-      AsyncStorage.removeItem("@labtrax_remembered_username").catch(() => {});
-    }
     setIsLoggingIn(true);
     const result = await login(username.trim(), password.trim());
     setIsLoggingIn(false);
@@ -2616,29 +2599,6 @@ export default function LoginScreen() {
                   <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={18} color="rgba(255,255,255,0.4)" />
                 </Pressable>
               </View>
-            </View>
-
-            <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 4, marginTop: 10, marginBottom: 2 }}>
-              <Pressable
-                onPress={() => setRememberUsername(!rememberUsername)}
-                style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
-              >
-                <View style={{
-                  width: 18,
-                  height: 18,
-                  borderRadius: 4,
-                  borderWidth: 1.5,
-                  borderColor: rememberUsername ? "#60A5FA" : "rgba(255,255,255,0.3)",
-                  backgroundColor: rememberUsername ? "#60A5FA" : "transparent",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}>
-                  {rememberUsername && <Ionicons name="checkmark" size={12} color="#FFF" />}
-                </View>
-                <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.7)" }}>
-                  Remember my username
-                </Text>
-              </Pressable>
             </View>
 
             <View style={{ flexDirection: "row", justifyContent: "space-between", paddingHorizontal: 4, marginTop: 4, marginBottom: 12 }}>

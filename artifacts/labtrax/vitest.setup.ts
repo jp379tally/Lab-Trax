@@ -315,8 +315,6 @@ vi.mock("@/lib/app-context", () => ({
     notifications: [],
     clients: [],
     pricingTiers: [],
-    customMaterials: [],
-    addCustomMaterial: vi.fn(),
     users: [],
     role: "user",
     adminUnlocked: false,

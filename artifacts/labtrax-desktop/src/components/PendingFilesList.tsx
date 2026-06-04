@@ -46,7 +46,7 @@ import {
   type ScanFormat,
 } from "@workspace/scan-viewer";
 import ScanThumbnail from "@/components/ScanThumbnail";
-import { apiFetch, ApiError, authedMediaFetch, getAccessToken } from "@/lib/api";
+import { apiFetch, ApiError, getAccessToken } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { formatDate, relativeTime } from "@/lib/format";
 import type { LabCase } from "@/lib/types";
@@ -111,7 +111,11 @@ function ScanPreview({
     const controller = new AbortController();
     (async () => {
       try {
-        const res = await authedMediaFetch(fileUrl, {
+        const headers: Record<string, string> = {};
+        const token = getAccessToken();
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+        const res = await fetch(fileUrl, {
+          headers,
           signal: controller.signal,
         });
         if (!res.ok) {

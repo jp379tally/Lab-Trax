@@ -48,7 +48,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
   saveBackupToFolder: (buffer, fileName, folderPath) =>
     ipcRenderer.invoke("backup:save-to-folder", { buffer, fileName, folderPath }),
   showOpenDialog: (opts) => ipcRenderer.invoke("dialog:showOpenDialog", opts),
-  readFile: (filePath) => ipcRenderer.invoke("dialog:read-file", filePath),
   itero: {
     getStatus: () => ipcRenderer.invoke("itero:get-status"),
     setCredentials: (payload) => ipcRenderer.invoke("itero:set-credentials", payload),

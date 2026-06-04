@@ -205,17 +205,6 @@ function ListsContent({ organizationId }: { organizationId: string }) {
   const allVendors = vendorsQuery.data ?? [];
   const allCategories = catsQuery.data ?? [];
 
-  // Existing billable item names, used to power the "Billable Item Name"
-  // dropdown when adding/editing an item.
-  const itemNames = Array.from(
-    new Set(
-      allVendors
-        .filter((v) => v.vendorType === "item")
-        .map((v) => v.name.trim())
-        .filter(Boolean)
-    )
-  ).sort((a, b) => a.localeCompare(b));
-
   // Support deep-linking to a specific vendor via ?vendor=<id>
   // (e.g. from the recurring rules list badge).
   const [autoOpenedVendorId, setAutoOpenedVendorId] = useState<string | null>(null);
@@ -629,7 +618,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
               {isCategoriesTab ? (
                 <CategoryFormFields form={categoryForm} onChange={setCategoryForm} error={catError} />
               ) : (
-                <VendorFormFields form={vendorForm} onChange={setVendorForm} error={vendorError} itemNames={itemNames} />
+                <VendorFormFields form={vendorForm} onChange={setVendorForm} error={vendorError} />
               )}
             </div>
 
@@ -937,36 +926,25 @@ function VendorFormFields({
   form,
   onChange,
   error,
-  itemNames = [],
 }: {
   form: VendorForm;
   onChange: (f: VendorForm) => void;
   error: string | null;
-  itemNames?: string[];
 }) {
   const set = (patch: Partial<VendorForm>) => onChange({ ...form, ...patch });
-  const isItem = form.vendorType === "item";
   return (
     <div className="space-y-4">
       {error && (
         <p className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">{error}</p>
       )}
-      <FieldRow label={isItem ? "Billable Item Name *" : "Name *"}>
-        {isItem ? (
-          <BillableItemNameField
-            value={form.name}
-            onChange={(name) => set({ name })}
-            options={itemNames}
-          />
-        ) : (
-          <input
-            autoFocus
-            value={form.name}
-            onChange={(e) => set({ name: e.target.value })}
-            placeholder="Full name"
-            className={inputCls}
-          />
-        )}
+      <FieldRow label="Name *">
+        <input
+          autoFocus
+          value={form.name}
+          onChange={(e) => set({ name: e.target.value })}
+          placeholder="Full name"
+          className={inputCls}
+        />
       </FieldRow>
       <FieldRow label="Type">
         <select
@@ -979,69 +957,65 @@ function VendorFormFields({
           <option value="item">Item</option>
         </select>
       </FieldRow>
-      {!isItem && (
-        <>
-          <FieldRow label="Phone">
-            <input
-              value={form.phone}
-              onChange={(e) => set({ phone: e.target.value })}
-              placeholder="(555) 555-5555"
-              className={inputCls}
-            />
-          </FieldRow>
-          <FieldRow label="Email">
-            <input
-              type="email"
-              value={form.email}
-              onChange={(e) => set({ email: e.target.value })}
-              placeholder="name@example.com"
-              className={inputCls}
-            />
-          </FieldRow>
-          <FieldRow label="Website">
-            <input
-              value={form.website}
-              onChange={(e) => set({ website: e.target.value })}
-              placeholder="https://example.com"
-              className={inputCls}
-            />
-          </FieldRow>
-          <FieldRow label="Address">
-            <input
-              value={form.address}
-              onChange={(e) => set({ address: e.target.value })}
-              placeholder="Street address"
-              className={inputCls}
-            />
-          </FieldRow>
-          <div className="grid grid-cols-3 gap-2">
-            <FieldRow label="City">
-              <input
-                value={form.city}
-                onChange={(e) => set({ city: e.target.value })}
-                placeholder="City"
-                className={inputCls}
-              />
-            </FieldRow>
-            <FieldRow label="State">
-              <input
-                value={form.state}
-                onChange={(e) => set({ state: e.target.value })}
-                placeholder="CA"
-                className={inputCls}
-              />
-            </FieldRow>
-            <FieldRow label="ZIP">
-              <input
-                value={form.zip}
-                onChange={(e) => set({ zip: e.target.value })}
-                placeholder="90210"
-                className={inputCls}
-              />
-            </FieldRow>
-          </div>
-        </>
-      )}
+      <FieldRow label="Phone">
+        <input
+          value={form.phone}
+          onChange={(e) => set({ phone: e.target.value })}
+          placeholder="(555) 555-5555"
+          className={inputCls}
+        />
+      </FieldRow>
+      <FieldRow label="Email">
+        <input
+          type="email"
+          value={form.email}
+          onChange={(e) => set({ email: e.target.value })}
+          placeholder="name@example.com"
+          className={inputCls}
+        />
+      </FieldRow>
+      <FieldRow label="Website">
+        <input
+          value={form.website}
+          onChange={(e) => set({ website: e.target.value })}
+          placeholder="https://example.com"
+          className={inputCls}
+        />
+      </FieldRow>
+      <FieldRow label="Address">
+        <input
+          value={form.address}
+          onChange={(e) => set({ address: e.target.value })}
+          placeholder="Street address"
+          className={inputCls}
+        />
+      </FieldRow>
+      <div className="grid grid-cols-3 gap-2">
+        <FieldRow label="City">
+          <input
+            value={form.city}
+            onChange={(e) => set({ city: e.target.value })}
+            placeholder="City"
+            className={inputCls}
+          />
+        </FieldRow>
+        <FieldRow label="State">
+          <input
+            value={form.state}
+            onChange={(e) => set({ state: e.target.value })}
+            placeholder="CA"
+            className={inputCls}
+          />
+        </FieldRow>
+        <FieldRow label="ZIP">
+          <input
+            value={form.zip}
+            onChange={(e) => set({ zip: e.target.value })}
+            placeholder="90210"
+            className={inputCls}
+          />
+        </FieldRow>
+      </div>
       <FieldRow label="Notes">
         <textarea
           value={form.notes}
@@ -1068,80 +1042,6 @@ function VendorFormFields({
         <span className="text-sm">{form.isActive ? "Active" : "Inactive"}</span>
       </div>
     </div>
-  );
-}
-
-const ADD_NEW_ITEM = "__add_new_billable_item__";
-
-function BillableItemNameField({
-  value,
-  onChange,
-  options,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  options: string[];
-}) {
-  // Canonical option matching the current value (case/whitespace-insensitive),
-  // used to keep the <select> binding exact even if stored casing differs.
-  const canonical = options.find(
-    (o) => o.toLowerCase() === value.trim().toLowerCase()
-  );
-  const isCustomValue = value.trim() !== "" && !canonical;
-  const [addingNew, setAddingNew] = useState(false);
-  // Derive the mode so async option loading / edit transitions never get stuck.
-  const showInput = addingNew || isCustomValue;
-
-  if (showInput) {
-    return (
-      <div className="space-y-1.5">
-        <input
-          autoFocus
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder="New billable item name"
-          className={inputCls}
-        />
-        {options.length > 0 && (
-          <button
-            type="button"
-            onClick={() => {
-              setAddingNew(false);
-              onChange("");
-            }}
-            className="text-xs text-primary hover:underline inline-flex items-center gap-1"
-          >
-            <ChevronDownIcon size={12} /> Choose from existing items instead
-          </button>
-        )}
-      </div>
-    );
-  }
-
-  return (
-    <select
-      autoFocus
-      value={canonical ?? ""}
-      onChange={(e) => {
-        if (e.target.value === ADD_NEW_ITEM) {
-          setAddingNew(true);
-          onChange("");
-        } else {
-          onChange(e.target.value);
-        }
-      }}
-      className={inputCls}
-    >
-      <option value="" disabled>
-        Select a billable item…
-      </option>
-      {options.map((o) => (
-        <option key={o} value={o}>
-          {o}
-        </option>
-      ))}
-      <option value={ADD_NEW_ITEM}>+ Add new billable item…</option>
-    </select>
   );
 }
 

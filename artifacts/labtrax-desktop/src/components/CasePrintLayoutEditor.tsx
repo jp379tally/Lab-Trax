@@ -1,6 +1,6 @@
-// Case-print-label layout editor (drag & resize, per-lab).
+// Advanced case-print-label layout editor.
 //
-// Opened from the "Layout" button on the case detail panel.
+// Modal opened from the basic PrintLayoutEditor's "Advanced layout…" button.
 // Provides drag/resize boxes (header, case details, RX summary, tooth chart,
 // notes, barcode) plus uploaded extra images (logos, signatures, stamps).
 //
@@ -16,21 +16,18 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  ChevronDown,
   Eye,
   EyeOff,
   ImageIcon,
   Loader2,
-  Printer,
   RotateCcw,
   Trash2,
   Upload,
   X,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
-import { fetchTemplateImageAsDataUrl, printCaseCardAdvanced } from "@/lib/print";
+import { fetchTemplateImageAsDataUrl } from "@/lib/print";
 import { useAuth } from "@/lib/auth-context";
-import type { CaseRestoration, LabCase } from "@/lib/types";
 import {
   coerceCasePrintTemplate,
   DEFAULT_CASE_PRINT_TEMPLATE,
@@ -123,232 +120,6 @@ function applyDrag(
   };
 }
 
-// Sample scenarios so admins can preview the layout against the range of
-// real-world cases — a standard case, a rush full-arch case, a long-notes
-// case, and a minimal/sparse case — to confirm boxes neither overflow nor
-// look empty. `labOrganizationId` is filled in at call time so uploaded
-// template images still resolve.
-
-type SampleNote = {
-  noteText: string;
-  visibility: string;
-  createdAt: string;
-};
-
-interface SampleScenario {
-  id: string;
-  label: string;
-  description: string;
-  build: (labOrganizationId: string) => {
-    labCase: LabCase;
-    restorations: CaseRestoration[];
-    notes: SampleNote[];
-  };
-}
-
-function restoration(
-  idx: number,
-  toothNumber: string,
-  restorationType: string,
-  material: string,
-  shade: string,
-): CaseRestoration {
-  return {
-    id: `preview-r${idx}`,
-    caseId: "preview-sample",
-    toothNumber,
-    restorationType,
-    material,
-    shade,
-    quantity: 1,
-    unitPrice: 0,
-  };
-}
-
-const SAMPLE_SCENARIOS: SampleScenario[] = [
-  {
-    id: "standard",
-    label: "Standard",
-    description: "Single patient, three crowns, two notes",
-    build: (labOrganizationId) => {
-      const now = new Date();
-      const due = new Date(now.getTime() + 1000 * 60 * 60 * 24 * 5);
-      return {
-        labCase: {
-          id: "preview-sample",
-          caseNumber: "10042",
-          labOrganizationId,
-          providerOrganizationId: "preview-provider",
-          patientFirstName: "Jordan",
-          patientLastName: "Maxwell",
-          doctorName: "Dr. Avery Chen",
-          status: "in_design",
-          priority: "normal",
-          dueDate: due.toISOString(),
-          createdAt: now.toISOString(),
-          restorationTypes: "Crown",
-          restorationMaterials: "Zirconia, E.max",
-          teeth: "8, 9, 14",
-          casePanBarcode: "10042",
-          caseNotes: "Match adjacent shade; high translucency at incisal edge.",
-        },
-        restorations: [
-          restoration(1, "8", "Crown", "Zirconia", "A2"),
-          restoration(2, "9", "Crown", "Zirconia", "A2"),
-          restoration(3, "14", "Crown", "E.max", "B1"),
-        ],
-        notes: [
-          {
-            noteText:
-              "Match adjacent shade; high translucency at incisal edge.",
-            visibility: "shared_with_provider",
-            createdAt: now.toISOString(),
-          },
-          {
-            noteText:
-              "Patient prefers a slightly warmer hue — confirmed at scan.",
-            visibility: "internal_lab_only",
-            createdAt: now.toISOString(),
-          },
-        ],
-      };
-    },
-  },
-  {
-    id: "rush-full-arch",
-    label: "Rush + full arch",
-    description: "Rush priority, full upper arch (16 units)",
-    build: (labOrganizationId) => {
-      const now = new Date();
-      const due = new Date(now.getTime() + 1000 * 60 * 60 * 24);
-      const restorations = Array.from({ length: 16 }, (_, i) =>
-        restoration(
-          i + 1,
-          String(i + 1),
-          "Crown",
-          i % 2 === 0 ? "Zirconia" : "E.max",
-          "A3",
-        ),
-      );
-      return {
-        labCase: {
-          id: "preview-sample",
-          caseNumber: "10099",
-          labOrganizationId,
-          providerOrganizationId: "preview-provider",
-          patientFirstName: "Alexandria",
-          patientLastName: "Worthington-Blake",
-          doctorName: "Dr. Sebastian Montgomery",
-          status: "in_design",
-          priority: "rush",
-          dueDate: due.toISOString(),
-          createdAt: now.toISOString(),
-          restorationTypes: "Crown",
-          restorationMaterials: "Zirconia, E.max",
-          teeth: "1-16",
-          casePanBarcode: "10099",
-          caseNotes:
-            "Full upper-arch reconstruction. Confirm occlusion before glazing.",
-        },
-        restorations,
-        notes: [
-          {
-            noteText:
-              "RUSH — patient flying out Friday. Stain & glaze same day.",
-            visibility: "shared_with_provider",
-            createdAt: now.toISOString(),
-          },
-        ],
-      };
-    },
-  },
-  {
-    id: "long-notes",
-    label: "Long notes",
-    description: "Several long, multi-line notes",
-    build: (labOrganizationId) => {
-      const now = new Date();
-      const due = new Date(now.getTime() + 1000 * 60 * 60 * 24 * 7);
-      return {
-        labCase: {
-          id: "preview-sample",
-          caseNumber: "10128",
-          labOrganizationId,
-          providerOrganizationId: "preview-provider",
-          patientFirstName: "Priya",
-          patientLastName: "Raghunathan",
-          doctorName: "Dr. Eleanor Whitfield",
-          status: "in_design",
-          priority: "normal",
-          dueDate: due.toISOString(),
-          createdAt: now.toISOString(),
-          restorationTypes: "Crown, Bridge",
-          restorationMaterials: "Zirconia",
-          teeth: "18, 19, 20",
-          casePanBarcode: "10128",
-          caseNotes:
-            "See attached notes — extensive shade-mapping instructions.",
-        },
-        restorations: [
-          restoration(1, "18", "Bridge", "Zirconia", "A1"),
-          restoration(2, "19", "Bridge", "Zirconia", "A1"),
-          restoration(3, "20", "Bridge", "Zirconia", "A1"),
-        ],
-        notes: [
-          {
-            noteText:
-              "Shade mapping: cervical third A3.5 blending to A2 at the middle third, finishing A1 with high translucency at the incisal edge. Patient has pronounced incisal halo on naturals 8 and 9 — replicate subtly. Avoid over-characterization; the contralateral side is conservative.",
-            visibility: "shared_with_provider",
-            createdAt: now.toISOString(),
-          },
-          {
-            noteText:
-              "Bite registration was taken in MIP. Patient reports occasional clenching at night — build in slightly heavier interproximal contacts on 18 and 20 and verify the pontic at 19 clears the ridge by at least 2mm for hygiene access.",
-            visibility: "internal_lab_only",
-            createdAt: now.toISOString(),
-          },
-          {
-            noteText:
-              "Doctor called to confirm: use the second impression (the first had a drag on the distal margin of 18). Provisional is in place; patient comfortable. Deliver before the 14th if at all possible.",
-            visibility: "shared_with_provider",
-            createdAt: now.toISOString(),
-          },
-        ],
-      };
-    },
-  },
-  {
-    id: "minimal",
-    label: "Minimal",
-    description: "One unit, no notes, sparse fields",
-    build: (labOrganizationId) => {
-      const now = new Date();
-      return {
-        labCase: {
-          id: "preview-sample",
-          caseNumber: "10003",
-          labOrganizationId,
-          providerOrganizationId: "preview-provider",
-          patientFirstName: "Sam",
-          patientLastName: "Lee",
-          doctorName: "Dr. Kim",
-          status: "received",
-          priority: "normal",
-          dueDate: null,
-          createdAt: now.toISOString(),
-          restorationTypes: "Crown",
-          restorationMaterials: null,
-          teeth: "30",
-          casePanBarcode: "10003",
-          caseNotes: null,
-        },
-        restorations: [restoration(1, "30", "Crown", "", "")],
-        notes: [],
-      };
-    },
-  },
-];
-
 interface CasePrintLayoutEditorProps {
   onClose: () => void;
   /**
@@ -392,25 +163,11 @@ export function CasePrintLayoutEditor({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [askKeep, setAskKeep] = useState(false);
-  const [previewMenuOpen, setPreviewMenuOpen] = useState(false);
 
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const previewMenuRef = useRef<HTMLDivElement | null>(null);
   const seededRef = useRef(false);
-
-  // Close the preview scenario menu on outside click.
-  useEffect(() => {
-    if (!previewMenuOpen) return;
-    function onDocClick(e: MouseEvent) {
-      if (!previewMenuRef.current?.contains(e.target as Node)) {
-        setPreviewMenuOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
-  }, [previewMenuOpen]);
 
   // Seed local draft once the query loads.
   useEffect(() => {
@@ -617,26 +374,6 @@ export function CasePrintLayoutEditor({
     setSelected(null);
   }
 
-  async function handlePreview(scenarioId: string) {
-    if (!orgId) return;
-    setPreviewMenuOpen(false);
-    setSaveError(null);
-    const scenario =
-      SAMPLE_SCENARIOS.find((s) => s.id === scenarioId) ?? SAMPLE_SCENARIOS[0];
-    try {
-      const sample = scenario.build(orgId);
-      await printCaseCardAdvanced(
-        sample.labCase,
-        { restorations: sample.restorations, notes: sample.notes },
-        draft,
-      );
-    } catch (e) {
-      setSaveError(
-        e instanceof Error ? e.message : "Failed to open preview.",
-      );
-    }
-  }
-
   function handleFile(file: File | null | undefined) {
     if (!file) return;
     if (draft.extraImages.length >= 8) {
@@ -730,46 +467,6 @@ export function CasePrintLayoutEditor({
             </p>
           </div>
           <div className="flex items-center gap-1.5">
-            <div className="relative" ref={previewMenuRef}>
-              <button
-                type="button"
-                onClick={() => setPreviewMenuOpen((o) => !o)}
-                aria-haspopup="menu"
-                aria-expanded={previewMenuOpen}
-                className="h-8 px-2.5 rounded-md hover:bg-secondary text-muted-foreground hover:text-foreground inline-flex items-center gap-1.5 text-xs font-medium"
-                title="Open a print preview of the current layout with a sample case"
-              >
-                <Printer size={13} />
-                Preview
-                <ChevronDown size={13} />
-              </button>
-              {previewMenuOpen && (
-                <div
-                  role="menu"
-                  className="absolute right-0 top-full mt-1 z-10 w-60 rounded-md border border-border bg-card shadow-lg py-1"
-                >
-                  <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-                    Preview with sample case
-                  </div>
-                  {SAMPLE_SCENARIOS.map((s) => (
-                    <button
-                      key={s.id}
-                      type="button"
-                      role="menuitem"
-                      onClick={() => handlePreview(s.id)}
-                      className="w-full text-left px-3 py-1.5 hover:bg-secondary/60 flex flex-col"
-                    >
-                      <span className="text-xs font-medium text-foreground">
-                        {s.label}
-                      </span>
-                      <span className="text-[10px] text-muted-foreground">
-                        {s.description}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
             <button
               type="button"
               onClick={resetToDefaults}

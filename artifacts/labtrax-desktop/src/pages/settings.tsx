@@ -3487,25 +3487,12 @@ function RestoreSection({
       properties: ["openFile"],
     });
     if (!filePaths || filePaths.length === 0) return;
-    const picked = filePaths[0];
-    // The renderer can't read local files directly (fetch("file://…") is
-    // blocked), so read the bytes through the main process over IPC.
-    if (!electron?.readFile) {
-      setRestoreError("This app build can't read the selected file. Please update the LabTrax Desktop app.");
-      return;
-    }
-    try {
-      const result = await electron.readFile(picked);
-      if (!result?.ok || !result.data) {
-        setRestoreError(result?.error ?? "Couldn't read the selected backup file.");
-        return;
-      }
-      const name = result.name ?? picked.split(/[\\/]/).pop() ?? "backup.zip.enc";
-      const file = new File([result.data], name, { type: "application/octet-stream" });
-      setRestoreError(null);
+    // Electron gives us a path; build a File-like object using fetch
+    const resp = await fetch(`file://${filePaths[0]}`).catch(() => null);
+    if (resp) {
+      const blob = await resp.blob();
+      const file = new File([blob], filePaths[0].split("/").pop() ?? "backup.zip.enc");
       setSelectedFile(file);
-    } catch (err) {
-      setRestoreError(err instanceof Error ? err.message : "Couldn't read the selected backup file.");
     }
   }
 
@@ -7008,7 +6995,7 @@ type PlatformAdminAPI = {
   testSecret: (payload: string | { apiBaseUrl: string }) => Promise<PlatformAdminTestResult>;
   onChanged: (cb: (s: PlatformAdminStatus) => void) => () => void;
 };
-type ElectronWindow = Window & { electronAPI?: { showFolderDialog?: () => Promise<string | null>; showOpenDialog?: (opts: { title?: string; filters?: Array<{ name: string; extensions: string[] }>; properties?: string[] }) => Promise<string[] | null>; readFile?: (filePath: string) => Promise<{ ok: boolean; name?: string; data?: ArrayBuffer; error?: string }>; relaunch?: () => void; openExternal?: (url: string) => Promise<boolean>; saveBackupToFolder?: (buffer: Uint8Array, fileName: string, folderPath: string) => Promise<{ ok: boolean; path?: string; error?: string }>; itero?: IteroAPI; platformAdmin?: PlatformAdminAPI } };
+type ElectronWindow = Window & { electronAPI?: { showFolderDialog?: () => Promise<string | null>; showOpenDialog?: (opts: { title?: string; filters?: Array<{ name: string; extensions: string[] }>; properties?: string[] }) => Promise<string[] | null>; relaunch?: () => void; openExternal?: (url: string) => Promise<boolean>; saveBackupToFolder?: (buffer: Uint8Array, fileName: string, folderPath: string) => Promise<{ ok: boolean; path?: string; error?: string }>; itero?: IteroAPI; platformAdmin?: PlatformAdminAPI } };
 
 function PlatformAdminPanel() {
   const electron = typeof window !== "undefined" ? (window as ElectronWindow).electronAPI : null;

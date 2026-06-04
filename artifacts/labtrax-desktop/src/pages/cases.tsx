@@ -35,7 +35,7 @@ import {
   X,
 } from "lucide-react";
 import QRCodeSVG from "react-qr-code";
-import { apiFetch, authedMediaFetch, getAccessToken, getApiOrigin } from "@/lib/api";
+import { apiFetch, getAccessToken, getApiOrigin } from "@/lib/api";
 import { AuthedImage, AuthedVideo, isSameApiOrigin } from "@/components/AuthedMedia";
 import type {
   CaseAttachment,
@@ -80,9 +80,11 @@ import {
 import ScanViewerModal from "@/components/ScanViewerModal";
 import ScanThumbnail from "@/components/ScanThumbnail";
 import type { ScanFormat } from "@workspace/scan-viewer";
+import { PrintLayoutEditor } from "@/components/PrintLayoutEditor";
 import { CasePrintLayoutEditor } from "@/components/CasePrintLayoutEditor";
 import {
   type PrintLayoutConfig,
+  isDefaultLayout,
   loadPrintLayoutConfig,
 } from "@/lib/print-layout";
 import {
@@ -893,8 +895,8 @@ export default function CasesPage() {
   });
 
   const bulkStatusMutation = useMutation({
-    mutationFn: (body: { caseIds: string[]; status: string; allowPartial?: boolean }) =>
-      apiFetch<{ updatedCount: number; missingIds?: string[] }>("/cases/bulk-status", {
+    mutationFn: (body: { caseIds: string[]; status: string }) =>
+      apiFetch<{ updatedCount: number }>("/cases/bulk-status", {
         method: "POST",
         body: JSON.stringify(body),
       }),
@@ -904,25 +906,12 @@ export default function CasesPage() {
       setShowBulkStatusModal(false);
       setBulkStatusValue("");
       const label = STATUS_FILTERS.find((s) => s.value === bulkStatusValue)?.label ?? bulkStatusValue;
-      const skipped = result.missingIds?.length ?? 0;
-      const base = `${result.updatedCount} case${result.updatedCount !== 1 ? "s" : ""} marked as ${label}`;
-      setBulkToast(
-        skipped > 0
-          ? `${base} (${skipped} not found, skipped).`
-          : `${base}.`,
-      );
+      setBulkToast(`${result.updatedCount} case${result.updatedCount !== 1 ? "s" : ""} marked as ${label}.`);
     },
     onError: (e: Error) => {
       setBulkToastError(e.message);
     },
   });
-
-  // True when the last attempt failed because some selected cases no longer
-  // exist — lets us offer "Apply to found cases only".
-  const bulkStatusNotFound =
-    bulkStatusMutation.isError &&
-    bulkStatusMutation.error instanceof Error &&
-    /not found/i.test(bulkStatusMutation.error.message);
 
   const [bulkToast, setBulkToast] = useState<string | null>(null);
   const [bulkToastError, setBulkToastError] = useState<string | null>(null);
@@ -1681,31 +1670,11 @@ export default function CasesPage() {
                 </select>
               </div>
               {bulkStatusMutation.isError && (
-                <div className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md space-y-2">
-                  <p>
-                    {bulkStatusMutation.error instanceof Error
-                      ? bulkStatusMutation.error.message
-                      : "An error occurred."}
-                  </p>
-                  {bulkStatusNotFound && (
-                    <button
-                      type="button"
-                      disabled={bulkStatusMutation.isPending}
-                      onClick={() => {
-                        if (!bulkStatusValue) return;
-                        bulkStatusMutation.mutate({
-                          caseIds: Array.from(selectedIds),
-                          status: bulkStatusValue,
-                          allowPartial: true,
-                        });
-                      }}
-                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-destructive text-destructive-foreground font-medium hover:bg-destructive/90 disabled:opacity-60"
-                    >
-                      {bulkStatusMutation.isPending && <Loader2 size={12} className="animate-spin" />}
-                      Apply to found cases only
-                    </button>
-                  )}
-                </div>
+                <p className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md">
+                  {bulkStatusMutation.error instanceof Error
+                    ? bulkStatusMutation.error.message
+                    : "An error occurred."}
+                </p>
               )}
             </div>
             <div className="flex gap-3 px-6 pb-5">
@@ -2067,6 +2036,7 @@ export function CaseDrawer({
   const { openPanel: openAiPanel } = useAiPanel();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [fileDragOver, setFileDragOver] = useState(false);
+  const fileDragCounterRef = useRef(0);
 
   const [activeTab, setActiveTab] = useState<CaseTab>("lab-slip");
   const [historySortOrder, setHistorySortOrder] = useState<"asc" | "desc">("asc");
@@ -2076,8 +2046,9 @@ export function CaseDrawer({
   >(null);
   const setLightboxUrl = (url: string | null) => setLightbox(url ? { url, kind: "image" } : null);
   const [confirmDeleteCase, setConfirmDeleteCase] = useState(false);
+  const [showPrintLayoutEditor, setShowPrintLayoutEditor] = useState(false);
   const [showCaseAdvancedEditor, setShowCaseAdvancedEditor] = useState(false);
-  const [printLayout] = useState<PrintLayoutConfig>(() => loadPrintLayoutConfig());
+  const [printLayout, setPrintLayout] = useState<PrintLayoutConfig>(() => loadPrintLayoutConfig());
 
   // Per-lab advanced (drag/scale) print template. Null = no custom layout
   // yet — the Print button keeps the existing list-based lab slip.
@@ -2908,20 +2879,12 @@ export function CaseDrawer({
     setUploadError(null);
     const errors: string[] = [];
     for (const file of files) {
-      // Bound each upload. apiFetch has no request timeout, and a stalled
-      // server/proxy (e.g. a restarting or zombie API instance) otherwise
-      // leaves the POST hanging forever with the UI stuck on "Uploading…".
-      // Aborting surfaces a recoverable error instead. 90s is generous for
-      // large media over a slow link.
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 90_000);
       try {
         const fd = new FormData();
         fd.append("file", file);
         const { url } = await apiFetch<{ url: string }>("/media/upload", {
           method: "POST",
           body: fd,
-          signal: controller.signal,
         });
         await apiFetch(`/cases/${labCase.id}/attachments`, {
           method: "POST",
@@ -2930,16 +2893,9 @@ export function CaseDrawer({
             fileName: file.name,
             fileType: file.type || "application/octet-stream",
           }),
-          signal: controller.signal,
         });
       } catch (err: any) {
-        const msg =
-          err?.name === "AbortError"
-            ? "Upload timed out. Please check your connection and try again."
-            : err?.message || "Upload failed.";
-        errors.push(`${file.name}: ${msg}`);
-      } finally {
-        clearTimeout(timeout);
+        errors.push(`${file.name}: ${err?.message || "Upload failed."}`);
       }
     }
     qc.invalidateQueries({ queryKey: ["case", labCase.id] });
@@ -2955,23 +2911,27 @@ export function CaseDrawer({
 
   function handleFileDragEnter(e: React.DragEvent) {
     e.preventDefault();
-    if (e.dataTransfer.types.includes("Files")) setFileDragOver(true);
+    e.stopPropagation();
+    fileDragCounterRef.current += 1;
+    if (fileDragCounterRef.current === 1) setFileDragOver(true);
   }
 
   function handleFileDragLeave(e: React.DragEvent) {
-    // Only clear when the drag truly leaves the outer drop zone div,
-    // not when moving between child elements inside it.
-    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
-      setFileDragOver(false);
-    }
+    e.preventDefault();
+    e.stopPropagation();
+    fileDragCounterRef.current -= 1;
+    if (fileDragCounterRef.current === 0) setFileDragOver(false);
   }
 
   function handleFileDragOver(e: React.DragEvent) {
     e.preventDefault();
+    e.stopPropagation();
   }
 
   function handleFileDrop(e: React.DragEvent) {
     e.preventDefault();
+    e.stopPropagation();
+    fileDragCounterRef.current = 0;
     setFileDragOver(false);
     const files = Array.from(e.dataTransfer.files);
     if (files.length > 0) void uploadFiles(files);
@@ -3525,14 +3485,14 @@ export function CaseDrawer({
                         Staged
                       </span>
                     )}
-                    {hasAdvancedTemplate && (
+                    {!isDefaultLayout(printLayout) && (
                       <span className="inline-flex items-center gap-1 text-[10px] font-medium text-primary bg-primary/10 px-1.5 py-0.5 rounded">
                         Customized
                       </span>
                     )}
                     <button
                       type="button"
-                      onClick={() => setShowCaseAdvancedEditor(true)}
+                      onClick={() => setShowPrintLayoutEditor(true)}
                       className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs text-muted-foreground hover:text-foreground transition-colors"
                       title="Customize print layout"
                     >
@@ -4535,6 +4495,10 @@ export function CaseDrawer({
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
+                  onDragEnter={handleFileDragEnter}
+                  onDragLeave={handleFileDragLeave}
+                  onDragOver={handleFileDragOver}
+                  onDrop={handleFileDrop}
                   className={`w-full flex items-center justify-center gap-2 py-3 rounded-lg border-2 border-dashed transition-colors cursor-pointer text-center ${
                     fileDragOver
                       ? "border-primary bg-primary/8 text-primary"
@@ -4924,10 +4888,14 @@ export function CaseDrawer({
                                             return;
                                           }
                                           try {
+                                            const token = getAccessToken();
                                             const sameOrigin = isSameApiOrigin(src);
-                                            const resp = sameOrigin
-                                              ? await authedMediaFetch(src)
-                                              : await fetch(src);
+                                            const resp = await fetch(
+                                              src,
+                                              sameOrigin && token
+                                                ? { headers: { Authorization: `Bearer ${token}` } }
+                                                : undefined,
+                                            );
                                             if (!resp.ok) throw new Error(String(resp.status));
                                             const blob = await resp.blob();
                                             const objUrl = URL.createObjectURL(blob);
@@ -5009,7 +4977,21 @@ export function CaseDrawer({
         <InvoiceEditor invoice={viewingInvoice} onClose={() => setViewingInvoice(null)} />
       )}
 
-      {/* Print Layout Editor (drag & resize, per-lab) */}
+      {/* Print Layout Editor */}
+      {showPrintLayoutEditor && (
+        <PrintLayoutEditor
+          onClose={() => setShowPrintLayoutEditor(false)}
+          config={printLayout}
+          onChange={(next) => setPrintLayout(next)}
+          hasCustomAdvancedTemplate={hasAdvancedTemplate}
+          onOpenAdvanced={() => {
+            setShowPrintLayoutEditor(false);
+            setShowCaseAdvancedEditor(true);
+          }}
+        />
+      )}
+
+      {/* Advanced (drag & resize) per-lab Print Layout Editor */}
       {showCaseAdvancedEditor && (
         <CasePrintLayoutEditor
           onClose={() => setShowCaseAdvancedEditor(false)}
@@ -5483,7 +5465,10 @@ function PriceHistoryPanel({
 }
 
 async function openFileAuthenticated(url: string): Promise<void> {
-  const res = await authedMediaFetch(url);
+  const token = getAccessToken();
+  const res = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
   if (!res.ok) {
     window.alert("Could not open file. Please try again.");
     return;
@@ -5507,7 +5492,10 @@ async function previewAttachmentInElectron(
   const electronAPI = (window as any).electronAPI;
   if (!electronAPI?.previewFile || !attachment.id) return;
   const href = `${getApiOrigin()}/api/cases/${caseId}/attachments/${attachment.id}/file`;
-  const res = await authedMediaFetch(href);
+  const token = getAccessToken();
+  const res = await fetch(href, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
   if (!res.ok) throw new Error(`Failed to fetch file: ${res.status}`);
   const buffer = await res.arrayBuffer();
   const mimeType =

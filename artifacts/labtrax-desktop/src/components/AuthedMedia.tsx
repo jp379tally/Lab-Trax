@@ -1,11 +1,10 @@
 import { useEffect, useState, type MouseEventHandler, type ReactNode } from "react";
-import { authedMediaFetch, getApiOrigin } from "@/lib/api";
+import { getAccessToken, getApiOrigin } from "@/lib/api";
 
 // True only when `url` is an absolute URL whose origin matches our API origin.
 // The bearer token must NEVER be sent to a third-party host, so we validate the
 // origin before attaching the Authorization header.
 export function isSameApiOrigin(url: string): boolean {
-  if (url.startsWith("/")) return true;
   try {
     return new URL(url).origin === new URL(getApiOrigin()).origin;
   } catch {
@@ -50,7 +49,11 @@ function useAuthedObjectUrl(url: string | null | undefined): {
     setState({ src: null, loading: true, error: false });
     (async () => {
       try {
-        const resp = await authedMediaFetch(url);
+        const token = getAccessToken();
+        const resp = await fetch(
+          url,
+          token ? { headers: { Authorization: `Bearer ${token}` } } : undefined,
+        );
         if (!resp.ok) throw new Error(`status ${resp.status}`);
         const blob = await resp.blob();
         if (cancelled) return;

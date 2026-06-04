@@ -1,4 +1,4 @@
-import { useState, useEffect, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { ApiError, TwoFactorRequiredError, getApiOrigin } from "@/lib/api";
 import { describeAuthRestoreStatus } from "@/lib/auth-restore-status";
@@ -18,22 +18,6 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [rememberUsername, setRememberUsername] = useState(false);
-  const [autoLoggedOut, setAutoLoggedOut] = useState(false);
-
-  useEffect(() => {
-    const saved = localStorage.getItem("labtrax_desktop_remembered_username");
-    if (saved) {
-      setUsername(saved);
-      setRememberUsername(true);
-    }
-    try {
-      if (sessionStorage.getItem("labtrax_auto_logout") === "1") {
-        sessionStorage.removeItem("labtrax_auto_logout");
-        setAutoLoggedOut(true);
-      }
-    } catch { /* ignore */ }
-  }, []);
 
   // Two-factor auth challenge state
   const [pendingToken, setPendingToken] = useState<string | null>(null);
@@ -54,11 +38,6 @@ export default function LoginPage() {
     if (!username.trim() || !password) {
       setError("Please enter your username and password.");
       return;
-    }
-    if (rememberUsername) {
-      localStorage.setItem("labtrax_desktop_remembered_username", username.trim());
-    } else {
-      localStorage.removeItem("labtrax_desktop_remembered_username");
     }
     setSubmitting(true);
     setError(null);
@@ -243,11 +222,6 @@ export default function LoginPage() {
                   </button>
                 </div>
               )}
-              {autoLoggedOut && (
-                <div className="mb-4 text-sm text-sky-800 bg-sky-50 border border-sky-200 px-3 py-2 rounded-md">
-                  You were signed out automatically after 2 minutes of inactivity.
-                </div>
-              )}
               <form onSubmit={onSubmit} className="space-y-4">
                 <div>
                   <label className="block text-xs font-medium text-foreground mb-1.5">
@@ -276,15 +250,6 @@ export default function LoginPage() {
                     placeholder="••••••••"
                   />
                 </div>
-                <label className="flex items-center gap-2.5 cursor-pointer select-none -mt-1">
-                  <input
-                    type="checkbox"
-                    checked={rememberUsername}
-                    onChange={(e) => setRememberUsername(e.target.checked)}
-                    className="h-4 w-4 rounded border-input accent-primary cursor-pointer"
-                  />
-                  <span className="text-sm text-muted-foreground">Remember my username</span>
-                </label>
                 {error && (
                   <div className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">
                     {error}
