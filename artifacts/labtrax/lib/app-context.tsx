@@ -181,6 +181,7 @@ const AppContext = createContext<AppContextValue | null>(null);
 
 const CASES_KEY = "@drivesync_cases";
 const ROLE_KEY = "@drivesync_role";
+const LAB_AFFILIATED_CACHE_KEY = "@drivesync_lab_affiliated";
 const NOTIFS_KEY = "@drivesync_notifs";
 const CLIENTS_KEY = "@drivesync_clients";
 const USERS_KEY = "@drivesync_users";
@@ -775,6 +776,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
     );
   }
 
+  // Immediately hydrate membership banner from cache before the API resolves.
+  // This prevents the "Join a lab" flash every time the app starts.
+  useEffect(() => {
+    if (!currentUserId) return;
+    AsyncStorage.getItem(`${LAB_AFFILIATED_CACHE_KEY}:${currentUserId}`)
+      .then((cached) => {
+        if (cached === "1") setHasActiveLabMembership(true);
+      })
+      .catch(() => {});
+  }, [currentUserId]);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -822,6 +834,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       if (activeMembership?.organizationId) {
         setHasActiveLabMembership(true);
+        AsyncStorage.setItem(`${LAB_AFFILIATED_CACHE_KEY}:${currentUserId}`, "1").catch(() => {});
         setActiveLabAffiliationKey(
           buildOrganizationAffiliationKey(activeMembership.organizationId)
         );
@@ -834,6 +847,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
 
       setHasActiveLabMembership(false);
+      AsyncStorage.removeItem(`${LAB_AFFILIATED_CACHE_KEY}:${currentUserId}`).catch(() => {});
       setActiveLabAffiliationKey(null);
       setActiveLabAffiliationName(null);
     }

@@ -32,6 +32,15 @@ import { notDeleted } from "./lib/soft-delete";
 const app: Express = express();
 app.set("trust proxy", 1);
 
+// Profile photos are public (not sensitive) — serve directly without auth.
+app.use(
+  "/uploads/profile-photos",
+  express.static(path.join(process.cwd(), "uploads", "profile-photos"), {
+    maxAge: "7d",
+    fallthrough: false,
+  }),
+);
+
 // Redirect legacy unauthenticated case-media URLs to the authenticated API
 // endpoint. Existing attachment records may have storageKey values of the form
 // "https://host/uploads/case-media/<filename>". Those URLs now hit this handler

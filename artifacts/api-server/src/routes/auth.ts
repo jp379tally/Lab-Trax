@@ -1,4 +1,8 @@
 import crypto from "node:crypto";
+import path from "node:path";
+import fs from "node:fs";
+import multer from "multer";
+import sharp from "sharp";
 import { Router } from "express";
 import { and, asc, eq, gt, inArray, isNull, ne } from "drizzle-orm";
 import { z } from "zod";
@@ -43,6 +47,15 @@ import { startBillingTrial } from "../lib/entitlement";
 
 const router = Router();
 
+const profilePhotoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype.startsWith("image/")) cb(null, true);
+    else cb(new Error("Only image files are allowed"));
+  },
+});
+
 function safeUser(user: any) {
   return {
     id: user.id,
@@ -63,6 +76,7 @@ function safeUser(user: any) {
     accountNumber: user.accountNumber,
     wantsUpdates: user.wantsUpdates,
     workStatus: user.workStatus ?? "available",
+    profilePhotoUrl: user.profilePhotoUrl ?? null,
   };
 }
 
@@ -902,6 +916,7 @@ router.put(
       phone,
       firstName,
       lastName,
+      profilePhotoUrl,
     } = req.body;
     const updates: Partial<typeof user> = {};
     if (practiceName !== undefined) updates.practiceName = practiceName;
@@ -911,6 +926,7 @@ router.put(
     if (phone !== undefined) updates.phone = phone;
     if (firstName !== undefined) updates.firstName = firstName;
     if (lastName !== undefined) updates.lastName = lastName;
+    if (profilePhotoUrl !== undefined) updates.profilePhotoUrl = profilePhotoUrl || null;
     if (firstName !== undefined || lastName !== undefined) {
       updates.initials = deriveUserInitials({
         firstName: firstName !== undefined ? firstName : user.firstName,
@@ -1277,6 +1293,45 @@ router.patch(
       .where(eq(users.id, userId))
       .returning();
     return ok(res, safeUser(updated));
+  })
+);
+
+router.post(
+  "/users/:id/profile-photo",
+  requireAuth,
+  profilePhotoUpload.single("photo"),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const authUserId = (req as any).auth.userId;
+    if (authUserId !== id) {
+      throw new HttpError(403, "Unauthorized");
+    }
+    if (!req.file) {
+      throw new HttpError(400, "No file provided");
+    }
+
+    const profilePhotosDir = path.join(process.cwd(), "uploads", "profile-photos");
+    if (!fs.existsSync(profilePhotosDir)) {
+      fs.mkdirSync(profilePhotosDir, { recursive: true });
+    }
+
+    const filename = `${id}-${Date.now()}.jpg`;
+    const outputPath = path.join(profilePhotosDir, filename);
+
+    await sharp(req.file.buffer)
+      .resize(200, 200, { fit: "cover" })
+      .jpeg({ quality: 85 })
+      .toFile(outputPath);
+
+    const photoUrl = `/uploads/profile-photos/${filename}`;
+
+    const [updated] = await db
+      .update(users)
+      .set({ profilePhotoUrl: photoUrl })
+      .where(eq(users.id, id))
+      .returning();
+
+    res.json({ success: true, profilePhotoUrl: photoUrl, user: safeUser(updated) });
   })
 );
 

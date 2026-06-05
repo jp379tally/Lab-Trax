@@ -66,6 +66,7 @@ export const users = pgTable(
     twoFactorSecret: text("two_factor_secret"),
     twoFactorEnabled: boolean("two_factor_enabled").default(false).notNull(),
     twoFactorBackupCodes: jsonb("two_factor_backup_codes"),
+    profilePhotoUrl: text("profile_photo_url"),
     createdAt: timestamp("created_at").defaultNow(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     deletedByUserId: varchar("deleted_by_user_id"),

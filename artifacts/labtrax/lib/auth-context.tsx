@@ -13,7 +13,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as LocalAuthentication from "expo-local-authentication";
 import * as SecureStore from "expo-secure-store";
 import { logAudit } from "./audit";
-import { getApiUrl, resilientFetch, saveTokens, clearTokens, loadTokens } from "./query-client";
+import { getApiUrl, resilientFetch, saveTokens, clearTokens, loadTokens, uploadCaseMedia } from "./query-client";
 
 interface StoredUser {
   id?: string;
@@ -260,7 +260,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               setIsLocked(true);
               const userPicKey = `${PROFILE_PIC_KEY}_${user.id || user.username}`;
               const savedPic = await AsyncStorage.getItem(userPicKey);
-              setProfilePicUriState(savedPic);
+              // Prefer server-stored URL (survives reinstalls) over local cache
+              const picUri = user.profilePhotoUrl || savedPic;
+              setProfilePicUriState(picUri);
+              if (user.profilePhotoUrl && savedPic !== user.profilePhotoUrl) {
+                await AsyncStorage.setItem(userPicKey, user.profilePhotoUrl).catch(() => {});
+              }
             } else if (meRes.status === 401 || meRes.status === 403) {
               // Session truly invalid — wipe credentials and route to login.
               await clearTokens();
@@ -311,6 +316,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } else {
       await AsyncStorage.removeItem(picKey);
     }
+    // Upload to server so the photo persists across reinstalls / devices
+    if (currentUserId && uri && (uri.startsWith("file://") || uri.startsWith("content://"))) {
+      try {
+        const filename = uri.split("/").pop() || "photo.jpg";
+        const mimeType = filename.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg";
+        const res = await uploadCaseMedia(
+          `/api/auth/users/${currentUserId}/profile-photo`,
+          uri,
+          filename,
+          mimeType,
+        );
+        if (res.ok) {
+          const data = await res.json();
+          if (data.profilePhotoUrl) {
+            const serverUrl = data.profilePhotoUrl;
+            setProfilePicUriState(serverUrl);
+            await AsyncStorage.setItem(picKey, serverUrl).catch(() => {});
+          }
+        }
+      } catch {
+        // Upload failure is non-fatal — local URI still shows immediately
+      }
+    }
   }
 
   async function login(username: string, password: string): Promise<{ success: boolean; requiresTwoFactor?: boolean; pendingToken?: string; error?: string }> {
@@ -360,7 +388,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await fetchAllUsers();
       const userPicKey = `${PROFILE_PIC_KEY}_${user.id || user.username}`;
       const savedPic = await AsyncStorage.getItem(userPicKey);
-      setProfilePicUriState(savedPic);
+      const picUri = user.profilePhotoUrl || savedPic;
+      setProfilePicUriState(picUri);
+      if (user.profilePhotoUrl && savedPic !== user.profilePhotoUrl) {
+        await AsyncStorage.setItem(userPicKey, user.profilePhotoUrl).catch(() => {});
+      }
       logAudit("LOGIN", username, "User authenticated");
       return { success: true };
     } catch (e: any) {
@@ -405,7 +437,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await fetchAllUsers();
         const userPicKey = `${PROFILE_PIC_KEY}_${user.id || user.username}`;
         const savedPic = await AsyncStorage.getItem(userPicKey);
-        setProfilePicUriState(savedPic);
+        const picUri = user.profilePhotoUrl || savedPic;
+        setProfilePicUriState(picUri);
+        if (user.profilePhotoUrl && savedPic !== user.profilePhotoUrl) {
+          await AsyncStorage.setItem(userPicKey, user.profilePhotoUrl).catch(() => {});
+        }
         logAudit("LOGIN_2FA", user.username, "User completed 2FA challenge");
       }
       return { success: true };
