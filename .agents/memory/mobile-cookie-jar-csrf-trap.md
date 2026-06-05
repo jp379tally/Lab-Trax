@@ -43,14 +43,22 @@ access token is present will also block the very endpoints used to *obtain* a
 token (`/api/auth/login`, `/api/auth/register`, `/api/auth/2fa/challenge`) —
 they are called before any token exists. Symptom: a red "Connection error: Not
 authenticated: no bearer token available.. Server: …" banner on the login
-screen, surfaced because auth-context wraps the thrown error. Fix: keep an
-exact-match allowlist of public paths (`lib/unauthenticated-paths.ts`) that
-bypass the guard; never use prefix/substring matching (an authed path must never
-be mis-classified as public). The exemption is safe for these endpoints because
-they're unauthenticated server-side and carry no cookie on a clean install.
+screen, surfaced because auth-context wraps the thrown error.
+
+**Fix (implemented):** `lib/unauthenticated-paths.ts` holds an exact-match
+`Set<string>` (`UNAUTHENTICATED_PATHS`) of all public endpoints. `resilientFetch`
+calls `isUnauthenticatedPath(path)` before throwing; if the path is in the set,
+the guard is skipped. Query strings are stripped before matching.
+
+**Critical: use exact-match, never prefix matching.** A prefix like `/api/auth/users`
+would also exempt `PUT /api/auth/users/:id/password` (authenticated!). Always
+match exact path (strip query string first with `path.split("?")[0]`).
+
+**When adding a new public endpoint:** add it to `UNAUTHENTICATED_PATHS` in
+`lib/unauthenticated-paths.ts` ONLY if the server route has no `requireAuth` guard.
+
 **Why:** the guard and the public-auth surface live in different files, so adding
-or tightening one silently breaks the other; a regression test pins the
-allowlist in both directions.
+or tightening one silently breaks the other.
 
 **Rescuing already-installed apps (no app-store update):** the server cookie-gate
 and the client bearer-hydrate fix only help *new* logins / *new* builds. An app

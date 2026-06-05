@@ -3,6 +3,7 @@ import { QueryClient, QueryFunction } from "@tanstack/react-query";
 import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
+import { isUnauthenticatedPath } from "./unauthenticated-paths";
 
 let cachedBaseUrl: string | null = null;
 
@@ -258,7 +259,11 @@ async function resilientFetch(
     // "lab rejected this change". Fail fast instead — a thrown fetch is treated
     // as a transient/retryable error, so the change stays recoverable until the
     // user re-authenticates.
-    if (!_accessToken) {
+    // Exception: public paths (login, register, verification, etc.) must be
+    // allowed through even with no token — blocking them prevents the login
+    // form itself from working on a fresh install or after logout.
+    // See `lib/unauthenticated-paths.ts` for the exact-match allowlist.
+    if (!_accessToken && !isUnauthenticatedPath(path)) {
       throw new Error("Not authenticated: no bearer token available.");
     }
   }
