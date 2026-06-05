@@ -1,37 +1,65 @@
 ---
-name: EAS submit silent account-level block
-description: How to diagnose `eas submit` failing instantly with no error when the IPA is fine — points to an Apple account-level delivery block (pending agreement), not a build problem.
+name: EAS iOS submission failure playbook
+description: Diagnosing eas submit failures — null error vs SUBMISSION_SERVICE_IOS_OLD_APP_VERSION vs Apple account blocks.
 ---
 
-# EAS submit "Something went wrong" with no detail = Apple account-level block
+# EAS iOS submission failure playbook
 
-When `eas submit --platform ios --latest` fails instantly with
-`✖ Something went wrong when submitting your app to Apple App Store Connect.`
-and the EAS submission record shows `error: null`, `logFiles: []`, `canRetry: false`,
-the failure is on EAS's submission **worker** (server-side), so the local CLI/DEBUG
-shows nothing. Do NOT assume it's the IPA or a build-number collision.
+## Step 1 — get the real error via GraphQL
 
-**How to tell binary problems apart from account blocks:**
-- The ASC API key reading everything as HTTP 200 (`/v1/builds`, `/v1/apps/{id}`,
-  `betaGroups`, `appStoreVersions`, etc.) proves the key + key-role are fine.
-- Download the IPA and read `CFBundleVersion` from `Payload/*.app/Info.plist`
-  (Python `zipfile`+`plistlib`; `unzip` isn't installed). If it's a **unique** build
-  number and bundle id/version/encryption look right, the binary is deliverable — so
-  the block is account-level, not the IPA.
-- List EAS submissions via GraphQL `app.byFullName(...).submissions(filter:{platform:IOS})`
-  and look at `status` over time. **FINISHED = the build actually landed in ASC;
-  ERRORED = it did not.** If submissions were FINISHED earlier today then every one
-  after a certain time is ERRORED, something changed at Apple, not in your repo.
+`error: null, logFiles: []` in the CLI output means NOTHING. Always pull the actual record:
 
-**Most likely cause:** a newly-pending App Store Connect **agreement** (Apple Developer
-Program License Agreement, or Paid/Free Apps agreement) that the **Account Holder** must
-accept in the App Store Connect web UI. Agreements gate *binary delivery* but NOT API
-reads — exactly this symptom. Secondary check: the ASC API key's role wasn't downgraded
-below App Manager. Both require the user; an API key cannot accept agreements.
+```bash
+EXPO_TOKEN=$(printenv EXPO_TOKEN)
+curl -s -X POST https://api.expo.dev/graphql \
+  -H "Authorization: Bearer $EXPO_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"{ app { byFullName(fullName: \"@jp379/labtrax\") { submissions(filter: {}, offset: 0, limit: 3) { id status error { errorCode message } logFiles } } } }"}' \
+  | python3 -m json.tool
+```
 
-**Don't waste build minutes:** the existing IPA is fine. Once the user clears the block,
-re-run `eas submit --platform ios --latest` (seconds) — no rebuild.
+Then fetch each `logFiles` URL immediately (they expire in 900 s) via `urllib.request.urlopen`.
 
-**Mapping which build has which source:** cross-reference the ASC build `uploadedDate`
-against `git log` commit times. A build uploaded *before* a rollback commit contains the
-pre-rollback (buggy) code even if it's the newest one in TestFlight.
+## Pattern A — null error, empty logFiles, immediate ERRORED
+
+EAS submission worker crashed before contacting Apple. Most likely the S3 artifact URL
+(900-second pre-signed, generated when the worker starts) expired before upload began.
+
+**Fix:** submit via local file instead of `--latest`:
+1. `curl -sL -H "Authorization: Bearer $EXPO_TOKEN" "https://api.expo.dev/v2/artifacts/eas/<id>" -o /tmp/build.ipa`
+2. `eas submit --platform ios --path /tmp/build.ipa --non-interactive`
+
+## Pattern B — SUBMISSION_SERVICE_IOS_OLD_APP_VERSION
+
+"You've already submitted this version of the app. Versions are identified by
+CFBundleShortVersionString."
+
+EAS blocks resubmitting the same `expo.version` (CFBundleShortVersionString) even with a
+different build number. Apple itself allows multiple builds per version string; EAS does not.
+
+**Fix:** bump `expo.version` in `app.json` manually (e.g. 1.0.9 → 1.0.10) and rebuild.
+The `bump-build-number` script only bumps `ios.buildNumber`/`android.versionCode`, NOT
+`expo.version` — that must be changed by hand before starting a new build.
+
+## Pattern C — Apple account-level delivery block
+
+Agreements tab in App Store Connect shows Active for all agreements, yet the build never
+appears in ASC (check via ASC API `/v1/builds?filter[app]=<id>&sort=-uploadedDate`).
+Most likely a newly-pushed Program License Agreement that only the Account Holder can
+accept — or the ASC API key's role was downgraded below App Manager.
+
+## Inspecting a downloaded IPA (unzip not installed)
+
+```python
+import zipfile, plistlib
+with zipfile.ZipFile("/tmp/build.ipa") as z:
+    plists = [n for n in z.namelist() if n.endswith("Info.plist") and n.count("/")==2]
+    pl = plistlib.load(z.open(plists[0]))
+    print(pl["CFBundleIdentifier"], pl["CFBundleVersion"], pl["CFBundleShortVersionString"])
+```
+
+## Mapping builds to source code
+
+Cross-reference ASC build `uploadedDate` against `git log` commit times. A build uploaded
+*before* a rollback commit contains the pre-rollback (buggy) code even if it's the newest
+one in TestFlight.
