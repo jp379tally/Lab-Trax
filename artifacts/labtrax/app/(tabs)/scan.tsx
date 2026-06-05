@@ -184,6 +184,7 @@ export default function ScanScreen() {
   const [isSubmittingCase, setIsSubmittingCase] = useState(false);
   const [activityEntries, setActivityEntries] = useState<ActivityEntry[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [scanError, setScanError] = useState<{ message: string; variant: "ai-not-configured" | "transient" } | null>(null);
   const [liveScanEnabled, setLiveScanEnabled] = useState(false);
   const [liveStatus, setLiveStatus] = useState("");
   const [doctorDropdownOpen, setDoctorDropdownOpen] = useState(false);
@@ -1849,24 +1850,16 @@ export default function ScanScreen() {
       }
 
       if (!aiSuccess) {
-        Alert.alert(
-          "AI Analysis",
-          "Could not read the prescription automatically. Please fill in the fields manually." +
-          (failReason ? `\n\n(${failReason})` : ""),
-          [
-            { text: "Fill manually", style: "cancel" },
-            {
-              text: "Retry AI",
-              onPress: () => {
-                setCapturedUri(null);
-                setCasePhotos([]);
-                setCaseAttachments([]);
-                autoAnalyzedRef.current = false;
-                setPhase("camera");
-              },
-            },
-          ],
-        );
+        const isNotConfigured =
+          failReason.includes("not configured") ||
+          failReason.includes("503");
+        const variant: "ai-not-configured" | "transient" = isNotConfigured
+          ? "ai-not-configured"
+          : "transient";
+        const userMessage = isNotConfigured
+          ? "AI reader isn't available on this account. Fill in the fields below."
+          : "Scan failed — the AI couldn't read the prescription. Fill in below or try scanning again.";
+        setScanError({ message: userMessage, variant });
       }
     }
 
@@ -1890,6 +1883,7 @@ export default function ScanScreen() {
     setCasePhotos([]);
     setCaseAttachments([]);
     setIsSubmittingCase(false);
+    setScanError(null);
     autoAnalyzedRef.current = false;
     setActivityEntries([{
       id: generateId(),
@@ -2839,6 +2833,7 @@ export default function ScanScreen() {
   function resetForm() {
     setPhase("camera");
     setCapturedUri(null);
+    setScanError(null);
     autoAnalyzedRef.current = false;
     setShowBarcodeScanner(false);
     setBarcodeScanned(false);
@@ -3002,6 +2997,60 @@ export default function ScanScreen() {
             <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.info }}>
               Analyzing prescription...
             </Text>
+          </View>
+        )}
+        {!isAnalyzing && scanError && (
+          <View style={{ backgroundColor: colors.errorLight, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.error, paddingHorizontal: 14, paddingVertical: 10, gap: 8 }}>
+            <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
+              <Ionicons
+                name={scanError.variant === "ai-not-configured" ? "information-circle-outline" : "warning-outline"}
+                size={17}
+                color={colors.errorText}
+                style={{ marginTop: 1, flexShrink: 0 }}
+              />
+              <Text style={{ flex: 1, fontSize: 13, fontFamily: "Inter_500Medium", color: colors.errorText }}>
+                {scanError.message}
+              </Text>
+              <Pressable
+                onPress={() => setScanError(null)}
+                hitSlop={10}
+                style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+                accessibilityLabel="Dismiss scan error"
+              >
+                <Ionicons name="close" size={16} color={colors.errorText} />
+              </Pressable>
+            </View>
+            {scanError.variant === "transient" && (
+              <Pressable
+                onPress={() => {
+                  setScanError(null);
+                  setCapturedUri(null);
+                  setCasePhotos([]);
+                  setCaseAttachments([]);
+                  autoAnalyzedRef.current = false;
+                  setPhase("camera");
+                }}
+                style={({ pressed }) => ({
+                  alignSelf: "flex-start",
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 5,
+                  marginLeft: 25,
+                  paddingHorizontal: 10,
+                  paddingVertical: 5,
+                  borderRadius: 8,
+                  backgroundColor: colors.errorStrong,
+                  opacity: pressed ? 0.7 : 1,
+                })}
+                accessibilityRole="button"
+                accessibilityLabel="Scan again"
+              >
+                <Ionicons name="camera-outline" size={14} color={colors.textInverse} />
+                <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: colors.textInverse }}>
+                  Scan again
+                </Text>
+              </Pressable>
+            )}
           </View>
         )}
         <KeyboardAwareScrollViewCompat
