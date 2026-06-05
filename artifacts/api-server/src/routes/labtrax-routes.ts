@@ -3675,9 +3675,12 @@ Important rules:
       // detection ticks) leads with the quick gpt-5-mini so the live preview
       // stays responsive; the final, accurate read of the captured still always
       // runs through the full chain below.
-      const MODEL_CHAIN = fast
-        ? ["gpt-5-mini", "gpt-5"]
-        : ["gpt-5.4", "gpt-5", "gpt-5-mini"];
+      //
+      // Update these constants (not the loop below) when models are renamed or
+      // added — keeping them named makes future breakages easy to find and fix.
+      const MODEL_CHAIN_ACCURATE = ["gpt-5.4", "gpt-5", "gpt-5-mini"];
+      const MODEL_CHAIN_FAST = ["gpt-5-mini", "gpt-5"];
+      const MODEL_CHAIN = fast ? MODEL_CHAIN_FAST : MODEL_CHAIN_ACCURATE;
       let response: any;
       let lastModelErr: any;
       for (const model of MODEL_CHAIN) {
@@ -3688,14 +3691,24 @@ Important rules:
             max_completion_tokens: 8192,
             response_format: { type: "json_schema", json_schema: PRESCRIPTION_SCHEMA },
           });
-          console.log("AI analyze-prescription: used", model);
+          req.log.info({ model, fast }, "AI analyze-prescription: model succeeded");
           break;
         } catch (modelErr: any) {
           lastModelErr = modelErr;
-          console.log(`AI analyze-prescription: ${model} failed:`, modelErr?.message);
+          req.log.warn(
+            { model, fast, err: modelErr?.message },
+            "AI analyze-prescription: model failed, trying next"
+          );
         }
       }
-      if (!response) throw lastModelErr ?? new Error("All prescription models failed");
+      if (!response) {
+        const triedModels = MODEL_CHAIN.join(", ");
+        req.log.error(
+          { modelsTriedCount: MODEL_CHAIN.length, modelsTried: triedModels, fast },
+          "AI analyze-prescription: all models failed"
+        );
+        throw lastModelErr ?? new Error(`All prescription models failed (tried: ${triedModels})`);
+      }
 
       const message = response.choices?.[0]?.message;
       if (message?.refusal) {
