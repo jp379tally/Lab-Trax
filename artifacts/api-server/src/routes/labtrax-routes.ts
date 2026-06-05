@@ -3620,7 +3620,10 @@ Important rules:
       // failure mode that made the reader unreliable. `confidence` (0-1) lets
       // the mobile live scanner decide when a read is trustworthy enough to
       // auto-fill without a manual capture.
-      const nullableString = { type: ["string", "null"] as const };
+      // OpenAI strict structured outputs require anyOf-based nullable fields;
+      // { type: ["string", "null"] } array union syntax is rejected in strict mode.
+      const nullableString = { anyOf: [{ type: "string" as const }, { type: "null" as const }] };
+      const nullableBoolean = { anyOf: [{ type: "boolean" as const }, { type: "null" as const }] };
       const PRESCRIPTION_SCHEMA = {
         name: "dental_prescription",
         strict: true,
@@ -3636,7 +3639,7 @@ Important rules:
             shade: nullableString,
             material: nullableString,
             dueDate: nullableString,
-            isRush: { type: ["boolean", "null"] as const },
+            isRush: nullableBoolean,
             notes: nullableString,
             practiceName: nullableString,
             practiceAddress: nullableString,

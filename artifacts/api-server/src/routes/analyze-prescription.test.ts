@@ -179,6 +179,63 @@ describe("POST /api/analyze-prescription (mobile AI reader)", () => {
     expect(mockCreate.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("sends anyOf-based nullable fields in the strict JSON schema (regression guard)", async () => {
+    mockCreate.mockResolvedValueOnce(aiJson({ patientName: "Pat Roe", confidence: 0.8 }));
+
+    await request(appMod.default)
+      .post("/api/analyze-prescription")
+      .send({ imageBase64: VALID_IMAGE });
+
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    const schema =
+      mockCreate.mock.calls[0][0].response_format?.json_schema?.schema ?? {};
+    const props = schema.properties ?? {};
+
+    // Every nullable string field must use anyOf, not the array-union shorthand
+    // { type: ["string", "null"] } which OpenAI strict mode rejects with a 400.
+    const nullableStringFields = [
+      "doctorName",
+      "patientName",
+      "patientInitials",
+      "caseType",
+      "toothIndices",
+      "shade",
+      "material",
+      "dueDate",
+      "notes",
+      "practiceName",
+      "practiceAddress",
+      "practicePhone",
+    ];
+    for (const field of nullableStringFields) {
+      const def = props[field];
+      expect(
+        def,
+        `${field} must be defined in the schema`
+      ).toBeDefined();
+      expect(
+        Array.isArray(def.type),
+        `${field} must NOT use array-union type syntax (type: ["string","null"]); use anyOf instead`
+      ).toBe(false);
+      expect(
+        def.anyOf,
+        `${field} must use anyOf for nullable definition`
+      ).toBeDefined();
+      const anyOfTypes = (def.anyOf as { type: string }[]).map((x) => x.type);
+      expect(anyOfTypes).toContain("string");
+      expect(anyOfTypes).toContain("null");
+    }
+
+    // isRush is the nullable boolean field — same anyOf requirement.
+    const isRush = props["isRush"];
+    expect(isRush).toBeDefined();
+    expect(Array.isArray(isRush.type)).toBe(false);
+    expect(isRush.anyOf).toBeDefined();
+    const isRushTypes = (isRush.anyOf as { type: string }[]).map((x) => x.type);
+    expect(isRushTypes).toContain("boolean");
+    expect(isRushTypes).toContain("null");
+  });
+
   // Guards the "AI not configured" branch without needing a database, so it
   // always runs in CI (the DB-gated cases-ai-reader.test.ts version is skipped
   // when DATABASE_URL is absent). Kept last: it rebuilds the module graph with
