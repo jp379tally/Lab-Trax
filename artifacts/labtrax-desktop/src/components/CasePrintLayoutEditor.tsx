@@ -18,6 +18,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Eye,
   EyeOff,
+  Grid2X2,
   ImageIcon,
   Loader2,
   Redo2,
@@ -91,6 +92,173 @@ interface DragState {
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
+}
+
+// ── Snap helpers ──────────────────────────────────────────────────────
+
+const SNAP_THRESHOLD = 7; // page-coordinate pixels within which alignment snap fires
+
+/** Round a single value to the nearest grid multiple. */
+function snapToGrid(v: number, grid: number): number {
+  return Math.round(v / grid) * grid;
+}
+
+/** Snap box edges to the grid based on which handle is being dragged. */
+function applyGridSnap(
+  box: { x: number; y: number; w: number; h: number },
+  handle: Handle,
+  grid: number,
+): { x: number; y: number; w: number; h: number } {
+  let { x, y, w, h } = box;
+  if (handle === "move") {
+    x = snapToGrid(x, grid);
+    y = snapToGrid(y, grid);
+  } else {
+    if (handle.includes("w")) {
+      const newX = snapToGrid(x, grid);
+      w = Math.max(40, x + w - newX);
+      x = newX;
+    }
+    if (handle.includes("e")) {
+      w = Math.max(40, snapToGrid(x + w, grid) - x);
+    }
+    if (handle.includes("n")) {
+      const newY = snapToGrid(y, grid);
+      h = Math.max(20, y + h - newY);
+      y = newY;
+    }
+    if (handle.includes("s")) {
+      h = Math.max(20, snapToGrid(y + h, grid) - y);
+    }
+  }
+  return { x, y, w, h };
+}
+
+/** Collect all x and y reference positions from other boxes for alignment. */
+function buildAlignRefs(
+  draft: { boxes: Record<string, { x: number; y: number; w: number; h: number; visible: boolean }>; extraImages: Array<{ id: string; x: number; y: number; w: number; h: number }> },
+  excludeKey: string,
+): { x: number[]; y: number[] } {
+  const xs = new Set<number>([0, PAGE_W / 2, PAGE_W]);
+  const ys = new Set<number>([0, PAGE_H / 2, PAGE_H]);
+
+  for (const key of SECTION_ORDER) {
+    if (key === excludeKey) continue;
+    const b = draft.boxes[key];
+    if (!b?.visible) continue;
+    xs.add(b.x); xs.add(b.x + b.w); xs.add(b.x + b.w / 2);
+    ys.add(b.y); ys.add(b.y + b.h); ys.add(b.y + b.h / 2);
+  }
+  for (const img of draft.extraImages) {
+    if (img.id === excludeKey) continue;
+    xs.add(img.x); xs.add(img.x + img.w); xs.add(img.x + img.w / 2);
+    ys.add(img.y); ys.add(img.y + img.h); ys.add(img.y + img.h / 2);
+  }
+
+  return { x: [...xs], y: [...ys] };
+}
+
+/** Find the closest reference edge within threshold and return the snapped value + guide position. */
+function snapEdge(edge: number, refs: number[], threshold: number): { snapped: number; guide: number | null } {
+  let bestD = threshold + 1;
+  let result = edge;
+  let guide: number | null = null;
+  for (const ref of refs) {
+    const d = Math.abs(edge - ref);
+    if (d < bestD) {
+      bestD = d;
+      result = ref;
+      guide = ref;
+    }
+  }
+  return { snapped: result, guide };
+}
+
+/**
+ * For "move", check left/center/right (or top/center/bottom) edges and pick the
+ * closest snap. Returns the adjusted position and any guide lines to show.
+ */
+function snapMoveAxis(pos: number, size: number, refs: number[], threshold: number): { pos: number; guides: number[] } {
+  const candidates: Array<{ edge: number; anchor: number }> = [
+    { edge: pos, anchor: 0 },
+    { edge: pos + size / 2, anchor: size / 2 },
+    { edge: pos + size, anchor: size },
+  ];
+  let bestD = threshold + 1;
+  let result = pos;
+  const guides: number[] = [];
+  for (const { edge, anchor } of candidates) {
+    const { snapped, guide } = snapEdge(edge, refs, threshold);
+    if (guide !== null) {
+      const d = Math.abs(edge - snapped);
+      if (d < bestD - 0.01) {
+        bestD = d;
+        result = snapped - anchor;
+        guides.length = 0;
+        guides.push(guide);
+      } else if (d < bestD + 0.01) {
+        guides.push(guide);
+      }
+    }
+  }
+  return { pos: result, guides };
+}
+
+interface AlignSnapResult {
+  box: { x: number; y: number; w: number; h: number };
+  guides: { x: number[]; y: number[] };
+}
+
+/** Apply alignment snapping and collect guide lines to render. */
+function applyAlignmentSnap(
+  box: { x: number; y: number; w: number; h: number },
+  handle: Handle,
+  refs: { x: number[]; y: number[] },
+  threshold: number,
+): AlignSnapResult {
+  let { x, y, w, h } = box;
+  const xGuides: number[] = [];
+  const yGuides: number[] = [];
+
+  if (handle === "move") {
+    const xResult = snapMoveAxis(x, w, refs.x, threshold);
+    const yResult = snapMoveAxis(y, h, refs.y, threshold);
+    x = xResult.pos;
+    y = yResult.pos;
+    xGuides.push(...xResult.guides);
+    yGuides.push(...yResult.guides);
+  } else {
+    if (handle.includes("w")) {
+      const { snapped, guide } = snapEdge(x, refs.x, threshold);
+      w = Math.max(40, x + w - snapped);
+      x = snapped;
+      if (guide !== null) xGuides.push(guide);
+    }
+    if (handle.includes("e")) {
+      const { snapped, guide } = snapEdge(x + w, refs.x, threshold);
+      w = Math.max(40, snapped - x);
+      if (guide !== null) xGuides.push(guide);
+    }
+    if (handle.includes("n")) {
+      const { snapped, guide } = snapEdge(y, refs.y, threshold);
+      h = Math.max(20, y + h - snapped);
+      y = snapped;
+      if (guide !== null) yGuides.push(guide);
+    }
+    if (handle.includes("s")) {
+      const { snapped, guide } = snapEdge(y + h, refs.y, threshold);
+      h = Math.max(20, snapped - y);
+      if (guide !== null) yGuides.push(guide);
+    }
+  }
+
+  return {
+    box: { x, y, w, h },
+    guides: {
+      x: [...new Set(xGuides)],
+      y: [...new Set(yGuides)],
+    },
+  };
 }
 
 function applyDrag(
@@ -183,6 +351,20 @@ export function CasePrintLayoutEditor({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [askKeep, setAskKeep] = useState(false);
+
+  // ── Snap / grid state ─────────────────────────────────────────────────
+  const [snapEnabled, setSnapEnabled] = useState(true);
+  const [gridSize, setGridSize] = useState<8 | 16>(8);
+  const [guideLines, setGuideLines] = useState<{ x: number[]; y: number[] }>({ x: [], y: [] });
+
+  // Refs that stay in sync so drag handlers (closures) can read current values.
+  const snapEnabledRef = useRef(snapEnabled);
+  const gridSizeRef = useRef(gridSize);
+  const draftRef = useRef(draft);
+
+  useEffect(() => { snapEnabledRef.current = snapEnabled; }, [snapEnabled]);
+  useEffect(() => { gridSizeRef.current = gridSize; }, [gridSize]);
+  useEffect(() => { draftRef.current = draft; }, [draft]);
 
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
@@ -411,7 +593,31 @@ export function CasePrintLayoutEditor({
       if (!d) return;
       const dx = ev.clientX * d.scaleX - d.startX;
       const dy = ev.clientY * d.scaleY - d.startY;
-      const next = applyDrag(d.startBox, d.handle, dx, dy);
+      let next = applyDrag(d.startBox, d.handle, dx, dy);
+
+      if (snapEnabledRef.current) {
+        // 1. Grid snap
+        next = applyGridSnap(next, d.handle, gridSizeRef.current);
+        // Re-clamp after grid snap
+        next = {
+          ...next,
+          x: clamp(next.x, 0, PAGE_W - next.w),
+          y: clamp(next.y, 0, PAGE_H - next.h),
+        };
+
+        // 2. Alignment snap (may override grid snap when an edge aligns closely)
+        const refs = buildAlignRefs(draftRef.current, d.key);
+        const aligned = applyAlignmentSnap(next, d.handle, refs, SNAP_THRESHOLD);
+        next = {
+          ...aligned.box,
+          x: clamp(aligned.box.x, 0, PAGE_W - aligned.box.w),
+          y: clamp(aligned.box.y, 0, PAGE_H - aligned.box.h),
+        };
+        setGuideLines(aligned.guides);
+      } else {
+        setGuideLines({ x: [], y: [] });
+      }
+
       setDraft((cur) => {
         if (d.kind === "section") {
           const k = d.key as CaseTemplateSectionKey;
@@ -431,6 +637,7 @@ export function CasePrintLayoutEditor({
 
     function handleUp() {
       dragRef.current = null;
+      setGuideLines({ x: [], y: [] });
       window.removeEventListener("pointermove", handleMove);
       window.removeEventListener("pointerup", handleUp);
       dragCleanupRef.current = null;
@@ -775,6 +982,60 @@ export function CasePrintLayoutEditor({
               </div>
             </section>
 
+            {/* Grid / Snap controls */}
+            <section>
+              <h3 className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2 px-1 flex items-center gap-1.5">
+                <Grid2X2 size={10} />
+                Grid &amp; Snap
+              </h3>
+              <div className="space-y-2 px-1">
+                <label className="flex items-center justify-between gap-2 text-xs cursor-pointer select-none">
+                  <span>Snap to grid</span>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={snapEnabled}
+                    onClick={() => setSnapEnabled((v) => !v)}
+                    className={`relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full border border-transparent transition-colors focus-visible:outline-none ${
+                      snapEnabled ? "bg-primary" : "bg-input"
+                    }`}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-3 w-3 rounded-full bg-white shadow-sm ring-0 transition-transform mt-0.5 ${
+                        snapEnabled ? "translate-x-3.5" : "translate-x-0.5"
+                      }`}
+                    />
+                  </button>
+                </label>
+                {snapEnabled && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-muted-foreground">Grid size</span>
+                    <div className="flex gap-0.5 ml-auto">
+                      {([8, 16] as const).map((sz) => (
+                        <button
+                          key={sz}
+                          type="button"
+                          onClick={() => setGridSize(sz)}
+                          className={`h-5 px-1.5 rounded text-[9px] font-medium border transition-colors ${
+                            gridSize === sz
+                              ? "bg-primary text-primary-foreground border-primary"
+                              : "bg-card text-muted-foreground border-border hover:bg-secondary/60"
+                          }`}
+                        >
+                          {sz}px
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {snapEnabled && (
+                  <p className="text-[9px] text-muted-foreground leading-snug">
+                    Edges also snap to other boxes and the page center while dragging.
+                  </p>
+                )}
+              </div>
+            </section>
+
             {/* Selected props */}
             {selectedSection && selected?.kind === "section" && (
               <section className="p-3 rounded-md border border-primary/30 bg-primary/5 space-y-2">
@@ -942,6 +1203,40 @@ export function CasePrintLayoutEditor({
                   />
                 );
               })}
+
+              {/* Alignment guide lines — shown only during drag */}
+              {guideLines.x.map((gx) => (
+                <div
+                  key={`gx-${gx}`}
+                  style={{
+                    position: "absolute",
+                    left: `${(gx / PAGE_W) * 100}%`,
+                    top: 0,
+                    bottom: 0,
+                    width: 1,
+                    background: "#2563eb",
+                    opacity: 0.75,
+                    pointerEvents: "none",
+                    zIndex: 20,
+                  }}
+                />
+              ))}
+              {guideLines.y.map((gy) => (
+                <div
+                  key={`gy-${gy}`}
+                  style={{
+                    position: "absolute",
+                    top: `${(gy / PAGE_H) * 100}%`,
+                    left: 0,
+                    right: 0,
+                    height: 1,
+                    background: "#2563eb",
+                    opacity: 0.75,
+                    pointerEvents: "none",
+                    zIndex: 20,
+                  }}
+                />
+              ))}
             </div>
           </main>
         </div>
