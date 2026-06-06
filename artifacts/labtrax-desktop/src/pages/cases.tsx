@@ -3042,7 +3042,7 @@ export function CaseDrawer({
           material: payload.material,
           shade: payload.shade ?? "",
           quantity: 1,
-          unitPrice: "",
+          unitPrice: lookupBillablePrice(payload.restorationType),
         },
       ]);
       setToothDialogId(null);
@@ -3086,7 +3086,7 @@ export function CaseDrawer({
           material: inferredMaterial,
           shade: "",
           quantity: 1,
-          unitPrice: "",
+          unitPrice: lookupBillablePrice("Pontic"),
         },
       ]);
       setToothDialogId(null);
