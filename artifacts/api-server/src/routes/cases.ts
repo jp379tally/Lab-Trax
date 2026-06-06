@@ -2442,6 +2442,7 @@ router.get(
               sql`lower(${cases.caseNumber}) like ${`${ql}%`}`,
               sql`lower(${cases.patientLastName}) like ${`${ql}%`}`,
               sql`lower(${cases.patientFirstName}) like ${`${ql}%`}`,
+              sql`lower(${cases.doctorName}) like ${'%' + ql + '%'}`,
             ),
           ),
         )
@@ -2482,7 +2483,8 @@ router.get(
         const spaceIdx = patientName.indexOf(" ");
         const fn = (spaceIdx >= 0 ? patientName.slice(0, spaceIdx) : patientName).toLowerCase();
         const ln = (spaceIdx >= 0 ? patientName.slice(spaceIdx + 1) : "").toLowerCase();
-        if (!cn.startsWith(ql) && !fn.startsWith(ql) && !ln.startsWith(ql)) continue;
+        const dn = String(parsed.doctorName ?? "").toLowerCase();
+        if (!cn.startsWith(ql) && !fn.startsWith(ql) && !ln.startsWith(ql) && !dn.includes(ql)) continue;
         mobileMerged.push({
           id: mr.id,
           caseNumber: String(parsed.caseNumber ?? ""),

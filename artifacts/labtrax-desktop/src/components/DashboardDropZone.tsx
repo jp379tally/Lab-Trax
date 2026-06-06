@@ -211,6 +211,15 @@ interface DuplicateHit {
   restorationTypes?: string;
 }
 
+interface ManualRemakeHit {
+  id: string;
+  caseNumber: string;
+  patientFirstName: string;
+  patientLastName: string;
+  doctorName: string;
+  status: string;
+}
+
 type Phase =
   | { kind: "idle" }
   | { kind: "draggingFile" }
@@ -648,6 +657,29 @@ export function DashboardDropZone() {
     useState<NewPracticeDraft | null>(null);
   const [creatingPractice, setCreatingPractice] = useState(false);
   const [newPracticeError, setNewPracticeError] = useState<string | null>(null);
+  // ── Manual remake state (rxConfirm panel) ──────────────────────────────────
+  const [manualRemakeEnabled, setManualRemakeEnabled] = useState(false);
+  const [manualRemakeSearch, setManualRemakeSearch] = useState("");
+  const [manualRemakeResults, setManualRemakeResults] = useState<ManualRemakeHit[]>([]);
+  const [manualRemakeSearching, setManualRemakeSearching] = useState(false);
+  const [manualRemakeSelected, setManualRemakeSelected] = useState<ManualRemakeHit | null>(null);
+  const [manualRemakeReason, setManualRemakeReason] = useState("");
+  const [manualRemakeCharged, setManualRemakeCharged] = useState<"yes" | "no" | "">("");
+  const manualRemakeSearchTimerRef = useRef<number | null>(null);
+
+  function clearManualRemake() {
+    setManualRemakeEnabled(false);
+    setManualRemakeSearch("");
+    setManualRemakeResults([]);
+    setManualRemakeSearching(false);
+    setManualRemakeSelected(null);
+    setManualRemakeReason("");
+    setManualRemakeCharged("");
+    if (manualRemakeSearchTimerRef.current !== null) {
+      window.clearTimeout(manualRemakeSearchTimerRef.current);
+      manualRemakeSearchTimerRef.current = null;
+    }
+  }
   // Alias-mapping state. `aliasExistedForRxName` tracks whether the server
   // already had a saved alias when the AI analysis ran (null = not yet checked
   // or no AI practiceName). When it's false and the user manually picks a
@@ -769,6 +801,7 @@ export function DashboardDropZone() {
       setRxProviderOrgId("");
       setRxDraft({});
       setRxProviderSearch("");
+      clearManualRemake();
       setPhase({ kind: "analyzing", fileName: file.name });
       try {
         let images: string[] = [];
@@ -978,6 +1011,8 @@ export function DashboardDropZone() {
     setQueueProgress(null);
     setZipSource(null);
     setPhase({ kind: "idle" });
+    clearManualRemake();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clearIdleResetTimer]);
 
   // Defensive: clear any pending idle-reset timer on unmount so a stale
@@ -1170,6 +1205,33 @@ export function DashboardDropZone() {
       setPhase({
         kind: "error",
         message: "Pick a practice (provider) for this case.",
+      });
+      return;
+    }
+
+    // If the user manually selected a remake target, validate and submit
+    // directly — skip the auto-duplicate check so the two paths don't
+    // conflict or double-link.
+    if (manualRemakeEnabled) {
+      if (!manualRemakeSelected) {
+        setPhase({ kind: "error", message: "Select the original case being remade." });
+        scheduleIdleReset(5000);
+        return;
+      }
+      if (!manualRemakeReason.trim()) {
+        setPhase({ kind: "error", message: "Remake reason is required." });
+        scheduleIdleReset(5000);
+        return;
+      }
+      if (manualRemakeCharged === "") {
+        setPhase({ kind: "error", message: "Choose whether to charge for this remake." });
+        scheduleIdleReset(5000);
+        return;
+      }
+      await proceedCreateCase(phase.file, phase.caseNumber, {
+        remakeOfCaseId: manualRemakeSelected.id,
+        remakeReason: manualRemakeReason.trim(),
+        remakeCharged: manualRemakeCharged === "yes",
       });
       return;
     }
@@ -1887,16 +1949,192 @@ export function DashboardDropZone() {
             onChange={(e) => setRxDraft({ ...r, notes: e.target.value })}
           />
         </div>
-        <label className="flex items-center gap-2 text-xs text-muted-foreground">
-          <input
-            type="checkbox"
-            checked={!!r.isRush}
-            onChange={(e) =>
-              setRxDraft({ ...r, isRush: e.target.checked })
-            }
-          />
-          Mark as rush
-        </label>
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-2 text-xs text-muted-foreground flex-1">
+            <input
+              type="checkbox"
+              checked={!!r.isRush}
+              onChange={(e) =>
+                setRxDraft({ ...r, isRush: e.target.checked })
+              }
+            />
+            Mark as rush
+          </label>
+          {/* Remake toggle: hidden for iTero ZIP imports because that path
+              uses /cases/import-from-itero-rx which does not accept remake
+              fields — the remake button only applies to standard Rx drops. */}
+          {!zipSource && (
+            <button
+              type="button"
+              onClick={() => {
+                if (manualRemakeEnabled) {
+                  setManualRemakeEnabled(false);
+                  setManualRemakeSearch("");
+                  setManualRemakeResults([]);
+                  setManualRemakeSelected(null);
+                  setManualRemakeReason("");
+                  setManualRemakeCharged("");
+                } else {
+                  setManualRemakeEnabled(true);
+                }
+              }}
+              className={`h-6 px-2.5 rounded-md text-xs font-medium transition-colors ${
+                manualRemakeEnabled
+                  ? "bg-primary/10 text-primary border border-primary/30"
+                  : "bg-secondary text-muted-foreground border border-transparent hover:bg-secondary/80"
+              }`}
+            >
+              Remake
+            </button>
+          )}
+        </div>
+        {manualRemakeEnabled && !zipSource && (
+          <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 space-y-2">
+            {!manualRemakeSelected ? (
+              <>
+                <p className="text-[11px] font-medium text-foreground">
+                  Find the original case being remade
+                </p>
+                <div className="relative">
+                  <input
+                    type="search"
+                    placeholder="Search by case #, patient, or doctor…"
+                    value={manualRemakeSearch}
+                    onChange={(e) => {
+                      const q = e.target.value;
+                      setManualRemakeSearch(q);
+                      if (manualRemakeSearchTimerRef.current !== null) {
+                        window.clearTimeout(manualRemakeSearchTimerRef.current);
+                      }
+                      if (q.length < 2) {
+                        setManualRemakeResults([]);
+                        setManualRemakeSearching(false);
+                        return;
+                      }
+                      setManualRemakeSearching(true);
+                      manualRemakeSearchTimerRef.current = window.setTimeout(async () => {
+                        manualRemakeSearchTimerRef.current = null;
+                        try {
+                          const result = await apiFetch<{ cases: ManualRemakeHit[] }>(
+                            `/cases/quick-search?labOrganizationId=${encodeURIComponent(rxLabOrgId)}&q=${encodeURIComponent(q)}`,
+                          );
+                          setManualRemakeResults(result.cases ?? []);
+                        } catch {
+                          setManualRemakeResults([]);
+                        } finally {
+                          setManualRemakeSearching(false);
+                        }
+                      }, 280);
+                    }}
+                    className="w-full h-8 px-2.5 pr-7 rounded-md bg-background text-sm border border-border focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                  />
+                  {manualRemakeSearching && (
+                    <Loader2
+                      size={12}
+                      className="absolute right-2.5 top-2 animate-spin text-muted-foreground"
+                    />
+                  )}
+                </div>
+                {manualRemakeResults.length > 0 && (
+                  <div className="rounded-md border border-border bg-card overflow-hidden max-h-40 overflow-y-auto divide-y divide-border">
+                    {manualRemakeResults.map((c) => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => {
+                          setManualRemakeSelected(c);
+                          setManualRemakeSearch("");
+                          setManualRemakeResults([]);
+                        }}
+                        className="w-full px-3 py-2 text-left text-xs hover:bg-secondary/50 transition-colors"
+                      >
+                        <div className="font-medium font-mono">
+                          {c.caseNumber} · {c.patientFirstName} {c.patientLastName}
+                        </div>
+                        <div className="text-muted-foreground text-[11px]">
+                          {c.doctorName} · {c.status}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {manualRemakeSearch.length >= 2 &&
+                  !manualRemakeSearching &&
+                  manualRemakeResults.length === 0 && (
+                    <p className="text-[11px] text-muted-foreground">
+                      No cases found for "{manualRemakeSearch}".
+                    </p>
+                  )}
+              </>
+            ) : (
+              <>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-medium text-foreground">
+                      Remaking: <span className="font-mono">{manualRemakeSelected.caseNumber}</span>
+                    </p>
+                    <p className="text-[11px] text-muted-foreground truncate">
+                      {manualRemakeSelected.patientFirstName}{" "}
+                      {manualRemakeSelected.patientLastName} · {manualRemakeSelected.doctorName}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setManualRemakeSelected(null);
+                      setManualRemakeReason("");
+                      setManualRemakeCharged("");
+                    }}
+                    className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                    aria-label="Clear remake selection"
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-muted-foreground mb-1">
+                    Remake reason (required)
+                  </label>
+                  <textarea
+                    rows={2}
+                    className="w-full px-2 py-1.5 rounded-md bg-background text-xs border border-border focus:outline-none focus:ring-1 focus:ring-primary resize-none"
+                    value={manualRemakeReason}
+                    onChange={(e) => setManualRemakeReason(e.target.value)}
+                    placeholder="e.g. Shade B1 came back too dark; doctor requested A2"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-muted-foreground mb-1">
+                    Charge for this remake?
+                  </label>
+                  <div className="flex gap-2">
+                    {(
+                      [
+                        { v: "yes" as const, label: "Yes — invoice as usual" },
+                        { v: "no" as const, label: "No — no-charge remake" },
+                      ]
+                    ).map((opt) => (
+                      <button
+                        key={opt.v}
+                        type="button"
+                        onClick={() => setManualRemakeCharged(opt.v)}
+                        className={`flex-1 h-8 rounded-md text-xs font-medium transition-colors ${
+                          manualRemakeCharged === opt.v
+                            ? opt.v === "no"
+                              ? "bg-amber-500/15 text-amber-700 border border-amber-500/40"
+                              : "bg-primary/10 text-primary border border-primary/30"
+                            : "bg-secondary text-muted-foreground border border-transparent hover:bg-secondary/80"
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
         <button
           type="button"
           onClick={async () => {
