@@ -190,6 +190,19 @@ export function CasePrintLayoutEditor({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const seededRef = useRef(false);
 
+  // Track the canvas rendered width so preview font sizes scale correctly.
+  const [canvasScale, setCanvasScale] = useState(1);
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width;
+      if (w) setCanvasScale(w / PAGE_W);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   // Clean up any lingering window drag listeners on unmount.
   useEffect(() => {
     return () => { dragCleanupRef.current?.(); };
@@ -899,6 +912,13 @@ export function CasePrintLayoutEditor({
                     color={SECTION_COLORS[key]}
                     label={SECTION_LABELS[key]}
                     selected={isSelected}
+                    preview={
+                      <SectionPreview
+                        sectionKey={key}
+                        fieldSizes={draft.fieldSizes}
+                        scale={canvasScale}
+                      />
+                    }
                     onStart={(e, h) => startDrag(e, "section", key, h, box)}
                   />
                 );
@@ -983,6 +1003,7 @@ interface DraggableBoxProps {
   selected?: boolean;
   imageUrl?: string;
   opacity?: number;
+  preview?: React.ReactNode;
   onStart: (e: React.PointerEvent, handle: Handle) => void;
   onDelete?: () => void;
 }
@@ -994,6 +1015,7 @@ function DraggableBox({
   selected,
   imageUrl,
   opacity,
+  preview,
   onStart,
   onDelete,
 }: DraggableBoxProps) {
@@ -1040,21 +1062,52 @@ function DraggableBox({
         />
       )}
 
-      {!imageUrl && label && (
-        <span
+      {!imageUrl && (
+        <div
           style={{
             position: "absolute",
-            top: 4,
-            left: 6,
-            fontSize: 10,
-            fontWeight: 600,
-            color: "rgba(0,0,0,0.55)",
+            inset: 0,
+            overflow: "hidden",
             pointerEvents: "none",
-            whiteSpace: "nowrap",
           }}
         >
-          {label}
-        </span>
+          {/* Section label badge — always visible on top */}
+          {label && (
+            <span
+              style={{
+                position: "absolute",
+                top: 3,
+                left: 5,
+                zIndex: 2,
+                fontSize: 9,
+                fontWeight: 700,
+                color: "rgba(0,0,0,0.5)",
+                background: "rgba(255,255,255,0.72)",
+                borderRadius: 2,
+                padding: "0 3px",
+                lineHeight: "14px",
+                whiteSpace: "nowrap",
+                letterSpacing: "0.01em",
+              }}
+            >
+              {label}
+            </span>
+          )}
+
+          {/* Content preview — slightly blurred/faded to signal it's approximate */}
+          {preview && (
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                filter: "blur(0.3px)",
+                opacity: 0.78,
+              }}
+            >
+              {preview}
+            </div>
+          )}
+        </div>
       )}
 
       {showDelete && (
@@ -1207,4 +1260,301 @@ function BoxNumericInputs({
       {field("Height", box.h, (v) => onChange({ h: v }), minH, PAGE_H - box.y)}
     </div>
   );
+}
+
+// ── Section content preview ─────────────────────────────────────────────
+//
+// Renders placeholder content inside each section box on the canvas so
+// admins can see the effect of Normal/Large/XL field-size changes before
+// printing. Font sizes are scaled to the canvas's actual render width.
+
+interface SectionPreviewProps {
+  sectionKey: CaseTemplateSectionKey;
+  fieldSizes?: CasePrintFieldSizes;
+  scale: number;
+}
+
+function scaledPx(base: number, scale: number): number {
+  return Math.max(5, Math.round(base * scale));
+}
+
+function fieldFontSize(
+  size: FieldSize | undefined,
+  base: number,
+  scale: number,
+): number {
+  const mult = size === "xl" ? 1.55 : size === "large" ? 1.28 : 1;
+  return scaledPx(base * mult, scale);
+}
+
+// Tiny row: "Label  Value" used in caseDetails / rxSummary previews.
+function PreviewRow({
+  label,
+  value,
+  labelSize,
+  valueSize,
+}: {
+  label: string;
+  value: string;
+  labelSize: number;
+  valueSize: number;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "baseline",
+        gap: scaledPx(5, 1),
+        lineHeight: 1.35,
+        marginBottom: Math.max(2, Math.round(valueSize * 0.18)),
+      }}
+    >
+      <span
+        style={{
+          fontSize: labelSize,
+          color: "rgba(0,0,0,0.45)",
+          whiteSpace: "nowrap",
+          flexShrink: 0,
+          minWidth: "28%",
+        }}
+      >
+        {label}:
+      </span>
+      <span
+        style={{
+          fontSize: valueSize,
+          fontWeight: 600,
+          color: "rgba(0,0,0,0.82)",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function SectionPreview({ sectionKey, fieldSizes, scale }: SectionPreviewProps) {
+  const pad = scaledPx(8, scale);
+  // base "normal" value font size at scale=1
+  const BASE_VALUE = 9;
+  const BASE_LABEL = 7;
+  const labelSz = scaledPx(BASE_LABEL, scale);
+
+  const containerStyle: React.CSSProperties = {
+    position: "absolute",
+    inset: 0,
+    padding: `${scaledPx(18, scale)}px ${pad}px ${pad}px`,
+    overflow: "hidden",
+    boxSizing: "border-box",
+    fontFamily: "system-ui, sans-serif",
+  };
+
+  // ── Header ──────────────────────────────────────────────────────────
+  if (sectionKey === "header") {
+    return (
+      <div style={containerStyle}>
+        <div
+          style={{
+            fontSize: scaledPx(13, scale),
+            fontWeight: 700,
+            color: "rgba(0,0,0,0.8)",
+            letterSpacing: "0.01em",
+          }}
+        >
+          Case #LAB-2024-001
+        </div>
+        <div
+          style={{
+            marginTop: scaledPx(3, scale),
+            display: "inline-flex",
+            alignItems: "center",
+            gap: scaledPx(4, scale),
+            fontSize: scaledPx(8, scale),
+            fontWeight: 600,
+            color: "#16a34a",
+            background: "rgba(22,163,74,0.1)",
+            borderRadius: scaledPx(3, scale),
+            padding: `${scaledPx(2, scale)}px ${scaledPx(6, scale)}px`,
+          }}
+        >
+          <span
+            style={{
+              width: scaledPx(5, scale),
+              height: scaledPx(5, scale),
+              borderRadius: "50%",
+              background: "#16a34a",
+              display: "inline-block",
+            }}
+          />
+          Active
+        </div>
+      </div>
+    );
+  }
+
+  // ── Case Details ─────────────────────────────────────────────────────
+  if (sectionKey === "caseDetails") {
+    const cd = fieldSizes?.caseDetails;
+    const rows: Array<{ field: CaseDetailField; label: string; value: string }> = [
+      { field: "patient", label: CASE_DETAIL_FIELD_LABELS.patient, value: "Smith, John" },
+      { field: "doctor", label: CASE_DETAIL_FIELD_LABELS.doctor, value: "Dr. Patel" },
+      { field: "status", label: CASE_DETAIL_FIELD_LABELS.status, value: "Active" },
+      { field: "priority", label: CASE_DETAIL_FIELD_LABELS.priority, value: "Standard" },
+      { field: "dueDate", label: CASE_DETAIL_FIELD_LABELS.dueDate, value: "06/12/2024" },
+      { field: "created", label: CASE_DETAIL_FIELD_LABELS.created, value: "06/01/2024" },
+    ];
+    return (
+      <div style={containerStyle}>
+        {rows.map(({ field, label, value }) => (
+          <PreviewRow
+            key={field}
+            label={label}
+            value={value}
+            labelSize={labelSz}
+            valueSize={fieldFontSize(cd?.[field], BASE_VALUE, scale)}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  // ── RX Summary ───────────────────────────────────────────────────────
+  if (sectionKey === "rxSummary") {
+    const rx = fieldSizes?.rxSummary;
+    const rows: Array<{ field: RxSummaryField; label: string; value: string }> = [
+      { field: "restorativeType", label: RX_SUMMARY_FIELD_LABELS.restorativeType, value: "PFM Crown" },
+      { field: "teeth", label: RX_SUMMARY_FIELD_LABELS.teeth, value: "#14, #15" },
+      { field: "material", label: RX_SUMMARY_FIELD_LABELS.material, value: "Zirconia" },
+      { field: "shade", label: RX_SUMMARY_FIELD_LABELS.shade, value: "A2" },
+    ];
+    return (
+      <div style={containerStyle}>
+        {rows.map(({ field, label, value }) => (
+          <PreviewRow
+            key={field}
+            label={label}
+            value={value}
+            labelSize={labelSz}
+            valueSize={fieldFontSize(rx?.[field], BASE_VALUE, scale)}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  // ── Tooth Chart ──────────────────────────────────────────────────────
+  if (sectionKey === "toothChart") {
+    const cellSize = scaledPx(10, scale);
+    const gap = scaledPx(2, scale);
+    const topTeeth = Array.from({ length: 16 }, (_, i) => i + 1);
+    const botTeeth = Array.from({ length: 16 }, (_, i) => i + 17);
+    return (
+      <div
+        style={{
+          ...containerStyle,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: scaledPx(4, scale),
+        }}
+      >
+        {[topTeeth, botTeeth].map((row, ri) => (
+          <div key={ri} style={{ display: "flex", gap }}>
+            {row.map((n) => (
+              <div
+                key={n}
+                style={{
+                  width: cellSize,
+                  height: cellSize,
+                  borderRadius: scaledPx(2, scale),
+                  background: "rgba(234,179,8,0.35)",
+                  border: "1px solid rgba(234,179,8,0.6)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: Math.max(4, scaledPx(5, scale)),
+                  color: "rgba(0,0,0,0.5)",
+                  fontWeight: 600,
+                }}
+              >
+                {n}
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  // ── Notes ────────────────────────────────────────────────────────────
+  if (sectionKey === "notes") {
+    return (
+      <div style={{ ...containerStyle, paddingTop: scaledPx(18, scale) }}>
+        <div
+          style={{
+            fontSize: scaledPx(8, scale),
+            color: "rgba(0,0,0,0.55)",
+            lineHeight: 1.5,
+          }}
+        >
+          Please call before delivery. Patient has sensitivity to metal alloys.
+          Verify shade with photo on file. Rush order — needed by end of week.
+        </div>
+      </div>
+    );
+  }
+
+  // ── Barcode ──────────────────────────────────────────────────────────
+  if (sectionKey === "barcode") {
+    const barH = "60%";
+    const pattern = [2, 1, 3, 1, 2, 2, 1, 3, 1, 1, 2, 3, 1, 2, 1, 3, 2, 1, 1, 2,
+                     3, 1, 2, 1, 1, 3, 2, 1, 2, 2, 1, 3, 1, 1, 2, 3, 1, 2, 1, 3];
+    return (
+      <div
+        style={{
+          ...containerStyle,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 0,
+          padding: `${scaledPx(6, scale)}px ${scaledPx(12, scale)}px`,
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            height: "100%",
+            gap: scaledPx(1, scale),
+          }}
+        >
+          {pattern.map((w, i) =>
+            i % 2 === 0 ? (
+              <div
+                key={i}
+                style={{
+                  width: w * scaledPx(1, scale),
+                  height: barH,
+                  background: "rgba(0,0,0,0.8)",
+                  borderRadius: 0.5,
+                  flexShrink: 0,
+                }}
+              />
+            ) : (
+              <div
+                key={i}
+                style={{ width: w * scaledPx(1, scale), flexShrink: 0 }}
+              />
+            ),
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return null;
 }
