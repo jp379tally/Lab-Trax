@@ -554,6 +554,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
             isLoading={vendorsQuery.isLoading}
             search={search}
             typeLabel={TYPE_LABEL[activeTab as VendorType]}
+            vendorType={activeTab as VendorType}
             onEdit={openEditVendor}
           />
         )}
@@ -699,14 +700,17 @@ function VendorsTable({
   isLoading,
   search,
   typeLabel,
+  vendorType,
   onEdit,
 }: {
   vendors: Vendor[];
   isLoading: boolean;
   search: string;
   typeLabel: string;
+  vendorType: VendorType;
   onEdit: (v: Vendor) => void;
 }) {
+  const isItem = vendorType === "item";
   const [sortKey, setSortKey] = useState<keyof Vendor>("name");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
 
@@ -743,10 +747,16 @@ function VendorsTable({
       <thead className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
         <tr>
           <SortTh label="Name" sortKey="name" active={sortKey === "name"} dir={sortDir} onClick={handleSort} className="px-4" />
-          <SortTh label="Phone" sortKey="phone" active={sortKey === "phone"} dir={sortDir} onClick={handleSort} />
-          <SortTh label="Email" sortKey="email" active={sortKey === "email"} dir={sortDir} onClick={handleSort} />
-          <SortTh label="City" sortKey="city" active={sortKey === "city"} dir={sortDir} onClick={handleSort} />
-          <SortTh label="Type" sortKey="vendorType" active={sortKey === "vendorType"} dir={sortDir} onClick={handleSort} className="w-28" />
+          {isItem ? (
+            <SortTh label="Notes" sortKey="notes" active={sortKey === "notes"} dir={sortDir} onClick={handleSort} />
+          ) : (
+            <>
+              <SortTh label="Phone" sortKey="phone" active={sortKey === "phone"} dir={sortDir} onClick={handleSort} />
+              <SortTh label="Email" sortKey="email" active={sortKey === "email"} dir={sortDir} onClick={handleSort} />
+              <SortTh label="City" sortKey="city" active={sortKey === "city"} dir={sortDir} onClick={handleSort} />
+              <SortTh label="Type" sortKey="vendorType" active={sortKey === "vendorType"} dir={sortDir} onClick={handleSort} className="w-28" />
+            </>
+          )}
           <th className="text-center font-medium px-3 py-2 w-20">Active</th>
           <th className="px-2 py-2 w-16" />
         </tr>
@@ -765,22 +775,30 @@ function VendorsTable({
                 </span>
               )}
             </td>
-            <td className="px-3 py-2.5 text-muted-foreground text-xs">
-              {v.phone ? formatPhone(v.phone) : "—"}
-            </td>
-            <td className="px-3 py-2.5 text-muted-foreground text-xs truncate max-w-[180px]">
-              {v.email || "—"}
-            </td>
-            <td className="px-3 py-2.5 text-muted-foreground text-xs">
-              {v.city || "—"}
-            </td>
-            <td className="px-3 py-2.5">
-              <span
-                className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${TYPE_BADGE[v.vendorType]}`}
-              >
-                {TYPE_LABEL[v.vendorType]}
-              </span>
-            </td>
+            {isItem ? (
+              <td className="px-3 py-2.5 text-muted-foreground text-xs truncate max-w-[300px]">
+                {v.notes || "—"}
+              </td>
+            ) : (
+              <>
+                <td className="px-3 py-2.5 text-muted-foreground text-xs">
+                  {v.phone ? formatPhone(v.phone) : "—"}
+                </td>
+                <td className="px-3 py-2.5 text-muted-foreground text-xs truncate max-w-[180px]">
+                  {v.email || "—"}
+                </td>
+                <td className="px-3 py-2.5 text-muted-foreground text-xs">
+                  {v.city || "—"}
+                </td>
+                <td className="px-3 py-2.5">
+                  <span
+                    className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${TYPE_BADGE[v.vendorType]}`}
+                  >
+                    {TYPE_LABEL[v.vendorType]}
+                  </span>
+                </td>
+              </>
+            )}
             <td className="px-3 py-2.5 text-center">
               <span
                 className={`inline-block h-2 w-2 rounded-full ${v.isActive ? "bg-emerald-500" : "bg-muted-foreground/30"}`}
