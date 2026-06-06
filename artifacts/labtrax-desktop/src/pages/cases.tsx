@@ -540,8 +540,11 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
         method: "POST",
         body: JSON.stringify(data),
       }),
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       qc.invalidateQueries({ queryKey: ["cases"] });
+      if (variables.remakeOfCaseId) {
+        qc.invalidateQueries({ queryKey: ["case-remake-chain", variables.remakeOfCaseId] });
+      }
       setDuplicateMatches(null);
       onClose();
     },
@@ -2457,6 +2460,15 @@ export function CaseDrawer({
   });
   const remakeChain = remakeChainQuery.data?.chain ?? [];
 
+  // When the drawer is reused for a different case, remove the previous
+  // case's chain from the cache so stale data never bleeds across.
+  useEffect(() => {
+    return () => {
+      qc.removeQueries({ queryKey: ["case-remake-chain", labCase.id] });
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [labCase.id]);
+
   const drawerOrgsQuery = useQuery({
     queryKey: ["organizations"],
     queryFn: () => apiFetch<Organization[]>("/organizations"),
@@ -2625,9 +2637,13 @@ export function CaseDrawer({
         method: "PATCH",
         body: JSON.stringify({ acknowledged: true, ...(payload ?? {}) }),
       }),
-    onSuccess: () => {
+    onSuccess: (_data, payload) => {
       qc.invalidateQueries({ queryKey: ["cases"] });
       qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+      qc.invalidateQueries({ queryKey: ["case-remake-chain", labCase.id] });
+      if (payload?.remake?.remakeOfCaseId) {
+        qc.invalidateQueries({ queryKey: ["case-remake-chain", payload.remake.remakeOfCaseId] });
+      }
       setAiDupes(null);
       setAiDupeSelectedId("");
       setAiDupeReason("");
