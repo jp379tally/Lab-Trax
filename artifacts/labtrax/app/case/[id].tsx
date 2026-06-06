@@ -712,24 +712,26 @@ export default function CaseDetailScreen() {
 
   // Fetch the full remake chain so every generation is visible at a glance.
   // Only canonical cases are included; the chain is shown when it has 2+ entries.
-  React.useEffect(() => {
-    if (!id) return;
-    let cancelled = false;
-    async function fetchRemakeChain() {
-      try {
-        const res = await resilientFetch(`/api/cases/${encodeURIComponent(id as string)}/remake-chain`);
-        if (cancelled || !res || !res.ok) return;
-        const json = await res.json().catch(() => null);
-        if (cancelled || !json) return;
-        const entries = Array.isArray(json.chain) ? json.chain : [];
-        setRemakeChain(entries);
-      } catch {
-        // Non-critical — silently ignore (chain section simply won't render)
+  useFocusEffect(
+    useCallback(() => {
+      if (!id) return;
+      let cancelled = false;
+      async function fetchRemakeChain() {
+        try {
+          const res = await resilientFetch(`/api/cases/${encodeURIComponent(id as string)}/remake-chain`);
+          if (cancelled || !res || !res.ok) return;
+          const json = await res.json().catch(() => null);
+          if (cancelled || !json) return;
+          const entries = Array.isArray(json.chain) ? json.chain : [];
+          setRemakeChain(entries);
+        } catch {
+          // Non-critical — silently ignore (chain section simply won't render)
+        }
       }
-    }
-    void fetchRemakeChain();
-    return () => { cancelled = true; };
-  }, [id]);
+      void fetchRemakeChain();
+      return () => { cancelled = true; };
+    }, [id]),
+  );
 
   if (!caseItem) {
     return (
