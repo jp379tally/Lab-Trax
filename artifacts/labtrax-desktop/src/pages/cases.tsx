@@ -2356,6 +2356,25 @@ export function CaseDrawer({
   });
   const generatePresets = generatePresetsQuery.data?.presets ?? [];
 
+  const billableItemsQuery = useQuery({
+    queryKey: ["finance", "vendors", labCase.labOrganizationId, "items"],
+    queryFn: () =>
+      apiFetch<Array<{ id: string; name: string; unitPrice: string | null }>>(
+        `/finance/vendors?organizationId=${encodeURIComponent(labCase.labOrganizationId)}&vendorType=item`,
+      ),
+    enabled: !!labCase.labOrganizationId,
+    staleTime: 60_000,
+  });
+  const billableItems = billableItemsQuery.data ?? [];
+
+  function lookupBillablePrice(name: string): string {
+    if (!name) return "";
+    const match = billableItems.find(
+      (it) => it.name.trim().toLowerCase() === name.trim().toLowerCase(),
+    );
+    return match?.unitPrice ? String(match.unitPrice) : "";
+  }
+
   const [showAddRest, setShowAddRest] = useState(false);
   const [restForm, setRestForm] = useState({
     toothNumber: "",
@@ -4259,13 +4278,34 @@ export function CaseDrawer({
                     </label>
                     <select
                       value={restForm.restorationType}
-                      onChange={(e) => setRestForm((f) => ({ ...f, restorationType: e.target.value }))}
+                      onChange={(e) => {
+                        const type = e.target.value;
+                        const price = lookupBillablePrice(type);
+                        setRestForm((f) => ({
+                          ...f,
+                          restorationType: type,
+                          unitPrice: price || f.unitPrice,
+                        }));
+                      }}
                       className="mt-1 w-full h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary"
                     >
                       <option value="">Select type…</option>
                       {RESTORATION_TYPES.map((t) => (
                         <option key={t} value={t}>{t}</option>
                       ))}
+                      {billableItems
+                        .filter(
+                          (it) =>
+                            it.unitPrice &&
+                            !RESTORATION_TYPES.some(
+                              (rt) => rt.toLowerCase() === it.name.toLowerCase(),
+                            ),
+                        )
+                        .map((it) => (
+                          <option key={it.id} value={it.name}>
+                            {it.name}
+                          </option>
+                        ))}
                     </select>
                     {restForm.restorationType === "Other" && (
                       <input

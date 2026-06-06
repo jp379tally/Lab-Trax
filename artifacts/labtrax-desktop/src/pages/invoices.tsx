@@ -1064,6 +1064,17 @@ export function InvoiceEditor({
   });
   const pricedItems = pricedItemsQuery.data?.items ?? [];
 
+  const billableItemsQuery = useQuery({
+    queryKey: ["finance", "vendors", invoice.labOrganizationId, "items"],
+    queryFn: () =>
+      apiFetch<Array<{ id: string; name: string; unitPrice: string | null }>>(
+        `/finance/vendors?organizationId=${encodeURIComponent(invoice.labOrganizationId)}&vendorType=item`,
+      ),
+    enabled: !!invoice.labOrganizationId,
+    staleTime: 60_000,
+  });
+  const billableItems = billableItemsQuery.data ?? [];
+
   const caseAttachmentsQuery = useQuery({
     queryKey: ["case-attachments-for-invoice", caseIdForPricing],
     queryFn: () =>
@@ -2120,9 +2131,91 @@ export function InvoiceEditor({
                       <td className="px-3 py-1.5 align-top">
                         {(() => {
                           // No priced catalog (case-less invoice or no
-                          // tiers configured) → behave like the original
-                          // free-text input.
+                          // tiers configured). If the lab has billable items
+                          // with stored prices, show those in a dropdown so
+                          // the unit price auto-fills. Otherwise fall back to
+                          // the original free-text input.
                           if (pricedItems.length === 0) {
+                            if (billableItems.length > 0) {
+                              const isCustomBillable =
+                                !!it.item &&
+                                !billableItems.some(
+                                  (b) => b.name === it.item,
+                                );
+                              if (isCustomBillable) {
+                                return (
+                                  <div className="flex items-start gap-1">
+                                    <input
+                                      type="text"
+                                      value={it.item}
+                                      onChange={(e) =>
+                                        updateItem(idx, { item: e.target.value })
+                                      }
+                                      placeholder="Item"
+                                      className="flex-1 min-w-0 h-8 px-2 rounded bg-background border border-input text-sm"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        updateItem(idx, {
+                                          item: "",
+                                          description: "",
+                                          unitPrice: 0,
+                                        })
+                                      }
+                                      title="Pick from list"
+                                      className="shrink-0 h-8 px-2 rounded border border-input bg-background text-xs text-muted-foreground hover:text-foreground hover:bg-secondary"
+                                    >
+                                      List
+                                    </button>
+                                  </div>
+                                );
+                              }
+                              return (
+                                <select
+                                  value={it.item}
+                                  onChange={(e) => {
+                                    const v = e.target.value;
+                                    if (v === "") {
+                                      updateItem(idx, {
+                                        item: "",
+                                        description: "",
+                                        unitPrice: 0,
+                                      });
+                                      return;
+                                    }
+                                    if (v === "__custom__") {
+                                      updateItem(idx, {
+                                        item: " ",
+                                        description: "",
+                                        unitPrice: 0,
+                                      });
+                                      return;
+                                    }
+                                    const picked = billableItems.find(
+                                      (b) => b.name === v,
+                                    );
+                                    if (!picked) return;
+                                    updateItem(idx, {
+                                      item: picked.name,
+                                      description: picked.name,
+                                      unitPrice: picked.unitPrice
+                                        ? Number(picked.unitPrice)
+                                        : 0,
+                                    });
+                                  }}
+                                  className="w-full h-8 px-2 rounded bg-background border border-input text-sm"
+                                >
+                                  <option value="">Select item…</option>
+                                  {billableItems.map((b) => (
+                                    <option key={b.id} value={b.name}>
+                                      {b.name}
+                                    </option>
+                                  ))}
+                                  <option value="__custom__">Custom…</option>
+                                </select>
+                              );
+                            }
                             return (
                               <input
                                 type="text"
