@@ -185,6 +185,8 @@ export default function ScanScreen() {
   const [activityEntries, setActivityEntries] = useState<ActivityEntry[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [scanError, setScanError] = useState<{ message: string; variant: "ai-not-configured" | "transient" } | null>(null);
+  const [watchdogSecondsLeft, setWatchdogSecondsLeft] = useState<number | null>(null);
+  const [aiFilledFields, setAiFilledFields] = useState<Set<string>>(new Set());
   const [liveScanEnabled, setLiveScanEnabled] = useState(false);
   const [liveStatus, setLiveStatus] = useState("");
   const [doctorDropdownOpen, setDoctorDropdownOpen] = useState(false);
@@ -714,12 +716,15 @@ export default function ScanScreen() {
     setCasePhotos((prev) => (prev.includes(finalUri) ? prev : [...prev, finalUri]));
     cropDoneRef.current = true;
 
-    // Always route the user through the Review screen so they have a
-    // chance to add more pages before AI analysis runs. The Review
-    // screen runs a short auto-finish countdown for fresh single-page
-    // captures, so single-page users still get a near-instant
-    // shutter → AI flow without an extra mandatory tap.
-    void isFreshCapture;
+    if (isFreshCapture) {
+      // Fresh single-page capture: skip the Review screen entirely and
+      // go straight to AI. Setting autoAnalyzedRef first lets
+      // waitAndTransition() see the flag and skip its own
+      // setPhase("review") call, so the scanning animation stays up
+      // while AI runs.
+      autoAnalyzedRef.current = true;
+      void handleFinishedReview([finalUri]);
+    }
   }
 
   function handleManualCrop() {
@@ -1593,11 +1598,16 @@ export default function ScanScreen() {
       // Watchdog: no matter what goes wrong below, never leave the user
       // stuck on the "Analyzing RX..." spinner. After 45s, force the
       // flow forward to the form so the user can fill it in by hand.
+      setWatchdogSecondsLeft(45);
       const watchdog = setTimeout(() => {
         console.log("AI: watchdog fired — forcing form transition after 45s");
+        setWatchdogSecondsLeft(null);
         setIsAnalyzing(false);
         setPhase("form");
       }, 45000);
+      let watchdogInterval: ReturnType<typeof setInterval> | null = setInterval(() => {
+        setWatchdogSecondsLeft((s) => (s !== null && s > 1 ? s - 1 : null));
+      }, 1000);
 
       try {
         analyzeUri = await ensureHighQualityBase64(analyzeUri);
@@ -1739,6 +1749,19 @@ export default function ScanScreen() {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           }
 
+          const filled = new Set<string>();
+          if (d.doctorName) filled.add("doctorName");
+          if (d.patientName || d.patientInitials) filled.add("patientName");
+          if (d.caseType) filled.add("caseType");
+          if (d.toothIndices) filled.add("toothIndices");
+          if (d.shade) filled.add("shade");
+          if (d.material) filled.add("material");
+          if (d.dueDate) filled.add("dueDate");
+          if (d.isRush !== undefined) filled.add("isRush");
+          if (d.notes) filled.add("notes");
+          setAiFilledFields(filled);
+          setTimeout(() => setAiFilledFields(new Set()), 3500);
+
           if (d.doctorName) {
             const assignment = decideAiDoctorAssignment(
               { doctorName: d.doctorName, practiceName: d.practiceName },
@@ -1846,6 +1869,9 @@ export default function ScanScreen() {
         if (!failReason) failReason = err?.message || "Unknown error";
       } finally {
         clearTimeout(watchdog);
+        if (watchdogInterval !== null) clearInterval(watchdogInterval);
+        watchdogInterval = null;
+        setWatchdogSecondsLeft(null);
         setIsAnalyzing(false);
       }
 
@@ -2994,9 +3020,36 @@ export default function ScanScreen() {
         {isAnalyzing && (
           <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: colors.infoSurface, paddingHorizontal: 16, paddingVertical: 10, gap: 10 }}>
             <ActivityIndicator size="small" color={colors.info} />
-            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.info }}>
-              Analyzing prescription...
-            </Text>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.info }}>
+                Analyzing prescription...
+              </Text>
+              {watchdogSecondsLeft !== null && watchdogSecondsLeft < 40 && (
+                <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.info, opacity: 0.7, marginTop: 1 }}>
+                  {watchdogSecondsLeft}s remaining
+                </Text>
+              )}
+            </View>
+          </View>
+        )}
+        {!isAnalyzing && capturedUri && !scanError && (
+          <View style={{ flexDirection: "row", justifyContent: "flex-end", alignItems: "center", paddingHorizontal: 16, paddingVertical: 6, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border }}>
+            <Pressable
+              onPress={() => {
+                setScanError(null);
+                setCapturedUri(null);
+                setCasePhotos([]);
+                setCaseAttachments([]);
+                autoAnalyzedRef.current = false;
+                setAiFilledFields(new Set());
+                setPhase("camera");
+              }}
+              style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 4, opacity: pressed ? 0.7 : 1 })}
+              accessibilityLabel="Rescan prescription"
+            >
+              <Ionicons name="camera-outline" size={14} color={colors.tint} />
+              <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: colors.tint }}>Rescan Rx</Text>
+            </Pressable>
           </View>
         )}
         {!isAnalyzing && scanError && (
@@ -3186,7 +3239,14 @@ export default function ScanScreen() {
           </View>
 
           <View style={[styles.formGroup, { zIndex: 10 }]}>
-            <Text style={styles.formLabel}>Doctor Name</Text>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 }}>
+              <Text style={[styles.formLabel, { marginBottom: 0 }]}>Doctor Name</Text>
+              {aiFilledFields.has("doctorName") && (
+                <View style={{ backgroundColor: "rgba(245,158,11,0.15)", borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 }}>
+                  <Text style={{ fontSize: 10, fontFamily: "Inter_700Bold", color: "#B45309" }}>✦ AI</Text>
+                </View>
+              )}
+            </View>
             <Pressable
               onPress={() => {
                 setDoctorDropdownOpen(!doctorDropdownOpen);
@@ -4571,12 +4631,26 @@ export default function ScanScreen() {
               contentFit="cover"
             />
             <View style={styles.scanOverlay} />
-            <RNAnimated.View
-              style={[
-                styles.scanLine,
-                { transform: [{ translateY: scanTranslateY }] },
-              ]}
-            />
+            {isAnalyzing ? (
+              <View style={{ position: "absolute", bottom: 0, left: 0, right: 0, backgroundColor: "rgba(15,23,42,0.85)", paddingVertical: 32, paddingHorizontal: 28, alignItems: "center", gap: 14 }}>
+                <ActivityIndicator size="large" color="#FFFFFF" />
+                <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFFFFF", textAlign: "center" }}>
+                  Analyzing prescription…
+                </Text>
+                {watchdogSecondsLeft !== null && watchdogSecondsLeft < 40 && (
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.55)", textAlign: "center" }}>
+                    {watchdogSecondsLeft}s remaining
+                  </Text>
+                )}
+              </View>
+            ) : (
+              <RNAnimated.View
+                style={[
+                  styles.scanLine,
+                  { transform: [{ translateY: scanTranslateY }] },
+                ]}
+              />
+            )}
           </>
         )}
 
