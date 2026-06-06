@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronsUpDown, ChevronUp, ChevronDown as ChevronDownIcon, Download, History, Loader2, Pencil, Plus, Search, Upload, X } from "lucide-react";
+import { Ban, ChevronsUpDown, ChevronUp, ChevronDown as ChevronDownIcon, Download, History, Loader2, Pencil, Plus, Search, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch } from "@/lib/api";
 import { formatDate, formatMoney, formatPhone } from "@/lib/format";
@@ -185,6 +185,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
   const [categoryForm, setCategoryForm] = useState<CategoryForm>(emptyCategoryForm());
   const [txnsVendor, setTxnsVendor] = useState<Vendor | null>(null);
   const [showImportDialog, setShowImportDialog] = useState(false);
+  const [confirmDeactivateItem, setConfirmDeactivateItem] = useState<Vendor | null>(null);
 
   const vendorsQuery = useQuery({
     queryKey: ["finance", "vendors", organizationId, "all"],
@@ -277,6 +278,34 @@ function ListsContent({ organizationId }: { organizationId: string }) {
     onSuccess: () => {
       closeDrawer();
       invalidateVendors();
+    },
+  });
+
+  const deactivateItemMut = useMutation({
+    mutationFn: (v: Vendor) =>
+      apiFetch(`/finance/vendors/${v.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          name: v.name,
+          vendorType: v.vendorType,
+          address: v.address,
+          city: v.city,
+          state: v.state,
+          zip: v.zip,
+          phone: v.phone,
+          email: v.email,
+          website: v.website,
+          notes: v.notes,
+          isActive: false,
+        }),
+      }),
+    onSuccess: (_data, v) => {
+      setConfirmDeactivateItem(null);
+      invalidateVendors();
+      toast.success(`"${v.name}" deactivated`);
+    },
+    onError: () => {
+      toast.error("Failed to deactivate item");
     },
   });
 
@@ -556,6 +585,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
             typeLabel={TYPE_LABEL[activeTab as VendorType]}
             vendorType={activeTab as VendorType}
             onEdit={openEditVendor}
+            onDeactivate={activeTab === "item" ? (v) => setConfirmDeactivateItem(v) : undefined}
           />
         )}
       </div>
@@ -580,6 +610,48 @@ function ListsContent({ organizationId }: { organizationId: string }) {
             toast.success(`${count} ${typeLabel.toLowerCase()}${count !== 1 ? "s" : ""} imported successfully`);
           }}
         />
+      )}
+
+      {confirmDeactivateItem && (
+        <>
+          <div
+            className="fixed inset-0 z-50 bg-foreground/30"
+            onClick={() => setConfirmDeactivateItem(null)}
+          />
+          <div className="fixed z-50 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[360px] bg-card border border-border rounded-xl shadow-2xl flex flex-col">
+            <div className="px-5 pt-5 pb-4">
+              <h3 className="text-sm font-semibold mb-1">Deactivate Billable Item?</h3>
+              <p className="text-sm text-muted-foreground">
+                <span className="font-medium text-foreground">"{confirmDeactivateItem.name}"</span> will be
+                marked inactive and hidden from case and invoice forms. You can re-activate it later by editing
+                it in this list.
+              </p>
+            </div>
+            <div className="flex justify-end gap-2 px-5 pb-4">
+              <button
+                type="button"
+                onClick={() => setConfirmDeactivateItem(null)}
+                disabled={deactivateItemMut.isPending}
+                className="h-9 px-4 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80 disabled:opacity-60"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => deactivateItemMut.mutate(confirmDeactivateItem)}
+                disabled={deactivateItemMut.isPending}
+                className="h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-semibold hover:bg-destructive/90 disabled:opacity-60 inline-flex items-center gap-1.5"
+              >
+                {deactivateItemMut.isPending ? (
+                  <Loader2 size={13} className="animate-spin" />
+                ) : (
+                  <Ban size={13} />
+                )}
+                Deactivate
+              </button>
+            </div>
+          </div>
+        </>
       )}
 
       {showDrawer && (
@@ -702,6 +774,7 @@ function VendorsTable({
   typeLabel,
   vendorType,
   onEdit,
+  onDeactivate,
 }: {
   vendors: Vendor[];
   isLoading: boolean;
@@ -709,6 +782,7 @@ function VendorsTable({
   typeLabel: string;
   vendorType: VendorType;
   onEdit: (v: Vendor) => void;
+  onDeactivate?: (v: Vendor) => void;
 }) {
   const isItem = vendorType === "item";
   const [sortKey, setSortKey] = useState<keyof Vendor>("name");
@@ -805,14 +879,27 @@ function VendorsTable({
               />
             </td>
             <td className="px-2 py-2.5 text-right">
-              <button
-                type="button"
-                onClick={() => onEdit(v)}
-                className="h-7 w-7 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground"
-                aria-label="Edit"
-              >
-                <Pencil size={13} />
-              </button>
+              <div className="flex items-center justify-end gap-1">
+                {onDeactivate && v.isActive && (
+                  <button
+                    type="button"
+                    onClick={() => onDeactivate(v)}
+                    className="h-7 w-7 rounded-md hover:bg-destructive/10 flex items-center justify-center text-muted-foreground hover:text-destructive"
+                    aria-label="Deactivate"
+                    title="Deactivate"
+                  >
+                    <Ban size={13} />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => onEdit(v)}
+                  className="h-7 w-7 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground"
+                  aria-label="Edit"
+                >
+                  <Pencil size={13} />
+                </button>
+              </div>
             </td>
           </tr>
         ))}
