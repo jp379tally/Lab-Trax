@@ -3011,6 +3011,17 @@ export function CaseDrawer({
                   Rush
                 </span>
               )}
+              {(() => {
+                const firstName = data?.patientFirstName ?? labCase.patientFirstName;
+                const lastName = data?.patientLastName ?? labCase.patientLastName;
+                const name = [firstName, lastName].filter(Boolean).join(" ");
+                return name ? (
+                  <>
+                    <span className="text-muted-foreground/40 text-xs select-none">·</span>
+                    <span className="text-sm text-muted-foreground">{name}</span>
+                  </>
+                ) : null;
+              })()}
             </div>
             {(() => {
               const patientName = [
