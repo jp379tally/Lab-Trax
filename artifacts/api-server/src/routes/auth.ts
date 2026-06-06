@@ -848,9 +848,9 @@ router.get(
     const user = (req as any).user;
     const memberships =
       await db.query.organizationMemberships.findMany({
-        where: eq(
-          organizationMemberships.userId,
-          (req as any).auth.userId
+        where: and(
+          eq(organizationMemberships.userId, (req as any).auth.userId),
+          isNull(organizationMemberships.deletedAt)
         ),
         orderBy: [asc(organizationMemberships.labId)],
       });

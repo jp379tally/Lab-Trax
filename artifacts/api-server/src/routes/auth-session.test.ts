@@ -55,6 +55,7 @@ maybe("Auth and multi-user lab sessions (db integration)", () => {
   const userAId = rid("ua");
   const userBId = rid("ub");
   const userWithAcctId = rid("uc");
+  const softDeletedMemberUserId = rid("usd");
 
   // Helper: manually create a session and return a valid access + refresh token pair.
   // The refresh token is SHA-256 hashed before storing so the /refresh endpoint can
@@ -106,6 +107,11 @@ maybe("Auth and multi-user lab sessions (db integration)", () => {
         password: hashedPassword,
         platformAccountNumber: ACCOUNT_NUMBER,
       },
+      {
+        id: softDeletedMemberUserId,
+        username: `usd_${softDeletedMemberUserId}`,
+        password: hashedPassword,
+      },
     ]);
 
     await db.insert(organizations).values([
@@ -116,6 +122,17 @@ maybe("Auth and multi-user lab sessions (db integration)", () => {
 
     await db.insert(organizationMemberships).values([
       { id: rid("m"), labId: labOrgId, userId: userAId, role: "admin", status: "active" },
+      // Soft-deleted membership: status is still "active" but deletedAt is set —
+      // this replicates the exact condition that caused the "Join a lab" banner bug.
+      {
+        id: rid("msd"),
+        labId: labOrgId,
+        userId: softDeletedMemberUserId,
+        role: "staff",
+        status: "active",
+        deletedAt: new Date(),
+        deletedByUserId: userAId,
+      },
     ]);
   });
 
@@ -138,16 +155,16 @@ maybe("Auth and multi-user lab sessions (db integration)", () => {
       inArray(invoices.labOrganizationId, [labOrgId, otherLabOrgId, providerOrgId])
     );
     await db.delete(userSessions).where(
-      inArray(userSessions.userId, [userAId, userBId, userWithAcctId])
+      inArray(userSessions.userId, [userAId, userBId, userWithAcctId, softDeletedMemberUserId])
     );
     await db.delete(organizationMemberships).where(
-      inArray(organizationMemberships.userId, [userAId, userBId, userWithAcctId])
+      inArray(organizationMemberships.userId, [userAId, userBId, userWithAcctId, softDeletedMemberUserId])
     );
     await db.delete(organizations).where(
       inArray(organizations.id, [labOrgId, otherLabOrgId, providerOrgId])
     );
     await db.delete(users).where(
-      inArray(users.id, [userAId, userBId, userWithAcctId])
+      inArray(users.id, [userAId, userBId, userWithAcctId, softDeletedMemberUserId])
     );
   });
 
@@ -326,5 +343,67 @@ maybe("Auth and multi-user lab sessions (db integration)", () => {
     const { db, userSessions } = dbMod as any;
     const p = authLib.verifyRefreshToken(refresh);
     await db.delete(userSessions).where(eq(userSessions.id, p.sid));
+  });
+
+  // ── Soft-deleted membership regression ───────────────────────────────────
+  // Regression guard for the "Join a lab" banner bug: a membership row with
+  // deletedAt set must be invisible to /api/auth/me and must not grant
+  // case-read access via fetchUserActiveLabIds.
+
+  it("GET /api/auth/me excludes soft-deleted memberships from the response", async () => {
+    const { access, refresh } = await makeSession(softDeletedMemberUserId);
+
+    const r = await request(appMod.default)
+      .get("/api/auth/me")
+      .set("Authorization", `Bearer ${access}`);
+
+    expect(r.status).toBe(200);
+    // The soft-deleted membership must not appear — memberships array must be empty.
+    expect(r.body.memberships).toEqual([]);
+
+    const { db, userSessions } = dbMod as any;
+    const p = authLib.verifyRefreshToken(refresh);
+    await db.delete(userSessions).where(eq(userSessions.id, p.sid));
+  });
+
+  it("GET /api/cases excludes lab cases for a user whose only membership is soft-deleted", async () => {
+    const { db, cases: casesTable, userSessions } = dbMod as any;
+
+    // Insert a case in the lab that the soft-deleted member no longer belongs to.
+    const caseId = rid("sdc");
+    await db.insert(casesTable).values({
+      id: caseId,
+      caseNumber: rid("SDC"),
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      patientFirstName: "Soft",
+      patientLastName: "Deleted",
+      doctorName: "Dr. SoftDelete",
+      status: "received",
+      createdByUserId: userAId,
+    });
+
+    const { access, refresh } = await makeSession(softDeletedMemberUserId);
+
+    // Do NOT pass organizationId — let the server derive orgs from the user's
+    // memberships. Passing an explicit org bypasses membership checks entirely;
+    // the membership-lookup path is what fetchUserActiveLabIds guards.
+    const r = await request(appMod.default)
+      .get("/api/cases")
+      .set("Authorization", `Bearer ${access}`);
+
+    // After fixing the soft-delete filter, the user has no active lab IDs so
+    // the response must be 200 with an empty list (or at most contain no
+    // cases from the lab they were soft-deleted from).
+    const ids =
+      r.status === 200 ? (r.body.data ?? []).map((c: any) => c.id) : [];
+    expect(ids).not.toContain(caseId);
+
+    // Clean up the test-inserted case and session.
+    const p = authLib.verifyRefreshToken(refresh);
+    await Promise.all([
+      db.delete(casesTable).where(eq(casesTable.id, caseId)),
+      db.delete(userSessions).where(eq(userSessions.id, p.sid)),
+    ]);
   });
 });

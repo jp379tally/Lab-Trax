@@ -647,6 +647,7 @@ async function fetchUserActiveLabIds(userId: string): Promise<string[]> {
         eq(organizationMemberships.userId, userId),
         eq(organizationMemberships.status, "active"),
         eq(organizations.type, "lab"),
+        isNull(organizationMemberships.deletedAt),
       ),
     );
   const ids = new Set<string>();
@@ -2228,7 +2229,8 @@ router.get(
         await db.query.organizationMemberships.findMany({
           where: and(
             eq(organizationMemberships.userId, callerId),
-            eq(organizationMemberships.status, "active")
+            eq(organizationMemberships.status, "active"),
+            isNull(organizationMemberships.deletedAt)
           ),
         })
       ).map((m: any) => m.labId);

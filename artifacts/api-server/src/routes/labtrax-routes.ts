@@ -113,7 +113,8 @@ async function fetchUserActiveLabIds(userId: string): Promise<string[]> {
       and(
         eq(organizationMemberships.userId, userId),
         eq(organizationMemberships.status, "active"),
-        eq(organizations.type, "lab")
+        eq(organizations.type, "lab"),
+        isNull(organizationMemberships.deletedAt)
       )
     );
   const ids = new Set<string>();
