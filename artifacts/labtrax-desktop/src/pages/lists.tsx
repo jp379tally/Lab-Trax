@@ -69,7 +69,7 @@ interface Category {
 const TYPE_TABS: { key: VendorType; label: string }[] = [
   { key: "vendor", label: "Vendors" },
   { key: "employee", label: "Employees" },
-  { key: "item", label: "Items" },
+  { key: "item", label: "Billable Items" },
 ];
 
 const TYPE_BADGE: Record<VendorType, string> = {
@@ -81,7 +81,7 @@ const TYPE_BADGE: Record<VendorType, string> = {
 const TYPE_LABEL: Record<VendorType, string> = {
   vendor: "Vendor",
   employee: "Employee",
-  item: "Item",
+  item: "Billable Item",
 };
 
 const KIND_BADGE: Record<string, string> = {
@@ -453,7 +453,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Lists</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Manage vendors, employees, items, and transaction categories used across the register.
+          Manage vendors, employees, billable items, and transaction categories used across the register.
         </p>
       </div>
 
@@ -618,7 +618,15 @@ function ListsContent({ organizationId }: { organizationId: string }) {
               {isCategoriesTab ? (
                 <CategoryFormFields form={categoryForm} onChange={setCategoryForm} error={catError} />
               ) : (
-                <VendorFormFields form={vendorForm} onChange={setVendorForm} error={vendorError} />
+                <VendorFormFields
+                  form={vendorForm}
+                  onChange={setVendorForm}
+                  error={vendorError}
+                  existingItemNames={allVendors
+                    .filter((v) => v.vendorType === "item" && v.isActive)
+                    .map((v) => v.name)
+                    .sort((a, b) => a.localeCompare(b))}
+                />
               )}
             </div>
 
@@ -926,12 +934,105 @@ function VendorFormFields({
   form,
   onChange,
   error,
+  existingItemNames = [],
 }: {
   form: VendorForm;
   onChange: (f: VendorForm) => void;
   error: string | null;
+  existingItemNames?: string[];
 }) {
   const set = (patch: Partial<VendorForm>) => onChange({ ...form, ...patch });
+  const isItem = form.vendorType === "item";
+
+  // For billable-item forms: track whether the user is picking an existing name or entering a new one
+  const [itemNameMode, setItemNameMode] = useState<"pick" | "add_new">(() => {
+    if (!isItem) return "pick";
+    if (!form.name) return "pick";
+    if (existingItemNames.includes(form.name)) return "pick";
+    return "add_new";
+  });
+
+  const ActiveToggle = (
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        onClick={() => set({ isActive: !form.isActive })}
+        className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${
+          form.isActive ? "bg-primary" : "bg-muted"
+        }`}
+      >
+        <span
+          className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform ${
+            form.isActive ? "translate-x-4" : "translate-x-1"
+          }`}
+        />
+      </button>
+      <span className="text-sm">{form.isActive ? "Active" : "Inactive"}</span>
+    </div>
+  );
+
+  if (isItem) {
+    return (
+      <div className="space-y-4">
+        {error && (
+          <p className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">{error}</p>
+        )}
+        <FieldRow label="Billable Item Name *">
+          {itemNameMode === "pick" ? (
+            <select
+              autoFocus
+              value={form.name}
+              onChange={(e) => {
+                if (e.target.value === "__add_new__") {
+                  setItemNameMode("add_new");
+                  set({ name: "" });
+                } else {
+                  set({ name: e.target.value });
+                }
+              }}
+              className={inputCls}
+            >
+              <option value="">— Select a billable item —</option>
+              {existingItemNames.map((n) => (
+                <option key={n} value={n}>{n}</option>
+              ))}
+              <option value="__add_new__">+ Add New</option>
+            </select>
+          ) : (
+            <div className="flex gap-2">
+              <input
+                autoFocus
+                value={form.name}
+                onChange={(e) => set({ name: e.target.value })}
+                placeholder="New billable item name"
+                className={`${inputCls} flex-1`}
+              />
+              {existingItemNames.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => { setItemNameMode("pick"); set({ name: "" }); }}
+                  className="h-9 px-3 rounded-md bg-secondary text-sm hover:bg-secondary/80 whitespace-nowrap"
+                >
+                  Pick existing
+                </button>
+              )}
+            </div>
+          )}
+        </FieldRow>
+        <FieldRow label="Notes">
+          <textarea
+            value={form.notes}
+            onChange={(e) => set({ notes: e.target.value })}
+            placeholder="Internal notes…"
+            rows={3}
+            className={textareaCls}
+          />
+        </FieldRow>
+        {ActiveToggle}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       {error && (
@@ -954,7 +1055,7 @@ function VendorFormFields({
         >
           <option value="vendor">Vendor</option>
           <option value="employee">Employee</option>
-          <option value="item">Item</option>
+          <option value="item">Billable Item</option>
         </select>
       </FieldRow>
       <FieldRow label="Phone">
@@ -1025,22 +1126,7 @@ function VendorFormFields({
           className={textareaCls}
         />
       </FieldRow>
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => set({ isActive: !form.isActive })}
-          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${
-            form.isActive ? "bg-primary" : "bg-muted"
-          }`}
-        >
-          <span
-            className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform ${
-              form.isActive ? "translate-x-4" : "translate-x-1"
-            }`}
-          />
-        </button>
-        <span className="text-sm">{form.isActive ? "Active" : "Inactive"}</span>
-      </div>
+      {ActiveToggle}
     </div>
   );
 }
