@@ -2444,6 +2444,7 @@ const vendorBodySchema = z.object({
   email: z.string().max(200).nullable().optional(),
   website: z.string().max(500).nullable().optional(),
   notes: z.string().max(2000).nullable().optional(),
+  unitPrice: z.string().max(20).nullable().optional(),
   vendorType: z.string().optional(),
   vendorTypeId: z.string().optional(),
   isActive: z.boolean().optional(),
@@ -2479,6 +2480,14 @@ router.post(
       typeId = await getDefaultVendorTypeId(input.organizationId);
       kind = "vendor";
     }
+    const normalizeUnitPrice = (raw: string | null | undefined): string | null => {
+      if (raw == null) return null;
+      const cleaned = String(raw).replace(/[$,\s]/g, "").trim();
+      if (!cleaned) return null;
+      const n = Number(cleaned);
+      if (!Number.isFinite(n)) return null;
+      return n.toFixed(2);
+    };
     const [row] = await db
       .insert(vendors)
       .values({
@@ -2492,6 +2501,7 @@ router.post(
         email: input.email ?? null,
         website: input.website ?? null,
         notes: input.notes ?? null,
+        unitPrice: normalizeUnitPrice(input.unitPrice),
         vendorType: kind ?? "vendor",
         vendorTypeId: typeId,
         isActive: input.isActive ?? true,
@@ -2768,6 +2778,17 @@ router.patch(
       updates.vendorType = resolved.builtinKind ?? "vendor";
     }
     if (input.isActive !== undefined) updates.isActive = input.isActive;
+    if (input.unitPrice !== undefined) {
+      const normalizePatchPrice = (raw: string | null | undefined): string | null => {
+        if (raw == null) return null;
+        const cleaned = String(raw).replace(/[$,\s]/g, "").trim();
+        if (!cleaned) return null;
+        const n = Number(cleaned);
+        if (!Number.isFinite(n)) return null;
+        return n.toFixed(2);
+      };
+      updates.unitPrice = normalizePatchPrice(input.unitPrice);
+    }
     const [updated] = await db
       .update(vendors)
       .set(updates)
