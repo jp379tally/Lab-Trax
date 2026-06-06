@@ -218,6 +218,24 @@ export default function ScanScreen() {
   const [selectedReviewPhotos, setSelectedReviewPhotos] = useState<number[]>([]);
   const [selectedPrinter, setSelectedPrinter] = useState<{ name: string; url: string } | null>(null);
 
+  type RemakeCandidate = {
+    id: string;
+    caseNumber: string;
+    patientFirstName: string;
+    patientLastName: string;
+    doctorName: string;
+    status: string;
+  };
+  const [manualRemakeEnabled, setManualRemakeEnabled] = useState(false);
+  const [manualRemakeSearch, setManualRemakeSearch] = useState("");
+  const [manualRemakeSearchLoading, setManualRemakeSearchLoading] = useState(false);
+  const [manualRemakeResults, setManualRemakeResults] = useState<RemakeCandidate[]>([]);
+  const [manualRemakeSelected, setManualRemakeSelected] = useState<RemakeCandidate | null>(null);
+  const [manualRemakeReason, setManualRemakeReason] = useState("");
+  const [manualRemakeCharged, setManualRemakeCharged] = useState<"yes" | "no" | "">("");
+  const [manualRemakeError, setManualRemakeError] = useState<string | null>(null);
+  const manualRemakeSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const SHADE_OPTIONS = ["A1", "A2", "A3", "A3.5", "A4", "B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D2", "D3", "D4", "0M1", "0M2", "0M3", "BL1", "BL2", "BL3", "Custom", "Other"];
   const [customShadePhotos, setCustomShadePhotos] = useState<string[]>([]);
   const [customShadeVideos, setCustomShadeVideos] = useState<string[]>([]);
@@ -2748,6 +2766,46 @@ export default function ScanScreen() {
     });
   }
 
+  async function searchRemakeCandidates(q: string): Promise<void> {
+    const labOrgId =
+      typeof activeLabAffiliationKey === "string" &&
+      activeLabAffiliationKey.startsWith("org:")
+        ? activeLabAffiliationKey.slice(4)
+        : "";
+    if (!labOrgId || q.trim().length < 2) {
+      setManualRemakeResults([]);
+      setManualRemakeSearchLoading(false);
+      return;
+    }
+    setManualRemakeSearchLoading(true);
+    try {
+      const qs = new URLSearchParams({ q: q.trim(), labOrganizationId: labOrgId });
+      const res = await resilientFetch(`/api/cases/quick-search?${qs.toString()}`);
+      if (!res.ok) { setManualRemakeResults([]); return; }
+      const body = await res.json();
+      const cases = body?.data?.cases ?? body?.cases ?? [];
+      setManualRemakeResults(Array.isArray(cases) ? cases : []);
+    } catch {
+      setManualRemakeResults([]);
+    } finally {
+      setManualRemakeSearchLoading(false);
+    }
+  }
+
+  function handleManualRemakeSearchChange(text: string) {
+    setManualRemakeSearch(text);
+    setManualRemakeSelected(null);
+    setManualRemakeError(null);
+    if (manualRemakeSearchTimerRef.current) clearTimeout(manualRemakeSearchTimerRef.current);
+    if (text.trim().length < 2) {
+      setManualRemakeResults([]);
+      return;
+    }
+    manualRemakeSearchTimerRef.current = setTimeout(() => {
+      void searchRemakeCandidates(text);
+    }, 350);
+  }
+
   async function fetchServerSimilarity(): Promise<DuplicateHit[]> {
     // Server-side check goes beyond exact-name matching (catches nicknames
     // and 1-edit typos across the same lab). The legacy local-only check
@@ -2789,6 +2847,30 @@ export default function ScanScreen() {
     }
     if (!patientName.trim()) {
       Alert.alert("Required", "Patient name is required");
+      return;
+    }
+
+    // Manual remake path: validate remake fields and submit directly,
+    // skipping the duplicate-detection prompt.
+    if (manualRemakeEnabled) {
+      if (!manualRemakeSelected) {
+        setManualRemakeError("Pick the original case being remade.");
+        return;
+      }
+      if (!manualRemakeReason.trim()) {
+        setManualRemakeError("Remake reason is required.");
+        return;
+      }
+      if (manualRemakeCharged === "") {
+        setManualRemakeError("Choose whether to charge for this remake.");
+        return;
+      }
+      setManualRemakeError(null);
+      createRemakeCase(
+        manualRemakeReason.trim(),
+        manualRemakeCharged === "yes",
+        manualRemakeSelected.id,
+      );
       return;
     }
 
@@ -2907,6 +2989,18 @@ export default function ScanScreen() {
     setCaseAttachments([]);
     setIsSubmittingCase(false);
     setActivityEntries([]);
+    setManualRemakeEnabled(false);
+    setManualRemakeSearch("");
+    setManualRemakeSearchLoading(false);
+    setManualRemakeResults([]);
+    setManualRemakeSelected(null);
+    setManualRemakeReason("");
+    setManualRemakeCharged("");
+    setManualRemakeError(null);
+    if (manualRemakeSearchTimerRef.current) {
+      clearTimeout(manualRemakeSearchTimerRef.current);
+      manualRemakeSearchTimerRef.current = null;
+    }
     scanAnim.setValue(0);
   }
 
@@ -4334,6 +4428,249 @@ export default function ScanScreen() {
               numberOfLines={3}
             />
           </View>
+
+          {/* ── Mark as Remake ─────────────────────────────────────────── */}
+          <View style={{ marginBottom: 16 }}>
+            <Pressable
+              onPress={() => {
+                const next = !manualRemakeEnabled;
+                setManualRemakeEnabled(next);
+                if (!next) {
+                  setManualRemakeSearch("");
+                  setManualRemakeResults([]);
+                  setManualRemakeSelected(null);
+                  setManualRemakeReason("");
+                  setManualRemakeCharged("");
+                  setManualRemakeError(null);
+                  if (manualRemakeSearchTimerRef.current) {
+                    clearTimeout(manualRemakeSearchTimerRef.current);
+                    manualRemakeSearchTimerRef.current = null;
+                  }
+                }
+                if ((Platform.OS as string) !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              }}
+              style={({ pressed }) => ({
+                flexDirection: "row" as const,
+                alignItems: "center" as const,
+                gap: 10,
+                paddingVertical: 12,
+                paddingHorizontal: 14,
+                borderRadius: 10,
+                borderWidth: 1.5,
+                borderColor: manualRemakeEnabled ? colors.warningStrong : colors.border,
+                backgroundColor: manualRemakeEnabled ? (colors.warningLight ?? "#FEF9C3") : colors.surface,
+                opacity: pressed ? 0.75 : 1,
+              })}
+              testID="mark-as-remake-toggle"
+              accessibilityLabel="Mark as Remake"
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: manualRemakeEnabled }}
+            >
+              <View style={{
+                width: 20, height: 20, borderRadius: 4,
+                borderWidth: 2,
+                borderColor: manualRemakeEnabled ? colors.warningStrong : colors.textTertiary,
+                backgroundColor: manualRemakeEnabled ? colors.warningStrong : "transparent",
+                alignItems: "center", justifyContent: "center",
+              }}>
+                {manualRemakeEnabled && (
+                  <Ionicons name="checkmark" size={13} color="#fff" />
+                )}
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 14, color: manualRemakeEnabled ? (colors.warningText ?? colors.text) : colors.text }}>
+                  Mark as Remake
+                </Text>
+                {!manualRemakeEnabled && (
+                  <Text style={{ fontFamily: "Inter_400Regular", fontSize: 11, color: colors.textTertiary, marginTop: 1 }}>
+                    Link this case to the original it replaces
+                  </Text>
+                )}
+              </View>
+              <Ionicons
+                name={manualRemakeEnabled ? "repeat" : "repeat-outline"}
+                size={18}
+                color={manualRemakeEnabled ? colors.warningStrong : colors.textTertiary}
+              />
+            </Pressable>
+
+            {manualRemakeEnabled && (
+              <View style={{
+                marginTop: 10,
+                borderRadius: 10,
+                borderWidth: 1,
+                borderColor: colors.warningStrong ?? colors.border,
+                backgroundColor: colors.surface,
+                overflow: "hidden" as const,
+              }}>
+                <View style={{ padding: 12, gap: 10 }}>
+                  {/* Case search */}
+                  {!manualRemakeSelected ? (
+                    <View>
+                      <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: colors.textSecondary, marginBottom: 6 }}>
+                        Search for original case (case # or patient name)
+                      </Text>
+                      <View style={{ flexDirection: "row" as const, alignItems: "center" as const, borderWidth: 1, borderColor: colors.border, borderRadius: 8, paddingHorizontal: 10, backgroundColor: colors.background }}>
+                        <Ionicons name="search-outline" size={15} color={colors.textTertiary} />
+                        <TextInput
+                          value={manualRemakeSearch}
+                          onChangeText={handleManualRemakeSearchChange}
+                          placeholder="e.g. 26-11 or Smith"
+                          placeholderTextColor={colors.textTertiary}
+                          style={{ flex: 1, paddingVertical: 9, paddingHorizontal: 8, fontFamily: "Inter_400Regular", fontSize: 13, color: colors.text }}
+                          autoCapitalize="none"
+                          autoCorrect={false}
+                          testID="remake-search-input"
+                        />
+                        {manualRemakeSearchLoading && <ActivityIndicator size="small" color={colors.tint} />}
+                      </View>
+
+                      {manualRemakeResults.length > 0 && (
+                        <View style={{ marginTop: 6, borderRadius: 8, borderWidth: 1, borderColor: colors.border, overflow: "hidden" as const, maxHeight: 220 }}>
+                          <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                            {manualRemakeResults.map((item, idx) => (
+                              <Pressable
+                                key={item.id}
+                                onPress={() => {
+                                  setManualRemakeSelected(item);
+                                  setManualRemakeResults([]);
+                                  setManualRemakeSearch("");
+                                  setManualRemakeError(null);
+                                  if ((Platform.OS as string) !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                }}
+                                style={({ pressed }) => ({
+                                  paddingVertical: 10,
+                                  paddingHorizontal: 12,
+                                  borderTopWidth: idx === 0 ? 0 : 1,
+                                  borderTopColor: colors.border,
+                                  backgroundColor: pressed ? colors.surfaceAlt : colors.surface,
+                                })}
+                              >
+                                <Text style={{ fontFamily: "Inter_700Bold", fontSize: 13, color: colors.text }}>
+                                  Case {item.caseNumber}
+                                </Text>
+                                <Text style={{ fontFamily: "Inter_400Regular", fontSize: 12, color: colors.textSecondary, marginTop: 2 }}>
+                                  {item.patientFirstName} {item.patientLastName}
+                                  {item.doctorName ? ` · Dr. ${item.doctorName}` : ""}
+                                  {item.status ? ` · ${item.status}` : ""}
+                                </Text>
+                              </Pressable>
+                            ))}
+                          </ScrollView>
+                        </View>
+                      )}
+
+                      {manualRemakeSearch.trim().length >= 2 && !manualRemakeSearchLoading && manualRemakeResults.length === 0 && (
+                        <Text style={{ fontFamily: "Inter_400Regular", fontSize: 12, color: colors.textTertiary, marginTop: 6, textAlign: "center" }}>
+                          No cases found
+                        </Text>
+                      )}
+                    </View>
+                  ) : (
+                    <View>
+                      <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: colors.textSecondary, marginBottom: 6 }}>
+                        Original case
+                      </Text>
+                      <View style={{
+                        flexDirection: "row" as const,
+                        alignItems: "center" as const,
+                        borderWidth: 1,
+                        borderColor: colors.info ?? colors.tint,
+                        borderRadius: 8,
+                        padding: 10,
+                        backgroundColor: (colors.infoSurface ?? colors.surface),
+                        gap: 8,
+                      }}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontFamily: "Inter_700Bold", fontSize: 13, color: colors.text }}>
+                            Case {manualRemakeSelected.caseNumber}
+                          </Text>
+                          <Text style={{ fontFamily: "Inter_400Regular", fontSize: 12, color: colors.textSecondary, marginTop: 2 }}>
+                            {manualRemakeSelected.patientFirstName} {manualRemakeSelected.patientLastName}
+                            {manualRemakeSelected.doctorName ? ` · Dr. ${manualRemakeSelected.doctorName}` : ""}
+                          </Text>
+                        </View>
+                        <Pressable
+                          onPress={() => {
+                            setManualRemakeSelected(null);
+                            setManualRemakeSearch("");
+                            setManualRemakeError(null);
+                          }}
+                          hitSlop={10}
+                        >
+                          <Ionicons name="close-circle" size={20} color={colors.textTertiary} />
+                        </Pressable>
+                      </View>
+                    </View>
+                  )}
+
+                  {/* Reason */}
+                  <View>
+                    <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: colors.textSecondary, marginBottom: 4 }}>
+                      Remake reason <Text style={{ color: colors.errorText }}>*</Text>
+                    </Text>
+                    <TextInput
+                      value={manualRemakeReason}
+                      onChangeText={(t) => { setManualRemakeReason(t); setManualRemakeError(null); }}
+                      placeholder="e.g. Doesn't fit / open margins / wrong shade…"
+                      placeholderTextColor={colors.textTertiary}
+                      multiline
+                      style={{
+                        borderWidth: 1, borderColor: colors.border, borderRadius: 8,
+                        paddingHorizontal: 10, paddingVertical: 8, minHeight: 56,
+                        fontFamily: "Inter_400Regular", fontSize: 13, color: colors.text,
+                        textAlignVertical: "top" as const,
+                      }}
+                      testID="remake-reason-input"
+                    />
+                  </View>
+
+                  {/* Charge decision */}
+                  <View>
+                    <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: colors.textSecondary, marginBottom: 6 }}>
+                      Charge for this remake? <Text style={{ color: colors.errorText }}>*</Text>
+                    </Text>
+                    <View style={{ flexDirection: "row" as const, gap: 8 }}>
+                      {(["yes", "no"] as const).map((v) => {
+                        const selected = manualRemakeCharged === v;
+                        const accentColor = v === "yes" ? (colors.info ?? colors.tint) : colors.warningStrong;
+                        const accentSurface = v === "yes" ? (colors.infoSurface ?? colors.surface) : (colors.warningLight ?? "#FEF9C3");
+                        return (
+                          <Pressable
+                            key={v}
+                            onPress={() => { setManualRemakeCharged(v); setManualRemakeError(null); }}
+                            style={({ pressed }) => ({
+                              flex: 1, paddingVertical: 10, borderRadius: 8,
+                              borderWidth: 1,
+                              borderColor: selected ? accentColor : colors.border,
+                              backgroundColor: selected ? accentSurface : colors.surface,
+                              alignItems: "center" as const,
+                              opacity: pressed ? 0.75 : 1,
+                            })}
+                            testID={`remake-charge-${v}`}
+                          >
+                            <Text style={{
+                              fontFamily: "Inter_600SemiBold", fontSize: 12,
+                              color: selected ? accentColor : colors.textSecondary,
+                            }}>
+                              {v === "yes" ? "Yes — charge as usual" : "No — no charge"}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  </View>
+
+                  {manualRemakeError && (
+                    <Text style={{ fontFamily: "Inter_500Medium", fontSize: 12, color: colors.errorText }}>
+                      {manualRemakeError}
+                    </Text>
+                  )}
+                </View>
+              </View>
+            )}
+          </View>
+          {/* ── end Mark as Remake ─────────────────────────────────────── */}
 
           {activityEntries.length > 0 && (
             <View style={styles.activitySection}>
