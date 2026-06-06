@@ -503,7 +503,7 @@ export function CasePrintLayoutEditor({
   // ── Undo / redo ───────────────────────────────────────────────────────
 
   // Mirror current values in refs so the keyboard handler is never stale.
-  const draftRef = useRef(draft);
+  // (draftRef is declared above near snap/grid refs; just keep it in sync here.)
   draftRef.current = draft;
   const undoStackRef = useRef(undoStack);
   undoStackRef.current = undoStack;
