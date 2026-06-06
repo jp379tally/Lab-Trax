@@ -1658,6 +1658,9 @@ export default function ScanScreen() {
         console.log("AI: watchdog fired — forcing form transition after 45s");
         setWatchdogSecondsLeft(null);
         setIsAnalyzing(false);
+        // Show the same prominent error bottom sheet on timeout so staff
+        // know the analysis didn't complete and can retake or fill manually.
+        setScanError({ message: "Prescription analysis timed out. You can retake the photo or fill in the details manually.", variant: "transient" });
         setPhase("form");
       }, 45000);
       let watchdogInterval: ReturnType<typeof setInterval> | null = setInterval(() => {
@@ -3798,8 +3801,18 @@ export default function ScanScreen() {
             )}
           </View>
 
-          <View style={styles.formGroup}>
-            <Text style={styles.formLabel}>Case Type</Text>
+          <View style={[styles.formGroup, { position: "relative" }]}>
+            {aiFilledFields.has("caseType") && (
+              <RNAnimated.View style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, backgroundColor: "#F59E0B", opacity: aiFlashAnim, borderRadius: 1.5 }} pointerEvents="none" />
+            )}
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 }}>
+              <Text style={[styles.formLabel, { marginBottom: 0 }]}>Case Type</Text>
+              {aiFilledFields.has("caseType") && (
+                <View style={{ backgroundColor: "rgba(245,158,11,0.15)", borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 }}>
+                  <Text style={{ fontSize: 10, fontFamily: "Inter_700Bold", color: "#B45309" }}>✦ AI</Text>
+                </View>
+              )}
+            </View>
             <Pressable
               onPress={() => setCaseTypeOpen(!caseTypeOpen)}
               style={[styles.formInput, styles.dropdownTrigger]}
@@ -3821,6 +3834,7 @@ export default function ScanScreen() {
                     onPress={() => {
                       setCaseType(type);
                       setCaseTypeOpen(false);
+                      setAiFilledFields(prev => { const n = new Set(prev); n.delete("caseType"); return n; });
                       if (type === "Removable") {
                         setMaterial("Acrylic");
                         setRemovableSubtype("");
@@ -4153,10 +4167,23 @@ export default function ScanScreen() {
             </View>
           </View>
 
-          <View style={styles.formGroup}>
-            <Text style={styles.formLabel}>Tooth Indicator</Text>
+          <View style={[styles.formGroup, { position: "relative" }]}>
+            {aiFilledFields.has("toothIndices") && (
+              <RNAnimated.View style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, backgroundColor: "#F59E0B", opacity: aiFlashAnim, borderRadius: 1.5 }} pointerEvents="none" />
+            )}
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 }}>
+              <Text style={[styles.formLabel, { marginBottom: 0 }]}>Tooth Indicator</Text>
+              {aiFilledFields.has("toothIndices") && (
+                <View style={{ backgroundColor: "rgba(245,158,11,0.15)", borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 }}>
+                  <Text style={{ fontSize: 10, fontFamily: "Inter_700Bold", color: "#B45309" }}>✦ AI</Text>
+                </View>
+              )}
+            </View>
             <Pressable
-              onPress={() => setToothChartOpen(!toothChartOpen)}
+              onPress={() => {
+                setToothChartOpen(!toothChartOpen);
+                setAiFilledFields(prev => { const n = new Set(prev); n.delete("toothIndices"); return n; });
+              }}
               style={[styles.formInput, styles.dropdownTrigger]}
             >
               <Text style={[styles.dropdownTriggerText, selectedTeeth.length === 0 && { color: colors.textTertiary }]}>
@@ -4390,8 +4417,18 @@ export default function ScanScreen() {
           </View>
 
           <View style={[styles.formRow, { zIndex: 5 }]}>
-            <View style={[styles.formGroup, { flex: 1, zIndex: 5 }]}>
-              <Text style={styles.formLabel}>Shade</Text>
+            <View style={[styles.formGroup, { flex: 1, zIndex: 5, position: "relative" }]}>
+              {aiFilledFields.has("shade") && (
+                <RNAnimated.View style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, backgroundColor: "#F59E0B", opacity: aiFlashAnim, borderRadius: 1.5 }} pointerEvents="none" />
+              )}
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                <Text style={[styles.formLabel, { marginBottom: 0 }]}>Shade</Text>
+                {aiFilledFields.has("shade") && (
+                  <View style={{ backgroundColor: "rgba(245,158,11,0.15)", borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 }}>
+                    <Text style={{ fontSize: 10, fontFamily: "Inter_700Bold", color: "#B45309" }}>✦ AI</Text>
+                  </View>
+                )}
+              </View>
               <Pressable
                 onPress={() => setShadeOpen(!shadeOpen)}
                 style={[styles.formInput, styles.dropdownTrigger]}
@@ -4414,6 +4451,7 @@ export default function ScanScreen() {
                         onPress={() => {
                           setShade(s);
                           setShadeOpen(false);
+                          setAiFilledFields(prev => { const n = new Set(prev); n.delete("shade"); return n; });
                           if ((Platform.OS as string) !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                           if (s === "Custom") {
                             setTimeout(() => {
@@ -4446,8 +4484,18 @@ export default function ScanScreen() {
                 </View>
               )}
             </View>
-            <View style={[styles.formGroup, { flex: 1 }]}>
-              <Text style={styles.formLabel}>Material</Text>
+            <View style={[styles.formGroup, { flex: 1, position: "relative" }]}>
+              {aiFilledFields.has("material") && (
+                <RNAnimated.View style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, backgroundColor: "#F59E0B", opacity: aiFlashAnim, borderRadius: 1.5 }} pointerEvents="none" />
+              )}
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                <Text style={[styles.formLabel, { marginBottom: 0 }]}>Material</Text>
+                {aiFilledFields.has("material") && (
+                  <View style={{ backgroundColor: "rgba(245,158,11,0.15)", borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 }}>
+                    <Text style={{ fontSize: 10, fontFamily: "Inter_700Bold", color: "#B45309" }}>✦ AI</Text>
+                  </View>
+                )}
+              </View>
               <View style={styles.materialSelector}>
                 {(caseType === "Removable"
                   ? ["Acrylic", "Flexible", "Cast Metal", "Other"]
@@ -4455,7 +4503,7 @@ export default function ScanScreen() {
                 ).map((m) => (
                   <Pressable
                     key={m}
-                    onPress={() => setMaterial(m)}
+                    onPress={() => { setMaterial(m); setAiFilledFields(prev => { const n = new Set(prev); n.delete("material"); return n; }); }}
                     style={[
                       styles.materialChip,
                       material === m && styles.materialChipActive,
@@ -4475,10 +4523,19 @@ export default function ScanScreen() {
             </View>
           </View>
 
+          <View style={{ position: "relative" }}>
+            {aiFilledFields.has("isRush") && (
+              <RNAnimated.View style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, backgroundColor: "#F59E0B", opacity: aiFlashAnim, borderRadius: 1.5 }} pointerEvents="none" />
+            )}
           <Pressable
-            onPress={() => setIsRush(!isRush)}
+            onPress={() => { setIsRush(!isRush); setAiFilledFields(prev => { const n = new Set(prev); n.delete("isRush"); return n; }); }}
             style={[styles.rushToggle, isRush && styles.rushToggleActive]}
           >
+            {aiFilledFields.has("isRush") && (
+              <View style={{ backgroundColor: "rgba(245,158,11,0.15)", borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1, marginRight: 4 }}>
+                <Text style={{ fontSize: 10, fontFamily: "Inter_700Bold", color: "#B45309" }}>✦ AI</Text>
+              </View>
+            )}
             <Ionicons
               name="flash"
               size={18}
@@ -4498,13 +4555,24 @@ export default function ScanScreen() {
               />
             </View>
           </Pressable>
+          </View>
 
-          <View style={styles.formGroup}>
-            <Text style={styles.formLabel}>Notes</Text>
+          <View style={[styles.formGroup, { position: "relative" }]}>
+            {aiFilledFields.has("notes") && (
+              <RNAnimated.View style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, backgroundColor: "#F59E0B", opacity: aiFlashAnim, borderRadius: 1.5 }} pointerEvents="none" />
+            )}
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 }}>
+              <Text style={[styles.formLabel, { marginBottom: 0 }]}>Notes</Text>
+              {aiFilledFields.has("notes") && (
+                <View style={{ backgroundColor: "rgba(245,158,11,0.15)", borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 }}>
+                  <Text style={{ fontSize: 10, fontFamily: "Inter_700Bold", color: "#B45309" }}>✦ AI</Text>
+                </View>
+              )}
+            </View>
             <TextInput
               style={[styles.formInput, styles.formTextArea]}
               value={notes}
-              onChangeText={setNotes}
+              onChangeText={(t) => { setNotes(t); setAiFilledFields(prev => { const n = new Set(prev); n.delete("notes"); return n; }); }}
               placeholder="Additional instructions..."
               placeholderTextColor={colors.textTertiary}
               multiline
