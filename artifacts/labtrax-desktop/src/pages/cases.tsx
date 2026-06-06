@@ -18,6 +18,7 @@ import {
   EyeOff,
   FileUp,
   Filter,
+  GitBranch,
   ImageOff,
   Loader2,
   Lock,
@@ -2276,6 +2277,7 @@ export function CaseDrawer({
 
   const [activeTab, setActiveTab] = useState<CaseTab>("lab-slip");
   const [historySortOrder, setHistorySortOrder] = useState<"asc" | "desc">("asc");
+  const [remakeChainExpanded, setRemakeChainExpanded] = useState(true);
   const [viewingInvoice, setViewingInvoice] = useState<Invoice | null>(null);
   const [lightbox, setLightbox] = useState<
     { url: string; kind: "image" | "video"; mimeType?: string } | null
@@ -2435,6 +2437,25 @@ export function CaseDrawer({
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
   });
+
+  type RemakeChainEntry = {
+    id: string;
+    caseNumber: string;
+    status: string | null;
+    remakeReason: string | null;
+    remakeCharged: boolean | null;
+    createdAt: string | null;
+  };
+  const inRemakeChain =
+    !!(data?.remakeOriginal) || (data?.remakeChildren?.length ?? 0) > 0;
+  const remakeChainQuery = useQuery({
+    queryKey: ["case-remake-chain", labCase.id],
+    queryFn: () =>
+      apiFetch<{ chain: RemakeChainEntry[] }>(`/cases/${labCase.id}/remake-chain`),
+    enabled: inRemakeChain,
+    staleTime: 30_000,
+  });
+  const remakeChain = remakeChainQuery.data?.chain ?? [];
 
   const drawerOrgsQuery = useQuery({
     queryKey: ["organizations"],
@@ -3414,6 +3435,93 @@ export function CaseDrawer({
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {/* Remake history — collapsible timeline showing every generation */}
+        {remakeChain.length >= 2 && (
+          <div className="border-b border-border shrink-0">
+            <button
+              type="button"
+              onClick={() => setRemakeChainExpanded((v) => !v)}
+              className="w-full flex items-center gap-2 px-5 py-2.5 hover:bg-muted/50 transition-colors"
+            >
+              <GitBranch size={14} className="text-muted-foreground shrink-0" />
+              <span className="flex-1 text-left text-xs font-medium text-foreground">
+                Remake history
+              </span>
+              <span className="text-[10px] text-muted-foreground mr-1">
+                {remakeChain.length} generation{remakeChain.length !== 1 ? "s" : ""}
+              </span>
+              {remakeChainExpanded ? (
+                <ChevronUp size={13} className="text-muted-foreground shrink-0" />
+              ) : (
+                <ChevronDown size={13} className="text-muted-foreground shrink-0" />
+              )}
+            </button>
+            {remakeChainExpanded && (
+              <div className="px-5 pb-3 space-y-1.5">
+                {remakeChain.map((entry, idx) => {
+                  const isCurrent = entry.id === labCase.id;
+                  const genLabel = String.fromCharCode(65 + idx);
+                  return (
+                    <div
+                      key={entry.id}
+                      className={[
+                        "flex items-start gap-2.5 rounded-md px-2.5 py-2 transition-colors",
+                        isCurrent
+                          ? "bg-primary/10"
+                          : "hover:bg-muted/50 cursor-pointer",
+                      ].join(" ")}
+                      onClick={() => {
+                        if (!isCurrent && onOpenCaseId) onOpenCaseId(entry.id);
+                      }}
+                      role={isCurrent ? undefined : "button"}
+                      tabIndex={isCurrent ? undefined : 0}
+                      onKeyDown={(e) => {
+                        if (!isCurrent && onOpenCaseId && (e.key === "Enter" || e.key === " ")) {
+                          e.preventDefault();
+                          onOpenCaseId(entry.id);
+                        }
+                      }}
+                    >
+                      <span
+                        className={[
+                          "flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold shrink-0 mt-0.5",
+                          isCurrent
+                            ? "bg-primary text-primary-foreground"
+                            : "bg-muted text-muted-foreground",
+                        ].join(" ")}
+                      >
+                        {genLabel}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-mono text-xs font-medium text-foreground">
+                            {entry.caseNumber}
+                          </span>
+                          {entry.status && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground capitalize">
+                              {statusLabel(entry.status)}
+                            </span>
+                          )}
+                          {isCurrent && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/20 text-primary font-medium">
+                              Current
+                            </span>
+                          )}
+                        </div>
+                        {entry.remakeReason && (
+                          <div className="text-[11px] text-muted-foreground mt-0.5 truncate">
+                            {entry.remakeReason}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
 
