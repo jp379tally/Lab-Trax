@@ -856,7 +856,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (cancelled) {
         return;
       }
-      setHasActiveLabMembership(false);
+      // Do NOT reset hasActiveLabMembership on network errors — the cache-hydrated
+      // value is more reliable than a transient failure. The banner should only
+      // show if the API *confirms* no membership, not if it couldn't be reached.
       setActiveLabAffiliationKey(null);
       setActiveLabAffiliationName(null);
       setAllLabAffiliationKeysList([]);

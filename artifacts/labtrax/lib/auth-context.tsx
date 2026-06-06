@@ -259,7 +259,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               setCurrentPassword(storedPassword);
               setIsLocked(true);
               const userPicKey = `${PROFILE_PIC_KEY}_${user.id || user.username}`;
-              const savedPic = await AsyncStorage.getItem(userPicKey);
+              let savedPic = await AsyncStorage.getItem(userPicKey);
+              // Migrate from old username-based key (set before userId was available)
+              if (!savedPic && user.id && user.username) {
+                const legacyKey = `${PROFILE_PIC_KEY}_${user.username}`;
+                const legacyPic = await AsyncStorage.getItem(legacyKey).catch(() => null);
+                if (legacyPic) {
+                  savedPic = legacyPic;
+                  await AsyncStorage.setItem(userPicKey, legacyPic).catch(() => {});
+                  await AsyncStorage.removeItem(legacyKey).catch(() => {});
+                }
+              }
               // Prefer server-stored URL (survives reinstalls) over local cache
               const picUri = user.profilePhotoUrl || savedPic;
               setProfilePicUriState(picUri);
@@ -387,7 +397,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       );
       await fetchAllUsers();
       const userPicKey = `${PROFILE_PIC_KEY}_${user.id || user.username}`;
-      const savedPic = await AsyncStorage.getItem(userPicKey);
+      let savedPic = await AsyncStorage.getItem(userPicKey);
+      if (!savedPic && user.id && user.username) {
+        const legacyKey = `${PROFILE_PIC_KEY}_${user.username}`;
+        const legacyPic = await AsyncStorage.getItem(legacyKey).catch(() => null);
+        if (legacyPic) {
+          savedPic = legacyPic;
+          await AsyncStorage.setItem(userPicKey, legacyPic).catch(() => {});
+          await AsyncStorage.removeItem(legacyKey).catch(() => {});
+        }
+      }
       const picUri = user.profilePhotoUrl || savedPic;
       setProfilePicUriState(picUri);
       if (user.profilePhotoUrl && savedPic !== user.profilePhotoUrl) {
@@ -436,7 +455,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         );
         await fetchAllUsers();
         const userPicKey = `${PROFILE_PIC_KEY}_${user.id || user.username}`;
-        const savedPic = await AsyncStorage.getItem(userPicKey);
+        let savedPic = await AsyncStorage.getItem(userPicKey);
+        if (!savedPic && user.id && user.username) {
+          const legacyKey = `${PROFILE_PIC_KEY}_${user.username}`;
+          const legacyPic = await AsyncStorage.getItem(legacyKey).catch(() => null);
+          if (legacyPic) {
+            savedPic = legacyPic;
+            await AsyncStorage.setItem(userPicKey, legacyPic).catch(() => {});
+            await AsyncStorage.removeItem(legacyKey).catch(() => {});
+          }
+        }
         const picUri = user.profilePhotoUrl || savedPic;
         setProfilePicUriState(picUri);
         if (user.profilePhotoUrl && savedPic !== user.profilePhotoUrl) {
