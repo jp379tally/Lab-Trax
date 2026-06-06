@@ -52,6 +52,7 @@ export default function LoginScreen() {
   const [error, setError] = useState<string | null>(null);
   const [biometricAvailable, setBiometricAvailable] = useState(false);
   const [biometricType, setBiometricType] = useState<string>("Biometric");
+  const [rememberMe, setRememberMe] = useState(true);
 
   // Two-factor auth challenge state
   const [twoFactorPendingToken, setTwoFactorPendingToken] = useState<string | null>(null);
@@ -132,6 +133,9 @@ export default function LoginScreen() {
 
   useEffect(() => {
     checkBiometricAvailability();
+    AsyncStorage.getItem("@labtrax_remember_me").then((val) => {
+      if (val !== null) setRememberMe(val === "true");
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -233,7 +237,7 @@ export default function LoginScreen() {
     }
     setError(null);
     setIsLoggingIn(true);
-    const result = await login(username.trim(), password.trim());
+    const result = await login(username.trim(), password.trim(), rememberMe);
     setIsLoggingIn(false);
     if (result.requiresTwoFactor && result.pendingToken) {
       setTwoFactorPendingToken(result.pendingToken);
@@ -2609,6 +2613,28 @@ export default function LoginScreen() {
                 <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "#60A5FA" }}>Forgot Username?</Text>
               </Pressable>
             </View>
+
+            <Pressable
+              onPress={() => setRememberMe(!rememberMe)}
+              style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 4, marginBottom: 16 }}
+              testID="remember-me-toggle"
+            >
+              <View style={{
+                width: 20,
+                height: 20,
+                borderRadius: 4,
+                borderWidth: 1.5,
+                borderColor: rememberMe ? "#60A5FA" : "rgba(255,255,255,0.3)",
+                backgroundColor: rememberMe ? "#60A5FA" : "transparent",
+                alignItems: "center",
+                justifyContent: "center",
+              }}>
+                {rememberMe && <Ionicons name="checkmark" size={13} color="#FFF" />}
+              </View>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.75)" }}>
+                Remember Me
+              </Text>
+            </Pressable>
 
             <Pressable
               onPress={handleLogin}

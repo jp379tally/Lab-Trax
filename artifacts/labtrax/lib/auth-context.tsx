@@ -45,7 +45,7 @@ interface AuthContextValue {
   userType: "provider" | "lab" | "master_admin" | null;
   profilePicUri: string | null;
   setProfilePicUri: (uri: string | null) => void;
-  login: (username: string, password: string) => Promise<{ success: boolean; requiresTwoFactor?: boolean; pendingToken?: string; error?: string }>;
+  login: (username: string, password: string, rememberMe?: boolean) => Promise<{ success: boolean; requiresTwoFactor?: boolean; pendingToken?: string; error?: string }>;
   completeTwoFactor: (pendingToken: string, code: string, trustDevice?: boolean) => Promise<{ success: boolean; error?: string }>;
   loginWithBiometric: () => Promise<{ success: boolean; requiresTwoFactor?: boolean; pendingToken?: string; error?: string }>;
   register: (data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean; userType?: "provider" | "lab" | "master_admin"; licenseNumber?: string; practiceName?: string; doctorName?: string; practiceAddress?: string; practicePhone?: string; phoneContactName?: string; role?: "user" | "admin"; accountNumber?: string; joinOrganizationId?: string; createOrganization?: boolean; claimProvider?: { labId: string; accountNumber: string } }) => Promise<{ success: boolean; error?: string }>;
@@ -68,6 +68,7 @@ const PROFILE_PIC_KEY = "@drivesync_profile_pic";
 const AUTH_PASSWORD_KEY = "@drivesync_auth_password";
 const BIOMETRIC_USER_KEY = "@drivesync_biometric_user";
 const TRUSTED_DEVICE_KEY = "@labtrax_trusted_device_v1";
+const REMEMBER_ME_KEY = "@labtrax_remember_me";
 
 const INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000;
 
@@ -232,6 +233,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function loadAuth() {
     try {
       await loadTokens();
+
+      // If the user's last sign-in had "Remember Me" unchecked, wipe every
+      // persisted credential before the auto-login attempt so the app returns
+      // them to the login screen on a cold start.
+      const rememberMeRaw = await AsyncStorage.getItem(REMEMBER_ME_KEY);
+      const rememberedMe = rememberMeRaw === null ? true : rememberMeRaw === "true";
+      if (!rememberedMe) {
+        await clearTokens();
+        await AsyncStorage.removeItem(AUTH_KEY);
+        await removeSensitiveItem(AUTH_PASSWORD_KEY);
+        await removeSensitiveItem(BIOMETRIC_USER_KEY);
+        await fetchAllUsers();
+        setIsAuthLoading(false);
+        return;
+      }
+
       const savedAuth = await AsyncStorage.getItem(AUTH_KEY);
 
       await fetchAllUsers();
@@ -351,7 +368,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  async function login(username: string, password: string): Promise<{ success: boolean; requiresTwoFactor?: boolean; pendingToken?: string; error?: string }> {
+  async function login(username: string, password: string, rememberMe = true): Promise<{ success: boolean; requiresTwoFactor?: boolean; pendingToken?: string; error?: string }> {
     try {
       // Include a stored trust token so a recognised device skips 2FA (Task #863).
       const storedTrustToken = await getSensitiveItem(TRUSTED_DEVICE_KEY).catch(() => null);
@@ -369,6 +386,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const data = await res.json();
 
       if (res.ok && data.requiresTwoFactor && data.pendingToken) {
+        // Persist the preference now so completeTwoFactor can honour it even
+        // though the full login path (where it's normally written) hasn't run.
+        await AsyncStorage.setItem(REMEMBER_ME_KEY, rememberMe ? "true" : "false");
         return { success: false, requiresTwoFactor: true, pendingToken: data.pendingToken };
       }
 
@@ -380,21 +400,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await saveTokens(data.accessToken, data.refreshToken);
       }
 
+      // Persist the user's preference so the next cold launch knows whether to
+      // restore the session or return them to the login screen.
+      await AsyncStorage.setItem(REMEMBER_ME_KEY, rememberMe ? "true" : "false");
+
       const user = data.user;
       setIsAuthenticated(true);
       setCurrentUser(user.username);
       setCurrentUserId(user.id);
       setUserType(user.userType || "lab");
       setCurrentPassword(password);
-      await setSensitiveItem(AUTH_PASSWORD_KEY, password);
-      await AsyncStorage.setItem(
-        AUTH_KEY,
-        JSON.stringify({ loggedIn: true, username: user.username, userId: user.id, userType: user.userType || "lab" }),
-      );
-      await setSensitiveItem(
-        BIOMETRIC_USER_KEY,
-        JSON.stringify({ username: user.username, password }),
-      );
+
+      if (rememberMe) {
+        await setSensitiveItem(AUTH_PASSWORD_KEY, password);
+        await AsyncStorage.setItem(
+          AUTH_KEY,
+          JSON.stringify({ loggedIn: true, username: user.username, userId: user.id, userType: user.userType || "lab" }),
+        );
+        await setSensitiveItem(
+          BIOMETRIC_USER_KEY,
+          JSON.stringify({ username: user.username, password }),
+        );
+      } else {
+        // "Remember Me" unchecked — clear any previously persisted session so
+        // the next cold launch returns the user to the login screen.
+        await AsyncStorage.removeItem(AUTH_KEY);
+        await removeSensitiveItem(AUTH_PASSWORD_KEY);
+        await removeSensitiveItem(BIOMETRIC_USER_KEY);
+      }
       await fetchAllUsers();
       const userPicKey = `${PROFILE_PIC_KEY}_${user.id || user.username}`;
       let savedPic = await AsyncStorage.getItem(userPicKey);
@@ -449,10 +482,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setCurrentUser(user.username);
         setCurrentUserId(user.id);
         setUserType(user.userType || "lab");
-        await AsyncStorage.setItem(
-          AUTH_KEY,
-          JSON.stringify({ loggedIn: true, username: user.username, userId: user.id, userType: user.userType || "lab" }),
-        );
+        // Read the Remember Me preference that was stored at the start of the
+        // login flow (login() writes it before returning the 2FA challenge).
+        const rememberMeRaw = await AsyncStorage.getItem(REMEMBER_ME_KEY);
+        const rememberMe = rememberMeRaw === null ? true : rememberMeRaw === "true";
+        if (rememberMe) {
+          await AsyncStorage.setItem(
+            AUTH_KEY,
+            JSON.stringify({ loggedIn: true, username: user.username, userId: user.id, userType: user.userType || "lab" }),
+          );
+        } else {
+          // Remember Me unchecked — ensure no persistent session is written
+          // so the next cold launch returns the user to the login screen.
+          await AsyncStorage.removeItem(AUTH_KEY);
+          await removeSensitiveItem(AUTH_PASSWORD_KEY);
+          await removeSensitiveItem(BIOMETRIC_USER_KEY);
+        }
         await fetchAllUsers();
         const userPicKey = `${PROFILE_PIC_KEY}_${user.id || user.username}`;
         let savedPic = await AsyncStorage.getItem(userPicKey);

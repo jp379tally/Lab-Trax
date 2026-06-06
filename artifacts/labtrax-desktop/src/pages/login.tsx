@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { useAuth } from "@/lib/auth-context";
-import { ApiError, TwoFactorRequiredError, getApiOrigin } from "@/lib/api";
+import { ApiError, TwoFactorRequiredError, getApiOrigin, getRememberMe, saveRememberMe } from "@/lib/api";
 import { describeAuthRestoreStatus } from "@/lib/auth-restore-status";
 import { Logo } from "@/components/Logo";
 import SignupWizard from "@/components/SignupWizard";
@@ -16,6 +16,7 @@ export default function LoginPage() {
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [rememberMe, setRememberMe] = useState(() => getRememberMe());
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -41,8 +42,9 @@ export default function LoginPage() {
     }
     setSubmitting(true);
     setError(null);
+    saveRememberMe(rememberMe);
     try {
-      await login(username.trim(), password);
+      await login(username.trim(), password, rememberMe);
     } catch (err) {
       if (err instanceof TwoFactorRequiredError) {
         setPendingToken(err.pendingToken);
@@ -250,6 +252,15 @@ export default function LoginPage() {
                     placeholder="••••••••"
                   />
                 </div>
+                <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={rememberMe}
+                    onChange={(e) => setRememberMe(e.target.checked)}
+                    className="h-4 w-4 rounded border-input accent-primary cursor-pointer"
+                  />
+                  <span className="text-sm text-foreground">Remember Me</span>
+                </label>
                 {error && (
                   <div className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">
                     {error}

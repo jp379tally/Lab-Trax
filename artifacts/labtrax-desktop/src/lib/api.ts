@@ -236,6 +236,29 @@ export function clearPlatformAdminSecretCache(): void {
 
 const TOKEN_STORAGE_KEY = "labtrax_desktop_tokens_v1";
 const TRUSTED_DEVICE_STORAGE_KEY = "labtrax_trusted_device_v1";
+const REMEMBER_ME_STORAGE_KEY = "labtrax_desktop_remember_me_v1";
+
+/** Returns the user's last "Remember Me" choice (defaults true for new installs). */
+export function getRememberMe(): boolean {
+  try {
+    if (typeof localStorage === "undefined") return true;
+    const raw = localStorage.getItem(REMEMBER_ME_STORAGE_KEY);
+    return raw === null ? true : raw === "true";
+  } catch {
+    return true;
+  }
+}
+
+/** Persists the user's "Remember Me" choice so the checkbox reflects it next time. */
+export function saveRememberMe(val: boolean): void {
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(REMEMBER_ME_STORAGE_KEY, val ? "true" : "false");
+    }
+  } catch {
+    /* ignore */
+  }
+}
 
 export function getTrustedDeviceToken(): string | null {
   try {
@@ -342,26 +365,39 @@ function writeLocalStorageTokens(next: TokenPair | null) {
   }
 }
 
-function persistTokens(next: TokenPair | null) {
+function persistTokens(next: TokenPair | null, rememberMe?: boolean) {
   _tokens = next;
+  // Resolve the "remember me" flag: if an explicit value was passed (e.g. from
+  // the login call) use it; otherwise read the persisted preference so that
+  // background operations like token refresh respect the user's last choice.
+  const shouldPersist = rememberMe !== undefined ? rememberMe : getRememberMe();
   const bridge = getAuthBridge();
   if (bridge) {
     // Always keep localStorage cleared in the Electron renderer — the
     // encrypted blob managed by the main process is the source of truth.
     clearLocalStorageTokens();
-    if (next) {
+    if (next && shouldPersist) {
       void bridge.setTokens(next).catch(() => {
         /* ignore — best effort persistence */
       });
-    } else {
+    } else if (!next) {
+      // Always honour explicit clears (logout, token invalidation) regardless
+      // of the remember-me setting so stale blobs don't accumulate.
       void bridge.clearTokens().catch(() => {
         /* ignore */
       });
     }
+    // next && !shouldPersist: tokens stay in _tokens (memory only) until the
+    // app is closed, then they're gone.
     return;
   }
   // Browser/dev fallback (no Electron bridge): use localStorage.
-  writeLocalStorageTokens(next);
+  if (shouldPersist) {
+    writeLocalStorageTokens(next);
+  } else if (!next) {
+    clearLocalStorageTokens();
+  }
+  // next && !shouldPersist: memory-only, no localStorage write.
 }
 
 // Hydrate on module load. In the Electron renderer this asynchronously pulls
@@ -370,6 +406,22 @@ function persistTokens(next: TokenPair | null) {
 // plain browser context (dev server preview) we fall back to localStorage so
 // the app still works for local development.
 const hydrationPromise: Promise<void> = (async () => {
+  // If the user signed in with "Remember Me" unchecked, skip loading persisted
+  // tokens entirely so the app returns them to the login screen on the next
+  // launch.  We also clear any leftover encrypted blob from a prior session
+  // where "Remember Me" was checked, so old credentials don't accumulate.
+  if (!getRememberMe()) {
+    const bridge = getAuthBridge();
+    if (bridge) {
+      void bridge.clearTokens().catch(() => { /* ignore */ });
+      clearLocalStorageTokens();
+    } else {
+      clearLocalStorageTokens();
+    }
+    _restoreStatus = "empty";
+    return;
+  }
+
   const bridge = getAuthBridge();
   if (bridge) {
     try {
@@ -955,7 +1007,7 @@ export class TwoFactorRequiredError extends Error {
   }
 }
 
-export async function login(username: string, password: string): Promise<SessionUser> {
+export async function login(username: string, password: string, rememberMe = true): Promise<SessionUser> {
   let r: Response;
   try {
     r = await fetch(apiUrl("/auth/login"), {
@@ -993,8 +1045,11 @@ export async function login(username: string, password: string): Promise<Session
   if (!r.ok || !body?.success) {
     throw new ApiError(body?.message || "Invalid username or password.", r.status);
   }
+  // Persist the user's preference before writing tokens so that persistTokens
+  // and future refreshAccessToken calls all read a consistent value.
+  saveRememberMe(rememberMe);
   if (typeof body.accessToken === "string" && typeof body.refreshToken === "string") {
-    persistTokens({ accessToken: body.accessToken, refreshToken: body.refreshToken });
+    persistTokens({ accessToken: body.accessToken, refreshToken: body.refreshToken }, rememberMe);
   } else {
     // Server didn't return tokens (e.g. an older deployment). Without a token
     // the desktop client can't authenticate any subsequent request, so treat

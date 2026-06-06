@@ -35,7 +35,7 @@ interface AuthContextValue {
   acknowledgeRestoreNotice: () => void;
   restoreNoticeDismissed: boolean;
   /** Throws TwoFactorRequiredError if 2FA is enabled. */
-  login: (username: string, password: string) => Promise<void>;
+  login: (username: string, password: string, rememberMe?: boolean) => Promise<void>;
   /** Pass trustDevice=true to remember this device for 30 days. */
   completeTwoFactor: (pendingToken: string, code: string, trustDevice?: boolean) => Promise<void>;
   register: (payload: RegisterPayload) => Promise<RegisterResult>;
@@ -100,8 +100,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const login = useCallback(async (username: string, password: string) => {
-    const me = await apiLogin(username, password);
+  const login = useCallback(async (username: string, password: string, rememberMe = true) => {
+    const me = await apiLogin(username, password, rememberMe);
     setUser(me);
     setStatus("authed");
   }, []);
