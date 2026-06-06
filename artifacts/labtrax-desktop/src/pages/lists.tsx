@@ -462,11 +462,12 @@ function ListsContent({ organizationId }: { organizationId: string }) {
   function handleExportCsv() {
     const type = activeTab as VendorType;
     const rows = allVendors.filter((v) => v.vendorType === type && v.isActive);
-    const headers = ["Name", "Phone", "Email", "Address", "City", "State", "Zip", "Website", "Notes"];
+    const isItem = type === "item";
+    const headers = ["Name", "Phone", "Email", "Address", "City", "State", "Zip", "Website", "Notes", ...(isItem ? ["Unit Price"] : [])];
     const csvLines = [
       headers.join(","),
       ...rows.map((v) =>
-        [v.name, v.phone ?? "", v.email ?? "", v.address ?? "", v.city ?? "", v.state ?? "", v.zip ?? "", v.website ?? "", v.notes ?? ""]
+        [v.name, v.phone ?? "", v.email ?? "", v.address ?? "", v.city ?? "", v.state ?? "", v.zip ?? "", v.website ?? "", v.notes ?? "", ...(isItem ? [v.unitPrice ?? ""] : [])]
           .map((val) => `"${String(val).replace(/"/g, '""')}"`)
           .join(",")
       ),
