@@ -29,17 +29,26 @@ import { apiFetch } from "@/lib/api";
 import { fetchTemplateImageAsDataUrl } from "@/lib/print";
 import { useAuth } from "@/lib/auth-context";
 import {
+  CASE_DETAIL_FIELDS,
+  CASE_DETAIL_FIELD_LABELS,
   coerceCasePrintTemplate,
   DEFAULT_CASE_PRINT_TEMPLATE,
+  FIELD_SIZE_VALUES,
   isSameTemplate,
   PAGE_H,
   PAGE_W,
+  RX_SUMMARY_FIELDS,
+  RX_SUMMARY_FIELD_LABELS,
   SECTION_LABELS,
   SECTION_ORDER,
+  type CaseDetailField,
   type CasePrintExtraImage,
+  type CasePrintFieldSizes,
   type CasePrintTemplate,
   type CaseTemplateBox,
   type CaseTemplateSectionKey,
+  type FieldSize,
+  type RxSummaryField,
 } from "@/lib/case-print-template";
 
 interface TemplateApi {
@@ -166,8 +175,14 @@ export function CasePrintLayoutEditor({
 
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
+  const dragCleanupRef = useRef<(() => void) | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const seededRef = useRef(false);
+
+  // Clean up any lingering window drag listeners on unmount.
+  useEffect(() => {
+    return () => { dragCleanupRef.current?.(); };
+  }, []);
 
   // Seed local draft once the query loads.
   useEffect(() => {
@@ -304,41 +319,64 @@ export function CasePrintLayoutEditor({
     } else {
       setSelected({ kind: "image", key });
     }
-    (e.target as Element).setPointerCapture?.(e.pointerId);
-  }
 
-  function onPointerMove(e: React.PointerEvent) {
-    const d = dragRef.current;
-    if (!d) return;
-    const dx = e.clientX * d.scaleX - d.startX;
-    const dy = e.clientY * d.scaleY - d.startY;
-    const next = applyDrag(d.startBox, d.handle, dx, dy);
-    setDraft((cur) => {
-      if (d.kind === "section") {
-        const k = d.key as CaseTemplateSectionKey;
+    function handleMove(ev: PointerEvent) {
+      const d = dragRef.current;
+      if (!d) return;
+      const dx = ev.clientX * d.scaleX - d.startX;
+      const dy = ev.clientY * d.scaleY - d.startY;
+      const next = applyDrag(d.startBox, d.handle, dx, dy);
+      setDraft((cur) => {
+        if (d.kind === "section") {
+          const k = d.key as CaseTemplateSectionKey;
+          return {
+            ...cur,
+            boxes: { ...cur.boxes, [k]: { ...cur.boxes[k], ...next } },
+          };
+        }
         return {
           ...cur,
-          boxes: {
-            ...cur.boxes,
-            [k]: { ...cur.boxes[k], ...next },
-          },
+          extraImages: cur.extraImages.map((img) =>
+            img.id === d.key ? { ...img, ...next } : img,
+          ),
         };
-      }
-      return {
-        ...cur,
-        extraImages: cur.extraImages.map((img) =>
-          img.id === d.key ? { ...img, ...next } : img,
-        ),
-      };
-    });
-    setDirty(true);
-  }
+      });
+      setDirty(true);
+    }
 
-  function endDrag() {
-    dragRef.current = null;
+    function handleUp() {
+      dragRef.current = null;
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+      dragCleanupRef.current = null;
+    }
+
+    // Clean up any previous drag that wasn't properly ended.
+    dragCleanupRef.current?.();
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp);
+    dragCleanupRef.current = handleUp;
   }
 
   // ── Sidebar mutators ──────────────────────────────────────────────────
+  function patchFieldSize(
+    section: "caseDetails" | "rxSummary",
+    field: CaseDetailField | RxSummaryField,
+    size: FieldSize,
+  ) {
+    setDraft((cur) => ({
+      ...cur,
+      fieldSizes: {
+        ...cur.fieldSizes,
+        [section]: {
+          ...cur.fieldSizes?.[section],
+          [field]: size === "normal" ? undefined : size,
+        },
+      },
+    }));
+    setDirty(true);
+  }
+
   function patchBox(key: CaseTemplateSectionKey, patch: Partial<CaseTemplateBox>) {
     setDraft((cur) => ({
       ...cur,
@@ -652,6 +690,38 @@ export function CasePrintLayoutEditor({
                   />
                   <span>Visible on printout</span>
                 </label>
+
+                {selected.key === "caseDetails" && (
+                  <div className="pt-1 space-y-1.5">
+                    <p className="text-[10px] font-semibold text-primary/80 uppercase tracking-wider">
+                      Field text sizes
+                    </p>
+                    {CASE_DETAIL_FIELDS.map((field) => (
+                      <FieldSizeRow
+                        key={field}
+                        label={CASE_DETAIL_FIELD_LABELS[field]}
+                        value={draft.fieldSizes?.caseDetails?.[field] ?? "normal"}
+                        onChange={(sz) => patchFieldSize("caseDetails", field, sz)}
+                      />
+                    ))}
+                  </div>
+                )}
+
+                {selected.key === "rxSummary" && (
+                  <div className="pt-1 space-y-1.5">
+                    <p className="text-[10px] font-semibold text-primary/80 uppercase tracking-wider">
+                      Field text sizes
+                    </p>
+                    {RX_SUMMARY_FIELDS.map((field) => (
+                      <FieldSizeRow
+                        key={field}
+                        label={RX_SUMMARY_FIELD_LABELS[field]}
+                        value={draft.fieldSizes?.rxSummary?.[field] ?? "normal"}
+                        onChange={(sz) => patchFieldSize("rxSummary", field as RxSummaryField, sz)}
+                      />
+                    ))}
+                  </div>
+                )}
               </section>
             )}
 
@@ -715,9 +785,6 @@ export function CasePrintLayoutEditor({
           <main className="flex-1 overflow-auto bg-secondary/30 p-6 flex items-start justify-center">
             <div
               ref={canvasRef}
-              onPointerMove={onPointerMove}
-              onPointerUp={endDrag}
-              onPointerLeave={endDrag}
               onClick={() => setSelected(null)}
               className="relative bg-white border border-border rounded shadow-sm select-none"
               style={{
@@ -860,6 +927,7 @@ function DraggableBox({
     <div
       style={style}
       onPointerDown={(e) => onStart(e, "move")}
+      onClick={(e) => e.stopPropagation()}
       onPointerEnter={() => setHovered(true)}
       onPointerLeave={() => setHovered(false)}
     >
@@ -955,6 +1023,46 @@ function DraggableBox({
             />
           );
         })}
+    </div>
+  );
+}
+
+// ── Field size row ──────────────────────────────────────────────────────
+
+const FIELD_SIZE_LABELS: Record<FieldSize, string> = {
+  normal: "Normal",
+  large: "Large",
+  xl: "XL",
+};
+
+function FieldSizeRow({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: FieldSize;
+  onChange: (size: FieldSize) => void;
+}) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-[10px] text-muted-foreground flex-1 truncate">{label}</span>
+      <div className="flex gap-0.5">
+        {FIELD_SIZE_VALUES.map((sz) => (
+          <button
+            key={sz}
+            type="button"
+            onClick={() => onChange(sz)}
+            className={`h-5 px-1.5 rounded text-[9px] font-medium border transition-colors ${
+              value === sz
+                ? "bg-primary text-primary-foreground border-primary"
+                : "bg-card text-muted-foreground border-border hover:bg-secondary/60"
+            }`}
+          >
+            {FIELD_SIZE_LABELS[sz]}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

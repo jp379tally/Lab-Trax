@@ -45,6 +45,56 @@ const sectionKeys = [
 
 export type CaseTemplateSectionKey = (typeof sectionKeys)[number];
 
+export const FIELD_SIZE_VALUES = ["normal", "large", "xl"] as const;
+export type FieldSize = (typeof FIELD_SIZE_VALUES)[number];
+
+export const CASE_DETAIL_FIELDS = [
+  "patient",
+  "doctor",
+  "status",
+  "priority",
+  "dueDate",
+  "created",
+] as const;
+export type CaseDetailField = (typeof CASE_DETAIL_FIELDS)[number];
+
+export const RX_SUMMARY_FIELDS = [
+  "restorativeType",
+  "teeth",
+  "material",
+  "shade",
+] as const;
+export type RxSummaryField = (typeof RX_SUMMARY_FIELDS)[number];
+
+const fieldSizeSchema = z.enum(FIELD_SIZE_VALUES);
+
+const caseDetailSizesSchema = z
+  .object({
+    patient: fieldSizeSchema.optional(),
+    doctor: fieldSizeSchema.optional(),
+    status: fieldSizeSchema.optional(),
+    priority: fieldSizeSchema.optional(),
+    dueDate: fieldSizeSchema.optional(),
+    created: fieldSizeSchema.optional(),
+  })
+  .optional();
+
+const rxSummarySizesSchema = z
+  .object({
+    restorativeType: fieldSizeSchema.optional(),
+    teeth: fieldSizeSchema.optional(),
+    material: fieldSizeSchema.optional(),
+    shade: fieldSizeSchema.optional(),
+  })
+  .optional();
+
+const fieldSizesSchema = z
+  .object({
+    caseDetails: caseDetailSizesSchema,
+    rxSummary: rxSummarySizesSchema,
+  })
+  .optional();
+
 export const casePrintTemplateSchema = z.object({
   version: z.literal(1),
   boxes: z.object({
@@ -56,6 +106,7 @@ export const casePrintTemplateSchema = z.object({
     barcode: boxSchema,
   }),
   extraImages: z.array(casePrintExtraImageSchema).max(8).default([]),
+  fieldSizes: fieldSizesSchema,
 });
 
 export type CasePrintTemplate = z.infer<typeof casePrintTemplateSchema>;

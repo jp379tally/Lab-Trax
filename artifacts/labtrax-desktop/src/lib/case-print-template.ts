@@ -32,10 +32,37 @@ export type CaseTemplateSectionKey =
   | "notes"
   | "barcode";
 
+export const FIELD_SIZE_VALUES = ["normal", "large", "xl"] as const;
+export type FieldSize = (typeof FIELD_SIZE_VALUES)[number];
+
+export const CASE_DETAIL_FIELDS = [
+  "patient",
+  "doctor",
+  "status",
+  "priority",
+  "dueDate",
+  "created",
+] as const;
+export type CaseDetailField = (typeof CASE_DETAIL_FIELDS)[number];
+
+export const RX_SUMMARY_FIELDS = [
+  "restorativeType",
+  "teeth",
+  "material",
+  "shade",
+] as const;
+export type RxSummaryField = (typeof RX_SUMMARY_FIELDS)[number];
+
+export interface CasePrintFieldSizes {
+  caseDetails?: Partial<Record<CaseDetailField, FieldSize>>;
+  rxSummary?: Partial<Record<RxSummaryField, FieldSize>>;
+}
+
 export interface CasePrintTemplate {
   version: 1;
   boxes: Record<CaseTemplateSectionKey, CaseTemplateBox>;
   extraImages: CasePrintExtraImage[];
+  fieldSizes?: CasePrintFieldSizes;
 }
 
 export const SECTION_LABELS: Record<CaseTemplateSectionKey, string> = {
@@ -45,6 +72,22 @@ export const SECTION_LABELS: Record<CaseTemplateSectionKey, string> = {
   toothChart: "Tooth Chart",
   notes: "Notes",
   barcode: "Case Pan Barcode",
+};
+
+export const CASE_DETAIL_FIELD_LABELS: Record<CaseDetailField, string> = {
+  patient: "Patient",
+  doctor: "Doctor",
+  status: "Status",
+  priority: "Priority",
+  dueDate: "Due Date",
+  created: "Created",
+};
+
+export const RX_SUMMARY_FIELD_LABELS: Record<RxSummaryField, string> = {
+  restorativeType: "Restorative Type",
+  teeth: "Tooth Number(s)",
+  material: "Material",
+  shade: "Shade",
 };
 
 export const SECTION_ORDER: CaseTemplateSectionKey[] = [
@@ -115,6 +158,48 @@ function coerceImage(raw: unknown): CasePrintExtraImage | null {
   };
 }
 
+function coerceFieldSize(v: unknown): FieldSize | undefined {
+  if (v === "large" || v === "xl") return v;
+  if (v === "normal") return "normal";
+  return undefined;
+}
+
+function coerceFieldSizes(raw: unknown): CasePrintFieldSizes | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const o = raw as Record<string, unknown>;
+
+  const cdRaw = o.caseDetails && typeof o.caseDetails === "object"
+    ? (o.caseDetails as Record<string, unknown>)
+    : null;
+  const rxRaw = o.rxSummary && typeof o.rxSummary === "object"
+    ? (o.rxSummary as Record<string, unknown>)
+    : null;
+
+  const caseDetails: Partial<Record<CaseDetailField, FieldSize>> = {};
+  if (cdRaw) {
+    for (const k of CASE_DETAIL_FIELDS) {
+      const s = coerceFieldSize(cdRaw[k]);
+      if (s) caseDetails[k] = s;
+    }
+  }
+
+  const rxSummary: Partial<Record<RxSummaryField, FieldSize>> = {};
+  if (rxRaw) {
+    for (const k of RX_SUMMARY_FIELDS) {
+      const s = coerceFieldSize(rxRaw[k]);
+      if (s) rxSummary[k] = s;
+    }
+  }
+
+  const hasCd = Object.keys(caseDetails).length > 0;
+  const hasRx = Object.keys(rxSummary).length > 0;
+  if (!hasCd && !hasRx) return undefined;
+  return {
+    ...(hasCd ? { caseDetails } : {}),
+    ...(hasRx ? { rxSummary } : {}),
+  };
+}
+
 export function coerceCasePrintTemplate(value: unknown): CasePrintTemplate {
   if (!value || typeof value !== "object") return DEFAULT_CASE_PRINT_TEMPLATE;
   const o = value as Partial<CasePrintTemplate>;
@@ -128,7 +213,8 @@ export function coerceCasePrintTemplate(value: unknown): CasePrintTemplate {
     .map(coerceImage)
     .filter((x): x is CasePrintExtraImage => x !== null)
     .slice(0, 8);
-  return { version: 1, boxes, extraImages };
+  const fieldSizes = coerceFieldSizes(o.fieldSizes);
+  return { version: 1, boxes, extraImages, ...(fieldSizes ? { fieldSizes } : {}) };
 }
 
 export function isSameTemplate(

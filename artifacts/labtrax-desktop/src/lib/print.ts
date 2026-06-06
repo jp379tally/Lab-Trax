@@ -809,17 +809,33 @@ export async function printCaseCardAdvanced(
 </div>`);
   }
 
+  // Helper: returns an inline style string for a field value span,
+  // applying the configured text size from the template fieldSizes.
+  function valStyle(
+    section: "caseDetails" | "rxSummary",
+    field: string,
+  ): string {
+    const sizes: Record<string, number> = { normal: 11, large: 14, xl: 18 };
+    const sectionSizes = template.fieldSizes?.[section] as
+      | Record<string, string>
+      | undefined;
+    const sz = sectionSizes?.[field];
+    if (!sz || sz === "normal") return "";
+    const px = sizes[sz] ?? 11;
+    return ` style="font-size:${px}px;font-weight:600"`;
+  }
+
   if (template.boxes.caseDetails.visible) {
     const b = template.boxes.caseDetails;
     sections.push(`<div class="lt-adv-box" style="${boxStyle(b)}">
   <div class="lt-adv-section-title">Case Details</div>
   <div class="lt-adv-grid">
-    <div class="lt-adv-field"><span class="lt-adv-key">Patient</span><span class="lt-adv-val">${escapeHtml(patient || "—")}</span></div>
-    <div class="lt-adv-field"><span class="lt-adv-key">Doctor</span><span class="lt-adv-val">${escapeHtml(labCase.doctorName || "—")}</span></div>
-    <div class="lt-adv-field"><span class="lt-adv-key">Status</span><span class="lt-adv-val">${escapeHtml(statusLabel(labCase.status))}</span></div>
-    <div class="lt-adv-field"><span class="lt-adv-key">Priority</span><span class="lt-adv-val">${escapeHtml(isRush ? "Rush" : "Normal")}</span></div>
-    <div class="lt-adv-field"><span class="lt-adv-key">Due Date</span><span class="lt-adv-val">${escapeHtml(formatDate(labCase.dueDate))}</span></div>
-    <div class="lt-adv-field"><span class="lt-adv-key">Created</span><span class="lt-adv-val">${escapeHtml(formatDate(labCase.createdAt))}</span></div>
+    <div class="lt-adv-field"><span class="lt-adv-key">Patient</span><span class="lt-adv-val"${valStyle("caseDetails","patient")}>${escapeHtml(patient || "—")}</span></div>
+    <div class="lt-adv-field"><span class="lt-adv-key">Doctor</span><span class="lt-adv-val"${valStyle("caseDetails","doctor")}>${escapeHtml(labCase.doctorName || "—")}</span></div>
+    <div class="lt-adv-field"><span class="lt-adv-key">Status</span><span class="lt-adv-val"${valStyle("caseDetails","status")}>${escapeHtml(statusLabel(labCase.status))}</span></div>
+    <div class="lt-adv-field"><span class="lt-adv-key">Priority</span><span class="lt-adv-val"${valStyle("caseDetails","priority")}>${escapeHtml(isRush ? "Rush" : "Normal")}</span></div>
+    <div class="lt-adv-field"><span class="lt-adv-key">Due Date</span><span class="lt-adv-val"${valStyle("caseDetails","dueDate")}>${escapeHtml(formatDate(labCase.dueDate))}</span></div>
+    <div class="lt-adv-field"><span class="lt-adv-key">Created</span><span class="lt-adv-val"${valStyle("caseDetails","created")}>${escapeHtml(formatDate(labCase.createdAt))}</span></div>
   </div>
 </div>`);
   }
@@ -830,10 +846,10 @@ export async function printCaseCardAdvanced(
     sections.push(`<div class="lt-adv-box" style="${boxStyle(b)}">
   <div class="lt-adv-section-title">RX Summary</div>
   <div class="lt-adv-grid">
-    <div class="lt-adv-field"><span class="lt-adv-key">Restorative Type</span><span class="lt-adv-val">${escapeHtml(restorativeType || "—")}</span></div>
-    <div class="lt-adv-field"><span class="lt-adv-key">${escapeHtml(teethKey)}</span><span class="lt-adv-val">${escapeHtml(teethLabel || "—")}</span></div>
-    <div class="lt-adv-field"><span class="lt-adv-key">Material</span><span class="lt-adv-val">${escapeHtml(materialLabel || "—")}</span></div>
-    <div class="lt-adv-field"><span class="lt-adv-key">${escapeHtml(summary.shades.length > 1 ? "Shades" : "Shade")}</span><span class="lt-adv-val">${escapeHtml(shadeLabel || "—")}</span></div>
+    <div class="lt-adv-field"><span class="lt-adv-key">Restorative Type</span><span class="lt-adv-val"${valStyle("rxSummary","restorativeType")}>${escapeHtml(restorativeType || "—")}</span></div>
+    <div class="lt-adv-field"><span class="lt-adv-key">${escapeHtml(teethKey)}</span><span class="lt-adv-val"${valStyle("rxSummary","teeth")}>${escapeHtml(teethLabel || "—")}</span></div>
+    <div class="lt-adv-field"><span class="lt-adv-key">Material</span><span class="lt-adv-val"${valStyle("rxSummary","material")}>${escapeHtml(materialLabel || "—")}</span></div>
+    <div class="lt-adv-field"><span class="lt-adv-key">${escapeHtml(summary.shades.length > 1 ? "Shades" : "Shade")}</span><span class="lt-adv-val"${valStyle("rxSummary","shade")}>${escapeHtml(shadeLabel || "—")}</span></div>
   </div>
 </div>`);
   }
