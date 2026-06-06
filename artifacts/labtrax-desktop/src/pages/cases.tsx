@@ -3527,9 +3527,22 @@ export function CaseDrawer({
                             </span>
                           )}
                         </div>
-                        {entry.remakeReason && (
-                          <div className="text-[11px] text-muted-foreground mt-0.5 truncate">
-                            {entry.remakeReason}
+                        {(entry.remakeReason || idx > 0) && (
+                          <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                            {entry.remakeReason && (
+                              <span className="text-[11px] text-muted-foreground truncate">
+                                {entry.remakeReason}
+                              </span>
+                            )}
+                            {idx > 0 && (
+                              <span className="inline-block text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-blue-500/20 shrink-0">
+                                {entry.remakeCharged === false
+                                  ? "no charge"
+                                  : entry.remakeCharged === true
+                                  ? "charged"
+                                  : "charge unspecified"}
+                              </span>
+                            )}
                           </div>
                         )}
                       </div>
