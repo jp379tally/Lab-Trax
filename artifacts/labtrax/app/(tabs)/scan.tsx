@@ -58,6 +58,7 @@ import {
 import { ensureDrPrefix } from "@/lib/scan/provider-match";
 import { decideAiDoctorAssignment } from "@/lib/scan/ai-doctor-assignment";
 import { mergeDuplicateMatches, defaultSelectedDuplicateId } from "@/lib/scan/duplicate-merge";
+import { mapRxResponseToFormFields } from "@/lib/scan/rx-to-form";
 import { DuplicatePromptModal } from "@/components/scan/DuplicatePromptModal";
 import { AttachBarcodeModal } from "@/components/scan/AttachBarcodeModal";
 import { LabelPrintModal } from "@/components/scan/LabelPrintModal";
