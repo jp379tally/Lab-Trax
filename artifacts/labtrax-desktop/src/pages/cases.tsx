@@ -3012,6 +3012,19 @@ export function CaseDrawer({
                 </span>
               )}
             </div>
+            {(() => {
+              const patientName = [
+                data?.patientFirstName ?? labCase.patientFirstName,
+                data?.patientLastName ?? labCase.patientLastName,
+              ]
+                .filter(Boolean)
+                .join(" ");
+              return patientName ? (
+                <div className="text-xs text-muted-foreground mt-0.5 truncate max-w-[240px]">
+                  {patientName}
+                </div>
+              ) : null;
+            })()}
           </div>
           <div className="flex items-center gap-1">
             <button
