@@ -191,6 +191,7 @@ export default function ScanScreen() {
   const [scanError, setScanError] = useState<{ message: string; variant: "ai-not-configured" | "transient" } | null>(null);
   const [watchdogSecondsLeft, setWatchdogSecondsLeft] = useState<number | null>(null);
   const [aiFilledFields, setAiFilledFields] = useState<Set<string>>(new Set());
+  const aiFlashAnim = useRef(new RNAnimated.Value(0)).current;
   const [liveScanEnabled, setLiveScanEnabled] = useState(false);
   const [liveStatus, setLiveStatus] = useState("");
   const [doctorDropdownOpen, setDoctorDropdownOpen] = useState(false);
@@ -451,6 +452,7 @@ export default function ScanScreen() {
     setCalendarMonth(d.getMonth());
     setCalendarYear(d.getFullYear());
     setDueDateOpen(false);
+    setAiFilledFields(prev => { const n = new Set(prev); n.delete("dueDate"); return n; });
   };
 
   const selectCalendarDay = (day: number) => {
@@ -459,6 +461,7 @@ export default function ScanScreen() {
     const dd = String(day).padStart(2, "0");
     setDueDate(`${yyyy}-${mm}-${dd}`);
     setDueDateOpen(false);
+    setAiFilledFields(prev => { const n = new Set(prev); n.delete("dueDate"); return n; });
   };
 
   const applyTimeDue = () => {
@@ -1812,7 +1815,21 @@ export default function ScanScreen() {
           if (d.isRush !== undefined) filled.add("isRush");
           if (d.notes) filled.add("notes");
           setAiFilledFields(filled);
-          setTimeout(() => setAiFilledFields(new Set()), 3500);
+          // Animated amber left-border flash on every AI-filled field:
+          // 300 ms fade-in → 700 ms hold → 400 ms fade-out.
+          // Badges (✦ AI) persist until the user edits each field.
+          // Wrapped in try/catch: RNAnimated.delay may be unavailable in
+          // test environments — animation failure must not affect business logic.
+          try {
+            aiFlashAnim.setValue(0);
+            RNAnimated.sequence([
+              RNAnimated.timing(aiFlashAnim, { toValue: 1, duration: 300, useNativeDriver: true }),
+              RNAnimated.delay(700),
+              RNAnimated.timing(aiFlashAnim, { toValue: 0, duration: 400, useNativeDriver: true }),
+            ]).start();
+          } catch {
+            // Non-critical — ignore animation failures
+          }
 
           if (d.doctorName) {
             const assignment = decideAiDoctorAssignment(
@@ -3152,15 +3169,15 @@ export default function ScanScreen() {
               <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.info }}>
                 Analyzing prescription...
               </Text>
-              {watchdogSecondsLeft !== null && watchdogSecondsLeft < 40 && (
+              {watchdogSecondsLeft !== null && (
                 <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.info, opacity: 0.7, marginTop: 1 }}>
-                  {watchdogSecondsLeft}s remaining
+                  {45 - watchdogSecondsLeft}s / 45s
                 </Text>
               )}
             </View>
           </View>
         )}
-        {!isAnalyzing && capturedUri && !scanError && (
+        {!isAnalyzing && capturedUri && (
           <View style={{ flexDirection: "row", justifyContent: "flex-end", alignItems: "center", paddingHorizontal: 16, paddingVertical: 6, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border }}>
             <Pressable
               onPress={() => {
@@ -3180,60 +3197,65 @@ export default function ScanScreen() {
             </Pressable>
           </View>
         )}
-        {!isAnalyzing && scanError && (
-          <View style={{ backgroundColor: colors.errorLight, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.error, paddingHorizontal: 14, paddingVertical: 10, gap: 8 }}>
-            <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
-              <Ionicons
-                name={scanError.variant === "ai-not-configured" ? "information-circle-outline" : "warning-outline"}
-                size={17}
-                color={colors.errorText}
-                style={{ marginTop: 1, flexShrink: 0 }}
-              />
-              <Text style={{ flex: 1, fontSize: 13, fontFamily: "Inter_500Medium", color: colors.errorText }}>
-                {scanError.message}
+        {/* AI scan error — prominent bottom sheet so staff know their next action */}
+        <Modal
+          visible={!isAnalyzing && !!scanError}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setScanError(null)}
+        >
+          <Pressable
+            style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.45)" }}
+            onPress={() => setScanError(null)}
+          />
+          <View style={{ backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingBottom: insets.bottom + 16, paddingTop: 8, paddingHorizontal: 20 }}>
+            <View style={{ width: 40, height: 4, backgroundColor: colors.border, borderRadius: 2, alignSelf: "center", marginBottom: 20 }} />
+            <View style={{ alignItems: "center", marginBottom: 16 }}>
+              <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: colors.errorLight, justifyContent: "center", alignItems: "center", marginBottom: 12 }}>
+                <Ionicons
+                  name={scanError?.variant === "ai-not-configured" ? "information-circle-outline" : "warning-outline"}
+                  size={28}
+                  color={colors.error}
+                />
+              </View>
+              <Text style={{ fontSize: 17, fontFamily: "Inter_700Bold", color: colors.text, textAlign: "center" }}>
+                {scanError?.variant === "ai-not-configured" ? "AI Not Configured" : "Couldn't Read Prescription"}
               </Text>
+              <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: colors.textSecondary, textAlign: "center", marginTop: 6, lineHeight: 20 }}>
+                {scanError?.message}
+              </Text>
+            </View>
+            <View style={{ gap: 10 }}>
+              {scanError?.variant === "transient" && (
+                <Pressable
+                  onPress={() => {
+                    setScanError(null);
+                    setCapturedUri(null);
+                    setCasePhotos([]);
+                    setCaseAttachments([]);
+                    autoAnalyzedRef.current = false;
+                    setAiFilledFields(new Set());
+                    setPhase("camera");
+                  }}
+                  style={({ pressed }) => ({ backgroundColor: colors.tint, borderRadius: 12, paddingVertical: 14, flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 8, opacity: pressed ? 0.8 : 1 })}
+                  accessibilityRole="button"
+                  accessibilityLabel="Retake prescription"
+                >
+                  <Ionicons name="camera-outline" size={18} color={colors.textInverse} />
+                  <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: colors.textInverse }}>Retake Rx</Text>
+                </Pressable>
+              )}
               <Pressable
                 onPress={() => setScanError(null)}
-                hitSlop={10}
-                style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
-                accessibilityLabel="Dismiss scan error"
+                style={({ pressed }) => ({ backgroundColor: colors.surfaceAlt, borderRadius: 12, paddingVertical: 14, alignItems: "center", opacity: pressed ? 0.8 : 1 })}
+                accessibilityRole="button"
+                accessibilityLabel="Fill in manually"
               >
-                <Ionicons name="close" size={16} color={colors.errorText} />
+                <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: colors.text }}>Fill in manually</Text>
               </Pressable>
             </View>
-            {scanError.variant === "transient" && (
-              <Pressable
-                onPress={() => {
-                  setScanError(null);
-                  setCapturedUri(null);
-                  setCasePhotos([]);
-                  setCaseAttachments([]);
-                  autoAnalyzedRef.current = false;
-                  setPhase("camera");
-                }}
-                style={({ pressed }) => ({
-                  alignSelf: "flex-start",
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 5,
-                  marginLeft: 25,
-                  paddingHorizontal: 10,
-                  paddingVertical: 5,
-                  borderRadius: 8,
-                  backgroundColor: colors.errorStrong,
-                  opacity: pressed ? 0.7 : 1,
-                })}
-                accessibilityRole="button"
-                accessibilityLabel="Scan again"
-              >
-                <Ionicons name="camera-outline" size={14} color={colors.textInverse} />
-                <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: colors.textInverse }}>
-                  Scan again
-                </Text>
-              </Pressable>
-            )}
           </View>
-        )}
+        </Modal>
         <KeyboardAwareScrollViewCompat
           style={styles.formScroll}
           contentContainerStyle={{
@@ -3366,7 +3388,10 @@ export default function ScanScreen() {
             )}
           </View>
 
-          <View style={[styles.formGroup, { zIndex: 10 }]}>
+          <View style={[styles.formGroup, { zIndex: 10, position: "relative" }]}>
+            {aiFilledFields.has("doctorName") && (
+              <RNAnimated.View style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, backgroundColor: "#F59E0B", opacity: aiFlashAnim, borderRadius: 1.5 }} pointerEvents="none" />
+            )}
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 }}>
               <Text style={[styles.formLabel, { marginBottom: 0 }]}>Doctor Name</Text>
               {aiFilledFields.has("doctorName") && (
@@ -3441,6 +3466,7 @@ export default function ScanScreen() {
                                 setDoctorName(entry.providerName);
                                 setDoctorDropdownOpen(false);
                                 setDoctorSearch("");
+                                setAiFilledFields(prev => { const n = new Set(prev); n.delete("doctorName"); return n; });
                                 if ((Platform.OS as string) !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                               }}
                               style={({ pressed }) => [
@@ -3552,6 +3578,7 @@ export default function ScanScreen() {
                           if (!newDoctorInput.trim()) return;
                           const drName = newDoctorInput.trim().startsWith("Dr.") ? newDoctorInput.trim() : `Dr. ${newDoctorInput.trim()}`;
                           setDoctorName(drName);
+                          setAiFilledFields(prev => { const n = new Set(prev); n.delete("doctorName"); return n; });
                           addClient({
                             practiceName: newDoctorPractice.trim() || drName,
                             leadDoctor: drName,
@@ -3582,8 +3609,18 @@ export default function ScanScreen() {
             )}
           </View>
 
-          <View style={[styles.formGroup, { zIndex: 9 }]}>
-            <Text style={styles.formLabel}>Patient Name</Text>
+          <View style={[styles.formGroup, { zIndex: 9, position: "relative" }]}>
+            {aiFilledFields.has("patientName") && (
+              <RNAnimated.View style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, backgroundColor: "#F59E0B", opacity: aiFlashAnim, borderRadius: 1.5 }} pointerEvents="none" />
+            )}
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 }}>
+              <Text style={[styles.formLabel, { marginBottom: 0 }]}>Patient Name</Text>
+              {aiFilledFields.has("patientName") && (
+                <View style={{ backgroundColor: "rgba(245,158,11,0.15)", borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 }}>
+                  <Text style={{ fontSize: 10, fontFamily: "Inter_700Bold", color: "#B45309" }}>✦ AI</Text>
+                </View>
+              )}
+            </View>
             <Pressable
               onPress={() => {
                 setPatientDropdownOpen(!patientDropdownOpen);
@@ -3650,6 +3687,7 @@ export default function ScanScreen() {
                                 setPatientName(name);
                                 setPatientDropdownOpen(false);
                                 setPatientSearch("");
+                                setAiFilledFields(prev => { const n = new Set(prev); n.delete("patientName"); return n; });
                                 if ((Platform.OS as string) !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                               }}
                               style={({ pressed }) => [
@@ -3736,6 +3774,7 @@ export default function ScanScreen() {
                           if (!newPatientFirst.trim() || !newPatientLast.trim()) return;
                           const fullName = [newPatientFirst.trim(), newPatientMiddle.trim(), newPatientLast.trim()].filter(Boolean).join(" ");
                           setPatientName(fullName);
+                          setAiFilledFields(prev => { const n = new Set(prev); n.delete("patientName"); return n; });
                           setPatientDropdownOpen(false);
                           setAddingNewPatient(false);
                           setNewPatientFirst("");
@@ -3957,8 +3996,18 @@ export default function ScanScreen() {
           )}
 
           <View style={styles.dueDateRow}>
-            <View style={styles.dueDateCol}>
-              <Text style={styles.formLabel}>Due Date</Text>
+            <View style={[styles.dueDateCol, { position: "relative" }]}>
+              {aiFilledFields.has("dueDate") && (
+                <RNAnimated.View style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, backgroundColor: "#F59E0B", opacity: aiFlashAnim, borderRadius: 1.5 }} pointerEvents="none" />
+              )}
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                <Text style={[styles.formLabel, { marginBottom: 0 }]}>Due Date</Text>
+                {aiFilledFields.has("dueDate") && (
+                  <View style={{ backgroundColor: "rgba(245,158,11,0.15)", borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 }}>
+                    <Text style={{ fontSize: 10, fontFamily: "Inter_700Bold", color: "#B45309" }}>✦ AI</Text>
+                  </View>
+                )}
+              </View>
               <Pressable
                 onPress={() => { setDueDateOpen(!dueDateOpen); setTimeDueOpen(false); }}
                 style={[styles.formInput, styles.dropdownTrigger]}
@@ -5008,9 +5057,9 @@ export default function ScanScreen() {
                 <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFFFFF", textAlign: "center" }}>
                   Analyzing prescription…
                 </Text>
-                {watchdogSecondsLeft !== null && watchdogSecondsLeft < 40 && (
+                {watchdogSecondsLeft !== null && (
                   <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.55)", textAlign: "center" }}>
-                    {watchdogSecondsLeft}s remaining
+                    {45 - watchdogSecondsLeft}s / 45s
                   </Text>
                 )}
               </View>
