@@ -1640,42 +1640,36 @@ export default function CaseDetailScreen() {
           ) : undefined
         }
       >
-        {caseItem.isRemake && (
+        {!!caseItem.remakeOfCaseId && (
           <Pressable
             onPress={() => {
-              if (caseItem.remakeOfCaseId) {
-                router.push(`/case/${encodeURIComponent(caseItem.remakeOfCaseId)}`);
-              } else {
-                router.push(
-                  `/chart-history?patient=${encodeURIComponent(caseItem.patientName || "")}`,
-                );
-              }
+              router.push(`/case/${encodeURIComponent(caseItem.remakeOfCaseId as string)}`);
             }}
             style={{
               marginHorizontal: 16,
               marginTop: 12,
               padding: 12,
               borderRadius: 10,
-              backgroundColor: colors.infoLight,
+              backgroundColor: colors.warningLight,
               borderLeftWidth: 4,
-              borderLeftColor: colors.info,
+              borderLeftColor: colors.warningStrong,
               flexDirection: "row",
               alignItems: "flex-start",
               gap: 10,
             }}
           >
-            <MaterialCommunityIcons name="sync-alert" size={18} color={colors.infoStrong} style={{ marginTop: 1 }} />
+            <MaterialCommunityIcons name="sync-alert" size={18} color={colors.warningText} style={{ marginTop: 1 }} />
             <View style={{ flex: 1 }}>
-              <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.infoStrong }}>
-                Remake{caseItem.remakeCharged === false || caseItem.price === 0 ? " — no charge" : ""}
+              <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.warningText }}>
+                Remake{caseItem.remakeCharged === true ? " — charged" : caseItem.remakeCharged === false ? " — no charge" : ""}
               </Text>
               {caseItem.remakeReason ? (
-                <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.infoStrong, marginTop: 2 }}>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.warningText, marginTop: 2 }}>
                   Reason: {caseItem.remakeReason}
                 </Text>
               ) : null}
-              <Text style={{ fontSize: 10, fontFamily: "Inter_500Medium", color: colors.infoStrong, marginTop: 4, textDecorationLine: "underline" }}>
-                {caseItem.remakeOfCaseId ? "Open original case →" : "View patient chart →"}
+              <Text style={{ fontSize: 10, fontFamily: "Inter_500Medium", color: colors.warningText, marginTop: 4, textDecorationLine: "underline" }}>
+                {originalCaseNumber ? `Open original case ${originalCaseNumber} →` : "Open original case →"}
               </Text>
             </View>
           </Pressable>
