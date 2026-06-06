@@ -4296,14 +4296,15 @@ export function CaseDrawer({
                       {billableItems
                         .filter(
                           (it) =>
-                            it.unitPrice &&
                             !RESTORATION_TYPES.some(
                               (rt) => rt.toLowerCase() === it.name.toLowerCase(),
                             ),
                         )
                         .map((it) => (
                           <option key={it.id} value={it.name}>
-                            {it.name}
+                            {it.unitPrice != null
+                              ? `${it.name} — $${Number(it.unitPrice).toFixed(2)}`
+                              : it.name}
                           </option>
                         ))}
                     </select>

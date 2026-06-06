@@ -2209,7 +2209,9 @@ export function InvoiceEditor({
                                   <option value="">Select item…</option>
                                   {billableItems.map((b) => (
                                     <option key={b.id} value={b.name}>
-                                      {b.name}
+                                      {b.unitPrice != null
+                                        ? `${b.name} — $${Number(b.unitPrice).toFixed(2)}`
+                                        : b.name}
                                     </option>
                                   ))}
                                   <option value="__custom__">Custom…</option>
