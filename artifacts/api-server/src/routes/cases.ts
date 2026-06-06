@@ -3003,6 +3003,92 @@ router.get(
   })
 );
 
+// ---------------------------------------------------------------------------
+// GET /:caseId/remake-chain
+// Walk up to the root ancestor then BFS down to collect the full remake
+// chain for the given case.  Returns entries in chronological order (root
+// first) so the UI can render a numbered timeline without any extra sorting.
+// ---------------------------------------------------------------------------
+router.get(
+  "/:caseId/remake-chain",
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId as string;
+    const caseId = req.params.caseId;
+
+    const access = await assertCaseAccessWithMemberships(userId, caseId);
+    const labOrgId = access.case.labOrganizationId;
+
+    const MAX_DEPTH = 30;
+
+    // 1. Walk up to find the root (original case with no parent in this lab).
+    let rootId = caseId;
+    {
+      let currentId = caseId;
+      const seen = new Set<string>([currentId]);
+      for (let i = 0; i < MAX_DEPTH; i++) {
+        const row = await db.query.cases.findFirst({
+          where: and(eq(cases.id, currentId), notDeleted(cases), eq(cases.labOrganizationId, labOrgId)),
+          columns: { id: true, remakeOfCaseId: true },
+        });
+        if (!row?.remakeOfCaseId || seen.has(row.remakeOfCaseId)) break;
+        const parentExists = await db.query.cases.findFirst({
+          where: and(eq(cases.id, row.remakeOfCaseId), notDeleted(cases), eq(cases.labOrganizationId, labOrgId)),
+          columns: { id: true },
+        });
+        if (!parentExists) break;
+        seen.add(row.remakeOfCaseId);
+        currentId = row.remakeOfCaseId;
+      }
+      rootId = currentId;
+    }
+
+    // 2. BFS from root — collect every node in chain order.
+    type ChainEntry = {
+      id: string;
+      caseNumber: string;
+      status: string | null;
+      remakeReason: string | null;
+      remakeCharged: boolean | null;
+      createdAt: Date | string | null;
+    };
+    const chain: ChainEntry[] = [];
+    const queue: string[] = [rootId];
+    const visited = new Set<string>();
+
+    while (queue.length > 0 && chain.length < MAX_DEPTH) {
+      const nextId = queue.shift()!;
+      if (visited.has(nextId)) continue;
+      visited.add(nextId);
+
+      const row = await db.query.cases.findFirst({
+        where: and(eq(cases.id, nextId), notDeleted(cases), eq(cases.labOrganizationId, labOrgId)),
+        columns: { id: true, caseNumber: true, status: true, remakeReason: true, remakeCharged: true, createdAt: true },
+      });
+      if (!row) continue;
+
+      chain.push({
+        id: row.id,
+        caseNumber: row.caseNumber,
+        status: row.status ?? null,
+        remakeReason: row.remakeReason ?? null,
+        remakeCharged: row.remakeCharged ?? null,
+        createdAt: row.createdAt,
+      });
+
+      const children = await db.query.cases.findMany({
+        where: and(eq(cases.remakeOfCaseId, nextId), notDeleted(cases), eq(cases.labOrganizationId, labOrgId)),
+        columns: { id: true },
+        orderBy: [cases.createdAt],
+      });
+      for (const child of children) {
+        if (!visited.has(child.id)) queue.push(child.id);
+      }
+    }
+
+    return ok(res, { chain });
+  })
+);
+
 router.get(
   "/:caseId/attachments",
   asyncHandler(async (req, res) => {

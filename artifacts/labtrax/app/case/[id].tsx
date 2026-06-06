@@ -267,6 +267,18 @@ export default function CaseDetailScreen() {
   // Latches to prevent the AI-suggested-practice auto-fill from looping
   // when the PATCH response refreshes fullCaseData on the next poll.
   const aiAutoLinkAttemptedRef = useRef(false);
+
+  type RemakeChainEntry = {
+    id: string;
+    caseNumber: string;
+    status: string | null;
+    remakeReason: string | null;
+    remakeCharged: boolean | null;
+    createdAt: string | null;
+  };
+  const [remakeChain, setRemakeChain] = useState<RemakeChainEntry[]>([]);
+  const [remakeChainExpanded, setRemakeChainExpanded] = useState(true);
+
   const [originalActivityLog, setOriginalActivityLog] = useState<ActivityEntry[]>([]);
   const [originalCaseNumber, setOriginalCaseNumber] = useState<string | null>(null);
   const [serverAttachments, setServerAttachments] = useState<CaseAttachment[]>([]);
@@ -695,6 +707,27 @@ export default function CaseDetailScreen() {
       }
     }
     void fetchCanonicalCase();
+    return () => { cancelled = true; };
+  }, [id]);
+
+  // Fetch the full remake chain so every generation is visible at a glance.
+  // Only canonical cases are included; the chain is shown when it has 2+ entries.
+  React.useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    async function fetchRemakeChain() {
+      try {
+        const res = await resilientFetch(`/api/cases/${encodeURIComponent(id as string)}/remake-chain`);
+        if (cancelled || !res || !res.ok) return;
+        const json = await res.json().catch(() => null);
+        if (cancelled || !json) return;
+        const entries = Array.isArray(json.chain) ? json.chain : [];
+        setRemakeChain(entries);
+      } catch {
+        // Non-critical — silently ignore (chain section simply won't render)
+      }
+    }
+    void fetchRemakeChain();
     return () => { cancelled = true; };
   }, [id]);
 
@@ -1702,6 +1735,173 @@ export default function CaseDetailScreen() {
             </View>
           );
         })()}
+
+        {/* Remake history chain — shown when the case belongs to a multi-generation chain */}
+        {remakeChain.length >= 2 && (() => {
+          const GENERATION_LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+          const statusLabel = (s: string | null) => {
+            if (!s) return null;
+            const MAP: Record<string, string> = {
+              received: "Received", in_design: "Design", scan: "Scan",
+              in_milling: "Milling", post_mill: "Post Mill", sintering_furnace: "Sintering",
+              model_room: "Model Room", in_porcelain: "Porcelain", qc: "QC",
+              complete: "Complete", shipped: "Shipped", delivered: "Delivered",
+              on_hold: "On Hold", remake: "Remake", cancelled: "Cancelled", draft: "Draft",
+            };
+            return MAP[s] ?? s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+          };
+          const statusColor = (s: string | null) => {
+            if (!s) return colors.textSecondary;
+            if (s === "complete" || s === "delivered" || s === "shipped") return colors.successStrong ?? colors.success ?? "#059669";
+            if (s === "cancelled" || s === "remake") return colors.warningText ?? "#92400E";
+            if (s === "draft" || s === "on_hold") return colors.textSecondary;
+            return colors.info ?? colors.indigo ?? "#1D4ED8";
+          };
+          return (
+            <View style={{ marginHorizontal: 16, marginTop: 12 }}>
+              <Pressable
+                onPress={() => setRemakeChainExpanded((v) => !v)}
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  paddingVertical: 8,
+                  paddingHorizontal: 12,
+                  borderRadius: 10,
+                  backgroundColor: colors.canvas ?? colors.surface,
+                  borderWidth: 1,
+                  borderColor: colors.border,
+                  gap: 8,
+                }}
+                accessibilityRole="button"
+                accessibilityLabel={remakeChainExpanded ? "Collapse remake history" : "Expand remake history"}
+              >
+                <MaterialCommunityIcons name="timeline-outline" size={16} color={colors.textSecondary} />
+                <Text style={{ flex: 1, fontSize: 12, fontFamily: "Inter_600SemiBold", color: colors.text }}>
+                  Remake history
+                  <Text style={{ fontFamily: "Inter_400Regular", color: colors.textSecondary }}>
+                    {"  "}{remakeChain.length} generation{remakeChain.length === 1 ? "" : "s"}
+                  </Text>
+                </Text>
+                <Ionicons
+                  name={remakeChainExpanded ? "chevron-up" : "chevron-down"}
+                  size={14}
+                  color={colors.textSecondary}
+                />
+              </Pressable>
+
+              {remakeChainExpanded && (
+                <View style={{
+                  borderRadius: 10,
+                  borderWidth: 1,
+                  borderTopWidth: 0,
+                  borderColor: colors.border,
+                  borderTopLeftRadius: 0,
+                  borderTopRightRadius: 0,
+                  overflow: "hidden",
+                }}>
+                  {remakeChain.map((entry, idx) => {
+                    const isCurrent = entry.id === id;
+                    const genLabel = GENERATION_LABELS[idx] ?? String(idx + 1);
+                    const isLast = idx === remakeChain.length - 1;
+                    return (
+                      <Pressable
+                        key={entry.id}
+                        onPress={() => {
+                          if (!isCurrent) router.push(`/case/${encodeURIComponent(entry.id)}`);
+                        }}
+                        style={({ pressed }) => ({
+                          flexDirection: "row",
+                          alignItems: "flex-start",
+                          paddingVertical: 10,
+                          paddingHorizontal: 12,
+                          gap: 10,
+                          backgroundColor: isCurrent
+                            ? (colors.warningLight ?? "#FEF9C3")
+                            : pressed
+                              ? (colors.canvas ?? colors.surface)
+                              : colors.surface,
+                          borderBottomWidth: isLast ? 0 : 1,
+                          borderBottomColor: colors.border,
+                        })}
+                        accessibilityRole={isCurrent ? "text" : "button"}
+                        accessibilityLabel={`Generation ${genLabel}: ${entry.caseNumber}${isCurrent ? " (current)" : ""}`}
+                      >
+                        {/* Generation badge */}
+                        <View style={{
+                          width: 22,
+                          height: 22,
+                          borderRadius: 11,
+                          backgroundColor: isCurrent ? (colors.warningStrong ?? "#D97706") : (colors.border ?? "#E5E7EB"),
+                          alignItems: "center",
+                          justifyContent: "center",
+                          marginTop: 1,
+                          flexShrink: 0,
+                        }}>
+                          <Text style={{
+                            fontSize: 10,
+                            fontFamily: "Inter_700Bold",
+                            color: isCurrent ? "#fff" : colors.textSecondary,
+                          }}>
+                            {genLabel}
+                          </Text>
+                        </View>
+
+                        {/* Case info */}
+                        <View style={{ flex: 1, gap: 2 }}>
+                          <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                            <Text style={{
+                              fontSize: 13,
+                              fontFamily: isCurrent ? "Inter_700Bold" : "Inter_600SemiBold",
+                              color: isCurrent ? (colors.warningText ?? "#92400E") : colors.text,
+                            }}>
+                              {entry.caseNumber}
+                            </Text>
+                            {isCurrent && (
+                              <View style={{
+                                paddingHorizontal: 5,
+                                paddingVertical: 1,
+                                borderRadius: 4,
+                                backgroundColor: colors.warningStrong ?? "#D97706",
+                              }}>
+                                <Text style={{ fontSize: 9, fontFamily: "Inter_700Bold", color: "#fff" }}>
+                                  CURRENT
+                                </Text>
+                              </View>
+                            )}
+                            {entry.status && (
+                              <Text style={{
+                                fontSize: 10,
+                                fontFamily: "Inter_500Medium",
+                                color: statusColor(entry.status),
+                              }}>
+                                {statusLabel(entry.status)}
+                              </Text>
+                            )}
+                            {entry.remakeCharged === false && (
+                              <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: colors.textSecondary }}>
+                                no charge
+                              </Text>
+                            )}
+                          </View>
+                          {entry.remakeReason ? (
+                            <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textSecondary, lineHeight: 15 }}>
+                              {entry.remakeReason}
+                            </Text>
+                          ) : null}
+                        </View>
+
+                        {!isCurrent && (
+                          <Ionicons name="chevron-forward" size={14} color={colors.textTertiary ?? colors.textSecondary} style={{ marginTop: 4 }} />
+                        )}
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              )}
+            </View>
+          );
+        })()}
+
         <Pressable
           onPress={() => {
             const nonce = String(Date.now());
