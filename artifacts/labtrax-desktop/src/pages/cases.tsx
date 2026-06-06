@@ -245,6 +245,15 @@ interface RemakeDecision {
   remakeCharged: boolean | null;
 }
 
+interface RemakeCaseHit {
+  id: string;
+  caseNumber: string;
+  patientFirstName: string;
+  patientLastName: string;
+  doctorName: string;
+  status: string;
+}
+
 /**
  * Modal that lists previously-seen cases for the same patient name and asks
  * the user whether the new case is a remake. Shown only when the server's
@@ -500,6 +509,30 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
   >(null);
   const [checkingDupes, setCheckingDupes] = useState(false);
 
+  // ── Remake state ─────────────────────────────────────────────────────────
+  const [isRemake, setIsRemake] = useState(false);
+  const [remakeSearch, setRemakeSearch] = useState("");
+  const [remakeResults, setRemakeResults] = useState<RemakeCaseHit[]>([]);
+  const [remakeSearching, setRemakeSearching] = useState(false);
+  const [remakeSelected, setRemakeSelected] = useState<RemakeCaseHit | null>(null);
+  const [remakeReason, setRemakeReason] = useState("");
+  const [remakeCharged, setRemakeCharged] = useState<"yes" | "no" | "">("");
+  const remakeSearchTimerRef = useRef<number | null>(null);
+
+  function clearRemake() {
+    setIsRemake(false);
+    setRemakeSearch("");
+    setRemakeResults([]);
+    setRemakeSearching(false);
+    setRemakeSelected(null);
+    setRemakeReason("");
+    setRemakeCharged("");
+    if (remakeSearchTimerRef.current !== null) {
+      window.clearTimeout(remakeSearchTimerRef.current);
+      remakeSearchTimerRef.current = null;
+    }
+  }
+
   const mutation = useMutation({
     mutationFn: (data: NewCaseFormData & Partial<RemakeDecision>) =>
       apiFetch<LabCase>("/cases", {
@@ -528,6 +561,22 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
     if (!form.patientFirstName.trim() || !form.patientLastName.trim())
       return setError("Patient first and last name are required.");
     if (!form.doctorName.trim()) return setError("Doctor name is required.");
+
+    // If the user marked this as a remake, validate the remake fields and
+    // submit directly — skip the auto-duplicate check to avoid double-linking.
+    if (isRemake) {
+      if (!remakeSelected) return setError("Select the original case being remade.");
+      if (!remakeReason.trim()) return setError("Remake reason is required.");
+      if (remakeCharged === "") return setError("Choose whether to charge for this remake.");
+      const { caseNumber: _ignored, ...formWithoutCaseNumber } = form;
+      mutation.mutate({
+        ...formWithoutCaseNumber,
+        remakeOfCaseId: remakeSelected.id,
+        remakeReason: remakeReason.trim(),
+        remakeCharged: remakeCharged === "yes",
+      });
+      return;
+    }
 
     setCheckingDupes(true);
     try {
@@ -724,6 +773,191 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
             </div>
           </div>
 
+          {/* ── Remake section ───────────────────────────────────────────── */}
+          <div>
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-muted-foreground">
+                Remake of an existing case?
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  if (isRemake) {
+                    clearRemake();
+                  } else {
+                    setIsRemake(true);
+                    setError(null);
+                  }
+                }}
+                className={`h-6 px-2.5 rounded-md text-xs font-medium transition-colors ${
+                  isRemake
+                    ? "bg-primary/10 text-primary border border-primary/30"
+                    : "bg-secondary text-muted-foreground border border-transparent hover:bg-secondary/80"
+                }`}
+              >
+                {isRemake ? "Remake on" : "Mark as remake"}
+              </button>
+            </div>
+
+            {isRemake && (
+              <div className="mt-2 rounded-lg border border-primary/20 bg-primary/5 p-3 space-y-2">
+                {!remakeSelected ? (
+                  <>
+                    <p className="text-[11px] font-medium text-foreground">
+                      Find the original case being remade
+                    </p>
+                    {!form.labOrganizationId && (
+                      <p className="text-[11px] text-muted-foreground">
+                        Select a lab organization above to search cases.
+                      </p>
+                    )}
+                    {form.labOrganizationId && (
+                      <>
+                        <div className="relative">
+                          <input
+                            type="search"
+                            placeholder="Search by case #, patient, or doctor…"
+                            value={remakeSearch}
+                            onChange={(e) => {
+                              const q = e.target.value;
+                              setRemakeSearch(q);
+                              if (remakeSearchTimerRef.current !== null) {
+                                window.clearTimeout(remakeSearchTimerRef.current);
+                              }
+                              if (q.length < 2) {
+                                setRemakeResults([]);
+                                setRemakeSearching(false);
+                                return;
+                              }
+                              setRemakeSearching(true);
+                              remakeSearchTimerRef.current = window.setTimeout(async () => {
+                                remakeSearchTimerRef.current = null;
+                                try {
+                                  const result = await apiFetch<{ cases: RemakeCaseHit[] }>(
+                                    `/cases/quick-search?labOrganizationId=${encodeURIComponent(form.labOrganizationId)}&q=${encodeURIComponent(q)}`,
+                                  );
+                                  setRemakeResults(result.cases ?? []);
+                                } catch {
+                                  setRemakeResults([]);
+                                } finally {
+                                  setRemakeSearching(false);
+                                }
+                              }, 280);
+                            }}
+                            className="w-full h-8 px-2.5 pr-7 rounded-md bg-background text-sm border border-border focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                          />
+                          {remakeSearching && (
+                            <Loader2
+                              size={12}
+                              className="absolute right-2.5 top-2 animate-spin text-muted-foreground"
+                            />
+                          )}
+                        </div>
+                        {remakeResults.length > 0 && (
+                          <div className="rounded-md border border-border bg-card overflow-hidden max-h-40 overflow-y-auto divide-y divide-border">
+                            {remakeResults.map((c) => (
+                              <button
+                                key={c.id}
+                                type="button"
+                                onClick={() => {
+                                  setRemakeSelected(c);
+                                  setRemakeSearch("");
+                                  setRemakeResults([]);
+                                }}
+                                className="w-full px-3 py-2 text-left text-xs hover:bg-secondary/50 transition-colors"
+                              >
+                                <div className="font-medium font-mono">
+                                  {c.caseNumber} · {c.patientFirstName} {c.patientLastName}
+                                </div>
+                                <div className="text-muted-foreground text-[11px]">
+                                  {c.doctorName} · {c.status}
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        {remakeSearch.length >= 2 &&
+                          !remakeSearching &&
+                          remakeResults.length === 0 && (
+                            <p className="text-[11px] text-muted-foreground">
+                              No cases found for "{remakeSearch}".
+                            </p>
+                          )}
+                      </>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-[11px] font-medium text-foreground">
+                          Remaking:{" "}
+                          <span className="font-mono">{remakeSelected.caseNumber}</span>
+                        </p>
+                        <p className="text-[11px] text-muted-foreground truncate">
+                          {remakeSelected.patientFirstName} {remakeSelected.patientLastName} ·{" "}
+                          {remakeSelected.doctorName}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRemakeSelected(null);
+                          setRemakeReason("");
+                          setRemakeCharged("");
+                        }}
+                        className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                        aria-label="Clear remake selection"
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-medium text-muted-foreground mb-1">
+                        Remake reason (required)
+                      </label>
+                      <textarea
+                        rows={2}
+                        className="w-full px-2 py-1.5 rounded-md bg-background text-xs border border-border focus:outline-none focus:ring-1 focus:ring-primary resize-none"
+                        value={remakeReason}
+                        onChange={(e) => setRemakeReason(e.target.value)}
+                        placeholder="e.g. Shade B1 came back too dark; doctor requested A2"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-medium text-muted-foreground mb-1">
+                        Charge for this remake?
+                      </label>
+                      <div className="flex gap-2">
+                        {(
+                          [
+                            { v: "yes" as const, label: "Yes — invoice as usual" },
+                            { v: "no" as const, label: "No — no-charge remake" },
+                          ]
+                        ).map((opt) => (
+                          <button
+                            key={opt.v}
+                            type="button"
+                            onClick={() => setRemakeCharged(opt.v)}
+                            className={`flex-1 h-8 rounded-md text-xs font-medium transition-colors ${
+                              remakeCharged === opt.v
+                                ? opt.v === "no"
+                                  ? "bg-amber-500/15 text-amber-700 border border-amber-500/40"
+                                  : "bg-primary/10 text-primary border border-primary/30"
+                                : "bg-secondary text-muted-foreground border border-transparent hover:bg-secondary/80"
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
           {error && (
             <p className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">
               {error}
@@ -750,6 +984,8 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
                 ? "Checking…"
                 : mutation.isPending
                 ? "Creating…"
+                : isRemake && remakeSelected
+                ? "Create remake"
                 : "Create case"}
             </button>
           </div>
