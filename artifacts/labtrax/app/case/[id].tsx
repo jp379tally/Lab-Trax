@@ -1702,6 +1702,41 @@ export default function CaseDetailScreen() {
             </View>
           );
         })()}
+        <Pressable
+          onPress={() => {
+            const nonce = String(Date.now());
+            router.push(
+              `/(tabs)/scan?originalCaseId=${encodeURIComponent(String(id))}&mode=manual&n=${nonce}` as any,
+            );
+          }}
+          style={({ pressed }) => ({
+            marginHorizontal: 16,
+            marginTop: 12,
+            paddingVertical: 10,
+            paddingHorizontal: 14,
+            borderRadius: 10,
+            borderWidth: 1.5,
+            borderColor: colors.warningStrong,
+            backgroundColor: pressed ? (colors.warningLight ?? "#FEF9C3") : colors.surface,
+            flexDirection: "row" as const,
+            alignItems: "center" as const,
+            gap: 10,
+          })}
+          accessibilityLabel="New Remake"
+          accessibilityRole="button"
+        >
+          <MaterialCommunityIcons name="repeat-variant" size={18} color={colors.warningStrong} />
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.warningStrong }}>
+              New Remake
+            </Text>
+            <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textSecondary, marginTop: 1 }}>
+              Create a replacement case for {caseItem.caseNumber}
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={16} color={colors.warningStrong} />
+        </Pressable>
+
         {(() => {
           const suggestedOrgId = fullCaseData?.suggestedProviderOrgId ?? null;
           const currentOrgId = fullCaseData?.providerOrganizationId ?? null;

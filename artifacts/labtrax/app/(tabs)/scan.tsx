@@ -111,11 +111,15 @@ export default function ScanScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const isFocused = useIsFocused();
-  const params = useLocalSearchParams<{ mode?: string; n?: string }>();
+  const params = useLocalSearchParams<{ mode?: string; n?: string; originalCaseId?: string }>();
   const manualModeRequested = params?.mode === "manual";
   const manualModeNonce = typeof params?.n === "string" ? params.n : null;
   const lastAppliedManualNonceRef = useRef<string | null>(null);
   const { addCase, cases, clients, addClient, role, adminUnlocked, invoices, updateCase, removeInvoice, attachCaseToInvoice, assignBarcodeToCase, findCaseByBarcode, pricingTiers, activeLabAffiliationKey } = useApp();
+  // Keep a ref so useFocusEffect can read the latest cases without listing
+  // cases as a dependency (which would re-fire the effect on every sync).
+  const casesRef = useRef(cases);
+  casesRef.current = cases;
   const { currentUser, registeredUsers } = useAuth();
   const currentRegisteredUser = registeredUsers.find(
     (user) => user.username?.toLowerCase() === (currentUser || "").toLowerCase()
@@ -541,6 +545,36 @@ export default function ScanScreen() {
       if (decision.kind === "fire") {
         lastAppliedManualNonceRef.current = decision.nextLastNonce;
         handleManualEntry();
+        // Context-aware remake: when navigating from a case detail screen via
+        // "New Remake", the originalCaseId param carries the case to pre-select.
+        // No separate ref needed — the nonce gate above already ensures this
+        // block fires at most once per navigation, even for the same case ID.
+        const originalCaseId = typeof params?.originalCaseId === "string" ? params.originalCaseId : null;
+        if (originalCaseId) {
+          const originalCase = casesRef.current.find((c) => c.id === originalCaseId);
+          if (originalCase) {
+            const nameParts = originalCase.patientName.trim().split(/\s+/);
+            const firstName = nameParts[0] ?? "";
+            const lastName = nameParts.length > 1 ? nameParts.slice(1).join(" ") : firstName;
+            const candidate: RemakeCandidate = {
+              id: originalCase.id,
+              caseNumber: originalCase.caseNumber,
+              patientFirstName: firstName,
+              patientLastName: lastName,
+              doctorName: originalCase.doctorName,
+              status: originalCase.status,
+            };
+            setManualRemakeEnabled(true);
+            setManualRemakeSelected(candidate);
+            setManualRemakeSearch("");
+            setManualRemakeResults([]);
+            setManualRemakeError(null);
+            // Pre-fill doctor and patient to match the original case so
+            // the user only needs to fill in the reason and charge decision.
+            setDoctorName(originalCase.doctorName);
+            setPatientName(originalCase.patientName);
+          }
+        }
       } else if (decision.kind === "reset") {
         setPhase("camera");
         setCapturedUri(null);
@@ -552,7 +586,7 @@ export default function ScanScreen() {
       // auto-start a new case. The dashboard's drop zone handles the
       // drain on its own focus effect.
       return () => {};
-    }, [phase, manualModeRequested, manualModeNonce, params?.mode])
+    }, [phase, manualModeRequested, manualModeNonce, params?.mode, params?.originalCaseId])
   );
 
   const cropDoneRef = useRef(false);
