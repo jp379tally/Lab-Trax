@@ -20,8 +20,10 @@ import {
   EyeOff,
   ImageIcon,
   Loader2,
+  Redo2,
   RotateCcw,
   Trash2,
+  Undo2,
   Upload,
   X,
 } from "lucide-react";
@@ -165,7 +167,16 @@ export function CasePrintLayoutEditor({
   const [draft, setDraft] = useState<CasePrintTemplate>(
     DEFAULT_CASE_PRINT_TEMPLATE,
   );
-  const [dirty, setDirty] = useState(false);
+  // Undo / redo history (bounded at 50 steps each).
+  // Cleared when the layout is saved or discarded.
+  const MAX_UNDO = 50;
+  const [undoStack, setUndoStack] = useState<CasePrintTemplate[]>([]);
+  const [redoStack, setRedoStack] = useState<CasePrintTemplate[]>([]);
+  // Tracks the last-saved (or initially-loaded) template so "dirty" is
+  // accurate after undo brings the draft back to the clean state.
+  const cleanTemplateRef = useRef<CasePrintTemplate>(DEFAULT_CASE_PRINT_TEMPLATE);
+  const dirty = !isSameTemplate(draft, cleanTemplateRef.current);
+
   const [selected, setSelected] = useState<
     { kind: "section"; key: CaseTemplateSectionKey } | { kind: "image"; key: string } | null
   >(null);
@@ -187,7 +198,9 @@ export function CasePrintLayoutEditor({
   // Seed local draft once the query loads.
   useEffect(() => {
     if (!seededRef.current && query.data) {
-      setDraft(coerceCasePrintTemplate(query.data.template));
+      const t = coerceCasePrintTemplate(query.data.template);
+      setDraft(t);
+      cleanTemplateRef.current = t;
       seededRef.current = true;
     }
   }, [query.data]);
@@ -234,7 +247,10 @@ export function CasePrintLayoutEditor({
     },
     onSuccess: async (template) => {
       await qc.invalidateQueries({ queryKey: ["casePrintTemplate", orgId] });
-      setDirty(false);
+      // Update the clean baseline so dirty=false, then clear history.
+      cleanTemplateRef.current = template ?? DEFAULT_CASE_PRINT_TEMPLATE;
+      setUndoStack([]);
+      setRedoStack([]);
       setSaveError(null);
       onTemplateSaved?.(template);
     },
@@ -272,7 +288,6 @@ export function CasePrintLayoutEditor({
           },
         ],
       }));
-      setDirty(true);
       setSelected({ kind: "image", key: img.id });
     },
     onError: (e) => {
@@ -290,6 +305,62 @@ export function CasePrintLayoutEditor({
     },
   });
 
+  // ── Undo / redo ───────────────────────────────────────────────────────
+
+  // Mirror current values in refs so the keyboard handler is never stale.
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const undoStackRef = useRef(undoStack);
+  undoStackRef.current = undoStack;
+  const redoStackRef = useRef(redoStack);
+  redoStackRef.current = redoStack;
+
+  /** Push the given snapshot onto the undo stack and clear redo. */
+  function pushUndo(snapshot: CasePrintTemplate) {
+    setUndoStack((prev) => [...prev.slice(-(MAX_UNDO - 1)), snapshot]);
+    setRedoStack([]);
+  }
+
+  function undo() {
+    const stack = undoStackRef.current;
+    if (stack.length === 0) return;
+    const snapshot = stack[stack.length - 1];
+    setUndoStack(stack.slice(0, -1));
+    setRedoStack((r) => [...r.slice(-(MAX_UNDO - 1)), draftRef.current]);
+    setDraft(snapshot);
+  }
+
+  function redo() {
+    const stack = redoStackRef.current;
+    if (stack.length === 0) return;
+    const snapshot = stack[stack.length - 1];
+    setRedoStack(stack.slice(0, -1));
+    setUndoStack((u) => [...u.slice(-(MAX_UNDO - 1)), draftRef.current]);
+    setDraft(snapshot);
+  }
+
+  // Keep refs up to date so the static keydown listener calls the latest fn.
+  const undoFnRef = useRef(undo);
+  undoFnRef.current = undo;
+  const redoFnRef = useRef(redo);
+  redoFnRef.current = redo;
+
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod) return;
+      if (e.key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undoFnRef.current();
+      } else if (e.key === "y" || (e.key === "z" && e.shiftKey)) {
+        e.preventDefault();
+        redoFnRef.current();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
   // ── Pointer / drag handlers ───────────────────────────────────────────
   function startDrag(
     e: React.PointerEvent,
@@ -304,6 +375,8 @@ export function CasePrintLayoutEditor({
     if (!rect) return;
     const scaleX = PAGE_W / rect.width;
     const scaleY = PAGE_H / rect.height;
+    // Snapshot before the drag begins so Ctrl+Z restores the pre-drag state.
+    pushUndo(draftRef.current);
     dragRef.current = {
       kind,
       key,
@@ -341,7 +414,6 @@ export function CasePrintLayoutEditor({
           ),
         };
       });
-      setDirty(true);
     }
 
     function handleUp() {
@@ -364,6 +436,7 @@ export function CasePrintLayoutEditor({
     field: CaseDetailField | RxSummaryField,
     size: FieldSize,
   ) {
+    pushUndo(draftRef.current);
     setDraft((cur) => ({
       ...cur,
       fieldSizes: {
@@ -374,41 +447,40 @@ export function CasePrintLayoutEditor({
         },
       },
     }));
-    setDirty(true);
   }
 
   function patchBox(key: CaseTemplateSectionKey, patch: Partial<CaseTemplateBox>) {
+    pushUndo(draftRef.current);
     setDraft((cur) => ({
       ...cur,
       boxes: { ...cur.boxes, [key]: { ...cur.boxes[key], ...patch } },
     }));
-    setDirty(true);
   }
 
   function patchImage(id: string, patch: Partial<CasePrintExtraImage>) {
+    pushUndo(draftRef.current);
     setDraft((cur) => ({
       ...cur,
       extraImages: cur.extraImages.map((img) =>
         img.id === id ? { ...img, ...patch } : img,
       ),
     }));
-    setDirty(true);
   }
 
   function deleteImage(id: string) {
+    // Image deletion is NOT undoable — the file is removed from storage.
     setDraft((cur) => ({
       ...cur,
       extraImages: cur.extraImages.filter((img) => img.id !== id),
     }));
-    setDirty(true);
     if (selected?.kind === "image" && selected.key === id) setSelected(null);
     // Fire-and-forget storage cleanup
     deleteImageMutation.mutate(id);
   }
 
   function resetToDefaults() {
+    pushUndo(draftRef.current);
     setDraft(DEFAULT_CASE_PRINT_TEMPLATE);
-    setDirty(true);
     setSelected(null);
   }
 
@@ -445,6 +517,8 @@ export function CasePrintLayoutEditor({
   }
 
   function discardAndClose() {
+    setUndoStack([]);
+    setRedoStack([]);
     onClose();
   }
 
@@ -505,6 +579,25 @@ export function CasePrintLayoutEditor({
             </p>
           </div>
           <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={undo}
+              disabled={undoStack.length === 0}
+              className="h-8 w-8 rounded-md hover:bg-secondary text-muted-foreground hover:text-foreground inline-flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
+              title={`Undo (Ctrl+Z)${undoStack.length > 0 ? ` — ${undoStack.length} step${undoStack.length > 1 ? "s" : ""}` : ""}`}
+            >
+              <Undo2 size={14} />
+            </button>
+            <button
+              type="button"
+              onClick={redo}
+              disabled={redoStack.length === 0}
+              className="h-8 w-8 rounded-md hover:bg-secondary text-muted-foreground hover:text-foreground inline-flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
+              title={`Redo (Ctrl+Y)${redoStack.length > 0 ? ` — ${redoStack.length} step${redoStack.length > 1 ? "s" : ""}` : ""}`}
+            >
+              <Redo2 size={14} />
+            </button>
+            <div className="w-px h-4 bg-border mx-0.5" />
             <button
               type="button"
               onClick={resetToDefaults}
