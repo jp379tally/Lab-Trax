@@ -2457,6 +2457,7 @@ export function CaseDrawer({
       apiFetch<{ chain: RemakeChainEntry[] }>(`/cases/${labCase.id}/remake-chain`),
     enabled: inRemakeChain,
     staleTime: 30_000,
+    refetchOnWindowFocus: true,
   });
   const remakeChain = remakeChainQuery.data?.chain ?? [];
 
