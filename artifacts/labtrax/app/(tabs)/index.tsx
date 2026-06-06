@@ -41,7 +41,8 @@ import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { useDrawer } from "@/lib/drawer-context";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { getStationInfo, STATIONS, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, formatAcctNum, formatInvNum, formatPhone, cleanDoctorDisplay, LabCase, ProviderContact } from "@/lib/data";
-import { LabFileDropZone } from "@/components/LabFileDropZone";
+import { LabFileDropZone, type LabFileDropZoneHandle } from "@/components/LabFileDropZone";
+import { DocumentPickerSheet } from "@/components/DocumentPickerSheet";
 import { CaseProgressBar } from "@/components/CaseProgressBar";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { apiRequest, getApiUrl, getAccessToken } from "@/lib/query-client";
@@ -330,6 +331,8 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [picModalVisible, setPicModalVisible] = useState(false);
   const [pendingPicAction, setPendingPicAction] = useState<"take" | "pick" | null>(null);
+  const [docSheetVisible, setDocSheetVisible] = useState(false);
+  const labFileDropZoneRef = useRef<LabFileDropZoneHandle>(null);
   const [shippingModalVisible, setShippingModalVisible] = useState(false);
   const [shippingCaseId, setShippingCaseId] = useState("");
   const [shippingAddress, setShippingAddress] = useState("");
@@ -824,12 +827,120 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
       </View>
 
       <LabFileDropZone
+        ref={labFileDropZoneRef}
         cases={cases}
         clients={clients}
         currentUser={currentUser}
         onAddToCase={(caseId, fileUri) => addCasePhoto(caseId, fileUri, currentUserInitials)}
         isAdmin={isLabAdmin}
         isFocused={dashboardFocused}
+      />
+
+      <Pressable
+          testID="add-documents-card"
+          onPress={() => setDocSheetVisible(true)}
+          style={({ pressed }) => [
+            {
+              marginHorizontal: 20,
+              marginBottom: 10,
+              borderRadius: 18,
+              backgroundColor: colors.surface,
+              borderWidth: 1,
+              borderColor: colors.border,
+              overflow: "hidden" as const,
+              shadowColor: colors.text,
+              shadowOpacity: 0.05,
+              shadowRadius: 12,
+              shadowOffset: { width: 0, height: 6 },
+              elevation: 2,
+              opacity: pressed ? 0.9 : 1,
+            },
+          ]}
+        >
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 16,
+              paddingVertical: 16,
+              paddingHorizontal: 16,
+            }}
+          >
+            <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 12 }}>
+              <View
+                style={{
+                  width: 42,
+                  height: 42,
+                  borderRadius: 12,
+                  backgroundColor: "rgba(124,58,237,0.10)",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <Ionicons name="folder-open-outline" size={22} color={colors.violet} />
+              </View>
+              <View style={{ flex: 1, gap: 3 }}>
+                <Text
+                  style={{
+                    fontFamily: "Inter_600SemiBold",
+                    fontSize: 15,
+                    color: colors.text,
+                  }}
+                >
+                  Add Documents
+                </Text>
+                <Text
+                  style={{
+                    fontFamily: "Inter_400Regular",
+                    fontSize: 12,
+                    color: colors.textSecondary,
+                    lineHeight: 17,
+                  }}
+                >
+                  {Platform.OS === "web"
+                    ? "Browse PDFs, Word, Excel, or other documents"
+                    : "Browse PDFs, Word, Excel, or other files to add to intake"}
+                </Text>
+              </View>
+            </View>
+            <View
+              style={{
+                minWidth: 92,
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                paddingHorizontal: 12,
+                paddingVertical: 10,
+                borderRadius: 999,
+                backgroundColor: colors.violetLight,
+              }}
+            >
+              <Text
+                style={{
+                  fontFamily: "Inter_700Bold",
+                  fontSize: 12,
+                  color: colors.violet,
+                  textTransform: "uppercase" as const,
+                  letterSpacing: 0.4,
+                }}
+              >
+                Browse
+              </Text>
+            </View>
+          </View>
+      </Pressable>
+
+      <DocumentPickerSheet
+        visible={docSheetVisible}
+        onClose={() => setDocSheetVisible(false)}
+        onConfirm={async (assets) => {
+          setDocSheetVisible(false);
+          if (labFileDropZoneRef.current) {
+            await labFileDropZoneRef.current.addDocumentAssets(assets);
+          }
+        }}
       />
 
       {isLabAdmin && pendingJoinRequests.length > 0 && (

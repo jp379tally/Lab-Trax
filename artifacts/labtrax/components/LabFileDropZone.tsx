@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import {
   Alert,
   InteractionManager,
@@ -56,6 +56,11 @@ interface LabFileDropZoneProps {
   onAddToCase: (caseId: string, fileUri: string) => void;
   isAdmin: boolean;
   isFocused?: boolean;
+}
+
+export interface LabFileDropZoneHandle {
+  /** Process document picker assets through the shared intake upload flow. */
+  addDocumentAssets: (assets: DocumentPicker.DocumentPickerAsset[]) => Promise<void>;
 }
 
 // Extract the org UUID from an "org:<UUID>" affiliation key.
@@ -154,14 +159,15 @@ function detectMimeKind(mimeType: string): "image" | "video" | "pdf" | "file" {
   return "file";
 }
 
-export function LabFileDropZone({
+export const LabFileDropZone = React.forwardRef<LabFileDropZoneHandle, LabFileDropZoneProps>(
+function LabFileDropZone({
   cases,
   clients,
   currentUser,
   onAddToCase,
   isAdmin,
   isFocused = true,
-}: LabFileDropZoneProps) {
+}: LabFileDropZoneProps, ref) {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
   const s = useMemo(() => makeS(colors), [colors]);
@@ -552,12 +558,12 @@ export function LabFileDropZone({
   // local-only entry with a server-backed entry that everyone in the lab can
   // see. If anything fails, we keep the local entry intact so the user
   // doesn't lose their work.
-  async function maybePromoteToServer(
+  const maybePromoteToServer = useCallback(async (
     localFile: PendingFile,
     source:
       | { kind: "web"; file: File }
       | { kind: "native"; uri: string; name: string; type: string }
-  ) {
+  ) => {
     const orgId = activeLabOrgId;
     if (!orgId) return;
     try {
@@ -616,7 +622,8 @@ export function LabFileDropZone({
     } catch {
       // Leave the local entry in place and let the user retry.
     }
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeLabOrgId, persistFiles]);
 
   const addFileAndPromptNote = useCallback(
     async (file: PendingFile) => {
@@ -629,6 +636,29 @@ export function LabFileDropZone({
     },
     [persistFiles],
   );
+
+  useImperativeHandle(ref, () => ({
+    async addDocumentAssets(assets: DocumentPicker.DocumentPickerAsset[]) {
+      for (const asset of assets) {
+        const pending: PendingFile = {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+          uri: asset.uri,
+          fileName: asset.name || "file",
+          mimeType: asset.mimeType || "application/octet-stream",
+          uploadedBy: currentUser || "Unknown",
+          uploadedAt: Date.now(),
+          notes: "",
+        };
+        await addFileAndPromptNote(pending);
+        maybePromoteToServer(pending, {
+          kind: "native",
+          uri: asset.uri,
+          name: pending.fileName,
+          type: pending.mimeType,
+        });
+      }
+    },
+  }), [addFileAndPromptNote, maybePromoteToServer, currentUser]);
 
   const processDroppedFiles = useCallback(
     async (fileList: FileList | File[]) => {
@@ -1429,7 +1459,7 @@ export function LabFileDropZone({
       </Modal>
     </>
   );
-}
+});
 
 const makeS = (colors: ThemeColors) => StyleSheet.create({
   bar: {
