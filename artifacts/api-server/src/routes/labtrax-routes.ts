@@ -140,6 +140,7 @@ import notificationsRoutes from "./notifications";
 import usersRoutes from "./users";
 import messengerRoutes from "./messenger";
 import { registerAiChatRoutes } from "./ai-chat";
+import { registerAiAgentRoutes } from "./ai-agent";
 
 const verificationCodes = new Map<string, { code: string; expiresAt: number }>();
 const passwordResetTokens = new Map<string, { userId: string; expiresAt: number }>();
@@ -1287,6 +1288,7 @@ export async function registerRoutes(): Promise<IRouter> {
   router.use("/notifications", notificationsRoutes);
   router.use("/messenger", messengerRoutes);
   registerAiChatRoutes(router);
+  registerAiAgentRoutes(router);
 
   router.post("/audit-log", (_req, res) => {
     res.json({ ok: true });

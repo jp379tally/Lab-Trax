@@ -1,12 +1,37 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { apiFetch } from "@/lib/api";
-import { Clock, Loader2, PenSquare, Plus, Send, Sparkles, Trash2, X } from "lucide-react";
+import {
+  AlertTriangle,
+  Check,
+  Clock,
+  Loader2,
+  PenSquare,
+  Plus,
+  Send,
+  Sparkles,
+  Trash2,
+  X,
+  Zap,
+} from "lucide-react";
 import type { AiCaseContext } from "@/lib/ai-panel-context";
+
+// ─── Message types ──────────────────────────────────────────────────────────
 
 interface ChatMsg {
   id: string;
   role: "user" | "assistant";
-  content: string;
+  /** Text content — set for reply and action_result messages */
+  content?: string;
+  /** Proposed action payload */
+  proposedAction?: {
+    actionId: string;
+    toolName: string;
+    summary: string;
+    /** "pending" → awaiting user; "confirmed" → executing; "done" → result; "rejected" */
+    state: "pending" | "confirmed" | "done" | "rejected";
+    resultText?: string;
+    error?: string;
+  };
 }
 
 interface CaseSearchResult {
@@ -26,6 +51,8 @@ interface StoredSession {
   createdAt: number;
   lastActive: number;
 }
+
+// ─── Local storage helpers ──────────────────────────────────────────────────
 
 const STORAGE_KEY = "labtrax_chat_sessions_v1";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -49,7 +76,7 @@ function writeStoredSessions(sessions: StoredSession[]): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ sessions }));
   } catch {
-    // ignore — storage errors are non-fatal
+    // ignore
   }
 }
 
@@ -72,16 +99,17 @@ function getSessionPreview(session: StoredSession): string {
     }
     return "Empty session";
   }
-  return first.content.length > 60
-    ? first.content.slice(0, 57) + "…"
-    : first.content;
+  const text = first.content ?? "";
+  return text.length > 60 ? text.slice(0, 57) + "…" : text;
 }
+
+// ─── Suggested prompts ──────────────────────────────────────────────────────
 
 const DEFAULT_SUGGESTED_PROMPTS = [
   "What cases are due this week?",
-  "What's our average turnaround time?",
+  "Mark invoice INV-2025-042 as paid",
   "Show me all rush cases",
-  "What's Dr. Smith's price for zirconia?",
+  "Set Dr. Smith to the Premium pricing tier",
 ];
 
 function buildCasePrompts(pinnedCases: AiCaseContext[]): string[] {
@@ -90,9 +118,7 @@ function buildCasePrompts(pinnedCases: AiCaseContext[]): string[] {
     const c = pinnedCases[0]!;
     return [
       `Summarize case ${c.caseNumber}`,
-      c.patientName
-        ? `What restorations are on ${c.patientName}'s case?`
-        : `What restorations are on case ${c.caseNumber}?`,
+      `Update case ${c.caseNumber} status to in_progress`,
       `When is case ${c.caseNumber} due?`,
       `What materials are on case ${c.caseNumber}?`,
     ];
@@ -114,7 +140,7 @@ const WELCOME_MSG: ChatMsg = {
   id: "welcome",
   role: "assistant",
   content:
-    "Hi! I'm LabTrax AI. I can help you with case status, pricing, turnaround times, and lab info. How can I help?",
+    "Hi! I'm LabTrax AI Agent. I can answer questions and take actions — like marking invoices paid, updating case status, merging doctors, and sending statements. How can I help?",
 };
 
 function buildWelcome(cases: AiCaseContext[]): ChatMsg {
@@ -124,16 +150,104 @@ function buildWelcome(cases: AiCaseContext[]): ChatMsg {
     return {
       id: "welcome",
       role: "assistant",
-      content: `Hi! I'm LabTrax AI. I'm ready to help you with case ${c.caseNumber}${c.patientName ? ` (${c.patientName})` : ""}. What would you like to know?`,
+      content: `Hi! I'm LabTrax AI Agent, ready to help with case ${c.caseNumber}${c.patientName ? ` (${c.patientName})` : ""}. I can answer questions or take actions. What would you like to do?`,
     };
   }
   const nums = cases.map((c) => c.caseNumber).join(", ");
   return {
     id: "welcome",
     role: "assistant",
-    content: `Hi! I'm LabTrax AI. I have ${cases.length} cases pinned: ${nums}. Ask me anything about these cases or your lab.`,
+    content: `Hi! I'm LabTrax AI Agent. I have ${cases.length} cases pinned: ${nums}. Ask me anything or tell me what action to take.`,
   };
 }
+
+// ─── Confirmation card ──────────────────────────────────────────────────────
+
+interface ConfirmCardProps {
+  actionId: string;
+  summary: string;
+  state: "pending" | "confirmed" | "done" | "rejected";
+  resultText?: string;
+  error?: string;
+  onConfirm: (actionId: string) => void;
+  onReject: (actionId: string) => void;
+}
+
+function ConfirmCard({ actionId, summary, state, resultText, error, onConfirm, onReject }: ConfirmCardProps) {
+  if (state === "rejected") {
+    return (
+      <div className="rounded-xl border border-border bg-secondary/60 px-3.5 py-3 max-w-[85%]">
+        <div className="flex items-center gap-2 text-muted-foreground">
+          <X size={13} />
+          <span className="text-xs">Action cancelled</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (state === "done") {
+    return (
+      <div className="rounded-xl border border-emerald-200 bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950/40 px-3.5 py-3 max-w-[85%]">
+        <div className="flex items-center gap-2 text-emerald-700 dark:text-emerald-400 mb-1">
+          <Check size={13} />
+          <span className="text-xs font-semibold">Done</span>
+        </div>
+        <p className="text-xs text-emerald-800 dark:text-emerald-300 leading-snug">
+          {resultText ?? summary}
+        </p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-3.5 py-3 max-w-[85%]">
+        <div className="flex items-center gap-2 text-destructive mb-1">
+          <AlertTriangle size={13} />
+          <span className="text-xs font-semibold">Action failed</span>
+        </div>
+        <p className="text-xs text-destructive/80 leading-snug">{error}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/40 px-3.5 py-3.5 max-w-[85%]">
+      <div className="flex items-center gap-1.5 text-amber-700 dark:text-amber-400 mb-2">
+        <Zap size={13} />
+        <span className="text-xs font-semibold">Proposed action</span>
+      </div>
+      <p className="text-sm text-amber-900 dark:text-amber-200 leading-snug mb-3">{summary}</p>
+      {state === "confirmed" ? (
+        <div className="flex items-center gap-1.5 text-amber-600 dark:text-amber-400">
+          <Loader2 size={12} className="animate-spin" />
+          <span className="text-xs">Executing…</span>
+        </div>
+      ) : (
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => onConfirm(actionId)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors"
+          >
+            <Check size={12} />
+            Confirm
+          </button>
+          <button
+            type="button"
+            onClick={() => onReject(actionId)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-secondary border border-border text-xs text-foreground hover:bg-secondary/80 transition-colors"
+          >
+            <X size={12} />
+            Cancel
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Main component ─────────────────────────────────────────────────────────
 
 interface Props {
   onClose: () => void;
@@ -142,13 +256,9 @@ interface Props {
 }
 
 export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: Props) {
-  // sessionKey is stable for the lifetime of this panel instance
   const sessionKey =
     initialCases.length > 0
-      ? [...initialCases]
-          .map((c) => c.caseId)
-          .sort()
-          .join("_")
+      ? [...initialCases].map((c) => c.caseId).sort().join("_")
       : "general";
 
   const [pinnedCases, setPinnedCases] = useState<AiCaseContext[]>(initialCases);
@@ -182,23 +292,17 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
   const showPrompts = !promptsDismissed && messages.length === 1;
   const hasHistory = messages.some((m) => m.id !== "welcome");
 
-  // Uses the functional-update form of setAllSessions so it always reads the
-  // latest state — safe even if called before the initial load resolves.
   const persistSession = useCallback(
     (msgs: ChatMsg[], sessionId: string, currentPinnedCases: AiCaseContext[]) => {
       const userMsgs = msgs.filter((m) => m.id !== "welcome");
       if (userMsgs.length === 0) return;
-
       const now = Date.now();
-
       setAllSessions((prev) => {
         const existing = prev.find((s) => s.id === sessionId);
         let updated: StoredSession[];
         if (existing) {
           updated = prev.map((s) =>
-            s.id === sessionId
-              ? { ...s, messages: userMsgs, lastActive: now }
-              : s,
+            s.id === sessionId ? { ...s, messages: userMsgs, lastActive: now } : s,
           );
         } else {
           const newSession: StoredSession = {
@@ -209,10 +313,10 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
             createdAt: now,
             lastActive: now,
           };
-          const keyedSessions = prev.filter((s) => s.key === sessionKey);
-          const otherSessions = prev.filter((s) => s.key !== sessionKey);
-          const trimmed = [newSession, ...keyedSessions].slice(0, MAX_SESSIONS_PER_KEY);
-          updated = [...otherSessions, ...trimmed];
+          const keyed = prev.filter((s) => s.key === sessionKey);
+          const others = prev.filter((s) => s.key !== sessionKey);
+          const trimmed = [newSession, ...keyed].slice(0, MAX_SESSIONS_PER_KEY);
+          updated = [...others, ...trimmed];
         }
         writeStoredSessions(updated);
         return updated;
@@ -221,7 +325,6 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
     [sessionKey],
   );
 
-  // Load from localStorage on mount
   useEffect(() => {
     const sessions = readStoredSessions();
     setAllSessions(sessions);
@@ -240,24 +343,20 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Scroll to bottom on new messages
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, sending]);
 
-  // Focus input on open
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
 
-  // Focus search input when picker opens
   useEffect(() => {
     if (showCasePicker) {
       setTimeout(() => caseSearchRef.current?.focus(), 50);
     }
   }, [showCasePicker]);
 
-  // Debounced case search
   useEffect(() => {
     if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
     if (!caseSearchQuery.trim() || caseSearchQuery.trim().length < 2) {
@@ -283,7 +382,6 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
     };
   }, [caseSearchQuery, labOrganizationId]);
 
-  // Close sessions dropdown on outside click
   useEffect(() => {
     if (!showSessionsList) return;
     function handleClick(e: MouseEvent) {
@@ -301,20 +399,12 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
   function pinCase(result: CaseSearchResult) {
     const alreadyPinned = pinnedCases.some((c) => c.caseId === result.id);
     if (alreadyPinned) return;
-    const patientName = [result.patientFirstName, result.patientLastName]
-      .filter(Boolean)
-      .join(" ");
-    const newCase: AiCaseContext = {
-      caseId: result.id,
-      caseNumber: result.caseNumber,
-      patientName,
-    };
+    const patientName = [result.patientFirstName, result.patientLastName].filter(Boolean).join(" ");
+    const newCase: AiCaseContext = { caseId: result.id, caseNumber: result.caseNumber, patientName };
     const updated = [...pinnedCases, newCase];
     setPinnedCases(updated);
     setMessages((prev) => {
-      if (prev.length === 1 && prev[0]!.id === "welcome") {
-        return [buildWelcome(updated)];
-      }
+      if (prev.length === 1 && prev[0]!.id === "welcome") return [buildWelcome(updated)];
       return prev;
     });
     setShowCasePicker(false);
@@ -357,11 +447,77 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
       setAllSessions(updated);
       writeStoredSessions(updated);
       setDeletingSessionId(null);
-      if (sessionId === currentSessionIdRef.current) {
-        startNewChat();
-      }
+      if (sessionId === currentSessionIdRef.current) startNewChat();
     } else {
       setDeletingSessionId(sessionId);
+    }
+  }
+
+  async function confirmAction(actionId: string) {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.proposedAction?.actionId === actionId
+          ? { ...m, proposedAction: { ...m.proposedAction!, state: "confirmed" as const } }
+          : m,
+      ),
+    );
+
+    try {
+      const result = await apiFetch<{
+        type: string;
+        success: boolean;
+        summary: string;
+        error?: string;
+      }>("/ai-agent/confirm", { method: "POST", body: JSON.stringify({ actionId }) });
+
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.proposedAction?.actionId === actionId
+            ? {
+                ...m,
+                proposedAction: {
+                  ...m.proposedAction!,
+                  state: "done" as const,
+                  resultText: result.success
+                    ? `✓ ${result.summary ?? "Action completed successfully."}`
+                    : undefined,
+                  error: result.success ? undefined : result.error ?? "Action failed.",
+                },
+              }
+            : m,
+        ),
+      );
+    } catch (err: any) {
+      const errMsg = err?.data?.error ?? err?.message ?? "Action failed. Please try again.";
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.proposedAction?.actionId === actionId
+            ? {
+                ...m,
+                proposedAction: {
+                  ...m.proposedAction!,
+                  state: "done" as const,
+                  error: errMsg,
+                },
+              }
+            : m,
+        ),
+      );
+    }
+  }
+
+  async function rejectAction(actionId: string) {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.proposedAction?.actionId === actionId
+          ? { ...m, proposedAction: { ...m.proposedAction!, state: "rejected" as const } }
+          : m,
+      ),
+    );
+    try {
+      await apiFetch("/ai-agent/reject", { method: "POST", body: JSON.stringify({ actionId }) });
+    } catch {
+      // best-effort
     }
   }
 
@@ -387,26 +543,63 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
 
     try {
       const apiMessages = nextMessages
-        .filter((m) => m.id !== "welcome")
-        .map((m) => ({ role: m.role, content: m.content }));
+        .filter((m) => m.id !== "welcome" && m.role === "user" && m.content)
+        .concat(
+          nextMessages.filter(
+            (m) => m.id !== "welcome" && m.role === "assistant" && m.content,
+          ),
+        )
+        .sort(() => 0) // preserve original order by rebuilding correctly
+        .reduce<Array<{ role: "user" | "assistant"; content: string }>>(
+          (acc, m) => {
+            if (m.content) acc.push({ role: m.role, content: m.content });
+            return acc;
+          },
+          [],
+        );
 
-      const body: Record<string, unknown> = { messages: apiMessages };
+      // Rebuild in chronological order
+      const orderedApiMessages = nextMessages
+        .filter((m) => m.id !== "welcome" && m.content)
+        .map((m) => ({ role: m.role, content: m.content! }));
+
+      const body: Record<string, unknown> = { messages: orderedApiMessages };
       if (snapshotPinnedCases.length === 1) {
         body.caseId = snapshotPinnedCases[0]!.caseId;
       } else if (snapshotPinnedCases.length > 1) {
         body.caseIds = snapshotPinnedCases.map((c) => c.caseId);
       }
 
-      const data = await apiFetch<{ reply: string; error?: string }>("/ai-chat", {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
+      const data = await apiFetch<{
+        type: "reply" | "proposed_action";
+        content?: string;
+        actionId?: string;
+        toolName?: string;
+        summary?: string;
+        error?: string;
+      }>("/ai-agent", { method: "POST", body: JSON.stringify(body) });
 
-      const assistantMsg: ChatMsg = {
-        id: generateId(),
-        role: "assistant",
-        content: data.reply || "I couldn't generate a response. Please try again.",
-      };
+      let assistantMsg: ChatMsg;
+
+      if (data.type === "proposed_action" && data.actionId && data.summary) {
+        assistantMsg = {
+          id: generateId(),
+          role: "assistant",
+          proposedAction: {
+            actionId: data.actionId,
+            toolName: data.toolName ?? "",
+            summary: data.summary,
+            state: "pending",
+          },
+        };
+      } else {
+        assistantMsg = {
+          id: generateId(),
+          role: "assistant",
+          content: data.content || "I couldn't generate a response. Please try again.",
+        };
+      }
+
       const finalMessages = [...nextMessages, assistantMsg];
       setMessages(finalMessages);
       persistSession(finalMessages, sessionId, snapshotPinnedCases);
@@ -446,7 +639,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
       ? `Ask about case ${pinnedCases[0]!.caseNumber}…`
       : pinnedCases.length > 1
       ? `Ask about these ${pinnedCases.length} cases…`
-      : "Ask about a case, pricing, or lab…";
+      : "Ask or say what to do…";
 
   return (
     <div className="fixed right-0 top-0 bottom-0 w-[380px] z-50 flex flex-col bg-card border-l border-border shadow-2xl">
@@ -457,9 +650,9 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
             <Sparkles size={16} className="text-primary" />
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-sm font-semibold">AI Assistant</div>
+            <div className="text-sm font-semibold">AI Agent</div>
             {pinnedCases.length === 0 ? (
-              <div className="text-[11px] text-muted-foreground">Powered by your live data</div>
+              <div className="text-[11px] text-muted-foreground">Can answer & take actions</div>
             ) : (
               <div className="text-[11px] text-primary font-medium">
                 {pinnedCases.length === 1
@@ -469,28 +662,20 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
             )}
           </div>
           <div className="flex items-center gap-1">
-            {/* Sessions history button */}
             {sessionsForKey.length > 0 && (
               <div className="relative" ref={sessionsDropdownRef}>
                 <button
                   type="button"
-                  onClick={() => {
-                    setShowSessionsList((v) => !v);
-                    setDeletingSessionId(null);
-                  }}
+                  onClick={() => { setShowSessionsList((v) => !v); setDeletingSessionId(null); }}
                   title="Past conversations"
                   className="h-8 w-8 rounded-md flex items-center justify-center text-muted-foreground hover:bg-secondary hover:text-foreground"
                 >
                   <Clock size={15} />
                 </button>
-
-                {/* Sessions dropdown */}
                 {showSessionsList && (
                   <div className="absolute right-0 top-10 w-72 bg-card border border-border rounded-xl shadow-xl z-50 overflow-hidden">
                     <div className="px-3 py-2.5 border-b border-border flex items-center justify-between">
-                      <span className="text-xs font-semibold text-foreground">
-                        Past Conversations
-                      </span>
+                      <span className="text-xs font-semibold text-foreground">Past Conversations</span>
                       <button
                         type="button"
                         onClick={startNewChat}
@@ -509,25 +694,16 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
                             key={session.id}
                             type="button"
                             onClick={() => loadSession(session)}
-                            className={`w-full text-left px-3 py-2.5 hover:bg-secondary transition-colors border-b border-border/50 last:border-0 flex items-start gap-2 group ${
-                              isActive ? "bg-primary/5" : ""
-                            }`}
+                            className={`w-full text-left px-3 py-2.5 hover:bg-secondary transition-colors border-b border-border/50 last:border-0 flex items-start gap-2 group ${isActive ? "bg-primary/5" : ""}`}
                           >
                             <div className="flex-1 min-w-0">
-                              <div
-                                className={`text-xs font-medium truncate leading-4 ${
-                                  isActive ? "text-primary" : "text-foreground"
-                                }`}
-                              >
+                              <div className={`text-xs font-medium truncate leading-4 ${isActive ? "text-primary" : "text-foreground"}`}>
                                 {getSessionPreview(session)}
                               </div>
                               <div className="text-[10px] text-muted-foreground mt-0.5">
                                 {formatRelativeTime(session.lastActive)} ·{" "}
-                                {session.messages.filter((m) => m.role === "user").length}{" "}
-                                message
-                                {session.messages.filter((m) => m.role === "user").length !== 1
-                                  ? "s"
-                                  : ""}
+                                {session.messages.filter((m) => m.role === "user").length} message
+                                {session.messages.filter((m) => m.role === "user").length !== 1 ? "s" : ""}
                               </div>
                             </div>
                             <button
@@ -552,7 +728,6 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
               </div>
             )}
 
-            {/* New chat button */}
             <button
               type="button"
               onClick={startNewChat}
@@ -566,7 +741,6 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
               <PenSquare size={15} />
             </button>
 
-            {/* Close button */}
             <button
               type="button"
               onClick={onClose}
@@ -587,8 +761,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
                 className="flex items-center gap-1 bg-primary/10 border border-primary/20 rounded-full pl-2.5 pr-1 py-0.5"
               >
                 <span className="text-[11px] font-medium text-primary">
-                  {c.caseNumber}
-                  {c.patientName ? ` · ${c.patientName}` : ""}
+                  {c.caseNumber}{c.patientName ? ` · ${c.patientName}` : ""}
                 </span>
                 <button
                   type="button"
@@ -619,10 +792,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
                         value={caseSearchQuery}
                         onChange={(e) => setCaseSearchQuery(e.target.value)}
                         onKeyDown={(e) => {
-                          if (e.key === "Escape") {
-                            setShowCasePicker(false);
-                            setCaseSearchQuery("");
-                          }
+                          if (e.key === "Escape") { setShowCasePicker(false); setCaseSearchQuery(""); }
                         }}
                         placeholder="Search by case # or patient…"
                         className="w-full px-2 py-1.5 text-xs rounded-md border border-input bg-background focus:outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/60"
@@ -635,16 +805,12 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
                         </div>
                       ) : caseSearchResults.length === 0 ? (
                         <div className="px-3 py-3 text-xs text-muted-foreground text-center">
-                          {caseSearchQuery.trim().length < 2
-                            ? "Type at least 2 characters"
-                            : "No cases found"}
+                          {caseSearchQuery.trim().length < 2 ? "Type at least 2 characters" : "No cases found"}
                         </div>
                       ) : (
                         caseSearchResults.map((result) => {
                           const alreadyPinned = pinnedCases.some((c) => c.caseId === result.id);
-                          const patientName = [result.patientFirstName, result.patientLastName]
-                            .filter(Boolean)
-                            .join(" ");
+                          const patientName = [result.patientFirstName, result.patientLastName].filter(Boolean).join(" ");
                           return (
                             <button
                               key={result.id}
@@ -655,20 +821,10 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
                             >
                               <div className="text-xs font-medium">
                                 {result.caseNumber}
-                                {alreadyPinned && (
-                                  <span className="ml-1.5 text-[10px] text-muted-foreground">
-                                    (pinned)
-                                  </span>
-                                )}
+                                {alreadyPinned && <span className="ml-1.5 text-[10px] text-muted-foreground">(pinned)</span>}
                               </div>
-                              {patientName && (
-                                <div className="text-[11px] text-muted-foreground">{patientName}</div>
-                              )}
-                              {result.status && (
-                                <div className="text-[10px] text-muted-foreground/70 capitalize">
-                                  {result.status}
-                                </div>
-                              )}
+                              {patientName && <div className="text-[11px] text-muted-foreground">{patientName}</div>}
+                              {result.status && <div className="text-[10px] text-muted-foreground/70 capitalize">{result.status}</div>}
                             </button>
                           );
                         })
@@ -681,7 +837,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
           </div>
         )}
 
-        {/* Add case button when no cases are pinned */}
+        {/* Add case button when no cases pinned */}
         {pinnedCases.length === 0 && labOrganizationId && (
           <div className="px-3 pb-2 relative">
             <button
@@ -701,10 +857,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
                     value={caseSearchQuery}
                     onChange={(e) => setCaseSearchQuery(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === "Escape") {
-                        setShowCasePicker(false);
-                        setCaseSearchQuery("");
-                      }
+                      if (e.key === "Escape") { setShowCasePicker(false); setCaseSearchQuery(""); }
                     }}
                     placeholder="Search by case # or patient…"
                     className="w-full px-2 py-1.5 text-xs rounded-md border border-input bg-background focus:outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/60"
@@ -717,15 +870,11 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
                     </div>
                   ) : caseSearchResults.length === 0 ? (
                     <div className="px-3 py-3 text-xs text-muted-foreground text-center">
-                      {caseSearchQuery.trim().length < 2
-                        ? "Type at least 2 characters"
-                        : "No cases found"}
+                      {caseSearchQuery.trim().length < 2 ? "Type at least 2 characters" : "No cases found"}
                     </div>
                   ) : (
                     caseSearchResults.map((result) => {
-                      const patientName = [result.patientFirstName, result.patientLastName]
-                        .filter(Boolean)
-                        .join(" ");
+                      const patientName = [result.patientFirstName, result.patientLastName].filter(Boolean).join(" ");
                       return (
                         <button
                           key={result.id}
@@ -734,14 +883,8 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
                           className="w-full text-left px-3 py-2 hover:bg-secondary transition-colors"
                         >
                           <div className="text-xs font-medium">{result.caseNumber}</div>
-                          {patientName && (
-                            <div className="text-[11px] text-muted-foreground">{patientName}</div>
-                          )}
-                          {result.status && (
-                            <div className="text-[10px] text-muted-foreground/70 capitalize">
-                              {result.status}
-                            </div>
-                          )}
+                          {patientName && <div className="text-[11px] text-muted-foreground">{patientName}</div>}
+                          {result.status && <div className="text-[10px] text-muted-foreground/70 capitalize">{result.status}</div>}
                         </button>
                       );
                     })
@@ -759,14 +902,32 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
         onClick={() => {
           setShowSessionsList(false);
           setDeletingSessionId(null);
-          if (showCasePicker) {
-            setShowCasePicker(false);
-            setCaseSearchQuery("");
-          }
+          if (showCasePicker) { setShowCasePicker(false); setCaseSearchQuery(""); }
         }}
       >
         {messages.map((msg) => {
           const isUser = msg.role === "user";
+
+          // Proposed action card (no avatar, full-width on assistant side)
+          if (msg.proposedAction) {
+            return (
+              <div key={msg.id} className="flex gap-2 items-end justify-start">
+                <div className="h-6 w-6 rounded-full bg-primary/10 flex items-center justify-center shrink-0 mb-0.5">
+                  <Sparkles size={11} className="text-primary" />
+                </div>
+                <ConfirmCard
+                  actionId={msg.proposedAction.actionId}
+                  summary={msg.proposedAction.summary}
+                  state={msg.proposedAction.state}
+                  resultText={msg.proposedAction.resultText}
+                  error={msg.proposedAction.error}
+                  onConfirm={confirmAction}
+                  onReject={rejectAction}
+                />
+              </div>
+            );
+          }
+
           return (
             <div
               key={msg.id}
@@ -793,7 +954,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
         {/* Suggested prompts */}
         {showPrompts && (
           <div className="pt-2">
-            <p className="text-[11px] text-muted-foreground mb-2">Try asking:</p>
+            <p className="text-[11px] text-muted-foreground mb-2">Try asking or telling me to:</p>
             <div className="flex flex-wrap gap-2">
               {suggestedPrompts.map((p) => (
                 <button

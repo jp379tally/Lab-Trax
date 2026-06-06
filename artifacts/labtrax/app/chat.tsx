@@ -21,11 +21,22 @@ import { useAuth } from "@/lib/auth-context";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { resilientFetch } from "@/lib/query-client";
 
+// ─── Message types ──────────────────────────────────────────────────────────
+
 interface ChatMsg {
   id: string;
   role: "user" | "assistant";
-  content: string;
+  content?: string;
   timestamp: number;
+  /** Proposed action payload for impactful-tool cards */
+  proposedAction?: {
+    actionId: string;
+    toolName: string;
+    summary: string;
+    state: "pending" | "confirmed" | "done" | "rejected";
+    resultText?: string;
+    error?: string;
+  };
 }
 
 interface PinnedCase {
@@ -52,6 +63,8 @@ interface StoredSession {
   lastActive: number;
 }
 
+// ─── Storage helpers ─────────────────────────────────────────────────────────
+
 const STORAGE_KEY = "labtrax_chat_sessions_v1";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_SESSIONS_PER_KEY = 10;
@@ -74,15 +87,17 @@ async function writeStoredSessions(sessions: StoredSession[]): Promise<void> {
   try {
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ sessions }));
   } catch {
-    // ignore — storage errors are non-fatal
+    // ignore
   }
 }
 
+// ─── Suggested prompts ───────────────────────────────────────────────────────
+
 const LAB_SUGGESTED_PROMPTS = [
   "What cases are due this week?",
-  "What's our average turnaround time?",
-  "What's Dr. Smith's price for zirconia?",
+  "Mark invoice INV-2025-042 as paid",
   "Show me all rush cases",
+  "Set Dr. Smith to the Premium pricing tier",
 ];
 
 const PROVIDER_SUGGESTED_PROMPTS = [
@@ -92,18 +107,12 @@ const PROVIDER_SUGGESTED_PROMPTS = [
   "What's the status of my recent cases?",
 ];
 
-function generateId() {
-  return Date.now().toString() + Math.random().toString(36).substr(2, 9);
-}
-
 function buildCasePrompts(pinnedCases: PinnedCase[]): string[] {
   if (pinnedCases.length === 1) {
     const c = pinnedCases[0]!;
     return [
       `Summarize case ${c.caseNumber}`,
-      c.patientName
-        ? `What restorations are on ${c.patientName}'s case?`
-        : `What restorations are on case ${c.caseNumber}?`,
+      `Update case ${c.caseNumber} to in_progress`,
       `When is case ${c.caseNumber} due?`,
       `What materials are on case ${c.caseNumber}?`,
     ];
@@ -120,15 +129,8 @@ function buildCasePrompts(pinnedCases: PinnedCase[]): string[] {
   return [];
 }
 
-function buildProviderCasePrompts(caseNumber: string, patientName: string): string[] {
-  return [
-    `When will this case be ready?`,
-    patientName
-      ? `What restorations are on ${patientName}'s case?`
-      : `What restorations are on case ${caseNumber}?`,
-    `Which lab is handling case ${caseNumber}?`,
-    `What is the current status of case ${caseNumber}?`,
-  ];
+function generateId() {
+  return Date.now().toString() + Math.random().toString(36).substr(2, 9);
 }
 
 function formatRelativeTime(ms: number): string {
@@ -150,10 +152,11 @@ function getSessionPreview(session: StoredSession): string {
     }
     return "Empty session";
   }
-  return first.content.length > 55
-    ? first.content.slice(0, 52) + "…"
-    : first.content;
+  const text = first.content ?? "";
+  return text.length > 55 ? text.slice(0, 52) + "…" : text;
 }
+
+// ─── Main screen ─────────────────────────────────────────────────────────────
 
 export default function ChatScreen() {
   const insets = useSafeAreaInsets();
@@ -167,7 +170,6 @@ export default function ChatScreen() {
     patientName?: string;
   }>();
 
-  // Build initial pinned case from route params
   const initialPinnedCases: PinnedCase[] = [];
   if (params.caseId && params.caseNumber) {
     initialPinnedCases.push({
@@ -177,13 +179,9 @@ export default function ChatScreen() {
     });
   }
 
-  // sessionKey is stable for the lifetime of this screen instance
   const sessionKey =
     initialPinnedCases.length > 0
-      ? [...initialPinnedCases]
-          .map((c) => c.caseId)
-          .sort()
-          .join("_")
+      ? [...initialPinnedCases].map((c) => c.caseId).sort().join("_")
       : "general";
 
   const [pinnedCases, setPinnedCases] = useState<PinnedCase[]>(initialPinnedCases);
@@ -192,15 +190,15 @@ export default function ChatScreen() {
   function buildWelcomeContent(cases: PinnedCase[]): string {
     if (cases.length === 0) {
       return isProvider
-        ? "Hi! I'm LabTrax's AI assistant. I can look up your cases across all your linked labs and answer pricing questions. How can I help?"
-        : "Hi! I'm LabTrax's AI assistant. I can help you with case status, pricing, turnaround times, and lab info. How can I help?";
+        ? "Hi! I'm LabTrax AI. I can look up your cases across your linked labs and answer pricing questions. How can I help?"
+        : "Hi! I'm LabTrax AI Agent. I can answer questions and take actions — like marking invoices paid, updating case status, merging doctors, and sending statements. How can I help?";
     }
     if (cases.length === 1) {
       const c = cases[0]!;
-      return `Hi! I'm LabTrax's AI assistant. I'm ready to help you with case ${c.caseNumber}${c.patientName ? ` (${c.patientName})` : ""}. What would you like to know?`;
+      return `Hi! I'm LabTrax AI Agent, ready to help with case ${c.caseNumber}${c.patientName ? ` (${c.patientName})` : ""}. I can answer questions or take actions. What would you like?`;
     }
     const nums = cases.map((c) => c.caseNumber).join(", ");
-    return `Hi! I'm LabTrax's AI assistant. I have ${cases.length} cases pinned: ${nums}. Ask me anything about these cases or your lab.`;
+    return `Hi! I'm LabTrax AI Agent. I have ${cases.length} cases pinned: ${nums}. Ask me anything or tell me what to do.`;
   }
 
   const [messages, setMessages] = useState<ChatMsg[]>([
@@ -219,14 +217,12 @@ export default function ChatScreen() {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [showSessionsModal, setShowSessionsModal] = useState(false);
 
-  // Case picker modal state
   const [pickerVisible, setPickerVisible] = useState(false);
   const [caseSearchQuery, setCaseSearchQuery] = useState("");
   const [caseSearchResults, setCaseSearchResults] = useState<CaseSearchResult[]>([]);
   const [caseSearchLoading, setCaseSearchLoading] = useState(false);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // The user's lab org ID for case quick-search
   const [labOrganizationId, setLabOrganizationId] = useState<string | null>(null);
 
   const currentSessionIdRef = useRef<string | null>(null);
@@ -245,7 +241,6 @@ export default function ChatScreen() {
   const showPrompts = !promptsDismissed && messages.length === 1;
   const hasHistory = messages.some((m) => m.id !== "welcome");
 
-  // Fetch lab org ID for case search (lab users only)
   useEffect(() => {
     if (isProvider) return;
     resilientFetch("/api/auth/me")
@@ -256,24 +251,18 @@ export default function ChatScreen() {
       .catch(() => {});
   }, [isProvider]);
 
-  // Uses the functional-update form of setAllSessions so it always reads the
-  // latest state — safe even if called before the initial load resolves.
   const persistSession = useCallback(
     async (msgs: ChatMsg[], sessionId: string, currentPinnedCases: PinnedCase[]) => {
       const userMsgs = msgs.filter((m) => m.id !== "welcome");
       if (userMsgs.length === 0) return;
-
       const now = Date.now();
       let persisted: StoredSession[] = [];
-
       setAllSessions((prev) => {
         const existing = prev.find((s) => s.id === sessionId);
         let updated: StoredSession[];
         if (existing) {
           updated = prev.map((s) =>
-            s.id === sessionId
-              ? { ...s, messages: userMsgs, lastActive: now }
-              : s,
+            s.id === sessionId ? { ...s, messages: userMsgs, lastActive: now } : s,
           );
         } else {
           const newSession: StoredSession = {
@@ -284,22 +273,19 @@ export default function ChatScreen() {
             createdAt: now,
             lastActive: now,
           };
-          const keyedSessions = prev.filter((s) => s.key === sessionKey);
-          const otherSessions = prev.filter((s) => s.key !== sessionKey);
-          const trimmed = [newSession, ...keyedSessions].slice(0, MAX_SESSIONS_PER_KEY);
-          updated = [...otherSessions, ...trimmed];
+          const keyed = prev.filter((s) => s.key === sessionKey);
+          const others = prev.filter((s) => s.key !== sessionKey);
+          const trimmed = [newSession, ...keyed].slice(0, MAX_SESSIONS_PER_KEY);
+          updated = [...others, ...trimmed];
         }
         persisted = updated;
         return updated;
       });
-
-      // Write outside the updater to avoid async inside setState
       await writeStoredSessions(persisted);
     },
     [sessionKey],
   );
 
-  // Load sessions from storage on mount
   useEffect(() => {
     let cancelled = false;
     async function init() {
@@ -316,25 +302,17 @@ export default function ChatScreen() {
         const cases = latest.pinnedCases.length > 0 ? latest.pinnedCases : initialPinnedCases;
         setPinnedCases(cases);
         setMessages([
-          {
-            id: "welcome",
-            role: "assistant",
-            content: buildWelcomeContent(cases),
-            timestamp: Date.now(),
-          },
+          { id: "welcome", role: "assistant", content: buildWelcomeContent(cases), timestamp: Date.now() },
           ...latest.messages,
         ]);
         setPromptsDismissed(latest.messages.some((m) => m.role === "user"));
       }
     }
     init();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Debounced case search
   useEffect(() => {
     if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
     if (!caseSearchQuery.trim() || caseSearchQuery.trim().length < 2) {
@@ -367,24 +345,12 @@ export default function ChatScreen() {
   function pinCase(result: CaseSearchResult) {
     const alreadyPinned = pinnedCases.some((c) => c.caseId === result.id);
     if (alreadyPinned) return;
-    const patientName = [result.patientFirstName, result.patientLastName]
-      .filter(Boolean)
-      .join(" ");
-    const updated = [
-      ...pinnedCases,
-      { caseId: result.id, caseNumber: result.caseNumber, patientName },
-    ];
+    const patientName = [result.patientFirstName, result.patientLastName].filter(Boolean).join(" ");
+    const updated = [...pinnedCases, { caseId: result.id, caseNumber: result.caseNumber, patientName }];
     setPinnedCases(updated);
     setMessages((prev) => {
       if (prev.length === 1 && prev[0]!.id === "welcome") {
-        return [
-          {
-            id: "welcome",
-            role: "assistant",
-            content: buildWelcomeContent(updated),
-            timestamp: Date.now(),
-          },
-        ];
+        return [{ id: "welcome", role: "assistant", content: buildWelcomeContent(updated), timestamp: Date.now() }];
       }
       return prev;
     });
@@ -403,14 +369,7 @@ export default function ChatScreen() {
     setCurrentSessionId(newId);
     currentSessionIdRef.current = newId;
     setPinnedCases(initialPinnedCases);
-    setMessages([
-      {
-        id: "welcome",
-        role: "assistant",
-        content: buildWelcomeContent(initialPinnedCases),
-        timestamp: Date.now(),
-      },
-    ]);
+    setMessages([{ id: "welcome", role: "assistant", content: buildWelcomeContent(initialPinnedCases), timestamp: Date.now() }]);
     setPromptsDismissed(false);
     setInput("");
   }
@@ -421,16 +380,81 @@ export default function ChatScreen() {
     currentSessionIdRef.current = session.id;
     setPinnedCases(cases);
     setMessages([
-      {
-        id: "welcome",
-        role: "assistant",
-        content: buildWelcomeContent(cases),
-        timestamp: Date.now(),
-      },
+      { id: "welcome", role: "assistant", content: buildWelcomeContent(cases), timestamp: Date.now() },
       ...session.messages,
     ]);
     setPromptsDismissed(session.messages.some((m) => m.role === "user"));
     setShowSessionsModal(false);
+  }
+
+  async function confirmAction(actionId: string) {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.proposedAction?.actionId === actionId
+          ? { ...m, proposedAction: { ...m.proposedAction!, state: "confirmed" as const } }
+          : m,
+      ),
+    );
+
+    try {
+      const resp = await resilientFetch("/api/ai-agent/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ actionId }),
+      });
+      const result = await resp.json();
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.proposedAction?.actionId === actionId
+            ? {
+                ...m,
+                proposedAction: {
+                  ...m.proposedAction!,
+                  state: "done" as const,
+                  resultText: result.success ? `✓ ${result.summary ?? "Done."}` : undefined,
+                  error: result.success ? undefined : result.error ?? "Action failed.",
+                },
+              }
+            : m,
+        ),
+      );
+    } catch {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.proposedAction?.actionId === actionId
+            ? { ...m, proposedAction: { ...m.proposedAction!, state: "done" as const, error: "Action failed. Please try again." } }
+            : m,
+        ),
+      );
+    }
+  }
+
+  function rejectAction(actionId: string) {
+    Alert.alert(
+      "Cancel Action",
+      "Are you sure you want to cancel this action?",
+      [
+        { text: "No", style: "cancel" },
+        {
+          text: "Yes, cancel",
+          style: "destructive",
+          onPress: async () => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.proposedAction?.actionId === actionId
+                  ? { ...m, proposedAction: { ...m.proposedAction!, state: "rejected" as const } }
+                  : m,
+              ),
+            );
+            resilientFetch("/api/ai-agent/reject", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ actionId }),
+            }).catch(() => {});
+          },
+        },
+      ],
+    );
   }
 
   async function sendMessage(text: string) {
@@ -445,53 +469,77 @@ export default function ChatScreen() {
     }
 
     const snapshotPinnedCases = pinnedCases;
-
-    const userMsg: ChatMsg = {
-      id: generateId(),
-      role: "user",
-      content: text.trim(),
-      timestamp: Date.now(),
-    };
+    const userMsg: ChatMsg = { id: generateId(), role: "user", content: text.trim(), timestamp: Date.now() };
     const nextMessages = [...messages, userMsg];
     setMessages(nextMessages);
     setInput("");
     setSending(true);
 
     try {
-      const apiMessages = nextMessages
-        .filter((m) => m.id !== "welcome")
-        .map((m) => ({ role: m.role, content: m.content }));
+      const orderedApiMessages = nextMessages
+        .filter((m) => m.id !== "welcome" && m.content)
+        .map((m) => ({ role: m.role, content: m.content! }));
 
-      const body: Record<string, unknown> = { messages: apiMessages };
+      const body: Record<string, unknown> = { messages: orderedApiMessages };
       if (snapshotPinnedCases.length === 1) {
         body.caseId = snapshotPinnedCases[0]!.caseId;
       } else if (snapshotPinnedCases.length > 1) {
         body.caseIds = snapshotPinnedCases.map((c) => c.caseId);
       }
 
-      const response = await resilientFetch("/api/ai-chat", {
+      const response = await resilientFetch("/api/ai-agent", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
 
-      let assistantContent = "Sorry, I'm having trouble connecting right now. Please try again.";
+      let assistantMsg: ChatMsg;
+
       if (response.ok) {
         const data = await response.json();
-        assistantContent = data.reply || "I couldn't process that request.";
+        if (data.type === "proposed_action" && data.actionId && data.summary) {
+          assistantMsg = {
+            id: generateId(),
+            role: "assistant",
+            timestamp: Date.now(),
+            proposedAction: {
+              actionId: data.actionId,
+              toolName: data.toolName ?? "",
+              summary: data.summary,
+              state: "pending",
+            },
+          };
+        } else {
+          assistantMsg = {
+            id: generateId(),
+            role: "assistant",
+            content: data.content || "I couldn't process that request.",
+            timestamp: Date.now(),
+          };
+        }
       } else if (response.status === 429) {
-        assistantContent = "Please slow down — try again in a moment.";
+        assistantMsg = {
+          id: generateId(),
+          role: "assistant",
+          content: "Please slow down — try again in a moment.",
+          timestamp: Date.now(),
+        };
       } else if (response.status === 503) {
-        assistantContent =
-          "AI assistant is not configured on this server. Please contact your administrator.";
+        assistantMsg = {
+          id: generateId(),
+          role: "assistant",
+          content: "AI assistant is not configured on this server. Please contact your administrator.",
+          timestamp: Date.now(),
+        };
+      } else {
+        assistantMsg = {
+          id: generateId(),
+          role: "assistant",
+          content: "Sorry, I'm having trouble connecting right now. Please try again.",
+          timestamp: Date.now(),
+        };
       }
 
-      const assistantMsg: ChatMsg = {
-        id: generateId(),
-        role: "assistant",
-        content: assistantContent,
-        timestamp: Date.now(),
-      };
       const finalMessages = [...nextMessages, assistantMsg];
       setMessages(finalMessages);
       persistSession(finalMessages, sessionId, snapshotPinnedCases);
@@ -510,56 +558,120 @@ export default function ChatScreen() {
     }
   }
 
-  function handleSend() {
-    sendMessage(input);
-  }
-
-  function handleSuggestedPrompt(prompt: string) {
-    sendMessage(prompt);
-  }
+  function handleSend() { sendMessage(input); }
+  function handleSuggestedPrompt(prompt: string) { sendMessage(prompt); }
 
   function handleDeleteSession(sessionId: string) {
-    Alert.alert(
-      "Delete Session",
-      "Remove this conversation from history?",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: async () => {
-            const updated = allSessions.filter((s) => s.id !== sessionId);
-            setAllSessions(updated);
-            await writeStoredSessions(updated);
-            if (sessionId === currentSessionIdRef.current) {
-              startNewChat();
-            }
-          },
+    Alert.alert("Delete Session", "Remove this conversation from history?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: async () => {
+          const updated = allSessions.filter((s) => s.id !== sessionId);
+          setAllSessions(updated);
+          await writeStoredSessions(updated);
+          if (sessionId === currentSessionIdRef.current) startNewChat();
         },
-      ],
-    );
+      },
+    ]);
   }
 
   function renderMessage({ item }: { item: ChatMsg }) {
     const isUser = item.role === "user";
+
+    // Proposed action confirmation card
+    if (item.proposedAction) {
+      const pa = item.proposedAction;
+
+      if (pa.state === "rejected") {
+        return (
+          <View style={[styles.messageBubbleWrap, styles.assistantWrap]}>
+            <View style={styles.aiAvatar}>
+              <Ionicons name="sparkles" size={14} color={colors.tint} />
+            </View>
+            <View style={styles.actionCancelledCard}>
+              <Text style={styles.actionCancelledText}>✕ Action cancelled</Text>
+            </View>
+          </View>
+        );
+      }
+
+      if (pa.state === "done" && pa.error) {
+        return (
+          <View style={[styles.messageBubbleWrap, styles.assistantWrap]}>
+            <View style={styles.aiAvatar}>
+              <Ionicons name="sparkles" size={14} color={colors.tint} />
+            </View>
+            <View style={styles.actionErrorCard}>
+              <Text style={styles.actionErrorTitle}>⚠ Action failed</Text>
+              <Text style={styles.actionErrorText}>{pa.error}</Text>
+            </View>
+          </View>
+        );
+      }
+
+      if (pa.state === "done") {
+        return (
+          <View style={[styles.messageBubbleWrap, styles.assistantWrap]}>
+            <View style={styles.aiAvatar}>
+              <Ionicons name="sparkles" size={14} color={colors.tint} />
+            </View>
+            <View style={styles.actionDoneCard}>
+              <Text style={styles.actionDoneTitle}>✓ Done</Text>
+              <Text style={styles.actionDoneText}>{pa.resultText ?? pa.summary}</Text>
+            </View>
+          </View>
+        );
+      }
+
+      return (
+        <View style={[styles.messageBubbleWrap, styles.assistantWrap]}>
+          <View style={styles.aiAvatar}>
+            <Ionicons name="sparkles" size={14} color={colors.tint} />
+          </View>
+          <View style={styles.actionCard}>
+            <View style={styles.actionCardHeader}>
+              <Ionicons name="flash" size={13} color={colors.warning} />
+              <Text style={styles.actionCardLabel}>Proposed action</Text>
+            </View>
+            <Text style={styles.actionCardSummary}>{pa.summary}</Text>
+            {pa.state === "confirmed" ? (
+              <View style={styles.actionConfirmingRow}>
+                <ActivityIndicator size="small" color={colors.warning} />
+                <Text style={styles.actionConfirmingText}>Executing…</Text>
+              </View>
+            ) : (
+              <View style={styles.actionButtonRow}>
+                <Pressable
+                  onPress={() => confirmAction(pa.actionId)}
+                  style={({ pressed }) => [styles.actionConfirmBtn, pressed && { opacity: 0.75 }]}
+                >
+                  <Ionicons name="checkmark" size={15} color={colors.textInverse} />
+                  <Text style={styles.actionConfirmBtnText}>Confirm</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => rejectAction(pa.actionId)}
+                  style={({ pressed }) => [styles.actionCancelBtn, pressed && { opacity: 0.75 }]}
+                >
+                  <Ionicons name="close" size={14} color={colors.text} />
+                  <Text style={styles.actionCancelBtnText}>Cancel</Text>
+                </Pressable>
+              </View>
+            )}
+          </View>
+        </View>
+      );
+    }
+
     return (
-      <View
-        style={[
-          styles.messageBubbleWrap,
-          isUser ? styles.userWrap : styles.assistantWrap,
-        ]}
-      >
+      <View style={[styles.messageBubbleWrap, isUser ? styles.userWrap : styles.assistantWrap]}>
         {!isUser && (
           <View style={styles.aiAvatar}>
             <Ionicons name="sparkles" size={14} color={colors.tint} />
           </View>
         )}
-        <View
-          style={[
-            styles.messageBubble,
-            isUser ? styles.userBubble : styles.assistantBubble,
-          ]}
-        >
+        <View style={[styles.messageBubble, isUser ? styles.userBubble : styles.assistantBubble]}>
           <Text style={[styles.messageText, isUser && styles.userText]}>
             {item.content}
           </Text>
@@ -573,27 +685,17 @@ export default function ChatScreen() {
     return (
       <Pressable
         onPress={() => loadSession(item)}
-        style={({ pressed }) => [
-          styles.sessionItem,
-          isActive && styles.sessionItemActive,
-          pressed && { opacity: 0.7 },
-        ]}
+        style={({ pressed }) => [styles.sessionItem, isActive && styles.sessionItemActive, pressed && { opacity: 0.7 }]}
       >
         <View style={{ flex: 1 }}>
-          <Text style={styles.sessionPreview} numberOfLines={2}>
-            {getSessionPreview(item)}
-          </Text>
+          <Text style={styles.sessionPreview} numberOfLines={2}>{getSessionPreview(item)}</Text>
           <Text style={styles.sessionTime}>
             {formatRelativeTime(item.lastActive)} ·{" "}
             {item.messages.filter((m) => m.role === "user").length} message
             {item.messages.filter((m) => m.role === "user").length !== 1 ? "s" : ""}
           </Text>
         </View>
-        <Pressable
-          onPress={() => handleDeleteSession(item.id)}
-          hitSlop={12}
-          style={({ pressed }) => [{ opacity: pressed ? 0.5 : 1, padding: 4 }]}
-        >
+        <Pressable onPress={() => handleDeleteSession(item.id)} hitSlop={12} style={({ pressed }) => [{ opacity: pressed ? 0.5 : 1, padding: 4 }]}>
           <Ionicons name="trash-outline" size={16} color={colors.textTertiary} />
         </Pressable>
       </Pressable>
@@ -602,12 +704,7 @@ export default function ChatScreen() {
 
   return (
     <View style={styles.container}>
-      <View
-        style={[
-          styles.header,
-          { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 },
-        ]}
-      >
+      <View style={[styles.header, { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 }]}>
         <Pressable onPress={() => router.back()} hitSlop={12}>
           <Ionicons name="arrow-back" size={24} color={colors.text} />
         </Pressable>
@@ -616,7 +713,7 @@ export default function ChatScreen() {
             <Ionicons name="sparkles" size={16} color={colors.tint} />
           </View>
           <View>
-            <Text style={styles.headerTitle}>AI Assistant</Text>
+            <Text style={styles.headerTitle}>AI Agent</Text>
             {pinnedCases.length === 1 && (
               <Text style={styles.headerSubtitle}>
                 Case {pinnedCases[0]!.caseNumber}
@@ -630,56 +727,30 @@ export default function ChatScreen() {
         </View>
         <View style={styles.headerActions}>
           {labOrganizationId && (
-            <Pressable
-              onPress={() => setPickerVisible(true)}
-              hitSlop={12}
-              style={({ pressed }) => [{ opacity: pressed ? 0.5 : 1 }]}
-            >
+            <Pressable onPress={() => setPickerVisible(true)} hitSlop={12} style={({ pressed }) => [{ opacity: pressed ? 0.5 : 1 }]}>
               <Ionicons name="add-circle-outline" size={22} color={colors.tint} />
             </Pressable>
           )}
           {sessionsForKey.length > 0 && (
-            <Pressable
-              onPress={() => setShowSessionsModal(true)}
-              hitSlop={12}
-              style={({ pressed }) => [{ opacity: pressed ? 0.5 : 1 }]}
-            >
+            <Pressable onPress={() => setShowSessionsModal(true)} hitSlop={12} style={({ pressed }) => [{ opacity: pressed ? 0.5 : 1 }]}>
               <Ionicons name="time-outline" size={20} color={colors.textSecondary} />
             </Pressable>
           )}
-          <Pressable
-            onPress={startNewChat}
-            hitSlop={12}
-            style={({ pressed }) => [{ opacity: pressed ? 0.5 : 1 }]}
-          >
-            <Ionicons
-              name="create-outline"
-              size={20}
-              color={hasHistory ? colors.tint : colors.textSecondary}
-            />
+          <Pressable onPress={startNewChat} hitSlop={12} style={({ pressed }) => [{ opacity: pressed ? 0.5 : 1 }]}>
+            <Ionicons name="create-outline" size={20} color={hasHistory ? colors.tint : colors.textSecondary} />
           </Pressable>
         </View>
       </View>
 
       {/* Pinned case chips */}
       {pinnedCases.length > 0 && (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.chipsRow}
-          contentContainerStyle={styles.chipsContent}
-        >
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipsRow} contentContainerStyle={styles.chipsContent}>
           {pinnedCases.map((c) => (
             <View key={c.caseId} style={styles.chip}>
               <Text style={styles.chipText} numberOfLines={1}>
-                {c.caseNumber}
-                {c.patientName ? ` · ${c.patientName}` : ""}
+                {c.caseNumber}{c.patientName ? ` · ${c.patientName}` : ""}
               </Text>
-              <Pressable
-                onPress={() => unpinCase(c.caseId)}
-                hitSlop={8}
-                style={({ pressed }) => [styles.chipRemove, { opacity: pressed ? 0.5 : 1 }]}
-              >
+              <Pressable onPress={() => unpinCase(c.caseId)} hitSlop={8} style={({ pressed }) => [styles.chipRemove, { opacity: pressed ? 0.5 : 1 }]}>
                 <Ionicons name="close" size={12} color={colors.tint} />
               </Pressable>
             </View>
@@ -687,13 +758,8 @@ export default function ChatScreen() {
         </ScrollView>
       )}
 
-      {/* Past sessions modal */}
-      <Modal
-        visible={showSessionsModal}
-        animationType="slide"
-        presentationStyle="pageSheet"
-        onRequestClose={() => setShowSessionsModal(false)}
-      >
+      {/* Sessions history modal */}
+      <Modal visible={showSessionsModal} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setShowSessionsModal(false)}>
         <View style={[styles.sessionsModalContainer, { paddingTop: insets.top + 16 }]}>
           <View style={styles.sessionsModalHeader}>
             <Text style={styles.sessionsModalTitle}>Past Conversations</Text>
@@ -703,9 +769,7 @@ export default function ChatScreen() {
           </View>
           {pinnedCases.length > 0 && (
             <Text style={styles.sessionsModalSubtitle}>
-              {pinnedCases.length === 1
-                ? `Case ${pinnedCases[0]!.caseNumber}`
-                : `${pinnedCases.length} cases pinned`}
+              {pinnedCases.length === 1 ? `Case ${pinnedCases[0]!.caseNumber}` : `${pinnedCases.length} cases pinned`}
             </Text>
           )}
           <FlatList
@@ -714,18 +778,10 @@ export default function ChatScreen() {
             renderItem={renderSessionItem}
             contentContainerStyle={styles.sessionsList}
             ItemSeparatorComponent={() => <View style={styles.sessionSeparator} />}
-            ListEmptyComponent={
-              <Text style={styles.emptyText}>No past conversations</Text>
-            }
+            ListEmptyComponent={<Text style={styles.emptyText}>No past conversations</Text>}
           />
           <View style={[styles.newChatFooter, { paddingBottom: Math.max(insets.bottom, 16) }]}>
-            <Pressable
-              onPress={() => {
-                setShowSessionsModal(false);
-                startNewChat();
-              }}
-              style={({ pressed }) => [styles.newChatBtn, pressed && { opacity: 0.8 }]}
-            >
+            <Pressable onPress={() => { setShowSessionsModal(false); startNewChat(); }} style={({ pressed }) => [styles.newChatBtn, pressed && { opacity: 0.8 }]}>
               <Ionicons name="create-outline" size={16} color={colors.textInverse} />
               <Text style={styles.newChatBtnText}>New Chat</Text>
             </Pressable>
@@ -733,11 +789,7 @@ export default function ChatScreen() {
         </View>
       </Modal>
 
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior="padding"
-        keyboardVerticalOffset={0}
-      >
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={0}>
         <FlatList
           ref={flatListRef}
           data={messages}
@@ -747,27 +799,14 @@ export default function ChatScreen() {
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="interactive"
-          onContentSizeChange={() =>
-            flatListRef.current?.scrollToEnd({ animated: true })
-          }
+          onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
           ListFooterComponent={
             showPrompts && suggestedPrompts.length > 0 ? (
               <View style={styles.promptsContainer}>
-                <Text style={styles.promptsLabel}>Try asking:</Text>
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.promptsScroll}
-                >
+                <Text style={styles.promptsLabel}>Try asking or telling me to:</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.promptsScroll}>
                   {suggestedPrompts.map((p) => (
-                    <Pressable
-                      key={p}
-                      onPress={() => handleSuggestedPrompt(p)}
-                      style={({ pressed }) => [
-                        styles.promptChip,
-                        pressed && { opacity: 0.7 },
-                      ]}
-                    >
+                    <Pressable key={p} onPress={() => handleSuggestedPrompt(p)} style={({ pressed }) => [styles.promptChip, pressed && { opacity: 0.7 }]}>
                       <Text style={styles.promptChipText}>{p}</Text>
                     </Pressable>
                   ))}
@@ -784,15 +823,7 @@ export default function ChatScreen() {
           </View>
         )}
 
-        <View
-          style={[
-            styles.inputBar,
-            {
-              paddingBottom:
-                Platform.OS === "web" ? 34 + 8 : Math.max(insets.bottom, 8) + 8,
-            },
-          ]}
-        >
+        <View style={[styles.inputBar, { paddingBottom: Platform.OS === "web" ? 34 + 8 : Math.max(insets.bottom, 8) + 8 }]}>
           <TextInput
             style={styles.textInput}
             value={input}
@@ -804,7 +835,7 @@ export default function ChatScreen() {
                 ? `Ask about these ${pinnedCases.length} cases…`
                 : isProvider
                 ? "Ask about a case or pricing…"
-                : "Ask about a case, pricing, or lab…"
+                : "Ask or say what to do…"
             }
             placeholderTextColor={colors.textTertiary}
             multiline
@@ -813,20 +844,8 @@ export default function ChatScreen() {
             onSubmitEditing={handleSend}
             blurOnSubmit={false}
           />
-          <Pressable
-            onPress={handleSend}
-            disabled={!input.trim() || sending}
-            style={({ pressed }) => [
-              styles.sendBtn,
-              (!input.trim() || sending) && styles.sendBtnDisabled,
-              pressed && { opacity: 0.7 },
-            ]}
-          >
-            <Ionicons
-              name="send"
-              size={18}
-              color={!input.trim() || sending ? colors.textTertiary : colors.textInverse}
-            />
+          <Pressable onPress={handleSend} disabled={!input.trim() || sending} style={({ pressed }) => [styles.sendBtn, (!input.trim() || sending) && styles.sendBtnDisabled, pressed && { opacity: 0.7 }]}>
+            <Ionicons name="send" size={18} color={!input.trim() || sending ? colors.textTertiary : colors.textInverse} />
           </Pressable>
         </View>
       </KeyboardAvoidingView>
@@ -836,31 +855,13 @@ export default function ChatScreen() {
         visible={pickerVisible}
         transparent
         animationType="fade"
-        onRequestClose={() => {
-          setPickerVisible(false);
-          setCaseSearchQuery("");
-          setCaseSearchResults([]);
-        }}
+        onRequestClose={() => { setPickerVisible(false); setCaseSearchQuery(""); setCaseSearchResults([]); }}
       >
-        <Pressable
-          style={styles.modalOverlay}
-          onPress={() => {
-            setPickerVisible(false);
-            setCaseSearchQuery("");
-            setCaseSearchResults([]);
-          }}
-        >
+        <Pressable style={styles.modalOverlay} onPress={() => { setPickerVisible(false); setCaseSearchQuery(""); setCaseSearchResults([]); }}>
           <Pressable style={styles.modalSheet} onPress={(e) => e.stopPropagation()}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Pin a Case</Text>
-              <Pressable
-                onPress={() => {
-                  setPickerVisible(false);
-                  setCaseSearchQuery("");
-                  setCaseSearchResults([]);
-                }}
-                hitSlop={12}
-              >
+              <Pressable onPress={() => { setPickerVisible(false); setCaseSearchQuery(""); setCaseSearchResults([]); }} hitSlop={12}>
                 <Ionicons name="close" size={22} color={colors.text} />
               </Pressable>
             </View>
@@ -875,9 +876,7 @@ export default function ChatScreen() {
                 autoFocus
                 returnKeyType="search"
               />
-              {caseSearchLoading && (
-                <ActivityIndicator size="small" color={colors.tint} />
-              )}
+              {caseSearchLoading && <ActivityIndicator size="small" color={colors.tint} />}
             </View>
             <ScrollView style={styles.modalResults} keyboardShouldPersistTaps="handled">
               {caseSearchQuery.trim().length < 2 ? (
@@ -887,37 +886,23 @@ export default function ChatScreen() {
               ) : (
                 caseSearchResults.map((result) => {
                   const alreadyPinned = pinnedCases.some((c) => c.caseId === result.id);
-                  const patientName = [result.patientFirstName, result.patientLastName]
-                    .filter(Boolean)
-                    .join(" ");
+                  const patientName = [result.patientFirstName, result.patientLastName].filter(Boolean).join(" ");
                   return (
                     <Pressable
                       key={result.id}
                       onPress={() => pinCase(result)}
                       disabled={alreadyPinned}
-                      style={({ pressed }) => [
-                        styles.modalResultItem,
-                        alreadyPinned && styles.modalResultItemDisabled,
-                        pressed && !alreadyPinned && { opacity: 0.7 },
-                      ]}
+                      style={({ pressed }) => [styles.modalResultItem, alreadyPinned && styles.modalResultItemDisabled, pressed && !alreadyPinned && { opacity: 0.7 }]}
                     >
                       <View style={styles.modalResultInfo}>
                         <Text style={styles.modalResultCaseNum}>
                           {result.caseNumber}
-                          {alreadyPinned && (
-                            <Text style={styles.modalResultPinnedLabel}> (pinned)</Text>
-                          )}
+                          {alreadyPinned && <Text style={styles.modalResultPinnedLabel}> (pinned)</Text>}
                         </Text>
-                        {patientName ? (
-                          <Text style={styles.modalResultPatient}>{patientName}</Text>
-                        ) : null}
-                        {result.status ? (
-                          <Text style={styles.modalResultStatus}>{result.status}</Text>
-                        ) : null}
+                        {patientName ? <Text style={styles.modalResultPatient}>{patientName}</Text> : null}
+                        {result.status ? <Text style={styles.modalResultStatus}>{result.status}</Text> : null}
                       </View>
-                      {!alreadyPinned && (
-                        <Ionicons name="add-circle" size={22} color={colors.tint} />
-                      )}
+                      {!alreadyPinned && <Ionicons name="add-circle" size={22} color={colors.tint} />}
                     </Pressable>
                   );
                 })
@@ -930,391 +915,106 @@ export default function ChatScreen() {
   );
 }
 
-const makeStyles = (colors: ThemeColors) => StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 16,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.borderLight,
-    backgroundColor: colors.surface,
-  },
-  headerCenter: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    flex: 1,
-    marginHorizontal: 8,
-  },
-  headerActions: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  headerIcon: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: colors.tintLight,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  headerTitle: {
-    fontSize: 17,
-    fontFamily: "Inter_700Bold",
-    color: colors.text,
-  },
-  headerSubtitle: {
-    fontSize: 11,
-    fontFamily: "Inter_500Medium",
-    color: colors.tint,
-    marginTop: 1,
-  },
-  chipsRow: {
-    backgroundColor: colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.borderLight,
-    maxHeight: 44,
-  },
-  chipsContent: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    gap: 6,
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  chip: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: colors.tintLight,
-    borderRadius: 20,
-    paddingLeft: 10,
-    paddingRight: 6,
-    paddingVertical: 4,
-    borderWidth: 1,
-    borderColor: colors.tint + "33",
-    gap: 4,
-    maxWidth: 200,
-  },
-  chipText: {
-    fontSize: 12,
-    fontFamily: "Inter_500Medium",
-    color: colors.tint,
-    flexShrink: 1,
-  },
-  chipRemove: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    backgroundColor: colors.tint + "22",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  messagesList: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    flexGrow: 1,
-  },
-  messageBubbleWrap: {
-    flexDirection: "row",
-    marginBottom: 12,
-    alignItems: "flex-end",
-    gap: 8,
-  },
-  userWrap: {
-    justifyContent: "flex-end",
-  },
-  assistantWrap: {
-    justifyContent: "flex-start",
-  },
-  aiAvatar: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: colors.tintLight,
-    justifyContent: "center",
-    alignItems: "center",
-    marginBottom: 2,
-  },
-  messageBubble: {
-    maxWidth: "75%",
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 18,
-  },
-  userBubble: {
-    backgroundColor: colors.tint,
-    borderBottomRightRadius: 4,
-  },
-  assistantBubble: {
-    backgroundColor: colors.surfaceSecondary,
-    borderBottomLeftRadius: 4,
-  },
-  messageText: {
-    fontSize: 15,
-    fontFamily: "Inter_400Regular",
-    color: colors.text,
-    lineHeight: 21,
-  },
-  userText: {
-    color: colors.textInverse,
-  },
-  promptsContainer: {
-    paddingVertical: 12,
-    gap: 8,
-  },
-  promptsLabel: {
-    fontSize: 12,
-    fontFamily: "Inter_500Medium",
-    color: colors.textSecondary,
-    paddingHorizontal: 4,
-    marginBottom: 4,
-  },
-  promptsScroll: {
-    gap: 8,
-    paddingBottom: 4,
-  },
-  promptChip: {
-    backgroundColor: colors.tintLight,
-    borderRadius: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderWidth: 1,
-    borderColor: colors.tint + "33",
-  },
-  promptChipText: {
-    fontSize: 13,
-    fontFamily: "Inter_500Medium",
-    color: colors.tint,
-  },
-  typingIndicator: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 20,
-    paddingVertical: 8,
-  },
-  typingText: {
-    fontSize: 13,
-    fontFamily: "Inter_500Medium",
-    color: colors.textSecondary,
-  },
-  inputBar: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-    paddingHorizontal: 12,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: colors.borderLight,
-    backgroundColor: colors.surface,
-    gap: 8,
-  },
-  textInput: {
-    flex: 1,
-    minHeight: 40,
-    maxHeight: 100,
-    backgroundColor: colors.surfaceSecondary,
-    borderRadius: 20,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    fontSize: 15,
-    fontFamily: "Inter_400Regular",
-    color: colors.text,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  sendBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: colors.tint,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  sendBtnDisabled: {
-    backgroundColor: colors.surfaceSecondary,
-  },
-  // Sessions modal (full-screen page sheet)
-  sessionsModalContainer: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  sessionsModalHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 20,
-    paddingBottom: 4,
-  },
-  sessionsModalTitle: {
-    fontSize: 20,
-    fontFamily: "Inter_700Bold",
-    color: colors.text,
-  },
-  sessionsModalSubtitle: {
-    fontSize: 13,
-    fontFamily: "Inter_500Medium",
-    color: colors.tint,
-    paddingHorizontal: 20,
-    marginBottom: 12,
-    marginTop: 2,
-  },
-  sessionsList: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
-  sessionItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    gap: 12,
-  },
-  sessionItemActive: {
-    borderWidth: 1.5,
-    borderColor: colors.tint,
-  },
-  sessionPreview: {
-    fontSize: 14,
-    fontFamily: "Inter_500Medium",
-    color: colors.text,
-    lineHeight: 20,
-    marginBottom: 4,
-  },
-  sessionTime: {
-    fontSize: 12,
-    fontFamily: "Inter_400Regular",
-    color: colors.textSecondary,
-  },
-  sessionSeparator: {
-    height: 8,
-  },
-  emptyText: {
-    fontSize: 14,
-    fontFamily: "Inter_400Regular",
-    color: colors.textSecondary,
-    textAlign: "center",
-    marginTop: 40,
-  },
-  newChatFooter: {
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: colors.borderLight,
-  },
-  newChatBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    backgroundColor: colors.tint,
-    borderRadius: 12,
-    paddingVertical: 14,
-  },
-  newChatBtnText: {
-    fontSize: 15,
-    fontFamily: "Inter_600SemiBold",
-    color: colors.textInverse,
-  },
-  // Case picker modal (bottom sheet)
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.45)",
-    justifyContent: "flex-end",
-  },
-  modalSheet: {
-    backgroundColor: colors.surface,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    maxHeight: "75%",
-    paddingBottom: 24,
-  },
-  modalHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: 12,
-  },
-  modalTitle: {
-    fontSize: 17,
-    fontFamily: "Inter_700Bold",
-    color: colors.text,
-  },
-  modalSearchBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginHorizontal: 16,
-    marginBottom: 8,
-    backgroundColor: colors.surfaceSecondary,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  modalSearchInput: {
-    flex: 1,
-    fontSize: 15,
-    fontFamily: "Inter_400Regular",
-    color: colors.text,
-  },
-  modalResults: {
-    maxHeight: 360,
-  },
-  modalHint: {
-    fontSize: 14,
-    fontFamily: "Inter_400Regular",
-    color: colors.textSecondary,
-    textAlign: "center",
-    paddingVertical: 24,
-    paddingHorizontal: 20,
-  },
-  modalResultItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.borderLight,
-  },
-  modalResultItemDisabled: {
-    opacity: 0.5,
-  },
-  modalResultInfo: {
-    flex: 1,
-    gap: 2,
-  },
-  modalResultCaseNum: {
-    fontSize: 15,
-    fontFamily: "Inter_600SemiBold",
-    color: colors.text,
-  },
-  modalResultPinnedLabel: {
-    fontSize: 13,
-    fontFamily: "Inter_400Regular",
-    color: colors.textSecondary,
-  },
-  modalResultPatient: {
-    fontSize: 13,
-    fontFamily: "Inter_400Regular",
-    color: colors.textSecondary,
-  },
-  modalResultStatus: {
-    fontSize: 12,
-    fontFamily: "Inter_400Regular",
-    color: colors.textTertiary,
-    textTransform: "capitalize",
-  },
-});
+// ─── Styles ──────────────────────────────────────────────────────────────────
+
+const makeStyles = (colors: ThemeColors) =>
+  StyleSheet.create({
+    container: { flex: 1, backgroundColor: colors.background },
+    header: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingHorizontal: 16,
+      paddingBottom: 12,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.borderLight,
+      backgroundColor: colors.surface,
+    },
+    headerCenter: { flexDirection: "row", alignItems: "center", gap: 8, flex: 1, marginHorizontal: 8 },
+    headerActions: { flexDirection: "row", alignItems: "center", gap: 10 },
+    headerIcon: { width: 28, height: 28, borderRadius: 14, backgroundColor: colors.tintLight, justifyContent: "center", alignItems: "center" },
+    headerTitle: { fontSize: 17, fontFamily: "Inter_700Bold", color: colors.text },
+    headerSubtitle: { fontSize: 11, fontFamily: "Inter_500Medium", color: colors.tint, marginTop: 1 },
+    chipsRow: { backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.borderLight, maxHeight: 44 },
+    chipsContent: { paddingHorizontal: 12, paddingVertical: 8, gap: 6, flexDirection: "row", alignItems: "center" },
+    chip: { flexDirection: "row", alignItems: "center", backgroundColor: colors.tintLight, borderRadius: 20, paddingLeft: 10, paddingRight: 6, paddingVertical: 4, gap: 4, maxWidth: 200 },
+    chipText: { fontSize: 12, fontFamily: "Inter_500Medium", color: colors.tint, flexShrink: 1 },
+    chipRemove: { width: 16, height: 16, borderRadius: 8, backgroundColor: colors.tint + "22", justifyContent: "center", alignItems: "center" },
+    messagesList: { paddingHorizontal: 16, paddingVertical: 12, flexGrow: 1 },
+    messageBubbleWrap: { flexDirection: "row", marginBottom: 12, alignItems: "flex-end", gap: 8 },
+    userWrap: { justifyContent: "flex-end" },
+    assistantWrap: { justifyContent: "flex-start" },
+    aiAvatar: { width: 28, height: 28, borderRadius: 14, backgroundColor: colors.tintLight, justifyContent: "center", alignItems: "center", marginBottom: 2 },
+    messageBubble: { maxWidth: "75%", paddingHorizontal: 14, paddingVertical: 10, borderRadius: 18 },
+    userBubble: { backgroundColor: colors.tint, borderBottomRightRadius: 4 },
+    assistantBubble: { backgroundColor: colors.surfaceSecondary, borderBottomLeftRadius: 4 },
+    messageText: { fontSize: 15, fontFamily: "Inter_400Regular", color: colors.text, lineHeight: 21 },
+    userText: { color: colors.textInverse },
+    // Action cards
+    actionCard: {
+      maxWidth: "82%",
+      borderRadius: 16,
+      borderWidth: 1,
+      borderColor: colors.warning + "66",
+      backgroundColor: colors.warning + "11",
+      padding: 14,
+    },
+    actionCardHeader: { flexDirection: "row", alignItems: "center", gap: 5, marginBottom: 6 },
+    actionCardLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold", color: colors.warning },
+    actionCardSummary: { fontSize: 14, fontFamily: "Inter_400Regular", color: colors.text, lineHeight: 20, marginBottom: 12 },
+    actionButtonRow: { flexDirection: "row", gap: 8 },
+    actionConfirmBtn: { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: colors.tint, borderRadius: 8, paddingHorizontal: 14, paddingVertical: 8 },
+    actionConfirmBtnText: { fontSize: 13, fontFamily: "Inter_600SemiBold", color: colors.textInverse },
+    actionCancelBtn: { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: colors.surfaceSecondary, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: colors.border },
+    actionCancelBtnText: { fontSize: 13, fontFamily: "Inter_500Medium", color: colors.text },
+    actionConfirmingRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+    actionConfirmingText: { fontSize: 13, fontFamily: "Inter_500Medium", color: colors.warning },
+    actionDoneCard: { maxWidth: "82%", borderRadius: 16, borderWidth: 1, borderColor: colors.success + "55", backgroundColor: colors.success + "11", padding: 14 },
+    actionDoneTitle: { fontSize: 12, fontFamily: "Inter_600SemiBold", color: colors.success, marginBottom: 4 },
+    actionDoneText: { fontSize: 14, fontFamily: "Inter_400Regular", color: colors.text, lineHeight: 20 },
+    actionErrorCard: { maxWidth: "82%", borderRadius: 16, borderWidth: 1, borderColor: colors.error + "55", backgroundColor: colors.error + "11", padding: 14 },
+    actionErrorTitle: { fontSize: 12, fontFamily: "Inter_600SemiBold", color: colors.error, marginBottom: 4 },
+    actionErrorText: { fontSize: 14, fontFamily: "Inter_400Regular", color: colors.text, lineHeight: 20 },
+    actionCancelledCard: { maxWidth: "82%", borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary, paddingHorizontal: 14, paddingVertical: 10 },
+    actionCancelledText: { fontSize: 13, fontFamily: "Inter_400Regular", color: colors.textSecondary },
+    promptsContainer: { paddingVertical: 12, gap: 8 },
+    promptsLabel: { fontSize: 12, fontFamily: "Inter_500Medium", color: colors.textSecondary, paddingHorizontal: 4, marginBottom: 4 },
+    promptsScroll: { gap: 8, paddingBottom: 4 },
+    promptChip: { backgroundColor: colors.tintLight, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 8, borderWidth: 1, borderColor: colors.tint + "33" },
+    promptChipText: { fontSize: 13, fontFamily: "Inter_500Medium", color: colors.tint },
+    typingIndicator: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 20, paddingVertical: 8 },
+    typingText: { fontSize: 13, fontFamily: "Inter_500Medium", color: colors.textSecondary },
+    inputBar: { flexDirection: "row", alignItems: "flex-end", paddingHorizontal: 12, paddingTop: 8, borderTopWidth: 1, borderTopColor: colors.borderLight, backgroundColor: colors.surface, gap: 8 },
+    textInput: { flex: 1, minHeight: 40, maxHeight: 100, backgroundColor: colors.surfaceSecondary, borderRadius: 20, paddingHorizontal: 16, paddingVertical: 10, fontSize: 15, fontFamily: "Inter_400Regular", color: colors.text, borderWidth: 1, borderColor: colors.border },
+    sendBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.tint, justifyContent: "center", alignItems: "center" },
+    sendBtnDisabled: { backgroundColor: colors.surfaceSecondary },
+    sessionsModalContainer: { flex: 1, backgroundColor: colors.background },
+    sessionsModalHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingBottom: 4 },
+    sessionsModalTitle: { fontSize: 20, fontFamily: "Inter_700Bold", color: colors.text },
+    sessionsModalSubtitle: { fontSize: 13, fontFamily: "Inter_500Medium", color: colors.tint, paddingHorizontal: 20, marginBottom: 12, marginTop: 2 },
+    sessionsList: { paddingHorizontal: 16, paddingVertical: 12 },
+    sessionItem: { flexDirection: "row", alignItems: "center", paddingVertical: 14, paddingHorizontal: 16, backgroundColor: colors.surface, borderRadius: 12, gap: 12 },
+    sessionItemActive: { borderWidth: 1.5, borderColor: colors.tint },
+    sessionPreview: { fontSize: 14, fontFamily: "Inter_500Medium", color: colors.text, lineHeight: 20, marginBottom: 4 },
+    sessionTime: { fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textSecondary },
+    sessionSeparator: { height: 8 },
+    emptyText: { fontSize: 14, fontFamily: "Inter_400Regular", color: colors.textSecondary, textAlign: "center", marginTop: 40 },
+    newChatFooter: { paddingHorizontal: 16, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.borderLight },
+    newChatBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: colors.tint, borderRadius: 12, paddingVertical: 14 },
+    newChatBtnText: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: colors.textInverse },
+    modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.45)", justifyContent: "flex-end" },
+    modalSheet: { backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: "75%", paddingBottom: 24 },
+    modalHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingTop: 20, paddingBottom: 12 },
+    modalTitle: { fontSize: 17, fontFamily: "Inter_700Bold", color: colors.text },
+    modalSearchBar: { flexDirection: "row", alignItems: "center", gap: 8, marginHorizontal: 16, marginBottom: 8, backgroundColor: colors.surfaceSecondary, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: colors.border },
+    modalSearchInput: { flex: 1, fontSize: 15, fontFamily: "Inter_400Regular", color: colors.text },
+    modalResults: { maxHeight: 360 },
+    modalHint: { fontSize: 14, fontFamily: "Inter_400Regular", color: colors.textSecondary, textAlign: "center", paddingVertical: 24, paddingHorizontal: 20 },
+    modalResultItem: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.borderLight },
+    modalResultItemDisabled: { opacity: 0.5 },
+    modalResultInfo: { flex: 1, gap: 2 },
+    modalResultCaseNum: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: colors.text },
+    modalResultPinnedLabel: { fontSize: 13, fontFamily: "Inter_400Regular", color: colors.textSecondary },
+    modalResultPatient: { fontSize: 13, fontFamily: "Inter_400Regular", color: colors.textSecondary },
+    modalResultStatus: { fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textTertiary, textTransform: "capitalize" },
+  });
