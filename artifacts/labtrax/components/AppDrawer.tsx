@@ -52,9 +52,9 @@ function isGroup(e: NavEntry): e is NavGroupDef {
 }
 
 const WORKSPACE_NAV: NavEntry[] = [
-  { key: "dashboard", label: "Dashboard",     icon: "home-outline",           path: "/(tabs)" },
-  { key: "cases",     label: "Cases",          icon: "file-tray-full-outline", path: "/(tabs)/cases" },
-  { key: "accounts",  label: "Accounts",       icon: "business-outline",       path: "/customers" },
+  { key: "dashboard", label: "Dashboard",      icon: "home-outline",           path: "/(tabs)" },
+  { key: "cases",     label: "Cases",           icon: "file-tray-full-outline", path: "/(tabs)/cases" },
+  { key: "accounts",  label: "Accounts",        icon: "business-outline",       path: "/customers" },
   {
     key: "financial",
     label: "Financial",
@@ -67,8 +67,10 @@ const WORKSPACE_NAV: NavEntry[] = [
       { key: "recv-payments",     label: "Receive Payments", icon: "cash-outline",          path: "/receive-payments",  labOnly: true },
     ],
   },
-  { key: "scan",    label: "Scan / New Case",   icon: "scan-outline",           path: "/(tabs)/scan",    labOnly: true },
-  { key: "pricing", label: "Pricing",           icon: "pricetag-outline",       path: "/pricing",        labOnly: true, adminOnly: true },
+  { key: "scan",     label: "Scan / New Case",  icon: "scan-outline",           path: "/(tabs)/scan",    labOnly: true },
+  { key: "pricing",  label: "Pricing",          icon: "pricetag-outline",       path: "/pricing",        labOnly: true, adminOnly: true },
+  { key: "reports",  label: "Reports",          icon: "stats-chart-outline",    path: "/reports",        labOnly: true },
+  { key: "lists",    label: "Lists",            icon: "list-outline",           path: "/lists",          labOnly: true },
 ];
 
 const SYSTEM_NAV: NavItemDef[] = [

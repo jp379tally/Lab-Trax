@@ -15,9 +15,8 @@ import { useTheme } from "@/lib/theme-context";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { AppHeader } from "@/components/ui/AppHeader";
 import { FilterBar } from "@/components/ui/FilterBar";
-import { SectionHeader } from "@/components/ui/SectionHeader";
 import { StatusBadge } from "@/components/ui/StatusBadge";
-import { getAccessToken, getApiUrl, resilientFetch } from "@/lib/query-client";
+import { resilientFetch } from "@/lib/query-client";
 
 type InvoiceStatus = "all" | "open" | "paid" | "overdue" | "draft" | "void";
 
@@ -30,7 +29,7 @@ interface ApiInvoice {
   issuedAt?: string | null;
   dueAt?: string | null;
   caseId?: string | null;
-  providerOrganization?: { name?: string | null } | null;
+  providerOrganization?: { name?: string | null; displayName?: string | null } | null;
   providerOrganizationId?: string | null;
 }
 
@@ -59,6 +58,42 @@ function isOverdue(inv: ApiInvoice): boolean {
   return new Date(inv.dueAt).getTime() < Date.now();
 }
 
+function AIInsightBanner({ invoices }: { invoices: ApiInvoice[] }) {
+  const { colors } = useTheme();
+  const [insight, setInsight] = useState<string | null>(null);
+  const [dismissed, setDismissed] = useState(false);
+
+  useEffect(() => {
+    if (!invoices.length) return;
+    const overdue = invoices.filter((i) => isOverdue(i));
+    const overdueTotal = overdue.reduce((s, i) => s + (Number(i.balanceDue) || 0), 0);
+    if (overdue.length === 0) return;
+
+    const practiceGroups: Record<string, number> = {};
+    for (const inv of overdue) {
+      const name = inv.providerOrganization?.displayName ?? inv.providerOrganization?.name ?? "Unknown";
+      practiceGroups[name] = (practiceGroups[name] || 0) + (Number(inv.balanceDue) || 0);
+    }
+    const top = Object.entries(practiceGroups).sort((a, b) => b[1] - a[1])[0];
+    const msg = top
+      ? `${overdue.length} overdue invoice${overdue.length !== 1 ? "s" : ""} totaling ${overdueTotal.toLocaleString("en-US", { style: "currency", currency: "USD" })}. Largest balance: ${top[0]} (${top[1].toLocaleString("en-US", { style: "currency", currency: "USD" })}).`
+      : `${overdue.length} overdue invoice${overdue.length !== 1 ? "s" : ""} totaling ${overdueTotal.toLocaleString("en-US", { style: "currency", currency: "USD" })}.`;
+    setInsight(msg);
+  }, [invoices]);
+
+  if (dismissed || !insight) return null;
+  return (
+    <View style={{ flexDirection: "row", alignItems: "flex-start", backgroundColor: "#EF444415", borderWidth: 1, borderColor: "#EF444430", borderRadius: 10, marginHorizontal: 16, marginVertical: 8, padding: 12, gap: 8 }}>
+      <Ionicons name="warning-outline" size={16} color="#EF4444" style={{ marginTop: 1 }} />
+      <View style={{ flex: 1 }}>
+        <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#EF4444", marginBottom: 2 }}>AI Financial Insight</Text>
+        <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "#374151", lineHeight: 18 }}>{insight}</Text>
+      </View>
+      <Pressable onPress={() => setDismissed(true)} hitSlop={8}><Ionicons name="close" size={16} color="#9CA3AF" /></Pressable>
+    </View>
+  );
+}
+
 export default function InvoicesScreen() {
   const { colors, isDark } = useTheme();
   const [invoices, setInvoices] = useState<ApiInvoice[]>([]);
@@ -78,7 +113,6 @@ export default function InvoicesScreen() {
         : [];
       setInvoices(rows);
     } catch {
-      // swallow
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -112,7 +146,8 @@ export default function InvoicesScreen() {
       const q = search.toLowerCase();
       rows = rows.filter((inv) =>
         (inv.invoiceNumber || "").toLowerCase().includes(q) ||
-        (inv.providerOrganization?.name || "").toLowerCase().includes(q)
+        (inv.providerOrganization?.name || "").toLowerCase().includes(q) ||
+        (inv.providerOrganization?.displayName || "").toLowerCase().includes(q)
       );
     }
     return rows.sort((a, b) => (b.issuedAt || "").localeCompare(a.issuedAt || ""));
@@ -126,6 +161,10 @@ export default function InvoicesScreen() {
     { id: "draft",   label: "Draft"   },
     { id: "void",    label: "Void"    },
   ];
+
+  function navigateToInvoice(inv: ApiInvoice) {
+    router.push(`/invoice/${inv.id}` as any);
+  }
 
   return (
     <View style={[styles.container, { backgroundColor: colors.backgroundSolid }]}>
@@ -154,6 +193,8 @@ export default function InvoicesScreen() {
         )}
       </View>
 
+      {!loading && <AIInsightBanner invoices={enriched} />}
+
       {loading ? (
         <View style={styles.center}>
           <ActivityIndicator size="large" color={colors.tint} />
@@ -181,18 +222,14 @@ export default function InvoicesScreen() {
           renderItem={({ item: inv }) => {
             const balance = Number(inv.balanceDue ?? 0);
             const isOpen = inv.effectiveStatus === "open" || inv.effectiveStatus === "overdue";
-            const practiceName = inv.providerOrganization?.name || "—";
+            const practiceName = inv.providerOrganization?.displayName ?? inv.providerOrganization?.name ?? "—";
             return (
               <Pressable
                 style={({ pressed }) => [
                   styles.row,
                   { borderBottomColor: colors.border, backgroundColor: pressed ? (isDark ? colors.surfaceSecondary : colors.canvas) : colors.surface },
                 ]}
-                onPress={() => {
-                  if (inv.caseId) {
-                    router.push(`/case/${inv.caseId}` as any);
-                  }
-                }}
+                onPress={() => navigateToInvoice(inv)}
               >
                 <View style={{ flex: 1, minWidth: 0 }}>
                   <Text style={[styles.invNum, { color: colors.text }]}>{inv.invoiceNumber}</Text>
@@ -226,7 +263,6 @@ export default function InvoicesScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   center: { flex: 1, alignItems: "center", justifyContent: "center", padding: 40, gap: 12 },
-  empty: { fontSize: 15, fontFamily: "Inter_400Regular", textAlign: "center" },
   searchRow: {
     flexDirection: "row",
     alignItems: "center",

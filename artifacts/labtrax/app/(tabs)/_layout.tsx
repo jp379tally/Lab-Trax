@@ -196,6 +196,7 @@ function ClassicTabLayout() {
           onDismiss={accessLevel === "read_only" ? handleDismiss : undefined}
         />
       )}
+
     </View>
   );
 }

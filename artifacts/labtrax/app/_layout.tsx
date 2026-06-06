@@ -26,6 +26,7 @@ import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { ThemeProvider } from "@/lib/theme-context";
 import { DrawerProvider } from "@/lib/drawer-context";
 import { AppDrawer } from "@/components/AppDrawer";
+import { GlobalAIFAB } from "@/components/GlobalAIFAB";
 import { RevenueCatProvider } from "@/lib/revenuecat";
 import LoginScreen from "@/components/LoginScreen";
 import LockScreen from "@/components/LockScreen";
@@ -117,6 +118,18 @@ function RootLayoutNav() {
         />
         <Stack.Screen
           name="pricing"
+          options={{ headerShown: false, presentation: "card" }}
+        />
+        <Stack.Screen
+          name="reports"
+          options={{ headerShown: false, presentation: "card" }}
+        />
+        <Stack.Screen
+          name="lists"
+          options={{ headerShown: false, presentation: "card" }}
+        />
+        <Stack.Screen
+          name="invoice/[id]"
           options={{ headerShown: false, presentation: "card" }}
         />
         <Stack.Screen
@@ -212,6 +225,7 @@ function AuthGate() {
                   <RootLayoutNav />
                 </MessengerProvider>
                 <AppDrawer />
+                <GlobalAIFAB />
               </View>
             </InactivityWrapper>
           </AppProvider>
