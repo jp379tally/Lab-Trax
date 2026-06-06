@@ -417,6 +417,25 @@ export async function uploadCaseMedia(
   fileName: string,
   mimeType: string,
 ): Promise<MediaUploadResult> {
+  // Mirror the same null-token guard as resilientFetch: hydrate from secure
+  // storage and refresh BEFORE sending the XHR. Without this, a null
+  // _accessToken causes the XHR to go out with no Authorization header. React
+  // Native's networking stack may still attach a stale auth cookie, which the
+  // server's CSRF guard rejects with a 403 — a PERMANENT "rejected" failure
+  // that wedges the photo in the queue forever instead of retrying.
+  if (Platform.OS !== "web" && !_accessToken) {
+    await loadTokens();
+    if (!_accessToken && _refreshToken) {
+      await refreshAccessToken();
+    }
+    if (!_accessToken) {
+      // No bearer token available. Throw so the caller (offline-queue drain)
+      // treats this as a transient network failure and retries after the user
+      // re-authenticates, rather than permanently wedging as "rejected".
+      throw new Error("Not authenticated: no bearer token available for upload.");
+    }
+  }
+
   const fullUrl = new URL(path, getApiUrl()).toString();
   const run = async (token: string | null) => {
     // Rebuild the body on each attempt — a consumed Blob cannot be re-sent.

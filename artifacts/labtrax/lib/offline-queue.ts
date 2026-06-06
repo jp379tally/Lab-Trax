@@ -50,8 +50,8 @@ function isPermanentCategory(category: SyncFailureCategory): boolean {
 const CATEGORY_MESSAGES: Record<SyncFailureCategory, string> = {
   network: "Lost connection — will keep trying",
   server: "The server had a problem — will keep trying",
-  rejected: "The lab rejected this change",
-  validation: "This change was rejected as invalid",
+  rejected: "Upload failed — case may no longer exist",
+  validation: "Invalid data — tap Discard to remove",
 };
 
 /** Plain-language reason for a failure category, shown in the sync banner. */

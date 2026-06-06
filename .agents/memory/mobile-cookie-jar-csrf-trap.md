@@ -37,6 +37,16 @@ without forcing a re-login.
 wrapper, preserve "bearer clients never receive cookies" and "never send a native
 authed request without first ensuring a bearer is attached."
 
+**The guard must be in EVERY native request path, not just resilientFetch.**
+`uploadCaseMedia` uses `XMLHttpRequest` directly (not `resilientFetch`) to avoid
+Expo's fetch FormData limitation. It therefore also needed its own null-token
+hydration guard: `if (!_accessToken) { loadTokens(); refreshAccessToken(); throw
+if still null }`. Without this guard the same CSRF 403 trap applies — the XHR
+goes out with no bearer, RN attaches a cookie, server CSRF blocks it permanently.
+The thrown error propagates up to `rawUploadPhotoToCase`'s try/catch as `false`
+(transient failure), so the upload retries after re-auth rather than wedging as
+"rejected". Any future XHR-based upload path needs the same pattern.
+
 **Trap: the no-bearer guard must exempt PUBLIC pre-auth endpoints.** The native
 guard that throws `"Not authenticated: no bearer token available."` when no
 access token is present will also block the very endpoints used to *obtain* a
