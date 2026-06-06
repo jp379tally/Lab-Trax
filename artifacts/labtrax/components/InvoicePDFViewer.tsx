@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   StyleSheet,
   View,
@@ -20,6 +20,7 @@ import * as Sharing from "expo-sharing";
 import * as FileSystem from "expo-file-system";
 import { useEmailInvoice, useSmsInvoice } from "@workspace/api-client-react";
 import type { Invoice, InvoiceLineItem } from "@/lib/data";
+import { resilientFetch } from "@/lib/query-client";
 import { formatInvNum } from "@/lib/data";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 
@@ -81,6 +82,7 @@ interface InvoicePDFViewerProps {
   practiceEmail?: string;
   practicePhone?: string;
   serverId?: string;
+  labOrgId?: string;
 }
 
 function formatDate(ts: number) {
@@ -96,7 +98,7 @@ function formatCurrency(amount: number) {
   return "$" + amount.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
-export default function InvoicePDFViewer({ visible, onClose, invoice, editable = false, onSave, doctorPricing, companyLogo, labName, labAddress, labPhone, invoiceTemplate, isAdmin = false, practiceEmail = "", practicePhone = "", serverId }: InvoicePDFViewerProps) {
+export default function InvoicePDFViewer({ visible, onClose, invoice, editable = false, onSave, doctorPricing, companyLogo, labName, labAddress, labPhone, invoiceTemplate, isAdmin = false, practiceEmail = "", practicePhone = "", serverId, labOrgId }: InvoicePDFViewerProps) {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
   const s = useMemo(() => makeStyles(colors), [colors]);
@@ -118,6 +120,36 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
   const [discountIdx, setDiscountIdx] = useState<number | null>(null);
   const [discountType, setDiscountType] = useState<"percent" | "flat">("percent");
   const [discountValue, setDiscountValue] = useState("");
+
+  const [apiBillableItems, setApiBillableItems] = useState<{ name: string; price: number }[]>([]);
+
+  const fetchBillableItems = useCallback(async (orgId: string) => {
+    try {
+      const res = await resilientFetch(
+        `/api/finance/vendors?organizationId=${encodeURIComponent(orgId)}&vendorType=item`,
+      );
+      if (!res.ok) return;
+      const data: { id: string; name: string; unitPrice: string | null }[] = await res.json() as { id: string; name: string; unitPrice: string | null }[];
+      if (Array.isArray(data)) {
+        setApiBillableItems(
+          data
+            .filter((v) => v.unitPrice !== null && Number(v.unitPrice) > 0)
+            .map((v) => ({ name: v.name, price: Number(v.unitPrice) })),
+        );
+      }
+    } catch {
+      // non-fatal — leave list empty
+    }
+  }, []);
+
+  useEffect(() => {
+    if (visible && labOrgId) {
+      void fetchBillableItems(labOrgId);
+    }
+    if (!visible) {
+      setApiBillableItems([]);
+    }
+  }, [visible, labOrgId, fetchBillableItems]);
   const [hasChanges, setHasChanges] = useState(false);
   const [editBillTo, setEditBillTo] = useState("");
   const [editNotes, setEditNotes] = useState("");
@@ -158,6 +190,20 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
       .map(item => ({ key: item.key, label: item.label, price: doctorPricing[item.key] }));
   }, [doctorPricing]);
 
+  const allDropdownItems = useMemo<{ label: string; price: number }[]>(() => {
+    const seen = new Set<string>();
+    const result: { label: string; price: number }[] = [];
+    for (const pi of pricedItems) {
+      const key = pi.label.trim().toLowerCase();
+      if (!seen.has(key)) { seen.add(key); result.push({ label: pi.label, price: pi.price }); }
+    }
+    for (const bi of apiBillableItems) {
+      const key = bi.name.trim().toLowerCase();
+      if (!seen.has(key)) { seen.add(key); result.push({ label: bi.name, price: bi.price }); }
+    }
+    return result;
+  }, [pricedItems, apiBillableItems]);
+
   if (!invoice) return null;
 
   const enabledSourceIds = new Set(
@@ -178,7 +224,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
 
   const teethDisplay = invoice.teeth || "";
 
-  function handleSelectPricedItem(item: DoctorPricingItem) {
+  function handleSelectDropdownItem(item: { label: string; price: number }) {
     setNewItemName(item.label);
     setNewItemRate(item.price.toString());
     const desc = teethDisplay ? `${item.label} - tooth ${teethDisplay}` : item.label;
@@ -189,9 +235,9 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
   function handleItemNameChange(text: string) {
     setNewItemName(text);
     setShowItemDropdown(false);
-    if (!text.trim() || pricedItems.length === 0) return;
+    if (!text.trim() || allDropdownItems.length === 0) return;
     const lower = text.trim().toLowerCase();
-    const match = pricedItems.find(
+    const match = allDropdownItems.find(
       (item) => item.label.toLowerCase().startsWith(lower) || item.label.toLowerCase().includes(lower)
     );
     if (match) {
@@ -967,7 +1013,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                 <View>
                   <Pressable
                     style={s.dropdownTrigger}
-                    onPress={() => pricedItems.length > 0 ? setShowItemDropdown(!showItemDropdown) : undefined}
+                    onPress={() => allDropdownItems.length > 0 ? setShowItemDropdown(!showItemDropdown) : undefined}
                   >
                     <TextInput
                       style={[s.fieldInput, { flex: 1, marginBottom: 0 }]}
@@ -976,7 +1022,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                       placeholder="e.g. Zirconia Crown"
                       placeholderTextColor={colors.textTertiary}
                     />
-                    {pricedItems.length > 0 && (
+                    {allDropdownItems.length > 0 && (
                       <Pressable
                         onPress={() => setShowItemDropdown(!showItemDropdown)}
                         style={s.dropdownArrow}
@@ -985,14 +1031,14 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                       </Pressable>
                     )}
                   </Pressable>
-                  {showItemDropdown && pricedItems.length > 0 && (
+                  {showItemDropdown && allDropdownItems.length > 0 && (
                     <View style={s.dropdownList}>
                       <ScrollView style={{ maxHeight: 200 }} nestedScrollEnabled keyboardShouldPersistTaps="handled">
-                        {pricedItems.map((item) => (
+                        {allDropdownItems.map((item) => (
                           <Pressable
-                            key={item.key}
+                            key={item.label}
                             style={({ pressed }) => [s.dropdownItem, pressed && { backgroundColor: colors.surfaceAlt }]}
-                            onPress={() => handleSelectPricedItem(item)}
+                            onPress={() => handleSelectDropdownItem(item)}
                           >
                             <Text style={s.dropdownItemLabel}>{item.label}</Text>
                             <Text style={s.dropdownItemPrice}>{formatCurrency(item.price)}</Text>

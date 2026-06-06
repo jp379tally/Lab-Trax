@@ -4579,6 +4579,7 @@ export default function CaseDetailScreen() {
         serverId={caseInvoice?.serverId}
         practiceEmail={caseInvoice?.practiceEmail ?? ""}
         practicePhone={caseInvoice?.practicePhone ?? ""}
+        labOrgId={allLabOrganizationIds?.[0]}
         doctorPricing={(() => {
           const stripDr = (n: string) => n.trim().toLowerCase().replace(/^dr\.?\s*/i, "");
           const drName = stripDr(caseItem.doctorName || "");
