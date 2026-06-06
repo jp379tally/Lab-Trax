@@ -561,6 +561,13 @@ export default function CaseDetailScreen() {
             if (data?.case) setFullCaseData(data.case);
           })
           .catch(() => {});
+
+        resilientFetch(`/api/cases/${encodeURIComponent(id as string)}/remake-chain`)
+          .then((res) => (res.ok ? res.json() : null))
+          .then((data) => {
+            if (data && Array.isArray(data.chain)) setRemakeChain(data.chain);
+          })
+          .catch(() => {});
       }
 
       function startPolling() {
