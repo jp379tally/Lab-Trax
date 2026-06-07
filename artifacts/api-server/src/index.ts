@@ -18,6 +18,29 @@ if (!rawPort) {
 
 const port = Number(rawPort);
 
+// ── Production security pre-flight ──────────────────────────────────────────
+// PLATFORM_ADMIN_PIN must be explicitly configured before the server is allowed
+// to start in production. Falling back to "0000" would let anyone bypass the
+// admin PIN gate on a fresh deployment.
+if (process.env.NODE_ENV === "production") {
+  const adminPin = process.env.PLATFORM_ADMIN_PIN;
+  if (!adminPin) {
+    process.stderr.write(
+      "[startup] FATAL: PLATFORM_ADMIN_PIN is not set.\n" +
+      "[startup] The server refuses to start in production without an admin PIN.\n" +
+      "[startup] Add PLATFORM_ADMIN_PIN to your Replit environment secrets and restart.\n",
+    );
+    process.exit(1);
+  }
+  if (adminPin === "0000") {
+    process.stderr.write(
+      "[startup] FATAL: PLATFORM_ADMIN_PIN is set to the insecure default '0000'.\n" +
+      "[startup] Choose a unique PIN and update PLATFORM_ADMIN_PIN in your Replit secrets.\n",
+    );
+    process.exit(1);
+  }
+}
+
 if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }

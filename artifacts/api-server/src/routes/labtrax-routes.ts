@@ -195,13 +195,21 @@ async function loadAdminPinCache(): Promise<void> {
 function getEffectiveAdminPin(): string {
   if (_dbAdminPin) return _dbAdminPin;
   const envPin = process.env.PLATFORM_ADMIN_PIN;
-  if (envPin) return envPin;
+  if (envPin && envPin !== "0000") return envPin;
   if (process.env.NODE_ENV === "production") {
-    console.warn(
-      "[SECURITY] Admin PIN is not configured. Using insecure default '0000'. " +
-      "Set PLATFORM_ADMIN_PIN or configure a PIN in Settings → Admin PIN."
+    // Belt-and-suspenders: index.ts should have already blocked startup
+    // if PLATFORM_ADMIN_PIN was missing or set to "0000". If this line is
+    // somehow reached, fail loudly rather than silently accept "0000".
+    throw new Error(
+      "PLATFORM_ADMIN_PIN is not configured for production. " +
+      "Set it in Replit environment secrets and redeploy.",
     );
   }
+  // Development only: allow "0000" with a clear warning.
+  console.warn(
+    "[dev] PLATFORM_ADMIN_PIN is not set. Falling back to '0000' in development. " +
+    "You must set PLATFORM_ADMIN_PIN in Replit secrets before publishing.",
+  );
   return "0000";
 }
 
