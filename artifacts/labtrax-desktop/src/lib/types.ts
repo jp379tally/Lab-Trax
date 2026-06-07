@@ -25,6 +25,8 @@ export interface LabCase {
   patientFirstName: string;
   patientLastName: string;
   externalPatientId?: string | null;
+  /** Initials-only patient identifier, populated for legacy/mobile-originated cases where full name is unavailable. */
+  patientInitials?: string | null;
   doctorName: string;
   status: CaseStatus;
   priority: CasePriority;

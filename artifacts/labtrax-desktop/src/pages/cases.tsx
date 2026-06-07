@@ -3292,10 +3292,22 @@ export function CaseDrawer({
       <aside className="w-full max-w-[700px] bg-card border-l border-border h-full flex flex-col shadow-2xl">
         {/* Header */}
         <header className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
-          <div>
-            <div className="text-xs text-muted-foreground">Case</div>
-            <div className="flex items-center gap-2 mt-0.5">
-              <span className="font-mono text-sm font-semibold">
+          <div className="min-w-0">
+            {(() => {
+              const firstName = data?.patientFirstName ?? labCase.patientFirstName;
+              const lastName = data?.patientLastName ?? labCase.patientLastName;
+              const patientName =
+                [firstName, lastName].filter(Boolean).join(" ") ||
+                (data?.patientInitials ?? labCase.patientInitials ?? "");
+              return patientName ? (
+                <div className="text-xl font-bold leading-tight truncate max-w-[420px]">
+                  {patientName}
+                </div>
+              ) : null;
+            })()}
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-xs text-muted-foreground">Case</span>
+              <span className="font-mono text-xs font-semibold text-muted-foreground">
                 {labCase.caseNumber}
               </span>
               <StatusBadge status={currentStatus} />
@@ -3304,31 +3316,7 @@ export function CaseDrawer({
                   Rush
                 </span>
               )}
-              {(() => {
-                const firstName = data?.patientFirstName ?? labCase.patientFirstName;
-                const lastName = data?.patientLastName ?? labCase.patientLastName;
-                const name = [firstName, lastName].filter(Boolean).join(" ");
-                return name ? (
-                  <>
-                    <span className="text-muted-foreground/40 text-xs select-none">·</span>
-                    <span className="text-sm text-muted-foreground">{name}</span>
-                  </>
-                ) : null;
-              })()}
             </div>
-            {(() => {
-              const patientName = [
-                data?.patientFirstName ?? labCase.patientFirstName,
-                data?.patientLastName ?? labCase.patientLastName,
-              ]
-                .filter(Boolean)
-                .join(" ");
-              return patientName ? (
-                <div className="text-xs text-muted-foreground mt-0.5 truncate max-w-[240px]">
-                  {patientName}
-                </div>
-              ) : null;
-            })()}
           </div>
           <div className="flex items-center gap-1">
             <button
