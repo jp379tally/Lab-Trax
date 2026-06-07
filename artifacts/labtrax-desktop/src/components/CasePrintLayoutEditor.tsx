@@ -27,8 +27,10 @@ import {
   ImageIcon,
   Italic,
   Loader2,
+  Printer,
   Redo2,
   RotateCcw,
+  Search,
   Trash2,
   Undo2,
   Upload,
@@ -38,7 +40,9 @@ import { apiFetch } from "@/lib/api";
 import {
   buildAnatomicalToothChartSvg,
   fetchTemplateImageAsDataUrl,
+  printCaseCardAdvanced,
 } from "@/lib/print";
+import type { CaseRestoration, LabCase } from "@/lib/types";
 import { useAuth } from "@/lib/auth-context";
 import {
   coerceCasePrintTemplate,
@@ -329,6 +333,7 @@ export function CasePrintLayoutEditor({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [askKeep, setAskKeep] = useState(false);
+  const [showCasePicker, setShowCasePicker] = useState(false);
 
   // ── Snap / grid state ─────────────────────────────────────────────────
   const [snapEnabled, setSnapEnabled] = useState(true);
@@ -755,6 +760,15 @@ export function CasePrintLayoutEditor({
             </button>
             <button
               type="button"
+              onClick={() => setShowCasePicker(true)}
+              className="h-8 px-2.5 rounded-md hover:bg-secondary text-muted-foreground hover:text-foreground inline-flex items-center gap-1.5 text-xs font-medium"
+              title="Preview the current layout rendered against a real case"
+            >
+              <Printer size={13} />
+              Preview…
+            </button>
+            <button
+              type="button"
               onClick={() =>
                 isAdmin
                   ? saveMutation.mutate(draft)
@@ -1128,6 +1142,14 @@ export function CasePrintLayoutEditor({
           </main>
         </div>
 
+        {/* Case picker for preview */}
+        {showCasePicker && (
+          <CasePreviewPicker
+            draft={draft}
+            onClose={() => setShowCasePicker(false)}
+          />
+        )}
+
         {/* "Keep changes" prompt */}
         {askKeep && (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/40">
@@ -1484,6 +1506,172 @@ function BoxNumericInputs({
       {field("Y", box.y, (v) => onChange({ y: v }), 0, PAGE_H - box.h)}
       {field("Width", box.w, (v) => onChange({ w: v }), minW, PAGE_W - box.x)}
       {field("Height", box.h, (v) => onChange({ h: v }), minH, PAGE_H - box.y)}
+    </div>
+  );
+}
+
+// ── Case preview picker ─────────────────────────────────────────────────
+//
+// Overlays the editor with a case-search dialog. When the admin picks a
+// case, fetches its restorations from /cases/:id and calls
+// printCaseCardAdvanced with the current draft — exactly the same renderer
+// used during actual label printing.
+
+interface CasePreviewPickerProps {
+  draft: CasePrintTemplate;
+  onClose: () => void;
+}
+
+function CasePreviewPicker({ draft, onClose }: CasePreviewPickerProps) {
+  const [query, setQuery] = useState("");
+  const [loadingId, setLoadingId] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const casesQuery = useQuery<LabCase[]>({
+    queryKey: ["cases-preview-picker"],
+    queryFn: () => apiFetch<LabCase[]>("/cases"),
+    staleTime: 30_000,
+  });
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  const lower = query.toLowerCase();
+  const filtered = (casesQuery.data ?? []).filter((c) => {
+    if (!lower) return true;
+    const patient = `${c.patientFirstName ?? ""} ${c.patientLastName ?? ""}`.toLowerCase();
+    return (
+      patient.includes(lower) ||
+      c.caseNumber.toLowerCase().includes(lower) ||
+      (c.doctorName ?? "").toLowerCase().includes(lower)
+    );
+  });
+
+  async function handlePick(labCase: LabCase) {
+    if (loadingId) return;
+    setPreviewError(null);
+    setLoadingId(labCase.id);
+    try {
+      const detailed = await apiFetch<LabCase & { restorations: CaseRestoration[] }>(
+        `/cases/${labCase.id}`,
+      );
+      await printCaseCardAdvanced(
+        detailed,
+        { restorations: detailed.restorations ?? [] },
+        draft,
+      );
+      onClose();
+    } catch (err) {
+      setPreviewError(
+        err instanceof Error ? err.message : "Failed to load case for preview.",
+      );
+    } finally {
+      setLoadingId(null);
+    }
+  }
+
+  return (
+    <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/50">
+      <div className="bg-card border border-border rounded-xl shadow-2xl p-5 w-full max-w-md mx-4 flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold">Preview with a real case</h3>
+            <p className="text-[11px] text-muted-foreground">
+              Renders the current draft layout with real patient &amp; Rx data.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-7 w-7 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground"
+            aria-label="Close"
+          >
+            <X size={15} />
+          </button>
+        </div>
+
+        {/* Search input */}
+        <div className="relative">
+          <Search
+            size={13}
+            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
+          />
+          <input
+            ref={inputRef}
+            type="text"
+            placeholder="Search by patient, case number, or doctor…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            className="w-full h-8 pl-7 pr-3 rounded-md border border-border bg-background text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+          />
+        </div>
+
+        {/* Error banner */}
+        {previewError && (
+          <p className="text-[11px] text-destructive border border-destructive/30 bg-destructive/5 rounded-md px-3 py-2">
+            {previewError}
+          </p>
+        )}
+
+        {/* Case list */}
+        <div className="overflow-y-auto max-h-72 -mx-1 flex flex-col gap-0.5">
+          {casesQuery.isPending && (
+            <div className="flex items-center justify-center py-8 text-muted-foreground gap-2">
+              <Loader2 size={14} className="animate-spin" />
+              <span className="text-xs">Loading cases…</span>
+            </div>
+          )}
+          {casesQuery.isError && (
+            <p className="text-xs text-destructive text-center py-6">
+              Could not load cases. Check your connection and try again.
+            </p>
+          )}
+          {casesQuery.isSuccess && filtered.length === 0 && (
+            <p className="text-xs text-muted-foreground italic text-center py-6">
+              {query ? "No cases match that search." : "No cases found."}
+            </p>
+          )}
+          {filtered.map((c) => {
+            const patient = `${c.patientFirstName ?? ""} ${c.patientLastName ?? ""}`.trim();
+            const isLoading = loadingId === c.id;
+            return (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => handlePick(c)}
+                disabled={!!loadingId}
+                className="flex items-center gap-2.5 px-2 py-2 rounded-md hover:bg-secondary/60 text-left transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {isLoading ? (
+                  <Loader2 size={13} className="animate-spin shrink-0 text-primary" />
+                ) : (
+                  <Printer size={13} className="shrink-0 text-muted-foreground" />
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-medium truncate">
+                    {patient || "—"}
+                    {c.priority === "rush" && (
+                      <span className="ml-1.5 text-[9px] font-bold text-red-600 uppercase">
+                        Rush
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground truncate">
+                    {c.caseNumber}
+                    {c.doctorName ? ` · Dr. ${c.doctorName}` : ""}
+                  </div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        <p className="text-[10px] text-muted-foreground">
+          Selecting a case opens a print preview window — the layout is not saved.
+        </p>
+      </div>
     </div>
   );
 }
