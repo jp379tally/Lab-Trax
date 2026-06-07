@@ -237,8 +237,15 @@ maybe("GET /api/cases/attachment-file/:filename — legacy case media", () => {
   });
 
   it("orphan cleanup never trashes a ledger-bound legacy file", async () => {
-    // Sanity: file is on disk before cleanup.
-    await expect(fsp.access(filePath)).resolves.toBeUndefined();
+    // Re-write the file before running cleanup. When both the standalone
+    // api-server-tests and the regression-tests workflows run concurrently
+    // they share the same uploads/case-media directory — one suite's
+    // cleanupOrphanedCaseMedia call can delete the other suite's file
+    // before the ledger binding is persisted, so we can't rely on beforeAll
+    // alone. Re-writing here is safe: the ledger row is already in the DB
+    // (committed by the previous test in this suite).
+    await fsp.mkdir(caseMediaMod.caseMediaDir, { recursive: true });
+    await fsp.writeFile(filePath, fileBytes);
 
     const report = await caseMediaMod.cleanupOrphanedCaseMedia({ dryRun: false });
     expect(report.mediaDirExists).toBe(true);

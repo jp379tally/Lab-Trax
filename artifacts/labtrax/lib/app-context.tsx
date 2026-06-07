@@ -2520,6 +2520,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const ext = uriClean.split(".").pop() || (isVid ? "mp4" : "jpg");
     const mimeType = isVid
       ? ext === "mov" ? "video/quicktime" : `video/${ext}`
+      : ext === "pdf" ? "application/pdf"
       : ext === "jpg" ? "image/jpeg" : `image/${ext}`;
     const fileName = `case-media-${Date.now()}.${ext}`;
     try {

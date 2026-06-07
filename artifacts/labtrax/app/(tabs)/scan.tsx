@@ -116,7 +116,7 @@ export default function ScanScreen() {
   const manualModeRequested = params?.mode === "manual";
   const manualModeNonce = typeof params?.n === "string" ? params.n : null;
   const lastAppliedManualNonceRef = useRef<string | null>(null);
-  const { addCase, cases, clients, addClient, role, adminUnlocked, invoices, updateCase, removeInvoice, attachCaseToInvoice, assignBarcodeToCase, findCaseByBarcode, pricingTiers, activeLabAffiliationKey } = useApp();
+  const { addCase, addCasePhoto, cases, clients, addClient, role, adminUnlocked, invoices, updateCase, removeInvoice, attachCaseToInvoice, assignBarcodeToCase, findCaseByBarcode, pricingTiers, activeLabAffiliationKey } = useApp();
   // Keep a ref so useFocusEffect can read the latest cases without listing
   // cases as a dependency (which would re-fire the effect on every sync).
   const casesRef = useRef(cases);
@@ -193,6 +193,7 @@ export default function ScanScreen() {
   const [watchdogSecondsLeft, setWatchdogSecondsLeft] = useState<number | null>(null);
   const [aiFilledFields, setAiFilledFields] = useState<Set<string>>(new Set());
   const aiFlashAnim = useRef(new RNAnimated.Value(0)).current;
+  const [autoRxPdfUri, setAutoRxPdfUri] = useState<string | null>(null);
   const [liveScanEnabled, setLiveScanEnabled] = useState(false);
   const [liveStatus, setLiveStatus] = useState("");
   const [doctorDropdownOpen, setDoctorDropdownOpen] = useState(false);
@@ -1676,6 +1677,7 @@ export default function ScanScreen() {
 
       autoGeneratePdf(photos).then((pdfUri) => {
         if (pdfUri) {
+          setAutoRxPdfUri(pdfUri);
           setActivityEntries((prev) => [
             ...prev,
             {
@@ -2680,6 +2682,22 @@ export default function ScanScreen() {
         : {}),
     });
 
+    // Upload the auto-generated prescription PDF (if any) as a case attachment
+    // so it appears in the case's documents/files section.
+    const rxPdfUri = autoRxPdfUri;
+    if (rxPdfUri) {
+      setAutoRxPdfUri(null);
+      void addCasePhoto(newCase.id, rxPdfUri, userInitials);
+    }
+
+    // Upload any PDF files the user attached from the document picker —
+    // createCase only carries videos in the addCase call, so PDFs need
+    // to be uploaded separately after the case exists on the server.
+    const pdfAttachments = caseAttachments.filter((x) => x.kind === "pdf");
+    for (const att of pdfAttachments) {
+      void addCasePhoto(newCase.id, att.uri, userInitials);
+    }
+
     if ((Platform.OS as string) !== "web") {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     }
@@ -3042,6 +3060,7 @@ export default function ScanScreen() {
     setTimeDuePeriod("AM");
     setCasePhotos([]);
     setCaseAttachments([]);
+    setAutoRxPdfUri(null);
     setIsSubmittingCase(false);
     setActivityEntries([]);
     setManualRemakeEnabled(false);
