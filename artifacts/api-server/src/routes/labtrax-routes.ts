@@ -32,6 +32,7 @@ import { eq, and, inArray, or, isNull, sql, desc, count, type SQL } from "drizzl
 import { hashPassword } from "../lib/crypto";
 import { HttpError } from "../lib/http";
 import { requireAuth, optionalAuth } from "../middlewares/auth";
+import { createRateLimit } from "../lib/rate-limit";
 import { parseOrganizationIdFromAffiliationKey } from "../lib/case-visibility";
 
 // ── Append-only union helpers for the legacy mobile case blob ──────────
@@ -195,6 +196,12 @@ function getEffectiveAdminPin(): string {
   if (_dbAdminPin) return _dbAdminPin;
   const envPin = process.env.PLATFORM_ADMIN_PIN;
   if (envPin) return envPin;
+  if (process.env.NODE_ENV === "production") {
+    console.warn(
+      "[SECURITY] Admin PIN is not configured. Using insecure default '0000'. " +
+      "Set PLATFORM_ADMIN_PIN or configure a PIN in Settings → Admin PIN."
+    );
+  }
   return "0000";
 }
 
@@ -527,6 +534,17 @@ function pruneStaleUploadSessions(): void {
     /* ignore */
   }
 }
+
+const sendCodeRateLimit = createRateLimit({
+  windowMs: 60_000,
+  max: 5,
+  message: "Too many code requests. Please wait a minute and try again.",
+});
+const passwordResetRateLimit = createRateLimit({
+  windowMs: 15 * 60_000,
+  max: 5,
+  message: "Too many password reset requests. Please wait 15 minutes and try again.",
+});
 
 export async function registerRoutes(): Promise<IRouter> {
   const router: IRouter = Router();
@@ -1049,7 +1067,7 @@ export async function registerRoutes(): Promise<IRouter> {
     res.status(200).json({ ok: true, timestamp: new Date().toISOString() });
   });
 
-  router.get("/labs/groups", async (_req, res) => {
+  router.get("/labs/groups", requireAuth, async (_req, res) => {
     try {
       const { allUsers, labOrganizations, activeMemberships } =
         await getRepairableLabDirectoryData();
@@ -1289,7 +1307,7 @@ export async function registerRoutes(): Promise<IRouter> {
   registerAiChatRoutes(router);
   registerAiAgentRoutes(router);
 
-  router.post("/audit-log", (_req, res) => {
+  router.post("/audit-log", requireAuth, (_req, res) => {
     res.json({ ok: true });
   });
 
@@ -3216,7 +3234,7 @@ export async function registerRoutes(): Promise<IRouter> {
     }
   });
 
-  router.post("/send-phone-code", async (req, res) => {
+  router.post("/send-phone-code", sendCodeRateLimit, async (req, res) => {
     const { phone } = req.body;
     if (!phone || typeof phone !== "string") {
       return res.status(400).json({ error: "Phone number required" });
@@ -3273,7 +3291,7 @@ export async function registerRoutes(): Promise<IRouter> {
     return res.json({ verified: true });
   });
 
-  router.post("/send-email-code", async (req, res) => {
+  router.post("/send-email-code", sendCodeRateLimit, async (req, res) => {
     const { email } = req.body;
     if (!email || typeof email !== "string") return res.status(400).json({ error: "Email required" });
     const code = generateCode();
@@ -3336,7 +3354,7 @@ export async function registerRoutes(): Promise<IRouter> {
     return res.json({ verified: true });
   });
 
-  router.post("/forgot-password", async (req, res) => {
+  router.post("/forgot-password", passwordResetRateLimit, async (req, res) => {
     try {
       const { email } = req.body;
       if (!email || typeof email !== "string") return res.status(400).json({ error: "Email address is required." });
@@ -3385,7 +3403,7 @@ export async function registerRoutes(): Promise<IRouter> {
     }
   });
 
-  router.post("/forgot-username", async (req, res) => {
+  router.post("/forgot-username", passwordResetRateLimit, async (req, res) => {
     try {
       const { email } = req.body;
       if (!email || typeof email !== "string") return res.status(400).json({ error: "Email address is required." });
@@ -3422,7 +3440,7 @@ export async function registerRoutes(): Promise<IRouter> {
     }
   });
 
-  router.post("/reset-password", async (req, res) => {
+  router.post("/reset-password", passwordResetRateLimit, async (req, res) => {
     try {
       const { token, newPassword } = req.body;
       if (!token || !newPassword) return res.status(400).json({ error: "Token and new password are required." });

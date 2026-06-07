@@ -55,9 +55,10 @@ export default function CasesScreen() {
   const [permission, requestPermission] = useCameraPermissions();
   const [invoiceCase, setInvoiceCase] = useState<LabCase | null>(null);
   useEffect(() => {
-    if (invoiceCase?.invoiceId) {
-      void hydrateInvoiceFromServer(invoiceCase.invoiceId);
-    }
+    if (!invoiceCase?.invoiceId) return;
+    let cancelled = false;
+    hydrateInvoiceFromServer(invoiceCase.invoiceId).catch(() => {}).finally(() => { cancelled; });
+    return () => { cancelled = true; };
   }, [invoiceCase?.invoiceId, hydrateInvoiceFromServer]);
   useEffect(() => {
     if (!invoiceCase) return;

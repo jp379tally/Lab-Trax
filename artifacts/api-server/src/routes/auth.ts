@@ -4,6 +4,7 @@ import fs from "node:fs";
 import multer from "multer";
 import sharp from "sharp";
 import { Router } from "express";
+import { createRateLimit } from "../lib/rate-limit";
 import { and, asc, eq, gt, inArray, isNull, ne } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
@@ -46,6 +47,17 @@ import {
 import { startBillingTrial } from "../lib/entitlement";
 
 const router = Router();
+
+const loginRateLimit = createRateLimit({
+  windowMs: 60_000,
+  max: 10,
+  message: "Too many login attempts. Please wait a minute and try again.",
+});
+const registerRateLimit = createRateLimit({
+  windowMs: 60_000,
+  max: 5,
+  message: "Too many registration attempts. Please wait a minute and try again.",
+});
 
 const profilePhotoUpload = multer({
   storage: multer.memoryStorage(),
@@ -260,6 +272,7 @@ const registerSchema = z.object({
 
 router.post(
   "/register",
+  registerRateLimit,
   asyncHandler(async (req, res) => {
     const input = registerSchema.parse(req.body);
     const shouldCreateOrganization =
@@ -578,6 +591,7 @@ const loginSchema = z
 
 router.post(
   "/login",
+  loginRateLimit,
   asyncHandler(async (req, res) => {
     const input = loginSchema.parse(req.body);
     const rawIdentifier = (input.identifier ?? input.username ?? "").trim();
