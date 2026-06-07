@@ -555,7 +555,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  async function fetchMyMemberships(): Promise<ServerMembership[]> {
+  async function fetchMyMemberships(): Promise<ServerMembership[] | null> {
     if (!currentUserId) {
       return [];
     }
@@ -563,13 +563,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try {
       const response = await resilientFetch("/api/auth/me");
       if (!response.ok) {
-        return [];
+        return null;
       }
 
       const payload = await response.json();
       return Array.isArray(payload.memberships) ? payload.memberships : [];
     } catch {
-      return [];
+      return null;
     }
   }
 
@@ -754,7 +754,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }
 
   async function findCurrentLabMembership(): Promise<ServerMembership | null> {
-    const memberships = sortMembershipsDeterministically(await fetchMyMemberships());
+    const memberships = sortMembershipsDeterministically(await fetchMyMemberships() ?? []);
     return (
       memberships.find(
         (membership) =>
@@ -765,7 +765,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }
 
   async function findCurrentLabAdminMembership(): Promise<ServerMembership | null> {
-    const memberships = sortMembershipsDeterministically(await fetchMyMemberships());
+    const memberships = sortMembershipsDeterministically(await fetchMyMemberships() ?? []);
     return (
       memberships.find(
         (membership) =>
@@ -802,12 +802,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      const memberships = sortMembershipsDeterministically(
-        await fetchMyMemberships()
-      );
-      if (cancelled) {
+      const fetchedMemberships = await fetchMyMemberships();
+      if (cancelled) return;
+      if (fetchedMemberships === null) {
         return;
       }
+      const memberships = sortMembershipsDeterministically(fetchedMemberships);
 
       const activeLabMemberships = memberships.filter(
         (membership) =>

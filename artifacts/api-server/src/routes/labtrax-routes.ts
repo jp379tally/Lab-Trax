@@ -145,16 +145,15 @@ import { registerAiAgentRoutes } from "./ai-agent";
 const verificationCodes = new Map<string, { code: string; expiresAt: number }>();
 const passwordResetTokens = new Map<string, { userId: string; expiresAt: number }>();
 const DEMO_SEED_USERS_ENABLED = process.env.LABTRAX_ENABLE_DEMO_SEEDS === "true";
-let cachedOpenAIClient: OpenAI | null | undefined;
+let cachedOpenAIClient: OpenAI | undefined;
 
 function getOpenAIClient(): OpenAI | null {
-  if (cachedOpenAIClient !== undefined) {
+  if (cachedOpenAIClient != null) {
     return cachedOpenAIClient;
   }
 
   const apiKey = process.env.AI_INTEGRATIONS_OPENAI_API_KEY;
   if (!apiKey) {
-    cachedOpenAIClient = null;
     return null;
   }
 
