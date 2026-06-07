@@ -15,7 +15,7 @@
     },
     "ios": {
       "supportsTablet": true,
-      "buildNumber": "200",
+      "buildNumber": "201",
       "bundleIdentifier": "app.replit.labtrax",
       "infoPlist": {
         "NSCameraUsageDescription": "This app uses the camera to capture photos of dental cases and scans for case tracking, documentation, and communication with the dental lab.",
@@ -66,7 +66,7 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "versionCode": 200
+      "versionCode": 201
     },
     "web": {
       "favicon": "./assets/images/favicon.png"
