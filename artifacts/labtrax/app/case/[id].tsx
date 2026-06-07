@@ -2100,6 +2100,16 @@ export default function CaseDetailScreen() {
         </Pressable>
         )}
 
+        {(() => {
+          const displayPatientName = (caseItem as any).patientName || caseItem.patientInitials;
+          if (!displayPatientName) return null;
+          return (
+            <Text style={styles.patientNameHeading} numberOfLines={2} ellipsizeMode="tail">
+              {displayPatientName}
+            </Text>
+          );
+        })()}
+
         <Pressable
           style={styles.infoGrid}
           onPress={() => {
@@ -5198,6 +5208,13 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     fontFamily: "Inter_700Bold",
     color: colors.error,
     letterSpacing: 0.5,
+  },
+  patientNameHeading: {
+    fontSize: 28,
+    lineHeight: 34,
+    fontFamily: "Inter_700Bold",
+    color: colors.text,
+    marginBottom: 16,
   },
   infoGrid: {
     flexDirection: "row",
