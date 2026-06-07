@@ -784,6 +784,68 @@ export default function ScanScreen() {
     }
   }
 
+  async function handleDocumentScan() {
+    if ((Platform.OS as string) === "web") {
+      await handleTakePhoto();
+      return;
+    }
+
+    if (liveActiveRef.current || liveScanEnabled) {
+      liveActiveRef.current = false;
+      setLiveScanEnabled(false);
+      setLiveStatus("");
+    }
+
+    const isFreshCapture = casePhotos.length === 0;
+
+    try {
+      const DocumentScannerModule = require("react-native-document-scanner-plugin");
+      const DocumentScannerDefault = DocumentScannerModule.default ?? DocumentScannerModule;
+      const ResponseType = DocumentScannerModule.ResponseType;
+
+      const result = await DocumentScannerDefault.scanDocument({
+        croppedImageQuality: 90,
+        maxNumDocuments: 1,
+        responseType: ResponseType?.ImageFilePath ?? 1,
+      });
+
+      if (!result?.scannedImages?.length) return;
+
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+      const rawUri: string = result.scannedImages[0];
+      autoAnalyzedRef.current = false;
+      cropDoneRef.current = false;
+      setCapturedUri(rawUri);
+      setPhase("scanning");
+
+      let dataUri = rawUri;
+      try {
+        const FS = await import("expo-file-system");
+        const b64 = await FS.readAsStringAsync(rawUri, {
+          encoding: (FS as any).EncodingType.Base64,
+        });
+        dataUri = `data:image/jpeg;base64,${b64}`;
+        setCapturedUri(dataUri);
+      } catch (e: any) {
+        console.log("Could not read scanned doc file:", e?.message);
+      }
+
+      const finalUri = dataUri.startsWith("data:") ? dataUri : rawUri;
+      setCapturedUri(finalUri);
+      setCasePhotos((prev) => (prev.includes(finalUri) ? prev : [...prev, finalUri]));
+      cropDoneRef.current = true;
+
+      if (isFreshCapture) {
+        autoAnalyzedRef.current = true;
+        void handleFinishedReview([finalUri]);
+      }
+    } catch (e: any) {
+      console.log("Document scanner failed, falling back:", e?.message);
+      await handleTakePhoto();
+    }
+  }
+
   function handleManualCrop() {
     if (casePhotos.length === 0) return;
     const targetIndex = selectedReviewPhotos.length === 1
@@ -5298,7 +5360,7 @@ export default function ScanScreen() {
 
               <View style={styles.captureBtnWrap}>
                 <Pressable
-                  onPress={handleTakePhoto}
+                  onPress={handleDocumentScan}
                   style={({ pressed }) => [
                     styles.captureBtn,
                     pressed && { transform: [{ scale: 0.95 }] },
