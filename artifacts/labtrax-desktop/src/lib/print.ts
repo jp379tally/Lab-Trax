@@ -20,6 +20,9 @@ import {
 import {
   PAGE_H as TPL_PAGE_H,
   PAGE_W as TPL_PAGE_W,
+  DEFAULT_FONT_FAMILY,
+  ELEMENT_LABELS,
+  type CasePrintElement,
   type CasePrintTemplate,
 } from "./case-print-template";
 import { apiFetchArrayBuffer, getApiOrigin } from "./api";
@@ -622,7 +625,7 @@ html, body { margin: 0; padding: 0; }
   position: relative;
   width: ${TPL_PAGE_W}px;
   height: ${TPL_PAGE_H}px;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: ${DEFAULT_FONT_FAMILY};
   color: #111;
   background: #fff;
 }
@@ -631,53 +634,27 @@ html, body { margin: 0; padding: 0; }
   box-sizing: border-box;
   overflow: hidden;
 }
-.lt-adv-section-title {
-  font-size: 9px;
+.lt-el-cap {
+  font-size: 8px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: #555;
-  border-bottom: 1px solid #ddd;
-  margin: 0 0 4px;
-  padding-bottom: 2px;
-}
-.lt-adv-case-num {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 28px;
-  font-weight: 700;
-  line-height: 1;
-}
-.lt-adv-badge {
-  display: inline-block;
-  font-size: 10px;
-  font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  border: 1px solid #333;
-  border-radius: 3px;
-  padding: 1px 6px;
-  color: #333;
+  color: #888;
+  margin-bottom: 2px;
+  line-height: 1.1;
 }
-.lt-adv-badge.rush {
-  background: #b91c1c;
-  border-color: #b91c1c;
-  color: #fff;
+.lt-el-val {
+  line-height: 1.25;
+  color: #111;
 }
-.lt-adv-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px 16px;
+.lt-el-val.notes {
+  white-space: pre-wrap;
+  line-height: 1.4;
 }
-.lt-adv-field { display: flex; flex-direction: column; }
-.lt-adv-key {
-  font-size: 8px;
-  color: #777;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+.lt-el-empty {
+  color: #999;
+  font-style: italic;
 }
-.lt-adv-val { font-size: 11px; font-weight: 500; color: #111; }
-.lt-adv-notes { font-size: 10px; white-space: pre-wrap; line-height: 1.4; }
-.lt-adv-notes-empty { font-size: 10px; color: #888; font-style: italic; }
 .lt-adv-barcode {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 18px;
@@ -687,6 +664,7 @@ html, body { margin: 0; padding: 0; }
 }
 .lt-adv-barcode-bars {
   height: 28px;
+  width: 100%;
   margin: 4px 0 2px;
   background: repeating-linear-gradient(
     to right,
@@ -703,6 +681,10 @@ html, body { margin: 0; padding: 0; }
   height: 100%;
   object-fit: contain;
   display: block;
+}
+.lt-adv-chart {
+  width: 100%;
+  height: 100%;
 }
 `;
 
@@ -757,15 +739,134 @@ export async function fetchTemplateImageAsDataUrl(
   }
 }
 
+// ── Anatomical tooth chart (SVG) ──────────────────────────────────────
+//
+// Renders a real two-arch dental chart with tooth-shaped glyphs. Worked-on
+// teeth are shaded. The SVG scales to fill whatever box it's placed in
+// (used by both the print output and the layout editor preview).
+
+const TOOTH_PATH =
+  "M3 28 Q3 4 11 4 Q19 4 19 28 L18 62 Q14 70 11 62 Q8 70 4 62 Z";
+const TOOTH_NAT_W = 22;
+const TOOTH_NAT_H = 66;
+
+export function buildAnatomicalToothChartSvg(selected: Set<string>): string {
+  const cols = 16;
+  const cellW = 32;
+  const NAT_W = cols * cellW; // 512
+  const NAT_H = 210;
+  const toothW = 24;
+  const toothH = 80;
+  const sx = toothW / TOOTH_NAT_W;
+  const sy = toothH / TOOTH_NAT_H;
+
+  const upperTopY = 2;
+  const lowerTopY = NAT_H - 2 - toothH; // 128
+  const upperNumY = upperTopY + toothH + 12; // ~94
+  const lowerNumY = lowerTopY - 5; // ~123
+
+  // Upper arch: 1–16 left→right. Lower arch: 32–17 left→right (mirrors upper).
+  const upper = Array.from({ length: 16 }, (_, i) => i + 1);
+  const lower = Array.from({ length: 16 }, (_, i) => 32 - i);
+
+  function tooth(n: number, col: number, isUpper: boolean): string {
+    const sel = selected.has(String(n));
+    const fill = sel ? "#3b82f6" : "#ffffff";
+    const stroke = sel ? "#1e40af" : "#94a3b8";
+    const cx = col * cellW + cellW / 2;
+    const tx = cx - toothW / 2;
+    const ty = isUpper ? upperTopY : lowerTopY;
+    // Upper teeth flip vertically so the crown faces the midline (downward).
+    const t = isUpper
+      ? `translate(${tx},${ty + toothH}) scale(${sx},${-sy})`
+      : `translate(${tx},${ty}) scale(${sx},${sy})`;
+    return `<path d="${TOOTH_PATH}" transform="${t}" fill="${fill}" stroke="${stroke}" stroke-width="1.2" stroke-linejoin="round"/>`;
+  }
+
+  function num(n: number, col: number, y: number): string {
+    const cx = col * cellW + cellW / 2;
+    const sel = selected.has(String(n));
+    return `<text x="${cx}" y="${y}" text-anchor="middle" font-family="${DEFAULT_FONT_FAMILY}" font-size="12" font-weight="${sel ? 700 : 600}" fill="${sel ? "#1e40af" : "#334155"}">${n}</text>`;
+  }
+
+  const parts: string[] = [];
+  upper.forEach((n, i) => parts.push(tooth(n, i, true)));
+  lower.forEach((n, i) => parts.push(tooth(n, i, false)));
+  upper.forEach((n, i) => parts.push(num(n, i, upperNumY)));
+  lower.forEach((n, i) => parts.push(num(n, i, lowerNumY)));
+  parts.push(
+    `<line x1="${NAT_W / 2}" y1="2" x2="${NAT_W / 2}" y2="${NAT_H - 2}" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="3 3"/>`,
+  );
+
+  return `<svg class="lt-adv-chart" viewBox="0 0 ${NAT_W} ${NAT_H}" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" style="display:block">${parts.join("")}</svg>`;
+}
+
+// ── Per-element value resolution ──────────────────────────────────────
+
+interface AdvancedCaseValues {
+  caseNumber: string;
+  patient: string;
+  doctor: string;
+  dueDate: string;
+  priority: string;
+  restorativeType: string;
+  teeth: string;
+  material: string;
+  shade: string;
+  rxNotes: string;
+  selected: Set<string>;
+}
+
+function elTextStyle(el: CasePrintElement): string {
+  const ff = el.fontFamily || DEFAULT_FONT_FAMILY;
+  const fs = el.fontSize ?? 13;
+  const fw = el.bold ? 700 : 400;
+  const fst = el.italic ? "italic" : "normal";
+  const al = el.align ?? "left";
+  return `font-family:${ff};font-size:${fs}px;font-weight:${fw};font-style:${fst};text-align:${al}`;
+}
+
+function renderTextElement(
+  el: CasePrintElement,
+  values: AdvancedCaseValues,
+): string {
+  const kind = el.kind;
+  const style = boxStyle(
+    el,
+    `${elTextStyle(el)};display:flex;flex-direction:column;justify-content:flex-start`,
+  );
+
+  if (kind === "caseNumber") {
+    return `<div class="lt-adv-box" style="${style}"><div class="lt-el-val">Case ${escapeHtml(values.caseNumber)}</div></div>`;
+  }
+
+  const caption = ELEMENT_LABELS[kind] ?? "";
+
+  if (kind === "rxNotes") {
+    const body = values.rxNotes
+      ? `<div class="lt-el-val notes">${escapeHtml(values.rxNotes)}</div>`
+      : `<div class="lt-el-val notes lt-el-empty">No prescription notes.</div>`;
+    return `<div class="lt-adv-box" style="${style}"><div class="lt-el-cap">${escapeHtml(caption)}</div>${body}</div>`;
+  }
+
+  const valueMap: Record<string, string> = {
+    patient: values.patient,
+    doctor: values.doctor,
+    dueDate: values.dueDate,
+    priority: values.priority,
+    restorativeType: values.restorativeType,
+    teeth: values.teeth,
+    material: values.material,
+    shade: values.shade,
+  };
+  const value = valueMap[kind] ?? "";
+  return `<div class="lt-adv-box" style="${style}"><div class="lt-el-cap">${escapeHtml(caption)}</div><div class="lt-el-val">${escapeHtml(value || "—")}</div></div>`;
+}
+
 export async function printCaseCardAdvanced(
   labCase: LabCase,
   extras: {
     restorations?: CaseRestoration[];
-    notes?: Array<{
-      noteText?: string | null;
-      visibility?: string | null;
-      createdAt?: string | null;
-    }>;
   },
   template: CasePrintTemplate,
 ): Promise<void> {
@@ -793,127 +894,67 @@ export async function printCaseCardAdvanced(
   );
   const isRush = labCase.priority === "rush";
 
-  const sections: string[] = [];
+  const values: AdvancedCaseValues = {
+    caseNumber: labCase.caseNumber,
+    patient,
+    doctor: labCase.doctorName ?? "",
+    dueDate: formatDate(labCase.dueDate),
+    priority: isRush ? "Rush" : "Normal",
+    restorativeType,
+    teeth: teethLabel,
+    material: materialLabel,
+    shade: shadeLabel,
+    // Prescription notes ONLY — the case's Rx notes field, never internal
+    // lab activity notes.
+    rxNotes: labCase.caseNotes ?? "",
+    selected,
+  };
 
-  if (template.boxes.header.visible) {
-    const b = template.boxes.header;
-    const badge = isRush
-      ? `<span class="lt-adv-badge rush">Rush</span>`
-      : `<span class="lt-adv-badge">${escapeHtml(statusLabel(labCase.status))}</span>`;
-    sections.push(`<div class="lt-adv-box" style="${boxStyle(b, "display:flex;align-items:baseline;justify-content:space-between;border-bottom:2px solid #111;padding-bottom:4px")}">
-  <div class="lt-adv-case-num">Case ${escapeHtml(labCase.caseNumber)}</div>
-  <div style="display:flex;flex-direction:column;align-items:flex-end;gap:3px">
-    <span style="font-size:9px;color:#555">Printed ${escapeHtml(formatDate(new Date().toISOString()))}</span>
-    ${badge}
-  </div>
-</div>`);
-  }
-
-  // Helper: returns an inline style string for a field value span,
-  // applying the configured text size from the template fieldSizes.
-  function valStyle(
-    section: "caseDetails" | "rxSummary",
-    field: string,
-  ): string {
-    const sizes: Record<string, number> = { normal: 11, large: 14, xl: 18 };
-    const sectionSizes = template.fieldSizes?.[section] as
-      | Record<string, string>
-      | undefined;
-    const sz = sectionSizes?.[field];
-    if (!sz || sz === "normal") return "";
-    const px = sizes[sz] ?? 11;
-    return ` style="font-size:${px}px;font-weight:600"`;
-  }
-
-  if (template.boxes.caseDetails.visible) {
-    const b = template.boxes.caseDetails;
-    sections.push(`<div class="lt-adv-box" style="${boxStyle(b)}">
-  <div class="lt-adv-section-title">Case Details</div>
-  <div class="lt-adv-grid">
-    <div class="lt-adv-field"><span class="lt-adv-key">Patient</span><span class="lt-adv-val"${valStyle("caseDetails","patient")}>${escapeHtml(patient || "—")}</span></div>
-    <div class="lt-adv-field"><span class="lt-adv-key">Doctor</span><span class="lt-adv-val"${valStyle("caseDetails","doctor")}>${escapeHtml(labCase.doctorName || "—")}</span></div>
-    <div class="lt-adv-field"><span class="lt-adv-key">Status</span><span class="lt-adv-val"${valStyle("caseDetails","status")}>${escapeHtml(statusLabel(labCase.status))}</span></div>
-    <div class="lt-adv-field"><span class="lt-adv-key">Priority</span><span class="lt-adv-val"${valStyle("caseDetails","priority")}>${escapeHtml(isRush ? "Rush" : "Normal")}</span></div>
-    <div class="lt-adv-field"><span class="lt-adv-key">Due Date</span><span class="lt-adv-val"${valStyle("caseDetails","dueDate")}>${escapeHtml(formatDate(labCase.dueDate))}</span></div>
-    <div class="lt-adv-field"><span class="lt-adv-key">Created</span><span class="lt-adv-val"${valStyle("caseDetails","created")}>${escapeHtml(formatDate(labCase.createdAt))}</span></div>
-  </div>
-</div>`);
-  }
-
-  if (template.boxes.rxSummary.visible) {
-    const b = template.boxes.rxSummary;
-    const teethKey = summary.isFullArch ? "Tooth Coverage" : "Tooth Number(s)";
-    sections.push(`<div class="lt-adv-box" style="${boxStyle(b)}">
-  <div class="lt-adv-section-title">RX Summary</div>
-  <div class="lt-adv-grid">
-    <div class="lt-adv-field"><span class="lt-adv-key">Restorative Type</span><span class="lt-adv-val"${valStyle("rxSummary","restorativeType")}>${escapeHtml(restorativeType || "—")}</span></div>
-    <div class="lt-adv-field"><span class="lt-adv-key">${escapeHtml(teethKey)}</span><span class="lt-adv-val"${valStyle("rxSummary","teeth")}>${escapeHtml(teethLabel || "—")}</span></div>
-    <div class="lt-adv-field"><span class="lt-adv-key">Material</span><span class="lt-adv-val"${valStyle("rxSummary","material")}>${escapeHtml(materialLabel || "—")}</span></div>
-    <div class="lt-adv-field"><span class="lt-adv-key">${escapeHtml(summary.shades.length > 1 ? "Shades" : "Shade")}</span><span class="lt-adv-val"${valStyle("rxSummary","shade")}>${escapeHtml(shadeLabel || "—")}</span></div>
-  </div>
-</div>`);
-  }
-
-  if (template.boxes.toothChart.visible) {
-    const b = template.boxes.toothChart;
-    sections.push(`<div class="lt-adv-box" style="${boxStyle(b)}">
-  <div class="lt-adv-section-title">Tooth Chart</div>
-  ${buildToothChart(selected)}
-</div>`);
-  }
-
-  if (template.boxes.notes.visible) {
-    const b = template.boxes.notes;
-    let notesHtml = "";
-    const notesArr = extras.notes;
-    if (notesArr && notesArr.length > 0) {
-      notesHtml = notesArr
-        .map((n) => {
-          const when = n.createdAt ? formatDateTime(n.createdAt) : "";
-          const vis = n.visibility === "internal_lab_only" ? "Internal" : "Shared";
-          return `<div style="margin-bottom:5px">
-  <div style="font-size:8px;color:#777;margin-bottom:1px">${escapeHtml(when)}${when ? " · " : ""}${vis}</div>
-  <div class="lt-adv-notes">${escapeHtml(n.noteText || "")}</div>
-</div>`;
-        })
-        .join("");
-    } else if (labCase.caseNotes) {
-      notesHtml = `<div class="lt-adv-notes">${escapeHtml(labCase.caseNotes)}</div>`;
-    } else {
-      notesHtml = `<div class="lt-adv-notes-empty">No notes.</div>`;
-    }
-    sections.push(`<div class="lt-adv-box" style="${boxStyle(b)}">
-  <div class="lt-adv-section-title">Notes</div>
-  ${notesHtml}
-</div>`);
-  }
-
-  if (template.boxes.barcode.visible) {
-    const b = template.boxes.barcode;
-    sections.push(`<div class="lt-adv-box" style="${boxStyle(b, "display:flex;flex-direction:column;justify-content:center")}">
-  <div class="lt-adv-barcode-bars"></div>
-  <div class="lt-adv-barcode">${escapeHtml(labCase.caseNumber)}</div>
-</div>`);
-  }
-
-  // Pre-fetch each template image as a data: URL. Plain `<img src>` can't
-  // attach the bearer token desktop uses for auth, so we inline the bytes
-  // before constructing the print HTML.
+  // Pre-fetch image elements as data: URLs (bearer auth can't ride on a
+  // plain <img src>), so we inline the bytes before building the HTML.
   const orgId = labCase.labOrganizationId;
+  const imageElements = template.elements.filter(
+    (el) => el.kind === "image" && el.visible,
+  );
   const imageSrcs = orgId
     ? await Promise.all(
-        template.extraImages.map((img) =>
-          fetchTemplateImageAsDataUrl(orgId, img.id),
-        ),
+        imageElements.map((el) => fetchTemplateImageAsDataUrl(orgId, el.id)),
       )
-    : template.extraImages.map(() => null);
-  template.extraImages.forEach((img, i) => {
-    const src = imageSrcs[i];
-    if (!src) return;
-    sections.push(`<div class="lt-adv-box" style="${boxStyle(img, `opacity:${img.opacity}`)}">
-  <img src="${escapeHtml(src)}" class="lt-adv-img" alt="" />
-</div>`);
-  });
+    : imageElements.map(() => null);
+  const imageSrcById = new Map<string, string | null>();
+  imageElements.forEach((el, i) => imageSrcById.set(el.id, imageSrcs[i]));
+
+  const sections: string[] = [];
+
+  for (const el of template.elements) {
+    if (!el.visible) continue;
+
+    if (el.kind === "image") {
+      const src = imageSrcById.get(el.id);
+      if (!src) continue;
+      sections.push(
+        `<div class="lt-adv-box" style="${boxStyle(el, `opacity:${el.opacity ?? 1}`)}"><img src="${escapeHtml(src)}" class="lt-adv-img" alt="" /></div>`,
+      );
+      continue;
+    }
+
+    if (el.kind === "toothChart") {
+      sections.push(
+        `<div class="lt-adv-box" style="${boxStyle(el, "padding:1px")}">${buildAnatomicalToothChartSvg(values.selected)}</div>`,
+      );
+      continue;
+    }
+
+    if (el.kind === "barcode") {
+      sections.push(
+        `<div class="lt-adv-box" style="${boxStyle(el, "display:flex;flex-direction:column;justify-content:center")}"><div class="lt-adv-barcode-bars"></div><div class="lt-adv-barcode">${escapeHtml(values.caseNumber)}</div></div>`,
+      );
+      continue;
+    }
+
+    // text element
+    sections.push(renderTextElement(el, values));
+  }
 
   const body = `<div class="lt-adv-page">${sections.join("\n")}</div>`;
 

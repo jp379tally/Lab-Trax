@@ -1,25 +1,31 @@
-// Advanced case-print-label layout editor.
+// Advanced case-print-label layout editor (v2, element-based).
 //
 // Modal opened from the basic PrintLayoutEditor's "Advanced layout…" button.
-// Provides drag/resize boxes (header, case details, RX summary, tooth chart,
-// notes, barcode) plus uploaded extra images (logos, signatures, stamps).
+// Every case info field (case number, patient, doctor, due date, priority,
+// restorative type, teeth, material, shade, prescription notes, tooth chart,
+// barcode) is its own independently positionable / resizable element with
+// Word-style typography (font family, numeric font size, bold, italic,
+// alignment). Uploaded images (logos, signatures, stamps) are elements too.
 //
 // State flow:
 //   - Loads the per-lab template from GET /organizations/:orgId/case-print-template
 //   - Edits happen in a local `draft` (dirty flag tracks changes)
-//   - "Save & Close" PUTs the draft; "Discard" reverts; closing while dirty
-//     prompts the user to keep the changes for future case labels.
+//   - "Save" PUTs the draft; closing while dirty prompts to keep changes.
 //   - Uploaded images are persisted immediately on POST so a discarded
-//     session may leave orphan App Storage objects — that's fine, it's
-//     bounded by 8 images per template and a 5MB/file limit.
+//     session may leave orphan App Storage objects — bounded by 8 images.
 
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AlignCenter,
+  AlignLeft,
+  AlignRight,
+  Bold,
   Eye,
   EyeOff,
   Grid2X2,
   ImageIcon,
+  Italic,
   Loader2,
   Redo2,
   RotateCcw,
@@ -29,29 +35,26 @@ import {
   X,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
-import { fetchTemplateImageAsDataUrl } from "@/lib/print";
+import {
+  buildAnatomicalToothChartSvg,
+  fetchTemplateImageAsDataUrl,
+} from "@/lib/print";
 import { useAuth } from "@/lib/auth-context";
 import {
-  CASE_DETAIL_FIELDS,
-  CASE_DETAIL_FIELD_LABELS,
   coerceCasePrintTemplate,
   DEFAULT_CASE_PRINT_TEMPLATE,
-  FIELD_SIZE_VALUES,
+  DEFAULT_FONT_FAMILY,
+  ELEMENT_COLORS,
+  ELEMENT_LABELS,
+  FONT_FAMILIES,
   isSameTemplate,
+  isTextKind,
+  makeImageElement,
   PAGE_H,
   PAGE_W,
-  RX_SUMMARY_FIELDS,
-  RX_SUMMARY_FIELD_LABELS,
-  SECTION_LABELS,
-  SECTION_ORDER,
-  type CaseDetailField,
-  type CasePrintExtraImage,
-  type CasePrintFieldSizes,
+  type CasePrintElement,
   type CasePrintTemplate,
-  type CaseTemplateBox,
-  type CaseTemplateSectionKey,
-  type FieldSize,
-  type RxSummaryField,
+  type ElementAlign,
 } from "@/lib/case-print-template";
 
 interface TemplateApi {
@@ -68,27 +71,20 @@ interface UploadedImage {
   size: number;
 }
 
-const SECTION_COLORS: Record<CaseTemplateSectionKey, string> = {
-  header: "rgba(59,130,246,0.18)",
-  caseDetails: "rgba(16,185,129,0.18)",
-  rxSummary: "rgba(168,85,247,0.18)",
-  toothChart: "rgba(234,179,8,0.18)",
-  notes: "rgba(244,63,94,0.18)",
-  barcode: "rgba(20,184,166,0.18)",
-};
-
+type Box = { x: number; y: number; w: number; h: number };
 type Handle = "move" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 
 interface DragState {
-  kind: "section" | "image";
-  key: string;
+  id: string;
   handle: Handle;
   startX: number;
   startY: number;
-  startBox: { x: number; y: number; w: number; h: number };
+  startBox: Box;
   scaleX: number;
   scaleY: number;
 }
+
+const MAX_IMAGES = 8;
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
@@ -98,17 +94,11 @@ function clamp(n: number, lo: number, hi: number): number {
 
 const SNAP_THRESHOLD = 7; // page-coordinate pixels within which alignment snap fires
 
-/** Round a single value to the nearest grid multiple. */
 function snapToGrid(v: number, grid: number): number {
   return Math.round(v / grid) * grid;
 }
 
-/** Snap box edges to the grid based on which handle is being dragged. */
-function applyGridSnap(
-  box: { x: number; y: number; w: number; h: number },
-  handle: Handle,
-  grid: number,
-): { x: number; y: number; w: number; h: number } {
+function applyGridSnap(box: Box, handle: Handle, grid: number): Box {
   let { x, y, w, h } = box;
   if (handle === "move") {
     x = snapToGrid(x, grid);
@@ -116,50 +106,48 @@ function applyGridSnap(
   } else {
     if (handle.includes("w")) {
       const newX = snapToGrid(x, grid);
-      w = Math.max(40, x + w - newX);
+      w = Math.max(20, x + w - newX);
       x = newX;
     }
     if (handle.includes("e")) {
-      w = Math.max(40, snapToGrid(x + w, grid) - x);
+      w = Math.max(20, snapToGrid(x + w, grid) - x);
     }
     if (handle.includes("n")) {
       const newY = snapToGrid(y, grid);
-      h = Math.max(20, y + h - newY);
+      h = Math.max(14, y + h - newY);
       y = newY;
     }
     if (handle.includes("s")) {
-      h = Math.max(20, snapToGrid(y + h, grid) - y);
+      h = Math.max(14, snapToGrid(y + h, grid) - y);
     }
   }
   return { x, y, w, h };
 }
 
-/** Collect all x and y reference positions from other boxes for alignment. */
+/** Collect x/y reference positions from other elements for alignment. */
 function buildAlignRefs(
-  draft: { boxes: Record<string, { x: number; y: number; w: number; h: number; visible: boolean }>; extraImages: Array<{ id: string; x: number; y: number; w: number; h: number }> },
-  excludeKey: string,
+  elements: CasePrintElement[],
+  excludeId: string,
 ): { x: number[]; y: number[] } {
   const xs = new Set<number>([0, PAGE_W / 2, PAGE_W]);
   const ys = new Set<number>([0, PAGE_H / 2, PAGE_H]);
-
-  for (const key of SECTION_ORDER) {
-    if (key === excludeKey) continue;
-    const b = draft.boxes[key];
-    if (!b?.visible) continue;
-    xs.add(b.x); xs.add(b.x + b.w); xs.add(b.x + b.w / 2);
-    ys.add(b.y); ys.add(b.y + b.h); ys.add(b.y + b.h / 2);
+  for (const el of elements) {
+    if (el.id === excludeId || !el.visible) continue;
+    xs.add(el.x);
+    xs.add(el.x + el.w);
+    xs.add(el.x + el.w / 2);
+    ys.add(el.y);
+    ys.add(el.y + el.h);
+    ys.add(el.y + el.h / 2);
   }
-  for (const img of draft.extraImages) {
-    if (img.id === excludeKey) continue;
-    xs.add(img.x); xs.add(img.x + img.w); xs.add(img.x + img.w / 2);
-    ys.add(img.y); ys.add(img.y + img.h); ys.add(img.y + img.h / 2);
-  }
-
   return { x: [...xs], y: [...ys] };
 }
 
-/** Find the closest reference edge within threshold and return the snapped value + guide position. */
-function snapEdge(edge: number, refs: number[], threshold: number): { snapped: number; guide: number | null } {
+function snapEdge(
+  edge: number,
+  refs: number[],
+  threshold: number,
+): { snapped: number; guide: number | null } {
   let bestD = threshold + 1;
   let result = edge;
   let guide: number | null = null;
@@ -174,11 +162,12 @@ function snapEdge(edge: number, refs: number[], threshold: number): { snapped: n
   return { snapped: result, guide };
 }
 
-/**
- * For "move", check left/center/right (or top/center/bottom) edges and pick the
- * closest snap. Returns the adjusted position and any guide lines to show.
- */
-function snapMoveAxis(pos: number, size: number, refs: number[], threshold: number): { pos: number; guides: number[] } {
+function snapMoveAxis(
+  pos: number,
+  size: number,
+  refs: number[],
+  threshold: number,
+): { pos: number; guides: number[] } {
   const candidates: Array<{ edge: number; anchor: number }> = [
     { edge: pos, anchor: 0 },
     { edge: pos + size / 2, anchor: size / 2 },
@@ -205,13 +194,12 @@ function snapMoveAxis(pos: number, size: number, refs: number[], threshold: numb
 }
 
 interface AlignSnapResult {
-  box: { x: number; y: number; w: number; h: number };
+  box: Box;
   guides: { x: number[]; y: number[] };
 }
 
-/** Apply alignment snapping and collect guide lines to render. */
 function applyAlignmentSnap(
-  box: { x: number; y: number; w: number; h: number },
+  box: Box,
   handle: Handle,
   refs: { x: number[]; y: number[] },
   threshold: number,
@@ -230,43 +218,35 @@ function applyAlignmentSnap(
   } else {
     if (handle.includes("w")) {
       const { snapped, guide } = snapEdge(x, refs.x, threshold);
-      w = Math.max(40, x + w - snapped);
+      w = Math.max(20, x + w - snapped);
       x = snapped;
       if (guide !== null) xGuides.push(guide);
     }
     if (handle.includes("e")) {
       const { snapped, guide } = snapEdge(x + w, refs.x, threshold);
-      w = Math.max(40, snapped - x);
+      w = Math.max(20, snapped - x);
       if (guide !== null) xGuides.push(guide);
     }
     if (handle.includes("n")) {
       const { snapped, guide } = snapEdge(y, refs.y, threshold);
-      h = Math.max(20, y + h - snapped);
+      h = Math.max(14, y + h - snapped);
       y = snapped;
       if (guide !== null) yGuides.push(guide);
     }
     if (handle.includes("s")) {
       const { snapped, guide } = snapEdge(y + h, refs.y, threshold);
-      h = Math.max(20, snapped - y);
+      h = Math.max(14, snapped - y);
       if (guide !== null) yGuides.push(guide);
     }
   }
 
   return {
     box: { x, y, w, h },
-    guides: {
-      x: [...new Set(xGuides)],
-      y: [...new Set(yGuides)],
-    },
+    guides: { x: [...new Set(xGuides)], y: [...new Set(yGuides)] },
   };
 }
 
-function applyDrag(
-  start: { x: number; y: number; w: number; h: number },
-  h: Handle,
-  dx: number,
-  dy: number,
-): { x: number; y: number; w: number; h: number } {
+function applyDrag(start: Box, h: Handle, dx: number, dy: number): Box {
   let { x, y, w, h: bh } = start;
   if (h === "move") {
     x += dx;
@@ -287,8 +267,8 @@ function applyDrag(
       w += dx;
     }
   }
-  w = Math.max(40, w);
-  bh = Math.max(20, bh);
+  w = Math.max(20, w);
+  bh = Math.max(14, bh);
   x = clamp(x, 0, PAGE_W - w);
   y = clamp(y, 0, PAGE_H - bh);
   return {
@@ -302,9 +282,8 @@ function applyDrag(
 interface CasePrintLayoutEditorProps {
   onClose: () => void;
   /**
-   * Called with the active template after save so the parent renderer
-   * can immediately use it for the next print. Null = template was
-   * reset to defaults (no custom layout).
+   * Called with the active template after save so the parent renderer can
+   * immediately use it for the next print. Null = reset to defaults.
    */
   onTemplateSaved?: (template: CasePrintTemplate | null) => void;
 }
@@ -314,7 +293,10 @@ export function CasePrintLayoutEditor({
   onTemplateSaved,
 }: CasePrintLayoutEditorProps) {
   const { user } = useAuth() as {
-    user: { practiceOrganizationId?: string | null; role?: string | null } | null;
+    user: {
+      practiceOrganizationId?: string | null;
+      role?: string | null;
+    } | null;
   };
   const orgId = user?.practiceOrganizationId ?? null;
   const isAdmin = user?.role === "admin";
@@ -327,27 +309,23 @@ export function CasePrintLayoutEditor({
       const res = await apiFetch<{ data: TemplateApi } | TemplateApi>(
         `/organizations/${orgId}/case-print-template`,
       );
-      return (((res as unknown) as { data?: TemplateApi }).data ??
-        (res as TemplateApi));
+      return (
+        (res as unknown as { data?: TemplateApi }).data ?? (res as TemplateApi)
+      );
     },
   });
 
   const [draft, setDraft] = useState<CasePrintTemplate>(
     DEFAULT_CASE_PRINT_TEMPLATE,
   );
-  // Undo / redo history (bounded at 50 steps each).
-  // Cleared when the layout is saved or discarded.
+
   const MAX_UNDO = 50;
   const [undoStack, setUndoStack] = useState<CasePrintTemplate[]>([]);
   const [redoStack, setRedoStack] = useState<CasePrintTemplate[]>([]);
-  // Tracks the last-saved (or initially-loaded) template so "dirty" is
-  // accurate after undo brings the draft back to the clean state.
   const cleanTemplateRef = useRef<CasePrintTemplate>(DEFAULT_CASE_PRINT_TEMPLATE);
   const dirty = !isSameTemplate(draft, cleanTemplateRef.current);
 
-  const [selected, setSelected] = useState<
-    { kind: "section"; key: CaseTemplateSectionKey } | { kind: "image"; key: string } | null
-  >(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [askKeep, setAskKeep] = useState(false);
@@ -355,16 +333,24 @@ export function CasePrintLayoutEditor({
   // ── Snap / grid state ─────────────────────────────────────────────────
   const [snapEnabled, setSnapEnabled] = useState(true);
   const [gridSize, setGridSize] = useState<8 | 16>(8);
-  const [guideLines, setGuideLines] = useState<{ x: number[]; y: number[] }>({ x: [], y: [] });
+  const [guideLines, setGuideLines] = useState<{ x: number[]; y: number[] }>({
+    x: [],
+    y: [],
+  });
 
-  // Refs that stay in sync so drag handlers (closures) can read current values.
   const snapEnabledRef = useRef(snapEnabled);
   const gridSizeRef = useRef(gridSize);
   const draftRef = useRef(draft);
 
-  useEffect(() => { snapEnabledRef.current = snapEnabled; }, [snapEnabled]);
-  useEffect(() => { gridSizeRef.current = gridSize; }, [gridSize]);
-  useEffect(() => { draftRef.current = draft; }, [draft]);
+  useEffect(() => {
+    snapEnabledRef.current = snapEnabled;
+  }, [snapEnabled]);
+  useEffect(() => {
+    gridSizeRef.current = gridSize;
+  }, [gridSize]);
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
 
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
@@ -372,7 +358,6 @@ export function CasePrintLayoutEditor({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const seededRef = useRef(false);
 
-  // Track the canvas rendered width so preview font sizes scale correctly.
   const [canvasScale, setCanvasScale] = useState(1);
   useEffect(() => {
     const el = canvasRef.current;
@@ -385,9 +370,10 @@ export function CasePrintLayoutEditor({
     return () => ro.disconnect();
   }, []);
 
-  // Clean up any lingering window drag listeners on unmount.
   useEffect(() => {
-    return () => { dragCleanupRef.current?.(); };
+    return () => {
+      dragCleanupRef.current?.();
+    };
   }, []);
 
   // Seed local draft once the query loads.
@@ -400,16 +386,14 @@ export function CasePrintLayoutEditor({
     }
   }, [query.data]);
 
-  // Resolved per-image data: URLs. Plain `<img src="/api/...">` can't
-  // attach the bearer token desktop uses for auth, so we prefetch each
-  // template image via apiFetchArrayBuffer and inline it as base64.
-  const [imageDataUrls, setImageDataUrls] = useState<Record<string, string>>(
-    {},
-  );
+  const imageElements = draft.elements.filter((el) => el.kind === "image");
+
+  // Resolved per-image data: URLs (bearer auth can't ride a plain <img src>).
+  const [imageDataUrls, setImageDataUrls] = useState<Record<string, string>>({});
   useEffect(() => {
     if (!orgId) return;
     const known = imageDataUrls;
-    const missing = draft.extraImages.filter((img) => !known[img.id]);
+    const missing = imageElements.filter((img) => !known[img.id]);
     if (missing.length === 0) return;
     let cancelled = false;
     (async () => {
@@ -430,7 +414,7 @@ export function CasePrintLayoutEditor({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orgId, draft.extraImages]);
+  }, [orgId, draft.elements]);
 
   const saveMutation = useMutation({
     mutationFn: async (template: CasePrintTemplate | null) => {
@@ -442,7 +426,6 @@ export function CasePrintLayoutEditor({
     },
     onSuccess: async (template) => {
       await qc.invalidateQueries({ queryKey: ["casePrintTemplate", orgId] });
-      // Update the clean baseline so dirty=false, then clear history.
       cleanTemplateRef.current = template ?? DEFAULT_CASE_PRINT_TEMPLATE;
       setUndoStack([]);
       setRedoStack([]);
@@ -462,28 +445,22 @@ export function CasePrintLayoutEditor({
         `/organizations/${orgId}/case-print-template/images`,
         { method: "POST", body: form },
       );
-      return (((res as unknown) as { data?: UploadedImage }).data ??
-        (res as UploadedImage));
+      return (
+        (res as unknown as { data?: UploadedImage }).data ??
+        (res as UploadedImage)
+      );
     },
     onSuccess: (img) => {
       setUploadError(null);
-      setDraft((d) => ({
-        ...d,
-        extraImages: [
-          ...d.extraImages,
-          {
-            id: img.id,
-            storageKey: img.storageKey,
-            url: img.url,
-            x: 60,
-            y: 60,
-            w: 160,
-            h: 80,
-            opacity: 1,
-          },
-        ],
-      }));
-      setSelected({ kind: "image", key: img.id });
+      const el = makeImageElement(img.id, img.storageKey, img.url, {
+        x: 60,
+        y: 60,
+        w: 160,
+        h: 80,
+      });
+      pushUndo(draftRef.current);
+      setDraft((d) => ({ ...d, elements: [...d.elements, el] }));
+      setSelectedId(el.id);
     },
     onError: (e) => {
       setUploadError(e instanceof Error ? e.message : "Upload failed.");
@@ -501,16 +478,12 @@ export function CasePrintLayoutEditor({
   });
 
   // ── Undo / redo ───────────────────────────────────────────────────────
-
-  // Mirror current values in refs so the keyboard handler is never stale.
-  // (draftRef is declared above near snap/grid refs; just keep it in sync here.)
   draftRef.current = draft;
   const undoStackRef = useRef(undoStack);
   undoStackRef.current = undoStack;
   const redoStackRef = useRef(redoStack);
   redoStackRef.current = redoStack;
 
-  /** Push the given snapshot onto the undo stack and clear redo. */
   function pushUndo(snapshot: CasePrintTemplate) {
     setUndoStack((prev) => [...prev.slice(-(MAX_UNDO - 1)), snapshot]);
     setRedoStack([]);
@@ -534,7 +507,6 @@ export function CasePrintLayoutEditor({
     setDraft(snapshot);
   }
 
-  // Keep refs up to date so the static keydown listener calls the latest fn.
   const undoFnRef = useRef(undo);
   undoFnRef.current = undo;
   const redoFnRef = useRef(redo);
@@ -544,6 +516,15 @@ export function CasePrintLayoutEditor({
     function handleKeyDown(e: KeyboardEvent) {
       const mod = e.ctrlKey || e.metaKey;
       if (!mod) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT")
+      ) {
+        return;
+      }
       if (e.key === "z" && !e.shiftKey) {
         e.preventDefault();
         undoFnRef.current();
@@ -559,10 +540,9 @@ export function CasePrintLayoutEditor({
   // ── Pointer / drag handlers ───────────────────────────────────────────
   function startDrag(
     e: React.PointerEvent,
-    kind: DragState["kind"],
-    key: string,
+    id: string,
     handle: Handle,
-    box: { x: number; y: number; w: number; h: number },
+    box: Box,
   ) {
     e.stopPropagation();
     e.preventDefault();
@@ -570,11 +550,9 @@ export function CasePrintLayoutEditor({
     if (!rect) return;
     const scaleX = PAGE_W / rect.width;
     const scaleY = PAGE_H / rect.height;
-    // Snapshot before the drag begins so Ctrl+Z restores the pre-drag state.
     pushUndo(draftRef.current);
     dragRef.current = {
-      kind,
-      key,
+      id,
       handle,
       startX: e.clientX * scaleX,
       startY: e.clientY * scaleY,
@@ -582,11 +560,7 @@ export function CasePrintLayoutEditor({
       scaleX,
       scaleY,
     };
-    if (kind === "section") {
-      setSelected({ kind: "section", key: key as CaseTemplateSectionKey });
-    } else {
-      setSelected({ kind: "image", key });
-    }
+    setSelectedId(id);
 
     function handleMove(ev: PointerEvent) {
       const d = dragRef.current;
@@ -596,17 +570,13 @@ export function CasePrintLayoutEditor({
       let next = applyDrag(d.startBox, d.handle, dx, dy);
 
       if (snapEnabledRef.current) {
-        // 1. Grid snap
         next = applyGridSnap(next, d.handle, gridSizeRef.current);
-        // Re-clamp after grid snap
         next = {
           ...next,
           x: clamp(next.x, 0, PAGE_W - next.w),
           y: clamp(next.y, 0, PAGE_H - next.h),
         };
-
-        // 2. Alignment snap (may override grid snap when an edge aligns closely)
-        const refs = buildAlignRefs(draftRef.current, d.key);
+        const refs = buildAlignRefs(draftRef.current.elements, d.id);
         const aligned = applyAlignmentSnap(next, d.handle, refs, SNAP_THRESHOLD);
         next = {
           ...aligned.box,
@@ -618,21 +588,12 @@ export function CasePrintLayoutEditor({
         setGuideLines({ x: [], y: [] });
       }
 
-      setDraft((cur) => {
-        if (d.kind === "section") {
-          const k = d.key as CaseTemplateSectionKey;
-          return {
-            ...cur,
-            boxes: { ...cur.boxes, [k]: { ...cur.boxes[k], ...next } },
-          };
-        }
-        return {
-          ...cur,
-          extraImages: cur.extraImages.map((img) =>
-            img.id === d.key ? { ...img, ...next } : img,
-          ),
-        };
-      });
+      setDraft((cur) => ({
+        ...cur,
+        elements: cur.elements.map((el) =>
+          el.id === d.id ? { ...el, ...next } : el,
+        ),
+      }));
     }
 
     function handleUp() {
@@ -643,7 +604,6 @@ export function CasePrintLayoutEditor({
       dragCleanupRef.current = null;
     }
 
-    // Clean up any previous drag that wasn't properly ended.
     dragCleanupRef.current?.();
     window.addEventListener("pointermove", handleMove);
     window.addEventListener("pointerup", handleUp);
@@ -651,38 +611,12 @@ export function CasePrintLayoutEditor({
   }
 
   // ── Sidebar mutators ──────────────────────────────────────────────────
-  function patchFieldSize(
-    section: "caseDetails" | "rxSummary",
-    field: CaseDetailField | RxSummaryField,
-    size: FieldSize,
-  ) {
+  function patchElement(id: string, patch: Partial<CasePrintElement>) {
     pushUndo(draftRef.current);
     setDraft((cur) => ({
       ...cur,
-      fieldSizes: {
-        ...cur.fieldSizes,
-        [section]: {
-          ...cur.fieldSizes?.[section],
-          [field]: size === "normal" ? undefined : size,
-        },
-      },
-    }));
-  }
-
-  function patchBox(key: CaseTemplateSectionKey, patch: Partial<CaseTemplateBox>) {
-    pushUndo(draftRef.current);
-    setDraft((cur) => ({
-      ...cur,
-      boxes: { ...cur.boxes, [key]: { ...cur.boxes[key], ...patch } },
-    }));
-  }
-
-  function patchImage(id: string, patch: Partial<CasePrintExtraImage>) {
-    pushUndo(draftRef.current);
-    setDraft((cur) => ({
-      ...cur,
-      extraImages: cur.extraImages.map((img) =>
-        img.id === id ? { ...img, ...patch } : img,
+      elements: cur.elements.map((el) =>
+        el.id === id ? { ...el, ...patch } : el,
       ),
     }));
   }
@@ -691,23 +625,22 @@ export function CasePrintLayoutEditor({
     // Image deletion is NOT undoable — the file is removed from storage.
     setDraft((cur) => ({
       ...cur,
-      extraImages: cur.extraImages.filter((img) => img.id !== id),
+      elements: cur.elements.filter((el) => el.id !== id),
     }));
-    if (selected?.kind === "image" && selected.key === id) setSelected(null);
-    // Fire-and-forget storage cleanup
+    if (selectedId === id) setSelectedId(null);
     deleteImageMutation.mutate(id);
   }
 
   function resetToDefaults() {
     pushUndo(draftRef.current);
     setDraft(DEFAULT_CASE_PRINT_TEMPLATE);
-    setSelected(null);
+    setSelectedId(null);
   }
 
   function handleFile(file: File | null | undefined) {
     if (!file) return;
-    if (draft.extraImages.length >= 8) {
-      setUploadError("Maximum of 8 images per layout.");
+    if (imageElements.length >= MAX_IMAGES) {
+      setUploadError(`Maximum of ${MAX_IMAGES} images per layout.`);
       return;
     }
     uploadMutation.mutate(file);
@@ -716,11 +649,8 @@ export function CasePrintLayoutEditor({
 
   // ── Close flow ────────────────────────────────────────────────────────
   function attemptClose() {
-    if (dirty) {
-      setAskKeep(true);
-    } else {
-      onClose();
-    }
+    if (dirty) setAskKeep(true);
+    else onClose();
   }
 
   async function keepAndClose() {
@@ -743,13 +673,9 @@ export function CasePrintLayoutEditor({
   }
 
   // ── Render ────────────────────────────────────────────────────────────
-  const selectedSection =
-    selected?.kind === "section" ? draft.boxes[selected.key] : null;
-  const selectedImage =
-    selected?.kind === "image"
-      ? draft.extraImages.find((i) => i.id === selected.key) ?? null
-      : null;
-
+  const selectedEl = selectedId
+    ? draft.elements.find((el) => el.id === selectedId) ?? null
+    : null;
   const isDefault = isSameTemplate(draft, DEFAULT_CASE_PRINT_TEMPLATE);
 
   if (!orgId) {
@@ -784,8 +710,7 @@ export function CasePrintLayoutEditor({
           <div>
             <h2 className="text-sm font-semibold">Advanced Print Layout</h2>
             <p className="text-[11px] text-muted-foreground">
-              Drag and resize the boxes. Add logos or signatures. Your lab
-              shares one layout.
+              Drag, resize, and style each field. Your lab shares one layout.
               {dirty && (
                 <span className="ml-2 text-amber-600 dark:text-amber-400 font-medium">
                   · Unsaved changes
@@ -823,7 +748,7 @@ export function CasePrintLayoutEditor({
               onClick={resetToDefaults}
               disabled={isDefault && !dirty}
               className="h-8 px-2.5 rounded-md hover:bg-secondary text-muted-foreground hover:text-foreground inline-flex items-center gap-1.5 text-xs font-medium disabled:opacity-40 disabled:cursor-not-allowed"
-              title="Reset all boxes to default positions"
+              title="Reset all elements to default positions"
             >
               <RotateCcw size={13} />
               Reset
@@ -831,13 +756,17 @@ export function CasePrintLayoutEditor({
             <button
               type="button"
               onClick={() =>
-                isAdmin ? saveMutation.mutate(draft) : setSaveError("Only lab admins can save.")
+                isAdmin
+                  ? saveMutation.mutate(draft)
+                  : setSaveError("Only lab admins can save.")
               }
               disabled={!dirty || saveMutation.isPending}
               className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-50 inline-flex items-center gap-1.5"
               title={isAdmin ? "Save as the lab default" : "Admin only"}
             >
-              {saveMutation.isPending && <Loader2 size={11} className="animate-spin" />}
+              {saveMutation.isPending && (
+                <Loader2 size={11} className="animate-spin" />
+              )}
               Save
             </button>
             <button
@@ -853,49 +782,49 @@ export function CasePrintLayoutEditor({
 
         {/* Body */}
         <div className="flex-1 flex min-h-0 overflow-hidden">
-          {/* Left rail — sections / images / selected props */}
+          {/* Left rail */}
           <aside className="w-72 border-r border-border bg-secondary/20 overflow-y-auto p-3 space-y-4 shrink-0">
-            {/* Sections */}
+            {/* Fields */}
             <section>
               <h3 className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2 px-1">
-                Sections
+                Fields
               </h3>
               <div className="space-y-1">
-                {SECTION_ORDER.map((key) => {
-                  const box = draft.boxes[key];
-                  const isSelected =
-                    selected?.kind === "section" && selected.key === key;
-                  return (
-                    <div
-                      key={key}
-                      className={`flex items-center gap-1.5 px-2 py-1.5 rounded-md border text-xs transition-colors cursor-pointer ${
-                        isSelected
-                          ? "bg-primary/10 border-primary/40"
-                          : "bg-card border-border hover:bg-secondary/40"
-                      } ${!box.visible ? "opacity-60" : ""}`}
-                      onClick={() => setSelected({ kind: "section", key })}
-                    >
-                      <span
-                        className="w-2.5 h-2.5 rounded-sm shrink-0"
-                        style={{ background: SECTION_COLORS[key] }}
-                      />
-                      <span className="flex-1 truncate font-medium">
-                        {SECTION_LABELS[key]}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          patchBox(key, { visible: !box.visible });
-                        }}
-                        className="text-muted-foreground hover:text-foreground"
-                        title={box.visible ? "Hide" : "Show"}
+                {draft.elements
+                  .filter((el) => el.kind !== "image")
+                  .map((el) => {
+                    const isSelected = selectedId === el.id;
+                    return (
+                      <div
+                        key={el.id}
+                        className={`flex items-center gap-1.5 px-2 py-1.5 rounded-md border text-xs transition-colors cursor-pointer ${
+                          isSelected
+                            ? "bg-primary/10 border-primary/40"
+                            : "bg-card border-border hover:bg-secondary/40"
+                        } ${!el.visible ? "opacity-60" : ""}`}
+                        onClick={() => setSelectedId(el.id)}
                       >
-                        {box.visible ? <Eye size={12} /> : <EyeOff size={12} />}
-                      </button>
-                    </div>
-                  );
-                })}
+                        <span
+                          className="w-2.5 h-2.5 rounded-sm shrink-0"
+                          style={{ background: ELEMENT_COLORS[el.kind] }}
+                        />
+                        <span className="flex-1 truncate font-medium">
+                          {ELEMENT_LABELS[el.kind]}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            patchElement(el.id, { visible: !el.visible });
+                          }}
+                          className="text-muted-foreground hover:text-foreground"
+                          title={el.visible ? "Hide" : "Show"}
+                        >
+                          {el.visible ? <Eye size={12} /> : <EyeOff size={12} />}
+                        </button>
+                      </div>
+                    );
+                  })}
               </div>
             </section>
 
@@ -906,7 +835,7 @@ export function CasePrintLayoutEditor({
                   Logos &amp; Images
                 </h3>
                 <span className="text-[9px] text-muted-foreground">
-                  {draft.extraImages.length}/8
+                  {imageElements.length}/{MAX_IMAGES}
                 </span>
               </div>
               <input
@@ -920,10 +849,16 @@ export function CasePrintLayoutEditor({
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={
-                  uploadMutation.isPending || draft.extraImages.length >= 8 || !isAdmin
+                  uploadMutation.isPending ||
+                  imageElements.length >= MAX_IMAGES ||
+                  !isAdmin
                 }
                 className="w-full h-8 rounded-md border border-dashed border-border bg-card hover:bg-secondary/40 inline-flex items-center justify-center gap-1.5 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
-                title={isAdmin ? "Upload PNG/JPG/SVG/WebP/GIF — max 5 MB" : "Admin only"}
+                title={
+                  isAdmin
+                    ? "Upload PNG/JPG/SVG/WebP/GIF — max 5 MB"
+                    : "Admin only"
+                }
               >
                 {uploadMutation.isPending ? (
                   <Loader2 size={12} className="animate-spin" />
@@ -938,9 +873,8 @@ export function CasePrintLayoutEditor({
                 </p>
               )}
               <div className="space-y-1 mt-2">
-                {draft.extraImages.map((img) => {
-                  const isSelected =
-                    selected?.kind === "image" && selected.key === img.id;
+                {imageElements.map((img) => {
+                  const isSelected = selectedId === img.id;
                   return (
                     <div
                       key={img.id}
@@ -949,7 +883,7 @@ export function CasePrintLayoutEditor({
                           ? "bg-primary/10 border-primary/40"
                           : "bg-card border-border hover:bg-secondary/40"
                       }`}
-                      onClick={() => setSelected({ kind: "image", key: img.id })}
+                      onClick={() => setSelectedId(img.id)}
                     >
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
@@ -974,7 +908,7 @@ export function CasePrintLayoutEditor({
                     </div>
                   );
                 })}
-                {draft.extraImages.length === 0 && (
+                {imageElements.length === 0 && (
                   <p className="text-[10px] text-muted-foreground italic px-1 py-1">
                     No images uploaded.
                   </p>
@@ -1009,7 +943,9 @@ export function CasePrintLayoutEditor({
                 </label>
                 {snapEnabled && (
                   <div className="flex items-center gap-1.5">
-                    <span className="text-[10px] text-muted-foreground">Grid size</span>
+                    <span className="text-[10px] text-muted-foreground">
+                      Grid size
+                    </span>
                     <div className="flex gap-0.5 ml-auto">
                       {([8, 16] as const).map((sz) => (
                         <button
@@ -1030,108 +966,75 @@ export function CasePrintLayoutEditor({
                 )}
                 {snapEnabled && (
                   <p className="text-[9px] text-muted-foreground leading-snug">
-                    Edges also snap to other boxes and the page center while dragging.
+                    Edges also snap to other elements and the page center while
+                    dragging.
                   </p>
                 )}
               </div>
             </section>
 
-            {/* Selected props */}
-            {selectedSection && selected?.kind === "section" && (
-              <section className="p-3 rounded-md border border-primary/30 bg-primary/5 space-y-2">
-                <h3 className="text-[10px] font-bold uppercase tracking-wider text-primary">
-                  {SECTION_LABELS[selected.key]}
+            {/* Selected element props */}
+            {selectedEl && (
+              <section className="p-3 rounded-md border border-primary/30 bg-primary/5 space-y-2.5">
+                <h3 className="text-[10px] font-bold uppercase tracking-wider text-primary flex items-center gap-1.5">
+                  {selectedEl.kind === "image" && <ImageIcon size={11} />}
+                  {ELEMENT_LABELS[selectedEl.kind]}
                 </h3>
                 <BoxNumericInputs
-                  box={selectedSection}
-                  onChange={(patch) => patchBox(selected.key, patch)}
+                  box={selectedEl}
+                  onChange={(patch) => patchElement(selectedEl.id, patch)}
+                  minW={selectedEl.kind === "image" ? 10 : 20}
+                  minH={selectedEl.kind === "image" ? 10 : 14}
                 />
                 <label className="flex items-center gap-2 text-xs">
                   <input
                     type="checkbox"
                     className="accent-primary w-3 h-3"
-                    checked={selectedSection.visible}
+                    checked={selectedEl.visible}
                     onChange={(e) =>
-                      patchBox(selected.key, { visible: e.target.checked })
+                      patchElement(selectedEl.id, { visible: e.target.checked })
                     }
                   />
                   <span>Visible on printout</span>
                 </label>
 
-                {selected.key === "caseDetails" && (
-                  <div className="pt-1 space-y-1.5">
-                    <p className="text-[10px] font-semibold text-primary/80 uppercase tracking-wider">
-                      Field text sizes
-                    </p>
-                    {CASE_DETAIL_FIELDS.map((field) => (
-                      <FieldSizeRow
-                        key={field}
-                        label={CASE_DETAIL_FIELD_LABELS[field]}
-                        value={draft.fieldSizes?.caseDetails?.[field] ?? "normal"}
-                        onChange={(sz) => patchFieldSize("caseDetails", field, sz)}
-                      />
-                    ))}
-                  </div>
-                )}
-
-                {selected.key === "rxSummary" && (
-                  <div className="pt-1 space-y-1.5">
-                    <p className="text-[10px] font-semibold text-primary/80 uppercase tracking-wider">
-                      Field text sizes
-                    </p>
-                    {RX_SUMMARY_FIELDS.map((field) => (
-                      <FieldSizeRow
-                        key={field}
-                        label={RX_SUMMARY_FIELD_LABELS[field]}
-                        value={draft.fieldSizes?.rxSummary?.[field] ?? "normal"}
-                        onChange={(sz) => patchFieldSize("rxSummary", field as RxSummaryField, sz)}
-                      />
-                    ))}
-                  </div>
-                )}
-              </section>
-            )}
-
-            {selectedImage && (
-              <section className="p-3 rounded-md border border-indigo-300/50 bg-indigo-50/40 dark:bg-indigo-950/20 space-y-2">
-                <h3 className="text-[10px] font-bold uppercase tracking-wider text-indigo-700 dark:text-indigo-300 flex items-center gap-1.5">
-                  <ImageIcon size={11} />
-                  Image
-                </h3>
-                <BoxNumericInputs
-                  box={selectedImage}
-                  onChange={(patch) => patchImage(selectedImage.id, patch)}
-                  minW={10}
-                  minH={10}
-                />
-                <label className="text-xs space-y-1 block">
-                  <span className="flex justify-between">
-                    <span>Opacity</span>
-                    <span className="font-mono text-[10px] text-muted-foreground">
-                      {Math.round(selectedImage.opacity * 100)}%
-                    </span>
-                  </span>
-                  <input
-                    type="range"
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={selectedImage.opacity}
-                    onChange={(e) =>
-                      patchImage(selectedImage.id, {
-                        opacity: Number(e.target.value),
-                      })
-                    }
-                    className="w-full accent-primary"
+                {isTextKind(selectedEl.kind) && (
+                  <TypographyControls
+                    el={selectedEl}
+                    onChange={(patch) => patchElement(selectedEl.id, patch)}
                   />
-                </label>
+                )}
+
+                {selectedEl.kind === "image" && (
+                  <label className="text-xs space-y-1 block">
+                    <span className="flex justify-between">
+                      <span>Opacity</span>
+                      <span className="font-mono text-[10px] text-muted-foreground">
+                        {Math.round((selectedEl.opacity ?? 1) * 100)}%
+                      </span>
+                    </span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={selectedEl.opacity ?? 1}
+                      onChange={(e) =>
+                        patchElement(selectedEl.id, {
+                          opacity: Number(e.target.value),
+                        })
+                      }
+                      className="w-full accent-primary"
+                    />
+                  </label>
+                )}
               </section>
             )}
 
-            {!selectedSection && !selectedImage && (
+            {!selectedEl && (
               <p className="text-[11px] text-muted-foreground italic px-1">
-                Click a section or image to edit its position, size, and
-                visibility.
+                Click a field or image to edit its position, size, typography,
+                and visibility.
               </p>
             )}
 
@@ -1142,8 +1045,8 @@ export function CasePrintLayoutEditor({
             )}
             {!isAdmin && (
               <div className="text-[10px] text-amber-700 dark:text-amber-400 border border-amber-500/30 bg-amber-500/5 rounded-md p-2">
-                Only lab admins can save the shared layout. You can still
-                drag boxes around to preview.
+                Only lab admins can save the shared layout. You can still drag
+                elements around to preview.
               </div>
             )}
           </aside>
@@ -1152,7 +1055,7 @@ export function CasePrintLayoutEditor({
           <main className="flex-1 overflow-auto bg-secondary/30 p-6 flex items-start justify-center">
             <div
               ref={canvasRef}
-              onClick={() => setSelected(null)}
+              onClick={() => setSelectedId(null)}
               className="relative bg-white border border-border rounded shadow-sm select-none"
               style={{
                 aspectRatio: `${PAGE_W} / ${PAGE_H}`,
@@ -1160,46 +1063,30 @@ export function CasePrintLayoutEditor({
                 maxWidth: PAGE_W,
               }}
             >
-              {/* Section boxes */}
-              {SECTION_ORDER.map((key) => {
-                const box = draft.boxes[key];
-                if (!box.visible) return null;
-                const isSelected =
-                  selected?.kind === "section" && selected.key === key;
+              {draft.elements.map((el) => {
+                if (!el.visible) return null;
+                const isSelected = selectedId === el.id;
+                const isImage = el.kind === "image";
                 return (
                   <DraggableBox
-                    key={key}
-                    box={box}
-                    color={SECTION_COLORS[key]}
-                    label={SECTION_LABELS[key]}
-                    selected={isSelected}
-                    preview={
-                      <SectionPreview
-                        sectionKey={key}
-                        fieldSizes={draft.fieldSizes}
-                        scale={canvasScale}
-                      />
+                    key={el.id}
+                    box={el}
+                    color={
+                      isImage
+                        ? "rgba(99,102,241,0.10)"
+                        : ELEMENT_COLORS[el.kind]
                     }
-                    onStart={(e, h) => startDrag(e, "section", key, h, box)}
-                  />
-                );
-              })}
-
-              {/* Extra images */}
-              {draft.extraImages.map((img) => {
-                const isSelected =
-                  selected?.kind === "image" && selected.key === img.id;
-                return (
-                  <DraggableBox
-                    key={img.id}
-                    box={img}
-                    color="rgba(99,102,241,0.10)"
-                    label=""
+                    label={isImage ? "" : ELEMENT_LABELS[el.kind]}
                     selected={isSelected}
-                    imageUrl={imageDataUrls[img.id]}
-                    opacity={img.opacity}
-                    onStart={(e, h) => startDrag(e, "image", img.id, h, img)}
-                    onDelete={() => deleteImage(img.id)}
+                    imageUrl={isImage ? imageDataUrls[el.id] : undefined}
+                    opacity={isImage ? el.opacity ?? 1 : undefined}
+                    preview={
+                      isImage ? undefined : (
+                        <ElementPreview el={el} scale={canvasScale} />
+                      )
+                    }
+                    onStart={(e, h) => startDrag(e, el.id, h, el)}
+                    onDelete={isImage ? () => deleteImage(el.id) : undefined}
                   />
                 );
               })}
@@ -1247,8 +1134,8 @@ export function CasePrintLayoutEditor({
             <div className="bg-card border border-border rounded-xl shadow-xl p-5 max-w-sm w-full mx-4">
               <h3 className="text-sm font-semibold mb-1">Keep these changes?</h3>
               <p className="text-xs text-muted-foreground mb-4">
-                You've made changes to the print layout. Save them as your
-                lab's default for next time, or discard.
+                You've made changes to the print layout. Save them as your lab's
+                default for next time, or discard.
               </p>
               {saveError && (
                 <p className="text-[11px] text-destructive mb-2">{saveError}</p>
@@ -1289,10 +1176,109 @@ export function CasePrintLayoutEditor({
   );
 }
 
+// ── Typography controls ────────────────────────────────────────────────
+
+function TypographyControls({
+  el,
+  onChange,
+}: {
+  el: CasePrintElement;
+  onChange: (patch: Partial<CasePrintElement>) => void;
+}) {
+  const aligns: Array<{ value: ElementAlign; icon: React.ReactNode }> = [
+    { value: "left", icon: <AlignLeft size={13} /> },
+    { value: "center", icon: <AlignCenter size={13} /> },
+    { value: "right", icon: <AlignRight size={13} /> },
+  ];
+  return (
+    <div className="space-y-2 pt-1 border-t border-primary/20">
+      <p className="text-[10px] font-semibold text-primary/80 uppercase tracking-wider">
+        Typography
+      </p>
+      <label className="text-[10px] block">
+        <span className="text-muted-foreground">Font</span>
+        <select
+          value={el.fontFamily ?? DEFAULT_FONT_FAMILY}
+          onChange={(e) => onChange({ fontFamily: e.target.value })}
+          className="w-full mt-0.5 h-7 px-1.5 rounded border border-border bg-background text-xs"
+        >
+          {FONT_FAMILIES.map((f) => (
+            <option key={f.value} value={f.value}>
+              {f.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="flex items-center gap-2">
+        <label className="text-[10px] flex-1">
+          <span className="text-muted-foreground">Size (pt)</span>
+          <input
+            type="number"
+            min={5}
+            max={200}
+            value={el.fontSize ?? 13}
+            onChange={(e) => {
+              const v = Number.parseInt(e.target.value, 10);
+              if (Number.isFinite(v)) onChange({ fontSize: clamp(v, 5, 200) });
+            }}
+            className="w-full mt-0.5 h-7 px-2 rounded border border-border bg-background text-xs font-mono"
+          />
+        </label>
+        <div className="flex gap-0.5 mt-3.5">
+          <button
+            type="button"
+            onClick={() => onChange({ bold: !el.bold })}
+            className={`h-7 w-7 rounded border inline-flex items-center justify-center transition-colors ${
+              el.bold
+                ? "bg-primary text-primary-foreground border-primary"
+                : "bg-card text-muted-foreground border-border hover:bg-secondary/60"
+            }`}
+            title="Bold"
+          >
+            <Bold size={13} />
+          </button>
+          <button
+            type="button"
+            onClick={() => onChange({ italic: !el.italic })}
+            className={`h-7 w-7 rounded border inline-flex items-center justify-center transition-colors ${
+              el.italic
+                ? "bg-primary text-primary-foreground border-primary"
+                : "bg-card text-muted-foreground border-border hover:bg-secondary/60"
+            }`}
+            title="Italic"
+          >
+            <Italic size={13} />
+          </button>
+        </div>
+      </div>
+      <div>
+        <span className="text-[10px] text-muted-foreground">Alignment</span>
+        <div className="flex gap-0.5 mt-0.5">
+          {aligns.map((a) => (
+            <button
+              key={a.value}
+              type="button"
+              onClick={() => onChange({ align: a.value })}
+              className={`h-7 flex-1 rounded border inline-flex items-center justify-center transition-colors ${
+                (el.align ?? "left") === a.value
+                  ? "bg-primary text-primary-foreground border-primary"
+                  : "bg-card text-muted-foreground border-border hover:bg-secondary/60"
+              }`}
+              title={`Align ${a.value}`}
+            >
+              {a.icon}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── DraggableBox helper ────────────────────────────────────────────────
 
 interface DraggableBoxProps {
-  box: { x: number; y: number; w: number; h: number };
+  box: Box;
   color: string;
   label: string;
   selected?: boolean;
@@ -1315,6 +1301,7 @@ function DraggableBox({
   onDelete,
 }: DraggableBoxProps) {
   const [hovered, setHovered] = useState(false);
+  const isImage = !!onDelete;
 
   const style: React.CSSProperties = {
     position: "absolute",
@@ -1323,9 +1310,7 @@ function DraggableBox({
     width: `${(box.w / PAGE_W) * 100}%`,
     height: `${(box.h / PAGE_H) * 100}%`,
     background: imageUrl ? "transparent" : color,
-    border: selected
-      ? "1.5px solid #2563eb"
-      : "1px dashed rgba(0,0,0,0.35)",
+    border: selected ? "1.5px solid #2563eb" : "1px dashed rgba(0,0,0,0.35)",
     cursor: "move",
     boxSizing: "border-box",
   };
@@ -1341,7 +1326,7 @@ function DraggableBox({
       onPointerEnter={() => setHovered(true)}
       onPointerLeave={() => setHovered(false)}
     >
-      {imageUrl && (
+      {isImage && imageUrl && (
         // eslint-disable-next-line @next/next/no-img-element
         <img
           src={imageUrl}
@@ -1357,7 +1342,7 @@ function DraggableBox({
         />
       )}
 
-      {!imageUrl && (
+      {!isImage && (
         <div
           style={{
             position: "absolute",
@@ -1366,41 +1351,27 @@ function DraggableBox({
             pointerEvents: "none",
           }}
         >
-          {/* Section label badge — always visible on top */}
+          {preview && <div style={{ position: "absolute", inset: 0 }}>{preview}</div>}
           {label && (
             <span
               style={{
                 position: "absolute",
-                top: 3,
-                left: 5,
+                top: 2,
+                left: 3,
                 zIndex: 2,
-                fontSize: 9,
+                fontSize: 8,
                 fontWeight: 700,
-                color: "rgba(0,0,0,0.5)",
-                background: "rgba(255,255,255,0.72)",
+                color: "rgba(0,0,0,0.55)",
+                background: "rgba(255,255,255,0.82)",
                 borderRadius: 2,
                 padding: "0 3px",
-                lineHeight: "14px",
+                lineHeight: "12px",
                 whiteSpace: "nowrap",
                 letterSpacing: "0.01em",
               }}
             >
               {label}
             </span>
-          )}
-
-          {/* Content preview — slightly blurred/faded to signal it's approximate */}
-          {preview && (
-            <div
-              style={{
-                position: "absolute",
-                inset: 0,
-                filter: "blur(0.3px)",
-                opacity: 0.78,
-              }}
-            >
-              {preview}
-            </div>
           )}
         </div>
       )}
@@ -1468,50 +1439,10 @@ function DraggableBox({
   );
 }
 
-// ── Field size row ──────────────────────────────────────────────────────
-
-const FIELD_SIZE_LABELS: Record<FieldSize, string> = {
-  normal: "Normal",
-  large: "Large",
-  xl: "XL",
-};
-
-function FieldSizeRow({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: FieldSize;
-  onChange: (size: FieldSize) => void;
-}) {
-  return (
-    <div className="flex items-center gap-1.5">
-      <span className="text-[10px] text-muted-foreground flex-1 truncate">{label}</span>
-      <div className="flex gap-0.5">
-        {FIELD_SIZE_VALUES.map((sz) => (
-          <button
-            key={sz}
-            type="button"
-            onClick={() => onChange(sz)}
-            className={`h-5 px-1.5 rounded text-[9px] font-medium border transition-colors ${
-              value === sz
-                ? "bg-primary text-primary-foreground border-primary"
-                : "bg-card text-muted-foreground border-border hover:bg-secondary/60"
-            }`}
-          >
-            {FIELD_SIZE_LABELS[sz]}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 // ── Numeric inputs for selected box ────────────────────────────────────
 
 interface BoxNumericInputsProps {
-  box: { x: number; y: number; w: number; h: number };
+  box: Box;
   onChange: (patch: { x?: number; y?: number; w?: number; h?: number }) => void;
   minW?: number;
   minH?: number;
@@ -1520,8 +1451,8 @@ interface BoxNumericInputsProps {
 function BoxNumericInputs({
   box,
   onChange,
-  minW = 40,
-  minH = 20,
+  minW = 20,
+  minH = 14,
 }: BoxNumericInputsProps) {
   function field(
     label: string,
@@ -1557,274 +1488,73 @@ function BoxNumericInputs({
   );
 }
 
-// ── Section content preview ─────────────────────────────────────────────
+// ── Element content preview ─────────────────────────────────────────────
 //
-// Renders placeholder content inside each section box on the canvas so
-// admins can see the effect of Normal/Large/XL field-size changes before
-// printing. Font sizes are scaled to the canvas's actual render width.
+// Renders sample content with the element's real typography so admins can
+// see the effect of their styling before printing. Font sizes scale to the
+// canvas's actual render width.
 
-interface SectionPreviewProps {
-  sectionKey: CaseTemplateSectionKey;
-  fieldSizes?: CasePrintFieldSizes;
-  scale: number;
-}
+const SAMPLE_VALUES: Record<string, string> = {
+  caseNumber: "Case LAB-2024-001",
+  patient: "Smith, John",
+  doctor: "Dr. Patel",
+  dueDate: "06/12/2024",
+  priority: "Rush",
+  restorativeType: "PFM Crown",
+  teeth: "#14, #15",
+  material: "Zirconia",
+  shade: "A2",
+  rxNotes:
+    "Please verify shade with photo on file. Light occlusal contacts. Deliver by Friday.",
+};
 
-function scaledPx(base: number, scale: number): number {
-  return Math.max(5, Math.round(base * scale));
-}
+const SAMPLE_TEETH = new Set(["14", "15"]);
 
-function fieldFontSize(
-  size: FieldSize | undefined,
-  base: number,
-  scale: number,
-): number {
-  const mult = size === "xl" ? 1.55 : size === "large" ? 1.28 : 1;
-  return scaledPx(base * mult, scale);
-}
-
-// Tiny row: "Label  Value" used in caseDetails / rxSummary previews.
-function PreviewRow({
-  label,
-  value,
-  labelSize,
-  valueSize,
+function ElementPreview({
+  el,
+  scale,
 }: {
-  label: string;
-  value: string;
-  labelSize: number;
-  valueSize: number;
+  el: CasePrintElement;
+  scale: number;
 }) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "baseline",
-        gap: scaledPx(5, 1),
-        lineHeight: 1.35,
-        marginBottom: Math.max(2, Math.round(valueSize * 0.18)),
-      }}
-    >
-      <span
-        style={{
-          fontSize: labelSize,
-          color: "rgba(0,0,0,0.45)",
-          whiteSpace: "nowrap",
-          flexShrink: 0,
-          minWidth: "28%",
+  if (el.kind === "toothChart") {
+    return (
+      <div
+        style={{ position: "absolute", inset: 0, padding: 2 }}
+        dangerouslySetInnerHTML={{
+          __html: buildAnatomicalToothChartSvg(SAMPLE_TEETH),
         }}
-      >
-        {label}:
-      </span>
-      <span
-        style={{
-          fontSize: valueSize,
-          fontWeight: 600,
-          color: "rgba(0,0,0,0.82)",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-        }}
-      >
-        {value}
-      </span>
-    </div>
-  );
-}
-
-function SectionPreview({ sectionKey, fieldSizes, scale }: SectionPreviewProps) {
-  const pad = scaledPx(8, scale);
-  // base "normal" value font size at scale=1
-  const BASE_VALUE = 9;
-  const BASE_LABEL = 7;
-  const labelSz = scaledPx(BASE_LABEL, scale);
-
-  const containerStyle: React.CSSProperties = {
-    position: "absolute",
-    inset: 0,
-    padding: `${scaledPx(18, scale)}px ${pad}px ${pad}px`,
-    overflow: "hidden",
-    boxSizing: "border-box",
-    fontFamily: "system-ui, sans-serif",
-  };
-
-  // ── Header ──────────────────────────────────────────────────────────
-  if (sectionKey === "header") {
-    return (
-      <div style={containerStyle}>
-        <div
-          style={{
-            fontSize: scaledPx(13, scale),
-            fontWeight: 700,
-            color: "rgba(0,0,0,0.8)",
-            letterSpacing: "0.01em",
-          }}
-        >
-          Case #LAB-2024-001
-        </div>
-        <div
-          style={{
-            marginTop: scaledPx(3, scale),
-            display: "inline-flex",
-            alignItems: "center",
-            gap: scaledPx(4, scale),
-            fontSize: scaledPx(8, scale),
-            fontWeight: 600,
-            color: "#16a34a",
-            background: "rgba(22,163,74,0.1)",
-            borderRadius: scaledPx(3, scale),
-            padding: `${scaledPx(2, scale)}px ${scaledPx(6, scale)}px`,
-          }}
-        >
-          <span
-            style={{
-              width: scaledPx(5, scale),
-              height: scaledPx(5, scale),
-              borderRadius: "50%",
-              background: "#16a34a",
-              display: "inline-block",
-            }}
-          />
-          Active
-        </div>
-      </div>
+      />
     );
   }
 
-  // ── Case Details ─────────────────────────────────────────────────────
-  if (sectionKey === "caseDetails") {
-    const cd = fieldSizes?.caseDetails;
-    const rows: Array<{ field: CaseDetailField; label: string; value: string }> = [
-      { field: "patient", label: CASE_DETAIL_FIELD_LABELS.patient, value: "Smith, John" },
-      { field: "doctor", label: CASE_DETAIL_FIELD_LABELS.doctor, value: "Dr. Patel" },
-      { field: "status", label: CASE_DETAIL_FIELD_LABELS.status, value: "Active" },
-      { field: "priority", label: CASE_DETAIL_FIELD_LABELS.priority, value: "Standard" },
-      { field: "dueDate", label: CASE_DETAIL_FIELD_LABELS.dueDate, value: "06/12/2024" },
-      { field: "created", label: CASE_DETAIL_FIELD_LABELS.created, value: "06/01/2024" },
+  if (el.kind === "barcode") {
+    const pattern = [
+      2, 1, 3, 1, 2, 2, 1, 3, 1, 1, 2, 3, 1, 2, 1, 3, 2, 1, 1, 2, 3, 1, 2, 1, 1,
+      3, 2, 1, 2, 2, 1, 3, 1, 1, 2, 3, 1, 2, 1, 3,
     ];
-    return (
-      <div style={containerStyle}>
-        {rows.map(({ field, label, value }) => (
-          <PreviewRow
-            key={field}
-            label={label}
-            value={value}
-            labelSize={labelSz}
-            valueSize={fieldFontSize(cd?.[field], BASE_VALUE, scale)}
-          />
-        ))}
-      </div>
-    );
-  }
-
-  // ── RX Summary ───────────────────────────────────────────────────────
-  if (sectionKey === "rxSummary") {
-    const rx = fieldSizes?.rxSummary;
-    const rows: Array<{ field: RxSummaryField; label: string; value: string }> = [
-      { field: "restorativeType", label: RX_SUMMARY_FIELD_LABELS.restorativeType, value: "PFM Crown" },
-      { field: "teeth", label: RX_SUMMARY_FIELD_LABELS.teeth, value: "#14, #15" },
-      { field: "material", label: RX_SUMMARY_FIELD_LABELS.material, value: "Zirconia" },
-      { field: "shade", label: RX_SUMMARY_FIELD_LABELS.shade, value: "A2" },
-    ];
-    return (
-      <div style={containerStyle}>
-        {rows.map(({ field, label, value }) => (
-          <PreviewRow
-            key={field}
-            label={label}
-            value={value}
-            labelSize={labelSz}
-            valueSize={fieldFontSize(rx?.[field], BASE_VALUE, scale)}
-          />
-        ))}
-      </div>
-    );
-  }
-
-  // ── Tooth Chart ──────────────────────────────────────────────────────
-  if (sectionKey === "toothChart") {
-    const cellSize = scaledPx(10, scale);
-    const gap = scaledPx(2, scale);
-    const topTeeth = Array.from({ length: 16 }, (_, i) => i + 1);
-    const botTeeth = Array.from({ length: 16 }, (_, i) => i + 17);
+    const unit = Math.max(1, scale);
     return (
       <div
         style={{
-          ...containerStyle,
+          position: "absolute",
+          inset: 0,
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
           justifyContent: "center",
-          gap: scaledPx(4, scale),
-        }}
-      >
-        {[topTeeth, botTeeth].map((row, ri) => (
-          <div key={ri} style={{ display: "flex", gap }}>
-            {row.map((n) => (
-              <div
-                key={n}
-                style={{
-                  width: cellSize,
-                  height: cellSize,
-                  borderRadius: scaledPx(2, scale),
-                  background: "rgba(234,179,8,0.35)",
-                  border: "1px solid rgba(234,179,8,0.6)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontSize: Math.max(4, scaledPx(5, scale)),
-                  color: "rgba(0,0,0,0.5)",
-                  fontWeight: 600,
-                }}
-              >
-                {n}
-              </div>
-            ))}
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  // ── Notes ────────────────────────────────────────────────────────────
-  if (sectionKey === "notes") {
-    return (
-      <div style={{ ...containerStyle, paddingTop: scaledPx(18, scale) }}>
-        <div
-          style={{
-            fontSize: scaledPx(8, scale),
-            color: "rgba(0,0,0,0.55)",
-            lineHeight: 1.5,
-          }}
-        >
-          Please call before delivery. Patient has sensitivity to metal alloys.
-          Verify shade with photo on file. Rush order — needed by end of week.
-        </div>
-      </div>
-    );
-  }
-
-  // ── Barcode ──────────────────────────────────────────────────────────
-  if (sectionKey === "barcode") {
-    const barH = "60%";
-    const pattern = [2, 1, 3, 1, 2, 2, 1, 3, 1, 1, 2, 3, 1, 2, 1, 3, 2, 1, 1, 2,
-                     3, 1, 2, 1, 1, 3, 2, 1, 2, 2, 1, 3, 1, 1, 2, 3, 1, 2, 1, 3];
-    return (
-      <div
-        style={{
-          ...containerStyle,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          gap: 0,
-          padding: `${scaledPx(6, scale)}px ${scaledPx(12, scale)}px`,
+          padding: 4,
+          gap: 2,
         }}
       >
         <div
           style={{
             display: "flex",
             alignItems: "center",
-            height: "100%",
-            gap: scaledPx(1, scale),
+            height: "55%",
+            gap: 0,
+            width: "92%",
+            justifyContent: "center",
           }}
         >
           {pattern.map((w, i) =>
@@ -1832,24 +1562,82 @@ function SectionPreview({ sectionKey, fieldSizes, scale }: SectionPreviewProps) 
               <div
                 key={i}
                 style={{
-                  width: w * scaledPx(1, scale),
-                  height: barH,
-                  background: "rgba(0,0,0,0.8)",
-                  borderRadius: 0.5,
+                  width: w * unit,
+                  height: "100%",
+                  background: "rgba(0,0,0,0.82)",
                   flexShrink: 0,
                 }}
               />
             ) : (
-              <div
-                key={i}
-                style={{ width: w * scaledPx(1, scale), flexShrink: 0 }}
-              />
+              <div key={i} style={{ width: w * unit, flexShrink: 0 }} />
             ),
           )}
+        </div>
+        <div
+          style={{
+            fontFamily: "ui-monospace, monospace",
+            fontSize: Math.max(6, Math.round(11 * scale)),
+            fontWeight: 700,
+            letterSpacing: "0.3em",
+            color: "rgba(0,0,0,0.8)",
+          }}
+        >
+          LAB-2024-001
         </div>
       </div>
     );
   }
 
-  return null;
+  // text element
+  const fontPx = Math.max(5, Math.round((el.fontSize ?? 13) * scale));
+  const capPx = Math.max(5, Math.round(8 * scale));
+  const showCap = el.kind !== "caseNumber";
+  const value = SAMPLE_VALUES[el.kind] ?? "";
+  const isNotes = el.kind === "rxNotes";
+
+  return (
+    <div
+      style={{
+        position: "absolute",
+        inset: 0,
+        padding: `${Math.round(3 * scale)}px ${Math.round(4 * scale)}px`,
+        fontFamily: el.fontFamily || DEFAULT_FONT_FAMILY,
+        fontWeight: el.bold ? 700 : 400,
+        fontStyle: el.italic ? "italic" : "normal",
+        textAlign: el.align ?? "left",
+        overflow: "hidden",
+        display: "flex",
+        flexDirection: "column",
+        boxSizing: "border-box",
+      }}
+    >
+      {showCap && (
+        <div
+          style={{
+            fontSize: capPx,
+            fontWeight: 700,
+            textTransform: "uppercase",
+            letterSpacing: "0.05em",
+            color: "rgba(0,0,0,0.45)",
+            marginBottom: 2,
+            lineHeight: 1.1,
+          }}
+        >
+          {ELEMENT_LABELS[el.kind]}
+        </div>
+      )}
+      <div
+        style={{
+          fontSize: fontPx,
+          color: "rgba(0,0,0,0.82)",
+          lineHeight: isNotes ? 1.4 : 1.25,
+          whiteSpace: isNotes ? "pre-wrap" : "nowrap",
+          overflow: "hidden",
+          textOverflow: isNotes ? "clip" : "ellipsis",
+        }}
+      >
+        {value}
+      </div>
+    </div>
+  );
 }

@@ -3925,7 +3925,6 @@ export function CaseDrawer({
                             data ?? labCase,
                             {
                               restorations: data?.restorations ?? [],
-                              notes: data?.notes ?? [],
                             },
                             advTemplate.template,
                           );
