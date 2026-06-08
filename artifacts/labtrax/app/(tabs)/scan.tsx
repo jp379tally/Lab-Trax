@@ -689,7 +689,7 @@ export default function ScanScreen() {
         if (!cameraReady) {
           await new Promise(resolve => setTimeout(resolve, 500));
         }
-        const photo = await cameraRef.current.takePictureAsync({ quality: 0.8, base64: true });
+        const photo = await cameraRef.current.takePictureAsync({ quality: 0.65, base64: true });
         if (photo?.uri) {
           cameraUri = photo.base64 ? `data:image/jpeg;base64,${photo.base64}` : photo.uri;
         }
@@ -804,7 +804,7 @@ export default function ScanScreen() {
       const ResponseType = DocumentScannerModule.ResponseType;
 
       const result = await DocumentScannerDefault.scanDocument({
-        croppedImageQuality: 90,
+        croppedImageQuality: 72,
         maxNumDocuments: 1,
         responseType: ResponseType?.ImageFilePath ?? 1,
       });
@@ -1398,17 +1398,25 @@ export default function ScanScreen() {
         try {
           const ImageManipulator = require("expo-image-manipulator");
           if (ImageManipulator.manipulateAsync) {
-            const manipulated = await ImageManipulator.manipulateAsync(
-              tryUri,
-              [{ resize: { width: 1200 } }],
-              { compress: 0.85, format: ImageManipulator.SaveFormat?.JPEG || "jpeg" }
-            );
-            console.log("AI compress: manipulator succeeded with:", tryUri);
-            const fileBase64 = await FileSystem.readAsStringAsync(manipulated.uri, {
-              encoding: (FileSystem as any).EncodingType.Base64,
-            });
-            console.log("AI compress: base64 length:", fileBase64.length);
-            return `data:image/jpeg;base64,${fileBase64}`;
+            // 8s timeout — manipulateAsync can hang indefinitely on some iOS devices.
+            const manipulated = await Promise.race<any | null>([
+              ImageManipulator.manipulateAsync(
+                tryUri,
+                [{ resize: { width: 1200 } }],
+                { compress: 0.85, format: ImageManipulator.SaveFormat?.JPEG || "jpeg" },
+              ),
+              new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000)),
+            ]);
+            if (!manipulated) {
+              console.log("AI compress: manipulator timed out for", tryUri);
+            } else {
+              console.log("AI compress: manipulator succeeded with:", tryUri);
+              const fileBase64 = await FileSystem.readAsStringAsync(manipulated.uri, {
+                encoding: (FileSystem as any).EncodingType.Base64,
+              });
+              console.log("AI compress: base64 length:", fileBase64.length);
+              return `data:image/jpeg;base64,${fileBase64}`;
+            }
           }
         } catch (manipErr: any) {
           console.log("AI compress: manipulator failed for", tryUri, ":", manipErr?.message);

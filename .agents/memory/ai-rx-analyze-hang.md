@@ -1,14 +1,31 @@
 ---
 name: AI Rx analyze-prescription hang
-description: Spinner hangs before any API call when ensureHighQualityBase64 calls ImageManipulator with no timeout on a raw file URI from takePictureAsync.
+description: Spinner hangs before any API call when ImageManipulator.manipulateAsync is called without a timeout anywhere in the compress/quality pipeline.
 ---
 
 ## The rule
 
-Any call to `ImageManipulator.manipulateAsync` must be wrapped in a `Promise.race` with an 8-second timeout. Without a timeout it can hang indefinitely on some iOS devices, blocking the entire AI pipeline silently.
+Every call to `ImageManipulator.manipulateAsync` anywhere in the AI pipeline must be wrapped in a `Promise.race` with an 8-second timeout. Without a timeout it hangs indefinitely on some iOS devices (confirmed by production logs — the API never receives the request at all).
 
-**Why:** `handleCapturePhotoFromCamera` called `takePictureAsync()` without `base64: true`, producing a raw `file:///...` URI. `ensureHighQualityBase64` then called `ImageManipulator.manipulateAsync` on that URI with no timeout. On affected devices the call never resolves. The 45-second watchdog eventually fires and moves the user to a blank form. Confirmed by deployment logs: no `POST /api/analyze-prescription` appeared at all during the hanging session — the request never left the device.
+**Why:** `compressImageForAI` has two separate code paths that both called `manipulateAsync`:
+1. **Data URI path** (b64Len > 2 000 000): writes data URI to temp file then calls `manipulateAsync`. Fixed first (build 207).
+2. **File URI loop** (lines 1400–1426 in scan.tsx): iterates candidate file URIs and calls `manipulateAsync` directly with **no timeout**. Fixed second (build 209).
+
+Additionally `ensureHighQualityBase64` also calls `manipulateAsync` for file URIs — that one already had the 8s timeout from build 207.
+
+Root-cause chain confirmed by deployment logs: every attempt after the early-morning 6AM session showed **zero requests reaching `/api/analyze-prescription`**, meaning the hang occurred entirely on-device before any network call.
 
 **How to apply:**
-- `handleCapturePhotoFromCamera`: call `takePictureAsync({ base64: true })` and use `photo.base64` when length > 5000. This avoids the file-system read path entirely (fastest fix).
-- `ensureHighQualityBase64` and `compressImageForAI`: any `ImageManipulator.manipulateAsync` call must be `Promise.race([manipulate(...), new Promise(r => setTimeout(() => r(null), 8000))])`. A null result means timed out — fall through to the next strategy or return the original URI.
+- Whenever you write or review code that calls `ImageManipulator.manipulateAsync` on native, always wrap with:
+  ```js
+  const result = await Promise.race([
+    ImageManipulator.manipulateAsync(uri, actions, options),
+    new Promise<null>(resolve => setTimeout(() => resolve(null), 8000)),
+  ]);
+  if (!result) { /* timed out — use fallback */ }
+  ```
+- Also reduce initial capture quality so photos rarely reach the > 2M char threshold at all:
+  - `takePictureAsync({ quality: 0.65 })` instead of `0.8`
+  - `croppedImageQuality: 72` in document scanner instead of `90`
+- The 45s watchdog in `handleFinishedReview` is a last-resort safety net — it must never be the primary timeout for the image path.
+- The red capture button calls **`handleDocumentScan`** (not `handleTakePhoto`). Document scanner failures fall back to `handleTakePhoto`.
