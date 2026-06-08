@@ -1843,82 +1843,26 @@ export default function ScanScreen() {
 
         if (result.success && result.data) {
           const d = result.data;
-          if (d.doctorName) setDoctorName(d.doctorName);
-          if (d.patientName) setPatientName(d.patientName);
-          else if (d.patientInitials) setPatientName(d.patientInitials);
-          if (d.caseType) {
-            const AI_CASE_TYPE_MAP: Record<string, string> = {
-              "crown & bridge": "Restorative",
-              "crown and bridge": "Restorative",
-              "crown": "Restorative",
-              "bridge": "Restorative",
-              "implant": "Restorative",
-              "implants": "Restorative",
-              "veneers": "Restorative",
-              "veneer": "Restorative",
-              "inlay": "Restorative",
-              "onlay": "Restorative",
-              "inlay/onlay": "Restorative",
-              "fixed": "Restorative",
-              "fixed prosthetics": "Restorative",
-              "denture": "Removable",
-              "dentures": "Removable",
-              "partial": "Removable",
-              "partial denture": "Removable",
-              "full denture": "Removable",
-              "complete denture": "Removable",
-              "flipper": "Removable",
-              "night guard": "Appliance",
-              "nightguard": "Appliance",
-              "mouth guard": "Appliance",
-              "mouthguard": "Appliance",
-              "retainer": "Appliance",
-              "sports guard": "Appliance",
-              "sportsguard": "Appliance",
-              "bleaching tray": "Appliance",
-              "bite splint": "Appliance",
-              "temporary": "Temporary",
-              "temporaries": "Temporary",
-              "temp": "Temporary",
-              "provisional": "Temporary",
-            };
-            const normalized = AI_CASE_TYPE_MAP[d.caseType.trim().toLowerCase()];
-            setCaseType(normalized ?? d.caseType);
+          const fields = mapRxResponseToFormFields(d);
+          if (fields.doctorName) setDoctorName(fields.doctorName);
+          if (fields.patientName) setPatientName(fields.patientName);
+          if (fields.caseType) setCaseType(fields.caseType);
+          if (fields.toothIndices) {
+            setToothIndices(fields.toothIndices);
+            setSelectedTeeth(fields.selectedTeeth);
           }
-          if (d.toothIndices) {
-            setToothIndices(d.toothIndices);
-            const nums = d.toothIndices.match(/\d+/g);
-            if (nums) setSelectedTeeth(nums.map(Number).filter((n: number) => n >= 1 && n <= 32).sort((a: number, b: number) => a - b));
-          }
-          if (d.shade) setShade(d.shade);
-          if (d.material) setMaterial(d.material);
-          if (d.dueDate) {
-            let normalizedDate = d.dueDate;
-            const slashMatch = d.dueDate.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-            if (slashMatch) {
-              normalizedDate = `${slashMatch[3]}-${slashMatch[1].padStart(2, "0")}-${slashMatch[2].padStart(2, "0")}`;
-            }
-            setDueDate(normalizedDate);
-          }
-          if (d.isRush !== undefined) setIsRush(d.isRush);
-          if (d.notes) setNotes(d.notes);
+          if (fields.shade) setShade(fields.shade);
+          if (fields.material) setMaterial(fields.material);
+          if (fields.dueDate) setDueDate(fields.dueDate);
+          setIsRush(fields.isRush);
+          if (fields.notes) setNotes(fields.notes);
           aiSuccess = true;
 
           if ((Platform.OS as string) !== "web") {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           }
 
-          const filled = new Set<string>();
-          if (d.doctorName) filled.add("doctorName");
-          if (d.patientName || d.patientInitials) filled.add("patientName");
-          if (d.caseType) filled.add("caseType");
-          if (d.toothIndices) filled.add("toothIndices");
-          if (d.shade) filled.add("shade");
-          if (d.material) filled.add("material");
-          if (d.dueDate) filled.add("dueDate");
-          if (d.isRush !== undefined) filled.add("isRush");
-          if (d.notes) filled.add("notes");
-          setAiFilledFields(filled);
+          setAiFilledFields(fields.aiFilledFields);
           // Animated amber left-border flash on every AI-filled field:
           // 300 ms fade-in → 700 ms hold → 400 ms fade-out.
           // Badges (✦ AI) persist until the user edits each field.

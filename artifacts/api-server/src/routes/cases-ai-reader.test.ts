@@ -416,6 +416,48 @@ maybe("Cases AI reader endpoints (db integration)", () => {
     await cleanCase(caseId);
   });
 
+  // ── POST /api/cases: auto-invoice generation ─────────────────────────────
+
+  it("POST /api/cases: auto-generates an open invoice for every new case", async () => {
+    const r = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({
+        caseNumber: rid("CN"),
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Invoice",
+        patientLastName: "AutoTest",
+        doctorName: "Dr. Auto",
+        status: "received",
+      });
+
+    expect(r.status).toBe(201);
+    const caseId = r.body.data.id;
+
+    // The auto-invoice is generated in a fire-and-forget async block.
+    // Poll briefly (max 2 s) rather than a fixed sleep so CI stays fast
+    // while flakiness is minimised on slow machines.
+    const { db, invoices } = dbMod as any;
+    let invoice: any;
+    for (let i = 0; i < 20; i++) {
+      await new Promise((res) => setTimeout(res, 100));
+      [invoice] = await db
+        .select()
+        .from(invoices)
+        .where(eq(invoices.caseId, caseId));
+      if (invoice) break;
+    }
+
+    expect(invoice, "auto-invoice must be created within 2 s of case creation").toBeDefined();
+    expect(invoice.status).toBe("open");
+    expect(invoice.caseId).toBe(caseId);
+    expect(invoice.labOrganizationId).toBe(labOrgId);
+    expect(invoice.providerOrganizationId).toBe(providerOrgId);
+
+    await cleanCase(caseId);
+  });
+
   // ── POST /api/analyze-prescription (mobile "AI reader") ──────────────────
   // This suite runs with AI_INTEGRATIONS_OPENAI_API_KEY deleted (see beforeAll),
   // so it deterministically guards the "AI not configured" branch. The happy
