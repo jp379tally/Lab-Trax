@@ -318,7 +318,7 @@ const makeDrawerStyles = (colors: ThemeColors) => StyleSheet.create({
 });
 
 function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void } = {}) {
-  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus, groupJoinRequests, respondToGroupJoinRequest, customStationLabels, userIsAffiliated, invoices, refreshCases, hardRefresh, clients, addCasePhoto } = useApp();
+  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus, groupJoinRequests, respondToGroupJoinRequest, customStationLabels, userIsAffiliated, labAffiliationReady, invoices, refreshCases, hardRefresh, clients, addCasePhoto } = useApp();
   const [refreshing, setRefreshing] = useState(false);
   const [pastDueCollapsed, setPastDueCollapsed] = useState(false);
   const { logout, profilePicUri, setProfilePicUri, currentUser, registeredUsers } = useAuth();
@@ -676,7 +676,7 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
           <Text style={styles.liveText}>Available</Text>
         </View>
 
-        {!userIsAffiliated && (
+        {labAffiliationReady && !userIsAffiliated && (
           <View style={{ marginTop: 16, padding: 14, backgroundColor: isDarkMode ? colors.text : colors.orangeLight, borderRadius: 12, flexDirection: "row", alignItems: "center", gap: 10, borderWidth: 1, borderColor: isDarkMode ? colors.textSecondary : colors.warning }}>
             <Ionicons name="information-circle-outline" size={22} color={isDarkMode ? colors.warning : colors.warningStrong} />
             <Text style={{ fontFamily: "Inter_400Regular", fontSize: 13, color: isDarkMode ? colors.border : colors.warningText, flex: 1, lineHeight: 18 }}>
@@ -7546,7 +7546,7 @@ function AdminDashboard() {
 }
 
 function ProviderDashboard() {
-  const { cases, role, adminUnlocked, users, addUser, updateUser, removeUser, customStationLabels, sendGroupJoinRequest, groupJoinRequests, invoices, updateInvoice, addNotification, userIsAffiliated, fetchLabDirectory, refreshCases, hardRefresh } = useApp();
+  const { cases, role, adminUnlocked, users, addUser, updateUser, removeUser, customStationLabels, sendGroupJoinRequest, groupJoinRequests, invoices, updateInvoice, addNotification, userIsAffiliated, labAffiliationReady, fetchLabDirectory, refreshCases, hardRefresh } = useApp();
   const { currentUser, registeredUsers, logout, profilePicUri, setProfilePicUri, changePassword } = useAuth();
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
@@ -7760,7 +7760,7 @@ function ProviderDashboard() {
           </View>
         </View>
 
-        {!userIsAffiliated && (
+        {labAffiliationReady && !userIsAffiliated && (
           <View style={{ marginHorizontal: 20, marginTop: 12, padding: 14, backgroundColor: colors.orangeLight, borderRadius: 12, flexDirection: "row", alignItems: "center", gap: 10, borderWidth: 1, borderColor: colors.warning }}>
             <Ionicons name="information-circle-outline" size={22} color={colors.warningStrong} />
             <Text style={{ fontFamily: "Inter_400Regular", fontSize: 13, color: colors.warningText, flex: 1, lineHeight: 18 }}>

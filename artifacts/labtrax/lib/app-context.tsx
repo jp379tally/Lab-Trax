@@ -137,6 +137,7 @@ interface AppContextValue {
   customStationLabels: Record<string, string>;
   updateStationLabel: (stationId: CaseStatus, label: string) => void;
   userIsAffiliated: boolean;
+  labAffiliationReady: boolean;
   activeLabAffiliationKey: string | null;
   activeLabAffiliationName: string | null;
   // Org IDs for EVERY active lab the current user belongs to (not just the
@@ -326,6 +327,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activeLabAffiliationKey, setActiveLabAffiliationKey] = useState<string | null>(null);
   const [activeLabAffiliationName, setActiveLabAffiliationName] = useState<string | null>(null);
   const [hasActiveLabMembership, setHasActiveLabMembership] = useState(false);
+  // True once the first lab-affiliation check (cache or API) has resolved.
+  // Banners conditioned on !userIsAffiliated must wait for this to avoid
+  // false-positive flashes on every app start for users who belong to a lab.
+  const [labAffiliationReady, setLabAffiliationReady] = useState(false);
   const [allLabAffiliationKeysList, setAllLabAffiliationKeysList] = useState<string[]>([]);
   const [allLabAffiliationNamesList, setAllLabAffiliationNamesList] = useState<string[]>([]);
   const [membershipVersion, setMembershipVersion] = useState(0);
@@ -778,13 +783,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // Immediately hydrate membership banner from cache before the API resolves.
   // This prevents the "Join a lab" flash every time the app starts.
+  // We also mark labAffiliationReady here so the banner is never shown during
+  // the async gap — it only renders once we know the answer (cached or live).
   useEffect(() => {
     if (!currentUserId) return;
     AsyncStorage.getItem(`${LAB_AFFILIATED_CACHE_KEY}:${currentUserId}`)
       .then((cached) => {
         if (cached === "1") setHasActiveLabMembership(true);
+        // Cache resolved (either direction) — safe to show/hide the banner.
+        setLabAffiliationReady(true);
       })
-      .catch(() => {});
+      .catch(() => {
+        // AsyncStorage unavailable — still mark ready so the live-sync result
+        // can render when it arrives.
+        setLabAffiliationReady(true);
+      });
   }, [currentUserId]);
 
   useEffect(() => {
@@ -834,6 +847,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       if (activeMembership?.organizationId) {
         setHasActiveLabMembership(true);
+        setLabAffiliationReady(true);
         AsyncStorage.setItem(`${LAB_AFFILIATED_CACHE_KEY}:${currentUserId}`, "1").catch(() => {});
         setActiveLabAffiliationKey(
           buildOrganizationAffiliationKey(activeMembership.organizationId)
@@ -847,6 +861,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
 
       setHasActiveLabMembership(false);
+      setLabAffiliationReady(true);
       AsyncStorage.removeItem(`${LAB_AFFILIATED_CACHE_KEY}:${currentUserId}`).catch(() => {});
       setActiveLabAffiliationKey(null);
       setActiveLabAffiliationName(null);
@@ -4021,6 +4036,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       customStationLabels,
       updateStationLabel,
       userIsAffiliated,
+      labAffiliationReady,
       activeLabAffiliationKey,
       activeLabAffiliationName,
       allLabOrganizationIds,
@@ -4045,7 +4061,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       retrySync,
       discardSync,
     }),
-    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, pendingInvoiceEditId, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers, allLabOrganizationIds, activeLabAffiliationKey, activeLabAffiliationName, allLabAffiliationKeysList, invoiceTemplate, pendingSyncCount, stuckSyncItems],
+    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, pendingInvoiceEditId, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, labAffiliationReady, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers, allLabOrganizationIds, activeLabAffiliationKey, activeLabAffiliationName, allLabAffiliationKeysList, invoiceTemplate, pendingSyncCount, stuckSyncItems],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
