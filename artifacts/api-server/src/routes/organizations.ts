@@ -2184,6 +2184,24 @@ router.patch(
       ADMIN_ROLES
     );
 
+    // Role ceiling: prevent a caller from assigning a role above their own.
+    if (input.role) {
+      const ROLE_RANK: Record<string, number> = {
+        owner: 0, admin: 1, billing: 2, user: 3, read_only: 4,
+      };
+      const callerMembership = await db.query.organizationMemberships.findFirst({
+        where: and(
+          eq(organizationMemberships.userId, (req as any).auth.userId),
+          eq(organizationMemberships.labId, membership.labId),
+        ),
+      });
+      const callerRank = ROLE_RANK[callerMembership?.role ?? "read_only"] ?? 99;
+      const targetRank = ROLE_RANK[input.role] ?? 99;
+      if (targetRank < callerRank) {
+        throw new HttpError(403, "You cannot assign a role above your own.");
+      }
+    }
+
     const [updated] = await db
       .update(organizationMemberships)
       .set(input)

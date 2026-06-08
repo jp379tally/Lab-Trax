@@ -602,6 +602,7 @@ router.post(
     const user = allUsers.find(
       (u) =>
         u.username.toLowerCase() === lowered ||
+        (u.email && u.email.toLowerCase() === lowered) ||
         (u.platformAccountNumber &&
           u.platformAccountNumber.toUpperCase() === upperedAcct)
     );
