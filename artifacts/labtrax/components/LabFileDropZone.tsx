@@ -202,6 +202,12 @@ function LabFileDropZone({
   const [noteModalVisible, setNoteModalVisible] = useState(false);
   const [draftNote, setDraftNote] = useState("");
 
+  const [captureModalVisible, setCaptureModalVisible] = useState(false);
+  const [capturePhotoUri, setCapturePhotoUri] = useState<string | null>(null);
+  const [capturePhotoMime, setCapturePhotoMime] = useState("image/jpeg");
+  const [captureFileName, setCaptureFileName] = useState("");
+  const [captureNote, setCaptureNote] = useState("");
+
   const [previewTarget, setPreviewTarget] = useState<PendingFile | null>(null);
   const [previewVisible, setPreviewVisible] = useState(false);
   const [previewDraftNote, setPreviewDraftNote] = useState("");
@@ -806,15 +812,72 @@ function LabFileDropZone({
     } catch {}
   }
 
+  async function handleTakePhoto() {
+    if (Platform.OS === "web") { handlePickFromFiles(); return; }
+    try {
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== "granted") {
+        Alert.alert("Camera Access Required", "Allow camera access in Settings to take photos.");
+        return;
+      }
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ["images"],
+        quality: 0.9,
+        allowsEditing: false,
+      });
+      if (result.canceled || !result.assets?.length) return;
+      const asset = result.assets[0];
+      const stamp = new Date().toISOString().slice(0, 10);
+      const defaultName = `photo-${stamp}.jpg`;
+      setCapturePhotoUri(asset.uri);
+      setCapturePhotoMime(asset.mimeType || "image/jpeg");
+      setCaptureFileName(defaultName);
+      setCaptureNote("");
+      setCaptureModalVisible(true);
+    } catch (err: any) {
+      console.log("Take photo failed:", err?.message);
+    }
+  }
+
+  async function saveCapturedPhoto() {
+    if (!capturePhotoUri) return;
+    const finalName = captureFileName.trim() || `photo-${Date.now()}.jpg`;
+    const pending: PendingFile = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      uri: capturePhotoUri,
+      fileName: finalName,
+      mimeType: capturePhotoMime,
+      uploadedBy: currentUser || "Unknown",
+      uploadedAt: Date.now(),
+      notes: captureNote.trim(),
+    };
+    setCaptureModalVisible(false);
+    const updated = [...pendingFilesRef.current, pending];
+    await persistFiles(updated);
+    if (Platform.OS !== "web") {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    }
+    maybePromoteToServer(pending, {
+      kind: "native",
+      uri: capturePhotoUri,
+      name: finalName,
+      type: capturePhotoMime,
+    });
+    setCapturePhotoUri(null);
+    setCaptureFileName("");
+    setCaptureNote("");
+  }
+
   function showPickOptions() {
     if (Platform.OS === "web") {
       handlePickFromFiles();
       return;
     }
-    Alert.alert("Add File", "Choose a source", [
+    Alert.alert("Document Dump Zone", "Add a file or take a photo", [
       { text: "Cancel", style: "cancel" },
-      { text: "Photos, Videos & Screenshots", onPress: handlePickFromPhotos },
-      { text: "Files & Documents (PDF)", onPress: handlePickFromDocuments },
+      { text: "Take Photo", onPress: handleTakePhoto },
+      { text: "Browse Photos & Videos", onPress: handlePickFromPhotos },
+      { text: "Browse Files & PDFs", onPress: handlePickFromDocuments },
     ]);
   }
 
@@ -940,17 +1003,17 @@ function LabFileDropZone({
 
   const fileCount = pendingFiles.length;
   const barTitle = dragOver
-    ? "Drop files to intake"
+    ? "Drop files here"
     : fileCount > 0
       ? `${fileCount} file${fileCount !== 1 ? "s" : ""} ready for review`
-      : "Case media intake";
+      : "Document Dump Zone";
   const barSub = dragOver
-    ? "Release to upload these files"
+    ? "Release to add to the dump zone"
     : fileCount > 0
       ? "Open the review queue and assign files to the correct case"
       : Platform.OS === "web"
-        ? "Drag files here or browse to attach new case media"
-        : "Browse photos, screenshots, or files to attach new case media";
+        ? "Drag files here or browse — prescriptions, photos, docs, anything"
+        : "Take photos or browse files — prescriptions, docs, anything to log";
   const barActionLabel = dragOver ? "Drop Now" : fileCount > 0 ? "Review" : "Upload";
 
   const headerPaddingTop = Math.max(insets.top, Platform.OS === "web" ? 20 : 16) + 12;
@@ -1125,6 +1188,66 @@ function LabFileDropZone({
         </View>
       </Modal>
 
+      {/* ── Capture: rename + note modal ── */}
+      <Modal
+        visible={captureModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setCaptureModalVisible(false)}
+      >
+        <KeyboardAvoidingView
+          style={s.noteBackdrop}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          keyboardVerticalOffset={0}
+        >
+          <Pressable style={{ flex: 1 }} onPress={() => setCaptureModalVisible(false)} />
+          <View style={[s.noteCard, { paddingBottom: Math.max(insets.bottom + 12, 28) }]}>
+            <View style={s.noteHandleBar} />
+            {capturePhotoUri ? (
+              <Image source={{ uri: capturePhotoUri }} style={s.captureThumb} contentFit="cover" />
+            ) : null}
+            <Text style={s.noteCardTitle}>Name this photo</Text>
+            <Text style={s.noteCardSub}>Give it a descriptive filename before saving.</Text>
+            <TextInput
+              style={s.noteInput}
+              value={captureFileName}
+              onChangeText={setCaptureFileName}
+              placeholder="e.g. patient-rx-john-doe.jpg"
+              placeholderTextColor={colors.textTertiary}
+              autoFocus
+              returnKeyType="next"
+              selectTextOnFocus
+            />
+            <Text style={[s.noteCardSub, { marginTop: 8 }]}>Add a note (optional)</Text>
+            <TextInput
+              style={s.noteInput}
+              value={captureNote}
+              onChangeText={setCaptureNote}
+              placeholder="e.g. Rx for crown prep, bite registration photo..."
+              placeholderTextColor={colors.textTertiary}
+              multiline
+              numberOfLines={2}
+              returnKeyType="default"
+              scrollEnabled
+            />
+            <View style={s.noteActions}>
+              <Pressable
+                onPress={() => setCaptureModalVisible(false)}
+                style={({ pressed }) => [s.noteBtnSecondary, pressed && { opacity: 0.7 }]}
+              >
+                <Text style={s.noteBtnSecondaryText}>Discard</Text>
+              </Pressable>
+              <Pressable
+                onPress={saveCapturedPhoto}
+                style={({ pressed }) => [s.noteBtnPrimary, pressed && { opacity: 0.8 }]}
+              >
+                <Text style={s.noteBtnPrimaryText}>Save to Dump Zone</Text>
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
       {/* ── Note edit history modal ── */}
       <Modal
         visible={historyVisible}
@@ -1235,6 +1358,18 @@ function LabFileDropZone({
               keyboardShouldPersistTaps="handled"
             >
               <View style={s.addMoreRow}>
+                {Platform.OS !== "web" ? (
+                  <Pressable
+                    onPress={() => {
+                      setReviewOpen(false);
+                      InteractionManager.runAfterInteractions(() => { handleTakePhoto(); });
+                    }}
+                    style={({ pressed }) => [s.addMoreBtn, s.addMoreBtnCamera, pressed && { opacity: 0.8 }]}
+                  >
+                    <Ionicons name="camera-outline" size={16} color={colors.textInverse} />
+                    <Text style={[s.addMoreBtnText, s.addMoreBtnCameraText]} numberOfLines={1}>Take Photo</Text>
+                  </Pressable>
+                ) : null}
                 <Pressable
                   onPress={() => {
                     setReviewOpen(false);
@@ -1244,16 +1379,6 @@ function LabFileDropZone({
                 >
                   <Ionicons name="images-outline" size={16} color={colors.tint} />
                   <Text style={s.addMoreBtnText} numberOfLines={1}>Photos &amp; Videos</Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => {
-                    setReviewOpen(false);
-                    InteractionManager.runAfterInteractions(() => { handlePickFromFiles(); });
-                  }}
-                  style={({ pressed }) => [s.addMoreBtn, pressed && { opacity: 0.8 }]}
-                >
-                  <Ionicons name="phone-portrait-outline" size={16} color={colors.tint} />
-                  <Text style={s.addMoreBtnText} numberOfLines={1}>Screenshots</Text>
                 </Pressable>
                 <Pressable
                   onPress={() => {
@@ -1952,6 +2077,19 @@ const makeS = (colors: ThemeColors) => StyleSheet.create({
     fontFamily: "Inter_600SemiBold",
     fontSize: 13,
     color: colors.tint,
+  },
+  addMoreBtnCamera: {
+    backgroundColor: colors.tint,
+    borderColor: colors.tint,
+  },
+  addMoreBtnCameraText: {
+    color: colors.textInverse,
+  },
+  captureThumb: {
+    width: "100%",
+    height: 140,
+    borderRadius: 10,
+    marginBottom: 12,
   },
   fileCard: {
     backgroundColor: colors.canvas,
