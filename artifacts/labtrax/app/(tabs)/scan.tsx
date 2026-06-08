@@ -1679,21 +1679,30 @@ export default function ScanScreen() {
       }
       try {
         const ImageManip = require("expo-image-manipulator");
-        const manipResult = await ImageManip.manipulateAsync(
-          uri,
-          [{ resize: { width: 1500 } }],
-          { compress: 0.9, format: ImageManip.SaveFormat?.JPEG || "jpeg", base64: true }
-        );
-        if (manipResult.base64 && manipResult.base64.length > 10000) {
-          console.log("AI quality: manipulator with base64 succeeded, length:", manipResult.base64.length);
-          return `data:image/jpeg;base64,${manipResult.base64}`;
-        }
-        if (manipResult.uri) {
-          const FSystem = await import("expo-file-system");
-          const b64 = await FSystem.readAsStringAsync(manipResult.uri, { encoding: (FSystem as any).EncodingType.Base64 });
-          if (b64 && b64.length > 10000) {
-            console.log("AI quality: manipulator+read succeeded, length:", b64.length);
-            return `data:image/jpeg;base64,${b64}`;
+        // Wrap in an 8 s timeout — ImageManipulator.manipulateAsync can hang
+        // indefinitely on some iOS devices, blocking the entire AI pipeline.
+        const manipResult = await Promise.race<any>([
+          ImageManip.manipulateAsync(
+            uri,
+            [{ resize: { width: 1500 } }],
+            { compress: 0.9, format: ImageManip.SaveFormat?.JPEG || "jpeg", base64: true },
+          ),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000)),
+        ]);
+        if (!manipResult) {
+          console.log("AI quality: manipulator timed out after 8s");
+        } else {
+          if (manipResult.base64 && manipResult.base64.length > 10000) {
+            console.log("AI quality: manipulator with base64 succeeded, length:", manipResult.base64.length);
+            return `data:image/jpeg;base64,${manipResult.base64}`;
+          }
+          if (manipResult.uri) {
+            const FSystem = await import("expo-file-system");
+            const b64 = await FSystem.readAsStringAsync(manipResult.uri, { encoding: (FSystem as any).EncodingType.Base64 });
+            if (b64 && b64.length > 10000) {
+              console.log("AI quality: manipulator+read succeeded, length:", b64.length);
+              return `data:image/jpeg;base64,${b64}`;
+            }
           }
         }
       } catch (e: any) {
@@ -2492,9 +2501,14 @@ export default function ScanScreen() {
 
     if (cameraRef.current) {
       try {
-        const photo = await cameraRef.current.takePictureAsync();
+        const photo = await cameraRef.current.takePictureAsync({ base64: true });
         if (photo?.uri) {
-          capturedPhotoUri = photo.uri;
+          // Prefer inline base64 to avoid the file-system read path that can
+          // hang in ImageManipulator on some iOS devices.
+          capturedPhotoUri =
+            photo.base64 && photo.base64.length > 5000
+              ? `data:image/jpeg;base64,${photo.base64}`
+              : photo.uri;
         }
       } catch {}
     }
