@@ -54,3 +54,9 @@ id = "-MzNPNsnhfY7z3IDf6w-m"
 uri = "file://attached_assets/labtrax-logo.jpg"
 type = "image"
 title = "LabTrax Logo"
+
+[[outputs]]
+id = "eYCzMJMCTbjhdTJLalv8b"
+uri = "file://attached_assets/labtrax-logo-transparent.png"
+type = "image"
+title = "LabTrax Logo (transparent background)"
