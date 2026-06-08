@@ -27,7 +27,6 @@ import * as Sharing from "expo-sharing";
 import * as FileSystem from "expo-file-system";
 import { Share } from "react-native";
 import { useFocusEffect, useRouter, useLocalSearchParams } from "expo-router";
-import { useIsFocused } from "@react-navigation/native";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
@@ -111,7 +110,13 @@ export default function ScanScreen() {
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const isFocused = useIsFocused();
+  const [isFocused, setIsFocused] = useState(false);
+  useFocusEffect(
+    useCallback(() => {
+      setIsFocused(true);
+      return () => setIsFocused(false);
+    }, [])
+  );
   const params = useLocalSearchParams<{ mode?: string; n?: string; originalCaseId?: string }>();
   const manualModeRequested = params?.mode === "manual";
   const manualModeNonce = typeof params?.n === "string" ? params.n : null;
