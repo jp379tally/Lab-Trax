@@ -1246,7 +1246,7 @@ export default function ScanScreen() {
     if (uri.startsWith("data:")) {
       const commaIdx = uri.indexOf(",");
       const b64Len = commaIdx >= 0 ? uri.length - commaIdx - 1 : uri.length;
-      console.log("AI compress: URI is already a data URI, base64 payload length:", b64Len);
+      console.log("AI compress: data URI, base64 payload length:", b64Len);
       // Non-image data URIs (e.g. PDF bytes mislabeled as image/jpeg) — pass straight
       // through to the server, which detects the PDF magic bytes and converts via pdftoppm.
       if (!uri.startsWith("data:image/") && b64Len >= 5000) return uri;
@@ -1260,32 +1260,41 @@ export default function ScanScreen() {
         // rather than sending garbage to the AI.
         throw new Error(`Image data too small after enhancement (${enhancedB64Len} chars) — likely a corrupted read`);
       }
-      // Large data URI (full-res camera photo) — resize before sending to
-      // avoid hitting the AI proxy's payload limits. Write to a temp file,
-      // shrink to 1200 px wide, and read back as base64.
-      if (b64Len > 200000 && (Platform.OS as string) !== "web") {
+      // Typical phone photos are 5 000 – 2 000 000 base64 chars (≈ up to ~1.5 MB
+      // JPEG).  Send those straight to the server — it handles them without issue.
+      // Skipping the write→resize→read round-trip eliminates a potential
+      // indefinite hang in expo-image-manipulator on some devices that caused the
+      // 45-second watchdog to fire before the API was ever called.
+      if (b64Len <= 2000000) return uri;
+      // Truly large image (> ~1.5 MB JPEG).  Attempt a timed resize so we don't
+      // send an oversized payload; fall back to the original on timeout or error.
+      if ((Platform.OS as string) !== "web") {
         try {
-          const FileSystem = await import("expo-file-system");
-          const tempUri = (FileSystem as any).cacheDirectory + "ai_resize_" + Date.now() + ".jpg";
-          const base64Only = commaIdx >= 0 ? uri.substring(commaIdx + 1) : uri;
-          await (FileSystem as any).writeAsStringAsync(tempUri, base64Only, {
-            encoding: (FileSystem as any).EncodingType.Base64,
-          });
-          const ImageManip = require("expo-image-manipulator");
-          if (ImageManip.manipulateAsync) {
-            const manipulated = await ImageManip.manipulateAsync(
-              tempUri,
-              [{ resize: { width: 1200 } }],
-              { compress: 0.82, format: ImageManip.SaveFormat?.JPEG || "jpeg" },
-            );
-            const resized = await (FileSystem as any).readAsStringAsync(manipulated.uri, {
-              encoding: (FileSystem as any).EncodingType.Base64,
-            });
-            if (resized && resized.length > 10000) {
-              console.log("AI compress: data URI resized from", b64Len, "to", resized.length, "chars");
-              return `data:image/jpeg;base64,${resized}`;
-            }
+          const resizeResult = await Promise.race<string | null>([
+            (async (): Promise<string | null> => {
+              const FS = await import("expo-file-system");
+              const tempUri = (FS as any).cacheDirectory + "ai_resize_" + Date.now() + ".jpg";
+              const base64Only = commaIdx >= 0 ? uri.substring(commaIdx + 1) : uri;
+              await (FS as any).writeAsStringAsync(tempUri, base64Only, {
+                encoding: (FS as any).EncodingType.Base64,
+              });
+              const manipulated = await ImageManipulator.manipulateAsync(
+                tempUri,
+                [{ resize: { width: 1200 } }],
+                { compress: 0.82, format: ImageManipulator.SaveFormat.JPEG },
+              );
+              const r = await (FS as any).readAsStringAsync(manipulated.uri, {
+                encoding: (FS as any).EncodingType.Base64,
+              });
+              return r && r.length > 10000 ? r : null;
+            })(),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000)),
+          ]);
+          if (resizeResult) {
+            console.log("AI compress: data URI resized from", b64Len, "to", resizeResult.length, "chars");
+            return `data:image/jpeg;base64,${resizeResult}`;
           }
+          console.log("AI compress: resize timed out or produced small result — using original");
         } catch (resizeErr: any) {
           console.log("AI compress: data URI resize failed, using original:", resizeErr?.message);
         }
