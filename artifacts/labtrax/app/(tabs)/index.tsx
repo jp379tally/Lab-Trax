@@ -343,6 +343,8 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
   const [batchManualInput, setBatchManualInput] = useState("");
   const [confirmJoinReq, setConfirmJoinReq] = useState<{ requestId: string; username: string; accept: boolean } | null>(null);
   const [isProcessingJoinReq, setIsProcessingJoinReq] = useState(false);
+  const [dueTodayExpanded, setDueTodayExpanded] = useState(true);
+  const [recentCasesExpanded, setRecentCasesExpanded] = useState(true);
   const lastBatchScanRef = useRef<string>("");
   const [camPermission, requestCamPermission] = useCameraPermissions();
   const dashboardFocused = useIsFocused();
@@ -1064,13 +1066,24 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
         );
         return (
           <>
-            <View style={styles.sectionHeader}>
-              <Text style={[styles.sectionTitle, { color: themeColors.text }]}>Due Today</Text>
-              <View style={styles.dueTodayBadge}>
-                <Text style={styles.dueTodayBadgeText}>{dueTodayCases.length}</Text>
+            <Pressable
+              style={styles.sectionHeader}
+              onPress={() => setDueTodayExpanded((v) => !v)}
+              hitSlop={8}
+            >
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                <Text style={[styles.sectionTitle, { color: themeColors.text }]}>Due Today</Text>
+                <View style={styles.dueTodayBadge}>
+                  <Text style={styles.dueTodayBadgeText}>{dueTodayCases.length}</Text>
+                </View>
               </View>
-            </View>
-            {dueTodayCases.length === 0 ? (
+              <Ionicons
+                name={dueTodayExpanded ? "chevron-up" : "chevron-down"}
+                size={18}
+                color={themeColors.textSecondary}
+              />
+            </Pressable>
+            {dueTodayExpanded && (dueTodayCases.length === 0 ? (
               <View style={styles.dueTodayEmpty}>
                 <Ionicons name="checkmark-circle-outline" size={28} color={colors.success} />
                 <Text style={styles.dueTodayEmptyText}>No cases due today</Text>
@@ -1112,19 +1125,30 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
                   );
                 })}
               </View>
-            )}
+            ))}
           </>
         );
       })()}
 
-      <View style={styles.sectionHeader}>
+      <Pressable
+        style={styles.sectionHeader}
+        onPress={() => setRecentCasesExpanded((v) => !v)}
+        hitSlop={8}
+      >
         <Text style={[styles.sectionTitle, { color: themeColors.text }]}>Recent Cases</Text>
-        <Pressable onPress={() => router.push("/(tabs)/cases")}>
-          <Text style={styles.seeAll}>See all</Text>
-        </Pressable>
-      </View>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+          <Pressable onPress={() => router.push("/(tabs)/cases")} hitSlop={8}>
+            <Text style={styles.seeAll}>See all</Text>
+          </Pressable>
+          <Ionicons
+            name={recentCasesExpanded ? "chevron-up" : "chevron-down"}
+            size={18}
+            color={themeColors.textSecondary}
+          />
+        </View>
+      </Pressable>
 
-      <View style={styles.caseList}>
+      {recentCasesExpanded && <View style={styles.caseList}>
         {recentCases.map((c) => {
           const stationInfo = getStationInfo(c.status, customStationLabels);
           const ownerUser = registeredUsers.find(u => u.id === c.ownerId);
@@ -1198,7 +1222,7 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
             </Pressable>
           );
         })}
-      </View>
+      </View>}
 
       <Pressable
         onPress={() => router.push("/chat")}
