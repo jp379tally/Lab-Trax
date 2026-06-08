@@ -81,12 +81,12 @@ export default function ProfileScreen() {
           labId?: string;
           role: string;
           status: string;
-          organization?: { userType?: string } | null;
+          organization?: { type?: string } | null;
         }> = j?.memberships || j?.user?.memberships || [];
         const ok = memberships.some((m) => {
           if (m.status !== "active") return false;
           if (!["owner", "admin", "billing"].includes(m.role)) return false;
-          const orgType = m.organization?.userType;
+          const orgType = m.organization?.type;
           if (orgType && orgType !== "lab") return false;
           return true;
         });

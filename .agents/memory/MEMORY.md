@@ -25,3 +25,4 @@
 - [Expo share-sheet is plugin-gated](expo-share-intent-share-sheet.md) — LabTrax vanishes from the iOS/Android share sheet if the expo-share-intent block is dropped from app.json plugins; native-only, guarded by a firewall test.
 - [Mobile cookie-jar CSRF trap](mobile-cookie-jar-csrf-trap.md) — bearer clients must never get Set-Cookie; RN fetch jar + missing in-memory token → cookie-only POST → CSRF 403 wedges syncs as "lab rejected".
 - [AI Rx compressImageForAI hang](ai-rx-compress-hang.md) — ImageManipulator.manipulateAsync hangs with no exception on some iOS devices; threshold raised to 2M chars + 8s Promise.race timeout.
+- [Profile org type field mismatch](profile-org-type-field.md) — canReceivePayments check must use `organization.type`, not `organization.userType`; the latter is always undefined on the /api/auth/me org object.
