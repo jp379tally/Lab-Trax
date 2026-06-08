@@ -143,7 +143,7 @@ maybe("POST /api/cases/bulk-reassign (db integration)", () => {
 
     tokens.admin = await makeSession(adminUserId);
     tokens.outsider = await makeSession(outsiderUserId);
-  });
+  }, 60_000);
 
   afterAll(async () => {
     if (!SHOULD_RUN) return;
