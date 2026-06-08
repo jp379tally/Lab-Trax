@@ -1415,7 +1415,11 @@ export default function ScanScreen() {
                 encoding: (FileSystem as any).EncodingType.Base64,
               });
               console.log("AI compress: base64 length:", fileBase64.length);
-              return `data:image/jpeg;base64,${fileBase64}`;
+              if (!fileBase64 || fileBase64.length < 5000) {
+                console.log("AI compress: manipulator produced empty/corrupt output for", tryUri, "— trying next URI");
+              } else {
+                return `data:image/jpeg;base64,${fileBase64}`;
+              }
             }
           }
         } catch (manipErr: any) {
@@ -1792,6 +1796,12 @@ export default function ScanScreen() {
               const destUri = (FSystem as any).cacheDirectory + "ai_fallback_" + Date.now() + ".jpg";
               await FSystem.copyAsync({ from: analyzeUri, to: destUri });
               const b64 = await FSystem.readAsStringAsync(destUri, { encoding: (FSystem as any).EncodingType.Base64 });
+              console.log("AI: Fallback copy+read length:", b64.length);
+              if (!b64 || b64.length < 5000) {
+                console.log("AI: Fallback produced empty/corrupt data — aborting");
+                failReason = "Could not read the image file (empty result)";
+                throw compErr;
+              }
               base64Data = `data:image/jpeg;base64,${b64}`;
               console.log("AI: Fallback copy+read succeeded, length:", b64.length);
             } catch (fallbackErr: any) {
