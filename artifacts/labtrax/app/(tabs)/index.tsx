@@ -26,7 +26,6 @@ import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import * as LocalAuthentication from "expo-local-authentication";
 import { router, useFocusEffect } from "expo-router";
-import { useIsFocused } from "@react-navigation/native";
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -343,7 +342,13 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
   const [recentCasesExpanded, setRecentCasesExpanded] = useState(true);
   const lastBatchScanRef = useRef<string>("");
   const [camPermission, requestCamPermission] = useCameraPermissions();
-  const dashboardFocused = useIsFocused();
+  const [dashboardFocused, setDashboardFocused] = useState(true);
+  useFocusEffect(
+    useCallback(() => {
+      setDashboardFocused(true);
+      return () => setDashboardFocused(false);
+    }, [])
+  );
 
   const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
   const currentUserInitials = deriveDisplayInitials({
