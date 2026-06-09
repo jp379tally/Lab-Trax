@@ -24,7 +24,7 @@ import {
   type StuckQueueItem,
   type SyncResult,
 } from "./offline-queue";
-import { AppState, Platform } from "react-native";
+import { Alert, AppState, Platform } from "react-native";
 import {
   UserRole,
   LabCase,
@@ -2323,7 +2323,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const syncResult = await syncCaseToServer(newCase);
       const ok = isSyncSuccess(syncResult);
       void logDebugEvent("SYNC_IIFE_DONE", { caseId: newCase.id, syncResult: String(syncResult), ok });
-      if (!ok) return;
+      if (!ok) {
+        // If there is no bearer token after the sync attempt, the request was
+        // never sent (resilientFetch threw "Not authenticated"). The case is
+        // saved locally on this device but the lab will not see it until the
+        // user re-authenticates. Show a blocking alert so the failure is visible.
+        if (!getAccessToken()) {
+          Alert.alert(
+            "Case Not Synced — Sign In Required",
+            `Case ${newCase.caseNumber} was saved on this device but could not reach the lab server because your session token is missing.\n\nPlease sign out and sign back in, then check that the case appears on the web or desktop.`,
+            [{ text: "OK" }],
+          );
+        }
+        return;
+      }
       await generateServerInvoiceForCase(newCase.id, newInvoice.id);
     })();
 

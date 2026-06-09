@@ -143,19 +143,32 @@ export function getAccessToken() {
 }
 
 export function logDebugEvent(tag: string, payload: Record<string, unknown>): void {
-  try {
-    const baseUrl = getApiUrl();
-    const token = _accessToken;
-    const url = new URL("api/debug/event", baseUrl).toString();
-    void globalThis.fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({ tag, payload }),
-    }).catch(() => {});
-  } catch {}
+  void (async () => {
+    try {
+      // Hydrate the bearer token from secure storage if not in memory — same
+      // guard used by resilientFetch. Without this, logDebugEvent always fires
+      // an unauthenticated request and receives 401 when _accessToken is null
+      // (e.g. when the in-memory token hasn't been loaded yet on this launch).
+      if (Platform.OS !== "web" && !_accessToken) {
+        await loadTokens();
+        if (!_accessToken && _refreshToken) {
+          await refreshAccessToken();
+        }
+      }
+      const token = _accessToken;
+      if (!token) return; // still no token after hydration — skip silently
+      const baseUrl = getApiUrl();
+      const url = new URL("api/debug/event", baseUrl).toString();
+      await globalThis.fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ tag, payload }),
+      });
+    } catch {}
+  })();
 }
 
 async function refreshAccessToken(): Promise<string | null> {
@@ -280,6 +293,11 @@ async function resilientFetch(
     // form itself from working on a fresh install or after logout.
     // See `lib/unauthenticated-paths.ts` for the exact-match allowlist.
     if (!_accessToken && !isUnauthenticatedPath(path)) {
+      console.error(
+        "[resilientFetch] No bearer token available for path:",
+        path,
+        "— SecureStore hydration failed or session expired. Request will not be sent.",
+      );
       throw new Error("Not authenticated: no bearer token available.");
     }
   }
