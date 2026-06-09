@@ -197,7 +197,7 @@ maybeDb("Mobile sync + invoice — DB regression suite", () => {
     const caseId = rid("case");
     const caseBlob = {
       id: caseId,
-      caseNumber: "26-INV-TEST",
+      caseNumber: `26-INV-TEST-${caseId}`,
       patientName: "Alice Crown",
       doctorName: "Dr. Incisor",
       toothIndices: "#8, #9",
@@ -225,7 +225,7 @@ maybeDb("Mobile sync + invoice — DB regression suite", () => {
     expect(r.body.ok).toBe(true);
     const inv = r.body.data ?? r.body;
     expect(inv.id).toBeTruthy();
-    expect(inv.invoiceNumber).toBe("INV-26-INV-TEST");
+    expect(inv.invoiceNumber).toBe(`INV-26-INV-TEST-${caseId}`);
   });
 
   // ── (d) Invoice has correct org + metadata from the legacy blob ─────────────
@@ -233,7 +233,7 @@ maybeDb("Mobile sync + invoice — DB regression suite", () => {
     const caseId = rid("case");
     const caseBlob = {
       id: caseId,
-      caseNumber: "26-META",
+      caseNumber: `26-META-${caseId}`,
       patientName: "Bob Premolar",
       doctorName: "Dr. Metadata",
       toothIndices: "#20",
@@ -273,7 +273,7 @@ maybeDb("Mobile sync + invoice — DB regression suite", () => {
     const caseId = rid("case");
     const caseBlob = {
       id: caseId,
-      caseNumber: "26-IDEM",
+      caseNumber: `26-IDEM-${caseId}`,
       patientName: "Carl Canine",
       doctorName: "Dr. Idempotent",
       status: "INTAKE",
@@ -336,7 +336,7 @@ maybeDb("Mobile sync + invoice — DB regression suite", () => {
 
     const blob1 = {
       id: caseId1,
-      caseNumber: "26-DUP-1",
+      caseNumber: `26-DUP-1-${caseId1}`,
       patientName: sharedPatient,
       doctorName: "Dr. Dup",
       status: "INTAKE",
@@ -344,7 +344,7 @@ maybeDb("Mobile sync + invoice — DB regression suite", () => {
     };
     const blob2 = {
       id: caseId2,
-      caseNumber: "26-DUP-2",
+      caseNumber: `26-DUP-2-${caseId2}`,
       patientName: sharedPatient,
       doctorName: "Dr. Dup",
       status: "INTAKE",
