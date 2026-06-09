@@ -1890,6 +1890,12 @@ function OrganizationsPanel() {
   );
 }
 
+interface BackfillSkippedCase {
+  caseId: string;
+  caseNumber: string;
+  invoiceNumber: string;
+}
+
 interface BackfillSummary {
   labOrganizationId: string;
   casesScanned: number;
@@ -1897,6 +1903,7 @@ interface BackfillSummary {
   skippedExisting: number;
   skippedNoRestorations: number;
   skippedNumberTaken: number;
+  skippedNumberTakenCases: BackfillSkippedCase[];
   createdInvoiceIds: string[];
 }
 
@@ -1957,15 +1964,37 @@ function BackfillInvoicesRow({ labOrganizationId, labName }: { labOrganizationId
       )}
 
       {summary && (
-        <div className="mt-2 rounded-md border border-border bg-secondary/30 px-3 py-2 text-xs">
-          <div className="font-medium mb-1">Backfill complete</div>
-          <ul className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-muted-foreground">
-            <li>Cases scanned: <span className="text-foreground font-medium">{summary.casesScanned}</span></li>
-            <li>Invoices created: <span className="text-foreground font-medium">{summary.created}</span></li>
-            <li>Skipped (already invoiced): <span className="text-foreground font-medium">{summary.skippedExisting}</span></li>
-            <li>Skipped (no restorations): <span className="text-foreground font-medium">{summary.skippedNoRestorations}</span></li>
-            <li>Skipped (number taken): <span className="text-foreground font-medium">{summary.skippedNumberTaken}</span></li>
-          </ul>
+        <div className="mt-2 space-y-2">
+          <div className="rounded-md border border-border bg-secondary/30 px-3 py-2 text-xs">
+            <div className="font-medium mb-1">Backfill complete</div>
+            <ul className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-muted-foreground">
+              <li>Cases scanned: <span className="text-foreground font-medium">{summary.casesScanned}</span></li>
+              <li>Invoices created: <span className="text-foreground font-medium">{summary.created}</span></li>
+              <li>Skipped (already invoiced): <span className="text-foreground font-medium">{summary.skippedExisting}</span></li>
+              <li>Skipped (no restorations): <span className="text-foreground font-medium">{summary.skippedNoRestorations}</span></li>
+              <li>Skipped (number taken): <span className="text-foreground font-medium">{summary.skippedNumberTaken}</span></li>
+            </ul>
+          </div>
+          {summary.skippedNumberTakenCases && summary.skippedNumberTakenCases.length > 0 && (
+            <div className="rounded-md border border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/40 px-3 py-2 text-xs">
+              <div className="font-semibold text-amber-800 dark:text-amber-300 mb-1">
+                {summary.skippedNumberTakenCases.length === 1
+                  ? "1 case could not be invoiced — invoice number already in use"
+                  : `${summary.skippedNumberTakenCases.length} cases could not be invoiced — invoice numbers already in use`}
+              </div>
+              <p className="text-amber-700 dark:text-amber-400 mb-2">
+                These cases were skipped because another invoice in this lab already holds the same invoice number. Open each case to manually assign a unique invoice number.
+              </p>
+              <ul className="space-y-0.5">
+                {summary.skippedNumberTakenCases.map((c) => (
+                  <li key={c.caseId} className="flex items-center gap-2 text-amber-800 dark:text-amber-300">
+                    <span className="font-medium">Case {c.caseNumber}</span>
+                    <span className="text-amber-600 dark:text-amber-500">→ would be {c.invoiceNumber}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       )}
 

@@ -715,6 +715,52 @@ function buildInvoiceDisplayMetadataFromCase(
   };
 }
 
+// Pre-flight check: report which cases would be skipped due to an invoice
+// number collision if the backfill were run now, without actually creating
+// anything. Same auth requirement as the backfill itself.
+router.get(
+  "/lab-orgs/:labOrganizationId/backfill-preview",
+  asyncHandler(async (req, res) => {
+    const labOrganizationId = req.params.labOrganizationId;
+    await requireAnyRole(
+      (req as any).auth.userId,
+      labOrganizationId,
+      ADMIN_ROLES
+    );
+
+    const labCases = await db.query.cases.findMany({
+      where: eq(cases.labOrganizationId, labOrganizationId),
+    });
+
+    const collisions: Array<{ caseId: string; caseNumber: string; invoiceNumber: string }> = [];
+
+    for (const found of labCases) {
+      const existingForCase = await db.query.invoices.findFirst({
+        where: eq(invoices.caseId, found.id),
+      });
+      if (existingForCase) continue;
+
+      const restorations = await db.query.caseRestorations.findMany({
+        where: eq(caseRestorations.caseId, found.id),
+      });
+      if (!restorations.length) continue;
+
+      const invoiceNumber = nextInvoiceNumber(found.caseNumber);
+      const conflicting = await db.query.invoices.findFirst({
+        where: and(
+          eq(invoices.labOrganizationId, labOrganizationId),
+          eq(invoices.invoiceNumber, invoiceNumber),
+        ),
+      });
+      if (conflicting) {
+        collisions.push({ caseId: found.id, caseNumber: found.caseNumber, invoiceNumber });
+      }
+    }
+
+    return ok(res, { labOrganizationId, casesChecked: labCases.length, collisions });
+  })
+);
+
 // Admin-only batch backfill: for a given lab org, find every case that does
 // not yet have an invoice and generate one for it using the same per-case
 // generation logic. Idempotent: relies on the unique index on
@@ -745,6 +791,7 @@ router.post(
     let skippedNoRestorations = 0;
     let skippedNumberTaken = 0;
     const createdInvoiceIds: string[] = [];
+    const skippedNumberTakenCases: Array<{ caseId: string; caseNumber: string; invoiceNumber: string }> = [];
 
     for (const found of labCases) {
       const existingForCase = await db.query.invoices.findFirst({
@@ -796,6 +843,7 @@ router.post(
         // a manual invoice created with the same number within the same lab).
         // Do nothing — we refuse to silently retitle or relink an existing invoice.
         skippedNumberTaken++;
+        skippedNumberTakenCases.push({ caseId: found.id, caseNumber: found.caseNumber, invoiceNumber });
         continue;
       }
 
@@ -864,6 +912,7 @@ router.post(
       skippedExisting,
       skippedNoRestorations,
       skippedNumberTaken,
+      skippedNumberTakenCases,
       createdInvoiceIds,
     };
 
