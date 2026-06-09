@@ -24,6 +24,7 @@
 - [LabTrax add-item dual pricing](labtrax-add-item-dual-pricing.md) — case.price (addCaseItem) and invoice line rate (handleSaveItem) resolve price independently; thread any pricing input to BOTH.
 - [Expo share-sheet is plugin-gated](expo-share-intent-share-sheet.md) — LabTrax vanishes from the iOS/Android share sheet if the expo-share-intent block is dropped from app.json plugins; native-only, guarded by a firewall test.
 - [Mobile cookie-jar CSRF trap](mobile-cookie-jar-csrf-trap.md) — bearer clients must never get Set-Cookie; RN fetch jar + missing in-memory token → cookie-only POST → CSRF 403 wedges syncs as "lab rejected".
+- [Mobile invoice nullable providerOrganizationId](mobile-invoice-nullable-provider-org.md) — making a FK column nullable cascades into eq(), requireMembership(), and filter() callers — typecheck all of them after schema change.
 - [AI Rx analyze-prescription hang](ai-rx-analyze-hang.md) — spinner hangs before API call when ensureHighQualityBase64 calls ImageManipulator with no timeout; fix = base64:true on takePictureAsync + 8s Promise.race in ensureHighQualityBase64.
 - [Join-a-lab banner false positive](join-lab-banner-false-positive.md) — banner renders on !userIsAffiliated which starts false; must gate on labAffiliationReady (set after AsyncStorage cache read + after sync) to prevent false-positive flash.
 - [Profile org type field mismatch](profile-org-type-field.md) — canReceivePayments check must use `organization.type`, not `organization.userType`; the latter is always undefined on the /api/auth/me org object.

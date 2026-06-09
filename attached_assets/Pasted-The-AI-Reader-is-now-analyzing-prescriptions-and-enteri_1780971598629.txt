@@ -1,0 +1,62 @@
+The AI Reader is now analyzing prescriptions and entering case data, but two regressions remain:
+
+1. Invoice regression:
+
+* After AI Reader creates/populates a case, no invoice is generated.
+* This used to work.
+* Fix the AI Reader → Case Save → Invoice Generation chain.
+
+2. Mobile/Web/Desktop sync regression:
+
+* The new case created from the mobile app does not appear in the web/desktop version.
+* This used to work.
+* Fix case persistence/sync so cases created on mobile appear on web/desktop immediately or after refresh.
+
+Do not add new features right now.
+
+Please perform root-cause analysis and identify exactly where the chain breaks:
+
+AI Reader
+→ Case data populated
+→ Case saved to database
+→ Invoice generated
+→ Case visible in mobile
+→ Case visible in web/desktop
+
+For each step, provide PASS/FAIL and logs.
+
+Required fixes:
+
+* Confirm the case is being saved to the shared backend database, not only local/mobile state.
+* Confirm the saved case has the correct labOrganizationId/providerOrganizationId.
+* Confirm invoice generation is triggered after AI-created cases, not only manually-created cases.
+* Confirm web/desktop case list queries include cases created from mobile AI Reader.
+* Confirm there is no filter/status/org mismatch hiding the case.
+* Confirm invoice generation works for AI-created cases with restorations/material/tooth data.
+
+After fixing, add permanent regression tests:
+
+1. Mobile AI Reader creates case.
+2. Case is saved to shared backend.
+3. Same case appears in web/desktop case list.
+4. Invoice is automatically generated.
+5. Invoice links to the correct case.
+6. Existing AI Reader analysis still works.
+7. Existing manual case creation still works.
+8. Existing web/desktop case list still works.
+
+Do not mark this fixed until you can provide evidence from a real end-to-end test:
+
+* Prescription image analyzed
+* Case ID created
+* Case visible on mobile
+* Same Case ID visible on web/desktop
+* Invoice number generated
+* Invoice linked to that Case ID
+
+Create a checkpoint after the fix named:
+
+“Verified Mobile AI Reader Case Sync Invoice Workflow”
+
+Going forward, no new feature should be merged unless the full regression suite passes for:
+AI Reader → Case Save → Invoice → Mobile/Web/Desktop Sync.

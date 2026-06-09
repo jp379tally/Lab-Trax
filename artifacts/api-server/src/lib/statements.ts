@@ -224,7 +224,7 @@ export async function buildPracticeStatements(
     new Set(
       rows
         .map((r) => r.providerOrganizationId)
-        .filter((id) => !filterIds || filterIds.has(id))
+        .filter((id): id is string => id !== null && (!filterIds || filterIds.has(id)))
     )
   );
   if (!practiceIds.length) return [];
@@ -243,6 +243,8 @@ export async function buildPracticeStatements(
 
   for (const inv of rows) {
     const id = inv.providerOrganizationId;
+    // Legacy mobile invoices have no provider org — skip them in statement grouping.
+    if (!id) continue;
     // Skip invoices for practices that aren't in the inclusion filter.
     if (filterIds && !filterIds.has(id)) continue;
     const org = byId.get(id);
@@ -1028,7 +1030,7 @@ export async function buildPracticeStatementsForScope(
     new Set(
       rows
         .map((r) => r.providerOrganizationId)
-        .filter((id) => !filterIds || filterIds.has(id))
+        .filter((id): id is string => id !== null && (!filterIds || filterIds.has(id)))
     )
   );
   if (!uniquePracticeIds.length) return [];
@@ -1044,6 +1046,8 @@ export async function buildPracticeStatementsForScope(
 
   for (const inv of rows) {
     const id = inv.providerOrganizationId;
+    // Legacy mobile invoices have no provider org — skip them in statement grouping.
+    if (!id) continue;
     if (filterIds && !filterIds.has(id)) continue;
     const org = byId.get(id);
     const cur =

@@ -333,6 +333,8 @@ router.post(
       BILLING_ROLES,
     );
 
+    if (!invoice.providerOrganizationId)
+      throw new HttpError(404, "This invoice has no associated practice.");
     const practice = await db.query.organizations.findFirst({
       where: eq(organizations.id, invoice.providerOrganizationId),
     });
@@ -492,6 +494,8 @@ router.post(
       BILLING_ROLES,
     );
 
+    if (!invoice.providerOrganizationId)
+      throw new HttpError(404, "This invoice has no associated practice.");
     const practice = await db.query.organizations.findFirst({
       where: eq(organizations.id, invoice.providerOrganizationId),
     });
@@ -1018,147 +1022,208 @@ router.post(
 router.post(
   "/cases/:caseId/generate-invoice",
   asyncHandler(async (req, res) => {
+    const caseId = String(req.params.caseId ?? "");
+    const userId = (req as any).auth.userId as string;
+
+    // ── Canonical case path ──────────────────────────────────────────────────
     const found = await db.query.cases.findFirst({
-      where: eq(cases.id, req.params.caseId),
+      where: eq(cases.id, caseId),
     });
-    if (!found) throw new HttpError(404, "Case not found.");
-    await requireAnyRole(
-      (req as any).auth.userId,
-      found.labOrganizationId,
-      BILLING_ROLES
-    );
 
-    const restorations = await db.query.caseRestorations.findMany({
-      where: eq(caseRestorations.caseId, found.id),
-    });
-    // Empty draft invoices are allowed: AI-imported / drag-and-dropped
-    // cases often have no restorations yet but still need an invoice
-    // skeleton to attach line items to later.
-    const hasRestorations = restorations.length > 0;
+    if (found) {
+      await requireAnyRole(userId, found.labOrganizationId, BILLING_ROLES);
 
-    // Pre-fill the invoice editor's patient/doctor/teeth/shade/case-notes
-    // fields from the originating case so an admin doesn't have to retype
-    // anything the AI prescription analysis already extracted. Restrict
-    // notes to provider-shared visibility — invoices are readable by the
-    // practice (provider org members), so internal-lab-only notes must
-    // never be persisted into invoice metadata or its downstream PDF/email.
-    const noteRows = await db.query.caseNotes.findMany({
-      where: and(
-        eq(caseNotes.caseId, found.id),
-        eq(caseNotes.visibility, "shared_with_provider"),
-      ),
-      orderBy: [caseNotes.createdAt],
+      const restorations = await db.query.caseRestorations.findMany({
+        where: eq(caseRestorations.caseId, found.id),
+      });
+      // Empty draft invoices are allowed: AI-imported / drag-and-dropped
+      // cases often have no restorations yet but still need an invoice
+      // skeleton to attach line items to later.
+      const hasRestorations = restorations.length > 0;
+
+      // Pre-fill the invoice editor's patient/doctor/teeth/shade/case-notes
+      // fields from the originating case so an admin doesn't have to retype
+      // anything the AI prescription analysis already extracted. Restrict
+      // notes to provider-shared visibility — invoices are readable by the
+      // practice (provider org members), so internal-lab-only notes must
+      // never be persisted into invoice metadata or its downstream PDF/email.
+      const noteRows = await db.query.caseNotes.findMany({
+        where: and(
+          eq(caseNotes.caseId, found.id),
+          eq(caseNotes.visibility, "shared_with_provider"),
+        ),
+        orderBy: [caseNotes.createdAt],
+      });
+      const displayMetadataJson = buildInvoiceDisplayMetadataFromCase(
+        found,
+        restorations,
+        noteRows,
+      );
+
+      const bodyLayoutPresetId =
+        typeof req.body?.layoutPresetId === "string" && req.body.layoutPresetId.trim()
+          ? req.body.layoutPresetId.trim()
+          : null;
+
+      const [invoice] = await db
+        .insert(invoices)
+        .values({
+          invoiceNumber: nextInvoiceNumber(found.caseNumber),
+          caseId: found.id,
+          labOrganizationId: found.labOrganizationId,
+          providerOrganizationId: found.providerOrganizationId,
+          status: "draft",
+          displayMetadataJson,
+          ...(bodyLayoutPresetId ? { layoutPresetId: bodyLayoutPresetId } : {}),
+          createdByUserId: userId,
+          updatedByUserId: userId,
+        })
+        .onConflictDoNothing()
+        .returning();
+
+      const targetInvoice =
+        invoice ??
+        (await db.query.invoices.findFirst({
+          where: eq(invoices.invoiceNumber, nextInvoiceNumber(found.caseNumber)),
+        }));
+      if (!targetInvoice)
+        throw new HttpError(500, "Invoice could not be generated.");
+
+      if (invoice && hasRestorations) {
+        const genLabelCache: Record<string, string> = {};
+        for (const r of restorations) {
+          const pk = materialToPriceKey(r.material, r.restorationType) ?? r.restorationType;
+          if (!(pk in genLabelCache)) {
+            genLabelCache[pk] = await resolveItemLabel(found.labOrganizationId, pk);
+          }
+        }
+        const itemsToInsert = restorations.map((restoration, index) => {
+          const pk = materialToPriceKey(restoration.material, restoration.restorationType) ?? restoration.restorationType;
+          const label = genLabelCache[pk] ?? restoration.restorationType;
+          const toothInt = parseInt(restoration.toothNumber, 10);
+          return {
+            invoiceId: targetInvoice.id,
+            caseRestorationId: restoration.id,
+            toothNumber: Number.isInteger(toothInt) && toothInt >= 1 && toothInt <= 32 ? toothInt : null,
+            description: buildLineItemDescription(restoration.toothNumber, label),
+            quantity: restoration.quantity,
+            unitPrice: restoration.unitPrice,
+            lineTotal: calculateLineTotal(restoration.quantity, restoration.unitPrice),
+            sortOrder: index,
+          };
+        });
+        await db.insert(invoiceLineItems).values(itemsToInsert);
+      }
+
+      const items = await db.query.invoiceLineItems.findMany({
+        where: eq(invoiceLineItems.invoiceId, targetInvoice.id),
+        orderBy: [invoiceLineItems.sortOrder],
+      });
+      const subtotal = sumMoney(items.map((item) => item.lineTotal));
+
+      const [updatedInvoice] = await db
+        .update(invoices)
+        .set({
+          subtotal,
+          total: subtotal,
+          balanceDue: subtotal,
+          updatedByUserId: userId,
+          // Empty drafts stay in "draft" with no issuedAt; only invoices
+          // with at least one line item are auto-issued to "open".
+          // Preserve an existing dueAt when re-generating; only default to
+          // 10th-of-next-month when dueAt is not already set.
+          ...(hasRestorations
+            ? {
+                issuedAt: new Date(),
+                status: "open" as const,
+                dueAt: targetInvoice.dueAt ?? invoiceDueDate(new Date()),
+              }
+            : {}),
+        })
+        .where(eq(invoices.id, targetInvoice.id))
+        .returning();
+
+      const user = (req as any).user;
+      await db.insert(caseEvents).values({
+        caseId: found.id,
+        eventType: "invoice_generated",
+        actorUserId: userId,
+        actorOrganizationId: found.labOrganizationId,
+        actorInitials: user?.initials || "SYS",
+        metadataJson: {
+          invoiceId: updatedInvoice.id,
+          invoiceNumber: updatedInvoice.invoiceNumber,
+        },
+      });
+
+      return ok(res, updatedInvoice, invoice ? 201 : 200);
+    }
+
+    // ── Legacy mobile case path ──────────────────────────────────────────────
+    // Mobile cases live in lab_cases (blob store), not the canonical cases
+    // table. We still generate an invoice skeleton for them, but:
+    //   • caseId is left null  (cases.id FK would reject the legacy ID)
+    //   • providerOrganizationId is null  (legacy cases have no formal provider
+    //     org; schema column is now nullable to allow this)
+    //   • caseEvents insert is skipped  (caseEvents.caseId FK to cases.id)
+    const legacyRow = await db.query.labCases.findFirst({
+      where: and(eq(labCases.id, caseId), isNull(labCases.deletedAt)),
     });
-    const displayMetadataJson = buildInvoiceDisplayMetadataFromCase(
-      found,
-      restorations,
-      noteRows,
-    );
+    if (!legacyRow) throw new HttpError(404, "Case not found.");
+    if (!legacyRow.organizationId) {
+      throw new HttpError(422, "Legacy case has no associated lab organization.");
+    }
+    await requireAnyRole(userId, legacyRow.organizationId, BILLING_ROLES);
+
+    let parsedBlob: any;
+    try {
+      parsedBlob =
+        typeof legacyRow.caseData === "string"
+          ? JSON.parse(legacyRow.caseData)
+          : (legacyRow.caseData ?? {});
+    } catch {
+      throw new HttpError(422, "Legacy case data is malformed.");
+    }
+
+    const legacyCaseNumber = String(parsedBlob.caseNumber ?? caseId);
+    const displayMetadataJson = {
+      patientName: String(parsedBlob.patientName ?? ""),
+      billTo: String(parsedBlob.doctorName ?? ""),
+      teeth: String(parsedBlob.toothIndices ?? ""),
+      shade: String(parsedBlob.shade ?? ""),
+      caseNotes: "",
+    };
 
     const bodyLayoutPresetId =
       typeof req.body?.layoutPresetId === "string" && req.body.layoutPresetId.trim()
         ? req.body.layoutPresetId.trim()
         : null;
 
-    const [invoice] = await db
+    const [legacyInvoice] = await db
       .insert(invoices)
       .values({
-        invoiceNumber: nextInvoiceNumber(found.caseNumber),
-        caseId: found.id,
-        labOrganizationId: found.labOrganizationId,
-        providerOrganizationId: found.providerOrganizationId,
+        invoiceNumber: nextInvoiceNumber(legacyCaseNumber),
+        caseId: null,
+        labOrganizationId: legacyRow.organizationId,
+        providerOrganizationId: null,
         status: "draft",
         displayMetadataJson,
         ...(bodyLayoutPresetId ? { layoutPresetId: bodyLayoutPresetId } : {}),
-        createdByUserId: (req as any).auth.userId,
-        updatedByUserId: (req as any).auth.userId,
+        createdByUserId: userId,
+        updatedByUserId: userId,
       })
       .onConflictDoNothing()
       .returning();
 
-    const targetInvoice =
-      invoice ??
+    const targetLegacyInvoice =
+      legacyInvoice ??
       (await db.query.invoices.findFirst({
-        where: eq(
-          invoices.invoiceNumber,
-          nextInvoiceNumber(found.caseNumber)
-        ),
+        where: eq(invoices.invoiceNumber, nextInvoiceNumber(legacyCaseNumber)),
       }));
-    if (!targetInvoice)
+    if (!targetLegacyInvoice)
       throw new HttpError(500, "Invoice could not be generated.");
 
-    if (invoice && hasRestorations) {
-      const genLabelCache: Record<string, string> = {};
-      for (const r of restorations) {
-        const pk = materialToPriceKey(r.material, r.restorationType) ?? r.restorationType;
-        if (!(pk in genLabelCache)) {
-          genLabelCache[pk] = await resolveItemLabel(found.labOrganizationId, pk);
-        }
-      }
-      const itemsToInsert = restorations.map((restoration, index) => {
-        const pk = materialToPriceKey(restoration.material, restoration.restorationType) ?? restoration.restorationType;
-        const label = genLabelCache[pk] ?? restoration.restorationType;
-        const toothInt = parseInt(restoration.toothNumber, 10);
-        return {
-          invoiceId: targetInvoice.id,
-          caseRestorationId: restoration.id,
-          toothNumber: Number.isInteger(toothInt) && toothInt >= 1 && toothInt <= 32 ? toothInt : null,
-          description: buildLineItemDescription(restoration.toothNumber, label),
-          quantity: restoration.quantity,
-          unitPrice: restoration.unitPrice,
-          lineTotal: calculateLineTotal(
-            restoration.quantity,
-            restoration.unitPrice
-          ),
-          sortOrder: index,
-        };
-      });
-      await db.insert(invoiceLineItems).values(itemsToInsert);
-    }
-
-    const items = await db.query.invoiceLineItems.findMany({
-      where: eq(invoiceLineItems.invoiceId, targetInvoice.id),
-      orderBy: [invoiceLineItems.sortOrder],
-    });
-    const subtotal = sumMoney(items.map((item) => item.lineTotal));
-
-    const [updatedInvoice] = await db
-      .update(invoices)
-      .set({
-        subtotal,
-        total: subtotal,
-        balanceDue: subtotal,
-        updatedByUserId: (req as any).auth.userId,
-        // Empty drafts stay in "draft" with no issuedAt; only invoices
-        // with at least one line item are auto-issued to "open".
-        // Preserve an existing dueAt when re-generating (onConflictDoNothing
-        // may have returned the pre-existing invoice row); only default to
-        // 10th-of-next-month when dueAt is not already set.
-        ...(hasRestorations
-          ? {
-              issuedAt: new Date(),
-              status: "open" as const,
-              dueAt: targetInvoice.dueAt ?? invoiceDueDate(new Date()),
-            }
-          : {}),
-      })
-      .where(eq(invoices.id, targetInvoice.id))
-      .returning();
-
-    const user = (req as any).user;
-    await db.insert(caseEvents).values({
-      caseId: found.id,
-      eventType: "invoice_generated",
-      actorUserId: (req as any).auth.userId,
-      actorOrganizationId: found.labOrganizationId,
-      actorInitials: user?.initials || "SYS",
-      metadataJson: {
-        invoiceId: updatedInvoice.id,
-        invoiceNumber: updatedInvoice.invoiceNumber,
-      },
-    });
-
-    return ok(res, updatedInvoice, invoice ? 201 : 200);
+    return ok(res, targetLegacyInvoice, legacyInvoice ? 201 : 200);
   })
 );
 
@@ -1918,10 +1983,12 @@ router.get(
       (req as any).auth.userId,
       invoice.labOrganizationId
     ).catch(() => null);
-    const providerMember = await requireMembership(
-      (req as any).auth.userId,
-      invoice.providerOrganizationId
-    ).catch(() => null);
+    const providerMember = invoice.providerOrganizationId
+      ? await requireMembership(
+          (req as any).auth.userId,
+          invoice.providerOrganizationId
+        ).catch(() => null)
+      : null;
     if (!labMember && !providerMember)
       throw new HttpError(403, "You do not have access to this invoice.");
 
@@ -1980,9 +2047,11 @@ router.get(
         }
       }
     }
-    const practiceOrg = await db.query.organizations.findFirst({
-      where: eq(organizations.id, invoice.providerOrganizationId),
-    }).catch(() => null);
+    const practiceOrg = invoice.providerOrganizationId
+      ? await db.query.organizations.findFirst({
+          where: eq(organizations.id, invoice.providerOrganizationId),
+        }).catch(() => null)
+      : null;
 
     const topLevelItems = items.filter((it) => it.parentLineItemId == null);
     const subItemsByParent = new Map<string, typeof items>();
@@ -2422,10 +2491,9 @@ async function loadInvoiceWithAccess(
     callerId,
     invoice.labOrganizationId,
   ).catch(() => null);
-  const providerMember = await requireMembership(
-    callerId,
-    invoice.providerOrganizationId,
-  ).catch(() => null);
+  const providerMember = invoice.providerOrganizationId
+    ? await requireMembership(callerId, invoice.providerOrganizationId).catch(() => null)
+    : null;
   if (!labMember && !providerMember) {
     throw new HttpError(403, "You do not have access to this invoice.");
   }
@@ -3577,9 +3645,11 @@ router.post(
           continue;
         }
         await requireAnyRole(callerId, invoice.labOrganizationId, BILLING_ROLES);
-        const practice = await db.query.organizations.findFirst({
-          where: eq(organizations.id, invoice.providerOrganizationId),
-        });
+        const practice = invoice.providerOrganizationId
+          ? await db.query.organizations.findFirst({
+              where: eq(organizations.id, invoice.providerOrganizationId),
+            })
+          : null;
         const recipientList: string[] = Array.isArray(item.to)
           ? item.to.map((s) => s.trim()).filter(Boolean)
           : item.to

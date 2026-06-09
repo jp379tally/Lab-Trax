@@ -797,7 +797,6 @@ export const invoices = pgTable(
       .notNull()
       .references(() => organizations.id, { onDelete: "restrict" }),
     providerOrganizationId: varchar("provider_organization_id")
-      .notNull()
       .references(() => organizations.id, { onDelete: "restrict" }),
     status: text("status").default("draft").notNull(),
     subtotal: decimal("subtotal", { precision: 10, scale: 2 })
@@ -902,7 +901,6 @@ export const invoiceCredits = pgTable(
       .notNull()
       .references(() => invoices.id, { onDelete: "cascade" }),
     providerOrganizationId: varchar("provider_organization_id")
-      .notNull()
       .references(() => organizations.id, { onDelete: "restrict" }),
     labOrganizationId: varchar("lab_organization_id")
       .notNull()

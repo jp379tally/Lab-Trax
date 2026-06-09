@@ -1,0 +1,316 @@
+/**
+ * Regression suite: Mobile AI Reader case sync + invoice generation.
+ *
+ * Covers two regressions found after Build 214 TestFlight:
+ *
+ *   (1) Invoice not generated — the generate-invoice endpoint only looked up
+ *       the canonical `cases` table. Mobile cases live in `lab_cases` (the
+ *       legacy blob store), so it always returned 404 and no invoice was
+ *       created on the server.
+ *
+ *   (2) Mobile cases not visible on web/desktop — GET /api/cases was already
+ *       bridging lab_cases into its response (with _source:"mobile"), so this
+ *       was not actually broken; but we guard it here to prevent regressions.
+ *
+ * The DB-gated suite (requires DATABASE_URL):
+ *   (a) POST /api/legacy/cases stores the case in lab_cases
+ *   (b) GET  /api/cases returns it with _source:"mobile" (sync visible)
+ *   (c) POST /api/invoices/cases/:id/generate-invoice returns 200/201 for a
+ *       legacy case and creates a real invoice row
+ *   (d) The invoice carries correct labOrganizationId + patient/doctor metadata
+ *   (e) Calling generate-invoice a second time is idempotent (200, same row)
+ *   (f) generate-invoice for a completely unknown id still returns 404
+ */
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { eq, inArray, and } from "drizzle-orm";
+import { randomBytes, createHash } from "node:crypto";
+import * as path from "node:path";
+import * as os from "node:os";
+import * as fs from "node:fs";
+import request from "supertest";
+
+import { vi } from "vitest";
+
+vi.mock("../lib/backup.js", () => ({
+  restartScheduledBackupJob: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));
+vi.mock("../lib/statements.js", () => ({ startStatementScheduler: vi.fn() }));
+vi.mock("../lib/case-media.js", () => ({
+  startDailyOrphanedMediaCleanup: vi.fn(),
+  caseMediaDir: path.join(os.tmpdir(), "labtrax-test-media-sync"),
+  extractMediaFileName: () => null,
+  extractMediaFilenamesFromText: () => [],
+}));
+
+function rid(prefix: string) {
+  return `${prefix}_${randomBytes(8).toString("hex")}`;
+}
+
+const SHOULD_RUN_DB = !!process.env["DATABASE_URL"];
+const maybeDb = SHOULD_RUN_DB ? describe : describe.skip;
+
+maybeDb("Mobile sync + invoice — DB regression suite", () => {
+  let dbMod: typeof import("@workspace/db");
+  let appMod: { default: import("express").Express };
+  let auth: typeof import("../lib/auth.js");
+
+  const labOrgId = rid("lab");
+  const mobileUserId = rid("umob");
+  let mobileToken = "";
+
+  async function makeSession(userId: string): Promise<string> {
+    const { db, userSessions } = dbMod as any;
+    const sessionId = rid("sess");
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+    const token = auth.signAccessToken(userId, sessionId);
+    const hash = createHash("sha256").update(token).digest("hex");
+    await db.insert(userSessions).values({ id: sessionId, userId, tokenHash: hash, expiresAt });
+    return token;
+  }
+
+  beforeAll(async () => {
+    fs.mkdirSync(path.join(os.tmpdir(), "labtrax-test-media-sync"), { recursive: true });
+    process.env["JWT_SECRET"] =
+      process.env["JWT_SECRET"] ?? "labtrax-test-secret-sync";
+
+    dbMod = await import("@workspace/db");
+    appMod = await import("../app.js");
+    auth = await import("../lib/auth.js");
+
+    const { db, organizations, users, organizationMemberships } = dbMod as any;
+
+    await db.insert(users).values([
+      { id: mobileUserId, username: `mob_${mobileUserId}`, password: "testpass" },
+    ]);
+    await db.insert(organizations).values([
+      { id: labOrgId, type: "lab", name: "Mobile Sync Test Lab" },
+    ]);
+    await db.insert(organizationMemberships).values([
+      { id: rid("m"), labId: labOrgId, userId: mobileUserId, role: "admin", status: "active" },
+    ]);
+
+    mobileToken = await makeSession(mobileUserId);
+  });
+
+  afterAll(async () => {
+    if (!SHOULD_RUN_DB) return;
+    const {
+      db,
+      organizations,
+      users,
+      invoices,
+      labCases,
+      organizationMemberships,
+      userSessions,
+      auditLogs,
+    } = dbMod as any;
+    await db.delete(auditLogs).where(eq(auditLogs.organizationId, labOrgId));
+    await db.delete(invoices).where(eq(invoices.labOrganizationId, labOrgId));
+    await db.delete(labCases).where(eq(labCases.organizationId, labOrgId));
+    await db
+      .delete(organizationMemberships)
+      .where(eq(organizationMemberships.userId, mobileUserId));
+    await db.delete(userSessions).where(eq(userSessions.userId, mobileUserId));
+    await db.delete(organizations).where(eq(organizations.id, labOrgId));
+    await db.delete(users).where(eq(users.id, mobileUserId));
+  });
+
+  // ── (a) POST /api/legacy/cases stores the case ─────────────────────────────
+  it("(a) POST /api/legacy/cases stores case in lab_cases", async () => {
+    const caseId = rid("case");
+    const caseBlob = {
+      id: caseId,
+      caseNumber: "26-99",
+      patientName: "John Doe",
+      doctorName: "Dr. Smith",
+      toothIndices: "#14, #15",
+      shade: "A2",
+      material: "Zirconia",
+      caseType: "crown",
+      status: "INTAKE",
+      affiliationKey: `org:${labOrgId}`,
+    };
+
+    const r = await request(appMod.default)
+      .post("/api/legacy/cases")
+      .set("Authorization", `Bearer ${mobileToken}`)
+      .send({
+        id: caseId,
+        ownerId: mobileUserId,
+        caseData: JSON.stringify(caseBlob),
+      });
+
+    expect(r.status).toBe(200);
+
+    const { db, labCases } = dbMod as any;
+    const row = await db.query.labCases.findFirst({
+      where: eq(labCases.id, caseId),
+    });
+    expect(row).toBeDefined();
+    expect(row.organizationId).toBe(labOrgId);
+
+    const parsed = JSON.parse(row.caseData);
+    expect(parsed.caseNumber).toBe("26-99");
+    expect(parsed.patientName).toBe("John Doe");
+    expect(parsed.doctorName).toBe("Dr. Smith");
+  });
+
+  // ── (b) GET /api/cases returns the mobile case with _source:"mobile" ────────
+  it("(b) GET /api/cases includes the mobile case with _source:'mobile'", async () => {
+    const caseId = rid("case");
+    const caseBlob = {
+      id: caseId,
+      caseNumber: "26-100",
+      patientName: "Jane Molar",
+      doctorName: "Dr. Sync",
+      toothIndices: "#3",
+      status: "INTAKE",
+      affiliationKey: `org:${labOrgId}`,
+    };
+
+    const post = await request(appMod.default)
+      .post("/api/legacy/cases")
+      .set("Authorization", `Bearer ${mobileToken}`)
+      .send({
+        id: caseId,
+        ownerId: mobileUserId,
+        caseData: JSON.stringify(caseBlob),
+      });
+    expect(post.status).toBe(200);
+
+    const list = await request(appMod.default)
+      .get("/api/cases")
+      .set("Authorization", `Bearer ${mobileToken}`);
+
+    expect(list.status).toBe(200);
+    const cases: any[] = list.body.data ?? list.body;
+    const found = cases.find((c: any) => c.id === caseId);
+    expect(found, "mobile case must appear in GET /api/cases").toBeDefined();
+    expect(found._source).toBe("mobile");
+    expect(found.labOrganizationId).toBe(labOrgId);
+    expect(found.caseNumber).toBe("26-100");
+  });
+
+  // ── (c) generate-invoice creates an invoice for a legacy case ───────────────
+  it("(c) POST generate-invoice returns 201 and creates invoice for legacy case", async () => {
+    const caseId = rid("case");
+    const caseBlob = {
+      id: caseId,
+      caseNumber: "26-INV-TEST",
+      patientName: "Alice Crown",
+      doctorName: "Dr. Incisor",
+      toothIndices: "#8, #9",
+      shade: "B1",
+      material: "PFM",
+      status: "INTAKE",
+      affiliationKey: `org:${labOrgId}`,
+    };
+
+    const sync = await request(appMod.default)
+      .post("/api/legacy/cases")
+      .set("Authorization", `Bearer ${mobileToken}`)
+      .send({
+        id: caseId,
+        ownerId: mobileUserId,
+        caseData: JSON.stringify(caseBlob),
+      });
+    expect(sync.status).toBe(200);
+
+    const r = await request(appMod.default)
+      .post(`/api/invoices/cases/${caseId}/generate-invoice`)
+      .set("Authorization", `Bearer ${mobileToken}`);
+
+    expect(r.status).toBe(201);
+    expect(r.body.ok).toBe(true);
+    const inv = r.body.data ?? r.body;
+    expect(inv.id).toBeTruthy();
+    expect(inv.invoiceNumber).toBe("INV-26-INV-TEST");
+  });
+
+  // ── (d) Invoice has correct org + metadata from the legacy blob ─────────────
+  it("(d) Generated invoice has correct labOrganizationId and patient/doctor metadata", async () => {
+    const caseId = rid("case");
+    const caseBlob = {
+      id: caseId,
+      caseNumber: "26-META",
+      patientName: "Bob Premolar",
+      doctorName: "Dr. Metadata",
+      toothIndices: "#20",
+      shade: "A3",
+      material: "Zirconia",
+      status: "INTAKE",
+      affiliationKey: `org:${labOrgId}`,
+    };
+
+    await request(appMod.default)
+      .post("/api/legacy/cases")
+      .set("Authorization", `Bearer ${mobileToken}`)
+      .send({
+        id: caseId,
+        ownerId: mobileUserId,
+        caseData: JSON.stringify(caseBlob),
+      });
+
+    const r = await request(appMod.default)
+      .post(`/api/invoices/cases/${caseId}/generate-invoice`)
+      .set("Authorization", `Bearer ${mobileToken}`);
+
+    expect(r.status).toBe(201);
+    const inv = r.body.data ?? r.body;
+    expect(inv.labOrganizationId).toBe(labOrgId);
+    expect(inv.providerOrganizationId).toBeNull();
+
+    const meta = inv.displayMetadataJson as Record<string, unknown>;
+    expect(meta.patientName).toBe("Bob Premolar");
+    expect(meta.billTo).toBe("Dr. Metadata");
+    expect(meta.teeth).toBe("#20");
+    expect(meta.shade).toBe("A3");
+  });
+
+  // ── (e) generate-invoice is idempotent ──────────────────────────────────────
+  it("(e) Calling generate-invoice twice returns the same invoice (idempotent)", async () => {
+    const caseId = rid("case");
+    const caseBlob = {
+      id: caseId,
+      caseNumber: "26-IDEM",
+      patientName: "Carl Canine",
+      doctorName: "Dr. Idempotent",
+      status: "INTAKE",
+      affiliationKey: `org:${labOrgId}`,
+    };
+
+    await request(appMod.default)
+      .post("/api/legacy/cases")
+      .set("Authorization", `Bearer ${mobileToken}`)
+      .send({
+        id: caseId,
+        ownerId: mobileUserId,
+        caseData: JSON.stringify(caseBlob),
+      });
+
+    const r1 = await request(appMod.default)
+      .post(`/api/invoices/cases/${caseId}/generate-invoice`)
+      .set("Authorization", `Bearer ${mobileToken}`);
+    expect(r1.status).toBe(201);
+    const inv1 = r1.body.data ?? r1.body;
+
+    const r2 = await request(appMod.default)
+      .post(`/api/invoices/cases/${caseId}/generate-invoice`)
+      .set("Authorization", `Bearer ${mobileToken}`);
+    expect(r2.status).toBe(200);
+    const inv2 = r2.body.data ?? r2.body;
+
+    expect(inv2.id).toBe(inv1.id);
+    expect(inv2.invoiceNumber).toBe(inv1.invoiceNumber);
+  });
+
+  // ── (f) unknown case id still returns 404 ──────────────────────────────────
+  it("(f) generate-invoice for unknown case id returns 404", async () => {
+    const r = await request(appMod.default)
+      .post("/api/invoices/cases/totally-unknown-case-id-xyz/generate-invoice")
+      .set("Authorization", `Bearer ${mobileToken}`);
+
+    expect(r.status).toBe(404);
+  });
+});
