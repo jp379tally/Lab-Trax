@@ -4,6 +4,10 @@
 
 pnpm workspace monorepo using TypeScript. Each package manages its own dependencies.
 
+## Regression Policy
+
+All protected workflows are documented in [`REGRESSION_GUARDRAILS.md`](./REGRESSION_GUARDRAILS.md). Once a workflow is listed there, no code change may be merged or published unless every protected workflow still passes. See that file for the full list of protected workflows, the zero-regression process, and the test coverage map.
+
 ## Stack
 
 - **Monorepo tool**: pnpm workspaces
