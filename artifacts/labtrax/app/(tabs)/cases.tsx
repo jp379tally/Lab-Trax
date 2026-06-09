@@ -159,10 +159,12 @@ export default function CasesScreen() {
     const showChartBtn = patientCaseCount > 1 || item.isRemake;
     return (
       <Pressable
+        testID={`case-card-${item.id}`}
         style={({ pressed }) => [
           styles.caseCard,
           pressed && { opacity: 0.7 },
         ]}
+        delayLongPress={200}
         onPress={() =>
           router.push({
             pathname: "/case/[id]",

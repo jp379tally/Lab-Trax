@@ -100,10 +100,12 @@ pnpm --filter @workspace/labtrax run test -- scan.smoke
 |-------|------|----------------|
 | Mobile unit | `artifacts/labtrax/lib/__tests__/screens/cases.smoke.test.tsx` | Cases list renders with server-synced state |
 | Mobile unit | `artifacts/labtrax/lib/__tests__/screens/case-detail.smoke.test.tsx` | Case detail renders; edit-save propagation to invoice; add-item propagation; AI-imported banner |
+| API integration | `artifacts/api-server/src/routes/mobile-sync-invoice.test.ts` | Same Case ID invariant (test h): client-generated ID preserved unchanged from mobile sync into GET /api/cases |
 
 Run command:
 ```
 pnpm --filter @workspace/labtrax run test -- cases.smoke case-detail.smoke
+pnpm --filter @workspace/api-server run test -- --reporter=verbose mobile-sync-invoice
 ```
 
 ### Invoice
@@ -112,20 +114,20 @@ pnpm --filter @workspace/labtrax run test -- cases.smoke case-detail.smoke
 |-------|------|----------------|
 | API integration | `artifacts/api-server/src/routes/invoices.test.ts` | Create, status transitions, line items, subtotal, list scoping, auth enforcement |
 | API integration | `artifacts/api-server/src/routes/cases-ai-reader.test.ts` | Auto-invoice generated on case creation (the `auto-generates an open invoice` test) |
+| API integration | `artifacts/api-server/src/routes/cases-invoice-creation.test.ts` | Case creation → invoice caseId linkage; correct org IDs; invoice starts as "open" |
 
 Run command:
 ```
-pnpm --filter @workspace/api-server run test -- --reporter=verbose invoices cases-ai-reader
+pnpm --filter @workspace/api-server run test -- --reporter=verbose invoices cases-ai-reader cases-invoice-creation
 ```
 
 ### Mobile Case Interactions
 
 | Layer | File | What it guards |
 |-------|------|----------------|
-| Mobile unit | `artifacts/labtrax/lib/__tests__/screens/cases.smoke.test.tsx` | Cases screen renders, case numbers visible |
+| Mobile unit | `artifacts/labtrax/lib/__tests__/screens/cases.smoke.test.tsx` | Cases screen renders, case numbers visible, long-press locate alert + modal |
 | Mobile unit | `artifacts/labtrax/lib/__tests__/screens/case-detail.smoke.test.tsx` | Case detail renders, empty state, completed case |
 | API integration | `artifacts/api-server/src/routes/cases-core.test.ts` | Case lifecycle: create, read, list, patch status, cross-lab scoping, soft-delete |
-| Mobile unit | _(pending)_ | Long-press locate — covered by companion restore task |
 
 Run command:
 ```
@@ -136,7 +138,7 @@ pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-core
 ### Run the full protected suite at once
 
 ```bash
-pnpm --filter @workspace/api-server run test -- cases-ai-reader analyze-prescription invoices cases-core
+pnpm --filter @workspace/api-server run test -- cases-ai-reader analyze-prescription invoices cases-core cases-invoice-creation mobile-sync-invoice
 pnpm --filter @workspace/labtrax run test -- cases.smoke case-detail.smoke scan.smoke
 ```
 

@@ -384,4 +384,48 @@ maybeDb("Mobile sync + invoice — DB regression suite", () => {
     expect(inv1.status).toBe(201);
     expect((inv1.body.data ?? inv1.body).id).not.toBe(invoiceRow.id);
   });
+
+  // ── (h) Same Case ID visible across platforms ───────────────────────────
+  //
+  // Regression guard for the "Same Case ID must be visible across platforms"
+  // invariant. A client-generated case ID posted via the mobile sync endpoint
+  // must appear UNCHANGED in GET /api/cases — the server must NOT replace it
+  // with a server-generated ID. This is what lets desktop/web correlate cases
+  // created on mobile without a reconciliation step.
+  //
+  it("(h) Client-generated case ID is preserved in GET /api/cases (same-ID invariant)", async () => {
+    const clientGeneratedId = rid("client");
+    const caseBlob = {
+      id: clientGeneratedId,
+      caseNumber: "26-SAMEID",
+      patientName: "Eva SameId",
+      doctorName: "Dr. SameId",
+      status: "INTAKE",
+      affiliationKey: `org:${labOrgId}`,
+    };
+
+    const post = await request(appMod.default)
+      .post("/api/legacy/cases")
+      .set("Authorization", `Bearer ${mobileToken}`)
+      .send({
+        id: clientGeneratedId,
+        ownerId: mobileUserId,
+        caseData: JSON.stringify(caseBlob),
+      });
+    expect(post.status).toBe(200);
+
+    const list = await request(appMod.default)
+      .get("/api/cases")
+      .set("Authorization", `Bearer ${mobileToken}`);
+
+    expect(list.status).toBe(200);
+    const cases: any[] = list.body.data ?? list.body;
+    const found = cases.find((c: any) => c.id === clientGeneratedId);
+    expect(
+      found,
+      "case must appear in GET /api/cases with the client-generated ID (not a server replacement)",
+    ).toBeDefined();
+    expect(found.id).toBe(clientGeneratedId);
+    expect(found.caseNumber).toBe("26-SAMEID");
+  });
 });

@@ -1,6 +1,7 @@
 import React from "react";
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { render } from "@testing-library/react-native";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { render, fireEvent, act } from "@testing-library/react-native";
+import { Alert } from "react-native";
 import {
   resetMockAppState,
   setMockAppState,
@@ -16,6 +17,7 @@ import {
 
 afterEach(() => {
   resetMockAppState();
+  vi.clearAllMocks();
 });
 
 describe("CasesScreen (smoke)", () => {
@@ -50,6 +52,66 @@ describe("CasesScreen (smoke)", () => {
       const { getAllByText } = render(<CasesScreen />);
       expect(getAllByText(/#5001/).length).toBeGreaterThan(0);
       expect(getAllByText(/#5002/).length).toBeGreaterThan(0);
+    });
+  });
+
+  describe("long-press locate", () => {
+    beforeEach(() => {
+      setMockAppState({
+        cases: [inProgressCase],
+        invoices: [],
+        clients: [],
+      });
+    });
+
+    it("fires Alert with 'Locate Case' title on long-press of a case card", () => {
+      const { getByTestId } = render(<CasesScreen />);
+      const card = getByTestId(`case-card-${inProgressCase.id}`);
+      fireEvent(card, "longPress");
+      expect(Alert.alert).toHaveBeenCalledWith(
+        "Locate Case",
+        expect.any(String),
+        expect.arrayContaining([
+          expect.objectContaining({ text: "No" }),
+          expect.objectContaining({ text: "Yes" }),
+        ]),
+      );
+    });
+
+    it("pressing Yes on the alert opens the locate modal with patient name and case number", async () => {
+      const { getByTestId, queryAllByText } = render(<CasesScreen />);
+
+      expect(queryAllByText(/Jane Doe \(#5001\)/).length).toBe(0);
+
+      fireEvent(getByTestId(`case-card-${inProgressCase.id}`), "longPress");
+
+      const alertCall = (Alert.alert as ReturnType<typeof vi.fn>).mock.calls[0];
+      const buttons: Array<{ text: string; onPress?: () => void }> = alertCall[2];
+      const yesBtn = buttons.find((b) => b.text === "Yes");
+      expect(yesBtn).toBeDefined();
+
+      await act(async () => {
+        yesBtn!.onPress?.();
+      });
+
+      expect(queryAllByText(/Jane Doe \(#5001\)/).length).toBeGreaterThan(0);
+    });
+
+    it("pressing No on the alert does not open the locate modal", async () => {
+      const { getByTestId, queryAllByText } = render(<CasesScreen />);
+
+      fireEvent(getByTestId(`case-card-${inProgressCase.id}`), "longPress");
+
+      const alertCall = (Alert.alert as ReturnType<typeof vi.fn>).mock.calls[0];
+      const buttons: Array<{ text: string; onPress?: () => void; style?: string }> = alertCall[2];
+      const noBtn = buttons.find((b) => b.text === "No");
+      expect(noBtn).toBeDefined();
+
+      await act(async () => {
+        noBtn!.onPress?.();
+      });
+
+      expect(queryAllByText(/Jane Doe \(#5001\)/).length).toBe(0);
     });
   });
 });
