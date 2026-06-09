@@ -64,6 +64,18 @@ Protected sub-behaviors:
 
 ---
 
+## Protected Workflow: E2E Browser Tests
+
+Playwright end-to-end specs that exercise live app flows in a real browser. They complement unit and API tests but do **not** replace real-device TestFlight verification — native rendering, OS-level permissions, camera access, biometric lock, and push notifications can only be confirmed on a real device.
+
+Protected sub-behaviors:
+
+- **AI Reader scan flow** — the Scan tab is reachable, the upload/gallery path triggers a stubbed `POST /api/analyze-prescription`, and extracted fields (patient name, doctor name, shade) appear in the UI after analysis.
+- **Mobile photo web view** — a photo attachment seeded via the API is accessible (no 401/403) from the case attachment endpoint; the desktop case page renders without crashing and no attachment URL returns a 401.
+- **Long-press locate case** — long-pressing (contextmenu) a case card triggers the "Locate Case" dialog or browser alert, and accepting it opens the station-picker modal ("Select a station:").
+
+---
+
 ## Zero-Regression Process
 
 Every code change that touches a protected workflow must follow this process, in order:
@@ -73,6 +85,27 @@ Every code change that touches a protected workflow must follow this process, in
 3. **Run the full protected suite after every change** — after the code change, run the complete test suite for every affected workflow (see Test Coverage Map below). All previously-passing tests must still pass.
 4. **Stop immediately on any failure** — if any protected test fails, stop. Do not merge, publish, or claim the work is done. Fix the regression first.
 5. **Never claim success from unit tests alone** — if the unit tests pass but the real app workflow fails (tested manually or via integration/E2E tests), the work is not done. The standard is: the protected workflow works as the user confirmed it.
+
+### Pre-publish checklist
+
+Before publishing a release, **all four gates** must pass:
+
+| Gate | Command | Notes |
+|------|---------|-------|
+| Mobile unit tests | `pnpm --filter @workspace/labtrax run test` | All mobile unit / smoke tests green |
+| API integration tests | `pnpm --filter @workspace/api-server run test` | All server-side integration tests green |
+| E2E browser tests | `pnpm test:e2e` | All Playwright specs pass against the running stack |
+| Real-device TestFlight | Manual | See below — no automated test replaces this |
+
+**Real-device TestFlight verification (required before every production release):**
+
+Install the TestFlight build on a physical iOS device and manually walk the following flow end-to-end:
+
+1. **AI Reader → case creation** — photograph or attach an Rx; confirm AI extracts patient name, doctor name, and shade; confirm the new-case form is pre-filled correctly.
+2. **Case sync** — create the case on mobile and verify it appears immediately in the desktop/web client without a manual refresh.
+3. **Invoice** — open the auto-created invoice from the new case; add a line item; confirm the subtotal is correct; mark it paid.
+
+This flow exercises native camera permissions, OS-level secure storage, biometric lock, and the full JWT refresh cycle — none of which can be replicated in a browser-based E2E test.
 
 ---
 
@@ -135,11 +168,29 @@ pnpm --filter @workspace/labtrax run test -- cases.smoke case-detail.smoke
 pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-core
 ```
 
+### E2E Browser Tests
+
+| Layer | File | What it guards |
+|-------|------|----------------|
+| E2E (Playwright) | `e2e/ai-reader-mobile-scan.spec.ts` | Scan tab reachable; upload path calls `/api/analyze-prescription`; AI-extracted fields appear in UI |
+| E2E (Playwright) | `e2e/mobile-photo-web-view.spec.ts` | Case attachment endpoint returns non-401/403; desktop case page renders; no attachment URL returns 401 |
+| E2E (Playwright) | `e2e/long-press-locate-case.spec.ts` | Long-press (contextmenu) on a case card opens "Locate Case" dialog; accepting it opens the station-picker modal |
+
+Run command:
+```
+pnpm test:e2e
+```
+
+Set `PLAYWRIGHT_BASE_URL` to the target deployment URL when running against staging or production (defaults to `http://localhost:80`).
+
+> **Note:** E2E specs run against the Expo web build in a browser. They do **not** cover native rendering, OS permissions, camera, biometric lock, or push notifications — those require real-device TestFlight verification (see Pre-publish checklist above).
+
 ### Run the full protected suite at once
 
 ```bash
 pnpm --filter @workspace/api-server run test -- cases-ai-reader analyze-prescription invoices cases-core cases-invoice-creation mobile-sync-invoice
 pnpm --filter @workspace/labtrax run test -- cases.smoke case-detail.smoke scan.smoke
+pnpm test:e2e
 ```
 
 ---
