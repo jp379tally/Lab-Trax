@@ -256,6 +256,93 @@ test.describe("Long-press locate case — mobile web view", () => {
     ).toBe(true);
   });
 
+  test("canceling the Locate Case prompt leaves the station picker closed", async ({
+    page,
+  }) => {
+    if (!tokens) {
+      test.skip();
+      return;
+    }
+
+    // Dismiss any browser-level dialogs (window.confirm / window.alert) so
+    // the "No" path is exercised rather than accepted.
+    let browserDialogSeen = false;
+    let browserDialogText = "";
+    page.on("dialog", async (dialog) => {
+      browserDialogText = dialog.message();
+      browserDialogSeen = true;
+      await dialog.dismiss().catch(() => {});
+    });
+
+    await page.goto(`${BASE_URL}/`);
+    await page.waitForLoadState("networkidle");
+    await injectTokens(page, tokens);
+    await page.goto(`${BASE_URL}/`);
+    await page.waitForLoadState("networkidle");
+
+    const casesTab = page
+      .getByRole("link", { name: /^cases$/i })
+      .or(page.getByTestId("tab-cases"))
+      .or(page.locator('[href*="cases"]').first());
+    if ((await casesTab.count()) > 0) {
+      await casesTab.first().click();
+      await page.waitForLoadState("networkidle");
+    }
+
+    const anyCard = page.locator('[data-testid^="case-card-"]').first();
+    await anyCard.waitFor({ state: "visible", timeout: 10_000 }).catch(() => {});
+    if ((await anyCard.count()) === 0) {
+      test.skip();
+      return;
+    }
+
+    // Trigger the long-press.
+    await anyCard.dispatchEvent("contextmenu");
+    await page.waitForTimeout(500);
+
+    // --- Step 1: Assert the Locate Case prompt appeared ---
+    // It may render as an in-DOM element (RNW Alert) or as a browser dialog.
+    const domLocateCaseCount = await page.getByText("Locate Case").count();
+    const viaDialog =
+      browserDialogSeen && /locate\s*case/i.test(browserDialogText);
+
+    expect(
+      domLocateCaseCount > 0 || viaDialog,
+      `Expected "Locate Case" prompt to appear after long-press — ` +
+        `DOM matches: ${domLocateCaseCount}, ` +
+        `browser dialog seen: ${browserDialogSeen} ` +
+        `(message: "${browserDialogText}")`
+    ).toBe(true);
+
+    // --- Step 2: Cancel the prompt ---
+    // If the prompt was a browser dialog it was already dismissed above.
+    // If it rendered as an in-DOM dialog, click the "No" button now.
+    let cancelExecuted = browserDialogSeen; // browser-dialog path already cancelled
+    const noButton = page
+      .getByRole("button", { name: /^no$/i })
+      .or(page.locator("text=No").first());
+    if (!cancelExecuted && (await noButton.count()) > 0) {
+      await noButton.first().click();
+      cancelExecuted = true;
+      await page.waitForTimeout(300);
+    }
+
+    expect(
+      cancelExecuted,
+      "Expected a cancel action to execute (No button clicked or browser dialog dismissed)"
+    ).toBe(true);
+
+    // --- Step 3: Assert the station-picker modal did NOT open ---
+    const stationPickerCount = await page
+      .getByText(/select a station/i)
+      .count();
+
+    expect(
+      stationPickerCount,
+      "Expected 'Select a station:' to be absent after canceling the Locate Case prompt"
+    ).toBe(0);
+  });
+
   test.afterAll(async ({ request }) => {
     if (!tokens || !createdCaseId) return;
     await request
