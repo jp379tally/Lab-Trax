@@ -364,6 +364,7 @@ vi.mock("@/lib/query-client", () => ({
   resilientFetch: vi.fn(
     async (url: string, init?: RequestInit) => fetchHandler.current(url, init),
   ),
+  logDebugEvent: vi.fn(),
   queryClient: { clear: vi.fn() },
 }));
 
