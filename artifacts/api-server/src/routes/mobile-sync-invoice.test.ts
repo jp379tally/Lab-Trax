@@ -313,4 +313,75 @@ maybeDb("Mobile sync + invoice — DB regression suite", () => {
 
     expect(r.status).toBe(404);
   });
+
+  // ── (g) duplicate patient: second case saves and gets its own invoice ───────
+  //
+  // Regression: the mobile duplicate-detection prompt fires when a same-named
+  // patient already has cases locally.  If the user dismissed the prompt (pressed
+  // Cancel / X) without choosing "Not a Remake", createCase() was never called
+  // and the case was silently discarded — nothing reached the server.  This test
+  // verifies the full happy-path that the user intended:
+  //
+  //   1. An existing lab_cases row for "Diana Dup" is already on the server.
+  //   2. A brand-new case for the same patient is POSTed (simulating the user
+  //      confirming past the duplicate prompt via "Not a Remake" or the fixed
+  //      X/Cancel behaviour).
+  //   3. The server must accept both; the second case gets its own distinct row.
+  //   4. generate-invoice creates a separate invoice for the second case.
+  //
+  it("(g) duplicate patient name: second case is accepted and gets its own invoice", async () => {
+    const caseId1 = rid("case");
+    const caseId2 = rid("case");
+    const sharedPatient = "Diana Dup";
+
+    const blob1 = {
+      id: caseId1,
+      caseNumber: "26-DUP-1",
+      patientName: sharedPatient,
+      doctorName: "Dr. Dup",
+      status: "INTAKE",
+      affiliationKey: `org:${labOrgId}`,
+    };
+    const blob2 = {
+      id: caseId2,
+      caseNumber: "26-DUP-2",
+      patientName: sharedPatient,
+      doctorName: "Dr. Dup",
+      status: "INTAKE",
+      affiliationKey: `org:${labOrgId}`,
+    };
+
+    const r1 = await request(appMod.default)
+      .post("/api/legacy/cases")
+      .set("Authorization", `Bearer ${mobileToken}`)
+      .send({ id: caseId1, ownerId: mobileUserId, caseData: JSON.stringify(blob1) });
+    expect(r1.status).toBe(200);
+
+    const r2 = await request(appMod.default)
+      .post("/api/legacy/cases")
+      .set("Authorization", `Bearer ${mobileToken}`)
+      .send({ id: caseId2, ownerId: mobileUserId, caseData: JSON.stringify(blob2) });
+    expect(r2.status, "second case for same patient must be accepted").toBe(200);
+
+    const { db, labCases } = dbMod as any;
+    const rows = await db.query.labCases.findMany({
+      where: (t: any, { inArray: inArr }: any) => inArr(t.id, [caseId1, caseId2]),
+    });
+    expect(rows).toHaveLength(2);
+
+    const inv = await request(appMod.default)
+      .post(`/api/invoices/cases/${caseId2}/generate-invoice`)
+      .set("Authorization", `Bearer ${mobileToken}`);
+    expect(inv.status).toBe(201);
+    expect(inv.body.ok).toBe(true);
+    const invoiceRow = inv.body.data ?? inv.body;
+    expect(invoiceRow.id).toBeTruthy();
+    expect(invoiceRow.labOrganizationId).toBe(labOrgId);
+
+    const inv1 = await request(appMod.default)
+      .post(`/api/invoices/cases/${caseId1}/generate-invoice`)
+      .set("Authorization", `Bearer ${mobileToken}`);
+    expect(inv1.status).toBe(201);
+    expect((inv1.body.data ?? inv1.body).id).not.toBe(invoiceRow.id);
+  });
 });

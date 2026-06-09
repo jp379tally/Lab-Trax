@@ -3148,7 +3148,10 @@ export default function ScanScreen() {
         onChangeReason={setDuplicateReason}
         onChangeCharge={setDuplicateCharge}
         onSetError={setDuplicateError}
-        onClose={() => setDuplicatePrompt(null)}
+        onClose={() => {
+          setDuplicatePrompt(null);
+          void createCase(false);
+        }}
         onViewChart={(pn) => {
           setDuplicatePrompt(null);
           router.push(`/chart-history?patient=${encodeURIComponent(pn || patientName.trim())}`);

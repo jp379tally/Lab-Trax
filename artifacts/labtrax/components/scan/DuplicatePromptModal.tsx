@@ -179,12 +179,6 @@ export function DuplicatePromptModal({
 
           <View style={{ flexDirection: "row", gap: 8, padding: 12, borderTopWidth: 1, borderTopColor: colors.border }}>
             <Pressable
-              onPress={onClose}
-              style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, backgroundColor: colors.surfaceAlt }}
-            >
-              <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: colors.textSecondary }}>Cancel</Text>
-            </Pressable>
-            <Pressable
               onPress={() => {
                 const pn = prompt?.patientName ?? "";
                 onViewChart(pn);
