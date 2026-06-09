@@ -385,6 +385,96 @@ maybeDb("Mobile sync + invoice — DB regression suite", () => {
     expect((inv1.body.data ?? inv1.body).id).not.toBe(invoiceRow.id);
   });
 
+  // ── (i) Two different labs can each generate an invoice with the same case number ──
+  //
+  // Regression guard for the global unique index bug: previously
+  // `invoices_invoice_number_unique` was on `(invoiceNumber)` alone, so the
+  // second lab's insert silently hit onConflictDoNothing and returned the
+  // FIRST lab's invoice row (or 200 with stale data). The fix changes the
+  // constraint to `(labOrganizationId, invoiceNumber)`.
+  //
+  it("(i) two labs with the same case number each get their own distinct invoice", async () => {
+    const { db, organizations, users, organizationMemberships, userSessions, invoices: invoicesTable } = dbMod as any;
+
+    // Create a second lab + its own admin user
+    const lab2Id = rid("lab2");
+    const user2Id = rid("u2");
+    await db.insert(users).values([{ id: user2Id, username: `u2_${user2Id}`, password: "testpass" }]);
+    await db.insert(organizations).values([{ id: lab2Id, type: "lab", name: "Second Lab" }]);
+    await db.insert(organizationMemberships).values([
+      { id: rid("m2"), labId: lab2Id, userId: user2Id, role: "admin", status: "active" },
+    ]);
+    const token2 = await makeSession(user2Id);
+
+    const sharedCaseNumber = "26-SHARED";
+
+    // Store a case under lab1 (mobileUserId / labOrgId)
+    const caseId1 = rid("clash1");
+    await request(appMod.default)
+      .post("/api/legacy/cases")
+      .set("Authorization", `Bearer ${mobileToken}`)
+      .send({
+        id: caseId1,
+        ownerId: mobileUserId,
+        caseData: JSON.stringify({
+          id: caseId1,
+          caseNumber: sharedCaseNumber,
+          patientName: "Pat A",
+          doctorName: "Dr. A",
+          status: "INTAKE",
+          affiliationKey: `org:${labOrgId}`,
+        }),
+      })
+      .expect(200);
+
+    // Store a case with the SAME case number under lab2
+    const caseId2 = rid("clash2");
+    await request(appMod.default)
+      .post("/api/legacy/cases")
+      .set("Authorization", `Bearer ${token2}`)
+      .send({
+        id: caseId2,
+        ownerId: user2Id,
+        caseData: JSON.stringify({
+          id: caseId2,
+          caseNumber: sharedCaseNumber,
+          patientName: "Pat B",
+          doctorName: "Dr. B",
+          status: "INTAKE",
+          affiliationKey: `org:${lab2Id}`,
+        }),
+      })
+      .expect(200);
+
+    // Lab1 generates its invoice
+    const r1 = await request(appMod.default)
+      .post(`/api/invoices/cases/${caseId1}/generate-invoice`)
+      .set("Authorization", `Bearer ${mobileToken}`);
+    expect(r1.status, "lab1 invoice creation must succeed").toBe(201);
+    const inv1 = r1.body.data ?? r1.body;
+    expect(inv1.labOrganizationId).toBe(labOrgId);
+
+    // Lab2 generates its invoice — must NOT collide with lab1's
+    const r2 = await request(appMod.default)
+      .post(`/api/invoices/cases/${caseId2}/generate-invoice`)
+      .set("Authorization", `Bearer ${token2}`);
+    expect(r2.status, "lab2 invoice creation must succeed (cross-lab collision bug)").toBe(201);
+    const inv2 = r2.body.data ?? r2.body;
+    expect(inv2.labOrganizationId).toBe(lab2Id);
+
+    // They must be distinct rows with distinct IDs
+    expect(inv2.id, "each lab must get its own invoice row").not.toBe(inv1.id);
+    expect(inv1.invoiceNumber).toBe(inv2.invoiceNumber); // same number string, different lab
+
+    // Cleanup second lab
+    await db.delete(invoicesTable).where(eq(invoicesTable.labOrganizationId, lab2Id));
+    await db.delete(dbMod.labCases as any).where(eq((dbMod.labCases as any).organizationId, lab2Id));
+    await db.delete(organizationMemberships).where(eq(organizationMemberships.userId, user2Id));
+    await db.delete(userSessions).where(eq(userSessions.userId, user2Id));
+    await db.delete(organizations).where(eq(organizations.id, lab2Id));
+    await db.delete(users).where(eq(users.id, user2Id));
+  });
+
   // ── (h) Same Case ID visible across platforms ───────────────────────────
   //
   // Regression guard for the "Same Case ID must be visible across platforms"

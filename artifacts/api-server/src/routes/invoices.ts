@@ -788,13 +788,13 @@ router.post(
           createdByUserId: (req as any).auth.userId,
           updatedByUserId: (req as any).auth.userId,
         })
-        .onConflictDoNothing()
+        .onConflictDoNothing({ target: [invoices.labOrganizationId, invoices.invoiceNumber] })
         .returning();
 
       if (!invoice) {
         // Invoice number collided with a row not linked to this case (e.g.
-        // a manual invoice created with the same number). Do nothing — we
-        // refuse to silently retitle or relink an existing invoice.
+        // a manual invoice created with the same number within the same lab).
+        // Do nothing — we refuse to silently retitle or relink an existing invoice.
         skippedNumberTaken++;
         continue;
       }
@@ -1078,13 +1078,16 @@ router.post(
           createdByUserId: userId,
           updatedByUserId: userId,
         })
-        .onConflictDoNothing()
+        .onConflictDoNothing({ target: [invoices.labOrganizationId, invoices.invoiceNumber] })
         .returning();
 
       const targetInvoice =
         invoice ??
         (await db.query.invoices.findFirst({
-          where: eq(invoices.invoiceNumber, nextInvoiceNumber(found.caseNumber)),
+          where: and(
+            eq(invoices.labOrganizationId, found.labOrganizationId),
+            eq(invoices.invoiceNumber, nextInvoiceNumber(found.caseNumber)),
+          ),
         }));
       if (!targetInvoice)
         throw new HttpError(500, "Invoice could not be generated.");
@@ -1212,13 +1215,16 @@ router.post(
         createdByUserId: userId,
         updatedByUserId: userId,
       })
-      .onConflictDoNothing()
+      .onConflictDoNothing({ target: [invoices.labOrganizationId, invoices.invoiceNumber] })
       .returning();
 
     const targetLegacyInvoice =
       legacyInvoice ??
       (await db.query.invoices.findFirst({
-        where: eq(invoices.invoiceNumber, nextInvoiceNumber(legacyCaseNumber)),
+        where: and(
+          eq(invoices.labOrganizationId, legacyRow.organizationId),
+          eq(invoices.invoiceNumber, nextInvoiceNumber(legacyCaseNumber)),
+        ),
       }));
     if (!targetLegacyInvoice)
       throw new HttpError(500, "Invoice could not be generated.");

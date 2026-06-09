@@ -846,6 +846,7 @@ export const invoices = pgTable(
   },
   (table) => ({
     invoiceNumberUnique: uniqueIndex("invoices_invoice_number_unique").on(
+      table.labOrganizationId,
       table.invoiceNumber
     ),
     invoicesDeletedAtIdx: index("invoices_deleted_at_idx").on(table.deletedAt),
