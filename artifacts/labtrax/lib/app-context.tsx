@@ -9,7 +9,7 @@ import React, {
 } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system";
-import { getApiUrl, resilientFetch, getAccessToken, uploadCaseMedia } from "./query-client";
+import { getApiUrl, resilientFetch, getAccessToken, uploadCaseMedia, logDebugEvent } from "./query-client";
 import {
   enqueuePhoto,
   enqueueNote,
@@ -445,12 +445,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }
 
   async function syncCaseToServer(labCase: LabCase): Promise<SyncResult> {
+    const isCanon = isCanonicalCase(labCase as any);
+    void logDebugEvent("SYNC_START", { caseId: labCase.id, isCanon, status: labCase.status ?? null, sourceTable: (labCase as any)._sourceTable ?? null });
     try {
       // Canonical (desktop) cases live in the `cases` table, not `lab_cases`.
       // Syncing them via the legacy POST endpoint would try to create a
       // duplicate row in lab_cases and fail with a 403. Use PATCH instead,
       // converting the mobile status token back to the desktop enum value.
-      if (isCanonicalCase(labCase as any)) {
+      if (isCanon) {
         const MOBILE_TO_DESKTOP_STATUS: Record<string, string> = {
           INTAKE: "received",
           DESIGN: "in_design",
@@ -473,7 +475,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const desktopStatus = labCase.status
           ? MOBILE_TO_DESKTOP_STATUS[labCase.status]
           : undefined;
-        if (!desktopStatus) return false;
+        if (!desktopStatus) {
+          void logDebugEvent("SYNC_CANON_NO_STATUS", { caseId: labCase.id, status: labCase.status ?? null });
+          return false;
+        }
         const res = await resilientFetch(
           `/api/cases/${encodeURIComponent(labCase.id)}`,
           {
@@ -482,6 +487,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             body: JSON.stringify({ status: desktopStatus }),
           }
         );
+        void logDebugEvent("SYNC_CANON_PATCH_DONE", { caseId: labCase.id, httpStatus: res?.status ?? -1, ok: res?.ok ?? false });
         return res?.ok ? true : syncFailureFromStatus(res?.status ?? 0);
       }
 
@@ -490,17 +496,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
         ownerId: labCase.ownerId || currentUserId || undefined,
         affiliationName: labCase.affiliationName ?? null,
       };
-      const res = await resilientFetch("/api/legacy/cases", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+
+      let bodyStr: string;
+      try {
+        bodyStr = JSON.stringify({
           id: normalizedCase.id,
           ownerId: normalizedCase.ownerId || currentUserId,
           caseData: JSON.stringify(normalizedCase),
-        }),
+        });
+      } catch (jsonErr) {
+        void logDebugEvent("SYNC_JSON_FAIL", { caseId: labCase.id, err: String(jsonErr) });
+        return false;
+      }
+
+      void logDebugEvent("SYNC_FETCH_START", { caseId: labCase.id, bodySize: bodyStr.length, ownerId: normalizedCase.ownerId ?? null, hasToken: !!getAccessToken() });
+      const res = await resilientFetch("/api/legacy/cases", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: bodyStr,
       });
+      void logDebugEvent("SYNC_FETCH_DONE", { caseId: labCase.id, httpStatus: res?.status ?? -1, ok: res?.ok ?? false });
       return res?.ok ? true : syncFailureFromStatus(res?.status ?? 0);
     } catch (e) {
+      void logDebugEvent("SYNC_CATCH", { caseId: labCase.id, err: String(e) });
       console.log("Could not sync case to server:", e);
       // Thrown fetch — never reached the server (transient network failure).
       return false;
@@ -2299,8 +2317,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const updated = [newCase, ...allCases];
     setAllCases(updated);
     AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+    void logDebugEvent("ADD_CASE_QUEUED", { caseId: newCase.id, affiliationKey: caseAffiliationKey ?? null, ownerId: currentUserId ?? null });
     void (async () => {
-      const ok = isSyncSuccess(await syncCaseToServer(newCase));
+      void logDebugEvent("SYNC_IIFE_ENTERED", { caseId: newCase.id });
+      const syncResult = await syncCaseToServer(newCase);
+      const ok = isSyncSuccess(syncResult);
+      void logDebugEvent("SYNC_IIFE_DONE", { caseId: newCase.id, syncResult: String(syncResult), ok });
       if (!ok) return;
       await generateServerInvoiceForCase(newCase.id, newInvoice.id);
     })();

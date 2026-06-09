@@ -33,7 +33,7 @@ import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { ActivityEntry, generateId, ToothEntry, ToothType, MATERIAL_PRICES, formatAcctNum, formatPhone, cleanDoctorDisplay } from "@/lib/data";
 import { resolvePriceForCase } from "@/lib/pricing";
 import { fetch as expoFetch } from "expo/fetch";
-import { getApiUrl, resilientFetch, getAccessToken } from "@/lib/query-client";
+import { getApiUrl, resilientFetch, getAccessToken, logDebugEvent } from "@/lib/query-client";
 import { convertPdfToImages } from "@/lib/pdfToImages";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { ManualCropOverlay } from "@/components/ManualCropOverlay";
@@ -2654,6 +2654,7 @@ export default function ScanScreen() {
     },
   ) {
     try {
+    void logDebugEvent("CREATE_CASE_CALLED", { isDuplicate: isDuplicate ?? false, isRemake: !!overrides?.isRemake });
     const yy = String(new Date().getFullYear()).slice(-2);
 
     // For remake cases, ask the server for the next suffix number so the
@@ -2733,6 +2734,7 @@ export default function ScanScreen() {
           }
         : {}),
     });
+    void logDebugEvent("CREATE_CASE_ADD_DONE", { caseId: newCase.id });
 
     // Upload the auto-generated prescription PDF (if any) as a case attachment
     // so it appears in the case's documents/files section.
@@ -3001,6 +3003,7 @@ export default function ScanScreen() {
 
     setIsSubmittingCase(true);
     const finish = () => setIsSubmittingCase(false);
+    void logDebugEvent("SUBMIT_START", { patientName: patientName.trim() });
 
     try {
       const localMatches = cases.filter(
@@ -3008,6 +3011,7 @@ export default function ScanScreen() {
       );
       const serverMatches = await fetchServerSimilarity();
       const totalCount = Math.max(localMatches.length, serverMatches.length);
+      void logDebugEvent("SUBMIT_SIMILARITY", { localCount: localMatches.length, serverCount: serverMatches.length, totalCount });
 
       if (totalCount > 0) {
         // Build a unified candidate list. Server hits (canonical cases)
@@ -3020,11 +3024,13 @@ export default function ScanScreen() {
         setDuplicateCharge("");
         setDuplicateError(null);
         setDuplicateSelectedId(defaultSelectedDuplicateId(merged));
+        void logDebugEvent("SUBMIT_DUPLICATE_PROMPT", { totalCount, mergedCount: merged.length, patientName: patientName.trim() });
         setDuplicatePrompt({ matches: merged, patientName: patientName.trim() });
         return;
       }
 
       try {
+        void logDebugEvent("SUBMIT_NO_DUPLICATE", { totalCount });
         void createCase(false);
       } finally {
         finish();

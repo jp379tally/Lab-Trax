@@ -142,6 +142,22 @@ export function getAccessToken() {
   return _accessToken;
 }
 
+export function logDebugEvent(tag: string, payload: Record<string, unknown>): void {
+  try {
+    const baseUrl = getApiUrl();
+    const token = _accessToken;
+    const url = new URL("api/debug/event", baseUrl).toString();
+    void globalThis.fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ tag, payload }),
+    }).catch(() => {});
+  } catch {}
+}
+
 async function refreshAccessToken(): Promise<string | null> {
   if (!_refreshToken) return null;
   if (_refreshPromise) return _refreshPromise;

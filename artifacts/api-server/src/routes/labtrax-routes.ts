@@ -1358,6 +1358,17 @@ export async function registerRoutes(): Promise<IRouter> {
     }
   });
 
+  router.post("/debug/event", requireAuth, async (req, res) => {
+    try {
+      const userId = (req as any).auth?.userId as string | undefined;
+      const body = (req.body || {}) as Record<string, unknown>;
+      const tag = String(body.tag ?? "UNKNOWN");
+      const payload = body.payload ?? {};
+      req.log.info({ tag, payload, u: userId }, "[MOBILE_DEBUG]");
+    } catch {}
+    res.status(204).end();
+  });
+
   router.post("/check-username", async (req, res) => {
     const { username } = req.body;
     if (!username || typeof username !== "string") {
