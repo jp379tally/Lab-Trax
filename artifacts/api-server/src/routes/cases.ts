@@ -674,6 +674,157 @@ const MOBILE_TO_DESKTOP_STATUS: Record<string, string> = {
 };
 
 /**
+ * Auto-promote a mobile `lab_cases` row to a canonical `cases` row so that
+ * desktop users can add/edit/delete restorations on mobile-originated cases.
+ *
+ * The same `id` is reused for the canonical row so all existing attachment
+ * references (caseAttachments.labCaseId) continue to resolve correctly.
+ *
+ * After promotion the canonical row is the live source of truth for the
+ * desktop. The original `lab_cases` row is preserved for mobile-app
+ * compatibility (the mobile app still syncs through the legacy endpoint).
+ *
+ * `providerOrganizationId` is set to the lab's own org because mobile cases
+ * have no external provider — it satisfies the NOT-NULL FK and can be
+ * corrected later via the case edit form.
+ */
+async function promoteLabCaseToCanonical(
+  userId: string,
+  labCaseId: string,
+): Promise<any> {
+  // Already promoted? Return the existing canonical row.
+  const existing = await db.query.cases.findFirst({
+    where: and(eq(cases.id, labCaseId), notDeleted(cases)),
+  });
+  if (existing) return existing;
+
+  const legacyRow = await db.query.labCases.findFirst({
+    where: and(eq(labCases.id, labCaseId), isNull(labCases.deletedAt)),
+  });
+  if (!legacyRow) throw new HttpError(404, "Case not found.");
+
+  const labIds = await fetchUserActiveLabIds(userId);
+  const orgId = legacyRow.organizationId ?? "";
+  if (!orgId || !labIds.includes(orgId)) {
+    throw new HttpError(403, "You do not have access to this case.");
+  }
+
+  let parsed: any = {};
+  try {
+    parsed =
+      typeof legacyRow.caseData === "string"
+        ? JSON.parse(legacyRow.caseData)
+        : (legacyRow.caseData ?? {});
+  } catch {
+    parsed = {};
+  }
+
+  const mobileStatus = String(parsed?.status ?? "INTAKE").toUpperCase();
+  const desktopStatus = MOBILE_TO_DESKTOP_STATUS[mobileStatus] ?? "received";
+  const split = splitDisplayName(parsed?.patientName ?? "");
+  const firstName =
+    ((parsed?.patientFirstName ?? split.first ?? "") as string).trim() ||
+    "Unknown";
+  const lastName =
+    ((parsed?.patientLastName ?? split.last ?? "") as string).trim() ||
+    "Patient";
+  const rawCaseNumber = String(parsed?.caseNumber ?? legacyRow.id);
+
+  // caseNumber has a global unique index; fall back to "<number>-m" or the
+  // lab_cases id itself when the raw number is already taken by another case.
+  let resolvedCaseNumber = rawCaseNumber;
+  const numConflict = await db.query.cases.findFirst({
+    where: eq(cases.caseNumber, rawCaseNumber),
+    columns: { id: true },
+  });
+  if (numConflict) {
+    const fallback = `${rawCaseNumber}-m`;
+    const fallbackConflict = await db.query.cases.findFirst({
+      where: eq(cases.caseNumber, fallback),
+      columns: { id: true },
+    });
+    resolvedCaseNumber = fallbackConflict ? labCaseId : fallback;
+  }
+
+  const toMs = (v: unknown): number | null => {
+    if (v === null || v === undefined || v === "") return null;
+    const n = typeof v === "number" ? v : Number(v);
+    if (Number.isFinite(n) && n > 0) return n;
+    if (typeof v === "string") {
+      const p = Date.parse(v);
+      if (Number.isFinite(p)) return p;
+    }
+    return null;
+  };
+  const dueDateMs = toMs(parsed?.dueDate);
+  const receivedAtMs = legacyRow.updatedAt
+    ? new Date(legacyRow.updatedAt).getTime()
+    : Date.now();
+
+  const [promoted] = await db
+    .insert(cases)
+    .values({
+      id: labCaseId,
+      caseNumber: resolvedCaseNumber,
+      labOrganizationId: orgId,
+      providerOrganizationId: orgId,
+      patientFirstName: firstName,
+      patientLastName: lastName,
+      doctorName: (parsed?.doctorName as string | undefined) ?? "",
+      status: desktopStatus,
+      priority: parsed?.isRush ? "rush" : "normal",
+      dueDate: dueDateMs ? new Date(dueDateMs) : null,
+      receivedAt: new Date(receivedAtMs),
+      createdByUserId: legacyRow.ownerId ?? userId,
+    })
+    .returning();
+
+  // Copy blob restorations to caseRestorations so the Restorations tab shows
+  // the teeth that were already entered on mobile.
+  const teeth: Array<{ num: string; type?: string }> = [];
+  if (Array.isArray(parsed?.toothMap)) {
+    for (const t of parsed.toothMap) {
+      if (t?.num != null) teeth.push({ num: String(t.num), type: t.type });
+    }
+  } else if (Array.isArray(parsed?.toothIndices)) {
+    for (const n of parsed.toothIndices) {
+      if (n != null) teeth.push({ num: String(n) });
+    }
+  }
+  if (teeth.length > 0) {
+    await db.insert(caseRestorations).values(
+      teeth.map((t) => ({
+        caseId: promoted.id,
+        toothNumber: t.num,
+        restorationType:
+          t.type ?? ((parsed?.caseType as string | undefined) ?? "restoration"),
+        material: (parsed?.material as string | undefined) ?? null,
+        shade: (parsed?.shade as string | undefined) ?? null,
+      })),
+    );
+  }
+
+  return promoted;
+}
+
+/**
+ * Wraps assertCaseAccess with a mobile-promotion fallback.
+ * When the caseId belongs to a lab_cases row (not yet in cases),
+ * auto-promotes it so restoration writes can proceed.
+ */
+async function assertCaseAccessOrPromote(
+  userId: string,
+  caseId: string,
+): Promise<any> {
+  try {
+    return await assertCaseAccess(userId, caseId);
+  } catch (e: any) {
+    if (e.statusCode !== 404) throw e;
+  }
+  return promoteLabCaseToCanonical(userId, caseId);
+}
+
+/**
  * Project a mobile-app legacy `lab_cases` JSON blob into the canonical
  * DetailedCase shape used by `GET /api/cases/:id`. Returns null when the
  * case isn't found in lab_cases or the caller isn't allowed to see it.
@@ -4339,7 +4490,7 @@ async function _repricePonticsInSpans(
 router.post(
   "/:caseId/restorations",
   asyncHandler(async (req, res) => {
-    const found = await assertCaseAccess(
+    const found = await assertCaseAccessOrPromote(
       (req as any).auth.userId,
       req.params.caseId
     );
@@ -4507,7 +4658,7 @@ router.post(
 router.delete(
   "/:caseId/restorations/:restorationId",
   asyncHandler(async (req, res) => {
-    const found = await assertCaseAccess(
+    const found = await assertCaseAccessOrPromote(
       (req as any).auth.userId,
       req.params.caseId
     );
@@ -4563,7 +4714,7 @@ router.delete(
 router.patch(
   "/:caseId/restorations/:restorationId",
   asyncHandler(async (req, res) => {
-    const found = await assertCaseAccess(
+    const found = await assertCaseAccessOrPromote(
       (req as any).auth.userId,
       req.params.caseId
     );
