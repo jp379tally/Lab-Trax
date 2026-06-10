@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Ban, ChevronsUpDown, ChevronUp, ChevronDown as ChevronDownIcon, Download, History, Loader2, Pencil, Plus, Search, Upload, X } from "lucide-react";
+import { Ban, ChevronsUpDown, ChevronUp, ChevronDown as ChevronDownIcon, Download, History, Loader2, Pencil, Plus, Search, Trash2, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch } from "@/lib/api";
 import { formatDate, formatMoney, formatPhone } from "@/lib/format";
@@ -192,6 +192,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
   const [txnsVendor, setTxnsVendor] = useState<Vendor | null>(null);
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [confirmDeactivateItem, setConfirmDeactivateItem] = useState<Vendor | null>(null);
+  const [confirmDeleteItem, setConfirmDeleteItem] = useState<Vendor | null>(null);
 
   const vendorsQuery = useQuery({
     queryKey: ["finance", "vendors", organizationId, "all"],
@@ -316,6 +317,21 @@ function ListsContent({ organizationId }: { organizationId: string }) {
     },
     onError: () => {
       toast.error("Failed to deactivate item");
+    },
+  });
+
+  const deleteItemMut = useMutation({
+    mutationFn: (v: Vendor) =>
+      apiFetch(`/finance/vendors/${v.id}?hard=true`, {
+        method: "DELETE",
+      }),
+    onSuccess: (_data, v) => {
+      setConfirmDeleteItem(null);
+      invalidateVendors();
+      toast.success(`"${v.name}" deleted`);
+    },
+    onError: () => {
+      toast.error("Failed to delete item");
     },
   });
 
@@ -599,6 +615,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
             vendorType={activeTab as VendorType}
             onEdit={openEditVendor}
             onDeactivate={activeTab === "item" ? (v) => setConfirmDeactivateItem(v) : undefined}
+            onDelete={activeTab === "item" ? (v) => setConfirmDeleteItem(v) : undefined}
           />
         )}
       </div>
@@ -661,6 +678,48 @@ function ListsContent({ organizationId }: { organizationId: string }) {
                   <Ban size={13} />
                 )}
                 Deactivate
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {confirmDeleteItem && (
+        <>
+          <div
+            className="fixed inset-0 z-50 bg-foreground/30"
+            onClick={() => setConfirmDeleteItem(null)}
+          />
+          <div className="fixed z-50 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[360px] bg-card border border-border rounded-xl shadow-2xl flex flex-col">
+            <div className="px-5 pt-5 pb-4">
+              <h3 className="text-sm font-semibold mb-1">Delete Billable Item?</h3>
+              <p className="text-sm text-muted-foreground">
+                <span className="font-medium text-foreground">"{confirmDeleteItem.name}"</span> will be
+                permanently removed from this list. Existing cases and invoices that already reference it are
+                not affected. This cannot be undone from the app.
+              </p>
+            </div>
+            <div className="flex justify-end gap-2 px-5 pb-4">
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteItem(null)}
+                disabled={deleteItemMut.isPending}
+                className="h-9 px-4 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80 disabled:opacity-60"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => deleteItemMut.mutate(confirmDeleteItem)}
+                disabled={deleteItemMut.isPending}
+                className="h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-semibold hover:bg-destructive/90 disabled:opacity-60 inline-flex items-center gap-1.5"
+              >
+                {deleteItemMut.isPending ? (
+                  <Loader2 size={13} className="animate-spin" />
+                ) : (
+                  <Trash2 size={13} />
+                )}
+                Delete
               </button>
             </div>
           </div>
@@ -788,6 +847,7 @@ function VendorsTable({
   vendorType,
   onEdit,
   onDeactivate,
+  onDelete,
 }: {
   vendors: Vendor[];
   isLoading: boolean;
@@ -796,6 +856,7 @@ function VendorsTable({
   vendorType: VendorType;
   onEdit: (v: Vendor) => void;
   onDeactivate?: (v: Vendor) => void;
+  onDelete?: (v: Vendor) => void;
 }) {
   const isItem = vendorType === "item";
   const [sortKey, setSortKey] = useState<keyof Vendor>("name");
@@ -912,6 +973,17 @@ function VendorsTable({
                 >
                   <Pencil size={13} />
                 </button>
+                {onDelete && (
+                  <button
+                    type="button"
+                    onClick={() => onDelete(v)}
+                    className="h-7 w-7 rounded-md hover:bg-destructive/10 flex items-center justify-center text-muted-foreground hover:text-destructive"
+                    aria-label="Delete"
+                    title="Delete permanently"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                )}
               </div>
             </td>
           </tr>

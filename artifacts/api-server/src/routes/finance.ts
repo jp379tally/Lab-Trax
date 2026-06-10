@@ -2807,6 +2807,12 @@ router.delete(
   "/vendors/:vendorId",
   asyncHandler(async (req, res) => {
     const { vendorId } = req.params;
+    // `?hard=true` removes the row from all lists (soft-delete via deletedAt),
+    // versus the default which only deactivates it (isActive=false, still shown
+    // greyed-out). The FKs that point at vendors use ON DELETE SET NULL, so
+    // referencing transactions are preserved; the row is recoverable via
+    // deletedAt.
+    const hard = req.query.hard === "true";
     const [existing] = await db
       .select()
       .from(vendors)
@@ -2816,7 +2822,16 @@ router.delete(
     await requireAnyRole(uid(req), existing.labOrganizationId, BILLING_ROLES);
     const [updated] = await db
       .update(vendors)
-      .set({ isActive: false, updatedAt: new Date() })
+      .set(
+        hard
+          ? {
+              deletedAt: new Date(),
+              deletedByUserId: uid(req),
+              isActive: false,
+              updatedAt: new Date(),
+            }
+          : { isActive: false, updatedAt: new Date() },
+      )
       .where(eq(vendors.id, vendorId))
       .returning();
     return ok(res, updated);
