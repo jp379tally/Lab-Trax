@@ -157,17 +157,17 @@ interface AppContextValue {
   updateWorkStatus: (status: "available" | "break" | "out_of_office") => Promise<{ success: boolean; error?: string }>;
   invoiceTemplate: { customTexts: any[]; defaultTextBlocks: any[] } | null;
   fetchInvoiceTemplate: () => Promise<void>;
-  // Number of offline changes (photos, notes, status moves) still queued and
-  // waiting to sync to the server. 0 when everything is up to date.
+  // Vestigial counter from the removed offline queue. Syncing is now direct
+  // (see fireWithRetry + chunked uploads), so this stays at 0.
   pendingSyncCount: number;
-  // Offline changes that have repeatedly failed to sync and are no longer
-  // retried automatically. Surfaced to the user so they can manually retry or
-  // discard them. Empty when nothing is stuck.
+  // Vestigial list from the removed offline queue; always empty now that
+  // changes sync straight to the server instead of being queued.
   stuckSyncItems: StuckQueueItem[];
-  // Reset stuck items so the next drain retries them. Pass an id to retry a
-  // single item, or omit to retry all stuck items. Triggers a drain.
+  // No-op stub retained for API compatibility; the offline queue it used to
+  // re-drive no longer exists.
   retrySync: (id?: string) => void;
-  // Permanently drop a stuck offline change so it stops blocking the queue.
+  // No-op stub retained for API compatibility; the offline queue it used to
+  // drop items from no longer exists.
   discardSync: (id: string) => void;
   // Insert a server-returned case into local state without creating a new UUID
   // or syncing back to the server. Used by the QR barcode lookup to ensure
@@ -1142,14 +1142,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [currentUserId, currentUser, conversationsStorageKey, chatMessagesStorageKey]);
 
   const prevCasesRef = useRef<LabCase[]>([]);
-  // Always mirrors the latest `allCases` so the offline status-drain executor
-  // (which is captured by long-lived AppState/interval handlers) can sync the
+  // Always mirrors the latest `allCases` so the background sync handlers
+  // (which are captured by long-lived AppState/interval handlers) can sync the
   // freshest local state of a case rather than a stale closure snapshot.
   const allCasesRef = useRef<LabCase[]>([]);
   // Flips true once loadData() has finished hydrating cases from the local
   // cache. Until then, a case "not found" in allCasesRef means the cache simply
-  // hasn't loaded yet (cold-boot race with the offline drain) — NOT that the
-  // case was deleted. The status drain uses this to avoid discarding a queued
+  // hasn't loaded yet (cold-boot race with the background sync) — NOT that the
+  // case was deleted. The sync handlers use this to avoid discarding a pending
   // station change before its case has hydrated.
   const casesHydratedRef = useRef(false);
   const syncReadyRef = useRef(false);
@@ -1845,8 +1845,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => clearInterval(interval);
   }, [currentUserId]);
 
-  // Keep the latest-cases mirror current on every cases change so the offline
-  // status drain always syncs the freshest local state of a case.
+  // Keep the latest-cases mirror current on every cases change so the
+  // background sync handlers always sync the freshest local state of a case.
   useEffect(() => {
     allCasesRef.current = allCases;
   }, [allCases]);
@@ -1902,7 +1902,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           );
           setAllCases((prev) => {
             const next = prev.length === 0 ? parsedCases : prev;
-            // Keep the drain executor's mirror in lockstep so a drain that
+            // Keep the sync handlers' mirror in lockstep so a sync that
             // wins the race against the post-render allCasesRef effect still
             // sees the hydrated case the moment casesHydratedRef flips below.
             allCasesRef.current = next;
@@ -2438,7 +2438,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // We therefore upload, create the attachment, and return the canonical
   // id-based serving URL (/api/cases/:caseId/attachments/:id/file), which is
   // same-origin and so receives the bearer token via caseMediaSource. Returns
-  // null on any failure so callers can fall back to the local uri + retry queue.
+  // null on any failure so callers can fall back to the local uri.
   async function uploadPhotoAndCreateAttachment(
     caseId: string,
     photoUri: string,
