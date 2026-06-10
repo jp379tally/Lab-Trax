@@ -1,0 +1,58 @@
+Do not attempt the entire rebuild as one giant task.
+
+The architecture plan is sound, but the execution should be:
+
+Phase 0 (Lockdown) — complete and verify.
+Phase 1 (Auth/API foundation) — complete and verify.
+Phase 2 (Cases only) — ship to TestFlight and validate.
+Phase 3 (Invoices only) — ship and validate.
+Phase 4 (Media only) — ship and validate.
+Phase 5 (Mobile-native features) — ship and validate.
+Phase 6 (Acceptance and cutover).
+
+The reason is simple: the current mobile app's biggest problem isn't that bugs exist—it's that nobody can reliably tell which change introduced which regression. A phased migration creates checkpoints where:
+
+Case history can be verified before invoices are touched.
+Invoice generation can be verified before media is touched.
+Media can be verified before AI Reader is touched.
+Every TestFlight build has a narrowly defined scope.
+
+For LabTrax specifically, I would define these as non-negotiable protected workflows that must pass before any phase is allowed to continue:
+
+Protected Workflow A — Case Lifecycle
+Create case on mobile
+Case appears on web
+Case appears on desktop
+Same UUID everywhere
+Case history identical everywhere
+Protected Workflow B — Media
+Take photo
+Upload photo
+View photo on mobile
+View photo on web
+View photo on desktop
+Protected Workflow C — Invoicing
+Create case
+Generate invoice once
+No duplicates
+Invoice linked to correct case UUID
+Pricing matches desktop
+Protected Workflow D — Status / Location
+Change status on mobile
+Appears on desktop
+Appears on web
+Long-press locate updates everywhere
+Protected Workflow E — AI Reader
+Scan prescription
+Parse correctly
+Create canonical case
+Generate canonical invoice
+Attach source media
+
+If any one of those fails during the rebuild, the phase stops.
+
+My recommendation is:
+
+Approve #1437, but require Replit to execute only Phase 0 first and provide proof that the legacy paths are locked down before any additional rebuild work begins.
+
+That gives you a clean foundation and prevents another cycle of "fix one thing, break three others."
