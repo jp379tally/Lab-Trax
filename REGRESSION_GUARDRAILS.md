@@ -187,10 +187,11 @@ pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-core
 | Layer | File | What it guards |
 |-------|------|----------------|
 | API integration | `artifacts/api-server/src/routes/cases-attachments.test.ts` | Legacy mobile case photo upload creates attachment row with `labCaseId`; attachment surfaces via `GET /api/cases/:caseId/attachments` |
+| API integration (E2E chain) | `artifacts/api-server/src/routes/cases-prescription-photo.test.ts` | Full chain: case creation → photo upload → DB integrity (labCaseId, fileType) → list endpoint (web/desktop Files tab) → file-serving auth (not 401/403) → invoice generation |
 
 Run command:
 ```
-pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-attachments
+pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-attachments cases-prescription-photo
 ```
 
 ### E2E Browser Tests
@@ -213,7 +214,7 @@ Set `PLAYWRIGHT_BASE_URL` to the target deployment URL when running against stag
 ### Run the full protected suite at once
 
 ```bash
-pnpm --filter @workspace/api-server run test -- cases-ai-reader analyze-prescription invoices cases-core cases-invoice-creation mobile-sync-invoice cases-attachments
+pnpm --filter @workspace/api-server run test -- cases-ai-reader analyze-prescription invoices cases-core cases-invoice-creation mobile-sync-invoice cases-attachments cases-prescription-photo
 pnpm --filter @workspace/labtrax run test -- cases.smoke case-detail.smoke scan.smoke
 pnpm test:e2e
 ```
