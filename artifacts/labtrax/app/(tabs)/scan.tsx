@@ -5349,7 +5349,7 @@ export default function ScanScreen() {
               >
                 <View style={[styles.liveDot, liveScanEnabled && styles.liveDotOn]} />
                 <Text style={[styles.liveToggleText, liveScanEnabled && styles.liveToggleTextOn]}>
-                  {liveScanEnabled ? "Live scan ON — point at the Rx" : "Live scan — read automatically"}
+                  {liveScanEnabled ? "Auto-shutter ON — point at the Rx" : "Auto-shutter: off — tap to enable"}
                 </Text>
               </Pressable>
             )}
