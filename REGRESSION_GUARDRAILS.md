@@ -90,6 +90,26 @@ Protected sub-behaviors:
 
 ---
 
+## Protected Workflow: Mobile Case Location Cross-Platform Sync
+
+When a lab technician locates (moves) a case to a station on the mobile app — whether by tapping a single case or using the Batch Locate barcode scanner — that location change must appear immediately on the web and desktop clients without requiring any manual refresh.
+
+Two bugs were fixed to make this work:
+1. `batchLocateCases()` only saved the new status to AsyncStorage; it never called `syncCaseToServer()`, so batch location changes were silently lost. Single-case `updateCaseStatus()` already synced correctly.
+2. The `GET /api/cases` list endpoint had a local `MOBILE_TO_DESKTOP_STATUS` map that was incomplete (missing SCAN, POST_MILL, SINTERING_FURNACE, MODEL_ROOM) and mapped COMPLETE to `"delivered"` instead of `"complete"`, causing the web list view to show the wrong location even when the mobile client had correctly synced the status to the server.
+
+Protected sub-behaviors:
+
+- **Single locate syncs to server** — moving a case to a station from the case detail screen or from the long-press "Locate Case" menu calls `syncCaseToServer()`, which POSTs the updated `caseData` blob (including the new `status`) to `POST /api/legacy/cases`. The server stores the new status in `lab_cases.caseData`.
+- **Batch locate syncs to server** — using the Batch Locate barcode scanner on the dashboard calls `batchLocateCases()`, which now calls `syncCaseToServer()` for each case in the batch, mirroring the single-case path.
+- **Offline fallback** — if the sync request fails (e.g. network offline), the case ID is enqueued via `enqueueStatus()` so the location change is retried when connectivity is restored.
+- **Web/desktop list shows updated location** — `GET /api/cases` bridges the `lab_cases.caseData.status` field into the desktop status format using `MOBILE_TO_DESKTOP_STATUS`. All 13 mobile statuses (INTAKE, DESIGN, SCAN, MILLING, POST_MILL, SINTERING_FURNACE, MODEL_ROOM, PORCELAIN, QC_CHECK, COMPLETE, DELIVERY, ON_HOLD, REMAKE) must map correctly; an unknown status falls back to `"received"`.
+- **Web/desktop detail shows updated location** — `GET /api/cases/:id` for a mobile-created case uses `tryProjectLegacyCaseForDesktop()` to project the `lab_cases` blob into the canonical shape; the `status` field in that response must match what the list returns.
+- **List and detail agree** — the location shown in `GET /api/cases` (list) must be the same as what `GET /api/cases/:id` (detail) returns for the same case. The two endpoints must use the same `MOBILE_TO_DESKTOP_STATUS` mapping.
+- **No regression on existing workflows** — AI Reader, invoice, image upload, and case creation must continue to pass after any change to the locate/sync path.
+
+---
+
 ## Zero-Regression Process
 
 Every code change that touches a protected workflow must follow this process, in order:
@@ -194,6 +214,17 @@ Run command:
 pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-attachments cases-prescription-photo
 ```
 
+### Mobile Case Location Cross-Platform Sync
+
+| Layer | File | What it guards |
+|-------|------|----------------|
+| API integration | `artifacts/api-server/src/routes/cases-location-sync.test.ts` | POST syncs status to lab_cases; GET /api/cases list maps all 13 mobile statuses correctly; batch locate (two cases); GET /api/cases/:id detail bridge; list+detail agree on COMPLETE→"complete"; auth guard |
+
+Run command:
+```
+pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-location-sync
+```
+
 ### E2E Browser Tests
 
 | Layer | File | What it guards |
@@ -214,7 +245,7 @@ Set `PLAYWRIGHT_BASE_URL` to the target deployment URL when running against stag
 ### Run the full protected suite at once
 
 ```bash
-pnpm --filter @workspace/api-server run test -- cases-ai-reader analyze-prescription invoices cases-core cases-invoice-creation mobile-sync-invoice cases-attachments cases-prescription-photo
+pnpm --filter @workspace/api-server run test -- cases-ai-reader analyze-prescription invoices cases-core cases-invoice-creation mobile-sync-invoice cases-attachments cases-prescription-photo cases-location-sync
 pnpm --filter @workspace/labtrax run test -- cases.smoke case-detail.smoke scan.smoke
 pnpm test:e2e
 ```

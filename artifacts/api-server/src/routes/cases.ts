@@ -2250,15 +2250,22 @@ router.get(
       }
     }
 
-    // Status map: mobile legacy → desktop format
+    // Status map: mobile legacy → desktop format.
+    // Must stay in sync with the module-level MOBILE_TO_DESKTOP_STATUS used by
+    // tryProjectLegacyCaseForDesktop — a divergence here causes the list view to
+    // show a different location than the detail view for the same case.
     const MOBILE_TO_DESKTOP_STATUS: Record<string, string> = {
       INTAKE: "received",
       DESIGN: "in_design",
+      SCAN: "scan",
       MILLING: "in_milling",
+      POST_MILL: "post_mill",
+      SINTERING_FURNACE: "sintering_furnace",
+      MODEL_ROOM: "model_room",
       PORCELAIN: "in_porcelain",
       QC_CHECK: "qc",
+      COMPLETE: "complete",
       DELIVERY: "shipped",
-      COMPLETE: "delivered",
       ON_HOLD: "on_hold",
       REMAKE: "remake",
     };

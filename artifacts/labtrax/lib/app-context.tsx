@@ -3904,7 +3904,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             description: `Case batch-moved to ${stationLabel}`,
             station: newStatus,
           };
-          return {
+          const updatedCase = {
             ...c,
             status: newStatus,
             assignedBarcode: c.assignedBarcode,
@@ -3912,6 +3912,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
             routeHistory: [...(c.routeHistory || []), { station: newStatus, timestamp: now }],
             activityLog: [...(c.activityLog || []), stationEntry],
           };
+          // Sync to server so web/desktop see the updated location.
+          // Mirrors updateCaseStatus: attempt immediately and fall back to
+          // the offline queue if the request fails, so the change is never
+          // silently lost on a transient network error.
+          void (async () => {
+            const ok = isSyncSuccess(await syncCaseToServer(updatedCase));
+            if (!ok) {
+              await enqueueStatus(c.id);
+            }
+          })();
+          return updatedCase;
         }
         return c;
       });
