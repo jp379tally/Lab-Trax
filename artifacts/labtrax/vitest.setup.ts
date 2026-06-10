@@ -106,6 +106,31 @@ export function resetMockFetchHandler(): void {
   fetchHandler.current = defaultFetchHandler;
 }
 
+// Mutable handler for the mocked `chunkedUploadCaseMedia` / `uploadCaseMedia`.
+// Defaults to a successful upload so screens that incidentally trigger an
+// upload during a smoke test don't surface a failure toast. Caller tests that
+// exercise the photo-attach failure path override this to return
+// `{ ok: false }` and then assert the user-visible "Upload Failed" alert.
+type UploadResult = { ok: true; url: string } | { ok: false; error?: string };
+type UploadHandler = (
+  uri: string,
+  name: string,
+  mimeType: string,
+) => UploadResult | Promise<UploadResult>;
+const defaultUploadHandler: UploadHandler = () => ({
+  ok: true,
+  url: "/uploads/case-media/test.jpg",
+});
+const uploadHandler: { current: UploadHandler } = {
+  current: defaultUploadHandler,
+};
+export function setMockUploadHandler(handler: UploadHandler): void {
+  uploadHandler.current = handler;
+}
+export function resetMockUploadHandler(): void {
+  uploadHandler.current = defaultUploadHandler;
+}
+
 type StackComponent = React.FC<ChildrenOnly> & {
   Screen: React.FC<ChildrenOnly>;
 };
@@ -429,6 +454,14 @@ vi.mock("@/lib/query-client", () => ({
   getAccessToken: vi.fn(async () => null),
   resilientFetch: vi.fn(
     async (url: string, init?: RequestInit) => fetchHandler.current(url, init),
+  ),
+  chunkedUploadCaseMedia: vi.fn(
+    async (uri: string, name: string, mimeType: string) =>
+      uploadHandler.current(uri, name, mimeType),
+  ),
+  uploadCaseMedia: vi.fn(
+    async (uri: string, name: string, mimeType: string) =>
+      uploadHandler.current(uri, name, mimeType),
   ),
   logDebugEvent: vi.fn(),
   queryClient: { clear: vi.fn() },
