@@ -504,22 +504,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
   async function fetchCasesFromServer(): Promise<FetchCasesResult> {
     try {
       const res = await resilientFetch(`/api/legacy/cases`);
-      lastFetchStatusRef.current = res.status;
       if (res.ok) {
         try {
           const data = await res.json();
-          lastFetchErrRef.current = "";
           return { ok: true, cases: Array.isArray(data?.cases) ? data.cases : [] };
-        } catch (parseErr: any) {
-          lastFetchErrRef.current = `parse:${String(parseErr?.message || parseErr).slice(0, 60)}`;
+        } catch {
           return { ok: false };
         }
       }
-      lastFetchErrRef.current = `http:${res.status}`;
       return { ok: false };
     } catch (e: any) {
-      lastFetchStatusRef.current = -1;
-      lastFetchErrRef.current = `throw:${String(e?.message || e).slice(0, 60)}`;
       console.log("Could not fetch cases from server:", e);
       return { ok: false };
     }
@@ -1699,12 +1693,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }
 
-  const lastFetchOkRef = useRef<boolean | null>(null);
-  const lastFetchCountRef = useRef<number>(-1);
-  const lastFetchSampleRef = useRef<string[]>([]);
-  const lastFetchStatusRef = useRef<number>(0);
-  const lastFetchErrRef = useRef<string>("");
-
   useEffect(() => {
     if (!currentUserId) {
       syncReadyRef.current = false;
@@ -1726,24 +1714,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
           return;
         }
         if (result.ok) {
-          lastFetchOkRef.current = true;
-          lastFetchCountRef.current = result.cases.length;
-          lastFetchSampleRef.current = result.cases
-            .slice(0, 3)
-            .map(
-              (c) =>
-                `${c.id?.slice(0, 8) || "?"}|${
-                  typeof c.affiliationKey === "string"
-                    ? c.affiliationKey.slice(0, 40)
-                    : "null"
-                }|owner=${(c.ownerId || "").slice(0, 8)}`
-            );
           // mergeServerCases handles both populated and empty responses
           // correctly: lab-tagged ghosts get reconciled away, private
           // local-only cases are preserved, server payloads win.
           mergeServerCases(result.cases);
         } else {
-          lastFetchOkRef.current = false;
           // Fetch failed — keep whatever was loaded from AsyncStorage so
           // the user still sees their previously-synced cases until the
           // next poll succeeds.
@@ -1816,89 +1791,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
     })();
   }, [cases, currentUserId, initialCasesFetchComplete]);
-
-  // TEMP DIAGNOSTIC: posts a snapshot of the device's React state to the
-  // server so we can read it from deployment logs and find where the
-  // 0-cases bug is hiding. Fires 6 s and 30 s after sign-in. Remove once
-  // jpp's missing-cases issue is resolved.
-  useEffect(() => {
-    if (!currentUserId) return;
-    let cancelled = false;
-    const fire = async (marker: string) => {
-      if (cancelled) return;
-      try {
-        const cached = await AsyncStorage.getItem(CASES_KEY);
-        let cacheLen: number | string = "null";
-        if (cached) {
-          try {
-            const parsed = JSON.parse(cached);
-            cacheLen = Array.isArray(parsed) ? parsed.length : "not-array";
-          } catch {
-            cacheLen = "parse-error";
-          }
-        }
-        // Inline raw probe — perform our OWN fetch right now from the
-        // diagnostic effect, bypassing fetchCasesFromServer entirely, so we
-        // can see exactly what the device sees: HTTP status, body byte
-        // length, JSON parse success, and the "cases" array length.
-        let probeStatus = 0;
-        let probeBytes = -1;
-        let probeParseOk = false;
-        let probeCount = -1;
-        let probeErr = "";
-        try {
-          const probeRes = await resilientFetch("/api/legacy/cases");
-          probeStatus = probeRes.status;
-          try {
-            const text = await probeRes.text();
-            probeBytes = text.length;
-            try {
-              const parsed = JSON.parse(text);
-              probeParseOk = true;
-              probeCount = Array.isArray(parsed?.cases)
-                ? parsed.cases.length
-                : -2;
-            } catch (pe: any) {
-              probeErr = `parse:${String(pe?.message || pe).slice(0, 50)}`;
-            }
-          } catch (te: any) {
-            probeErr = `text:${String(te?.message || te).slice(0, 50)}`;
-          }
-        } catch (fe: any) {
-          probeErr = `throw:${String(fe?.message || fe).slice(0, 50)}`;
-        }
-        await resilientFetch("/api/_debug/client-state", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            marker,
-            username: currentUser || "",
-            build: "96",
-            fetchOk: lastFetchOkRef.current,
-            fetchStatus: lastFetchStatusRef.current,
-            fetchErr: lastFetchErrRef.current,
-            serverCount: lastFetchCountRef.current,
-            probeStatus,
-            probeBytes,
-            probeParseOk,
-            probeCount,
-            probeErr,
-            cacheLen,
-            note: "post-signin diagnostic w/ raw probe",
-          }),
-        });
-      } catch {
-        // ignore — diagnostic only
-      }
-    };
-    const t1 = setTimeout(() => void fire("T+6s"), 6000);
-    const t2 = setTimeout(() => void fire("T+30s"), 30000);
-    return () => {
-      cancelled = true;
-      clearTimeout(t1);
-      clearTimeout(t2);
-    };
-  }, [currentUserId]);
 
   useEffect(() => {
     if (!currentUserId) {
