@@ -105,28 +105,13 @@ describe("CaseDetailScreen (smoke)", () => {
   describe("with an AI-imported case from iTero", () => {
     beforeEach(() => {
       setMockSearchParams({ id: aiImportedCase.id });
+      // Provide needsAiReview + aiImportSource in the mock case so the canonical
+      // useCase hook (mocked via @workspace/api-client-react) returns these flags
+      // and the "AI-imported — needs review" banner renders.
       setMockAppState({
-        cases: [aiImportedCase],
+        cases: [{ ...aiImportedCase, needsAiReview: true, aiImportSource: "itero" }],
         invoices: [],
         clients: [sampleClient],
-      });
-      // The case detail screen pulls heavy fields (incl. needsAiReview /
-      // aiImportSource) from `/api/legacy/cases/:id`. Stub that response
-      // so the "needs review" banner branch actually runs.
-      setMockFetchHandler((url: string) => {
-        if (url.includes("/api/legacy/cases/")) {
-          return new Response(
-            JSON.stringify({
-              case: {
-                ...aiImportedCase,
-                needsAiReview: true,
-                aiImportSource: "itero",
-              },
-            }),
-            { status: 200 },
-          );
-        }
-        return new Response(JSON.stringify({ data: null }), { status: 200 });
       });
     });
 

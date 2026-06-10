@@ -61,7 +61,6 @@ import {
   InvoiceLineItem,
 } from "./data";
 import { useAuth } from "./auth-context";
-import { reconcileCases } from "./case-reconciliation";
 
 interface AppContextValue {
   role: UserRole;
@@ -1796,15 +1795,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  // Reconcile local cache with the authoritative server response. The
-  // pure reconciliation function lives in lib/case-reconciliation.ts so it
-  // can be unit-tested without React; this wrapper handles the setState
-  // and AsyncStorage side effects.
+  // Update local case state with the authoritative server response.
+  // Server payloads win on id matches. Local-only cases (those without an
+  // "org:" affiliationKey — private cases not yet synced to any lab) that the
+  // server didn't return are preserved so offline-created work isn't lost.
+  // Lab-tagged cases not in the server response are dropped (server is
+  // authoritative for org cases).
   function mergeServerCases(serverCases: LabCase[]) {
     setAllCases((prev) => {
-      const { next, changed } = reconcileCases(prev, serverCases);
+      const serverIds = new Set(serverCases.map((c) => c.id));
+      const localPrivate = prev.filter((c) => {
+        if (serverIds.has(c.id)) return false;
+        const key = typeof c.affiliationKey === "string" ? c.affiliationKey.trim() : "";
+        return !key.startsWith("org:");
+      });
+      const next = [...serverCases, ...localPrivate];
+      const changed =
+        next.length !== prev.length ||
+        next.some((c, i) => c.id !== prev[i]?.id || c.updatedAt !== prev[i]?.updatedAt);
       if (!changed) return prev;
-      AsyncStorage.setItem(CASES_KEY, JSON.stringify(next));
+      void AsyncStorage.setItem(CASES_KEY, JSON.stringify(next));
       prevCasesRef.current = next;
       return next;
     });

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -20,6 +20,7 @@ import { AppHeader } from "@/components/ui/AppHeader";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { Card } from "@/components/ui/Card";
 import { SectionHeader } from "@/components/ui/SectionHeader";
+import { useInvoice } from "@workspace/api-client-react";
 import { resilientFetch } from "@/lib/query-client";
 
 function fmtMoney(v?: string | number | null) {
@@ -159,26 +160,19 @@ function EmailModal({ visible, onClose, practiceName }: { visible: boolean; onCl
 export default function InvoiceDetailScreen() {
   const { colors } = useTheme();
   const { id } = useLocalSearchParams<{ id: string }>();
-  const [invoice, setInvoice] = useState<any>(null);
-  const [lineItems, setLineItems] = useState<LineItem[]>([]);
-  const [payments, setPayments] = useState<Payment[]>([]);
-  const [loading, setLoading] = useState(true);
   const [paymentModalVisible, setPaymentModalVisible] = useState(false);
   const [emailModalVisible, setEmailModalVisible] = useState(false);
 
-  const load = useCallback(async () => {
-    if (!id) return;
-    try {
-      const res = await resilientFetch(`/api/invoices/${id}`);
-      const body = await res.json().catch(() => ({}));
-      const inv = body?.invoice ?? body?.data ?? body;
-      setInvoice(inv);
-      setLineItems(inv?.lineItems ?? inv?.items ?? []);
-      setPayments(inv?.payments ?? []);
-    } catch {} finally { setLoading(false); }
-  }, [id]);
-
-  useEffect(() => { void load(); }, [load]);
+  const { data: invoiceData, isLoading: loading, refetch: reload } = useInvoice(id);
+  const invoice = invoiceData ?? null;
+  const lineItems = useMemo<LineItem[]>(
+    () => ((invoice as any)?.lineItems ?? (invoice as any)?.items ?? []) as LineItem[],
+    [invoice],
+  );
+  const payments = useMemo<Payment[]>(
+    () => ((invoice as any)?.payments ?? []) as Payment[],
+    [invoice],
+  );
 
   const effectiveStatus = useMemo(() => {
     if (!invoice) return "unknown";
@@ -343,7 +337,7 @@ export default function InvoiceDetailScreen() {
       <RecordPaymentModal
         visible={paymentModalVisible}
         onClose={() => setPaymentModalVisible(false)}
-        onSave={load}
+        onSave={() => { void reload(); }}
         invoiceId={id!}
         balanceDue={balanceDue}
       />

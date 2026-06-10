@@ -16,7 +16,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { AppHeader } from "@/components/ui/AppHeader";
 import { FilterBar } from "@/components/ui/FilterBar";
 import { StatusBadge } from "@/components/ui/StatusBadge";
-import { resilientFetch } from "@/lib/query-client";
+import { useInvoices } from "@workspace/api-client-react";
 
 type InvoiceStatus = "all" | "open" | "paid" | "overdue" | "draft" | "void";
 
@@ -96,30 +96,12 @@ function AIInsightBanner({ invoices }: { invoices: ApiInvoice[] }) {
 
 export default function InvoicesScreen() {
   const { colors, isDark } = useTheme();
-  const [invoices, setInvoices] = useState<ApiInvoice[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<InvoiceStatus>("all");
 
-  async function load() {
-    try {
-      const res = await resilientFetch("/api/invoices");
-      const body = await res.json().catch(() => ({}));
-      const rows: ApiInvoice[] = Array.isArray(body)
-        ? body
-        : Array.isArray(body?.data)
-        ? body.data
-        : [];
-      setInvoices(rows);
-    } catch {
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }
-
-  useEffect(() => { void load(); }, []);
+  const { data: rawInvoices = [], isLoading: loading, isFetching, refetch } = useInvoices();
+  const refreshing = isFetching && !loading;
+  const invoices = rawInvoices as ApiInvoice[];
 
   const enriched = useMemo(() =>
     invoices.map((inv) => ({
@@ -206,7 +188,7 @@ export default function InvoicesScreen() {
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
-              onRefresh={() => { setRefreshing(true); void load(); }}
+              onRefresh={() => { void refetch(); }}
               tintColor={colors.tint}
             />
           }

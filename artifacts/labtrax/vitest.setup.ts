@@ -398,6 +398,68 @@ vi.mock("react-native-qrcode-svg", () => ({
   default: nullComponent,
 }));
 
+// ── @workspace/api-client-react: mock React Query hooks so screens that use
+// useCases / useCase / useInvoices / useInvoice don't need a QueryClientProvider.
+// Hook data is driven by the same mockAppOverrides used for the AppContext mock.
+vi.mock("@workspace/api-client-react", () => ({
+  useCases: () => ({
+    data: (mockAppOverrides.current.cases as unknown[]) ?? [],
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(async () => undefined),
+  }),
+  useCase: (id?: string) => ({
+    data: id
+      ? ((mockAppOverrides.current.cases as Array<{ id: string }> | undefined)?.find(
+          (c) => c.id === id,
+        ) ?? null)
+      : null,
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(async () => undefined),
+  }),
+  useInvoices: () => ({
+    data: (mockAppOverrides.current.invoices as unknown[]) ?? [],
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(async () => undefined),
+  }),
+  useInvoice: (id?: string) => ({
+    data: id
+      ? ((mockAppOverrides.current.invoices as Array<{ id: string }> | undefined)?.find(
+          (i) => i.id === id,
+        ) ?? null)
+      : null,
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(async () => undefined),
+  }),
+  useCaseAttachments: () => ({
+    data: [],
+    isLoading: false,
+    refetch: vi.fn(async () => undefined),
+  }),
+  setBaseUrl: vi.fn(),
+  setAuthTokenGetter: vi.fn(),
+  setAuthRefresher: vi.fn(),
+}));
+
+// authed-media-cache: return the URL as-is in tests (no filesystem I/O).
+vi.mock("@/lib/authed-media-cache", () => ({
+  getAuthedMediaUri: vi.fn(async (url: string | null | undefined) => url ?? null),
+  refreshAuthedMediaUri: vi.fn(async (url: string | null | undefined) => url ?? null),
+}));
+
+// expo-file-system/legacy: stub constants and methods used by authed-media-cache.
+vi.mock("expo-file-system/legacy", () => ({
+  cacheDirectory: "file:///cache/",
+  getInfoAsync: vi.fn(async () => ({ exists: false })),
+  makeDirectoryAsync: vi.fn(async () => undefined),
+  downloadAsync: vi.fn(async (_url: string, dest: string) => ({ status: 200, uri: dest })),
+  deleteAsync: vi.fn(async () => undefined),
+  readAsStringAsync: vi.fn(async () => ""),
+}));
+
 vi.mock("@/lib/theme-context", () => {
   const Colors = {
     text: "#0F172A",

@@ -32,7 +32,9 @@ import * as DocumentPicker from "expo-document-picker";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { useApp } from "@/lib/app-context";
 import { resilientFetch, getAccessToken, getApiUrl, uploadCaseMedia } from "@/lib/query-client";
+import { useCase, type CanonicalCase as CanonicalCaseType } from "@workspace/api-client-react";
 import { caseMediaSource, isSameApiOrigin } from "@/lib/case-media-source";
+import { AuthedImage } from "@/components/ui/AuthedImage";
 import * as FileSystem from "expo-file-system";
 import * as LegacyFileSystem from "expo-file-system/legacy";
 import { useAuth } from "@/lib/auth-context";
@@ -81,6 +83,67 @@ import {
   getApplianceUnitPrice,
   buildApplianceLineItems,
 } from "@/lib/case-detail/add-item";
+
+// ─── Canonical → mobile status map (mirrors the one in cases.tsx) ────────────
+const _CANONICAL_TO_MOBILE_STATUS: Record<string, import("@/lib/data").CaseStatus> = {
+  received: "INTAKE", draft: "INTAKE", in_design: "DESIGN", design: "DESIGN",
+  scan: "SCAN", in_milling: "MILL", milling: "MILL", post_mill: "POST_MILL",
+  sintering_furnace: "SINTERING_FURNACE", sintering: "SINTERING_FURNACE",
+  model_room: "MODEL_ROOM", in_porcelain: "PORCELAIN", porcelain: "PORCELAIN",
+  qc: "QC", complete: "COMPLETE", shipped: "SHIP", ship: "SHIP",
+  on_hold: "HOLD", hold: "HOLD", remake: "INTAKE",
+};
+
+function _toMobileStatus(s: string | null | undefined): import("@/lib/data").CaseStatus {
+  if (!s) return "INTAKE";
+  return _CANONICAL_TO_MOBILE_STATUS[s.toLowerCase()] ?? "INTAKE";
+}
+
+function canonicalCaseToDisplayBase(c: CanonicalCaseType): import("@/lib/data").LabCase {
+  const firstName = (c.patientFirstName as string | null | undefined) ?? "";
+  const lastName  = (c.patientLastName  as string | null | undefined) ?? "";
+  // Fall back to patientName when first/last are absent (legacy data or test fixtures)
+  const patientName = [firstName, lastName].filter(Boolean).join(" ")
+    || (c as Record<string, unknown>).patientName as string | undefined
+    || "";
+  const effectiveFirst = firstName || patientName.split(" ")[0] || "";
+  const effectiveLast  = lastName  || patientName.split(" ").slice(1).join(" ") || "";
+  const initials = [effectiveFirst[0], effectiveLast[0]].filter(Boolean).join("").toUpperCase()
+    || (c as Record<string, unknown>).patientInitials as string | undefined
+    || "";
+  const raw = c as Record<string, unknown>;
+  return {
+    // Spread raw first so LabCase-specific fields (clientName, invoiceId, etc.)
+    // pass through. Typed canonical mappings below override where field names differ.
+    ...raw,
+    id: c.id,
+    caseNumber: (c.caseNumber as string | null | undefined) ?? "",
+    ownerId: (c.createdByUserId as string | null | undefined) ?? undefined,
+    affiliationKey: c.labOrganizationId ? `org:${c.labOrganizationId}` : null,
+    patientName,
+    patientInitials: initials,
+    doctorName: (c.doctorName as string | null | undefined) ?? "",
+    status: _toMobileStatus(c.status as string | null | undefined),
+    // canonical field names differ from LabCase; explicit mappings take priority
+    material: (c.restorationMaterials as string | null | undefined) ?? (raw.material as string | undefined) ?? "",
+    shade: (c.shade as string | null | undefined) ?? "",
+    toothIndices: (c.teeth as string | null | undefined) ?? (raw.toothIndices as string | undefined) ?? "",
+    price: Number((c.totalPrice as string | number | null | undefined) ?? (raw.price as number | undefined) ?? 0),
+    dueDate: (c.dueDate as string | null | undefined) ?? "",
+    createdAt: c.createdAt ? new Date(c.createdAt as string).getTime() : Date.now(),
+    updatedAt: c.updatedAt ? new Date(c.updatedAt as string).getTime() : Date.now(),
+    isRush: (c.priority as string | null | undefined) === "rush",
+    isRemake: Boolean(c.remakeOfCaseId),
+    remakeOfCaseId: (c.remakeOfCaseId as string | null | undefined) ?? undefined,
+    notes: (c.notes as string | null | undefined) ?? "",
+    photos: Array.isArray(c.photos) ? (c.photos as string[]) : [],
+    activityLog: Array.isArray(raw.activityLog) ? raw.activityLog : [],
+    routeHistory: Array.isArray(raw.routeHistory) ? raw.routeHistory : [],
+    assignedBarcode: (c.casePanBarcode as string | null | undefined) ?? (raw.assignedBarcode as string | undefined) ?? undefined,
+    expectedDeliveryDate: (c.expectedDeliveryDate as string | null | undefined) ?? undefined,
+    restorations: Array.isArray(c.restorations) ? c.restorations : undefined,
+  } as unknown as import("@/lib/data").LabCase;
+}
 
 const SCAN_MIME_TYPES = new Set([
   "model/stl",
@@ -207,6 +270,9 @@ function QrCard({ caseQrUrl, caseNumber }: { caseQrUrl: string; caseNumber: stri
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addCasePhotosWithNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, addInvoice, updateCase, clients, pricingTiers, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate, assignBarcodeToCase, findCaseByBarcode, customStationLabels, addNotification, hardRefresh, hydrateInvoiceFromServer, allLabOrganizationIds, invoiceTemplate, fetchInvoiceTemplate } = useApp();
+  // Canonical API hook — drives fullCaseData and provides a fallback for
+  // caseItemBase when this case isn't yet in the AppContext cases array.
+  const { data: canonicalCase, refetch: refetchCanonicalCase } = useCase(id);
   const { currentUser, userType, registeredUsers } = useAuth();
   const currentRegisteredUser = registeredUsers.find(
     (user) => user.username?.toLowerCase() === (currentUser || "").toLowerCase()
@@ -406,7 +472,14 @@ export default function CaseDetailScreen() {
   const [qeDueDate, setQeDueDate] = useState("");
   const [qeNotes, setQeNotes] = useState("");
 
-  const caseItemBase = cases.find((c) => c.id === id);
+  // Canonical API (React Query useCase) is the authoritative source.
+  // AppContext cases array is only used as a fallback for the brief moment
+  // before the canonical query resolves on first render.
+  const caseFromCanonical = useMemo<import("@/lib/data").LabCase | undefined>(
+    () => canonicalCase ? canonicalCaseToDisplayBase(canonicalCase) : undefined,
+    [canonicalCase],
+  );
+  const caseItemBase = caseFromCanonical ?? cases.find((c) => c.id === id);
   const caseItem = caseItemBase && fullCaseData
     ? {
         ...caseItemBase,
@@ -531,19 +604,59 @@ export default function CaseDetailScreen() {
     }
   }
 
-  // Fetch full case data (photos + activityLog) for the detail view.
-  // The list endpoint strips these large fields to keep it lean.
+  // Populate fullCaseData from the canonical API hook response.
+  // Replaces the previous resilientFetch("/api/legacy/cases/:id") one-shot fetch.
   React.useEffect(() => {
-    if (!id) return;
-    let cancelled = false;
-    resilientFetch(`/api/legacy/cases/${encodeURIComponent(id)}`)
-      .then((res) => res.ok ? res.json() : null)
-      .then((data) => {
-        if (!cancelled && data?.case) setFullCaseData(data.case);
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [id]);
+    if (!canonicalCase) return;
+    const entries: ActivityEntry[] = (Array.isArray(canonicalCase.activityLog)
+      ? (canonicalCase.activityLog as any[])
+      : []
+    ).map((e: any, i: number) => {
+      const ts = (e.occurredAt || e.createdAt)
+        ? new Date(e.occurredAt ?? e.createdAt ?? 0).getTime()
+        : i;
+      const meta: Record<string, unknown> = e.metadataJson ?? {};
+      const et = (e.eventType ?? "") as string;
+      let type: ActivityEntry["type"] = "created";
+      let description = et.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
+      if (et === "status_changed") {
+        type = "station_change";
+        const to = meta.toStatus ?? meta.newStatus;
+        description = to ? `Case moved to ${String(to)}` : "Status changed";
+      } else if (et === "note_added") {
+        type = "note";
+        description = String(meta.content ?? meta.text ?? "Note");
+      } else if (et.includes("attachment")) {
+        type = "photo";
+        description = String(meta.fileName ?? "Attachment");
+      } else if (et.includes("invoice")) {
+        type = "invoice_attached";
+        description = String(meta.invoiceNumber ?? "Invoice");
+      }
+      return {
+        type,
+        timestamp: ts,
+        description,
+        user: e.actorInitials,
+        id: e.id,
+        attachmentId: e.attachmentId ?? undefined,
+        imageUri: e.imageUri ?? undefined,
+      } as ActivityEntry;
+    });
+    setFullCaseData({
+      photos: Array.isArray(canonicalCase.photos) ? (canonicalCase.photos as string[]) : [],
+      videos: Array.isArray(canonicalCase.videos) ? (canonicalCase.videos as string[]) : [],
+      activityLog: entries,
+      needsAiReview: Boolean(canonicalCase.needsAiReview),
+      aiImportSource: (canonicalCase.aiImportSource as string | null | undefined) ?? null,
+      remakeOriginal: (canonicalCase.remakeOriginal as any) ?? null,
+      remakeChildren: (canonicalCase.remakeChildren as any[]) ?? [],
+      providerOrganizationId: (canonicalCase.providerOrganizationId as string | null | undefined) ?? null,
+      suggestedProviderOrgId: (canonicalCase.suggestedProviderOrgId as string | null | undefined) ?? null,
+      suggestedPracticeName: (canonicalCase.suggestedPracticeName as string | null | undefined) ?? null,
+      suggestedDoctorName: (canonicalCase.suggestedDoctorName as string | null | undefined) ?? null,
+    });
+  }, [canonicalCase]);
 
   // Poll the full case every 30 s while the screen is in focus so desktop-
   // added attachments and activity events appear without a manual refresh.
@@ -555,12 +668,9 @@ export default function CaseDetailScreen() {
       let timer: ReturnType<typeof setInterval> | null = null;
 
       function poll() {
-        resilientFetch(`/api/legacy/cases/${encodeURIComponent(id as string)}`)
-          .then((res) => (res.ok ? res.json() : null))
-          .then((data) => {
-            if (data?.case) setFullCaseData(data.case);
-          })
-          .catch(() => {});
+        // Invalidate the canonical useCase query so the useEffect above
+        // re-populates fullCaseData with fresh server data.
+        void refetchCanonicalCase();
 
         resilientFetch(`/api/cases/${encodeURIComponent(id as string)}/remake-chain`)
           .then((res) => (res.ok ? res.json() : null))
@@ -592,7 +702,7 @@ export default function CaseDetailScreen() {
         stopPolling();
         appStateSub.remove();
       };
-    }, [id])
+    }, [id, refetchCanonicalCase])
   );
 
   // Fetch the original case's activity log so the history section can show
@@ -2749,8 +2859,8 @@ export default function CaseDetailScreen() {
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 4 }}>
               {caseItem.photos!.map((uri, idx) => (
                 <Pressable key={idx} onPress={() => setFullScreenPhoto(uri)}>
-                  <Image
-                    source={caseMediaSource(uri)}
+                  <AuthedImage
+                    url={uri}
                     style={styles.photoThumb}
                   />
                 </Pressable>
@@ -2830,8 +2940,8 @@ export default function CaseDetailScreen() {
                               onPress={() => setFullScreenPhoto(fullUrl)}
                               style={({ pressed }) => ({ opacity: pressed ? 0.85 : 1 })}
                             >
-                              <Image
-                                source={caseMediaSource(fullUrl)}
+                              <AuthedImage
+                                url={fullUrl}
                                 style={{ width: 88, height: 88, borderRadius: 8, backgroundColor: colors.border }}
                               />
                             </Pressable>
@@ -3676,15 +3786,15 @@ export default function CaseDetailScreen() {
                         {entry.description}
                       </Text>
                       {isPhoto && entry.imageUri && (
-                        <Image
-                          source={caseMediaSource(entry.imageUri)}
+                        <AuthedImage
+                          url={entry.imageUri}
                           style={{
                             width: "100%",
                             height: 120,
                             borderRadius: 8,
                             marginTop: 8,
                           }}
-                          resizeMode="cover"
+                          contentFit="cover"
                         />
                       )}
                       {isVideo && entry.imageUri && (
@@ -4450,10 +4560,10 @@ export default function CaseDetailScreen() {
                         <View style={styles.completePhotoGrid}>
                           {uniquePhotos.map((uri, idx) => (
                             <Pressable key={idx} onPress={() => setFullScreenPhoto(uri)}>
-                              <Image
-                                source={caseMediaSource(uri)}
+                              <AuthedImage
+                                url={uri}
                                 style={styles.completePhoto}
-                                resizeMode="cover"
+                                contentFit="cover"
                               />
                             </Pressable>
                           ))}
@@ -4959,10 +5069,10 @@ export default function CaseDetailScreen() {
           </View>
           <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 8 }}>
             {fullScreenPhoto && (
-              <Image
-                source={caseMediaSource(fullScreenPhoto)}
+              <AuthedImage
+                url={fullScreenPhoto}
                 style={{ width: "100%", height: "100%" }}
-                resizeMode="contain"
+                contentFit="contain"
               />
             )}
           </View>

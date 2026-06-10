@@ -525,11 +525,40 @@ export const queryClient = new QueryClient({
       queryFn: getQueryFn({ on401: "throw" }),
       refetchInterval: false,
       refetchOnWindowFocus: false,
-      staleTime: Infinity,
+      staleTime: 30_000,
       retry: false,
     },
     mutations: {
       retry: false,
     },
   },
+});
+
+// ── Wire @workspace/api-client-react for mobile ─────────────────────────────
+// Generated and custom hooks in api-client-react use customFetch, which needs
+// (a) a base URL (relative /api/* paths won't resolve on native without it),
+// (b) a Bearer token getter with SecureStore hydration (native has no session cookie),
+// (c) a token refresher so 401 responses transparently retry after a token refresh.
+// Called at module init so hooks are ready before any component mounts.
+import { setBaseUrl, setAuthTokenGetter, setAuthRefresher } from "@workspace/api-client-react";
+setBaseUrl(getApiUrl().replace(/\/+$/, ""));
+
+// Auth getter: hydrate from SecureStore if the in-memory token is missing —
+// mirrors the same guard used by resilientFetch so the canonical hooks behave
+// identically on cold start and after an app resume.
+setAuthTokenGetter(async () => {
+  if (Platform.OS !== "web" && !_accessToken) {
+    await loadTokens();
+    if (!_accessToken && _refreshToken) {
+      await refreshAccessToken();
+    }
+  }
+  return _accessToken;
+});
+
+// Refresher: called by customFetch on 401 — fetches a new access token so the
+// failed query is retried with a fresh bearer token without requiring re-login.
+setAuthRefresher(async () => {
+  await refreshAccessToken();
+  return _accessToken;
 });

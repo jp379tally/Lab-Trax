@@ -29,4 +29,6 @@
 - [AI Rx analyze-prescription hang](ai-rx-analyze-hang.md) — spinner hangs before API call when ensureHighQualityBase64 calls ImageManipulator with no timeout; fix = base64:true on takePictureAsync + 8s Promise.race in ensureHighQualityBase64.
 - [Join-a-lab banner false positive](join-lab-banner-false-positive.md) — banner renders on !userIsAffiliated which starts false; must gate on labAffiliationReady (set after AsyncStorage cache read + after sync) to prevent false-positive flash.
 - [Profile org type field mismatch](profile-org-type-field.md) — canReceivePayments check must use `organization.type`, not `organization.userType`; the latter is always undefined on the /api/auth/me org object.
+- [React Query on mobile needs auth refresh wiring](rq-mobile-auth-refresh.md) — customFetch needs setAuthRefresher for 401-retry; token getter needs SecureStore hydration; smoke tests need @workspace/api-client-react mocked in vitest.setup.
+- [Authed media cache same-origin guard](authed-media-cache-origin.md) — authed-media-cache must check isSameApiOrigin before attaching Bearer to downloadAsync; skipping this leaks JWTs to external URLs.
 - [LabTrax Lists page duplicate](labtrax-lists-page-duplicate.md) — edit lists.tsx (live /lists); finance/payees.tsx is a dead lookalike. vendors not protected, FKs SET NULL, items keyed by name.

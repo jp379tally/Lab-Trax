@@ -20,16 +20,86 @@ import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
-import { resilientFetch } from "@/lib/query-client";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { getStationInfo, STATIONS, CaseStatus, LabCase, cleanDoctorDisplay, Invoice } from "@/lib/data";
+import { useCases, type CanonicalCase } from "@workspace/api-client-react";
 import { ChatButton } from "@/components/ChatButton";
 import InvoicePDFViewer from "@/components/InvoicePDFViewer";
 import { CaseProgressBar } from "@/components/CaseProgressBar";
 import { deriveDisplayInitials } from "@/lib/display-initials";
 import { getCaseInvoice as getCaseInvoiceFromLib } from "@/lib/case-invoice";
+
+// ─── Canonical → mobile status map ───────────────────────────────────────────
+const CANONICAL_TO_MOBILE_STATUS: Record<string, CaseStatus> = {
+  received:           "INTAKE",
+  draft:              "INTAKE",
+  in_design:          "DESIGN",
+  design:             "DESIGN",
+  scan:               "SCAN",
+  in_milling:         "MILL",
+  milling:            "MILL",
+  post_mill:          "POST_MILL",
+  sintering_furnace:  "SINTERING_FURNACE",
+  sintering:          "SINTERING_FURNACE",
+  model_room:         "MODEL_ROOM",
+  in_porcelain:       "PORCELAIN",
+  porcelain:          "PORCELAIN",
+  qc:                 "QC",
+  complete:           "COMPLETE",
+  shipped:            "SHIP",
+  ship:               "SHIP",
+  on_hold:            "HOLD",
+  hold:               "HOLD",
+  remake:             "INTAKE",
+};
+
+function toMobileStatus(s: string | null | undefined): CaseStatus {
+  if (!s) return "INTAKE";
+  return CANONICAL_TO_MOBILE_STATUS[s.toLowerCase()] ?? "INTAKE";
+}
+
+function canonicalCaseToDisplay(c: CanonicalCase): LabCase {
+  const firstName = (c.patientFirstName as string | null | undefined) ?? "";
+  const lastName  = (c.patientLastName  as string | null | undefined) ?? "";
+  // Fall back to patientName when first/last are absent (e.g. legacy data or test fixtures)
+  const patientName = [firstName, lastName].filter(Boolean).join(" ")
+    || (c.patientName as string | null | undefined)
+    || "";
+  const effectiveFirst = firstName || patientName.split(" ")[0] || "";
+  const effectiveLast  = lastName  || patientName.split(" ").slice(1).join(" ") || "";
+  const initials = [effectiveFirst[0], effectiveLast[0]].filter(Boolean).join("").toUpperCase();
+  return {
+    id: c.id,
+    caseNumber: (c.caseNumber as string | null | undefined) ?? "",
+    ownerId: (c.createdByUserId as string | null | undefined) ?? undefined,
+    affiliationKey: c.labOrganizationId ? `org:${c.labOrganizationId}` : null,
+    patientName,
+    patientInitials: initials,
+    doctorName: (c.doctorName as string | null | undefined) ?? "",
+    status: toMobileStatus(c.status as string | null | undefined),
+    material: (c.restorationMaterials as string | null | undefined) ?? "",
+    shade: (c.shade as string | null | undefined) ?? "",
+    toothIndices: (c.teeth as string | null | undefined) ?? "",
+    price: Number((c.totalPrice as string | number | null | undefined) ?? 0),
+    dueDate: (c.dueDate as string | null | undefined) ?? "",
+    createdAt: c.createdAt ? new Date(c.createdAt as string).getTime() : Date.now(),
+    updatedAt: c.updatedAt ? new Date(c.updatedAt as string).getTime() : Date.now(),
+    isRush: (c.priority as string | null | undefined) === "rush",
+    isRemake: Boolean(c.remakeOfCaseId),
+    remakeOfCaseId: (c.remakeOfCaseId as string | null | undefined) ?? undefined,
+    notes: (c.notes as string | null | undefined) ?? "",
+    photos: Array.isArray(c.photos) ? (c.photos as string[]) : [],
+    activityLog: [],
+    routeHistory: [],
+    assignedBarcode: (c.casePanBarcode as string | null | undefined) ?? undefined,
+    expectedDeliveryDate: (c.expectedDeliveryDate as string | null | undefined) ?? undefined,
+    restorations: Array.isArray(c.restorations) ? c.restorations : undefined,
+    needsAiReview: Boolean(c.needsAiReview),
+    aiImportSource: (c.aiImportSource as string | null | undefined) ?? null,
+  } as unknown as LabCase;
+}
 
 function formatDueDate(d: string | number | undefined | null): string {
   if (d == null || d === "") return "";
@@ -51,13 +121,16 @@ function formatDueDate(d: string | number | undefined | null): string {
 }
 
 export default function CasesScreen() {
-  const { cases, role, adminUnlocked, findCaseByBarcode, updateCaseStatus, customStationLabels, invoices, updateInvoice, addInvoice, updateCase, addCaseNote, clients, pricingTiers, refreshCases, fullRefreshCases, setPendingInvoiceEditId, hydrateInvoiceFromServer, allLabOrganizationIds, invoiceTemplate, fetchInvoiceTemplate } = useApp();
+  const { role, adminUnlocked, findCaseByBarcode, updateCaseStatus, customStationLabels, invoices, updateInvoice, addInvoice, updateCase, addCaseNote, clients, pricingTiers, setPendingInvoiceEditId, hydrateInvoiceFromServer, allLabOrganizationIds, invoiceTemplate, fetchInvoiceTemplate } = useApp();
   const [refreshing, setRefreshing] = useState(false);
   const { userType, currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const locStyles = useMemo(() => makeLocStyles(colors), [colors]);
+
+  const { data: rawCases = [], isLoading: casesLoading, refetch: refetchCases } = useCases();
+  const cases = useMemo<LabCase[]>(() => rawCases.map(canonicalCaseToDisplay), [rawCases]);
   const [companyLogo, setCompanyLogo] = useState<string | null>(null);
   useEffect(() => {
     AsyncStorage.getItem("@drivesync_company_logo").then((uri) => {
@@ -371,7 +444,7 @@ export default function CasesScreen() {
               style={({ pressed }) => [styles.barcodeLocateBtn, pressed && { opacity: 0.7 }]}
               onPress={async () => {
                 setRefreshing(true);
-                await fullRefreshCases();
+                await refetchCases();
                 setRefreshing(false);
               }}
             >
@@ -438,7 +511,7 @@ export default function CasesScreen() {
         refreshing={refreshing}
         onRefresh={async () => {
           setRefreshing(true);
-          await fullRefreshCases();
+          await refetchCases();
           setRefreshing(false);
         }}
         ListEmptyComponent={
