@@ -2230,7 +2230,7 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function BulkPriceTools({
+export function BulkPriceTools({
   keys,
   prices,
   onApply,
@@ -2244,10 +2244,14 @@ function BulkPriceTools({
   const [paste, setPaste] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [preview, setPreview] = useState<
+    { key: string; label: string; before: string; after: string }[] | null
+  >(null);
 
   function applyPct() {
     setErr(null);
     setMsg(null);
+    setPreview(null);
     const n = Number(pct);
     if (!Number.isFinite(n) || n === 0) {
       setErr("Enter a non-zero percent (e.g. 5 for +5%, -3 for −3%).");
@@ -2256,10 +2260,18 @@ function BulkPriceTools({
     const factor = 1 + n / 100;
     let touched = 0;
     const next: Record<string, string> = { ...prices };
+    const rows: { key: string; label: string; before: string; after: string }[] = [];
     for (const k of keys) {
       const cur = Number(prices[k]);
       if (Number.isFinite(cur) && cur > 0) {
-        next[k] = (cur * factor).toFixed(2);
+        const after = (cur * factor).toFixed(2);
+        next[k] = after;
+        rows.push({
+          key: k,
+          label: labelFor(k),
+          before: formatPriceTwoDecimals(prices[k] || ""),
+          after: formatPriceTwoDecimals(after),
+        });
         touched++;
       }
     }
@@ -2268,13 +2280,16 @@ function BulkPriceTools({
       return;
     }
     onApply(next);
+    setPreview(rows);
     setMsg(`Adjusted ${touched} price${touched === 1 ? "" : "s"} by ${n}%.`);
   }
 
   function applyPaste() {
     setErr(null);
     setMsg(null);
+    setPreview(null);
     const next: Record<string, string> = { ...prices };
+    const rows: { key: string; label: string; before: string; after: string }[] = [];
     let updated = 0;
     const skipped: string[] = [];
     const lines = paste
@@ -2293,7 +2308,14 @@ function BulkPriceTools({
         skipped.push(line);
         continue;
       }
-      next[rawKey] = value.toFixed(2);
+      const after = value.toFixed(2);
+      next[rawKey] = after;
+      rows.push({
+        key: rawKey,
+        label: labelFor(rawKey),
+        before: formatPriceTwoDecimals(prices[rawKey] || ""),
+        after: formatPriceTwoDecimals(after),
+      });
       updated++;
     }
     if (updated === 0) {
@@ -2305,6 +2327,7 @@ function BulkPriceTools({
       return;
     }
     onApply(next);
+    setPreview(rows);
     setMsg(
       `Updated ${updated} item${updated === 1 ? "" : "s"}${
         skipped.length ? `, skipped ${skipped.length}.` : "."
@@ -2316,7 +2339,11 @@ function BulkPriceTools({
     <div className="rounded-md border border-border bg-secondary/20">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          const next = !open;
+          setOpen(next);
+          if (!next) setPreview(null);
+        }}
         className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium hover:bg-secondary/40"
       >
         <span className="inline-flex items-center gap-1.5">
@@ -2368,6 +2395,29 @@ function BulkPriceTools({
               Apply pasted prices
             </button>
           </div>
+          {preview && preview.length > 0 && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium mb-1">
+                Result
+              </div>
+              <ul className="space-y-0.5" aria-label="Bulk price result">
+                {preview.map((row) => (
+                  <li
+                    key={row.key}
+                    className="flex items-center justify-between text-xs"
+                    aria-label={`${row.label}: ${row.before} to ${row.after}`}
+                  >
+                    <span className="text-muted-foreground truncate mr-2">{row.label}</span>
+                    <span className="tabular-nums shrink-0">
+                      <span className="text-muted-foreground line-through">{row.before}</span>
+                      {" → "}
+                      <span className="font-medium">{row.after}</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {msg && <div className="text-xs text-success">{msg}</div>}
           {err && <div className="text-xs text-destructive">{err}</div>}
           <div className="text-[10px] text-muted-foreground">

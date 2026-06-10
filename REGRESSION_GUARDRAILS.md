@@ -172,6 +172,21 @@ Protected sub-behaviors:
 
 ---
 
+## Protected Workflow: Pricing Tier Decimal Consistency
+
+All price values displayed in the Pricing Tier editor — including the per-item `PriceField` inputs, the "Bulk edit prices" collapsible, and the save-confirmation dialog — must render with exactly two decimal places. This ensures that a price entered as `119` is always shown and committed as `119.00`, never `119` or `119.0`.
+
+Protected sub-behaviors:
+
+- **All pricing displays must render with two decimal places** — any price value surfaced to the user (in a field, in a preview row, or in a confirmation diff) must always carry exactly two decimal places. A raw integer like `119` must display as `119.00`; `99.5` must display as `99.50`.
+- **Bulk percent preview shows two decimals** — after entering a percent adjustment and clicking Apply in the "Bulk edit prices" panel, each changed item shows a before→after row where both values carry exactly two decimal places.
+- **Bulk paste preview shows two decimals** — after pasting `key = price` lines and clicking "Apply pasted prices", each accepted item shows a before→after row with two-decimal formatting.
+- **Calculations are not altered by formatting** — the numeric result forwarded to `onApply` (and ultimately stored in the form) is the same `.toFixed(2)` value produced before the preview feature was added. The preview is display-only.
+- **Preview hidden on error** — no before/after rows appear when the operation produces a validation error (missing percent, zero percent, no priced items, unparseable paste).
+- **Preview cleared on panel collapse** — collapsing the "Bulk edit prices" panel clears any stale preview rows.
+
+---
+
 ## Zero-Regression Process
 
 Every code change that touches a protected workflow must follow this process, in order:
@@ -339,6 +354,18 @@ pnpm test:e2e
 Set `PLAYWRIGHT_BASE_URL` to the target deployment URL when running against staging or production (defaults to `http://localhost:80`).
 
 > **Note:** E2E specs run against the Expo web build in a browser. They do **not** cover native rendering, OS permissions, camera, biometric lock, or push notifications — those require real-device TestFlight verification (see Pre-publish checklist above).
+
+### Pricing Tier Decimal Consistency
+
+| Layer | File | What it guards |
+|-------|------|----------------|
+| Desktop unit | `artifacts/labtrax-desktop/src/pages/__tests__/bulk-price-tools.test.tsx` | Bulk percent preview shows two-decimal before/after rows; bulk paste preview shows two-decimal rows; whole-number inputs padded to `.00`; `onApply` receives numerically unchanged `.toFixed(2)` values; no preview on error; preview clears on panel collapse |
+| Desktop unit | `artifacts/labtrax-desktop/src/lib/__tests__/pricing-keys.test.ts` | `formatPriceTwoDecimals` pads integers, single-cent values, passes through valid two-decimal inputs, returns empty for blank, leaves non-numeric unchanged |
+
+Run command:
+```
+pnpm --filter @workspace/labtrax-desktop exec vitest run src/pages/__tests__/bulk-price-tools.test.tsx src/lib/__tests__/pricing-keys.test.ts
+```
 
 ### Run the full protected suite at once
 
