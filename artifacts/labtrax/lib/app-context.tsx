@@ -17,6 +17,14 @@ import {
   type StuckQueueItem,
   type SyncResult,
 } from "./sync-types";
+import {
+  type PendingUpload,
+  pendingUploadsStorageKey as pendingUploadsStorageKeyFor,
+  loadPendingUploads,
+  savePendingUploads,
+  upsertPendingUpload,
+  processPendingUploadsList,
+} from "./pending-uploads";
 import { Alert, AppState, Platform } from "react-native";
 import {
   UserRole,
@@ -933,14 +941,178 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, [currentUserId]);
 
-  // Stubs retained so AppContext consumers compile unchanged.
-  // The offline queue is removed; uploads use chunked sessions.
-  const pendingSyncCount = 0;
-  const stuckSyncItems: StuckQueueItem[] = [];
+  // ─── Persistent upload retry queue ───────────────────────────────────────
+  // When a chunked photo/video upload exhausts its in-session retries the file
+  // is parked in a persistent queue (PENDING_UPLOADS_KEY) instead of being lost
+  // once the user leaves the screen. A background pass — triggered on
+  // foreground / connectivity-returns and on an interval — re-drives each entry
+  // through the same uploadPhotoAndCreateAttachment path (which itself reuses
+  // the server resume session via GET /api/media/upload-session/:id), swaps the
+  // device-local uri for the canonical serving URL on success, and clears the
+  // entry. `pendingSyncCount` / `stuckSyncItems` expose the queue to any badge.
+  const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([]);
+  const pendingUploadsRef = useRef<PendingUpload[]>([]);
+  const processingUploadsRef = useRef(false);
+
+  const pendingSyncCount = pendingUploads.length;
+  const stuckSyncItems: StuckQueueItem[] = useMemo(
+    () =>
+      pendingUploads.map((u) => ({
+        id: u.id,
+        caseId: u.caseId,
+        type: "photo" as const,
+        attempts: u.attempts,
+      })),
+    [pendingUploads],
+  );
+
+  // Scope the queue to the signed-in user so a shared device / account switch
+  // never inherits another user's parked uploads (whose cases the new user may
+  // not be authorized for).
+  const pendingUploadsUserId = currentUserId ?? null;
+
+  const persistPendingUploads = useCallback(
+    async (list: PendingUpload[]) => {
+      pendingUploadsRef.current = list;
+      setPendingUploads(list);
+      await savePendingUploads(pendingUploadsUserId, list);
+    },
+    [pendingUploadsUserId],
+  );
+
+  const enqueuePendingUpload = useCallback(
+    async (entry: { caseId: string; fileUri: string; isVid: boolean }) => {
+      const next = upsertPendingUpload(
+        pendingUploadsRef.current,
+        entry,
+        generateId,
+      );
+      await persistPendingUploads(next);
+    },
+    [persistPendingUploads],
+  );
+
+  // Swap a recovered upload's device-local uri for the canonical serving URL in
+  // the case's photos array + activity log, then re-sync the case so the lab
+  // sees the now-uploaded media. Matched by exact uri (what we stored locally).
+  const applyRecoveredUpload = useCallback(
+    (caseId: string, localUri: string, canonicalUrl: string) => {
+      const now = Date.now();
+      setCases((prevCases) => {
+        const updated = prevCases.map((c) => {
+          if (c.id !== caseId) return c;
+          const updatedCase = {
+            ...c,
+            updatedAt: now,
+            photos: (c.photos || []).map((p) => (p === localUri ? canonicalUrl : p)),
+            activityLog: (c.activityLog || []).map((e) =>
+              e.imageUri === localUri ? { ...e, imageUri: canonicalUrl } : e,
+            ),
+          };
+          fireWithRetry(async () => {
+            const r = await syncCaseToServer(updatedCase);
+            if (!isSyncSuccess(r)) throw new Error("recovered-upload sync failed");
+          });
+          return updatedCase;
+        });
+        AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+        return updated;
+      });
+    },
+    [],
+  );
+
+  // Drain the persistent upload queue once. Re-entrancy-guarded so overlapping
+  // triggers (foreground + interval) don't double-upload. Entries whose local
+  // file has vanished are dropped (nothing left to upload); transient failures
+  // stay queued with a bumped attempt count for the next pass.
+  const processPendingUploads = useCallback(async () => {
+    if (processingUploadsRef.current) return;
+    if (!currentUserId) return;
+    const queue = pendingUploadsRef.current;
+    if (queue.length === 0) return;
+    processingUploadsRef.current = true;
+    let recovered = 0;
+    try {
+      const { remaining, recovered: count } = await processPendingUploadsList(
+        queue,
+        {
+          uploadOne: (caseId, fileUri) =>
+            uploadPhotoAndCreateAttachment(caseId, fileUri),
+          // Drop entries whose backing file is gone — it can never upload.
+          fileStillExists: async (fileUri) => {
+            if (Platform.OS === "web" || fileUri.startsWith("data:")) {
+              return true;
+            }
+            try {
+              const info = await FileSystem.getInfoAsync(fileUri);
+              return info.exists;
+            } catch {
+              return true;
+            }
+          },
+          onRecovered: (item, canonicalUrl) =>
+            applyRecoveredUpload(item.caseId, item.fileUri, canonicalUrl),
+        },
+      );
+      recovered = count;
+      await persistPendingUploads(remaining);
+    } finally {
+      processingUploadsRef.current = false;
+    }
+    if (recovered > 0) {
+      showToast(
+        recovered === 1
+          ? "Attachment uploaded to the lab."
+          : `${recovered} attachments uploaded to the lab.`,
+        "info",
+      );
+    }
+  }, [currentUserId, persistPendingUploads, applyRecoveredUpload]);
+
+  // Load the persisted queue on sign-in, then retry it whenever the app returns
+  // to the foreground (a reliable proxy for "connection returned") and on a
+  // slow interval as a backstop.
+  useEffect(() => {
+    if (!currentUserId) {
+      pendingUploadsRef.current = [];
+      setPendingUploads([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const list = await loadPendingUploads(currentUserId);
+      if (cancelled) return;
+      pendingUploadsRef.current = list;
+      setPendingUploads(list);
+      if (!cancelled) void processPendingUploads();
+    })();
+
+    const sub = AppState.addEventListener("change", (next) => {
+      if (next === "active") void processPendingUploads();
+    });
+    const intervalId = setInterval(() => {
+      void processPendingUploads();
+    }, 60_000);
+
+    return () => {
+      cancelled = true;
+      sub.remove();
+      clearInterval(intervalId);
+    };
+  }, [currentUserId, processPendingUploads]);
+
+  // Manual retry from a badge/banner — kick the background pass immediately.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  function retrySync(_id?: string) {}
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  function discardSync(_id: string) {}
+  function retrySync(_id?: string) {
+    void processPendingUploads();
+  }
+  // Drop a parked upload from the persistent queue (e.g. user dismisses it).
+  function discardSync(id: string) {
+    void persistPendingUploads(
+      pendingUploadsRef.current.filter((u) => u.id !== id),
+    );
+  }
 
   function hydrateServerCase(sc: LabCase): void {
     setCases((prev) => (prev.some((c) => c.id === sc.id) ? prev : [...prev, sc]));
@@ -2504,13 +2676,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (canonicalUrl) {
       storedUri = canonicalUrl;
     } else {
-      // Upload exhausted its retries. The photo stays on-device only — surface
-      // a toast so the user knows it didn't reach the lab rather than failing
-      // silently and assuming it synced.
+      // Upload exhausted its in-session retries. Park it in the persistent
+      // retry queue so a background pass finishes the upload once connectivity
+      // returns, and surface a toast so the user knows it hasn't reached the
+      // lab yet (rather than failing silently and assuming it synced).
+      void enqueuePendingUpload({ caseId, fileUri: photoUri, isVid });
       showToast(
         isVid
-          ? "Video saved on this device but couldn't upload — check your connection."
-          : "Photo saved on this device but couldn't upload — check your connection.",
+          ? "Video saved — will upload to the lab automatically when you're back online."
+          : "Photo saved — will upload to the lab automatically when you're back online.",
         "error",
       );
     }
@@ -2598,15 +2772,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     const normalizedUris = resolved.map((r) => r.storedUri);
 
-    // Surface a toast when one or more uploads exhausted their retries. The
-    // files remain on-device only, so the user needs to know they didn't reach
-    // the lab rather than assuming they synced.
-    const failedCount = resolved.filter((r) => r.retry).length;
+    // Park every upload that exhausted its in-session retries in the persistent
+    // retry queue so a background pass finishes them once connectivity returns,
+    // then surface a toast so the user knows they haven't reached the lab yet
+    // rather than assuming they synced.
+    const failed = resolved.filter((r) => r.retry);
+    for (const r of failed) {
+      void enqueuePendingUpload({ caseId, fileUri: r.originalUri, isVid: r.isVid });
+    }
+    const failedCount = failed.length;
     if (failedCount > 0) {
       showToast(
         failedCount === 1
-          ? "1 attachment saved on this device but couldn't upload — check your connection."
-          : `${failedCount} attachments saved on this device but couldn't upload — check your connection.`,
+          ? "1 attachment saved — will upload to the lab automatically when you're back online."
+          : `${failedCount} attachments saved — will upload to the lab automatically when you're back online.`,
         "error",
       );
     }
@@ -4018,7 +4197,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       showToast,
       dismissToast,
     }),
-    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, pendingInvoiceEditId, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, labAffiliationReady, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers, allLabOrganizationIds, activeLabAffiliationKey, activeLabAffiliationName, allLabAffiliationKeysList, invoiceTemplate, toast, showToast, dismissToast],
+    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, pendingInvoiceEditId, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, labAffiliationReady, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers, allLabOrganizationIds, activeLabAffiliationKey, activeLabAffiliationName, allLabAffiliationKeysList, invoiceTemplate, pendingSyncCount, stuckSyncItems, toast, showToast, dismissToast],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

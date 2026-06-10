@@ -127,6 +127,23 @@ Status drift caused by a missed normalization breaks:
 - **AsyncStorage-hydrated tokens normalize on load** — cases hydrated from the local cache (`CASES_KEY`) in `loadData()` on mount are passed through `normalizeCaseStatuses()` before reaching UI/state.
 - **No regression on the helper itself** — the `normalizeCaseStatus()` token mappings (uppercase mobile tokens, desktop-bridge tokens, whitespace trimming, unknown-value fallback to `received`) must remain correct.
 
+## Protected Workflow: Mobile Failed-Upload Retry
+
+Failed mobile photo uploads must retry when connection returns and eventually become visible on web/desktop.
+
+When a chunked photo/video upload exhausts its in-session retries, the file is parked in a persistent, user-scoped retry queue (`@drivesync_pending_uploads:<userId>`) instead of being lost. A background pass re-drives each parked entry through the existing upload + attachment-create path once the app returns to the foreground (connectivity-returned proxy) or on a slow interval, so the photo eventually lands on the server and is visible on web/desktop for the same Case ID.
+
+Protected sub-behaviors:
+
+- **Failed upload enters retry queue** — a photo/video upload that fails after in-session retries is enqueued (`enqueuePendingUpload`) with its `caseId` + device-local `fileUri`; the toast/badge reflects the pending state.
+- **Persists across app restarts** — the queue is written to AsyncStorage and reloaded on sign-in, so a parked upload survives an app restart and is retried on the next pass.
+- **User-scoped** — the queue is keyed per signed-in user; a shared device / account switch never inherits or exposes another user's parked uploads.
+- **Retries only failed photo uploads** — only case media (photos/videos) is queued. Case creation, invoice generation, status/location sync, and AI Reader extraction are NOT routed through this queue.
+- **No duplicate attachments** — a recovered upload is removed from the queue on success, so a subsequent background pass never re-uploads it or creates a second `case_attachments` row; entries are also de-duplicated on `(caseId, fileUri)` at enqueue time.
+- **Clears on success + becomes visible** — on success the device-local uri is swapped for the canonical serving URL in the case's photos/activity log, the case is re-synced, and the queue entry is cleared, so the photo is visible on web/desktop.
+- **Local-only warning** — while an upload is still parked (local-only), the user sees a clear warning that the photo will upload automatically when back online.
+- **No regression on existing workflows** — AI Reader → case creation → invoice → case sync and location sync must continue to pass after any change to the retry path.
+
 ---
 
 ## Zero-Regression Process
@@ -254,6 +271,18 @@ pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-locatio
 Run command:
 ```
 pnpm --filter @workspace/labtrax run test -- normalize-case-status case-status-normalization-boundaries
+```
+
+### Mobile Failed-Upload Retry
+
+| Layer | File | What it guards |
+|-------|------|----------------|
+| Mobile unit | `artifacts/labtrax/lib/__tests__/pending-uploads.test.ts` | Failed upload enters retry queue; retry resumes after app restart (persist + reload); successful retry removes item; duplicate retries do not re-upload / create duplicate attachments; queue scoped per user; vanished local file dropped |
+
+Run command:
+```
+pnpm --filter @workspace/labtrax run test -- pending-uploads
+```
 ```
 
 ### E2E Browser Tests
