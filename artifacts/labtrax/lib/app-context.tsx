@@ -10,7 +10,7 @@ import React, {
 } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system";
-import { getApiUrl, resilientFetch, getAccessToken, chunkedUploadCaseMedia, retryAsync, fireWithRetry, logDebugEvent } from "./query-client";
+import { getApiUrl, resilientFetch, getAccessToken, chunkedUploadCaseMedia, retryAsync, fireWithRetry, logDebugEvent, waitForHydration } from "./query-client";
 import {
   isSyncSuccess,
   syncFailureFromStatus,
@@ -819,6 +819,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return;
       }
 
+      // Ensure token hydration is complete before the first API call fires.
+      // AppProvider mounts immediately after isAuthenticated flips true, which
+      // can happen before module-level token state is populated (e.g. after an
+      // Expo Fast Refresh that resets JS scope while React state persists).
+      await waitForHydration();
+      if (cancelled) return;
       const fetchedMemberships = await fetchMyMemberships();
       if (cancelled) return;
       if (fetchedMemberships === null) {

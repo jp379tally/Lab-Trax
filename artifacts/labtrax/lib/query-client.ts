@@ -55,6 +55,15 @@ let _accessToken: string | null = null;
 let _refreshToken: string | null = null;
 let _refreshPromise: Promise<string | null> | null = null;
 
+// ── Singleton hydration promise ────────────────────────────────────────────
+// A module-level deduplication slot so concurrent callers at startup all
+// await the same SecureStore read instead of each racing to hydrate
+// independently. Set on the first loadTokens() call; subsequent calls return
+// the same promise. Cleared by clearTokens() so a post-logout loadTokens()
+// starts a fresh read.
+let _hydrationPromise: Promise<void> | null = null;
+let _isHydrated = false;
+
 async function secureGetItem(key: string): Promise<string | null> {
   if (Platform.OS === "web") {
     try {
@@ -108,22 +117,50 @@ async function secureRemoveItem(key: string): Promise<void> {
   } catch {}
 }
 
-export async function loadTokens() {
-  try {
-    let raw = await secureGetItem(TOKEN_KEY);
-    if (!raw && Platform.OS !== "web") {
-      raw = await AsyncStorage.getItem(TOKEN_KEY);
-      if (raw) {
-        await SecureStore.setItemAsync(TOKEN_KEY, raw);
-        await AsyncStorage.removeItem(TOKEN_KEY);
+// loadTokens() creates the singleton hydration promise on first call and
+// returns the same promise on every subsequent call — concurrent callers all
+// await the same read instead of each independently hitting SecureStore.
+export function loadTokens(): Promise<void> {
+  if (_hydrationPromise) return _hydrationPromise;
+  _hydrationPromise = (async () => {
+    try {
+      let raw = await secureGetItem(TOKEN_KEY);
+      if (!raw && Platform.OS !== "web") {
+        raw = await AsyncStorage.getItem(TOKEN_KEY);
+        if (raw) {
+          await SecureStore.setItemAsync(TOKEN_KEY, raw);
+          await AsyncStorage.removeItem(TOKEN_KEY);
+        }
       }
-    }
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      _accessToken = parsed.accessToken || null;
-      _refreshToken = parsed.refreshToken || null;
-    }
-  } catch {}
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        _accessToken = parsed.accessToken || null;
+        _refreshToken = parsed.refreshToken || null;
+      }
+    } catch {}
+    _isHydrated = true;
+  })();
+  return _hydrationPromise;
+}
+
+// waitForHydration() is the public API for callers (effects, providers) that
+// want to ensure token state is ready before issuing their first request.
+export function waitForHydration(): Promise<void> {
+  return loadTokens();
+}
+
+// Returns true once the initial SecureStore read has completed at least once.
+export function getIsHydrated(): boolean {
+  return _isHydrated;
+}
+
+// ensureHydrated() awaits the singleton, then attempts one refresh if the
+// store was empty but a refresh token is available. Internal to this module.
+async function ensureHydrated(): Promise<void> {
+  await loadTokens();
+  if (Platform.OS !== "web" && !_accessToken && _refreshToken) {
+    await refreshAccessToken();
+  }
 }
 
 export async function saveTokens(accessToken: string, refreshToken: string) {
@@ -135,6 +172,12 @@ export async function saveTokens(accessToken: string, refreshToken: string) {
 export async function clearTokens() {
   _accessToken = null;
   _refreshToken = null;
+  // Reset the singleton so a post-logout loadTokens() starts fresh. Without
+  // this reset, the resolved hydration promise would short-circuit the next
+  // SecureStore read, preventing a re-authenticated user from loading their
+  // new tokens.
+  _hydrationPromise = null;
+  _isHydrated = false;
   await secureRemoveItem(TOKEN_KEY);
 }
 
@@ -271,19 +314,19 @@ async function resilientFetch(
   path: string,
   options?: RequestInit,
 ): Promise<Response> {
-  // Native clients authenticate with a bearer token. If the in-memory token
-  // isn't populated yet — e.g. a request fires at launch before
-  // loadTokens() has run, or after a transient clear — hydrate it from secure
-  // storage (and refresh if needed) BEFORE sending. Otherwise the request goes
-  // out with no Authorization header but with the auth cookie that React
-  // Native's fetch jar auto-attaches, which the server's CSRF guard rejects
-  // with a 403 on every state-changing request (POST/PUT/PATCH/DELETE) —
-  // silently wedging case-status/photo/note syncs as "lab rejected".
-  if (Platform.OS !== "web" && !_accessToken) {
-    await loadTokens();
-    if (!_accessToken && _refreshToken) {
-      await refreshAccessToken();
-    }
+  // Native clients authenticate with a bearer token. Await the singleton
+  // hydration promise before every request so all concurrent callers at
+  // startup queue behind the same SecureStore read rather than each racing
+  // to hydrate independently. ensureHydrated() also attempts one refresh if
+  // the store was empty but a refresh token is available.
+  //
+  // Without this guard a request that fires at launch before loadTokens() has
+  // run (or after a transient clear) would go out with no Authorization header
+  // but with the auth cookie that React Native's fetch jar auto-attaches.
+  // The server's CSRF guard rejects cookie-only POST/PUT/PATCH/DELETE with 403,
+  // permanently wedging case-status/photo/note syncs as "lab rejected".
+  if (Platform.OS !== "web") {
+    await ensureHydrated();
     // Still no bearer after hydrating + refreshing: the user is effectively
     // logged out (token store empty/corrupt) but a stale auth cookie may
     // linger in React Native's fetch jar. Sending now would go out cookie-only
@@ -452,17 +495,14 @@ export async function uploadCaseMedia(
   fileName: string,
   mimeType: string,
 ): Promise<MediaUploadResult> {
-  // Mirror the same null-token guard as resilientFetch: hydrate from secure
-  // storage and refresh BEFORE sending the XHR. Without this, a null
-  // _accessToken causes the XHR to go out with no Authorization header. React
-  // Native's networking stack may still attach a stale auth cookie, which the
-  // server's CSRF guard rejects with a 403 — a PERMANENT "rejected" failure
-  // that wedges the photo in the queue forever instead of retrying.
-  if (Platform.OS !== "web" && !_accessToken) {
-    await loadTokens();
-    if (!_accessToken && _refreshToken) {
-      await refreshAccessToken();
-    }
+  // Mirror the same null-token guard as resilientFetch via the shared
+  // ensureHydrated() singleton. Without this, a null _accessToken causes the
+  // XHR to go out with no Authorization header. React Native's networking
+  // stack may still attach a stale auth cookie, which the server's CSRF guard
+  // rejects with a 403 — a PERMANENT "rejected" failure that wedges the photo
+  // in the queue forever instead of retrying.
+  if (Platform.OS !== "web") {
+    await ensureHydrated();
     if (!_accessToken) {
       // No bearer token available. Throw so the caller treats this as a
       // transient network failure and retries after the user re-authenticates.
@@ -605,9 +645,9 @@ export async function chunkedUploadCaseMedia(
   fileName: string,
   mimeType: string,
 ): Promise<ChunkedUploadResult> {
-  if (Platform.OS !== "web" && !_accessToken) {
-    await loadTokens();
-    if (!_accessToken && _refreshToken) await refreshAccessToken();
+  // Use the shared ensureHydrated() singleton instead of an ad hoc guard.
+  if (Platform.OS !== "web") {
+    await ensureHydrated();
     if (!_accessToken) {
       throw new Error("Not authenticated: no bearer token available for upload.");
     }
@@ -837,15 +877,12 @@ export function fireWithRetry(
 import { setBaseUrl, setAuthTokenGetter, setAuthRefresher } from "@workspace/api-client-react";
 setBaseUrl(getApiUrl().replace(/\/+$/, ""));
 
-// Auth getter: hydrate from SecureStore if the in-memory token is missing —
-// mirrors the same guard used by resilientFetch so the canonical hooks behave
-// identically on cold start and after an app resume.
+// Auth getter: use the shared ensureHydrated() singleton so all callers
+// (resilientFetch, XHR uploads, and generated hooks) queue behind the same
+// SecureStore read rather than each racing independently.
 setAuthTokenGetter(async () => {
-  if (Platform.OS !== "web" && !_accessToken) {
-    await loadTokens();
-    if (!_accessToken && _refreshToken) {
-      await refreshAccessToken();
-    }
+  if (Platform.OS !== "web") {
+    await ensureHydrated();
   }
   return _accessToken;
 });

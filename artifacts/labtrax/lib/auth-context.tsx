@@ -579,10 +579,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   async function logout() {
-    logAudit("LOGOUT", currentUser || "unknown", "User signed out");
-    try {
-      await resilientFetch("/api/auth/logout", { method: "POST" });
-    } catch {}
+    // Both the server-side logout call and the audit log must complete (or
+    // fail) BEFORE clearTokens() clears _accessToken from memory. Reversing
+    // this order — the previous bug — caused both requests to fire with no
+    // bearer token, producing spurious "[resilientFetch] No bearer token"
+    // errors in the console and a 401 on /api/audit-log.
+    await Promise.allSettled([
+      resilientFetch("/api/auth/logout", { method: "POST" }),
+      logAudit("LOGOUT", currentUser || "unknown", "User signed out"),
+    ]);
     await clearTokens();
     setIsAuthenticated(false);
     setCurrentUser(null);
