@@ -62,3 +62,24 @@ the website yet absent in the installed desktop app.
 button) = the installed desktop app → tell the user to update it
 (Settings → Desktop App → Check for updates). A browser session → hard refresh to
 drop the cached old chunk.
+
+## The no-preflight 401 fingerprint (old client fetching media via plain `<img>`)
+
+In **prod API logs**, a stale desktop renderer shows a very specific tell on
+case-media (`/api/cases/:id/attachments/:attId/file`): freshly-uploaded **image**
+thumbnails return `401` at `responseTime≈0` with **no CORS `OPTIONS` preflight`,
+while **document** files (opened via the token-aware fetch) get a preflight + `200`
+in the same session. No preflight ⇒ the request carried **no `Authorization`
+header** ⇒ it's a plain `<img src=…>` from a renderer that predates the
+token-aware `AuthedImage` migration. Current source already fetches all media
+through `AuthedImage` (bearer token + 401-refresh), so it can't produce a
+no-preflight 401 cross-origin — proof the client, not the code, is old.
+
+**Merged ≠ shipped for the Electron desktop app:** the renderer fix can be on
+`main` yet never reach users because **no desktop installer was built**. Confirm
+by checking `artifacts/labtrax-desktop/package.json` `version` — if it hasn't been
+bumped since the fix commit, no release carried it. Deliver by (1) bumping that
+version to fire `auto-tag-desktop-release.yml` → `release.yml` (precedent: prior
+manual "bump to trigger republish" commits; CI computes next version from
+package.json), and (2) republishing the Replit web deployment for the browser
+client. **Do not re-fix the rendering code — it's already correct.**
