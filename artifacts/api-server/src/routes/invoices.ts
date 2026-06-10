@@ -1140,6 +1140,12 @@ router.post(
         }));
       if (!targetInvoice)
         throw new HttpError(500, "Invoice could not be generated.");
+      if (!invoice && targetInvoice.caseId !== found.id) {
+        throw new HttpError(
+          409,
+          `Invoice number collision: "${targetInvoice.invoiceNumber}" is already used by a different case (conflicting invoice ID: ${targetInvoice.id}).`,
+        );
+      }
 
       if (invoice && hasRestorations) {
         const genLabelCache: Record<string, string> = {};
@@ -1277,6 +1283,12 @@ router.post(
       }));
     if (!targetLegacyInvoice)
       throw new HttpError(500, "Invoice could not be generated.");
+    if (!legacyInvoice && targetLegacyInvoice.caseId !== null) {
+      throw new HttpError(
+        409,
+        `Invoice number collision: "${targetLegacyInvoice.invoiceNumber}" is already used by a different case (conflicting invoice ID: ${targetLegacyInvoice.id}).`,
+      );
+    }
 
     return ok(res, targetLegacyInvoice, legacyInvoice ? 201 : 200);
   })

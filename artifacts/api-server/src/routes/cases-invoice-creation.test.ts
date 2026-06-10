@@ -254,6 +254,71 @@ maybe("Case creation → invoice invariants (db integration)", () => {
     expect(invoice.status).toBe("open");
   });
 
+  // ── (5) 409 when invoice number is already used by a different case ─────────
+
+  it("(5) POST generate-invoice returns 409 when invoice number is already taken by another case", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const { db, cases: casesTable, invoices } = dbMod as any;
+
+    // Case A — will own the pre-existing invoice
+    const caseAId = rid("caseA");
+    const caseANumber = rid("COLCN");
+    await db.insert(casesTable).values({
+      id: caseAId,
+      caseNumber: caseANumber,
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Alice",
+      patientLastName: "Collision",
+      doctorName: "Dr. Alice",
+      createdByUserId: labOwnerId,
+    });
+    createdCaseIds.push(caseAId);
+
+    // Case B — will try to generate an invoice with the same number as A
+    const caseBId = rid("caseB");
+    const caseBNumber = rid("COLCN");
+    await db.insert(casesTable).values({
+      id: caseBId,
+      caseNumber: caseBNumber,
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "received",
+      patientFirstName: "Bob",
+      patientLastName: "Collision",
+      doctorName: "Dr. Bob",
+      createdByUserId: labOwnerId,
+    });
+    createdCaseIds.push(caseBId);
+
+    // Pre-insert an invoice using case B's invoice number but linked to case A
+    const collisionInvoiceNumber = `INV-${caseBNumber}`;
+    const [collisionInvoice] = await db
+      .insert(invoices)
+      .values({
+        invoiceNumber: collisionInvoiceNumber,
+        caseId: caseAId,
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        status: "draft",
+        displayMetadataJson: { patientName: "", billTo: "", teeth: "", shade: "", caseNotes: "" },
+        createdByUserId: labOwnerId,
+        updatedByUserId: labOwnerId,
+      })
+      .returning();
+
+    // Now try to generate an invoice for case B — it should 409
+    const r = await request(appMod.default)
+      .post(`/api/invoices/cases/${caseBId}/generate-invoice`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({});
+
+    expect(r.status).toBe(409);
+    expect(r.body.error ?? r.body.message ?? "").toMatch(/collision/i);
+    expect(r.body.error ?? r.body.message ?? "").toContain(collisionInvoice.id);
+  });
+
   // ── (4) GET /api/invoices/:id returns caseId matching the created case ────
 
   it("(4) GET /api/invoices/:id returns invoice with caseId matching the new case", async () => {
