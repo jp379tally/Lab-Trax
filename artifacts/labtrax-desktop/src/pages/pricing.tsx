@@ -2150,18 +2150,25 @@ function PriceField({
   onChange: (v: string) => void;
   placeholder?: string;
 }) {
+  const [focused, setFocused] = useState(false);
+  const displayValue = focused ? value : formatPriceTwoDecimals(value);
   return (
     <div className="flex items-center gap-3">
       <div className="text-sm text-muted-foreground flex-1">{label}</div>
       <div className="flex items-center gap-1.5">
         <span className="text-xs text-muted-foreground">$</span>
         <input
-          type="number"
+          type="text"
+          inputMode="decimal"
+          pattern="[0-9]*[.]?[0-9]*"
           min="0"
-          step="0.01"
-          value={value}
+          value={displayValue}
           onChange={(e) => onChange(e.target.value)}
-          onBlur={(e) => onChange(formatPriceTwoDecimals(e.target.value))}
+          onFocus={() => setFocused(true)}
+          onBlur={(e) => {
+            setFocused(false);
+            onChange(formatPriceTwoDecimals(e.target.value));
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               onChange(formatPriceTwoDecimals(e.currentTarget.value));

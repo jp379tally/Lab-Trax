@@ -382,7 +382,7 @@ pnpm --filter @workspace/labtrax run test -- reconnecting-indicator
 | Layer | File | What it guards |
 |-------|------|----------------|
 | Desktop unit | `artifacts/labtrax-desktop/src/pages/__tests__/bulk-price-tools.test.tsx` | Bulk percent preview shows two-decimal before/after rows; bulk paste preview shows two-decimal rows; whole-number inputs padded to `.00`; `onApply` receives numerically unchanged `.toFixed(2)` values; no preview on error; preview clears on panel collapse |
-| Desktop unit | `artifacts/labtrax-desktop/src/lib/__tests__/pricing-keys.test.ts` | `formatPriceTwoDecimals` pads integers, single-cent values, passes through valid two-decimal inputs, returns empty for blank, leaves non-numeric unchanged |
+| Desktop unit | `artifacts/labtrax-desktop/src/lib/__tests__/pricing-keys.test.ts` | `formatPriceTwoDecimals` pads integers, single-cent values, passes through valid two-decimal inputs, returns empty for blank, leaves non-numeric unchanged; `applyPct` logic produces `.toFixed(2)` strings in `next` and preview rows; `applyPaste` logic produces `.toFixed(2)` strings in `next` and preview rows |
 
 Run command:
 ```
