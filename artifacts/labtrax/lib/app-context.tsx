@@ -9,7 +9,13 @@ import React, {
 } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system";
-import { getApiUrl, resilientFetch, getAccessToken, uploadCaseMedia, logDebugEvent } from "./query-client";
+import { getApiUrl, resilientFetch, getAccessToken, chunkedUploadCaseMedia, retryAsync, fireWithRetry, logDebugEvent } from "./query-client";
+import {
+  isSyncSuccess,
+  syncFailureFromStatus,
+  type StuckQueueItem,
+  type SyncResult,
+} from "./sync-types";
 import { Alert, AppState, Platform } from "react-native";
 import {
   UserRole,
@@ -54,6 +60,7 @@ interface AppContextValue {
   setAdminUnlocked: (v: boolean) => void;
   cases: LabCase[];
   addCase: (c: Omit<LabCase, "id" | "createdAt" | "updatedAt" | "routeHistory">) => LabCase;
+  createCanonicalScanCase: (c: Omit<LabCase, "id" | "createdAt" | "updatedAt" | "routeHistory">) => Promise<LabCase | null>;
   updateCaseStatus: (caseId: string, newStatus: CaseStatus, user?: string) => void;
   addCasePhoto: (caseId: string, photoUri: string, user?: string) => Promise<void>;
   addCaseNote: (caseId: string, note: string, user?: string) => void;
@@ -148,6 +155,24 @@ interface AppContextValue {
   updateWorkStatus: (status: "available" | "break" | "out_of_office") => Promise<{ success: boolean; error?: string }>;
   invoiceTemplate: { customTexts: any[]; defaultTextBlocks: any[] } | null;
   fetchInvoiceTemplate: () => Promise<void>;
+  // Number of offline changes (photos, notes, status moves) still queued and
+  // waiting to sync to the server. 0 when everything is up to date.
+  pendingSyncCount: number;
+  // Offline changes that have repeatedly failed to sync and are no longer
+  // retried automatically. Surfaced to the user so they can manually retry or
+  // discard them. Empty when nothing is stuck.
+  stuckSyncItems: StuckQueueItem[];
+  // Reset stuck items so the next drain retries them. Pass an id to retry a
+  // single item, or omit to retry all stuck items. Triggers a drain.
+  retrySync: (id?: string) => void;
+  // Permanently drop a stuck offline change so it stops blocking the queue.
+  discardSync: (id: string) => void;
+  // Insert a server-returned case into local state without creating a new UUID
+  // or syncing back to the server. Used by the QR barcode lookup to ensure
+  // the case is present in app state before navigation so case/[id] doesn't
+  // flash "Case not found". Safe to call when the case is already present
+  // (idempotent — no-ops when id already exists).
+  hydrateServerCase: (sc: LabCase) => void;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -578,10 +603,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!fileUri) return null;
 
       try {
-        const res = await uploadCaseMedia("/api/media/upload", fileUri, filename, mimeType);
-        if (!res.ok) return null;
-        const data = await res.json();
-        return data?.url || null;
+        const result = await chunkedUploadCaseMedia(fileUri, filename, mimeType);
+        if (!result.ok) return null;
+        return result.url;
       } finally {
         if (objectUrl) {
           try {
@@ -904,6 +928,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       clearInterval(intervalId);
     };
   }, [currentUserId]);
+
+  // Stubs retained so AppContext consumers compile unchanged.
+  // The offline queue is removed; uploads use chunked sessions.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  function retrySync(_id?: string) {}
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  function discardSync(_id: string) {}
+
+  function hydrateServerCase(sc: LabCase): void {
+    setCases((prev) => (prev.some((c) => c.id === sc.id) ? prev : [...prev, sc]));
+  }
 
   function mapJoinRequestStatus(status?: string): GroupJoinRequest["status"] {
     if (status === "approved" || status === "accepted") {
@@ -2127,6 +2162,113 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return newCase;
   }
 
+  // Try to create a new case via the canonical POST /api/cases endpoint.
+  // Requires the user to have an active lab affiliation and a matching
+  // rxPracticeNameAliases entry (doctor-name → providerOrganizationId) so the
+  // server can resolve the provider org.  Returns the new LabCase on success,
+  // or null when the canonical path is unavailable (caller falls back to
+  // addCase → syncCaseToServer → legacy endpoint).
+  async function createCanonicalScanCase(
+    c: Omit<LabCase, "id" | "createdAt" | "updatedAt" | "routeHistory">,
+  ): Promise<LabCase | null> {
+    if (!activeLabAffiliationKey?.startsWith("org:")) return null;
+    const labOrganizationId = activeLabAffiliationKey.slice(4);
+
+    // Resolve the server-side provider org for this doctor name via the
+    // rx-practice-aliases lookup table (populated when a lab admin links a
+    // doctor name to a provider org).
+    const aliasQs = new URLSearchParams({
+      labOrganizationId,
+      rxName: c.doctorName.trim(),
+    });
+    const aliasRes = await resilientFetch(`/api/rx-practice-aliases?${aliasQs}`).catch(() => null);
+    if (!aliasRes?.ok) return null;
+    const aliasBody = await aliasRes.json().catch(() => null);
+    const providerOrganizationId = aliasBody?.data?.providerOrganizationId as string | null | undefined;
+    if (!providerOrganizationId) return null;
+
+    // The canonical endpoint requires separate first/last name fields.
+    const nameParts = c.patientName.trim().split(/\s+/);
+    const patientFirstName = nameParts[0] || c.patientName.trim() || "Unknown";
+    const patientLastName = nameParts.slice(1).join(" ") || "-";
+
+    const payload: Record<string, unknown> = {
+      caseNumber: c.caseNumber,
+      labOrganizationId,
+      providerOrganizationId,
+      patientFirstName,
+      patientLastName,
+      doctorName: c.doctorName.trim(),
+      status: "received",
+      priority: c.isRush ? "rush" : "normal",
+      ...(c.dueDate ? { dueDate: c.dueDate } : {}),
+      ...(c.notes ? { notes: c.notes } : {}),
+      ...((c as any).remakeOfCaseId
+        ? {
+            remakeOfCaseId: (c as any).remakeOfCaseId,
+            remakeReason: (c as any).remakeReason ?? null,
+            remakeCharged: (c as any).remakeCharged ?? null,
+          }
+        : {}),
+    };
+
+    const createRes = await resilientFetch("/api/cases", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }).catch(() => null);
+
+    if (!createRes || createRes.status !== 201) return null;
+    const created = await createRes.json().catch(() => null);
+    const serverId: unknown = created?.id ?? created?.data?.id;
+    if (typeof serverId !== "string") return null;
+
+    const now = Date.now();
+    const createdEntry: import("@/lib/data").ActivityEntry = {
+      id: generateId(),
+      type: "created",
+      timestamp: now,
+      description: "Case created and scanned in at Intake",
+      station: c.status,
+    };
+    const newCase: LabCase = {
+      ...c,
+      id: serverId,
+      ownerId: currentUserId || undefined,
+      affiliationKey: activeLabAffiliationKey,
+      affiliationName: activeLabAffiliationName,
+      createdAt: now,
+      updatedAt: now,
+      routeHistory: [{ station: c.status, timestamp: now }],
+      photos: c.photos || [],
+      activityLog: [...(c.activityLog || []), createdEntry],
+    };
+
+    const updated = [newCase, ...allCases];
+    setAllCases(updated);
+    AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+    void logDebugEvent("CANONICAL_CASE_CREATED", {
+      caseId: newCase.id,
+      labOrganizationId,
+      providerOrganizationId,
+    });
+
+    const newNotif: Notification = {
+      id: generateId(),
+      title: "New Case Scanned",
+      message: `Case ${c.caseNumber} (${c.doctorName}) has been added`,
+      type: "update",
+      caseId: newCase.id,
+      read: false,
+      timestamp: now,
+    };
+    const updatedNotifs = [newNotif, ...notifications];
+    setNotifications(updatedNotifs);
+    AsyncStorage.setItem(NOTIFS_KEY, JSON.stringify(updatedNotifs));
+
+    return newCase;
+  }
+
   function updateCaseStatus(caseId: string, newStatus: CaseStatus, user?: string) {
     const now = Date.now();
     const stationLabel = getStationInfo(newStatus, customStationLabels).label;
@@ -2163,7 +2305,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
             ],
             activityLog: [...(c.activityLog || []), ...extraEntries],
           };
-          void syncCaseToServer(updatedCase);
+          // Attempt the status sync immediately; retry up to 3 times on
+          // transient failures so station changes are never silently lost.
+          fireWithRetry(async () => {
+            const r = await syncCaseToServer(updatedCase);
+            if (!isSyncSuccess(r)) throw new Error("status sync failed");
+          });
           return updatedCase;
         }
         return c;
@@ -2240,17 +2387,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     mimeType: string
   ): Promise<boolean> {
     try {
-      // Use uploadCaseMedia (XHR), NOT resilientFetch — expo/fetch rejects the
-      // native { uri, name, type } file descriptor.
-      const uploadRes = await uploadCaseMedia("/api/media/upload", photoUri, fileName, mimeType);
-      if (!uploadRes?.ok) return false;
-      const { url } = await uploadRes.json();
+      const uploadResult = await chunkedUploadCaseMedia(photoUri, fileName, mimeType);
+      if (!uploadResult.ok) return false;
       const attachRes = await resilientFetch(
         `/api/cases/${encodeURIComponent(caseId)}/attachments`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ storageKey: url, fileName, fileType: mimeType }),
+          body: JSON.stringify({ storageKey: uploadResult.url, fileName, fileType: mimeType }),
         }
       );
       return attachRes?.ok ?? false;
@@ -2275,8 +2419,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  // ─── Public wrappers ─────────────────────────────────────────────────────
+
   async function addNoteToCanonicalCase(caseId: string, noteText: string): Promise<void> {
-    await rawPostNoteToCase(caseId, noteText);
+    fireWithRetry(async () => {
+      const result = await rawPostNoteToCase(caseId, noteText);
+      if (!isSyncSuccess(result)) throw new Error("canonical note failed");
+    });
   }
 
   // Upload a local photo/video and create its caseAttachments row in a SINGLE
@@ -2301,10 +2450,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       : ext === "jpg" ? "image/jpeg" : `image/${ext}`;
     const fileName = `case-media-${Date.now()}.${ext}`;
     try {
-      const uploadRes = await uploadCaseMedia("/api/media/upload", photoUri, fileName, mimeType);
-      if (!uploadRes?.ok) return null;
-      const { url } = await uploadRes.json();
-      if (!url) return null;
+      const uploadResult = await chunkedUploadCaseMedia(photoUri, fileName, mimeType);
+      if (!uploadResult.ok) return null;
+      const url = uploadResult.url;
       const attachRes = await resilientFetch(
         `/api/cases/${encodeURIComponent(caseId)}/attachments`,
         {
@@ -2317,8 +2465,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const body = await attachRes.json();
       const attachmentId = body?.data?.id ?? body?.id;
       if (!attachmentId) {
-        // Attachment row was created with storageKey === url, so the
-        // filename-based serving route can now resolve it; fall back to that.
         return url;
       }
       const base = getApiUrl().replace(/\/+$/, "");
@@ -2336,7 +2482,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // can return the file. Falls back to local URI on network failure so the
     // user still sees the photo on-device.
     let storedUri = photoUri;
-    const canonicalUrl = await uploadPhotoAndCreateAttachment(caseId, photoUri);
+    const canonicalUrl = await retryAsync(
+      () => uploadPhotoAndCreateAttachment(caseId, photoUri),
+    ).catch(() => null);
     if (canonicalUrl) {
       storedUri = canonicalUrl;
     }
@@ -2358,7 +2506,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
             photos: [...(c.photos || []), storedUri],
             activityLog: [...(c.activityLog || []), photoEntry],
           };
-          void syncCaseToServer(updatedCase);
+          fireWithRetry(async () => {
+            const r = await syncCaseToServer(updatedCase);
+            if (!isSyncSuccess(r)) throw new Error("photo sync failed");
+          });
           return updatedCase;
         }
         return c;
@@ -2367,16 +2518,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return updated;
     });
 
-    if (!canonicalUrl) {
-      // Upload failed — attempt bare upload as a best-effort fallback.
-      const uriClean = photoUri.toLowerCase().split("?")[0] ?? "";
-      const ext = uriClean.split(".").pop() || (isVid ? "mp4" : "jpg");
-      const mimeType = isVid
-        ? ext === "mov" ? "video/quicktime" : `video/${ext}`
-        : ext === "jpg" ? "image/jpeg" : `image/${ext}`;
-      const fileName = `case-media-${Date.now()}.${ext}`;
-      void rawUploadPhotoToCase(caseId, photoUri, fileName, mimeType);
-    }
   }
 
   function addCaseNote(caseId: string, note: string, user?: string) {
@@ -2397,7 +2538,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
             notes: c.notes ? `${c.notes}\n${note}` : note,
             activityLog: [...(c.activityLog || []), noteEntry],
           };
-          void syncCaseToServer(updatedCase);
+          fireWithRetry(async () => {
+            const r = await syncCaseToServer(updatedCase);
+            if (!isSyncSuccess(r)) throw new Error("note sync failed");
+          });
           void addNoteToCanonicalCase(caseId, note);
           return updatedCase;
         }
@@ -2418,7 +2562,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const resolved = await Promise.all(
       photoUris.map(async (originalUri) => {
         const isVid = isVideoUri(originalUri);
-        const canonicalUrl = await uploadPhotoAndCreateAttachment(caseId, originalUri);
+        const canonicalUrl = await retryAsync(
+          () => uploadPhotoAndCreateAttachment(caseId, originalUri),
+        ).catch(() => null);
         if (canonicalUrl) return { storedUri: canonicalUrl, isVid, retry: false, originalUri };
         return { storedUri: originalUri, isVid, retry: true, originalUri };
       })
@@ -2458,7 +2604,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
               ...(noteEntry ? [noteEntry] : []),
             ],
           };
-          void syncCaseToServer(updatedCase);
+          fireWithRetry(async () => {
+            const r = await syncCaseToServer(updatedCase);
+            if (!isSyncSuccess(r)) throw new Error("photos+note sync failed");
+          });
           if (noteEntry) {
             void addNoteToCanonicalCase(caseId, noteEntry.description);
           }
@@ -2470,17 +2619,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return updated;
     });
 
-    // Best-effort retry for any uploads that failed (e.g. offline).
-    for (const r of resolved) {
-      if (!r.retry) continue;
-      const uriClean = r.originalUri.toLowerCase().split("?")[0] ?? "";
-      const ext = uriClean.split(".").pop() || (r.isVid ? "mp4" : "jpg");
-      const mimeType = r.isVid
-        ? ext === "mov" ? "video/quicktime" : `video/${ext}`
-        : ext === "jpg" ? "image/jpeg" : `image/${ext}`;
-      const fileName = `case-media-${Date.now()}.${ext}`;
-      void rawUploadPhotoToCase(caseId, r.originalUri, fileName, mimeType);
-    }
   }
 
   function addTrackingNumber(caseId: string, tracking: string) {
@@ -3608,7 +3746,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
             routeHistory: [...(c.routeHistory || []), { station: newStatus, timestamp: now }],
             activityLog: [...(c.activityLog || []), stationEntry],
           };
-          void syncCaseToServer(updatedCase);
+          // Sync to server so web/desktop see the updated location.
+          // Retry up to 3 times so location changes are never silently lost.
+          fireWithRetry(async () => {
+            const r = await syncCaseToServer(updatedCase);
+            if (!isSyncSuccess(r)) throw new Error("locate sync failed");
+          });
           return updatedCase;
         }
         return c;
@@ -3710,6 +3853,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setAdminUnlocked,
       cases,
       addCase,
+      createCanonicalScanCase,
       updateCaseStatus,
       addCasePhoto,
       addCaseNote,
@@ -3797,6 +3941,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       updateWorkStatus,
       invoiceTemplate,
       fetchInvoiceTemplate,
+      pendingSyncCount,
+      stuckSyncItems,
+      retrySync,
+      discardSync,
+      hydrateServerCase,
     }),
     [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, pendingInvoiceEditId, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, labAffiliationReady, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers, allLabOrganizationIds, activeLabAffiliationKey, activeLabAffiliationName, allLabAffiliationKeysList, invoiceTemplate],
   );

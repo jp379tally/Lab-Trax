@@ -181,8 +181,68 @@ vi.mock("expo-image", () => ({
     React.createElement("Image", { source }),
 }));
 
+// MockCameraView captures onBarcodeScanned callbacks so tests can trigger
+// simulated barcode scans via triggerMockBarcodeScan(data).
+//
+// Callbacks are stored in two ways:
+//   1. By testID (preferred) — keyed in _mockBarcodeScanCallbacksByTestId so
+//      multiple CameraViews with different testIDs can coexist (e.g. the main
+//      barcode scanner vs. AttachBarcodeModal's scanner).
+//   2. Legacy unnamed fallback — _mockBarcodeScanCallback, overwritten by the
+//      last MockCameraView that rendered without a testID.
+const _mockBarcodeScanCallbacksByTestId = new Map<
+  string,
+  ((payload: { data: string }) => void) | undefined
+>();
+let _mockBarcodeScanCallback: ((payload: { data: string }) => void) | undefined;
+
+function MockCameraView({
+  children,
+  onBarcodeScanned,
+  testID,
+}: {
+  children?: React.ReactNode;
+  onBarcodeScanned?: (payload: { data: string }) => void;
+  testID?: string;
+}) {
+  if (testID !== undefined) {
+    _mockBarcodeScanCallbacksByTestId.set(testID, onBarcodeScanned);
+  } else {
+    _mockBarcodeScanCallback = onBarcodeScanned;
+  }
+  return (children ?? null) as React.ReactNode;
+}
+
+/** Call from tests to fire a fake barcode scan event.
+ * @param data     The barcode string value to simulate scanning.
+ * @param testID   The testID of the target CameraView (default: "scan-barcode-scanner").
+ *                 Pass undefined to target the legacy unnamed callback instead.
+ * Throws if no matching CameraView callback is found. */
+export function triggerMockBarcodeScan(
+  data: string,
+  testID: string | null = "scan-barcode-scanner",
+): void {
+  let cb: ((payload: { data: string }) => void) | undefined;
+  if (testID !== null) {
+    cb = _mockBarcodeScanCallbacksByTestId.get(testID);
+    if (cb === undefined && !_mockBarcodeScanCallbacksByTestId.has(testID)) {
+      throw new Error(
+        `triggerMockBarcodeScan: no CameraView with testID="${testID}" is mounted.`,
+      );
+    }
+  } else {
+    cb = _mockBarcodeScanCallback;
+    if (!cb) {
+      throw new Error(
+        "triggerMockBarcodeScan: no unnamed CameraView with onBarcodeScanned is mounted.",
+      );
+    }
+  }
+  if (cb) cb({ data });
+}
+
 vi.mock("expo-camera", () => ({
-  CameraView: passthrough,
+  CameraView: MockCameraView,
   useCameraPermissions: () => [
     { granted: true, status: "granted" },
     vi.fn(async () => ({ granted: true, status: "granted" })),
@@ -319,6 +379,9 @@ vi.mock("@/lib/app-context", () => ({
     role: "user",
     adminUnlocked: false,
     customStationLabels: {},
+    addCase: vi.fn((c: any) => ({ ...c, id: "test-mock-case-id", createdAt: Date.now(), updatedAt: Date.now(), routeHistory: [] })),
+    createCanonicalScanCase: vi.fn(async () => null),
+    hydrateServerCase: vi.fn(),
     findCaseByBarcode: () => null,
     updateCaseStatus: vi.fn(),
     addCasePhoto: vi.fn(),

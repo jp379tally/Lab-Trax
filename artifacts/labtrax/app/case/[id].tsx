@@ -31,7 +31,7 @@ import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { useApp } from "@/lib/app-context";
-import { resilientFetch, getAccessToken, getApiUrl, uploadCaseMedia } from "@/lib/query-client";
+import { resilientFetch, getAccessToken, getApiUrl, chunkedUploadCaseMedia } from "@/lib/query-client";
 import { useCase, type CanonicalCase as CanonicalCaseType } from "@workspace/api-client-react";
 import { caseMediaSource, isSameApiOrigin } from "@/lib/case-media-source";
 import { AuthedImage } from "@/components/ui/AuthedImage";
@@ -568,15 +568,11 @@ export default function CaseDetailScreen() {
   async function uploadAttachment(uri: string, name: string, mimeType: string) {
     setUploadingAttachment(true);
     try {
-      // Uploads go through uploadCaseMedia (XHR), NOT resilientFetch — the
-      // latter uses expo/fetch which rejects React Native's native file
-      // descriptor with "Unsupported FormDataPart implementation".
-      const uploadRes = await uploadCaseMedia("/api/media/upload", uri, name, mimeType);
-      if (!uploadRes.ok) {
-        const err: ApiErrorBody = await uploadRes.json().catch(() => ({}));
-        throw new Error(err.error || "Upload failed");
+      const uploadResult = await chunkedUploadCaseMedia(uri, name, mimeType);
+      if (!uploadResult.ok) {
+        throw new Error("Upload failed");
       }
-      const { url } = await uploadRes.json();
+      const url = uploadResult.url;
 
       const attachRes = await resilientFetch(`/api/cases/${encodeURIComponent(String(id))}/attachments`, {
         method: "POST",

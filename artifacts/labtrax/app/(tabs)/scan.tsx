@@ -30,7 +30,7 @@ import { useFocusEffect, useRouter, useLocalSearchParams } from "expo-router";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
-import { ActivityEntry, generateId, ToothEntry, ToothType, MATERIAL_PRICES, formatAcctNum, formatPhone, cleanDoctorDisplay } from "@/lib/data";
+import { ActivityEntry, generateId, LabCase, ToothEntry, ToothType, MATERIAL_PRICES, formatAcctNum, formatPhone, cleanDoctorDisplay } from "@/lib/data";
 import { resolvePriceForCase } from "@/lib/pricing";
 import { fetch as expoFetch } from "expo/fetch";
 import { getApiUrl, resilientFetch, getAccessToken, logDebugEvent } from "@/lib/query-client";
@@ -121,7 +121,7 @@ export default function ScanScreen() {
   const manualModeRequested = params?.mode === "manual";
   const manualModeNonce = typeof params?.n === "string" ? params.n : null;
   const lastAppliedManualNonceRef = useRef<string | null>(null);
-  const { addCase, addCasePhoto, cases, clients, addClient, role, adminUnlocked, invoices, updateCase, removeInvoice, attachCaseToInvoice, assignBarcodeToCase, findCaseByBarcode, pricingTiers, activeLabAffiliationKey } = useApp();
+  const { addCase, createCanonicalScanCase, hydrateServerCase, addCasePhoto, cases, clients, addClient, role, adminUnlocked, invoices, updateCase, removeInvoice, attachCaseToInvoice, assignBarcodeToCase, findCaseByBarcode, pricingTiers, activeLabAffiliationKey } = useApp();
   // Keep a ref so useFocusEffect can read the latest cases without listing
   // cases as a dependency (which would re-fire the effect on every sync).
   const casesRef = useRef(cases);
@@ -1477,7 +1477,7 @@ export default function ScanScreen() {
     const jsonBody = JSON.stringify(payload);
     console.log("AI: Sending request, body size:", jsonBody.length, "platform:", Platform.OS);
 
-    const primaryUrl = new URL("/api/analyze-prescription", getApiUrl()).toString();
+    const primaryUrl = new URL("/api/cases/analyze-rx", getApiUrl()).toString();
     console.log("AI: Trying URL:", primaryUrl);
 
     const token = getAccessToken();
@@ -2341,17 +2341,38 @@ export default function ScanScreen() {
     }, 600);
   }
 
-  function handleBarcodeScanned({ data }: { data: string }) {
+  async function handleBarcodeScanned({ data }: { data: string }) {
     if (barcodeScanned || barcodeAttachProcessingRef.current || barcodeScanForCase) return;
     setBarcodeScanned(true);
     if ((Platform.OS as string) !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
-    const foundCase = cases.find(c => c.id === data || c.caseNumber === data || c.assignedBarcode === data);
+    // Check local cache first, then fall back to server search
+    let foundCase = cases.find(c => c.id === data || c.caseNumber === data || c.assignedBarcode === data);
+    if (!foundCase) {
+      try {
+        const res = await resilientFetch(`/api/cases?search=${encodeURIComponent(data)}`);
+        if (res.ok) {
+          const body = await res.json();
+          const serverCases: any[] = body?.data ?? body?.cases ?? (Array.isArray(body) ? body : []);
+          if (serverCases.length > 0) {
+            const sc = serverCases[0];
+            foundCase = cases.find((c) => c.id === sc.id) ?? (sc as any);
+            // Hydrate into local app state so case/[id] can render
+            // immediately without flashing "Case not found" while the
+            // sync catchup arrives.
+            if (!cases.find((c) => c.id === sc.id)) {
+              hydrateServerCase(sc as LabCase);
+            }
+          }
+        }
+      } catch {}
+    }
+
     if (foundCase) {
       setShowBarcodeScanner(false);
       setBarcodeScanned(false);
       setTimeout(() => {
-        router.navigate(`/case/${foundCase.id}`);
+        router.navigate(`/case/${foundCase!.id}`);
       }, 400);
     } else {
       setShowBarcodeScanner(false);
@@ -2707,7 +2728,7 @@ export default function ScanScreen() {
       toothIndices,
     });
 
-    const newCase = addCase({
+    const caseParams = {
       caseNumber,
       doctorName: doctorName.trim(),
       patientName: savedPatientName,
@@ -2716,7 +2737,7 @@ export default function ScanScreen() {
       toothIndices: effectiveToothIndices,
       shade: shade.trim(),
       material,
-      status: "INTAKE",
+      status: "INTAKE" as const,
       isRush,
       notes: overrides?.notes ?? finalNotes,
       price: overrides?.price ?? calculatedPrice,
@@ -2733,7 +2754,21 @@ export default function ScanScreen() {
             remakeOfCaseId: overrides.remakeOfCaseId,
           }
         : {}),
-    });
+    };
+    // When lab-affiliated, attempt the canonical POST /api/cases path only.
+    // createCanonicalScanCase returns null when the doctor name is not yet
+    // registered in the lab's rx-practice-aliases table; surface that as a
+    // visible error so the user knows to ask the admin to add the alias.
+    // Non-affiliated users still go through addCase → legacy sync.
+    const canonical = await createCanonicalScanCase(caseParams);
+    if (activeLabAffiliationKey?.startsWith("org:") && !canonical) {
+      Alert.alert(
+        "Cannot Create Case",
+        "This doctor is not linked to a provider practice. Ask your lab admin to register the doctor name in lab settings before scanning.",
+      );
+      return;
+    }
+    const newCase = canonical ?? addCase(caseParams);
     void logDebugEvent("CREATE_CASE_ADD_DONE", { caseId: newCase.id });
 
     // Upload the auto-generated prescription PDF (if any) as a case attachment
@@ -5018,6 +5053,7 @@ export default function ScanScreen() {
 
             <Pressable
               onPress={openBarcodeScanner}
+              testID="open-barcode-scanner-btn"
               style={({ pressed }) => ({
                 width: "100%",
                 flexDirection: "row" as const,
@@ -5139,6 +5175,7 @@ export default function ScanScreen() {
               </Pressable>
             </View>
             <CameraView
+              testID="scan-barcode-scanner"
               style={{ flex: 1 }}
               facing="back"
               autofocus="on"
@@ -5525,6 +5562,7 @@ export default function ScanScreen() {
           </View>
           {(Platform.OS as string) !== "web" && permission?.granted ? (
             <CameraView
+              testID="scan-barcode-scanner"
               style={{ flex: 1 }}
               facing="back"
               autofocus="on"

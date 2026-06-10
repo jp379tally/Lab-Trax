@@ -22,7 +22,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Client, LabCase } from "@/lib/data";
 import { popSharedFiles, subscribeSharedFileInbox } from "@/lib/shared-file-inbox";
-import { getApiUrl, resilientFetch } from "@/lib/query-client";
+import { getApiUrl, resilientFetch, chunkedUploadCaseMedia } from "@/lib/query-client";
 import { useApp } from "@/lib/app-context";
 
 function getStorageKey(user: string | null): string {
@@ -82,24 +82,26 @@ async function uploadBinaryToServer(
     | { kind: "native"; uri: string; name: string; type: string }
 ): Promise<string | null> {
   try {
-    const formData = new FormData();
+    let fileUri: string;
+    let fileName: string;
+    let mimeType: string;
+    let blobUrl: string | null = null;
+
     if (source.kind === "web") {
-      formData.append("file", source.file, source.file.name);
+      // Create an object URL so chunkedUploadCaseMedia can fetch the blob.
+      blobUrl = URL.createObjectURL(source.file);
+      fileUri = blobUrl;
+      fileName = source.file.name;
+      mimeType = source.file.type;
     } else {
-      // React Native FormData accepts an object with uri/name/type.
-      formData.append("file", {
-        uri: source.uri,
-        name: source.name,
-        type: source.type,
-      } as any);
+      fileUri = source.uri;
+      fileName = source.name;
+      mimeType = source.type;
     }
-    const response = await resilientFetch("/api/media/upload", {
-      method: "POST",
-      body: formData,
-    });
-    if (!response.ok) return null;
-    const data = await response.json();
-    return typeof data?.url === "string" ? data.url : null;
+
+    const result = await chunkedUploadCaseMedia(fileUri, fileName, mimeType);
+    if (blobUrl) URL.revokeObjectURL(blobUrl);
+    return result.ok ? result.url : null;
   } catch {
     return null;
   }

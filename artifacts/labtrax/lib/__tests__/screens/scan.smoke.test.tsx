@@ -40,6 +40,7 @@ import {
   setMockAppState,
   setMockFetchHandler,
   setMockSearchParams,
+  triggerMockBarcodeScan,
 } from "../../../vitest.setup";
 
 import ScanScreen from "@/app/(tabs)/scan";
@@ -105,7 +106,7 @@ describe("ScanScreen (smoke)", () => {
           { status: 200, headers: { "Content-Type": "application/json" } },
         );
       }
-      if (url.includes("/api/analyze-prescription")) {
+      if (url.includes("/api/cases/analyze-rx") || url.includes("/api/analyze-prescription")) {
         return new Response(
           JSON.stringify({
             success: true,
@@ -188,7 +189,7 @@ describe("ScanScreen (smoke)", () => {
           { status: 200, headers: { "Content-Type": "application/json" } },
         );
       }
-      if (url.includes("/api/analyze-prescription")) {
+      if (url.includes("/api/cases/analyze-rx") || url.includes("/api/analyze-prescription")) {
         return new Response(
           JSON.stringify({
             success: true,
@@ -256,6 +257,97 @@ describe("ScanScreen (smoke)", () => {
     });
   }, 15000);
 
+  async function selectDoctorAndNewPatient(
+    screen: ReturnType<typeof render>,
+    doctorName: string,
+    patientFirst: string,
+    patientLast: string,
+  ) {
+    // Select doctor
+    const doctorTrigger = await waitFor(() => screen.getByTestId("doctor-dropdown-trigger"));
+    fireEvent.press(doctorTrigger);
+    const doctorEntry = await waitFor(() => {
+      const matches = screen.getAllByText(doctorName);
+      if (matches.length === 0) throw new Error("provider not in list");
+      return matches[0];
+    });
+    fireEvent.press(doctorEntry);
+
+    // Open patient dropdown and add a new patient
+    const patientTrigger = await waitFor(() => screen.getByTestId("patient-dropdown-trigger"));
+    fireEvent.press(patientTrigger);
+    const addNewBtn = await waitFor(() => screen.getByTestId("add-new-patient-btn"));
+    fireEvent.press(addNewBtn);
+    const firstInput = await waitFor(() => screen.getByTestId("new-patient-first-input"));
+    fireEvent.changeText(firstInput, patientFirst);
+    const lastInput = await waitFor(() => screen.getByTestId("new-patient-last-input"));
+    fireEvent.changeText(lastInput, patientLast);
+    const confirmBtn = await waitFor(() => screen.getByTestId("confirm-add-patient-btn"));
+    fireEvent.press(confirmBtn);
+  }
+
+  it("calls createCanonicalScanCase (not addCase) when lab-affiliated", async () => {
+    setMockSearchParams({ mode: "manual", n: "canonical-path-test-1" });
+    const canonicalCase = { ...inProgressCase, id: "canonical-server-uuid", caseNumber: "C001" };
+    const createCanonicalSpy = vi.fn(async () => canonicalCase);
+    const addCaseSpy = vi.fn((c: any) => ({ ...c, id: "legacy-local-id" }));
+    setMockAppState({
+      cases: [],
+      clients: [sampleClient],
+      activeLabAffiliationKey: "org:test-lab-id",
+      createCanonicalScanCase: createCanonicalSpy,
+      addCase: addCaseSpy,
+    });
+    setMockFetchHandler((url: string) => {
+      if (url.includes("/api/cases/patient-similarity")) {
+        return new Response(JSON.stringify({ data: { matches: [] } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ data: null }), { status: 200 });
+    });
+
+    const screen = render(<ScanScreen />);
+    await selectDoctorAndNewPatient(screen, sampleClient.practiceName, "Alice", "Test");
+
+    fireEvent.press(screen.getByTestId("submit-case-btn"));
+
+    await waitFor(() => {
+      expect(createCanonicalSpy).toHaveBeenCalled();
+      expect(addCaseSpy).not.toHaveBeenCalled();
+    }, { timeout: 8000 });
+  }, 15000);
+
+  it("shows Cannot Create Case alert when lab-affiliated but canonical create returns null", async () => {
+    setMockSearchParams({ mode: "manual", n: "canonical-fail-test-1" });
+    const addCaseSpy = vi.fn((c: any) => ({ ...c, id: "legacy-local-id" }));
+    setMockAppState({
+      cases: [],
+      clients: [sampleClient],
+      activeLabAffiliationKey: "org:test-lab-id",
+      createCanonicalScanCase: vi.fn(async () => null),
+      addCase: addCaseSpy,
+    });
+    setMockFetchHandler((url: string) => {
+      if (url.includes("/api/cases/patient-similarity")) {
+        return new Response(JSON.stringify({ data: { matches: [] } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ data: null }), { status: 200 });
+    });
+
+    const alertSpy = vi.mocked(Alert.alert);
+    alertSpy.mockClear();
+
+    const screen = render(<ScanScreen />);
+    await selectDoctorAndNewPatient(screen, sampleClient.practiceName, "Alice", "Test");
+
+    fireEvent.press(screen.getByTestId("submit-case-btn"));
+
+    await waitFor(() => {
+      const titles = alertSpy.mock.calls.map((c) => String(c[0] ?? ""));
+      expect(titles.some((t) => t === "Cannot Create Case")).toBe(true);
+      expect(addCaseSpy).not.toHaveBeenCalled();
+    }, { timeout: 8000 });
+  }, 15000);
+
   it("shows the duplicate prompt when a local patient name already has an open case", async () => {
     setMockSearchParams({ mode: "manual", n: "dup-prompt-test-1" });
     setMockAppState({
@@ -306,5 +398,57 @@ describe("ScanScreen (smoke)", () => {
     expect(
       screen.getAllByText(new RegExp(expectedNumber)).length,
     ).toBeGreaterThan(0);
+  });
+
+  describe("barcode lookup — server case not in local state", () => {
+    it("calls hydrateServerCase and navigates to the case when server returns a match", async () => {
+      const hydrateServerCaseSpy = vi.fn();
+      setMockAppState({
+        cases: [], // no local cases — simulates arriving before sync catchup
+        clients: [],
+        hydrateServerCase: hydrateServerCaseSpy,
+      });
+
+      const serverCase = { ...inProgressCase, id: "server-uuid-barcode-1" };
+      setMockFetchHandler((url: string) => {
+        if (url.includes("/api/cases?search=")) {
+          return new Response(
+            JSON.stringify({ data: [serverCase] }),
+            { status: 200 },
+          );
+        }
+        return new Response(JSON.stringify({ data: null }), { status: 200 });
+      });
+
+      const { router } = await import("expo-router");
+      vi.mocked(router.navigate).mockClear();
+
+      const { resilientFetch } = await import("@/lib/query-client");
+      vi.mocked(resilientFetch).mockClear();
+
+      render(<ScanScreen />);
+
+      // Trigger the scan via the MockCameraView callback.  The barcode
+      // CameraView is inside a Modal stub that renders children unconditionally,
+      // so the callback is captured even before the modal is opened.
+      triggerMockBarcodeScan("server-uuid-barcode-1");
+
+      // Step 1: verify resilientFetch was called with the search URL
+      await waitFor(() => {
+        expect(vi.mocked(resilientFetch)).toHaveBeenCalledWith(
+          expect.stringContaining("/api/cases?search="),
+        );
+      }, { timeout: 4000 });
+
+      // Step 2: verify hydrateServerCase and navigate were called
+      await waitFor(() => {
+        expect(hydrateServerCaseSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ id: "server-uuid-barcode-1" }),
+        );
+        expect(router.navigate).toHaveBeenCalledWith(
+          expect.stringContaining("server-uuid-barcode-1"),
+        );
+      }, { timeout: 8000 });
+    }, 15000);
   });
 });

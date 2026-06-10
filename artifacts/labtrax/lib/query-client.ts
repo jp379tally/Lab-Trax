@@ -1,5 +1,5 @@
 import { fetch } from "expo/fetch";
-import { QueryClient, QueryFunction } from "@tanstack/react-query";
+import { QueryClient, QueryFunction, MutationObserver } from "@tanstack/react-query";
 import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
@@ -287,10 +287,8 @@ async function resilientFetch(
     // Still no bearer after hydrating + refreshing: the user is effectively
     // logged out (token store empty/corrupt) but a stale auth cookie may
     // linger in React Native's fetch jar. Sending now would go out cookie-only
-    // and earn a CSRF 403, which the offline queue records as a PERMANENT
-    // "lab rejected this change". Fail fast instead — a thrown fetch is treated
-    // as a transient/retryable error, so the change stays recoverable until the
-    // user re-authenticates.
+    // and earn a CSRF 403. Fail fast instead — callers treat a thrown fetch as
+    // a transient failure recoverable once the user re-authenticates.
     // Exception: public paths (login, register, verification, etc.) must be
     // allowed through even with no token — blocking them prevents the login
     // form itself from working on a fresh install or after logout.
@@ -504,6 +502,157 @@ export async function uploadCaseMedia(
   };
 }
 
+// ── Chunked media upload ───────────────────────────────────────────────────
+// Uploads a file to /api/media/upload-session in 1 MB chunks so large files
+// (PDFs, photos) are never dropped by the Replit proxy's ~20 MB single-shot
+// limit. Falls back cleanly if the session cannot be created.
+export type ChunkedUploadResult =
+  | { ok: true; url: string }
+  | { ok: false; status?: number; error?: string };
+
+const CHUNKED_UPLOAD_CHUNK_SIZE = 1 * 1024 * 1024; // 1 MB
+
+function base64ToArrayBuffer(b64: string): ArrayBuffer {
+  const clean = b64.replace(/\s+/g, "");
+  const binary = atob(clean);
+  const buffer = new ArrayBuffer(binary.length);
+  const view = new Uint8Array(buffer);
+  for (let i = 0; i < binary.length; i++) {
+    view[i] = binary.charCodeAt(i);
+  }
+  return buffer;
+}
+
+function sendBinaryPatch(
+  url: string,
+  data: ArrayBuffer,
+  offset: number,
+  token: string | null,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PATCH", url);
+    if (Platform.OS === "web") xhr.withCredentials = true;
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    if (Platform.OS === "web") {
+      const csrf = getCsrfToken();
+      if (csrf) xhr.setRequestHeader("x-csrf-token", csrf);
+    }
+    xhr.setRequestHeader("Upload-Offset", String(offset));
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.onload = () => resolve({ status: xhr.status, body: xhr.responseText });
+    xhr.onerror = () => reject(new Error("Network request failed"));
+    xhr.send(data);
+  });
+}
+
+export async function chunkedUploadCaseMedia(
+  fileUri: string,
+  fileName: string,
+  mimeType: string,
+): Promise<ChunkedUploadResult> {
+  if (Platform.OS !== "web" && !_accessToken) {
+    await loadTokens();
+    if (!_accessToken && _refreshToken) await refreshAccessToken();
+    if (!_accessToken) {
+      throw new Error("Not authenticated: no bearer token available for upload.");
+    }
+  }
+
+  // Resolve the file to either a Blob (web) or a decoded ArrayBuffer (native)
+  let fileBlob: Blob | null = null;
+  let fullBuffer: ArrayBuffer | null = null;
+  let fileSize = 0;
+
+  if (Platform.OS === "web") {
+    const resp = await globalThis.fetch(fileUri);
+    fileBlob = await resp.blob();
+    fileSize = fileBlob.size;
+  } else {
+    // Native: read entire file as base64, decode to ArrayBuffer once
+    let rawB64 = "";
+    if (fileUri.startsWith("data:")) {
+      const idx = fileUri.indexOf(",");
+      rawB64 = idx >= 0 ? fileUri.slice(idx + 1) : fileUri;
+    } else {
+      // Dynamic import avoids bundling issues on web
+      const FS = await import("expo-file-system");
+      rawB64 = await (FS as any).readAsStringAsync(fileUri, {
+        encoding: (FS as any).EncodingType.Base64,
+      });
+    }
+    fullBuffer = base64ToArrayBuffer(rawB64);
+    fileSize = fullBuffer.byteLength;
+  }
+
+  if (fileSize <= 0) {
+    return { ok: false, error: "Could not determine file size" };
+  }
+
+  // Create the upload session
+  const sessionRes = await resilientFetch("/api/media/upload-session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fileName, fileSize, mimeType }),
+  });
+  if (!sessionRes.ok) {
+    return { ok: false, status: sessionRes.status, error: "Could not create upload session" };
+  }
+  const sessionData = await sessionRes.json();
+  const sessionId = sessionData.sessionId as string;
+  let uploadedBytes: number = (sessionData.uploadedBytes as number) ?? 0;
+
+  const patchUrl = new URL(
+    `/api/media/upload-session/${sessionId}`,
+    getApiUrl(),
+  ).toString();
+
+  // Upload in 1 MB chunks
+  while (uploadedBytes < fileSize) {
+    const chunkSize = Math.min(CHUNKED_UPLOAD_CHUNK_SIZE, fileSize - uploadedBytes);
+    let chunkBuffer: ArrayBuffer;
+
+    if (fileBlob) {
+      chunkBuffer = await fileBlob.slice(uploadedBytes, uploadedBytes + chunkSize).arrayBuffer();
+    } else {
+      chunkBuffer = fullBuffer!.slice(uploadedBytes, uploadedBytes + chunkSize);
+    }
+
+    let patchResult = await sendBinaryPatch(patchUrl, chunkBuffer, uploadedBytes, _accessToken);
+
+    if (patchResult.status === 401 && _refreshToken) {
+      const newToken = await refreshAccessToken();
+      if (newToken) {
+        patchResult = await sendBinaryPatch(patchUrl, chunkBuffer, uploadedBytes, newToken);
+      }
+    }
+
+    if (patchResult.status === 409) {
+      // Server reports a different offset; resync before retrying
+      try {
+        const body = JSON.parse(patchResult.body);
+        uploadedBytes = (body.uploadedBytes as number) ?? uploadedBytes;
+      } catch {}
+      continue;
+    }
+
+    if (patchResult.status < 200 || patchResult.status >= 300) {
+      return { ok: false, status: patchResult.status, error: "Chunk upload failed" };
+    }
+
+    let patchBody: any = {};
+    try { patchBody = JSON.parse(patchResult.body); } catch {}
+
+    if (patchBody.complete && patchBody.url) {
+      return { ok: true, url: patchBody.url as string };
+    }
+
+    uploadedBytes = (patchBody.uploadedBytes as number) ?? uploadedBytes + chunkBuffer.byteLength;
+  }
+
+  return { ok: false, error: "Upload ended without a complete response" };
+}
+
 export const getQueryFn: <T>(options: {
   on401: UnauthorizedBehavior;
 }) => QueryFunction<T> =
@@ -535,6 +684,56 @@ export const queryClient = new QueryClient({
     },
   },
 });
+
+/**
+ * Async retry helper for awaitable operations.
+ * Treats a null result as failure when isFailure is omitted (null-check default).
+ * Throws after all retries are exhausted.
+ */
+export async function retryAsync<T>(
+  fn: () => Promise<T>,
+  retries = 3,
+  isFailure: (v: T) => boolean = (v) => v === null || v === undefined,
+): Promise<T> {
+  let lastError: unknown = new Error("retryAsync: all attempts failed");
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (attempt > 0) {
+      await new Promise<void>((r) =>
+        setTimeout(r, Math.min(1_000 * 2 ** (attempt - 1), 30_000)),
+      );
+    }
+    try {
+      const result = await fn();
+      if (!isFailure(result)) return result;
+      lastError = new Error(`retryAsync: attempt ${attempt} returned a failure value`);
+    } catch (e) {
+      lastError = e;
+    }
+  }
+  throw lastError;
+}
+
+/**
+ * Fire-and-forget wrapper that executes fn() with up to `retries` attempts
+ * and exponential back-off using React Query's MutationObserver retry engine.
+ * fn() must throw (or return a rejected Promise) for a retry to be triggered.
+ * Errors after all retries are silently discarded.
+ *
+ * Used for status syncs, note posts, and attachment creates that should retry
+ * on transient network failures without blocking the calling code path.
+ */
+export function fireWithRetry(
+  fn: () => Promise<unknown>,
+  retries = 3,
+): void {
+  const obs = new MutationObserver<unknown, Error, void>(queryClient, {
+    mutationFn: (_vars: void) => fn(),
+    retry: retries,
+    retryDelay: (attempt: number) => Math.min(1_000 * 2 ** attempt, 30_000),
+  });
+  // mutate() returns a Promise in v5 — drives the retry loop.
+  void obs.mutate(undefined as unknown as void).catch(() => {});
+}
 
 // ── Wire @workspace/api-client-react for mobile ─────────────────────────────
 // Generated and custom hooks in api-client-react use customFetch, which needs

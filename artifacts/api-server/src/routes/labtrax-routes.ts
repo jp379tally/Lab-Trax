@@ -3554,7 +3554,7 @@ export async function registerRoutes(): Promise<IRouter> {
     }
   }
 
-  router.post("/analyze-prescription", optionalAuth, async (req, res) => {
+  router.post(["/analyze-prescription", "/cases/analyze-rx"], optionalAuth, async (req, res) => {
     try {
       const openai = getOpenAIClient();
       if (!openai) return res.status(503).json({ success: false, error: "AI integrations are not configured." });
