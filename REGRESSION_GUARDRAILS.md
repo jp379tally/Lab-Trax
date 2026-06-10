@@ -125,6 +125,7 @@ Status drift caused by a missed normalization breaks:
 
 - **Desktop/server tokens normalize on fetch** — cases pulled from `/api/legacy/cases` via `fetchCasesFromServer()` are passed through `normalizeCaseStatuses()` before reaching UI/state. Legacy uppercase and desktop-bridge tokens become canonical lowercase.
 - **AsyncStorage-hydrated tokens normalize on load** — cases hydrated from the local cache (`CASES_KEY`) in `loadData()` on mount are passed through `normalizeCaseStatuses()` before reaching UI/state.
+- **Normalized status reaches the screen** — the canonical status must survive `mergeServerCases()` reconciliation and the `cases` selector and appear in the `cases` value a real consumer of `useApp()` sees. A raw uppercase token (e.g. `DELIVERY`, `SHIP`) must never reach `useApp().cases` via either the server-fetch or the AsyncStorage-hydration path. This protects against a regression where normalization runs but a later merge/dedup/selector bug re-introduces a raw token.
 - **No regression on the helper itself** — the `normalizeCaseStatus()` token mappings (uppercase mobile tokens, desktop-bridge tokens, whitespace trimming, unknown-value fallback to `received`) must remain correct.
 
 ## Protected Workflow: Mobile Failed-Upload Retry
@@ -284,7 +285,7 @@ pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-locatio
 | Layer | File | What it guards |
 |-------|------|----------------|
 | Mobile unit | `artifacts/labtrax/lib/__tests__/normalize-case-status.test.ts` | `normalizeCaseStatus()` / `normalizeCaseStatuses()` token mappings: canonical identity, legacy uppercase + desktop-bridge tokens, whitespace trimming, unknown-value fallback to `received` |
-| Mobile unit | `artifacts/labtrax/lib/__tests__/case-status-normalization-boundaries.test.tsx` | Both real ingestion boundaries call `normalizeCaseStatuses()`: server fetch (`/api/legacy/cases` → `fetchCasesFromServer()`) and AsyncStorage hydration (`CASES_KEY` → `loadData()`) |
+| Mobile unit | `artifacts/labtrax/lib/__tests__/case-status-normalization-boundaries.test.tsx` | Both real ingestion boundaries call `normalizeCaseStatuses()`: server fetch (`/api/legacy/cases` → `fetchCasesFromServer()`) and AsyncStorage hydration (`CASES_KEY` → `loadData()`). Plus end-to-end: a legacy token (`DELIVERY`/`SHIP`) ingested via either path surfaces as canonical lowercase (`shipped`) in `useApp().cases`, proving the normalized status survives merge/dedup and the `cases` selector |
 
 Run command:
 ```

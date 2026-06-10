@@ -65,8 +65,9 @@ vi.mock("@/lib/auth-context", () => ({
   AuthProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
 
-import { AppProvider } from "@/lib/app-context";
+import { AppProvider, useApp } from "@/lib/app-context";
 import { normalizeCaseStatuses } from "@/lib/data";
+import type { LabCase } from "@/lib/data";
 
 // Must match CASES_KEY in app-context.tsx.
 const CASES_KEY = "@drivesync_cases";
@@ -87,6 +88,24 @@ function rawCase(overrides: Record<string, unknown>) {
 function renderProvider() {
   return render(
     React.createElement(AppProvider, null, React.createElement(() => null)),
+  );
+}
+
+// Captures the latest value of useApp().cases on every render so a test can
+// assert on what a real consumer of the context actually sees — the case list
+// that drives the UI — rather than on an internal helper call.
+function makeCaseCapture() {
+  const captured: { current: LabCase[] } = { current: [] };
+  function CaseCapture() {
+    captured.current = useApp().cases;
+    return null;
+  }
+  return { captured, CaseCapture };
+}
+
+function renderWithCapture(CaseCapture: React.ComponentType) {
+  return render(
+    React.createElement(AppProvider, null, React.createElement(CaseCapture)),
   );
 }
 
@@ -145,5 +164,71 @@ describe("case-status normalization is applied at ingestion boundaries", () => {
         expect.objectContaining({ id: "hydrate-1", status: "SHIP" }),
       );
     });
+  });
+});
+
+/**
+ * END-TO-END: the normalized status must survive merge/dedup and reach the
+ * `cases` value a real consumer of useApp() sees. The boundary tests above
+ * only prove normalizeCaseStatuses() is *called*; they would still pass if a
+ * later mergeServerCases() / cases-selector bug re-introduced a raw uppercase
+ * token. These tests close that gap by asserting the visible status.
+ */
+describe("normalized case status reaches useApp().cases", () => {
+  it("server-fetched DELIVERY surfaces as canonical 'shipped' in useApp().cases", async () => {
+    const serverCase = rawCase({ id: "server-1", status: "DELIVERY" });
+
+    setMockFetchHandler((url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method === "GET" && url.endsWith("/api/legacy/cases")) {
+        return new Response(JSON.stringify({ cases: [serverCase] }), {
+          status: 200,
+        });
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    });
+
+    const { captured, CaseCapture } = makeCaseCapture();
+    renderWithCapture(CaseCapture);
+
+    await waitFor(() => {
+      const visible = captured.current.find((c) => c.id === "server-1");
+      expect(visible).toBeDefined();
+      expect(visible?.status).toBe("shipped");
+    });
+
+    // No raw uppercase token leaked through the merge/selector path.
+    expect(
+      captured.current.some((c) => (c.status as string) === "DELIVERY"),
+    ).toBe(false);
+  });
+
+  it("AsyncStorage-hydrated SHIP surfaces as canonical 'shipped' in useApp().cases", async () => {
+    const cachedCase = rawCase({ id: "hydrate-1", status: "SHIP" });
+    await AsyncStorage.setItem(CASES_KEY, JSON.stringify([cachedCase]));
+
+    // Server returns no cases so the visible status can only come from the
+    // hydration path. mergeServerCases([]) preserves local-only non-UUID
+    // private cases, so the hydrated case survives reconciliation.
+    setMockFetchHandler((url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method === "GET" && url.endsWith("/api/legacy/cases")) {
+        return new Response(JSON.stringify({ cases: [] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    });
+
+    const { captured, CaseCapture } = makeCaseCapture();
+    renderWithCapture(CaseCapture);
+
+    await waitFor(() => {
+      const visible = captured.current.find((c) => c.id === "hydrate-1");
+      expect(visible).toBeDefined();
+      expect(visible?.status).toBe("shipped");
+    });
+
+    expect(
+      captured.current.some((c) => (c.status as string) === "SHIP"),
+    ).toBe(false);
   });
 });
