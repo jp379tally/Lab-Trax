@@ -120,7 +120,7 @@ function canonicalCaseToDisplayBase(c: CanonicalCaseType): import("@/lib/data").
     isRush: (c.priority as string | null | undefined) === "rush",
     isRemake: Boolean(c.remakeOfCaseId),
     remakeOfCaseId: (c.remakeOfCaseId as string | null | undefined) ?? undefined,
-    notes: (c.notes as string | null | undefined) ?? "",
+    notes: normalizeNotes(c.notes),
     photos: Array.isArray(c.photos) ? (c.photos as string[]) : [],
     activityLog: Array.isArray(raw.activityLog) ? raw.activityLog : [],
     routeHistory: Array.isArray(raw.routeHistory) ? raw.routeHistory : [],
@@ -128,6 +128,12 @@ function canonicalCaseToDisplayBase(c: CanonicalCaseType): import("@/lib/data").
     expectedDeliveryDate: (c.expectedDeliveryDate as string | null | undefined) ?? undefined,
     restorations: Array.isArray(c.restorations) ? c.restorations : undefined,
   } as unknown as import("@/lib/data").LabCase;
+}
+
+// Case notes may arrive from the API as a non-string (null, undefined, array,
+// or object). Normalize to a string so callers can safely call .trim()/render.
+function normalizeNotes(notes: unknown): string {
+  return typeof notes === "string" ? notes : "";
 }
 
 const SCAN_MIME_TYPES = new Set([
@@ -880,7 +886,7 @@ export default function CaseDetailScreen() {
     const baselineEdd = rawEdd ? rawEdd.slice(0, 10) : "";
     editExpectedDeliveryDateBaselineRef.current = baselineEdd;
     setEditExpectedDeliveryDate(baselineEdd);
-    setEditNotes(caseItem.notes || "");
+    setEditNotes(normalizeNotes(caseItem.notes));
     setShowEditCase(true);
   }
 
@@ -2211,7 +2217,7 @@ export default function CaseDetailScreen() {
             setQeShade(caseItem.shade || "");
             setQeMaterial(caseItem.material || "");
             setQeDueDate(caseItem.dueDate || "");
-            setQeNotes(caseItem.notes || "");
+            setQeNotes(normalizeNotes(caseItem.notes));
             setShowQuickEdit(true);
             if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
           }}
@@ -2369,7 +2375,7 @@ export default function CaseDetailScreen() {
             .filter((e) => e.type === "note")
             .sort((a, b) => b.timestamp - a.timestamp);
           const hasNotes =
-            noteEntries.length > 0 || (caseItem.notes || "").trim().length > 0;
+            noteEntries.length > 0 || normalizeNotes(caseItem.notes).trim().length > 0;
           return (
             <View style={styles.rxSummaryCard}>
               <Text style={styles.rxSummaryHeading}>Rx Summary</Text>
@@ -2443,7 +2449,7 @@ export default function CaseDetailScreen() {
                         ) : (
                           <View style={styles.rxSummaryNoteRow}>
                             <Text style={styles.rxSummaryNoteText}>
-                              {caseItem.notes}
+                              {normalizeNotes(caseItem.notes)}
                             </Text>
                           </View>
                         )}
@@ -2784,7 +2790,7 @@ export default function CaseDetailScreen() {
           const noteEntries = (caseItem.activityLog || [])
             .filter((e) => e.type === "note")
             .sort((a, b) => a.timestamp - b.timestamp);
-          if (noteEntries.length === 0 && !caseItem.notes) return null;
+          if (noteEntries.length === 0 && !normalizeNotes(caseItem.notes)) return null;
           return (
             <View style={styles.notesCard}>
               <Text style={styles.notesLabel}>Notes</Text>
@@ -2826,7 +2832,7 @@ export default function CaseDetailScreen() {
                   );
                 })()
               )) : (
-                <Text style={styles.notesText}>{caseItem.notes}</Text>
+                <Text style={styles.notesText}>{normalizeNotes(caseItem.notes)}</Text>
               )}
             </View>
           );
@@ -4858,7 +4864,7 @@ export default function CaseDetailScreen() {
               shade: caseItem.shade,
               material: caseItem.material,
               dueDate: caseItem.dueDate,
-              notes: caseItem.notes,
+              notes: normalizeNotes(caseItem.notes),
               caseType: caseItem.caseType,
               isRush: caseItem.isRush,
               invoiceId: caseItem.invoiceId,

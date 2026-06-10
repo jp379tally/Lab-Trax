@@ -128,6 +128,55 @@ describe("CaseDetailScreen (smoke)", () => {
     });
   });
 
+  describe("renders safely when notes is not a string", () => {
+    // The API sometimes returns case `notes` as something other than a string
+    // (null, undefined, an array, or an object). The screen must not crash when
+    // it normalizes/reads notes (e.g. the Rx Summary `.trim()` check). See the
+    // narrow `normalizeNotes` guard in app/case/[id].tsx.
+    const renderWithNotes = (notes: unknown) => {
+      const caseWithBadNotes = {
+        ...inProgressCase,
+        id: "case-bad-notes",
+        caseNumber: "#5099",
+        // Empty the activity log so `hasNotes` cannot short-circuit on a
+        // note-type entry — this forces the `normalizeNotes(...).trim()`
+        // branch (the original crash locus) and the notes-fallback render
+        // branch to actually execute.
+        activityLog: [],
+        // Cast: we intentionally inject a non-string to reproduce the crash.
+        notes: notes as unknown as string,
+      };
+      setMockSearchParams({ id: caseWithBadNotes.id });
+      setMockAppState({
+        cases: [caseWithBadNotes],
+        invoices: [],
+        clients: [sampleClient],
+      });
+      return render(<CaseDetailScreen />);
+    };
+
+    it("renders when notes is undefined", () => {
+      expect(() => renderWithNotes(undefined)).not.toThrow();
+    });
+
+    it("renders when notes is null", () => {
+      expect(() => renderWithNotes(null)).not.toThrow();
+    });
+
+    it("renders when notes is an array", () => {
+      expect(() => renderWithNotes(["a", "b"])).not.toThrow();
+    });
+
+    it("renders when notes is an object", () => {
+      expect(() => renderWithNotes({ text: "hi" })).not.toThrow();
+    });
+
+    it("still renders the case (no crash) with non-string notes", () => {
+      const { getAllByText } = renderWithNotes({ foo: 1 });
+      expect(getAllByText(/#5099/).length).toBeGreaterThan(0);
+    });
+  });
+
   describe("edit save updating the linked invoice", () => {
     it("calls updateInvoice with a recomputed caseType when the material changes", async () => {
       const updateInvoice = vi.fn();
