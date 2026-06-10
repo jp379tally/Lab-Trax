@@ -110,6 +110,25 @@ Protected sub-behaviors:
 
 ---
 
+## Protected Workflow: Case Status Normalization Boundaries
+
+Case status tokens arrive in the mobile app from sources that still emit legacy uppercase and desktop-bridge tokens (e.g. `DELIVERY`, `SHIP`, `ON_HOLD`, `QC_CHECK`). Every status must be coerced to the canonical lowercase `CaseStatus` at the moment it is ingested, so the mobile domain model stays canonical end-to-end. If normalization is skipped at any ingestion boundary, status drift silently breaks downstream features — most visibly the "shipped shows as Intake" bug.
+
+Status drift caused by a missed normalization breaks:
+
+- **Case lists** — cases sort/group/display under the wrong status.
+- **Location/station views** — the station a case is shown at no longer matches its real status.
+- **Invoice eligibility** — status-gated invoice logic misfires on raw tokens.
+- **Shipped/delivered tracking** — completion and delivery tracking reads the wrong state.
+
+`normalizeCaseStatus()` / `normalizeCaseStatuses()` (in `artifacts/labtrax/lib/data.ts`) are unit-tested for their token mappings, but a correct helper is useless if a refactor stops calling it at the boundaries. These behaviors are protected:
+
+- **Desktop/server tokens normalize on fetch** — cases pulled from `/api/legacy/cases` via `fetchCasesFromServer()` are passed through `normalizeCaseStatuses()` before reaching UI/state. Legacy uppercase and desktop-bridge tokens become canonical lowercase.
+- **AsyncStorage-hydrated tokens normalize on load** — cases hydrated from the local cache (`CASES_KEY`) in `loadData()` on mount are passed through `normalizeCaseStatuses()` before reaching UI/state.
+- **No regression on the helper itself** — the `normalizeCaseStatus()` token mappings (uppercase mobile tokens, desktop-bridge tokens, whitespace trimming, unknown-value fallback to `received`) must remain correct.
+
+---
+
 ## Zero-Regression Process
 
 Every code change that touches a protected workflow must follow this process, in order:
@@ -225,6 +244,18 @@ Run command:
 pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-location-sync
 ```
 
+### Case Status Normalization Boundaries
+
+| Layer | File | What it guards |
+|-------|------|----------------|
+| Mobile unit | `artifacts/labtrax/lib/__tests__/normalize-case-status.test.ts` | `normalizeCaseStatus()` / `normalizeCaseStatuses()` token mappings: canonical identity, legacy uppercase + desktop-bridge tokens, whitespace trimming, unknown-value fallback to `received` |
+| Mobile unit | `artifacts/labtrax/lib/__tests__/case-status-normalization-boundaries.test.tsx` | Both real ingestion boundaries call `normalizeCaseStatuses()`: server fetch (`/api/legacy/cases` → `fetchCasesFromServer()`) and AsyncStorage hydration (`CASES_KEY` → `loadData()`) |
+
+Run command:
+```
+pnpm --filter @workspace/labtrax run test -- normalize-case-status case-status-normalization-boundaries
+```
+
 ### E2E Browser Tests
 
 | Layer | File | What it guards |
@@ -246,7 +277,7 @@ Set `PLAYWRIGHT_BASE_URL` to the target deployment URL when running against stag
 
 ```bash
 pnpm --filter @workspace/api-server run test -- cases-ai-reader analyze-prescription invoices cases-core cases-invoice-creation mobile-sync-invoice cases-attachments cases-prescription-photo cases-location-sync
-pnpm --filter @workspace/labtrax run test -- cases.smoke case-detail.smoke scan.smoke
+pnpm --filter @workspace/labtrax run test -- cases.smoke case-detail.smoke scan.smoke normalize-case-status case-status-normalization-boundaries
 pnpm test:e2e
 ```
 
