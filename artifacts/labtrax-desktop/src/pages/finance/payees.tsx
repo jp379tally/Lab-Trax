@@ -20,7 +20,7 @@ interface Vendor {
 const TYPE_TABS: { key: VendorType; label: string; description: string }[] = [
   { key: "vendor", label: "Vendors", description: "Suppliers and service providers" },
   { key: "employee", label: "Employees", description: "Staff paid through the check register" },
-  { key: "item", label: "Items", description: "Lab supplies like Zirconia, EMAX, etc." },
+  { key: "item", label: "Billable Items", description: "Lab supplies like Zirconia, EMAX, etc." },
 ];
 
 const TYPE_BADGE: Record<VendorType, string> = {
