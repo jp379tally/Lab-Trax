@@ -1891,25 +1891,6 @@ export async function registerRoutes(): Promise<IRouter> {
         }
       }
 
-      // Status map: desktop → mobile legacy format
-      const DESKTOP_TO_MOBILE_STATUS: Record<string, string> = {
-        received: "INTAKE",
-        in_design: "DESIGN",
-        scan: "SCAN",
-        in_milling: "MILLING",
-        post_mill: "POST_MILL",
-        sintering_furnace: "SINTERING_FURNACE",
-        model_room: "MODEL_ROOM",
-        in_porcelain: "PORCELAIN",
-        qc: "QC_CHECK",
-        complete: "COMPLETE",
-        shipped: "DELIVERY",
-        delivered: "COMPLETE",
-        on_hold: "ON_HOLD",
-        remake: "REMAKE",
-        cancelled: "COMPLETE",
-      };
-
       const mobileCases = rows
         .map((row) => {
           try {
@@ -1966,8 +1947,9 @@ export async function registerRoutes(): Promise<IRouter> {
           const patientName = [firstName, lastName].filter(Boolean).join(" ");
           const initials =
             (firstName[0] ?? "") + (lastName[0] ?? "");
-          const mobileStatus =
-            DESKTOP_TO_MOBILE_STATUS[dc.status ?? ""] ?? "INTAKE";
+          // Mobile and server now share canonical lowercase statuses, so the
+          // structured-case status passes through unchanged.
+          const mobileStatus = dc.status ?? "received";
           const createdMs = dc.createdAt ? new Date(dc.createdAt).getTime() : Date.now();
           const updatedMs = dc.updatedAt ? new Date(dc.updatedAt).getTime() : createdMs;
           return {
@@ -2510,18 +2492,21 @@ export async function registerRoutes(): Promise<IRouter> {
         .from(caseRestorations)
         .where(eq(caseRestorations.caseId, caseId));
 
-      const DESKTOP_TO_MOBILE_STATUS: Record<string, string> = {
-        received: "INTAKE", in_design: "DESIGN", scan: "SCAN",
-        in_milling: "MILLING", post_mill: "POST_MILL",
-        sintering_furnace: "SINTERING_FURNACE", model_room: "MODEL_ROOM",
-        in_porcelain: "PORCELAIN", qc: "QC_CHECK", complete: "COMPLETE",
-        shipped: "DELIVERY", delivered: "COMPLETE",
-        on_hold: "ON_HOLD", remake: "REMAKE", cancelled: "COMPLETE",
+      // Human-readable labels for the canonical lowercase statuses, used only
+      // for activity-log descriptions. The status values themselves pass
+      // through unchanged — mobile and server share the canonical vocabulary.
+      const STATUS_LABEL: Record<string, string> = {
+        received: "Intake", in_design: "Design", scan: "Scan",
+        in_milling: "Mill", post_mill: "Post Mill",
+        sintering_furnace: "Sintering Furnace", model_room: "Model Room",
+        in_porcelain: "Porcelain", qc: "Quality Check", complete: "Complete",
+        shipped: "Shipping", delivered: "Delivered",
+        on_hold: "On Hold", remake: "Remake", cancelled: "Cancelled",
       };
 
       const createdMs = dc.createdAt ? new Date(dc.createdAt).getTime() : Date.now();
       const updatedMs = dc.updatedAt ? new Date(dc.updatedAt).getTime() : createdMs;
-      const mobileStatus = DESKTOP_TO_MOBILE_STATUS[dc.status ?? ""] ?? "INTAKE";
+      const mobileStatus = dc.status ?? "received";
       const firstName = dc.patientFirstName ?? "";
       const lastName = dc.patientLastName ?? "";
       const patientName = [firstName, lastName].filter(Boolean).join(" ");
@@ -2553,9 +2538,6 @@ export async function registerRoutes(): Promise<IRouter> {
         : req.protocol || "https";
       const attachmentFileUrl = (attId: string) =>
         `${fileProto}://${fileHost}/api/cases/${caseId}/attachments/${attId}/file`;
-
-      const mobileStationLabel = (mobile: string) =>
-        mobile.charAt(0) + mobile.slice(1).toLowerCase().replace(/_/g, " ");
 
       // Best-effort human description for less-common event types. Returns null
       // to omit purely-internal events (dedup detection, auto-link, deletions).
@@ -2618,15 +2600,12 @@ export async function registerRoutes(): Promise<IRouter> {
             });
             break;
           case "status_changed": {
-            const toMobile =
-              DESKTOP_TO_MOBILE_STATUS[String(meta.toStatus ?? "")] ?? null;
-            const label = toMobile
-              ? mobileStationLabel(toMobile)
-              : String(meta.toStatus ?? "");
+            const canonical = String(meta.toStatus ?? "");
+            const label = STATUS_LABEL[canonical] ?? canonical;
             activityLog.push({
               id: `evt-${ev.id}`,
               type: "station_change",
-              station: toMobile ?? undefined,
+              station: canonical || undefined,
               timestamp: ts,
               description: `Case moved to ${label}`,
               user: actor,
