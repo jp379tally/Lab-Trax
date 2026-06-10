@@ -1141,10 +1141,23 @@ router.post(
       if (!targetInvoice)
         throw new HttpError(500, "Invoice could not be generated.");
       if (!invoice && targetInvoice.caseId !== found.id) {
-        throw new HttpError(
-          409,
-          `Invoice number collision: "${targetInvoice.invoiceNumber}" is already used by a different case (conflicting invoice ID: ${targetInvoice.id}).`,
-        );
+        // When the existing invoice has caseId=null it was created via the
+        // legacy mobile path before this case was promoted to canonical.
+        // Link it to the canonical case now instead of refusing with a
+        // collision error — idempotent: if called again after linking it
+        // will already have caseId=found.id and this branch won't fire.
+        if (targetInvoice.caseId === null) {
+          await db
+            .update(invoices)
+            .set({ caseId: found.id, updatedByUserId: userId })
+            .where(eq(invoices.id, targetInvoice.id));
+          (targetInvoice as any).caseId = found.id;
+        } else {
+          throw new HttpError(
+            409,
+            `Invoice number collision: "${targetInvoice.invoiceNumber}" is already used by a different case (conflicting invoice ID: ${targetInvoice.id}).`,
+          );
+        }
       }
 
       if (invoice && hasRestorations) {
@@ -1451,6 +1464,12 @@ router.get(
     const realCaseIds = new Set(
       rows.map((r: any) => r.caseId).filter((id: any): id is string => !!id)
     );
+    // Also track real DB invoice numbers so we can suppress mobile-synthesized
+    // duplicates when a matching INV-<caseNumber> row exists with caseId=null
+    // (the legacy generate-invoice path sets caseId null for lab_cases rows).
+    const realInvoiceNumbers = new Set(
+      rows.map((r: any) => r.invoiceNumber).filter((n: any): n is string => !!n)
+    );
     type SynthesizedInvoice = ReturnType<typeof toMobileInvoice>;
     const mobileInvoices: SynthesizedInvoice[] = [];
     for (const lc of mobileCaseRows as any[]) {
@@ -1462,6 +1481,12 @@ router.get(
             ? JSON.parse(lc.caseData)
             : lc.caseData;
         if (!parsed || typeof parsed !== "object") continue;
+        // Skip synthesis when a real DB invoice already covers this case by
+        // invoice number (handles the legacy path where caseId is null so
+        // realCaseIds would never match, causing both rows to appear).
+        const lcCaseNumber =
+          typeof parsed.caseNumber === "string" ? parsed.caseNumber : "";
+        if (lcCaseNumber && realInvoiceNumbers.has(`INV-${lcCaseNumber}`)) continue;
         const localInvoiceId =
           typeof parsed.invoiceId === "string" && parsed.invoiceId
             ? parsed.invoiceId
