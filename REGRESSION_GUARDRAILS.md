@@ -146,6 +146,24 @@ Protected sub-behaviors:
 
 ---
 
+## Protected Workflow: Pending Upload Queue UI
+
+The user must be able to *see and manage* photos/videos still waiting to upload. This is a visibility layer over the existing Mobile Failed-Upload Retry queue (above) — it reads the queue and drives the queue's own actions; it must never reimplement or redesign the queue itself.
+
+`PendingSyncBanner` (mounted once at the authed root, `app/_layout.tsx`) reads `pendingSyncCount` / `stuckSyncItems` from app-context and drives the queue's `retrySync` / `discardSync`.
+
+Protected sub-behaviors:
+
+- **Badge/banner appears while uploads are pending** — when `pendingSyncCount > 0` the user sees a persistent banner stating attachments are still uploading and are not yet visible on web/desktop.
+- **Hidden when the queue is empty** — when `pendingSyncCount` is 0 the banner (and its management sheet) render nothing.
+- **Tap reveals the stuck items** — tapping the banner opens a sheet listing each entry from `stuckSyncItems`.
+- **Per-item Retry now → `retrySync`** — each item exposes a "Retry now" action that calls `retrySync(item.id)` (kicks an immediate queue pass).
+- **Per-item Discard → `discardSync`** — each item exposes a "Discard" action that calls `discardSync(item.id)` (drops the entry).
+- **Indicator clears when the queue drains** — once everything uploads (`pendingSyncCount` returns to 0) the banner disappears on its own.
+- **No queue redesign** — the banner must not change the retry/resume/persistence logic, case sync, AI Reader, case creation, invoice generation, or location sync.
+
+---
+
 ## Zero-Regression Process
 
 Every code change that touches a protected workflow must follow this process, in order:
@@ -283,6 +301,16 @@ Run command:
 ```
 pnpm --filter @workspace/labtrax run test -- pending-uploads
 ```
+
+### Pending Upload Queue UI
+
+| Layer | File | What it guards |
+|-------|------|----------------|
+| Mobile unit | `artifacts/labtrax/lib/__tests__/screens/pending-sync-banner.smoke.test.tsx` | Badge appears when `pendingSyncCount > 0`; hidden when empty; tapping shows stuck items; "Retry now" calls `retrySync(id)`; "Discard" calls `discardSync(id)`; banner clears after the queue drains |
+
+Run command:
+```
+pnpm --filter @workspace/labtrax run test -- pending-sync-banner
 ```
 
 ### E2E Browser Tests

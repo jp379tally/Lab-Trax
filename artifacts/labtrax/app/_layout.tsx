@@ -28,6 +28,7 @@ import { DrawerProvider } from "@/lib/drawer-context";
 import { AppDrawer } from "@/components/AppDrawer";
 import { GlobalAIFAB } from "@/components/GlobalAIFAB";
 import { Toast } from "@/components/Toast";
+import { PendingSyncBanner } from "@/components/PendingSyncBanner";
 import { RevenueCatProvider } from "@/lib/revenuecat";
 import LoginScreen from "@/components/LoginScreen";
 import LockScreen from "@/components/LockScreen";
@@ -227,6 +228,7 @@ function AuthGate() {
                 </MessengerProvider>
                 <AppDrawer />
                 <GlobalAIFAB />
+                <PendingSyncBanner />
                 <Toast />
               </View>
             </InactivityWrapper>
