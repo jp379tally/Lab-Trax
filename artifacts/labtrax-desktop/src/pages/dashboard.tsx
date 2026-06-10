@@ -813,7 +813,7 @@ function CasesTable({
             <th className="text-left font-medium py-2.5">Case #</th>
             <th className="text-left font-medium py-2.5">Patient</th>
             <th className="text-left font-medium py-2.5">Doctor</th>
-            <th className="text-left font-medium py-2.5">Status</th>
+            <th className="text-left font-medium py-2.5">Location</th>
             <th className="text-left font-medium py-2.5 pr-5">Due</th>
           </tr>
         </thead>
