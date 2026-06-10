@@ -2324,17 +2324,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const ok = isSyncSuccess(syncResult);
       void logDebugEvent("SYNC_IIFE_DONE", { caseId: newCase.id, syncResult: String(syncResult), ok });
       if (!ok) {
-        // If there is no bearer token after the sync attempt, the request was
-        // never sent (resilientFetch threw "Not authenticated"). The case is
-        // saved locally on this device but the lab will not see it until the
-        // user re-authenticates. Show a blocking alert so the failure is visible.
-        if (!getAccessToken()) {
-          Alert.alert(
-            "Case Not Synced — Sign In Required",
-            `Case ${newCase.caseNumber} was saved on this device but could not reach the lab server because your session token is missing.\n\nPlease sign out and sign back in, then check that the case appears on the web or desktop.`,
-            [{ text: "OK" }],
-          );
-        }
+        // Case is already saved locally and the offline queue will retry the
+        // sync once connectivity / authentication is restored. The "offline
+        // changes waiting to sync" banner at the top of the screen already
+        // surfaces the pending state — a blocking alert here fires mid-form
+        // and misleadingly implies data loss when there is none.
         return;
       }
       await generateServerInvoiceForCase(newCase.id, newInvoice.id);
