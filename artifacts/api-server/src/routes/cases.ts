@@ -341,6 +341,28 @@ router.get(
       if (typeof url !== "string" || !url || url.startsWith("data:")) {
         throw new HttpError(404, "File not found.");
       }
+      // uploadPhotoAndCreateAttachment stores the id-based URL
+      // (/api/cases/:id/attachments/:uuid/file) in caseData.photos.
+      // extractMediaFileName can't derive a real filename from that path
+      // (the last segment is always "file"), so we resolve it by looking up
+      // the real caseAttachments row via the UUID embedded in the URL.
+      const idBasedMatch = url.match(
+        /\/api\/cases\/[^/]+\/attachments\/([0-9a-f-]{36})\/file(?:[?#].*)?$/i,
+      );
+      if (idBasedMatch) {
+        const resolvedAttId = idBasedMatch[1]!;
+        const resolvedAtt = await db.query.caseAttachments.findFirst({
+          where: and(
+            eq(caseAttachments.id, resolvedAttId),
+            isNull(caseAttachments.deletedAt),
+          ),
+        });
+        if (!resolvedAtt?.storageKey) throw new HttpError(404, "File not found.");
+        const fn2 = extractMediaFileName(resolvedAtt.storageKey);
+        if (!fn2) throw new HttpError(404, "File not found.");
+        await serveLegacyCaseMediaFile(req, res, fn2);
+        return;
+      }
       const fn = extractMediaFileName(url);
       if (!fn) throw new HttpError(404, "File not found.");
       // Authorize the FILE itself via the legacy_case_media ledger
@@ -371,6 +393,16 @@ router.get(
           eq(caseAttachments.caseId, caseId),
         ),
       });
+      // Fallback: case was promoted from mobile; attachment was created against
+      // labCaseId before promotion and still has caseId = null.
+      if (!attachment) {
+        attachment = await db.query.caseAttachments.findFirst({
+          where: and(
+            eq(caseAttachments.id, attachmentId),
+            eq(caseAttachments.labCaseId, caseId),
+          ),
+        });
+      }
     } else {
       // Legacy mobile case — look up by labCaseId, authorize via lab membership.
       const mobileRow = await db.query.labCases.findFirst({
@@ -3265,13 +3297,26 @@ router.get(
 
     if (canonicalAccess) {
       isLabMember = !!canonicalAccess.labMembership;
-      attachments = await db.query.caseAttachments.findMany({
+      const byCanonicalId = await db.query.caseAttachments.findMany({
         where: and(
           eq(caseAttachments.caseId, canonicalAccess.case.id),
           isNull(caseAttachments.deletedAt)
         ),
         orderBy: [desc(caseAttachments.createdAt)],
       });
+      // Also include attachments created before promotion (stored with labCaseId).
+      const byLabCaseId = await db.query.caseAttachments.findMany({
+        where: and(
+          eq(caseAttachments.labCaseId, canonicalAccess.case.id),
+          isNull(caseAttachments.deletedAt)
+        ),
+        orderBy: [desc(caseAttachments.createdAt)],
+      });
+      const seenIds = new Set(byCanonicalId.map((a: any) => a.id));
+      attachments = [
+        ...byCanonicalId,
+        ...byLabCaseId.filter((a: any) => !seenIds.has(a.id)),
+      ];
     } else {
       // Legacy mobile case — look up attachments by labCaseId.
       const mobileRow = await db.query.labCases.findFirst({
