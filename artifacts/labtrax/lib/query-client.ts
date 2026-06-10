@@ -251,6 +251,9 @@ function injectAuthHeaders(options?: RequestInit): RequestInit {
   if (_accessToken) {
     headers.set("Authorization", `Bearer ${_accessToken}`);
   }
+  if (Platform.OS !== "web") {
+    headers.set("x-labtrax-client", "mobile/2");
+  }
   if (Platform.OS === "web") {
     const csrfToken = getCsrfToken();
     if (csrfToken) {
@@ -269,7 +272,7 @@ async function resilientFetch(
   options?: RequestInit,
 ): Promise<Response> {
   // Native clients authenticate with a bearer token. If the in-memory token
-  // isn't populated yet — e.g. the offline-queue drain fires at launch before
+  // isn't populated yet — e.g. a request fires at launch before
   // loadTokens() has run, or after a transient clear — hydrate it from secure
   // storage (and refresh if needed) BEFORE sending. Otherwise the request goes
   // out with no Authorization header but with the auth cookie that React
@@ -463,9 +466,8 @@ export async function uploadCaseMedia(
       await refreshAccessToken();
     }
     if (!_accessToken) {
-      // No bearer token available. Throw so the caller (offline-queue drain)
-      // treats this as a transient network failure and retries after the user
-      // re-authenticates, rather than permanently wedging as "rejected".
+      // No bearer token available. Throw so the caller treats this as a
+      // transient network failure and retries after the user re-authenticates.
       throw new Error("Not authenticated: no bearer token available for upload.");
     }
   }

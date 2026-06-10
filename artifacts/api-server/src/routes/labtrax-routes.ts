@@ -1380,6 +1380,25 @@ export async function registerRoutes(): Promise<IRouter> {
   });
 
   router.post("/legacy/cases", requireAuth, async (req, res) => {
+    // Guard: if the new mobile client (mobile/2+) sends a canonical UUID as
+    // the case ID to this legacy endpoint, it is a routing bug — the canonical
+    // PATCH /api/cases/:id path should have been used instead. Return 410 so
+    // the mistake surfaces loudly in logs. Non-UUID IDs (client-generated,
+    // stored in lab_cases) are still valid here and pass through unchanged.
+    const clientHeader = req.headers["x-labtrax-client"];
+    const incomingId = req.body?.id;
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (
+      typeof clientHeader === "string" &&
+      clientHeader.startsWith("mobile/") &&
+      typeof incomingId === "string" &&
+      UUID_RE.test(incomingId)
+    ) {
+      return res.status(410).json({
+        error:
+          "Canonical UUID cases must use PATCH /api/cases/:id, not the legacy cases endpoint.",
+      });
+    }
     try {
       const { id, ownerId, caseData } = req.body;
       if (!id || !ownerId || !caseData) {

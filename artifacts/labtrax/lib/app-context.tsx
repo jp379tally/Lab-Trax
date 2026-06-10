@@ -10,20 +10,6 @@ import React, {
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system";
 import { getApiUrl, resilientFetch, getAccessToken, uploadCaseMedia, logDebugEvent } from "./query-client";
-import {
-  enqueuePhoto,
-  enqueueNote,
-  enqueueStatus,
-  drainQueue,
-  subscribeToQueueSummary,
-  retryItem,
-  retryAllStuck,
-  discardItem,
-  isSyncSuccess,
-  syncFailureFromStatus,
-  type StuckQueueItem,
-  type SyncResult,
-} from "./offline-queue";
 import { Alert, AppState, Platform } from "react-native";
 import {
   UserRole,
@@ -46,7 +32,6 @@ import {
 import { resolvePriceForCase } from "@/lib/pricing";
 import {
   generateId,
-  isCanonicalCase,
   getStationInfo,
   formatAcctNum,
   formatInvNum,
@@ -163,18 +148,6 @@ interface AppContextValue {
   updateWorkStatus: (status: "available" | "break" | "out_of_office") => Promise<{ success: boolean; error?: string }>;
   invoiceTemplate: { customTexts: any[]; defaultTextBlocks: any[] } | null;
   fetchInvoiceTemplate: () => Promise<void>;
-  // Number of offline changes (photos, notes, status moves) still queued and
-  // waiting to sync to the server. 0 when everything is up to date.
-  pendingSyncCount: number;
-  // Offline changes that have repeatedly failed to sync and are no longer
-  // retried automatically. Surfaced to the user so they can manually retry or
-  // discard them. Empty when nothing is stuck.
-  stuckSyncItems: StuckQueueItem[];
-  // Reset stuck items so the next drain retries them. Pass an id to retry a
-  // single item, or omit to retry all stuck items. Triggers a drain.
-  retrySync: (id?: string) => void;
-  // Permanently drop a stuck offline change so it stops blocking the queue.
-  discardSync: (id: string) => void;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -313,8 +286,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [customStationLabels, setCustomStationLabels] = useState<Record<string, string>>({});
   const [deletedClientInvoices, setDeletedClientInvoices] = useState<DeletedClientInvoice[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [pendingSyncCount, setPendingSyncCount] = useState(0);
-  const [stuckSyncItems, setStuckSyncItems] = useState<StuckQueueItem[]>([]);
   const [invoiceTemplate, setInvoiceTemplate] = useState<{ customTexts: any[]; defaultTextBlocks: any[] } | null>(null);
   const invoiceTemplateFetchedAtRef = useRef<number>(0);
   const INVOICE_TEMPLATE_TTL_MS = 10 * 60 * 1000;
@@ -443,39 +414,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setAllCases(updater);
   }
 
-  async function syncCaseToServer(labCase: LabCase): Promise<SyncResult> {
-    const isCanon = isCanonicalCase(labCase as any);
-    void logDebugEvent("SYNC_START", { caseId: labCase.id, isCanon, status: labCase.status ?? null, sourceTable: (labCase as any)._sourceTable ?? null });
+  // UUID-format case IDs were issued by the server's canonical `cases` table.
+  // Non-UUID IDs were generated client-side (generateId()) and live in lab_cases.
+  const CANONICAL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  async function syncCaseToServer(labCase: LabCase): Promise<boolean> {
+    const MOBILE_TO_DESKTOP_STATUS: Record<string, string> = {
+      INTAKE: "received",
+      DESIGN: "in_design",
+      SCAN: "scan",
+      MILL: "in_milling",
+      MILLING: "in_milling",
+      POST_MILL: "post_mill",
+      SINTERING_FURNACE: "sintering_furnace",
+      MODEL_ROOM: "model_room",
+      PORCELAIN: "in_porcelain",
+      QC_CHECK: "qc",
+      QC: "qc",
+      COMPLETE: "complete",
+      SHIP: "shipped",
+      DELIVERY: "shipped",
+      HOLD: "on_hold",
+      ON_HOLD: "on_hold",
+      REMAKE: "remake",
+    };
+    void logDebugEvent("SYNC_START", { caseId: labCase.id, status: labCase.status ?? null });
     try {
-      // Canonical (desktop) cases live in the `cases` table, not `lab_cases`.
-      // Syncing them via the legacy POST endpoint would try to create a
-      // duplicate row in lab_cases and fail with a 403. Use PATCH instead,
-      // converting the mobile status token back to the desktop enum value.
-      if (isCanon) {
-        const MOBILE_TO_DESKTOP_STATUS: Record<string, string> = {
-          INTAKE: "received",
-          DESIGN: "in_design",
-          SCAN: "scan",
-          MILL: "in_milling",
-          MILLING: "in_milling",
-          POST_MILL: "post_mill",
-          SINTERING_FURNACE: "sintering_furnace",
-          MODEL_ROOM: "model_room",
-          PORCELAIN: "in_porcelain",
-          QC_CHECK: "qc",
-          QC: "qc",
-          COMPLETE: "complete",
-          SHIP: "shipped",
-          DELIVERY: "shipped",
-          HOLD: "on_hold",
-          ON_HOLD: "on_hold",
-          REMAKE: "remake",
-        };
+      if (CANONICAL_ID_RE.test(labCase.id)) {
+        // Canonical UUID case → PATCH status on the cases table.
         const desktopStatus = labCase.status
           ? MOBILE_TO_DESKTOP_STATUS[labCase.status]
           : undefined;
         if (!desktopStatus) {
-          void logDebugEvent("SYNC_CANON_NO_STATUS", { caseId: labCase.id, status: labCase.status ?? null });
+          void logDebugEvent("SYNC_NO_STATUS", { caseId: labCase.id, status: labCase.status ?? null });
           return false;
         }
         const res = await resilientFetch(
@@ -486,40 +457,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
             body: JSON.stringify({ status: desktopStatus }),
           }
         );
-        void logDebugEvent("SYNC_CANON_PATCH_DONE", { caseId: labCase.id, httpStatus: res?.status ?? -1, ok: res?.ok ?? false });
-        return res?.ok ? true : syncFailureFromStatus(res?.status ?? 0);
-      }
-
-      const normalizedCase: LabCase = {
-        ...labCase,
-        ownerId: labCase.ownerId || currentUserId || undefined,
-        affiliationName: labCase.affiliationName ?? null,
-      };
-
-      let bodyStr: string;
-      try {
-        bodyStr = JSON.stringify({
-          id: normalizedCase.id,
-          ownerId: normalizedCase.ownerId || currentUserId,
-          caseData: JSON.stringify(normalizedCase),
+        void logDebugEvent("SYNC_PATCH_DONE", { caseId: labCase.id, httpStatus: res?.status ?? -1, ok: res?.ok ?? false });
+        return res?.ok ?? false;
+      } else {
+        // Legacy non-UUID case → upsert into lab_cases.
+        if (!labCase.ownerId) return false;
+        const res = await resilientFetch("/api/legacy/cases", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: labCase.id,
+            ownerId: labCase.ownerId,
+            caseData: labCase,
+          }),
         });
-      } catch (jsonErr) {
-        void logDebugEvent("SYNC_JSON_FAIL", { caseId: labCase.id, err: String(jsonErr) });
-        return false;
+        void logDebugEvent("SYNC_LEGACY_POST_DONE", { caseId: labCase.id, httpStatus: res?.status ?? -1, ok: res?.ok ?? false });
+        return res?.ok ?? false;
       }
-
-      void logDebugEvent("SYNC_FETCH_START", { caseId: labCase.id, bodySize: bodyStr.length, ownerId: normalizedCase.ownerId ?? null, hasToken: !!getAccessToken() });
-      const res = await resilientFetch("/api/legacy/cases", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: bodyStr,
-      });
-      void logDebugEvent("SYNC_FETCH_DONE", { caseId: labCase.id, httpStatus: res?.status ?? -1, ok: res?.ok ?? false });
-      return res?.ok ? true : syncFailureFromStatus(res?.status ?? 0);
     } catch (e) {
       void logDebugEvent("SYNC_CATCH", { caseId: labCase.id, err: String(e) });
       console.log("Could not sync case to server:", e);
-      // Thrown fetch — never reached the server (transient network failure).
       return false;
     }
   }
@@ -954,82 +911,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, [currentUserId]);
 
-  // ─── Offline queue drain ──────────────────────────────────────────────────
-  // Drain any pending photo/note uploads queued while offline.
-  //
-  // Three triggers:
-  //  1. Mount — picks up items left over from a previous session that was
-  //     interrupted before the queue was fully drained.
-  //  2. AppState "active" — fires when the user brings the app to the
-  //     foreground after a background-or-closed stint during which network
-  //     may have been unavailable.
-  //  3. 30-second interval while the app is foregrounded — handles the
-  //     common case where the device regains connectivity while the app
-  //     stays open (e.g. Wi-Fi dropping and reconnecting), without
-  //     requiring a background/foreground transition.
-  useEffect(() => {
-    if (!currentUserId) return;
-
-    void drainQueue(rawUploadPhotoToCase, rawPostNoteToCase, rawSyncCaseStatus);
-
-    const appStateSubscription = AppState.addEventListener(
-      "change",
-      (nextState) => {
-        if (nextState === "active") {
-          void drainQueue(rawUploadPhotoToCase, rawPostNoteToCase, rawSyncCaseStatus);
-        }
-      }
-    );
-
-    const DRAIN_INTERVAL_MS = 30_000;
-    const intervalId = setInterval(() => {
-      if (AppState.currentState === "active") {
-        void drainQueue(rawUploadPhotoToCase, rawPostNoteToCase, rawSyncCaseStatus);
-      }
-    }, DRAIN_INTERVAL_MS);
-
-    return () => {
-      appStateSubscription.remove();
-      clearInterval(intervalId);
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUserId]);
-
-  // ─── Pending-sync indicator ────────────────────────────────────────────────
-  // Mirror the offline queue's state into React state so the UI can show a
-  // "waiting to sync" indicator and, when changes repeatedly fail, a
-  // "couldn't sync — tap to retry" prompt. subscribeToQueueSummary fires
-  // immediately with the current summary and again after every enqueue, drain,
-  // retry, or discard mutation.
-  useEffect(() => {
-    const unsubscribe = subscribeToQueueSummary((summary) => {
-      setPendingSyncCount(summary.total);
-      setStuckSyncItems(summary.stuckItems);
-    });
-    return unsubscribe;
-  }, []);
-
-  // Reset stuck items (one or all) and kick off a drain so they retry now.
-  function retrySync(id?: string) {
-    void (async () => {
-      if (id) {
-        await retryItem(id);
-      } else {
-        await retryAllStuck();
-      }
-      triggerQueueDrain();
-    })();
-  }
-
-  // Permanently discard a stuck offline change so it stops blocking the queue.
-  function discardSync(id: string) {
-    void (async () => {
-      await discardItem(id);
-      // Discarding the wedged head item may unblock the rest of the queue.
-      triggerQueueDrain();
-    })();
-  }
-
   function mapJoinRequestStatus(status?: string): GroupJoinRequest["status"] {
     if (status === "approved" || status === "accepted") {
       return "accepted";
@@ -1276,7 +1157,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     inFlightSyncIdsRef.current.add(c.id);
     void (async () => {
       try {
-        const ok = isSyncSuccess(await syncCaseToServer(c));
+        const ok = await syncCaseToServer(c);
         if (!ok) return;
         const localInvoice = invoicesRef.current.find((inv) =>
           inv.caseIds?.includes(c.id)
@@ -1795,28 +1676,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  // Update local case state with the authoritative server response.
-  // Server payloads win on id matches. Local-only cases (those without an
-  // "org:" affiliationKey — private cases not yet synced to any lab) that the
-  // server didn't return are preserved so offline-created work isn't lost.
-  // Lab-tagged cases not in the server response are dropped (server is
-  // authoritative for org cases).
+  // Replace local cache with the authoritative server response. The server is
+  // the single source of truth for cases; we do not attempt to reconcile local
+  // edits that haven't been synced yet — all writes go through the canonical API.
   function mergeServerCases(serverCases: LabCase[]) {
     setAllCases((prev) => {
+      // Server cases are authoritative for their own records. Preserve
+      // local-only private cases (non-UUID device IDs) that haven't reached
+      // the server yet — e.g. a case scanned offline or mid-network-blip.
+      // UUID-format IDs were issued by the server; if the server no longer
+      // returns them, they're gone (membership revoked, deleted, etc.).
       const serverIds = new Set(serverCases.map((c) => c.id));
-      const localPrivate = prev.filter((c) => {
-        if (serverIds.has(c.id)) return false;
-        const key = typeof c.affiliationKey === "string" ? c.affiliationKey.trim() : "";
-        return !key.startsWith("org:");
-      });
-      const next = [...serverCases, ...localPrivate];
-      const changed =
-        next.length !== prev.length ||
-        next.some((c, i) => c.id !== prev[i]?.id || c.updatedAt !== prev[i]?.updatedAt);
-      if (!changed) return prev;
-      void AsyncStorage.setItem(CASES_KEY, JSON.stringify(next));
-      prevCasesRef.current = next;
-      return next;
+      const localOnly = prev.filter(
+        (c) => !serverIds.has(c.id) && !CANONICAL_ID_RE.test(c.id) && !!c.ownerId
+      );
+      const merged =
+        localOnly.length > 0 ? [...serverCases, ...localOnly] : serverCases;
+      if (merged === prev) return prev;
+      AsyncStorage.setItem(CASES_KEY, JSON.stringify(merged));
+      prevCasesRef.current = merged;
+      return merged;
     });
   }
 
@@ -2096,7 +1975,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // calling setAllCases([]) on a freshly-cleared cache (post-logout
       // sign-in) would wipe the server's response. Always guard with a
       // functional setState that only hydrates from cache when state is
-      // empty — the server fetch's reconcileCases handles everything else.
+      // empty — the server fetch handles everything else.
       if (savedCases) {
         try {
           const parsedCases: LabCase[] = JSON.parse(savedCases);
@@ -2330,14 +2209,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     void logDebugEvent("ADD_CASE_QUEUED", { caseId: newCase.id, affiliationKey: caseAffiliationKey ?? null, ownerId: currentUserId ?? null });
     void (async () => {
       void logDebugEvent("SYNC_IIFE_ENTERED", { caseId: newCase.id });
-      const syncResult = await syncCaseToServer(newCase);
-      const ok = isSyncSuccess(syncResult);
-      void logDebugEvent("SYNC_IIFE_DONE", { caseId: newCase.id, syncResult: String(syncResult), ok });
+      const ok = await syncCaseToServer(newCase);
+      void logDebugEvent("SYNC_IIFE_DONE", { caseId: newCase.id, ok });
       if (!ok) {
-        // Case is already saved locally and the offline queue will retry the
-        // sync once connectivity / authentication is restored. The "offline
-        // changes waiting to sync" banner at the top of the screen already
-        // surfaces the pending state — a blocking alert here fires mid-form
+        // Case is already saved locally. A blocking alert here fires mid-form
         // and misleadingly implies data loss when there is none.
         return;
       }
@@ -2396,17 +2271,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             ],
             activityLog: [...(c.activityLog || []), ...extraEntries],
           };
-          // Attempt the status sync immediately; if it fails (offline or a
-          // transient error) enqueue it so the offline drain retries it on
-          // reconnect — mirroring how photos/notes already drain. Without this
-          // the local UI would update but the station change could be silently
-          // lost, leaving web/desktop on the old station.
-          void (async () => {
-            const ok = isSyncSuccess(await syncCaseToServer(updatedCase));
-            if (!ok) {
-              await enqueueStatus(caseId);
-            }
-          })();
+          void syncCaseToServer(updatedCase);
           return updatedCase;
         }
         return c;
@@ -2474,19 +2339,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } catch {}
   }
 
-  // ─── Raw executors used by both the hot-path and the offline drain ──────────
+  // ─── Server sync helpers ─────────────────────────────────────────────────
 
   async function rawUploadPhotoToCase(
     caseId: string,
     photoUri: string,
     fileName: string,
     mimeType: string
-  ): Promise<SyncResult> {
+  ): Promise<boolean> {
     try {
       // Use uploadCaseMedia (XHR), NOT resilientFetch — expo/fetch rejects the
       // native { uri, name, type } file descriptor.
       const uploadRes = await uploadCaseMedia("/api/media/upload", photoUri, fileName, mimeType);
-      if (!uploadRes?.ok) return syncFailureFromStatus(uploadRes?.status ?? 0);
+      if (!uploadRes?.ok) return false;
       const { url } = await uploadRes.json();
       const attachRes = await resilientFetch(
         `/api/cases/${encodeURIComponent(caseId)}/attachments`,
@@ -2496,14 +2361,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
           body: JSON.stringify({ storageKey: url, fileName, fileType: mimeType }),
         }
       );
-      return attachRes?.ok ? true : syncFailureFromStatus(attachRes?.status ?? 0);
+      return attachRes?.ok ?? false;
     } catch {
-      // Thrown fetch — never reached the server (transient network failure).
       return false;
     }
   }
 
-  async function rawPostNoteToCase(caseId: string, noteText: string): Promise<SyncResult> {
+  async function rawPostNoteToCase(caseId: string, noteText: string): Promise<boolean> {
     try {
       const res = await resilientFetch(
         `/api/cases/${encodeURIComponent(caseId)}/notes`,
@@ -2513,47 +2377,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
           body: JSON.stringify({ noteText }),
         }
       );
-      return res?.ok ? true : syncFailureFromStatus(res?.status ?? 0);
+      return res?.ok ?? false;
     } catch {
-      // Thrown fetch — never reached the server (transient network failure).
       return false;
     }
   }
 
-  // Sync a queued case status/station change. Re-reads the case's latest local
-  // state (via the ref so long-lived drain handlers aren't stuck on a stale
-  // closure) and pushes it through the same canonical/legacy path as the
-  // hot-path.
-  //
-  // Crucially, "case not found in allCasesRef" is ambiguous on a cold boot: it
-  // can mean the case was deleted, OR that loadData() simply hasn't hydrated the
-  // cache yet (the mount drain effect can win the race against case loading). We
-  // must NOT drop the queued item in the latter case, or an offline station
-  // change made before a restart vanishes silently. So:
-  //   - case found            → sync it.
-  //   - not found, not hydrated → return false (keep it queued; a later drain
-  //                               trigger retries once the cache has loaded).
-  //   - not found, hydrated    → the case is genuinely gone (deleted); return
-  //                               true so the item doesn't wedge the queue.
-  async function rawSyncCaseStatus(caseId: string): Promise<SyncResult> {
-    const labCase = allCasesRef.current.find((c) => c.id === caseId);
-    if (!labCase) return casesHydratedRef.current ? true : false;
-    return syncCaseToServer(labCase);
-  }
-
-  function triggerQueueDrain() {
-    void drainQueue(rawUploadPhotoToCase, rawPostNoteToCase, rawSyncCaseStatus);
-  }
-
-  // ─── Public wrappers: attempt immediately, enqueue on failure ────────────
-
   async function addNoteToCanonicalCase(caseId: string, noteText: string): Promise<void> {
-    const itemId = `note-${caseId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-    const succeeded = isSyncSuccess(await rawPostNoteToCase(caseId, noteText));
-    if (!succeeded) {
-      await enqueueNote(itemId, caseId, noteText);
-    }
+    await rawPostNoteToCase(caseId, noteText);
   }
 
   // Upload a local photo/video and create its caseAttachments row in a SINGLE
@@ -2608,35 +2439,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   async function addCasePhoto(caseId: string, photoUri: string, user?: string) {
     const now = Date.now();
     const isVid = isVideoUri(photoUri);
-    const targetCase = cases.find((c) => c.id === caseId);
-    const isCanonical = isCanonicalCase(targetCase as any);
 
-    // Decide what URI to persist. For canonical server cases we MUST store a
-    // URL backed by a real caseAttachments row (see uploadPhotoAndCreateAttachment),
-    // otherwise the auth-gated serving route 404s and the photo renders blank.
+    // Upload and create the caseAttachments row so the auth-gated serving route
+    // can return the file. Falls back to local URI on network failure so the
+    // user still sees the photo on-device.
     let storedUri = photoUri;
-    let enqueueForRetry = false;
-    if (isCanonical) {
-      const canonicalUrl = await uploadPhotoAndCreateAttachment(caseId, photoUri);
-      if (canonicalUrl) {
-        storedUri = canonicalUrl;
-      } else {
-        // Offline / upload failed: keep the local uri for on-device preview and
-        // queue the upload so it syncs once connectivity returns.
-        enqueueForRetry = true;
-      }
-    } else {
-      // The /api/cases/:caseId/attachments endpoint handles both canonical case
-      // IDs (caseId FK) and legacy lab_cases IDs (labCaseId FK). Try the proper
-      // server upload path so the photo appears in the web/desktop Files tab for
-      // the same Case ID; fall back to a normalized local URI only on failure.
-      const serverUrl = await uploadPhotoAndCreateAttachment(caseId, photoUri);
-      if (serverUrl) {
-        storedUri = serverUrl;
-      } else {
-        storedUri = (await normalizeSharedImageUri(photoUri)) || photoUri;
-        enqueueForRetry = true;
-      }
+    const canonicalUrl = await uploadPhotoAndCreateAttachment(caseId, photoUri);
+    if (canonicalUrl) {
+      storedUri = canonicalUrl;
     }
 
     const photoEntry: ActivityEntry = {
@@ -2665,15 +2475,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return updated;
     });
 
-    if (enqueueForRetry) {
+    if (!canonicalUrl) {
+      // Upload failed — attempt bare upload as a best-effort fallback.
       const uriClean = photoUri.toLowerCase().split("?")[0] ?? "";
       const ext = uriClean.split(".").pop() || (isVid ? "mp4" : "jpg");
       const mimeType = isVid
         ? ext === "mov" ? "video/quicktime" : `video/${ext}`
         : ext === "jpg" ? "image/jpeg" : `image/${ext}`;
       const fileName = `case-media-${Date.now()}.${ext}`;
-      const itemId = `photo-${caseId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      await enqueuePhoto(itemId, caseId, photoUri, fileName, mimeType);
+      void rawUploadPhotoToCase(caseId, photoUri, fileName, mimeType);
     }
   }
 
@@ -2696,9 +2506,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             activityLog: [...(c.activityLog || []), noteEntry],
           };
           void syncCaseToServer(updatedCase);
-          if (isCanonicalCase(c as any)) {
-            void addNoteToCanonicalCase(caseId, note);
-          }
+          void addNoteToCanonicalCase(caseId, note);
           return updatedCase;
         }
         return c;
@@ -2710,24 +2518,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   async function addCasePhotosWithNote(caseId: string, photoUris: string[], note: string, user?: string) {
     const now = Date.now();
-    const targetCase = cases.find((c) => c.id === caseId);
-    const isCanonical = isCanonicalCase(targetCase as any);
 
-    // Resolve each local uri to a renderable, persistable uri. For canonical
-    // server cases this uploads + creates the attachment row so the serving
-    // route can actually return the file (otherwise it 404s → blank). isVid is
-    // derived from the ORIGINAL uri because the canonical serving URL has no
-    // file extension to sniff.
+    // Resolve each local uri to a renderable, persistable uri. This uploads +
+    // creates the attachment row so the serving route can actually return the
+    // file (otherwise it 404s → blank). isVid is derived from the ORIGINAL uri
+    // because the canonical serving URL has no file extension to sniff.
     const resolved = await Promise.all(
       photoUris.map(async (originalUri) => {
         const isVid = isVideoUri(originalUri);
-        if (isCanonical) {
-          const canonicalUrl = await uploadPhotoAndCreateAttachment(caseId, originalUri);
-          if (canonicalUrl) return { storedUri: canonicalUrl, isVid, retry: false, originalUri };
-          return { storedUri: originalUri, isVid, retry: true, originalUri };
-        }
-        const shared = (await normalizeSharedImageUri(originalUri)) || originalUri;
-        return { storedUri: shared, isVid, retry: false, originalUri };
+        const canonicalUrl = await uploadPhotoAndCreateAttachment(caseId, originalUri);
+        if (canonicalUrl) return { storedUri: canonicalUrl, isVid, retry: false, originalUri };
+        return { storedUri: originalUri, isVid, retry: true, originalUri };
       })
     );
 
@@ -2766,7 +2567,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             ],
           };
           void syncCaseToServer(updatedCase);
-          if (isCanonical && noteEntry) {
+          if (noteEntry) {
             void addNoteToCanonicalCase(caseId, noteEntry.description);
           }
           return updatedCase;
@@ -2777,7 +2578,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return updated;
     });
 
-    // Queue any uploads that failed (offline) so they sync when back online.
+    // Best-effort retry for any uploads that failed (e.g. offline).
     for (const r of resolved) {
       if (!r.retry) continue;
       const uriClean = r.originalUri.toLowerCase().split("?")[0] ?? "";
@@ -2786,8 +2587,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         ? ext === "mov" ? "video/quicktime" : `video/${ext}`
         : ext === "jpg" ? "image/jpeg" : `image/${ext}`;
       const fileName = `case-media-${Date.now()}.${ext}`;
-      const itemId = `photo-${caseId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      await enqueuePhoto(itemId, caseId, r.originalUri, fileName, mimeType);
+      void rawUploadPhotoToCase(caseId, r.originalUri, fileName, mimeType);
     }
   }
 
@@ -3916,16 +3716,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             routeHistory: [...(c.routeHistory || []), { station: newStatus, timestamp: now }],
             activityLog: [...(c.activityLog || []), stationEntry],
           };
-          // Sync to server so web/desktop see the updated location.
-          // Mirrors updateCaseStatus: attempt immediately and fall back to
-          // the offline queue if the request fails, so the change is never
-          // silently lost on a transient network error.
-          void (async () => {
-            const ok = isSyncSuccess(await syncCaseToServer(updatedCase));
-            if (!ok) {
-              await enqueueStatus(c.id);
-            }
-          })();
+          void syncCaseToServer(updatedCase);
           return updatedCase;
         }
         return c;
@@ -4114,12 +3905,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       updateWorkStatus,
       invoiceTemplate,
       fetchInvoiceTemplate,
-      pendingSyncCount,
-      stuckSyncItems,
-      retrySync,
-      discardSync,
     }),
-    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, pendingInvoiceEditId, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, labAffiliationReady, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers, allLabOrganizationIds, activeLabAffiliationKey, activeLabAffiliationName, allLabAffiliationKeysList, invoiceTemplate, pendingSyncCount, stuckSyncItems],
+    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, pendingInvoiceEditId, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, labAffiliationReady, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers, allLabOrganizationIds, activeLabAffiliationKey, activeLabAffiliationName, allLabAffiliationKeysList, invoiceTemplate],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

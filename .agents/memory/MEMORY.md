@@ -32,3 +32,4 @@
 - [React Query on mobile needs auth refresh wiring](rq-mobile-auth-refresh.md) — customFetch needs setAuthRefresher for 401-retry; token getter needs SecureStore hydration; smoke tests need @workspace/api-client-react mocked in vitest.setup.
 - [Authed media cache same-origin guard](authed-media-cache-origin.md) — authed-media-cache must check isSameApiOrigin before attaching Bearer to downloadAsync; skipping this leaks JWTs to external URLs.
 - [LabTrax Lists page duplicate](labtrax-lists-page-duplicate.md) — edit lists.tsx (live /lists); finance/payees.tsx is a dead lookalike. vendors not protected, FKs SET NULL, items keyed by name.
+- [Mobile shim removal](mobile-shim-removal.md) — offline-queue + case-reconciliation deleted; syncCaseToServer is dual-path (UUID→canonical PATCH, non-UUID→legacy POST); 410 only for UUID IDs via mobile/2 header.

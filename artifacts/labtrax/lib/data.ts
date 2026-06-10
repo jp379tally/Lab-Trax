@@ -238,29 +238,6 @@ export function generateId(): string {
   return Date.now().toString() + Math.random().toString(36).substr(2, 9);
 }
 
-// Canonical (desktop/web) cases live in the `cases` table and have a
-// DB-generated UUID id (`gen_random_uuid()`). Legacy mobile cases live in
-// `lab_cases` and use a client `generateId()` (timestamp + base36, never a
-// UUID). The server tags canonical cases with `_sourceTable === "cases"`, but
-// that flag can be dropped by local caching/merge. The id shape cannot, so we
-// use it as a flag-independent fallback to avoid misrouting a canonical case's
-// status/photo/note writes to the legacy endpoint (which 403s).
-const CANONICAL_UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-export function isCanonicalCaseId(id: string | null | undefined): boolean {
-  return typeof id === "string" && CANONICAL_UUID_RE.test(id);
-}
-
-export function isCanonicalCase(
-  c: { id?: string | null; _sourceTable?: string | null } | null | undefined
-): boolean {
-  if (!c) return false;
-  if (c._sourceTable === "cases") return true;
-  if (c._sourceTable === "lab_cases") return false;
-  return isCanonicalCaseId(c.id);
-}
-
 export function formatAcctNum(accountNumber: string): string {
   if (!accountNumber) return "";
   return `Acct #${accountNumber}`;
