@@ -61,6 +61,13 @@ Protected sub-behaviors:
 - **Case detail renders** — the case detail screen renders the case header (case number, patient name) and activity log entries without throwing. An unknown case ID shows "Case not found".
 - **Completed-case detail renders** — a completed case with an attached paid invoice renders without throwing.
 - **Long-press locate** _(tests pending restoration)_ — long-pressing a case on the list triggers the locate/highlight workflow. This behavior is protected and must be covered by a regression test once the companion restore task is complete.
+- **Case Detail Notes Rendering** — the case detail screen must render without crashing regardless of the shape of the `notes` field returned by the API. Protected sub-behaviors:
+  - Case detail renders when `notes` is `undefined`.
+  - Case detail renders when `notes` is `null`.
+  - Case detail renders when `notes` is an array.
+  - Case detail renders when `notes` is an object.
+  - Non-string `notes` values must never crash the screen.
+  - Notes normalization (`normalizeNotes`) must remain applied at all case-detail ingestion, render, and edit boundaries — canonical mapper, Rx Summary `.trim()` check, both notes render sites, the notes-card empty check, edit/quick-edit initializers, and the quick-edit price-comparison snapshot.
 
 ---
 
@@ -248,7 +255,7 @@ pnpm --filter @workspace/api-server run test -- --reporter=verbose invoices case
 | Layer | File | What it guards |
 |-------|------|----------------|
 | Mobile unit | `artifacts/labtrax/lib/__tests__/screens/cases.smoke.test.tsx` | Cases screen renders, case numbers visible, long-press locate alert + modal |
-| Mobile unit | `artifacts/labtrax/lib/__tests__/screens/case-detail.smoke.test.tsx` | Case detail renders, empty state, completed case |
+| Mobile unit | `artifacts/labtrax/lib/__tests__/screens/case-detail.smoke.test.tsx` | Case detail renders, empty state, completed case; non-string `notes` (undefined/null/array/object) never crashes the screen |
 | API integration | `artifacts/api-server/src/routes/cases-core.test.ts` | Case lifecycle: create, read, list, patch status, cross-lab scoping, soft-delete |
 
 Run command:
