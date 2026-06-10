@@ -106,3 +106,25 @@ export function isTierMissing(
 export function isKnownPriceKey(key: string | null | undefined): boolean {
   return !!key && VALID_KEY_SET.has(key);
 }
+
+/**
+ * Normalizes a raw price-input string to exactly two decimal places for
+ * display when the user leaves a price field (blur / Tab / Enter).
+ *
+ * Rules:
+ *  - Blank (or whitespace-only) stays blank — never force `0.00` into an
+ *    empty field.
+ *  - A valid numeric string is padded/rounded to two decimals
+ *    (`119` → `119.00`, `99.5` → `99.50`, `119.00` → `119.00`).
+ *  - Anything that isn't a plain decimal number is returned unchanged so
+ *    invalid input isn't silently corrupted.
+ *
+ * This only affects the displayed string; callers still derive the saved
+ * numeric value via `Number(value)` exactly as before.
+ */
+export function formatPriceTwoDecimals(raw: string): string {
+  const trimmed = (raw ?? "").trim();
+  if (trimmed === "") return "";
+  if (!/^\d*\.?\d+$/.test(trimmed)) return raw;
+  return Number(trimmed).toFixed(2);
+}

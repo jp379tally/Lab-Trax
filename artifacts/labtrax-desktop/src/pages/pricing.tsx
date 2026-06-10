@@ -22,6 +22,7 @@ import type { LabCase, MeResponse, Organization } from "@/lib/types";
 import { formatMoney } from "@/lib/format";
 import {
   DEFAULT_PRICE_KEYS,
+  formatPriceTwoDecimals,
   isKnownPriceKey,
   isTierMissing,
   labelFor,
@@ -2160,6 +2161,12 @@ function PriceField({
           step="0.01"
           value={value}
           onChange={(e) => onChange(e.target.value)}
+          onBlur={(e) => onChange(formatPriceTwoDecimals(e.target.value))}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              onChange(formatPriceTwoDecimals(e.currentTarget.value));
+            }
+          }}
           placeholder={placeholder}
           className="w-28 h-8 px-2 rounded-md bg-background border border-input text-sm text-right tabular-nums"
         />
