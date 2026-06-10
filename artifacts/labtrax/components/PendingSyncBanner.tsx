@@ -1,3 +1,8 @@
+// legacy-mobile-fence:disable-file — PendingSyncBanner is a pre-rebuild
+// component that directly consumes `pendingSyncCount` and `stuckSyncItems`
+// from app-context.  It is grandfathered until a follow-up task rewires
+// it to source data from the pending-uploads helpers directly.  Do NOT
+// add new references to the legacy sync fields in this file.
 import React, { useMemo, useState } from "react";
 import {
   View,

@@ -1,0 +1,98 @@
+Approved in principle, but do not begin broad implementation all at once.
+
+This is now the official direction:
+
+Scrap the legacy mobile architecture and rebuild the mobile app on the canonical desktop/web architecture.
+
+However, proceed in controlled phases. Do not make a massive all-at-once rewrite.
+
+Rules:
+
+1. Freeze new feature work on the old mobile app.
+2. Do not remove the old mobile app until the rebuilt version passes TestFlight acceptance.
+3. Build on canonical APIs only:
+
+   * `/api/cases`
+   * `/api/invoices`
+   * `/api/media/upload-session`
+   * `/api/cases/:id/attachments`
+4. No new mobile-created case may use `lab_cases`.
+5. No new mobile-created case may use `/api/legacy/cases`.
+6. No split IDs.
+7. No synthetic media IDs.
+8. No mobile-only invoice generation path.
+9. No silent local-only saves.
+
+Implementation must be phased:
+
+Phase 0:
+
+* Add compile-time guardrails preventing new legacy mobile paths.
+* Confirm no new mobile code can call `/api/legacy/cases`.
+* Confirm `X-LabTrax-Client: mobile/2` is enforced.
+
+Phase 1:
+
+* Auth/API/query foundation only.
+* Do not change screens yet.
+* Prove auth hydration, refresh, and protected requests are stable.
+
+Phase 2:
+
+* Rebuild cases list and case detail only.
+* Same UUID must appear on mobile/web/desktop.
+* Case history must match desktop/web.
+
+Phase 3:
+
+* Rebuild invoices only.
+* Invoice generated once.
+* No duplicate invoices.
+* Invoice links to canonical Case UUID.
+
+Phase 4:
+
+* Rebuild media/photo attachments.
+* Mobile photo must appear on web/desktop.
+* No synthetic or local-only photo paths.
+
+Phase 5:
+
+* Port mobile-specific features:
+
+  * AI Reader
+  * camera capture
+  * QR/barcode lookup
+  * share intent
+  * biometric lock
+  * long-press locate
+
+Phase 6:
+
+* Full TestFlight acceptance.
+
+Do not begin the next phase until the prior phase passes tests and I approve moving forward.
+
+Required after every phase:
+
+* automated regression tests
+* real-device TestFlight smoke test where applicable
+* checkpoint
+* rollback plan
+
+Acceptance for the rebuild remains:
+
+* AI Reader creates canonical case
+* same Case UUID visible mobile/web/desktop
+* case history visible
+* invoice generated once
+* invoice linked to same Case UUID
+* photos visible web/desktop
+* location/status syncs web/desktop
+* pricing matches desktop/web
+* no local-only saves
+* no duplicate invoices
+
+Checkpoint for Phase 0:
+
+“Mobile Rebuild Phase 0 — Legacy Paths Locked”

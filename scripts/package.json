@@ -11,6 +11,7 @@
     "diagnose-desktop-installer": "tsx ./src/diagnose-desktop-installer.ts",
     "test-publish-failure-alert": "tsx ./src/test-publish-failure-alert.ts",
     "lint-protected-tables": "tsx ./src/lint-protected-tables.ts",
+    "lint-mobile-legacy-paths": "tsx ./src/lint-mobile-legacy-paths.ts",
     "backfill-platform-account-numbers": "tsx ./src/backfill-platform-account-numbers.ts",
     "backfill-restoration-buckets": "tsx ./src/backfill-restoration-buckets.ts",
     "backfill-vendor-links": "tsx ./src/backfill-vendor-links.ts",

@@ -1,3 +1,10 @@
+// legacy-mobile-fence:disable-file — This file is grandfathered from the
+// pre-canonical-API era and cannot be migrated in one shot without breaking
+// existing cached cases on live devices.  All DEPRECATED symbols in this file
+// are kept for backward compatibility only.  Do NOT add new references to
+// /api/legacy/cases, lab_cases, or any of the legacy sync helpers here.
+// New case operations belong in components that use the @workspace/api-client-react
+// hooks (useCases, useCase, useInvoices, …) directly.
 import React, {
   createContext,
   useContext,
@@ -492,7 +499,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
         void logDebugEvent("SYNC_PATCH_DONE", { caseId: labCase.id, httpStatus: res?.status ?? -1, ok: res?.ok ?? false });
         return res?.ok ?? false;
       } else {
-        // Legacy non-UUID case → upsert into lab_cases.
+        // ⚠️  DEPRECATED — Legacy non-UUID case → upsert into lab_cases.
+        //
+        // TODO: Remove this branch once all active devices have migrated to
+        //       the canonical API architecture.  New cases must be created via
+        //       POST /api/cases and receive a canonical UUID; this path exists
+        //       only so existing cached cases (with client-generated IDs) keep
+        //       syncing until devices upgrade.
+        //       See: Rebuild mobile app on canonical API architecture task.
+        if (__DEV__) {
+          console.error(
+            "[app-context] syncCaseToServer: DEPRECATED legacy POST branch executed for case",
+            labCase.id,
+            "— this path is deprecated and will be removed. New cases must go through POST /api/cases.",
+          );
+        }
         if (!labCase.ownerId) return false;
         const res = await resilientFetch("/api/legacy/cases", {
           method: "POST",
@@ -960,6 +981,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const pendingUploadsRef = useRef<PendingUpload[]>([]);
   const processingUploadsRef = useRef(false);
 
+  // ⚠️  DEPRECATED — `pendingSyncCount` and `stuckSyncItems` are legacy fields
+  // from the pre-canonical-API sync model. They are kept here so the
+  // PendingSyncBanner component (which predates the rebuild) continues to work
+  // without changes. New code must not introduce additional reads of these
+  // fields from outside app-context. They will be removed in a follow-up task
+  // once PendingSyncBanner is updated to source its data directly from the
+  // pending-uploads helpers.
   const pendingSyncCount = pendingUploads.length;
   const stuckSyncItems: StuckQueueItem[] = useMemo(
     () =>

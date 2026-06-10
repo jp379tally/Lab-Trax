@@ -770,7 +770,7 @@ export default function CaseDetailScreen() {
 
       // Fallback: fetch the original (legacy) case directly.
       if (cancelled) return;
-      const legacyRes = await resilientFetch(`/api/legacy/cases/${encodeURIComponent(remakeOfCaseId as string)}`).catch(() => null);
+      const legacyRes = await resilientFetch(`/api/legacy/cases/${encodeURIComponent(remakeOfCaseId as string)}`).catch(() => null); // legacy-fence:allow — read-only remake-chain lookup for cases that pre-date the canonical rebuild; remove once all remakes reference canonical UUIDs
       if (cancelled || !legacyRes || !legacyRes.ok) return;
       const legacyData = await legacyRes.json().catch(() => null);
       if (cancelled) return;

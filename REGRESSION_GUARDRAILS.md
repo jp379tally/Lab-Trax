@@ -419,10 +419,80 @@ pnpm --filter @workspace/labtrax-desktop exec vitest run src/pages/__tests__/pri
 ### Run the full protected suite at once
 
 ```bash
-pnpm --filter @workspace/api-server run test -- cases-ai-reader analyze-prescription invoices cases-core cases-invoice-creation mobile-sync-invoice cases-attachments cases-prescription-photo cases-location-sync
+pnpm --filter @workspace/api-server run test -- cases-ai-reader analyze-prescription invoices cases-core cases-invoice-creation mobile-sync-invoice cases-attachments cases-prescription-photo cases-location-sync cases-canonical-mobile
 pnpm --filter @workspace/labtrax run test -- cases.smoke case-detail.smoke scan.smoke normalize-case-status case-status-normalization-boundaries auth-hydration reconnecting-indicator
+pnpm --filter @workspace/scripts run lint-mobile-legacy-paths
 pnpm test:e2e
 ```
+
+---
+
+## Protected Workflow: Mobile Legacy-Path Fence
+
+The mobile app must not introduce new direct calls to the legacy case endpoints
+(`/api/legacy/cases`, `lab_cases` table references, `pendingSyncCount`,
+`stuckSyncItems`, `unionActivityLog`) outside the grandfathered files that
+pre-date the canonical rebuild. This is enforced by a compile-time lint script
+that fails the build if any violation is found.
+
+Protected sub-behaviors:
+
+- **Fence blocks `/api/legacy/cases`** — any non-comment, non-allowed-line
+  reference to `/api/legacy/cases` in `artifacts/labtrax/app/`,
+  `artifacts/labtrax/lib/`, `artifacts/labtrax/components/`, or
+  `artifacts/labtrax/hooks/` causes `lint-mobile-legacy-paths` to exit 1.
+- **Fence blocks `lab_cases`** — direct table-name references are forbidden
+  in new mobile code; data access goes through `/api/cases`.
+- **Fence blocks legacy sync fields** — `pendingSyncCount` and `stuckSyncItems`
+  must not be imported or referenced outside their grandfathered files.
+- **Fence blocks `unionActivityLog`** — the legacy server-side union helper
+  must not be called from new mobile code paths.
+- **Grandfathered files exempt via file-level marker** —
+  `artifacts/labtrax/lib/app-context.tsx` and
+  `artifacts/labtrax/components/PendingSyncBanner.tsx` carry a
+  `// legacy-mobile-fence:disable-file` marker and are entirely exempt.
+- **Per-line escape hatch** — `artifacts/labtrax/app/case/[id].tsx` carries
+  a single `// legacy-fence:allow` on the remake-chain fallback fetch for
+  read-only backward compatibility. Any new per-line exemption requires a
+  comment explaining why it cannot be migrated now.
+- **Fence passes clean today** — running `pnpm --filter @workspace/scripts
+  run lint-mobile-legacy-paths` exits 0 with no violations.
+
+| Layer | File | What it guards |
+|-------|------|----------------|
+| Lint script | `scripts/src/lint-mobile-legacy-paths.ts` | Exits non-zero if any new mobile code references `/api/legacy/cases`, `lab_cases`, `pendingSyncCount`, `stuckSyncItems`, or `unionActivityLog` |
+| API integration | `artifacts/api-server/src/routes/cases-canonical-mobile.test.ts` | Canonical case UUID round-trip, invoice not duplicated, status PATCH visible in GET, event history available, cross-client list/detail identity |
+
+Run command:
+```bash
+pnpm --filter @workspace/scripts run lint-mobile-legacy-paths
+pnpm --filter @workspace/api-server run test -- cases-canonical-mobile
+```
+
+---
+
+## TestFlight Smoke Test Checklist (Mobile Rebuild — Phase 0+)
+
+When submitting a build for TestFlight acceptance after any mobile change, the
+following real-device smoke tests must pass before the build is approved. These
+supplement the automated regression suite; they cannot be replaced by unit tests.
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| 1 | Log in on a fresh install | Auth succeeds; home screen loads with case list |
+| 2 | Create a new case via the + button | Case appears immediately in the list; case UUID visible in case detail header |
+| 3 | Open the same case on web or desktop | Identical case UUID, case number, and patient name visible |
+| 4 | Open the Invoices tab | Invoice for the new case shown exactly once; no duplicates |
+| 5 | Change case status (e.g. Received → In Design) | Status change visible immediately on mobile and on web/desktop without manual refresh |
+| 6 | Open Scan tab, photograph an Rx | AI extracts patient/doctor/case type; tapping Create opens pre-filled new-case form |
+| 7 | Upload a photo on the case detail screen | Photo appears on the web/desktop case detail without re-upload; no spinner stuck state |
+| 8 | Lock screen via biometric | Lock screen appears after inactivity; Face ID / Touch ID unlocks without re-login |
+| 9 | Share a PDF into LabTrax from Files app | Share intent received; PDF attached to a new or existing case |
+| 10 | Force-quit and reopen the app | Session is restored; no login required; pending upload queue (if non-empty) auto-retries |
+
+**Zero-regression rule:** If any row above breaks in a new build, the build is
+rejected from TestFlight promotion and a regression issue is filed against the
+offending change before any new feature work continues.
 
 ---
 
