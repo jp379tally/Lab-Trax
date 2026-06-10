@@ -31,6 +31,25 @@ import { CaseProgressBar } from "@/components/CaseProgressBar";
 import { deriveDisplayInitials } from "@/lib/display-initials";
 import { getCaseInvoice as getCaseInvoiceFromLib } from "@/lib/case-invoice";
 
+function formatDueDate(d: string | number | undefined | null): string {
+  if (d == null || d === "") return "";
+  const s = String(d);
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (m) {
+    const [yr, mo, dy] = m[1].split("-").map(Number);
+    return new Date(yr, mo - 1, dy).toLocaleDateString(undefined, {
+      month: "short", day: "numeric", year: "numeric",
+    });
+  }
+  const ms = typeof d === "number" ? d : Number(d);
+  if (Number.isFinite(ms)) {
+    return new Date(ms).toLocaleDateString(undefined, {
+      month: "short", day: "numeric", year: "numeric",
+    });
+  }
+  return s;
+}
+
 export default function CasesScreen() {
   const { cases, role, adminUnlocked, findCaseByBarcode, updateCaseStatus, customStationLabels, invoices, updateInvoice, addInvoice, updateCase, addCaseNote, clients, pricingTiers, refreshCases, fullRefreshCases, setPendingInvoiceEditId, hydrateInvoiceFromServer, allLabOrganizationIds, invoiceTemplate, fetchInvoiceTemplate } = useApp();
   const [refreshing, setRefreshing] = useState(false);
@@ -226,7 +245,7 @@ export default function CasesScreen() {
           expectedDeliveryDate={item.expectedDeliveryDate}
         />
         <View style={styles.caseBottom}>
-          <Text style={styles.caseDue}>{item.caseNumber} · Due: {item.dueDate}</Text>
+          <Text style={styles.caseDue}>{item.caseNumber} · Due: {formatDueDate(item.dueDate)}</Text>
           {showChartBtn && (
             <Pressable
               onPress={() => {
@@ -371,41 +390,6 @@ export default function CasesScreen() {
             >
               <Ionicons name="sparkles" size={18} color={colors.violet} />
               <Text style={styles.askAiBtnText}>Ask AI about all my cases</Text>
-            </Pressable>
-          )}
-          {userType !== "provider" && (
-            <Pressable
-              style={({ pressed }) => [styles.barcodeLocateBtn, pressed && { opacity: 0.7 }]}
-              onPress={async () => {
-                if (Platform.OS === "web") {
-                  setShowBarcodeLocate(true);
-                  setBarcodeLocateScanned(false);
-                  return;
-                }
-                if (!permission?.granted) {
-                  Alert.alert(
-                    "Camera Access",
-                    "This feature uses your camera to capture dental case photos.",
-                    [{
-                      text: "Continue",
-                      onPress: async () => {
-                        const result = await requestPermission();
-                        if (result.granted) {
-                          setShowBarcodeLocate(true);
-                          setBarcodeLocateScanned(false);
-                        }
-                      },
-                    }]
-                  );
-                  return;
-                }
-                setShowBarcodeLocate(true);
-                setBarcodeLocateScanned(false);
-                barcodeLocateProcessingRef.current = false;
-              }}
-            >
-              <Ionicons name="barcode-outline" size={18} color={colors.tint} />
-              <Text style={styles.barcodeLocateBtnText}>Use Barcode to Locate Case</Text>
             </Pressable>
           )}
         </View>
