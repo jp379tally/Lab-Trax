@@ -294,6 +294,7 @@ vi.mock("expo-sharing", () => ({
 vi.mock("expo-image-picker", () => ({
   getCameraPermissionsAsync: vi.fn(async () => ({ granted: true })),
   requestCameraPermissionsAsync: vi.fn(async () => ({ status: "granted" })),
+  requestMediaLibraryPermissionsAsync: vi.fn(async () => ({ status: "granted" })),
   launchCameraAsync: vi.fn(async () => ({ canceled: true, assets: [] })),
   launchImageLibraryAsync: vi.fn(async () => ({ canceled: true, assets: [] })),
   MediaTypeOptions: { Images: "Images", Videos: "Videos", All: "All" },

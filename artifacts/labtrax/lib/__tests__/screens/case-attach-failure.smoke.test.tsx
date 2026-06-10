@@ -14,6 +14,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { cleanup, fireEvent, render } from "@testing-library/react-native";
 import { Alert } from "react-native";
 import * as DocumentPicker from "expo-document-picker";
+import * as ImagePicker from "expo-image-picker";
 import {
   resetMockAppState,
   resetMockFetchHandler,
@@ -103,6 +104,87 @@ describe("CaseDetailScreen — photo upload failure surface", () => {
 
     vi.mocked(Alert.alert).mockClear();
     await (browse.onPress as () => Promise<void>)();
+
+    const calls = vi.mocked(Alert.alert).mock.calls;
+    expect(calls.find((c) => c[0] === "Upload Failed")).toBeFalsy();
+  });
+
+  // ── Camera path ──────────────────────────────────────────────────────────
+  // The "Camera" button funnels through requestCameraWithPrompt: when
+  // getCameraPermissionsAsync reports `{ granted: true }` (the global mock
+  // default) the onGranted callback runs synchronously inside the resolved
+  // promise, calling launchCameraAsync and then the shared uploadAttachment.
+  it('Camera path: shows an "Upload Failed" alert when the upload returns { ok: false }', async () => {
+    setMockUploadHandler(() => ({ ok: false }));
+    vi.mocked(ImagePicker.launchCameraAsync).mockResolvedValueOnce({
+      canceled: false,
+      assets: [{ uri: "file:///tmp/camera.jpg", mimeType: "image/jpeg" }],
+    } as any);
+
+    const { getAllByText } = renderWithCase();
+    const camera = pressAttachAndGetButton(getAllByText, "Camera");
+
+    vi.mocked(Alert.alert).mockClear();
+    await (camera.onPress as () => Promise<void>)();
+    // requestCameraWithPrompt resolves getCameraPermissionsAsync in a
+    // microtask before invoking onGranted → uploadAttachment; flush it.
+    await new Promise((r) => setTimeout(r, 0));
+
+    const calls = vi.mocked(Alert.alert).mock.calls;
+    const failureAlert = calls.find((c) => c[0] === "Upload Failed");
+    expect(failureAlert).toBeTruthy();
+  });
+
+  it("Camera path: does NOT show a failure alert when the upload succeeds", async () => {
+    vi.mocked(ImagePicker.launchCameraAsync).mockResolvedValueOnce({
+      canceled: false,
+      assets: [{ uri: "file:///tmp/camera.jpg", mimeType: "image/jpeg" }],
+    } as any);
+
+    const { getAllByText } = renderWithCase();
+    const camera = pressAttachAndGetButton(getAllByText, "Camera");
+
+    vi.mocked(Alert.alert).mockClear();
+    await (camera.onPress as () => Promise<void>)();
+    await new Promise((r) => setTimeout(r, 0));
+
+    const calls = vi.mocked(Alert.alert).mock.calls;
+    expect(calls.find((c) => c[0] === "Upload Failed")).toBeFalsy();
+  });
+
+  // ── Photo Library path ───────────────────────────────────────────────────
+  // The "Photo Library" button gates on requestMediaLibraryPermissionsAsync
+  // (newly added to the global mock so this path is drivable) then loops over
+  // launchImageLibraryAsync assets through the shared uploadAttachment.
+  it('Photo Library path: shows an "Upload Failed" alert when the upload returns { ok: false }', async () => {
+    setMockUploadHandler(() => ({ ok: false }));
+    vi.mocked(ImagePicker.launchImageLibraryAsync).mockResolvedValueOnce({
+      canceled: false,
+      assets: [{ uri: "file:///tmp/library.jpg", mimeType: "image/jpeg" }],
+    } as any);
+
+    const { getAllByText } = renderWithCase();
+    const library = pressAttachAndGetButton(getAllByText, "Photo Library");
+
+    vi.mocked(Alert.alert).mockClear();
+    await (library.onPress as () => Promise<void>)();
+
+    const calls = vi.mocked(Alert.alert).mock.calls;
+    const failureAlert = calls.find((c) => c[0] === "Upload Failed");
+    expect(failureAlert).toBeTruthy();
+  });
+
+  it("Photo Library path: does NOT show a failure alert when the upload succeeds", async () => {
+    vi.mocked(ImagePicker.launchImageLibraryAsync).mockResolvedValueOnce({
+      canceled: false,
+      assets: [{ uri: "file:///tmp/library.jpg", mimeType: "image/jpeg" }],
+    } as any);
+
+    const { getAllByText } = renderWithCase();
+    const library = pressAttachAndGetButton(getAllByText, "Photo Library");
+
+    vi.mocked(Alert.alert).mockClear();
+    await (library.onPress as () => Promise<void>)();
 
     const calls = vi.mocked(Alert.alert).mock.calls;
     expect(calls.find((c) => c[0] === "Upload Failed")).toBeFalsy();

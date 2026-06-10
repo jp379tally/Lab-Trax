@@ -263,10 +263,12 @@ pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-core
 |-------|------|----------------|
 | API integration | `artifacts/api-server/src/routes/cases-attachments.test.ts` | Legacy mobile case photo upload creates attachment row with `labCaseId`; attachment surfaces via `GET /api/cases/:caseId/attachments` |
 | API integration (E2E chain) | `artifacts/api-server/src/routes/cases-prescription-photo.test.ts` | Full chain: case creation → photo upload → DB integrity (labCaseId, fileType) → list endpoint (web/desktop Files tab) → file-serving auth (not 401/403) → invoice generation |
+| Mobile unit | `artifacts/labtrax/lib/__tests__/screens/case-attach-failure.smoke.test.tsx` | The user-facing "Upload Failed" alert fires when `uploadAttachment` gets `{ ok: false }` across **all three** attach sources (Browse Files, Camera, Photo Library) and stays silent on success — so a failed photo upload can never silently vanish |
 
 Run command:
 ```
 pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-attachments cases-prescription-photo
+pnpm --filter @workspace/labtrax run test -- case-attach-failure.smoke
 ```
 
 ### Mobile Case Location Cross-Platform Sync
