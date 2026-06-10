@@ -2445,6 +2445,7 @@ const vendorBodySchema = z.object({
   website: z.string().max(500).nullable().optional(),
   notes: z.string().max(2000).nullable().optional(),
   unitPrice: z.string().max(20).nullable().optional(),
+  itemCategory: z.enum(["Restorative", "Removable", "Appliance"]).nullable().optional(),
   vendorType: z.string().optional(),
   vendorTypeId: z.string().optional(),
   isActive: z.boolean().optional(),
@@ -2502,6 +2503,7 @@ router.post(
         website: input.website ?? null,
         notes: input.notes ?? null,
         unitPrice: normalizeUnitPrice(input.unitPrice),
+        itemCategory: kind === "item" ? (input.itemCategory ?? null) : null,
         vendorType: kind ?? "vendor",
         vendorTypeId: typeId,
         isActive: input.isActive ?? true,
@@ -2789,6 +2791,7 @@ router.patch(
       };
       updates.unitPrice = normalizePatchPrice(input.unitPrice);
     }
+    if (input.itemCategory !== undefined) updates.itemCategory = input.itemCategory;
     const [updated] = await db
       .update(vendors)
       .set(updates)

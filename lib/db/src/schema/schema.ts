@@ -1812,6 +1812,10 @@ export const vendors = pgTable(
     website: text("website"),
     notes: text("notes"),
     unitPrice: decimal("unit_price", { precision: 10, scale: 2 }),
+    // For billable items only: sub-classification of the item, one of
+    // "Restorative" | "Removable" | "Appliance". Null for vendors/employees
+    // and for items left uncategorized.
+    itemCategory: text("item_category"),
     // Legacy: kept for back-compat / migration period. New code reads
     // `vendorTypeId` which points at a per-lab row in `vendor_types`.
     // For builtin types this still mirrors `builtin_kind`; for custom

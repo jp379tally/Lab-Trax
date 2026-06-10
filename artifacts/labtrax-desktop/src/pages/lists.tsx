@@ -54,6 +54,7 @@ interface Vendor {
   website: string | null;
   notes: string | null;
   unitPrice: string | null;
+  itemCategory: string | null;
   vendorType: VendorType;
   isActive: boolean;
 }
@@ -111,6 +112,7 @@ interface VendorForm {
   website: string;
   notes: string;
   unitPrice: string;
+  itemCategory: string;
   isActive: boolean;
 }
 
@@ -134,6 +136,7 @@ const emptyVendorForm = (type: VendorType = "vendor"): VendorForm => ({
   website: "",
   notes: "",
   unitPrice: "",
+  itemCategory: "",
   isActive: true,
 });
 
@@ -252,6 +255,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
           website: form.website.trim() || null,
           notes: form.notes.trim() || null,
           unitPrice: form.vendorType === "item" ? (form.unitPrice.trim() || null) : null,
+          itemCategory: form.vendorType === "item" ? (form.itemCategory.trim() || null) : null,
           isActive: form.isActive,
         }),
       }),
@@ -277,6 +281,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
           website: form.website.trim() || null,
           notes: form.notes.trim() || null,
           unitPrice: form.vendorType === "item" ? (form.unitPrice.trim() || null) : null,
+          itemCategory: form.vendorType === "item" ? (form.itemCategory.trim() || null) : null,
           isActive: form.isActive,
         }),
       }),
@@ -381,6 +386,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
       website: v.website ?? "",
       notes: v.notes ?? "",
       unitPrice: v.unitPrice ?? "",
+      itemCategory: v.itemCategory ?? "",
       isActive: v.isActive,
     });
     setShowDrawer(true);
@@ -1089,7 +1095,7 @@ function VendorFormFields({
         {error && (
           <p className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">{error}</p>
         )}
-        <FieldRow label="Billable Item Name *">
+        <FieldRow label="Item *">
           {itemNameMode === "pick" ? (
             <select
               autoFocus
@@ -1130,6 +1136,18 @@ function VendorFormFields({
               )}
             </div>
           )}
+        </FieldRow>
+        <FieldRow label="Type">
+          <select
+            value={form.itemCategory}
+            onChange={(e) => set({ itemCategory: e.target.value })}
+            className={inputCls}
+          >
+            <option value="">— Select a type —</option>
+            <option value="Restorative">Restorative</option>
+            <option value="Removable">Removable</option>
+            <option value="Appliance">Appliance</option>
+          </select>
         </FieldRow>
         <FieldRow label="Unit Price">
           <div className="relative">
