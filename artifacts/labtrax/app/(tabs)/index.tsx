@@ -1019,18 +1019,20 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
         style={styles.sectionHeader}
         onPress={() => setRecentCasesExpanded((v) => !v)}
         hitSlop={8}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: recentCasesExpanded }}
       >
-        <Text style={[styles.sectionTitle, { color: themeColors.text }]}>Recent Cases</Text>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-          <Pressable onPress={() => router.push("/(tabs)/cases")} hitSlop={8}>
-            <Text style={styles.seeAll}>See all</Text>
-          </Pressable>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
           <Ionicons
-            name={recentCasesExpanded ? "chevron-up" : "chevron-down"}
+            name={recentCasesExpanded ? "chevron-down" : "chevron-forward"}
             size={18}
             color={themeColors.textSecondary}
           />
+          <Text style={[styles.sectionTitle, { color: themeColors.text }]}>Recent Cases</Text>
         </View>
+        <Pressable onPress={() => router.push("/(tabs)/cases")} hitSlop={8}>
+          <Text style={styles.seeAll}>See all</Text>
+        </Pressable>
       </Pressable>
 
       {recentCasesExpanded && <View style={styles.caseList}>
