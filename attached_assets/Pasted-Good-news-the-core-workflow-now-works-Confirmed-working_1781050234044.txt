@@ -1,0 +1,65 @@
+Good news: the core workflow now works.
+
+Confirmed working:
+
+* AI Reader read the prescription.
+* Case was created for Yasmin Newsom.
+* Doctor was Dr. Chinara Garraway.
+* Invoice was generated.
+* Case is visible on web.
+* Case is visible on desktop.
+
+Do not regress any of that.
+
+Remaining regression:
+The prescription image/photo taken from the mobile app is not visible on the web/desktop version.
+
+Please fix only this issue:
+
+Mobile captured prescription image
+→ saved/uploaded to shared backend storage
+→ linked to the same Case ID
+→ visible in web case view
+→ visible in desktop case view
+
+Required investigation:
+
+1. Confirm whether the mobile image is only stored locally on the device.
+2. Confirm whether it is uploaded to server storage.
+3. Confirm whether the uploaded image URL/file ID is attached to the Case ID.
+4. Confirm whether web/desktop case detail fetches and renders those mobile-uploaded images.
+5. Confirm no auth, org/lab, or file permission issue prevents web/desktop viewing.
+
+Required proof after fixing:
+
+* Same Case ID for Yasmin Newsom or a new test case.
+* Prescription image captured on mobile.
+* Same image visible in web case detail.
+* Same image visible in desktop case detail.
+* Invoice still generated.
+* Case still syncs across mobile/web/desktop.
+
+Zero-regression requirement:
+Do not break:
+
+* AI Reader analysis
+* case creation
+* invoice generation
+* mobile/web/desktop sync
+* long-press case locate
+* existing desktop/web case display
+
+Add this as a protected workflow in `REGRESSION_GUARDRAILS.md`:
+
+“Mobile captured prescription images must be visible on web and desktop for the same Case ID.”
+
+Add regression tests that cover:
+
+* mobile case photo upload
+* image attachment linked to Case ID
+* web/desktop API returns image metadata/URL
+* existing AI Reader → case → invoice workflow still passes
+
+Create checkpoint after fix:
+
+“Verified Mobile Prescription Image Cross-Platform Visibility”

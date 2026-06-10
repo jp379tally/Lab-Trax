@@ -2752,6 +2752,14 @@ export default function ScanScreen() {
       void addCasePhoto(newCase.id, att.uri, userInitials);
     }
 
+    // Upload prescription photos (camera captures) as server-side case
+    // attachments so they appear in the web/desktop Files tab for the same
+    // Case ID. They were passed into addCase as local device URIs; we now
+    // upload each one so a caseAttachments row is created on the server.
+    for (const photo of casePhotos) {
+      void addCasePhoto(newCase.id, photo, userInitials);
+    }
+
     if ((Platform.OS as string) !== "web") {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     }

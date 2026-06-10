@@ -76,6 +76,20 @@ Protected sub-behaviors:
 
 ---
 
+## Protected Workflow: Mobile Prescription Image Cross-Platform Visibility
+
+A prescription photo captured on mobile (AI Reader camera flow) must be visible in the web and desktop case detail for the same Case ID. The image must be stored as a server-side attachment — not a device-local URI — so that any authenticated client can view it.
+
+Protected sub-behaviors:
+
+- **Camera photo uploaded to server** — after case creation via the AI Reader scan flow, each photo in `casePhotos` is uploaded to `/api/media/upload` and a `case_attachments` row is created via `POST /api/cases/:caseId/attachments`.
+- **Attachment linked to Case ID** — the `case_attachments` row carries `labCaseId` referencing the mobile case's `lab_cases` row; the same `caseId` the mobile app generated is used as the lookup key.
+- **Web/desktop Files tab shows the image** — `GET /api/cases/:caseId/attachments` returns the uploaded image attachment (with `fileType` starting with `image/`) for the same `caseId`.
+- **Auth-gated serving** — the serving route (`GET /api/cases/:caseId/attachments/:attachmentId/file`) authorizes the download via `labCaseId` membership check and returns the file bytes; it does not return 401 or 403 for a valid lab member.
+- **No regression on core workflow** — the AI Reader → case creation → invoice → case sync workflow must continue to pass after any change to the photo-upload path.
+
+---
+
 ## Zero-Regression Process
 
 Every code change that touches a protected workflow must follow this process, in order:
@@ -168,6 +182,17 @@ pnpm --filter @workspace/labtrax run test -- cases.smoke case-detail.smoke
 pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-core
 ```
 
+### Mobile Prescription Image Cross-Platform Visibility
+
+| Layer | File | What it guards |
+|-------|------|----------------|
+| API integration | `artifacts/api-server/src/routes/cases-attachments.test.ts` | Legacy mobile case photo upload creates attachment row with `labCaseId`; attachment surfaces via `GET /api/cases/:caseId/attachments` |
+
+Run command:
+```
+pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-attachments
+```
+
 ### E2E Browser Tests
 
 | Layer | File | What it guards |
@@ -188,7 +213,7 @@ Set `PLAYWRIGHT_BASE_URL` to the target deployment URL when running against stag
 ### Run the full protected suite at once
 
 ```bash
-pnpm --filter @workspace/api-server run test -- cases-ai-reader analyze-prescription invoices cases-core cases-invoice-creation mobile-sync-invoice
+pnpm --filter @workspace/api-server run test -- cases-ai-reader analyze-prescription invoices cases-core cases-invoice-creation mobile-sync-invoice cases-attachments
 pnpm --filter @workspace/labtrax run test -- cases.smoke case-detail.smoke scan.smoke
 pnpm test:e2e
 ```

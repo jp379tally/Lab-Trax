@@ -263,6 +263,53 @@ maybe(
       }
     );
 
+    it(
+      "mobile prescription photo (image/jpeg) creates an attachment row visible via GET /api/cases/:caseId/attachments",
+      async () => {
+        const app = appMod.default;
+        const { db, caseAttachments } = dbMod as any;
+
+        const fileName = "prescription-photo.jpg";
+        const storageKey = `/uploads/case-media/${fileName}`;
+        const fileType = "image/jpeg";
+
+        // POST — simulates what uploadPhotoAndCreateAttachment does on mobile.
+        const postRes = await request(app)
+          .post(`/api/cases/${legacyCaseId}/attachments`)
+          .set("Authorization", `Bearer ${tokens.member}`)
+          .send({ storageKey, fileName, fileType, visibility: "shared_with_provider" });
+
+        expect(postRes.status).toBe(201);
+        const attachmentId = postRes.body.data?.id;
+        expect(attachmentId).toBeTruthy();
+        expect(postRes.body.data.labCaseId).toBe(legacyCaseId);
+        expect(postRes.body.data.fileType).toBe(fileType);
+
+        // GET — confirms the same attachment surfaces via the list endpoint
+        // (mirrors what the web/desktop Files tab queries).
+        const getRes = await request(app)
+          .get(`/api/cases/${legacyCaseId}/attachments`)
+          .set("Authorization", `Bearer ${tokens.member}`);
+
+        expect(getRes.status).toBe(200);
+        const list: any[] = getRes.body.data ?? getRes.body;
+        const found = (Array.isArray(list) ? list : []).find(
+          (a: any) => a.id === attachmentId
+        );
+        expect(found).toBeDefined();
+        expect(found.fileType).toBe(fileType);
+        expect(found.fileName).toBe(fileName);
+
+        // DB assertion: row exists with correct labCaseId.
+        const row = await db.query.caseAttachments.findFirst({
+          where: eq(caseAttachments.id, attachmentId),
+        });
+        expect(row).toBeDefined();
+        expect(row.labCaseId).toBe(legacyCaseId);
+        expect(row.fileType).toBe(fileType);
+      }
+    );
+
     it("returns 404 when the caseId does not exist in lab_cases or cases", async () => {
       const app = appMod.default;
       const res = await request(app)

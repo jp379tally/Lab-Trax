@@ -2622,9 +2622,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
         enqueueForRetry = true;
       }
     } else {
-      // Legacy/local cases have no server attachment endpoint; best-effort
-      // public upload, else keep the local uri.
-      storedUri = (await normalizeSharedImageUri(photoUri)) || photoUri;
+      // The /api/cases/:caseId/attachments endpoint handles both canonical case
+      // IDs (caseId FK) and legacy lab_cases IDs (labCaseId FK). Try the proper
+      // server upload path so the photo appears in the web/desktop Files tab for
+      // the same Case ID; fall back to a normalized local URI only on failure.
+      const serverUrl = await uploadPhotoAndCreateAttachment(caseId, photoUri);
+      if (serverUrl) {
+        storedUri = serverUrl;
+      } else {
+        storedUri = (await normalizeSharedImageUri(photoUri)) || photoUri;
+        enqueueForRetry = true;
+      }
     }
 
     const photoEntry: ActivityEntry = {
