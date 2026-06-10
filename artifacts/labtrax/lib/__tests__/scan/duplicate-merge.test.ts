@@ -11,7 +11,7 @@ const localCase = {
   id: "loc-1",
   caseNumber: "26-1",
   patientName: "Jane Doe",
-  status: "INTAKE",
+  status: "received",
   createdAt: "2026-01-01T00:00:00Z",
   toothIndices: "#8",
   caseType: "Restorative",

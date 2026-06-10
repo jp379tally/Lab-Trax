@@ -361,7 +361,7 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
     r => r.targetAdminUsername.toLowerCase() === (currentUser || "").toLowerCase() && r.status === "pending"
   );
   const recentCases = [...cases]
-    .filter((c) => c.status !== "COMPLETE")
+    .filter((c) => c.status !== "complete")
     .sort(
       (a, b) =>
         (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0)
@@ -372,7 +372,7 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
     const today = new Date();
     const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
     return cases.filter(
-      (c) => c.dueDate && c.dueDate < todayStr && c.status !== "COMPLETE" && c.status !== "SHIP",
+      (c) => c.dueDate && c.dueDate < todayStr && c.status !== "complete" && c.status !== "shipped",
     );
   }, [cases]);
 
@@ -947,7 +947,7 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
         const today = new Date();
         const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
         const dueTodayCases = cases.filter(
-          (c) => c.dueDate === todayStr && c.status !== "COMPLETE" && c.status !== "SHIP",
+          (c) => c.dueDate === todayStr && c.status !== "complete" && c.status !== "shipped",
         );
         return (
           <>
@@ -4654,7 +4654,7 @@ function AdminDashboard() {
         <View style={{ flexDirection: "row", marginHorizontal: 16, marginBottom: 12, gap: 10 }}>
           <StatTile
             label="Active Cases"
-            value={clientCases.filter((c) => c.status !== "COMPLETE").length}
+            value={clientCases.filter((c) => c.status !== "complete").length}
             icon="construct-outline"
             accent={colors.tint}
           />
@@ -5399,8 +5399,8 @@ function AdminDashboard() {
     const periodCases = cases.filter(c => c.createdAt >= periodStart && c.createdAt <= periodEnd);
     const periodInvoices = invoices.filter(i => i.issuedAt >= periodStart && i.issuedAt <= periodEnd);
 
-    const completedCases = periodCases.filter((c) => c.status === "COMPLETE" || c.status === "SHIP");
-    const activeCases = periodCases.filter((c) => c.status !== "COMPLETE" && c.status !== "SHIP");
+    const completedCases = periodCases.filter((c) => c.status === "complete" || c.status === "shipped");
+    const activeCases = periodCases.filter((c) => c.status !== "complete" && c.status !== "shipped");
     const completedRevenue = completedCases.reduce((s, c) => s + c.price, 0);
     const activeRevenue = activeCases.reduce((s, c) => s + c.price, 0);
     const periodRevenue = periodCases.reduce((s, c) => s + c.price, 0);
@@ -6815,7 +6815,7 @@ function AdminDashboard() {
       toothIndices: rx.teeth || "",
       shade: rx.shade || "",
       material: rx.material || "",
-      status: "INTAKE",
+      status: "received",
       isRush: false,
       notes: rx.notes ? `[iTero Import] ${rx.notes}` : "[iTero Import]",
       price: 0,
@@ -7046,7 +7046,7 @@ function AdminDashboard() {
   }
 
   function renderDeleteCases() {
-    const activeCases = cases.filter((c) => c.status !== "COMPLETE");
+    const activeCases = cases.filter((c) => c.status !== "complete");
 
     return (
       <View style={{ flex: 1, backgroundColor: colors.canvas }}>
@@ -7515,8 +7515,8 @@ function ProviderDashboard() {
       (a, b) =>
         (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0)
     );
-  const activeCases = myCases.filter(c => c.status !== "COMPLETE" && c.status !== "HOLD");
-  const completedCases = myCases.filter(c => c.status === "COMPLETE");
+  const activeCases = myCases.filter(c => c.status !== "complete" && c.status !== "on_hold");
+  const completedCases = myCases.filter(c => c.status === "complete");
   const inProgressCount = activeCases.length;
   const completedCount = completedCases.length;
 

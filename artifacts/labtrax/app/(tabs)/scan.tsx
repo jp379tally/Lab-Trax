@@ -2737,7 +2737,7 @@ export default function ScanScreen() {
       toothIndices: effectiveToothIndices,
       shade: shade.trim(),
       material,
-      status: "INTAKE" as const,
+      status: "received" as const,
       isRush,
       notes: overrides?.notes ?? finalNotes,
       price: overrides?.price ?? calculatedPrice,

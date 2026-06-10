@@ -70,7 +70,7 @@ export default function ChartHistoryScreen() {
         </View>
         <View style={styles.summaryCard}>
           <Text style={styles.summaryNum}>
-            {patientCases.filter((c) => c.status === "COMPLETE").length}
+            {patientCases.filter((c) => c.status === "complete").length}
           </Text>
           <Text style={styles.summaryLabel}>Completed</Text>
         </View>

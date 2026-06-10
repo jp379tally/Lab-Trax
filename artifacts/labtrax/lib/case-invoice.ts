@@ -73,7 +73,7 @@ export function buildSyntheticInvoice(
     caseIds: [caseItem.id],
     amount: total,
     credits: caseItem.isRemake && caseItem.price === 0 ? total : 0,
-    status: caseItem.status === "COMPLETE" ? "paid" : "open",
+    status: caseItem.status === "complete" ? "paid" : "open",
     issuedAt: caseItem.createdAt,
     dueAt: invoiceDueDate(new Date(caseItem.createdAt)).getTime(),
     billTo: caseItem.doctorName,

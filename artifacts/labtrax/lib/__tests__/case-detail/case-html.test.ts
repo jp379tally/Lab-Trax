@@ -12,7 +12,7 @@ const baseCase = {
   material: "Zirconia",
   dueDate: "2026-06-01",
   notes: "Verify margins",
-  status: "DESIGN" as const,
+  status: "in_design" as const,
   createdAt: 1717200000000,
   activityLog: [],
   routeHistory: [],
@@ -85,7 +85,7 @@ describe("buildCaseHistoryHtml", () => {
       caseItem: {
         ...baseCase,
         activityLog: [],
-        routeHistory: [{ station: "MILL", timestamp: 5000 }],
+        routeHistory: [{ station: "in_milling", timestamp: 5000 }],
       },
       now: fixedNow,
     });

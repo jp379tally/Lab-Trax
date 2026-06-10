@@ -28,7 +28,7 @@ export const inProgressCase: LabCase = {
   toothIndices: "8,9",
   shade: "A2",
   material: "Zirconia",
-  status: "DESIGN",
+  status: "in_design",
   isRush: false,
   notes: "Standard zirconia crown",
   createdAt: NOW - 2 * DAY,
@@ -36,18 +36,18 @@ export const inProgressCase: LabCase = {
   price: 500,
   dueDate: "2024-01-15",
   routeHistory: [
-    { station: "INTAKE", timestamp: NOW - 2 * DAY },
-    { station: "DESIGN", timestamp: NOW - DAY },
+    { station: "received", timestamp: NOW - 2 * DAY },
+    { station: "in_design", timestamp: NOW - DAY },
   ],
   photos: ["file:///tmp/photo-1.jpg"],
   videos: [],
   activityLog: [
     baseActivity("a1", NOW - 2 * DAY, "created", "Case created at Intake", {
-      station: "INTAKE",
+      station: "received",
       user: "AB",
     }),
     baseActivity("a2", NOW - DAY, "station_change", "Moved to Design", {
-      station: "DESIGN",
+      station: "in_design",
       user: "AB",
     }),
     baseActivity("a3", NOW - DAY / 2, "note", "Initial impression looks good", {
@@ -64,17 +64,17 @@ export const completedCaseWithInvoice: LabCase = {
   ...inProgressCase,
   id: "case-completed",
   caseNumber: "#5002",
-  status: "COMPLETE",
+  status: "complete",
   invoiceId: "inv-5002",
   routeHistory: [
     ...inProgressCase.routeHistory,
-    { station: "QC", timestamp: NOW - DAY / 2 },
-    { station: "COMPLETE", timestamp: NOW - DAY / 4 },
+    { station: "qc", timestamp: NOW - DAY / 2 },
+    { station: "complete", timestamp: NOW - DAY / 4 },
   ],
   activityLog: [
     ...inProgressCase.activityLog,
     baseActivity("a4", NOW - DAY / 4, "station_change", "Marked Complete", {
-      station: "COMPLETE",
+      station: "complete",
       user: "AB",
     }),
   ],

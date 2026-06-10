@@ -17,7 +17,7 @@ function makeCase(overrides: Partial<LabCase> = {}): LabCase {
     toothIndices: "8,9",
     shade: "A2",
     material: "Zirconia",
-    status: "INTAKE",
+    status: "received",
     isRush: false,
     notes: "",
     createdAt: new Date("2024-03-15T12:00:00Z").getTime(),
@@ -130,7 +130,7 @@ describe("buildSyntheticInvoice", () => {
 
   it("marks a COMPLETE case's synthetic invoice as paid", () => {
     const inv = buildSyntheticInvoice(
-      makeCase({ status: "COMPLETE" }),
+      makeCase({ status: "complete" }),
       clients,
       tiers
     );

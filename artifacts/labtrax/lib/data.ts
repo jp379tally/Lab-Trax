@@ -1,33 +1,123 @@
 export type UserRole = "user" | "admin";
 
+// Canonical lowercase case statuses — identical to the server's `cases.status`
+// values (see artifacts/api-server). The mobile app uses these directly so no
+// uppercase↔lowercase translation is needed when syncing to the server.
 export type CaseStatus =
-  | "INTAKE"
-  | "DESIGN"
-  | "SCAN"
-  | "MILL"
-  | "POST_MILL"
-  | "SINTERING_FURNACE"
-  | "MODEL_ROOM"
-  | "PORCELAIN"
-  | "QC"
-  | "SHIP"
-  | "HOLD"
-  | "COMPLETE";
+  | "received"
+  | "in_design"
+  | "scan"
+  | "in_milling"
+  | "post_mill"
+  | "sintering_furnace"
+  | "model_room"
+  | "in_porcelain"
+  | "qc"
+  | "shipped"
+  | "on_hold"
+  | "complete";
 
 export const STATIONS: { id: CaseStatus; label: string; color: string }[] = [
-  { id: "INTAKE", label: "Intake", color: "#2563EB" },
-  { id: "DESIGN", label: "Design", color: "#F59E0B" },
-  { id: "SCAN", label: "Scan", color: "#8B5CF6" },
-  { id: "MILL", label: "Mill", color: "#EC4899" },
-  { id: "POST_MILL", label: "Post Mill", color: "#D946EF" },
-  { id: "SINTERING_FURNACE", label: "Sintering Furnace", color: "#F97316" },
-  { id: "MODEL_ROOM", label: "Model Room", color: "#14B8A6" },
-  { id: "PORCELAIN", label: "Porcelain", color: "#06B6D4" },
-  { id: "QC", label: "Quality Check", color: "#10B981" },
-  { id: "COMPLETE", label: "Complete", color: "#22C55E" },
-  { id: "SHIP", label: "Shipping", color: "#6366F1" },
-  { id: "HOLD", label: "On Hold", color: "#94A3B8" },
+  { id: "received", label: "Intake", color: "#2563EB" },
+  { id: "in_design", label: "Design", color: "#F59E0B" },
+  { id: "scan", label: "Scan", color: "#8B5CF6" },
+  { id: "in_milling", label: "Mill", color: "#EC4899" },
+  { id: "post_mill", label: "Post Mill", color: "#D946EF" },
+  { id: "sintering_furnace", label: "Sintering Furnace", color: "#F97316" },
+  { id: "model_room", label: "Model Room", color: "#14B8A6" },
+  { id: "in_porcelain", label: "Porcelain", color: "#06B6D4" },
+  { id: "qc", label: "Quality Check", color: "#10B981" },
+  { id: "complete", label: "Complete", color: "#22C55E" },
+  { id: "shipped", label: "Shipping", color: "#6366F1" },
+  { id: "on_hold", label: "On Hold", color: "#94A3B8" },
 ];
+
+// Maps every status token the app has ever produced or received — legacy
+// uppercase mobile tokens, desktop-bridge tokens (DESKTOP_TO_MOBILE_STATUS),
+// and canonical lowercase server values — onto the canonical lowercase
+// CaseStatus. Used to normalize cases on ingest (server fetch + AsyncStorage
+// hydration) so historical data with uppercase statuses migrates seamlessly.
+const STATUS_ALIASES: Record<string, CaseStatus> = {
+  // Canonical lowercase (identity)
+  received: "received",
+  in_design: "in_design",
+  scan: "scan",
+  in_milling: "in_milling",
+  post_mill: "post_mill",
+  sintering_furnace: "sintering_furnace",
+  model_room: "model_room",
+  in_porcelain: "in_porcelain",
+  qc: "qc",
+  complete: "complete",
+  shipped: "shipped",
+  on_hold: "on_hold",
+  // Canonical values without a dedicated mobile station → nearest station
+  draft: "received",
+  delivered: "complete",
+  cancelled: "complete",
+  remake: "received",
+  design: "in_design",
+  milling: "in_milling",
+  sintering: "sintering_furnace",
+  porcelain: "in_porcelain",
+  ship: "shipped",
+  hold: "on_hold",
+  // Legacy uppercase mobile + desktop-bridge tokens
+  INTAKE: "received",
+  DESIGN: "in_design",
+  SCAN: "scan",
+  MILL: "in_milling",
+  MILLING: "in_milling",
+  POST_MILL: "post_mill",
+  SINTERING_FURNACE: "sintering_furnace",
+  MODEL_ROOM: "model_room",
+  PORCELAIN: "in_porcelain",
+  QC: "qc",
+  QC_CHECK: "qc",
+  COMPLETE: "complete",
+  SHIP: "shipped",
+  DELIVERY: "shipped",
+  HOLD: "on_hold",
+  ON_HOLD: "on_hold",
+  REMAKE: "received",
+};
+
+/**
+ * Coerces any incoming status token to the canonical lowercase CaseStatus.
+ * Unknown values fall back to "received" (the initial station), mirroring the
+ * previous fallback behavior (getStationInfo defaulted to STATIONS[0]).
+ */
+export function normalizeCaseStatus(raw: unknown): CaseStatus {
+  if (typeof raw === "string") {
+    const hit = STATUS_ALIASES[raw] ?? STATUS_ALIASES[raw.trim()];
+    if (hit) return hit;
+  }
+  return "received";
+}
+
+/** Normalizes a case's status + routeHistory/activityLog station fields in place-safe (returns a copy). */
+export function normalizeCaseStatuses<T extends Partial<LabCase>>(c: T): T {
+  if (!c || typeof c !== "object") return c;
+  const next: any = { ...c };
+  if (next.status !== undefined) {
+    next.status = normalizeCaseStatus(next.status);
+  }
+  if (Array.isArray(next.routeHistory)) {
+    next.routeHistory = next.routeHistory.map((r: any) =>
+      r && typeof r === "object" && r.station !== undefined
+        ? { ...r, station: normalizeCaseStatus(r.station) }
+        : r
+    );
+  }
+  if (Array.isArray(next.activityLog)) {
+    next.activityLog = next.activityLog.map((e: any) =>
+      e && typeof e === "object" && e.station !== undefined && e.station !== null
+        ? { ...e, station: normalizeCaseStatus(e.station) }
+        : e
+    );
+  }
+  return next as T;
+}
 
 export type ActivityEntryType = "photo" | "video" | "note" | "station_change" | "scan" | "created" | "courtesy_text" | "barcode_assigned" | "barcode_unassigned" | "invoice_paid" | "invoice_attached" | "tracking_added" | "exocad_linked" | "exocad_shared" | "document";
 
@@ -227,7 +317,8 @@ export interface LabInvitation {
 }
 
 export function getStationInfo(status: CaseStatus, customLabels?: Record<string, string>) {
-  const station = STATIONS.find((s) => s.id === status) || STATIONS[0];
+  const canonical = normalizeCaseStatus(status);
+  const station = STATIONS.find((s) => s.id === canonical) || STATIONS[0];
   if (customLabels && customLabels[station.id]) {
     return { ...station, label: customLabels[station.id] };
   }
@@ -327,7 +418,7 @@ export const SAMPLE_CASES: LabCase[] = [
     toothIndices: "#8, #9, #10",
     shade: "A2",
     material: "E.max",
-    status: "DESIGN",
+    status: "in_design",
     isRush: false,
     notes: "Bridge prep - verify margins",
     createdAt: Date.now() - 86400000 * 2,
@@ -335,8 +426,8 @@ export const SAMPLE_CASES: LabCase[] = [
     price: 1250.0,
     dueDate: "2026-02-14",
     routeHistory: [
-      { station: "INTAKE", timestamp: Date.now() - 86400000 * 2 },
-      { station: "DESIGN", timestamp: Date.now() - 3600000 },
+      { station: "received", timestamp: Date.now() - 86400000 * 2 },
+      { station: "in_design", timestamp: Date.now() - 3600000 },
     ],
     photos: [],
     activityLog: [
@@ -345,7 +436,7 @@ export const SAMPLE_CASES: LabCase[] = [
         type: "created",
         timestamp: Date.now() - 86400000 * 2,
         description: "Case created and scanned in at Intake",
-        station: "INTAKE",
+        station: "received",
       },
       {
         id: generateId(),
@@ -358,7 +449,7 @@ export const SAMPLE_CASES: LabCase[] = [
         type: "station_change",
         timestamp: Date.now() - 3600000,
         description: "Case moved to Design",
-        station: "DESIGN",
+        station: "in_design",
       },
     ],
   },
@@ -371,7 +462,7 @@ export const SAMPLE_CASES: LabCase[] = [
     toothIndices: "#14",
     shade: "A3",
     material: "Zirconia",
-    status: "QC",
+    status: "qc",
     isRush: false,
     isRemake: true,
     notes: "Remake of previous crown - occlusion issue\n(REMAKE - No Charge)",
@@ -380,11 +471,11 @@ export const SAMPLE_CASES: LabCase[] = [
     price: 0,
     dueDate: "2026-02-08",
     routeHistory: [
-      { station: "INTAKE", timestamp: Date.now() - 86400000 * 10 },
-      { station: "DESIGN", timestamp: Date.now() - 86400000 * 8 },
-      { station: "PORCELAIN" as CaseStatus, timestamp: Date.now() - 86400000 * 6 },
-      { station: "PORCELAIN" as CaseStatus, timestamp: Date.now() - 86400000 * 4 },
-      { station: "QC", timestamp: Date.now() - 86400000 * 3 },
+      { station: "received", timestamp: Date.now() - 86400000 * 10 },
+      { station: "in_design", timestamp: Date.now() - 86400000 * 8 },
+      { station: "in_porcelain" as CaseStatus, timestamp: Date.now() - 86400000 * 6 },
+      { station: "in_porcelain" as CaseStatus, timestamp: Date.now() - 86400000 * 4 },
+      { station: "qc", timestamp: Date.now() - 86400000 * 3 },
     ],
     photos: [],
     activityLog: [
@@ -393,21 +484,21 @@ export const SAMPLE_CASES: LabCase[] = [
         type: "created",
         timestamp: Date.now() - 86400000 * 10,
         description: "Remake case created - original had occlusion issue",
-        station: "INTAKE",
+        station: "received",
       },
       {
         id: generateId(),
         type: "station_change",
         timestamp: Date.now() - 86400000 * 8,
         description: "Case moved to Design",
-        station: "DESIGN",
+        station: "in_design",
       },
       {
         id: generateId(),
         type: "station_change",
         timestamp: Date.now() - 86400000 * 3,
         description: "Case moved to QC",
-        station: "QC",
+        station: "qc",
       },
     ],
   },
@@ -420,14 +511,14 @@ export const SAMPLE_CASES: LabCase[] = [
     toothIndices: "#3",
     shade: "B1",
     material: "Zirconia",
-    status: "INTAKE",
+    status: "received",
     isRush: false,
     notes: "",
     createdAt: Date.now() - 3600000,
     updatedAt: Date.now() - 3600000,
     price: 680.0,
     dueDate: "2026-02-16",
-    routeHistory: [{ station: "INTAKE", timestamp: Date.now() - 3600000 }],
+    routeHistory: [{ station: "received", timestamp: Date.now() - 3600000 }],
     photos: [],
     activityLog: [
       {
@@ -435,7 +526,7 @@ export const SAMPLE_CASES: LabCase[] = [
         type: "created",
         timestamp: Date.now() - 3600000,
         description: "Case created and scanned in at Intake",
-        station: "INTAKE",
+        station: "received",
       },
     ],
   },
@@ -448,7 +539,7 @@ export const SAMPLE_CASES: LabCase[] = [
     toothIndices: "#19, #20",
     shade: "A3",
     material: "PFM",
-    status: "PORCELAIN",
+    status: "in_porcelain",
     isRush: true,
     notes: "RUSH - Patient traveling 02/12",
     createdAt: Date.now() - 86400000 * 5,
@@ -456,9 +547,9 @@ export const SAMPLE_CASES: LabCase[] = [
     price: 1580.0,
     dueDate: "2026-02-12",
     routeHistory: [
-      { station: "INTAKE", timestamp: Date.now() - 86400000 * 5 },
-      { station: "DESIGN", timestamp: Date.now() - 86400000 * 4 },
-      { station: "PORCELAIN", timestamp: Date.now() - 7200000 },
+      { station: "received", timestamp: Date.now() - 86400000 * 5 },
+      { station: "in_design", timestamp: Date.now() - 86400000 * 4 },
+      { station: "in_porcelain", timestamp: Date.now() - 7200000 },
     ],
     photos: [],
     activityLog: [
@@ -467,14 +558,14 @@ export const SAMPLE_CASES: LabCase[] = [
         type: "created",
         timestamp: Date.now() - 86400000 * 5,
         description: "Case created and scanned in at Intake",
-        station: "INTAKE",
+        station: "received",
       },
       {
         id: generateId(),
         type: "station_change",
         timestamp: Date.now() - 86400000 * 4,
         description: "Case moved to Design",
-        station: "DESIGN",
+        station: "in_design",
       },
       {
         id: generateId(),
@@ -493,7 +584,7 @@ export const SAMPLE_CASES: LabCase[] = [
         type: "station_change",
         timestamp: Date.now() - 7200000,
         description: "Case moved to Porcelain",
-        station: "PORCELAIN",
+        station: "in_porcelain",
       },
     ],
   },
@@ -506,7 +597,7 @@ export const SAMPLE_CASES: LabCase[] = [
     toothIndices: "#14",
     shade: "C2",
     material: "Gold",
-    status: "QC",
+    status: "qc",
     isRush: false,
     notes: "Full gold crown - check occlusion",
     createdAt: Date.now() - 86400000 * 7,
@@ -514,10 +605,10 @@ export const SAMPLE_CASES: LabCase[] = [
     price: 920.0,
     dueDate: "2026-02-13",
     routeHistory: [
-      { station: "INTAKE", timestamp: Date.now() - 86400000 * 7 },
-      { station: "DESIGN", timestamp: Date.now() - 86400000 * 5 },
-      { station: "PORCELAIN", timestamp: Date.now() - 86400000 * 3 },
-      { station: "QC", timestamp: Date.now() - 1800000 },
+      { station: "received", timestamp: Date.now() - 86400000 * 7 },
+      { station: "in_design", timestamp: Date.now() - 86400000 * 5 },
+      { station: "in_porcelain", timestamp: Date.now() - 86400000 * 3 },
+      { station: "qc", timestamp: Date.now() - 1800000 },
     ],
     photos: [],
     activityLog: [
@@ -526,28 +617,28 @@ export const SAMPLE_CASES: LabCase[] = [
         type: "created",
         timestamp: Date.now() - 86400000 * 7,
         description: "Case created and scanned in at Intake",
-        station: "INTAKE",
+        station: "received",
       },
       {
         id: generateId(),
         type: "station_change",
         timestamp: Date.now() - 86400000 * 5,
         description: "Case moved to Design",
-        station: "DESIGN",
+        station: "in_design",
       },
       {
         id: generateId(),
         type: "station_change",
         timestamp: Date.now() - 86400000 * 3,
         description: "Case moved to Porcelain",
-        station: "PORCELAIN",
+        station: "in_porcelain",
       },
       {
         id: generateId(),
         type: "station_change",
         timestamp: Date.now() - 1800000,
         description: "Case moved to Quality Check",
-        station: "QC",
+        station: "qc",
       },
     ],
   },
@@ -560,7 +651,7 @@ export const SAMPLE_CASES: LabCase[] = [
     toothIndices: "#6, #7, #8, #9, #10, #11",
     shade: "BL2",
     material: "E.max",
-    status: "DESIGN",
+    status: "in_design",
     isRush: true,
     notes: "RUSH - Full anterior veneers. Minimal prep.",
     createdAt: Date.now() - 86400000 * 3,
@@ -568,8 +659,8 @@ export const SAMPLE_CASES: LabCase[] = [
     price: 4200.0,
     dueDate: "2026-02-09",
     routeHistory: [
-      { station: "INTAKE", timestamp: Date.now() - 86400000 * 3 },
-      { station: "DESIGN", timestamp: Date.now() - 14400000 },
+      { station: "received", timestamp: Date.now() - 86400000 * 3 },
+      { station: "in_design", timestamp: Date.now() - 14400000 },
     ],
     photos: [],
     activityLog: [
@@ -578,14 +669,14 @@ export const SAMPLE_CASES: LabCase[] = [
         type: "created",
         timestamp: Date.now() - 86400000 * 3,
         description: "Case created and scanned in at Intake",
-        station: "INTAKE",
+        station: "received",
       },
       {
         id: generateId(),
         type: "station_change",
         timestamp: Date.now() - 14400000,
         description: "Case moved to Design",
-        station: "DESIGN",
+        station: "in_design",
       },
     ],
   },
@@ -598,7 +689,7 @@ export const SAMPLE_CASES: LabCase[] = [
     toothIndices: "#30",
     shade: "A3.5",
     material: "Zirconia",
-    status: "SHIP",
+    status: "shipped",
     isRush: false,
     notes: "Standard single crown",
     createdAt: Date.now() - 86400000 * 10,
@@ -606,11 +697,11 @@ export const SAMPLE_CASES: LabCase[] = [
     price: 720.0,
     dueDate: "2026-02-09",
     routeHistory: [
-      { station: "INTAKE", timestamp: Date.now() - 86400000 * 10 },
-      { station: "DESIGN", timestamp: Date.now() - 86400000 * 8 },
-      { station: "PORCELAIN", timestamp: Date.now() - 86400000 * 5 },
-      { station: "QC", timestamp: Date.now() - 86400000 * 2 },
-      { station: "SHIP", timestamp: Date.now() - 900000 },
+      { station: "received", timestamp: Date.now() - 86400000 * 10 },
+      { station: "in_design", timestamp: Date.now() - 86400000 * 8 },
+      { station: "in_porcelain", timestamp: Date.now() - 86400000 * 5 },
+      { station: "qc", timestamp: Date.now() - 86400000 * 2 },
+      { station: "shipped", timestamp: Date.now() - 900000 },
     ],
     photos: [],
     activityLog: [
@@ -619,35 +710,35 @@ export const SAMPLE_CASES: LabCase[] = [
         type: "created",
         timestamp: Date.now() - 86400000 * 10,
         description: "Case created and scanned in at Intake",
-        station: "INTAKE",
+        station: "received",
       },
       {
         id: generateId(),
         type: "station_change",
         timestamp: Date.now() - 86400000 * 8,
         description: "Case moved to Design",
-        station: "DESIGN",
+        station: "in_design",
       },
       {
         id: generateId(),
         type: "station_change",
         timestamp: Date.now() - 86400000 * 5,
         description: "Case moved to Porcelain",
-        station: "PORCELAIN",
+        station: "in_porcelain",
       },
       {
         id: generateId(),
         type: "station_change",
         timestamp: Date.now() - 86400000 * 2,
         description: "Case moved to Quality Check",
-        station: "QC",
+        station: "qc",
       },
       {
         id: generateId(),
         type: "station_change",
         timestamp: Date.now() - 900000,
         description: "Case moved to Shipping",
-        station: "SHIP",
+        station: "shipped",
       },
     ],
   },

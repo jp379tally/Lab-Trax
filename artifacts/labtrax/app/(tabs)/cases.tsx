@@ -23,42 +23,13 @@ import { useAuth } from "@/lib/auth-context";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { getStationInfo, STATIONS, CaseStatus, LabCase, cleanDoctorDisplay, Invoice } from "@/lib/data";
+import { getStationInfo, STATIONS, CaseStatus, LabCase, cleanDoctorDisplay, Invoice, normalizeCaseStatus } from "@/lib/data";
 import { useCases, type CanonicalCase } from "@workspace/api-client-react";
 import { ChatButton } from "@/components/ChatButton";
 import InvoicePDFViewer from "@/components/InvoicePDFViewer";
 import { CaseProgressBar } from "@/components/CaseProgressBar";
 import { deriveDisplayInitials } from "@/lib/display-initials";
 import { getCaseInvoice as getCaseInvoiceFromLib } from "@/lib/case-invoice";
-
-// ─── Canonical → mobile status map ───────────────────────────────────────────
-const CANONICAL_TO_MOBILE_STATUS: Record<string, CaseStatus> = {
-  received:           "INTAKE",
-  draft:              "INTAKE",
-  in_design:          "DESIGN",
-  design:             "DESIGN",
-  scan:               "SCAN",
-  in_milling:         "MILL",
-  milling:            "MILL",
-  post_mill:          "POST_MILL",
-  sintering_furnace:  "SINTERING_FURNACE",
-  sintering:          "SINTERING_FURNACE",
-  model_room:         "MODEL_ROOM",
-  in_porcelain:       "PORCELAIN",
-  porcelain:          "PORCELAIN",
-  qc:                 "QC",
-  complete:           "COMPLETE",
-  shipped:            "SHIP",
-  ship:               "SHIP",
-  on_hold:            "HOLD",
-  hold:               "HOLD",
-  remake:             "INTAKE",
-};
-
-function toMobileStatus(s: string | null | undefined): CaseStatus {
-  if (!s) return "INTAKE";
-  return CANONICAL_TO_MOBILE_STATUS[s.toLowerCase()] ?? "INTAKE";
-}
 
 function canonicalCaseToDisplay(c: CanonicalCase): LabCase {
   const firstName = (c.patientFirstName as string | null | undefined) ?? "";
@@ -78,7 +49,7 @@ function canonicalCaseToDisplay(c: CanonicalCase): LabCase {
     patientName,
     patientInitials: initials,
     doctorName: (c.doctorName as string | null | undefined) ?? "",
-    status: toMobileStatus(c.status as string | null | undefined),
+    status: normalizeCaseStatus(c.status as string | null | undefined),
     material: (c.restorationMaterials as string | null | undefined) ?? "",
     shade: (c.shade as string | null | undefined) ?? "",
     toothIndices: (c.teeth as string | null | undefined) ?? "",

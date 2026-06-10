@@ -2116,7 +2116,7 @@ export default function ScanScreen() {
       toothIndices: toothIndices.trim(),
       shade: shade.trim(),
       material,
-      status: "INTAKE",
+      status: "received",
       isRush,
       notes: finalNotes,
       price: calculatedPrice,

@@ -34,6 +34,8 @@ import {
   ToothType,
   CaseTypeValue,
   MATERIAL_PRICES,
+  normalizeCaseStatus,
+  normalizeCaseStatuses,
 } from "@/lib/data";
 import { resolvePriceForCase } from "@/lib/pricing";
 import {
@@ -444,33 +446,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const CANONICAL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
   async function syncCaseToServer(labCase: LabCase): Promise<boolean> {
-    const MOBILE_TO_DESKTOP_STATUS: Record<string, string> = {
-      INTAKE: "received",
-      DESIGN: "in_design",
-      SCAN: "scan",
-      MILL: "in_milling",
-      MILLING: "in_milling",
-      POST_MILL: "post_mill",
-      SINTERING_FURNACE: "sintering_furnace",
-      MODEL_ROOM: "model_room",
-      PORCELAIN: "in_porcelain",
-      QC_CHECK: "qc",
-      QC: "qc",
-      COMPLETE: "complete",
-      SHIP: "shipped",
-      DELIVERY: "shipped",
-      HOLD: "on_hold",
-      ON_HOLD: "on_hold",
-      REMAKE: "remake",
-    };
     void logDebugEvent("SYNC_START", { caseId: labCase.id, status: labCase.status ?? null });
     try {
       if (CANONICAL_ID_RE.test(labCase.id)) {
-        // Canonical UUID case → PATCH status on the cases table.
-        const desktopStatus = labCase.status
-          ? MOBILE_TO_DESKTOP_STATUS[labCase.status]
+        // Canonical UUID case → PATCH status on the cases table. The mobile
+        // domain model already uses the server's canonical lowercase statuses,
+        // so the status is sent through as-is (no translation map needed).
+        const canonicalStatus = labCase.status
+          ? normalizeCaseStatus(labCase.status)
           : undefined;
-        if (!desktopStatus) {
+        if (!canonicalStatus) {
           void logDebugEvent("SYNC_NO_STATUS", { caseId: labCase.id, status: labCase.status ?? null });
           return false;
         }
@@ -479,7 +464,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ status: desktopStatus }),
+            body: JSON.stringify({ status: canonicalStatus }),
           }
         );
         void logDebugEvent("SYNC_PATCH_DONE", { caseId: labCase.id, httpStatus: res?.status ?? -1, ok: res?.ok ?? false });
@@ -532,7 +517,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (res.ok) {
         try {
           const data = await res.json();
-          return { ok: true, cases: Array.isArray(data?.cases) ? data.cases : [] };
+          const rawCases = Array.isArray(data?.cases) ? data.cases : [];
+          // Normalize statuses to canonical lowercase. The server's legacy
+          // endpoints still emit uppercase mobile tokens (and historical
+          // lab_cases blobs hold them too); coerce them so the mobile domain
+          // model stays canonical end-to-end.
+          return { ok: true, cases: rawCases.map((c: LabCase) => normalizeCaseStatuses(c)) };
         } catch {
           return { ok: false };
         }
@@ -931,6 +921,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // Stubs retained so AppContext consumers compile unchanged.
   // The offline queue is removed; uploads use chunked sessions.
+  const pendingSyncCount = 0;
+  const stuckSyncItems: StuckQueueItem[] = [];
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   function retrySync(_id?: string) {}
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -1905,7 +1897,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // empty — the server fetch handles everything else.
       if (savedCases) {
         try {
-          const parsedCases: LabCase[] = JSON.parse(savedCases);
+          const parsedCases: LabCase[] = (JSON.parse(savedCases) as LabCase[]).map(
+            (c) => normalizeCaseStatuses(c)
+          );
           setAllCases((prev) => {
             const next = prev.length === 0 ? parsedCases : prev;
             // Keep the drain executor's mirror in lockstep so a drain that
@@ -1984,7 +1978,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       const savedStationLabels = await AsyncStorage.getItem(STATION_LABELS_KEY);
       if (savedStationLabels) {
-        setCustomStationLabels(JSON.parse(savedStationLabels));
+        // Custom labels are keyed by station id. Legacy installs stored them
+        // under uppercase tokens (e.g. "INTAKE"); remap to the canonical
+        // lowercase station ids so labels keep resolving after the migration.
+        const rawLabels = JSON.parse(savedStationLabels) as Record<string, string>;
+        const migrated: Record<string, string> = {};
+        for (const [key, label] of Object.entries(rawLabels)) {
+          migrated[normalizeCaseStatus(key)] = label;
+        }
+        setCustomStationLabels(migrated);
       }
 
       setGroupJoinRequests([]);
@@ -2283,7 +2285,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setCases((prevCases) => {
       const updated = prevCases.map((c) => {
         if (c.id === caseId) {
-          const shouldFreeBarcode = newStatus === "COMPLETE" && !!c.assignedBarcode;
+          const shouldFreeBarcode = newStatus === "complete" && !!c.assignedBarcode;
           const extraEntries: ActivityEntry[] = [stationEntry];
           if (shouldFreeBarcode) {
             extraEntries.push({
@@ -2298,7 +2300,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             ...c,
             status: newStatus,
             updatedAt: now,
-            assignedBarcode: newStatus === "COMPLETE" ? undefined : c.assignedBarcode,
+            assignedBarcode: newStatus === "complete" ? undefined : c.assignedBarcode,
             routeHistory: [
               ...(c.routeHistory || []),
               { station: newStatus, timestamp: now },
@@ -2322,7 +2324,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const newNotif: Notification = {
           id: generateId(),
           title: "Station Update",
-          message: `Case ${caseInfo.caseNumber} moved to ${newStatus}`,
+          message: `Case ${caseInfo.caseNumber} moved to ${getStationInfo(newStatus, customStationLabels).label}`,
           type: "update",
           caseId,
           read: false,
@@ -2334,7 +2336,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           return updatedNotifs;
         });
 
-        if (newStatus === "INTAKE" || newStatus === "COMPLETE") {
+        if (newStatus === "received" || newStatus === "complete") {
           sendProviderCaseUpdateText(caseInfo, newStatus);
         }
       }
@@ -2356,7 +2358,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       );
       if (!providerUser) return;
 
-      const statusLabel = status === "INTAKE" ? "received by the lab" : "completed";
+      const statusLabel = status === "received" ? "received by the lab" : "completed";
       const message = `LabTrax: Hello Dr. ${providerUser.doctorName || providerUser.username}, your case ${caseInfo.caseNumber} for patient ${caseInfo.patientName} has been ${statusLabel}. Thank you for choosing LabTrax.`;
 
       const host = process.env.EXPO_PUBLIC_DOMAIN;
@@ -3716,8 +3718,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // Match by assigned barcode first, then fall back to case number so that
     // scanning a QR code printed with the case number also works.
     return (
-      cases.find((c) => c.assignedBarcode === q && c.status !== "COMPLETE") ??
-      cases.find((c) => (c.caseNumber || "").trim() === q && c.status !== "COMPLETE")
+      cases.find((c) => c.assignedBarcode === q && c.status !== "complete") ??
+      cases.find((c) => (c.caseNumber || "").trim() === q && c.status !== "complete")
     );
   }
 
@@ -3829,13 +3831,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [notifications],
   );
   const activeCaseCount = useMemo(
-    () => cases.filter((c) => c.status !== "COMPLETE" && c.status !== "SHIP").length,
+    () => cases.filter((c) => c.status !== "complete" && c.status !== "shipped").length,
     [cases],
   );
   const rushCaseCount = useMemo(
     () =>
       cases.filter(
-        (c) => c.isRush && c.status !== "COMPLETE" && c.status !== "SHIP",
+        (c) => c.isRush && c.status !== "complete" && c.status !== "shipped",
       ).length,
     [cases],
   );

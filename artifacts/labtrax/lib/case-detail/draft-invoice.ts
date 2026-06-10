@@ -71,7 +71,7 @@ export function buildDraftInvoice(input: {
     caseIds: [caseItem.id],
     amount: total,
     credits: caseItem.isRemake && caseItem.price === 0 ? total : 0,
-    status: caseItem.status === "COMPLETE" ? ("paid" as const) : ("open" as const),
+    status: caseItem.status === "complete" ? ("paid" as const) : ("open" as const),
     issuedAt: caseItem.createdAt,
     dueAt: invoiceDueDate(new Date(caseItem.createdAt)).getTime(),
     billTo: safeDoctorName,

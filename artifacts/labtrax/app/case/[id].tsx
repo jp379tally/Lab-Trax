@@ -39,7 +39,7 @@ import * as FileSystem from "expo-file-system";
 import * as LegacyFileSystem from "expo-file-system/legacy";
 import { useAuth } from "@/lib/auth-context";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
-import { getStationInfo, STATIONS, CaseStatus, ToothType, MATERIAL_PRICES, CaseTypeValue, Invoice, LabCase, SHADE_OPTIONS, cleanDoctorDisplay, formatInvNum, ActivityEntry } from "@/lib/data";
+import { getStationInfo, STATIONS, CaseStatus, ToothType, MATERIAL_PRICES, CaseTypeValue, Invoice, LabCase, SHADE_OPTIONS, cleanDoctorDisplay, formatInvNum, ActivityEntry, normalizeCaseStatus } from "@/lib/data";
 import { resolvePriceForCase } from "@/lib/pricing";
 import { ChatButton } from "@/components/ChatButton";
 import InvoicePDFViewer from "@/components/InvoicePDFViewer";
@@ -84,21 +84,6 @@ import {
   buildApplianceLineItems,
 } from "@/lib/case-detail/add-item";
 
-// ─── Canonical → mobile status map (mirrors the one in cases.tsx) ────────────
-const _CANONICAL_TO_MOBILE_STATUS: Record<string, import("@/lib/data").CaseStatus> = {
-  received: "INTAKE", draft: "INTAKE", in_design: "DESIGN", design: "DESIGN",
-  scan: "SCAN", in_milling: "MILL", milling: "MILL", post_mill: "POST_MILL",
-  sintering_furnace: "SINTERING_FURNACE", sintering: "SINTERING_FURNACE",
-  model_room: "MODEL_ROOM", in_porcelain: "PORCELAIN", porcelain: "PORCELAIN",
-  qc: "QC", complete: "COMPLETE", shipped: "SHIP", ship: "SHIP",
-  on_hold: "HOLD", hold: "HOLD", remake: "INTAKE",
-};
-
-function _toMobileStatus(s: string | null | undefined): import("@/lib/data").CaseStatus {
-  if (!s) return "INTAKE";
-  return _CANONICAL_TO_MOBILE_STATUS[s.toLowerCase()] ?? "INTAKE";
-}
-
 function canonicalCaseToDisplayBase(c: CanonicalCaseType): import("@/lib/data").LabCase {
   const firstName = (c.patientFirstName as string | null | undefined) ?? "";
   const lastName  = (c.patientLastName  as string | null | undefined) ?? "";
@@ -123,7 +108,7 @@ function canonicalCaseToDisplayBase(c: CanonicalCaseType): import("@/lib/data").
     patientName,
     patientInitials: initials,
     doctorName: (c.doctorName as string | null | undefined) ?? "",
-    status: _toMobileStatus(c.status as string | null | undefined),
+    status: normalizeCaseStatus(c.status as string | null | undefined),
     // canonical field names differ from LabCase; explicit mappings take priority
     material: (c.restorationMaterials as string | null | undefined) ?? (raw.material as string | undefined) ?? "",
     shade: (c.shade as string | null | undefined) ?? "",
@@ -2175,14 +2160,14 @@ export default function CaseDetailScreen() {
 
         {isAdmin && (
         <Pressable
-          style={[styles.statusCard, (caseItem.status === "COMPLETE" || caseItem.status === "SHIP") && styles.statusCardTappable]}
+          style={[styles.statusCard, (caseItem.status === "complete" || caseItem.status === "shipped") && styles.statusCardTappable]}
           onPress={() => {
-            if (caseItem.status === "COMPLETE" || caseItem.status === "SHIP") {
+            if (caseItem.status === "complete" || caseItem.status === "shipped") {
               setShowCompleteInfo(true);
               if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             }
           }}
-          disabled={caseItem.status !== "COMPLETE" && caseItem.status !== "SHIP"}
+          disabled={caseItem.status !== "complete" && caseItem.status !== "shipped"}
         >
           <View
             style={[
@@ -2200,7 +2185,7 @@ export default function CaseDetailScreen() {
               <Text style={styles.rushText}>RUSH</Text>
             </View>
           )}
-          {(caseItem.status === "COMPLETE" || caseItem.status === "SHIP") && (
+          {(caseItem.status === "complete" || caseItem.status === "shipped") && (
             <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
           )}
         </Pressable>
@@ -2290,7 +2275,7 @@ export default function CaseDetailScreen() {
 
         {userType === "provider" && (() => {
           const deliveryDate = canonicalCaseData?.expectedDeliveryDate;
-          const isComplete = caseItem.status === "COMPLETE" || caseItem.status === "SHIP";
+          const isComplete = caseItem.status === "complete" || caseItem.status === "shipped";
           if (deliveryDate) {
             const dateObj = new Date(deliveryDate.includes("T") ? deliveryDate : deliveryDate + "T00:00:00");
             const today = new Date();
@@ -3546,7 +3531,7 @@ export default function CaseDetailScreen() {
                           </View>
                         )}
                       </View>
-                      {entry.station === "INTAKE" && caseItem.assignedBarcode && (
+                      {entry.station === "received" && caseItem.assignedBarcode && (
                         <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: colors.tint, marginTop: 2 }}>
                           Case Pan: {caseItem.assignedBarcode}
                         </Text>
@@ -3937,7 +3922,7 @@ export default function CaseDetailScreen() {
             </View>
           )}
 
-          {userType !== "provider" && caseItem.status !== "COMPLETE" && (
+          {userType !== "provider" && caseItem.status !== "complete" && (
             <Pressable
               onPress={async () => {
                 if (caseItem.assignedBarcode) {
@@ -4511,7 +4496,7 @@ export default function CaseDetailScreen() {
           <View style={styles.completeSheet}>
             <View style={styles.completeHeader}>
               <Text style={styles.completeTitle}>
-                {caseItem.status === "COMPLETE" ? "Completed Case" : "Shipped Case"}
+                {caseItem.status === "complete" ? "Completed Case" : "Shipped Case"}
               </Text>
               <Pressable onPress={() => setShowCompleteInfo(false)}>
                 <Ionicons name="close" size={24} color={colors.textSecondary} />

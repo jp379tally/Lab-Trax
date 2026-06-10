@@ -16,7 +16,7 @@ const baseCase = {
   toothIndices: "#8, #9, #10",
   shade: "A2",
   material: "Zirconia",
-  status: "DESIGN",
+  status: "in_design",
   isRush: false,
   notes: "",
   createdAt: new Date("2026-03-15T00:00:00Z").getTime(),
@@ -75,7 +75,7 @@ describe("buildDraftInvoice", () => {
 
   it("marks completed cases as paid", () => {
     const inv = buildDraftInvoice({
-      caseItem: { ...baseCase, status: "COMPLETE" } as LabCase,
+      caseItem: { ...baseCase, status: "complete" } as LabCase,
       clients,
       pricingTiers: tiers,
     });
