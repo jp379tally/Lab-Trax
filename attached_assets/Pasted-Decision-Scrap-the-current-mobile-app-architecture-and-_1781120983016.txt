@@ -1,0 +1,88 @@
+Decision: Scrap the current mobile app architecture and rebuild mobile from the ground up, derived directly from the stable desktop/web version.
+
+Reason:
+The current mobile app has caused repeated regressions and is no longer acceptable to keep patching. The mobile app has repeatedly broken or drifted from web/desktop in these areas:
+
+* Case sync
+* Case history
+* Invoice generation
+* Duplicate invoices
+* Photo capture/upload
+* Photo visibility on web/desktop
+* Location updates
+* Lab affiliation
+* Auth/session handling
+* Mobile/desktop data mismatch
+
+The desktop and web versions are more stable, more reliable, and more effective. The new mobile app must be derived from the desktop/web architecture and must not continue the old mobile architecture.
+
+Effective immediately:
+
+1. Stop patching the old mobile app except for emergency blockers.
+2. Do not add new features to the old mobile app.
+3. Do not build on top of the legacy mobile data model.
+4. Do not use `lab_cases` for new mobile-created cases.
+5. Do not use `/api/legacy/cases` for the rebuilt mobile app.
+6. Do not use separate mobile-only invoice, photo, location, or sync logic.
+
+New mobile rebuild requirements:
+
+* Use the same canonical backend as desktop/web.
+* Use `/api/cases`.
+* Use `/api/invoices`.
+* Use canonical case UUIDs.
+* Use `caseAttachments` for photos and documents.
+* Use the same invoice model as desktop/web.
+* Use the same case history source as desktop/web.
+* Use the same location/status/station fields as desktop/web.
+* Use the same pricing and billing logic as desktop/web.
+* Use the same authentication/session model as desktop/web as much as possible.
+
+Preserve mobile-specific features:
+
+* Camera prescription capture
+* AI Reader
+* Case creation from prescription
+* Photo/document upload
+* Quick case lookup
+* Long-press locate
+* QR/barcode lookup
+* Share intent
+* Biometric lock
+* Mobile-friendly dashboard/HUD
+
+Required plan before coding:
+Create a full rebuild implementation plan that includes:
+
+1. What code from the current mobile app will be deleted or retired.
+2. What desktop/web components, hooks, API paths, and data models will be reused.
+3. What mobile screens will be rebuilt first.
+4. What mobile-only features will be ported.
+5. What legacy mobile code will be blocked from future use.
+6. What regression tests will protect every working workflow.
+7. What real-device TestFlight tests must pass before release.
+8. Rollback plan if the new mobile build fails.
+
+The new mobile app acceptance criteria:
+
+* AI Reader analyzes prescription.
+* AI Reader creates a canonical case.
+* Same Case ID appears on mobile, web, and desktop.
+* Case history appears correctly.
+* Invoice is generated once, not duplicated.
+* Invoice is linked to the same Case ID.
+* Mobile photo uploads successfully.
+* Mobile photo appears on web and desktop.
+* Case location changes sync to web and desktop.
+* Pricing is consistent with desktop/web.
+* No silent local-only saves.
+* No “server down” upload failures caused by mobile-only sync logic.
+* No legacy mobile data paths for new work.
+
+This is now a full mobile rebuild, not another patch cycle.
+
+Checkpoint after plan:
+
+“Mobile Rebuild Approved — Scrap Legacy Mobile Architecture”
+
+Do not begin implementation until I approve the rebuild plan.
