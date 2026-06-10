@@ -1,5 +1,11 @@
 # Mobile App Rebuild: Evaluation & Migration Plan
 
+> **Approval gate (governance rule):** No implementation phase of this rebuild
+> starts until it is **explicitly approved** by the project owner. Planning,
+> investigation, test/guardrail coverage, and documentation may proceed, but any
+> code change that begins an implementation phase (Phases 1–5 below) requires a
+> prior explicit go-ahead.
+
 ## Supporting planning artifacts
 
 Detailed companion documents live in [`docs/mobile-rebuild/`](mobile-rebuild/):
@@ -157,8 +163,22 @@ all desktop bug fixes automatically, and eliminates every legacy shim.
     `lib/offline-queue.ts`, legacy routing in `lib/data.ts`, and all `/api/legacy/cases`
     calls from the mobile codebase.
 16. **Deprecate `lab_cases` mobile writes** — API server: guard the legacy write
-    endpoints to return 410 Gone for the new mobile client user-agent, preserving
-    read access for historical data display only.
+    endpoints to return 410 Gone for the rebuilt mobile client, preserving read
+    access for historical data display only. The concrete contract (implemented and
+    covered by `artifacts/api-server/src/routes/legacy-case-mobile-guard.test.ts`):
+    - The rebuilt mobile client **must** send the header `X-LabTrax-Client: mobile/2`
+      on every request.
+    - `POST /api/legacy/cases` **returns 410 Gone** for the rebuilt mobile client
+      (guard fires when the `X-LabTrax-Client` header starts with `mobile/` and the
+      posted case `id` is a canonical UUID — the routing-bug case the rebuilt client
+      could hit). Non-UUID (legacy, client-generated) ids still pass through so old
+      clients keep working.
+    - **Legacy mobile paths remain available** only for old clients (no/non-matching
+      `X-LabTrax-Client` header) and for read-only display of historical `lab_cases`
+      data.
+    - **No new mobile-created case ever goes through `lab_cases`** — the rebuilt
+      client creates/updates cases exclusively via the canonical `cases` table and
+      `/api/cases` endpoints.
 
 ### Phase 5 — Validation
 17. **Regression test pass** — run the existing API server test suite; add mobile

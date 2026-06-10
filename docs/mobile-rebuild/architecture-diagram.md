@@ -124,7 +124,9 @@ The rebuild does **not** delete `lab_cases` or the legacy endpoints. During and 
 migration:
 - `lab_cases` remains readable so historical mobile-created cases still display on
   desktop/web (`tryProjectLegacyCaseForDesktop()` stays).
-- The legacy `/api/legacy/cases` routes remain mounted until the cutover task
-  (Phase 4) explicitly guards writes (410 Gone for the rebuilt client) — handled in a
-  later implementation task, not here.
+- The legacy `/api/legacy/cases` routes remain mounted, but writes are now guarded:
+  the rebuilt client sends `X-LabTrax-Client: mobile/2` and `POST /api/legacy/cases`
+  returns 410 Gone for it on canonical UUID ids. Legacy paths stay available for old
+  clients and historical reads; no new mobile-created case goes through `lab_cases`.
+  Covered by `artifacts/api-server/src/routes/legacy-case-mobile-guard.test.ts`.
 - The current mobile workflow keeps running unchanged throughout this planning phase.

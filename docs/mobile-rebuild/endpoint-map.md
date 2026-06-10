@@ -82,5 +82,9 @@ called** by the rebuilt mobile client:
 - `POST /api/legacy/cases`
 - `DELETE /api/legacy/cases/:caseId`
 
-The cutover task (Phase 4) decides whether to additionally return 410 Gone for the
-rebuilt client's user-agent. That is **out of scope for this planning artifact**.
+The write guard is now implemented: `POST /api/legacy/cases` returns **410 Gone** for
+the rebuilt mobile client (header `X-LabTrax-Client: mobile/2`) when it posts a
+canonical UUID case id — old clients sending non-UUID legacy ids, and clients without
+the header, still pass through. Covered by
+`artifacts/api-server/src/routes/legacy-case-mobile-guard.test.ts`. No new
+mobile-created case goes through `lab_cases`; legacy reads remain for historical data.

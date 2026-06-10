@@ -12,7 +12,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, inArray } from "drizzle-orm";
-import { randomBytes, createHash } from "node:crypto";
+import { randomBytes, createHash, randomUUID } from "node:crypto";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as fs from "node:fs";
@@ -47,6 +47,7 @@ maybeDb(
     const labOrgId = rid("lab");
     const userId = rid("umob");
     let token = "";
+    const createdCaseIds: string[] = [];
 
     async function makeSession(uid: string): Promise<string> {
       const { db, userSessions } = dbMod as any;
@@ -96,8 +97,17 @@ maybeDb(
 
     afterAll(async () => {
       if (!SHOULD_RUN_DB) return;
-      const { db, organizations, users, organizationMemberships, userSessions } =
-        dbMod as any;
+      const {
+        db,
+        organizations,
+        users,
+        organizationMemberships,
+        userSessions,
+        labCases,
+      } = dbMod as any;
+      if (createdCaseIds.length > 0) {
+        await db.delete(labCases).where(inArray(labCases.id, createdCaseIds));
+      }
       await db
         .delete(organizationMemberships)
         .where(eq(organizationMemberships.userId, userId));
@@ -136,8 +146,9 @@ maybeDb(
       expect([200, 201]).toContain(res.status);
     });
 
-    it("does NOT return 410 when no mobile client header is present (desktop/web)", async () => {
-      const uuidId = "660e8400-e29b-41d4-a716-446655440001";
+    it("proceeds to the upsert (200/201) when no mobile client header is present (desktop/web), even for a UUID", async () => {
+      const uuidId = randomUUID();
+      createdCaseIds.push(uuidId);
       const res = await request(appMod.default)
         .post("/api/legacy/cases")
         .set("Authorization", `Bearer ${token}`)
@@ -147,6 +158,55 @@ maybeDb(
           caseData: { id: uuidId, ownerId: userId, status: "INTAKE" },
         });
       expect(res.status).not.toBe(410);
+      expect([200, 201]).toContain(res.status);
+    });
+
+    it("proceeds to the upsert (200/201) for a non-matching client header (e.g. desktop) posting a UUID", async () => {
+      const uuidId = randomUUID();
+      createdCaseIds.push(uuidId);
+      const res = await request(appMod.default)
+        .post("/api/legacy/cases")
+        .set("Authorization", `Bearer ${token}`)
+        .set("x-labtrax-client", "desktop/1")
+        .send({
+          id: uuidId,
+          ownerId: userId,
+          caseData: { id: uuidId, ownerId: userId, status: "INTAKE" },
+        });
+      expect(res.status).not.toBe(410);
+      expect([200, 201]).toContain(res.status);
+    });
+
+    it("proceeds to body validation (400) for a non-matching header with an invalid body", async () => {
+      const res = await request(appMod.default)
+        .post("/api/legacy/cases")
+        .set("Authorization", `Bearer ${token}`)
+        .set("x-labtrax-client", "desktop/1")
+        .send({});
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/required/i);
+    });
+
+    it("proceeds to body validation (400) when no header is present and required fields are missing", async () => {
+      const res = await request(appMod.default)
+        .post("/api/legacy/cases")
+        .set("Authorization", `Bearer ${token}`)
+        .send({});
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/required/i);
+    });
+
+    it("requires authentication regardless of the guard", async () => {
+      const uuidId = "880e8400-e29b-41d4-a716-446655440003";
+      const res = await request(appMod.default)
+        .post("/api/legacy/cases")
+        .set("x-labtrax-client", "mobile/2")
+        .send({
+          id: uuidId,
+          ownerId: userId,
+          caseData: { id: uuidId, ownerId: userId, status: "INTAKE" },
+        });
+      expect(res.status).toBe(401);
     });
   }
 );
