@@ -512,6 +512,22 @@ export type ChunkedUploadResult =
 
 const CHUNKED_UPLOAD_CHUNK_SIZE = 1 * 1024 * 1024; // 1 MB
 
+// Per-chunk retry budget for transient network / 5xx failures. A single
+// dropped packet on a flaky mobile connection used to fail the whole upload;
+// now each chunk PATCH is retried with exponential back-off before giving up.
+const CHUNK_MAX_RETRIES = 3;
+
+function chunkBackoffDelayMs(attempt: number): number {
+  return Math.min(1_000 * 2 ** (attempt - 1), 8_000);
+}
+
+// Maps a stable file identity (uri + size) to a live server upload session so a
+// fresh chunkedUploadCaseMedia() call after a dropped connection resumes from
+// the server's current offset instead of restarting from byte 0. Keyed on
+// (uri + size) — NOT fileName — because callers mint a new timestamped fileName
+// on every retry attempt.
+const resumableSessionCache = new Map<string, string>();
+
 function base64ToArrayBuffer(b64: string): ArrayBuffer {
   const clean = b64.replace(/\s+/g, "");
   const binary = atob(clean);
@@ -544,6 +560,44 @@ function sendBinaryPatch(
     xhr.onerror = () => reject(new Error("Network request failed"));
     xhr.send(data);
   });
+}
+
+// Sends a single chunk PATCH, retrying transient failures (network drops and
+// 5xx responses) up to CHUNK_MAX_RETRIES times with exponential back-off.
+// A 401 is handled inline by refreshing the bearer token once per attempt.
+// Definitive responses — 2xx success, 409 offset-resync, and other 4xx — are
+// returned to the caller rather than retried. Throws only when every transient
+// retry is exhausted.
+async function sendChunkWithRetry(
+  patchUrl: string,
+  chunkBuffer: ArrayBuffer,
+  offset: number,
+): Promise<{ status: number; body: string }> {
+  let lastError: unknown = new Error("Chunk upload failed");
+  for (let attempt = 0; attempt <= CHUNK_MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      await new Promise<void>((r) => setTimeout(r, chunkBackoffDelayMs(attempt)));
+    }
+    try {
+      let result = await sendBinaryPatch(patchUrl, chunkBuffer, offset, _accessToken);
+      if (result.status === 401 && _refreshToken) {
+        const newToken = await refreshAccessToken();
+        if (newToken) {
+          result = await sendBinaryPatch(patchUrl, chunkBuffer, offset, newToken);
+        }
+      }
+      if (result.status >= 500 && result.status < 600) {
+        // Transient server error — back off and retry the same chunk.
+        lastError = new Error(`Chunk upload failed with status ${result.status}`);
+        continue;
+      }
+      return result;
+    } catch (e) {
+      // Network-level failure (sendBinaryPatch rejected) — back off and retry.
+      lastError = e;
+    }
+  }
+  throw lastError;
 }
 
 export async function chunkedUploadCaseMedia(
@@ -589,65 +643,104 @@ export async function chunkedUploadCaseMedia(
     return { ok: false, error: "Could not determine file size" };
   }
 
-  // Create the upload session
-  const sessionRes = await resilientFetch("/api/media/upload-session", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ fileName, fileSize, mimeType }),
-  });
-  if (!sessionRes.ok) {
-    return { ok: false, status: sessionRes.status, error: "Could not create upload session" };
+  // Resume an in-flight session for this exact file if one is still alive on
+  // the server (e.g. a previous attempt dropped mid-upload). This avoids
+  // re-uploading bytes the server already has.
+  const cacheKey = `${fileUri}::${fileSize}`;
+  let sessionId: string | null = null;
+  let uploadedBytes = 0;
+
+  const cachedSessionId = resumableSessionCache.get(cacheKey);
+  if (cachedSessionId) {
+    try {
+      const statusRes = await resilientFetch(
+        `/api/media/upload-session/${cachedSessionId}`,
+        { method: "GET" },
+      );
+      if (statusRes.ok) {
+        const statusData = await statusRes.json();
+        // Only resume if the server agrees on the file size — otherwise the
+        // cached id is stale/mismatched and we start fresh.
+        if (typeof statusData?.fileSize === "number" && statusData.fileSize === fileSize) {
+          sessionId = cachedSessionId;
+          uploadedBytes = (statusData.uploadedBytes as number) ?? 0;
+        }
+      }
+    } catch {
+      // Status check failed (network error / expired session) — fall through
+      // and create a fresh session below.
+    }
+    if (!sessionId) {
+      resumableSessionCache.delete(cacheKey);
+    }
   }
-  const sessionData = await sessionRes.json();
-  const sessionId = sessionData.sessionId as string;
-  let uploadedBytes: number = (sessionData.uploadedBytes as number) ?? 0;
+
+  // Create a new upload session if we couldn't resume an existing one.
+  if (!sessionId) {
+    const sessionRes = await resilientFetch("/api/media/upload-session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fileName, fileSize, mimeType }),
+    });
+    if (!sessionRes.ok) {
+      return { ok: false, status: sessionRes.status, error: "Could not create upload session" };
+    }
+    const sessionData = await sessionRes.json();
+    sessionId = sessionData.sessionId as string;
+    uploadedBytes = (sessionData.uploadedBytes as number) ?? 0;
+    resumableSessionCache.set(cacheKey, sessionId);
+  }
 
   const patchUrl = new URL(
     `/api/media/upload-session/${sessionId}`,
     getApiUrl(),
   ).toString();
 
-  // Upload in 1 MB chunks
-  while (uploadedBytes < fileSize) {
-    const chunkSize = Math.min(CHUNKED_UPLOAD_CHUNK_SIZE, fileSize - uploadedBytes);
-    let chunkBuffer: ArrayBuffer;
+  // Upload in 1 MB chunks. Each chunk PATCH is retried with back-off on
+  // transient failures (see sendChunkWithRetry); a thrown error means all
+  // retries were exhausted, so we bail but KEEP the session cached so a later
+  // call can resume from the server's offset rather than restarting.
+  try {
+    while (uploadedBytes < fileSize) {
+      const chunkSize = Math.min(CHUNKED_UPLOAD_CHUNK_SIZE, fileSize - uploadedBytes);
+      let chunkBuffer: ArrayBuffer;
 
-    if (fileBlob) {
-      chunkBuffer = await fileBlob.slice(uploadedBytes, uploadedBytes + chunkSize).arrayBuffer();
-    } else {
-      chunkBuffer = fullBuffer!.slice(uploadedBytes, uploadedBytes + chunkSize);
-    }
-
-    let patchResult = await sendBinaryPatch(patchUrl, chunkBuffer, uploadedBytes, _accessToken);
-
-    if (patchResult.status === 401 && _refreshToken) {
-      const newToken = await refreshAccessToken();
-      if (newToken) {
-        patchResult = await sendBinaryPatch(patchUrl, chunkBuffer, uploadedBytes, newToken);
+      if (fileBlob) {
+        chunkBuffer = await fileBlob.slice(uploadedBytes, uploadedBytes + chunkSize).arrayBuffer();
+      } else {
+        chunkBuffer = fullBuffer!.slice(uploadedBytes, uploadedBytes + chunkSize);
       }
+
+      const patchResult = await sendChunkWithRetry(patchUrl, chunkBuffer, uploadedBytes);
+
+      if (patchResult.status === 409) {
+        // Server reports a different offset; resync before retrying
+        try {
+          const body = JSON.parse(patchResult.body);
+          uploadedBytes = (body.uploadedBytes as number) ?? uploadedBytes;
+        } catch {}
+        continue;
+      }
+
+      if (patchResult.status < 200 || patchResult.status >= 300) {
+        return { ok: false, status: patchResult.status, error: "Chunk upload failed" };
+      }
+
+      let patchBody: any = {};
+      try { patchBody = JSON.parse(patchResult.body); } catch {}
+
+      if (patchBody.complete && patchBody.url) {
+        resumableSessionCache.delete(cacheKey);
+        return { ok: true, url: patchBody.url as string };
+      }
+
+      uploadedBytes = (patchBody.uploadedBytes as number) ?? uploadedBytes + chunkBuffer.byteLength;
     }
-
-    if (patchResult.status === 409) {
-      // Server reports a different offset; resync before retrying
-      try {
-        const body = JSON.parse(patchResult.body);
-        uploadedBytes = (body.uploadedBytes as number) ?? uploadedBytes;
-      } catch {}
-      continue;
-    }
-
-    if (patchResult.status < 200 || patchResult.status >= 300) {
-      return { ok: false, status: patchResult.status, error: "Chunk upload failed" };
-    }
-
-    let patchBody: any = {};
-    try { patchBody = JSON.parse(patchResult.body); } catch {}
-
-    if (patchBody.complete && patchBody.url) {
-      return { ok: true, url: patchBody.url as string };
-    }
-
-    uploadedBytes = (patchBody.uploadedBytes as number) ?? uploadedBytes + chunkBuffer.byteLength;
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "Chunk upload failed after retries",
+    };
   }
 
   return { ok: false, error: "Upload ended without a complete response" };

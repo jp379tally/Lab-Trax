@@ -5,6 +5,7 @@ import React, {
   useEffect,
   useMemo,
   useRef,
+  useCallback,
   ReactNode,
 } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -175,7 +176,18 @@ interface AppContextValue {
   // flash "Case not found". Safe to call when the case is already present
   // (idempotent — no-ops when id already exists).
   hydrateServerCase: (sc: LabCase) => void;
+  // Transient in-app toast for surfacing background failures (e.g. a photo
+  // upload that exhausted its retries) instead of failing silently. `null`
+  // when no toast is showing. Rendered by <Toast /> at the authed root.
+  toast: ToastMessage | null;
+  // Show a transient toast. Auto-dismisses after a few seconds.
+  showToast: (message: string, variant?: ToastVariant) => void;
+  // Dismiss the current toast immediately.
+  dismissToast: () => void;
 }
+
+export type ToastVariant = "error" | "info";
+export type ToastMessage = { id: string; message: string; variant: ToastVariant };
 
 const AppContext = createContext<AppContextValue | null>(null);
 
@@ -288,6 +300,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [adminUnlocked, setAdminUnlocked] = useState(false);
   const [allCases, setAllCases] = useState<LabCase[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [toast, setToast] = useState<ToastMessage | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [clients, setClients] = useState<Client[]>([]);
   const [users, setUsers] = useState<LabUser[]>([]);
   const invoicesRef = useRef<Invoice[]>([]);
@@ -2489,6 +2503,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     ).catch(() => null);
     if (canonicalUrl) {
       storedUri = canonicalUrl;
+    } else {
+      // Upload exhausted its retries. The photo stays on-device only — surface
+      // a toast so the user knows it didn't reach the lab rather than failing
+      // silently and assuming it synced.
+      showToast(
+        isVid
+          ? "Video saved on this device but couldn't upload — check your connection."
+          : "Photo saved on this device but couldn't upload — check your connection.",
+        "error",
+      );
     }
 
     const photoEntry: ActivityEntry = {
@@ -2573,6 +2597,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     );
 
     const normalizedUris = resolved.map((r) => r.storedUri);
+
+    // Surface a toast when one or more uploads exhausted their retries. The
+    // files remain on-device only, so the user needs to know they didn't reach
+    // the lab rather than assuming they synced.
+    const failedCount = resolved.filter((r) => r.retry).length;
+    if (failedCount > 0) {
+      showToast(
+        failedCount === 1
+          ? "1 attachment saved on this device but couldn't upload — check your connection."
+          : `${failedCount} attachments saved on this device but couldn't upload — check your connection.`,
+        "error",
+      );
+    }
 
     const photoEntries: ActivityEntry[] = resolved.map((r, i) => ({
       id: generateId(),
@@ -3784,6 +3821,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }
 
+  const dismissToast = useCallback(() => {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
+    setToast(null);
+  }, []);
+
+  const showToast = useCallback(
+    (message: string, variant: ToastVariant = "info") => {
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
+        toastTimerRef.current = null;
+      }
+      setToast({ id: generateId(), message, variant });
+      toastTimerRef.current = setTimeout(() => {
+        setToast(null);
+        toastTimerRef.current = null;
+      }, 5000);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    };
+  }, []);
+
   function addNotification(notif: Omit<Notification, "id" | "read" | "timestamp">) {
     const newNotif: Notification = {
       id: generateId(),
@@ -3948,8 +4014,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       retrySync,
       discardSync,
       hydrateServerCase,
+      toast,
+      showToast,
+      dismissToast,
     }),
-    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, pendingInvoiceEditId, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, labAffiliationReady, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers, allLabOrganizationIds, activeLabAffiliationKey, activeLabAffiliationName, allLabAffiliationKeysList, invoiceTemplate],
+    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, pendingInvoiceEditId, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, labAffiliationReady, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers, allLabOrganizationIds, activeLabAffiliationKey, activeLabAffiliationName, allLabAffiliationKeysList, invoiceTemplate, toast, showToast, dismissToast],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
