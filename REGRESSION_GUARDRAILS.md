@@ -355,6 +355,28 @@ Set `PLAYWRIGHT_BASE_URL` to the target deployment URL when running against stag
 
 > **Note:** E2E specs run against the Expo web build in a browser. They do **not** cover native rendering, OS permissions, camera, biometric lock, or push notifications — those require real-device TestFlight verification (see Pre-publish checklist above).
 
+### Mobile Auth Hydration Guard
+
+| Layer | File | What it guards |
+|-------|------|----------------|
+| Mobile unit | `artifacts/labtrax/lib/__tests__/auth-hydration.test.ts` | Singleton hydration promise deduplication; `waitForHydration` queuing; `ensureHydrated` one-shot refresh; `getIsHydrated` flag accuracy |
+
+Run command:
+```
+pnpm --filter @workspace/labtrax run test -- auth-hydration
+```
+
+### Mobile Reconnecting Indicator
+
+| Layer | File | What it guards |
+|-------|------|----------------|
+| Mobile unit | `artifacts/labtrax/lib/__tests__/reconnecting-indicator.test.ts` | Listener fires `true` on refresh start and `false` on end (success and failure); listener fires exactly once for concurrent callers (deduplication); no listener call for requests that don't need a refresh; `createReconnectingTracker` suppresses indicator for fast refreshes (< 400ms); indicator appears after 400ms delay for slow refreshes; indicator clears immediately after success or failure; pending timer cancelled when refresh completes before threshold; `resilientFetch` hydration unaffected when listener is registered |
+
+Run command:
+```
+pnpm --filter @workspace/labtrax run test -- reconnecting-indicator
+```
+
 ### Pricing Tier Decimal Consistency
 
 | Layer | File | What it guards |
@@ -371,7 +393,7 @@ pnpm --filter @workspace/labtrax-desktop exec vitest run src/pages/__tests__/bul
 
 ```bash
 pnpm --filter @workspace/api-server run test -- cases-ai-reader analyze-prescription invoices cases-core cases-invoice-creation mobile-sync-invoice cases-attachments cases-prescription-photo cases-location-sync
-pnpm --filter @workspace/labtrax run test -- cases.smoke case-detail.smoke scan.smoke normalize-case-status case-status-normalization-boundaries
+pnpm --filter @workspace/labtrax run test -- cases.smoke case-detail.smoke scan.smoke normalize-case-status case-status-normalization-boundaries auth-hydration reconnecting-indicator
 pnpm test:e2e
 ```
 

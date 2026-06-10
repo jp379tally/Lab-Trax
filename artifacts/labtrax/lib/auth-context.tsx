@@ -13,7 +13,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as LocalAuthentication from "expo-local-authentication";
 import * as SecureStore from "expo-secure-store";
 import { logAudit } from "./audit";
-import { getApiUrl, resilientFetch, saveTokens, clearTokens, loadTokens, uploadCaseMedia } from "./query-client";
+import { getApiUrl, resilientFetch, saveTokens, clearTokens, loadTokens, uploadCaseMedia, setReconnectingListener, createReconnectingTracker } from "./query-client";
 
 interface StoredUser {
   id?: string;
@@ -59,6 +59,7 @@ interface AuthContextValue {
   updateUserProfile: (updates: { practiceName?: string; practiceAddress?: string; practicePhone?: string; email?: string; phone?: string }) => Promise<{ success: boolean; error?: string }>;
   resetInactivityTimer: () => void;
   refreshUsers: () => Promise<void>;
+  isReconnecting: boolean;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -176,8 +177,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [profilePicUri, setProfilePicUriState] = useState<string | null>(null);
   const [isLocked, setIsLocked] = useState(false);
   const [currentPassword, setCurrentPassword] = useState<string | null>(null);
+  const [isReconnecting, setIsReconnecting] = useState(false);
   const inactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+  const reconnectTrackerRef = useRef(createReconnectingTracker((v) => setIsReconnecting(v)));
+
+  // Register the reconnecting listener for the lifetime of the provider.
+  // When refreshAccessToken() starts, the tracker waits 400ms before setting
+  // isReconnecting = true — suppressing the banner for fast refreshes.
+  // The listener clears the indicator immediately on success or failure.
+  useEffect(() => {
+    reconnectTrackerRef.current = createReconnectingTracker((v) => setIsReconnecting(v));
+    setReconnectingListener((active) => {
+      if (active) reconnectTrackerRef.current.start();
+      else reconnectTrackerRef.current.end();
+    });
+    return () => {
+      setReconnectingListener(null);
+      reconnectTrackerRef.current.end();
+    };
+  }, []);
 
   const resetInactivityTimer = useCallback(() => {
     if (inactivityTimerRef.current) {
@@ -758,8 +777,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       updateUserProfile,
       resetInactivityTimer,
       refreshUsers: fetchAllUsers,
+      isReconnecting,
     }),
-    [isAuthenticated, isAuthLoading, currentUser, userType, registeredUsers, profilePicUri, isLocked, resetInactivityTimer, currentPassword, currentUserId],
+    [isAuthenticated, isAuthLoading, currentUser, userType, registeredUsers, profilePicUri, isLocked, resetInactivityTimer, currentPassword, currentUserId, isReconnecting],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

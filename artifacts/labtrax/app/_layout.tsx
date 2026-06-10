@@ -29,6 +29,7 @@ import { AppDrawer } from "@/components/AppDrawer";
 import { GlobalAIFAB } from "@/components/GlobalAIFAB";
 import { Toast } from "@/components/Toast";
 import { PendingSyncBanner } from "@/components/PendingSyncBanner";
+import { ReconnectingBanner } from "@/components/ReconnectingBanner";
 import { RevenueCatProvider } from "@/lib/revenuecat";
 import LoginScreen from "@/components/LoginScreen";
 import LockScreen from "@/components/LockScreen";
@@ -229,6 +230,7 @@ function AuthGate() {
                 <AppDrawer />
                 <GlobalAIFAB />
                 <PendingSyncBanner />
+                <ReconnectingBanner />
                 <Toast />
               </View>
             </InactivityWrapper>

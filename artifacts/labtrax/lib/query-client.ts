@@ -55,6 +55,42 @@ let _accessToken: string | null = null;
 let _refreshToken: string | null = null;
 let _refreshPromise: Promise<string | null> | null = null;
 
+// ── Reconnecting listener ──────────────────────────────────────────────────
+// A single subscriber (owned by AuthProvider) that is called with `true`
+// when a token refresh starts and `false` when it finishes. Used to drive
+// the non-blocking "Reconnecting…" indicator in the UI.
+// Only the caller that actually initiates the refresh fires the signal;
+// concurrent callers that return the already-in-flight _refreshPromise do
+// not re-fire it.
+type ReconnectingListener = (active: boolean) => void;
+let _reconnectingListener: ReconnectingListener | null = null;
+export function setReconnectingListener(fn: ReconnectingListener | null): void {
+  _reconnectingListener = fn;
+}
+
+// ── Reconnecting tracker (pure, no React dependency) ──────────────────────
+// Drives the "Reconnecting…" indicator with a 400ms delay so fast token
+// refreshes don't flash the banner. Exported here (not in auth-context) so
+// tests can import it from the already-unmocked query-client module.
+export function createReconnectingTracker(
+  setState: (v: boolean) => void,
+  delayMs = 400,
+): { start: () => void; end: () => void } {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  return {
+    start() {
+      timer = setTimeout(() => setState(true), delayMs);
+    },
+    end() {
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      setState(false);
+    },
+  };
+}
+
 // ── Singleton hydration promise ────────────────────────────────────────────
 // A module-level deduplication slot so concurrent callers at startup all
 // await the same SecureStore read instead of each racing to hydrate
@@ -218,6 +254,10 @@ async function refreshAccessToken(): Promise<string | null> {
   if (!_refreshToken) return null;
   if (_refreshPromise) return _refreshPromise;
 
+  // Only the first caller fires the signal — concurrent callers return the
+  // already-in-flight promise above without re-firing.
+  _reconnectingListener?.(true);
+
   _refreshPromise = (async () => {
     try {
       const apiUrl = getApiUrl();
@@ -255,6 +295,9 @@ async function refreshAccessToken(): Promise<string | null> {
       return null;
     } finally {
       _refreshPromise = null;
+      // Signal end regardless of success or failure so the indicator always
+      // clears. Fires even when the try-catch returns null (failure path).
+      _reconnectingListener?.(false);
     }
   })();
 
