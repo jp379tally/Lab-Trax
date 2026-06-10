@@ -863,6 +863,7 @@ function BilledEditor({
 }) {
   const queryClient = useQueryClient();
   const [unitPrice, setUnitPrice] = useState<string>(row.avgPrice.toFixed(2));
+  const [unitPriceFocused, setUnitPriceFocused] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<number | null>(null);
 
@@ -945,11 +946,22 @@ function BilledEditor({
         <div className="flex items-center gap-2">
           <span className="text-sm text-muted-foreground">$</span>
           <input
-            type="number"
+            type="text"
+            inputMode="decimal"
+            pattern="[0-9]*[.]?[0-9]*"
             min="0"
-            step="0.01"
-            value={unitPrice}
+            value={unitPriceFocused ? unitPrice : formatPriceTwoDecimals(unitPrice)}
             onChange={(e) => setUnitPrice(e.target.value)}
+            onFocus={() => setUnitPriceFocused(true)}
+            onBlur={(e) => {
+              setUnitPriceFocused(false);
+              setUnitPrice(formatPriceTwoDecimals(e.target.value));
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                setUnitPrice(formatPriceTwoDecimals(e.currentTarget.value));
+              }
+            }}
             className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm tabular-nums"
           />
         </div>
@@ -2139,7 +2151,7 @@ function OverrideEditor({
 
 // ---- Shared UI ----
 
-function PriceField({
+export function PriceField({
   label,
   value,
   onChange,

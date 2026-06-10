@@ -187,6 +187,22 @@ Protected sub-behaviors:
 
 ---
 
+## Protected Workflow: Pricing Editor Two Decimal Display Protected
+
+Every price input in the Pricing page (`PriceField` used by TierEditor and OverrideEditor, plus the "New unit price" field in BilledEditor) must display exactly two decimal places at all times when the field is not actively being edited. This is purely visual — stored values and calculations are unchanged.
+
+Protected sub-behaviors:
+
+- **`PriceField` shows two decimals when unfocused** — integer `119` renders as `119.00`; single-decimal `99.5` renders as `99.50`; already-formatted `119.00` stays `119.00`; blank stays blank.
+- **`PriceField` shows the raw value while focused** — no mid-type reformatting disrupts the user while they type.
+- **`PriceField` formats on blur** — when the field loses focus, `formatPriceTwoDecimals` is applied and `onChange` is called with the formatted result.
+- **`PriceField` formats on Enter** — pressing Enter triggers the same formatting as blur.
+- **`PriceField` is `type="text"` with `inputMode="decimal"`** — no browser number-spinners; native mobile decimal keyboards are hinted via `inputMode`.
+- **BilledEditor "New unit price" input has the same two-decimal display guard** — the restoration bulk-pricing panel uses the identical focus/blur pattern.
+- **Stored values are not altered** — bulk math, invoice math, and tier resolution are unaffected by display formatting.
+
+---
+
 ## Zero-Regression Process
 
 Every code change that touches a protected workflow must follow this process, in order:
@@ -387,6 +403,17 @@ pnpm --filter @workspace/labtrax run test -- reconnecting-indicator
 Run command:
 ```
 pnpm --filter @workspace/labtrax-desktop exec vitest run src/pages/__tests__/bulk-price-tools.test.tsx src/lib/__tests__/pricing-keys.test.ts
+```
+
+### Pricing Editor Two Decimal Display Protected
+
+| Layer | File | What it guards |
+|-------|------|----------------|
+| Desktop unit | `artifacts/labtrax-desktop/src/pages/__tests__/pricing-fields.test.tsx` | `PriceField` unfocused shows two decimals for integers and single-decimal values; focused shows raw value; blur fires `onChange` with formatted value; Enter fires `onChange` with formatted value; no mid-type reformatting; renders as `type="text"` with `inputMode="decimal"` |
+
+Run command:
+```
+pnpm --filter @workspace/labtrax-desktop exec vitest run src/pages/__tests__/pricing-fields.test.tsx src/pages/__tests__/bulk-price-tools.test.tsx src/lib/__tests__/pricing-keys.test.ts
 ```
 
 ### Run the full protected suite at once
