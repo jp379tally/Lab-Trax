@@ -451,10 +451,10 @@ Protected sub-behaviors:
   `artifacts/labtrax/lib/app-context.tsx` and
   `artifacts/labtrax/components/PendingSyncBanner.tsx` carry a
   `// legacy-mobile-fence:disable-file` marker and are entirely exempt.
-- **Per-line escape hatch** — `artifacts/labtrax/app/case/[id].tsx` carries
-  a single `// legacy-fence:allow` on the remake-chain fallback fetch for
-  read-only backward compatibility. Any new per-line exemption requires a
-  comment explaining why it cannot be migrated now.
+- **Per-line escape hatch** — any single line that must be individually
+  exempted may end with `// legacy-fence:allow` with a comment explaining
+  why it cannot be migrated now. There are currently **zero** active
+  per-line exemptions in the mobile codebase.
 - **Fence passes clean today** — running `pnpm --filter @workspace/scripts
   run lint-mobile-legacy-paths` exits 0 with no violations.
 

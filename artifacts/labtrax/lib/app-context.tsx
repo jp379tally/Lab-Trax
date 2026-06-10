@@ -173,17 +173,29 @@ interface AppContextValue {
   updateWorkStatus: (status: "available" | "break" | "out_of_office") => Promise<{ success: boolean; error?: string }>;
   invoiceTemplate: { customTexts: any[]; defaultTextBlocks: any[] } | null;
   fetchInvoiceTemplate: () => Promise<void>;
-  // Vestigial counter from the removed offline queue. Syncing is now direct
-  // (see fireWithRetry + chunked uploads), so this stays at 0.
+  /**
+   * @deprecated Vestigial counter from the removed offline queue. Syncing is
+   * now direct (fireWithRetry + chunked uploads), so this always stays at 0.
+   * PendingSyncBanner is the only grandfathered consumer; do NOT add new reads.
+   * Will be removed once PendingSyncBanner is rewritten.
+   */
   pendingSyncCount: number;
-  // Vestigial list from the removed offline queue; always empty now that
-  // changes sync straight to the server instead of being queued.
+  /**
+   * @deprecated Vestigial list from the removed offline queue; always empty now
+   * that changes sync straight to the server. PendingSyncBanner is the only
+   * grandfathered consumer; do NOT add new reads. Will be removed once
+   * PendingSyncBanner is rewritten.
+   */
   stuckSyncItems: StuckQueueItem[];
-  // No-op stub retained for API compatibility; the offline queue it used to
-  // re-drive no longer exists.
+  /**
+   * @deprecated No-op stub retained for API compatibility; the offline queue
+   * it used to re-drive no longer exists. Will be removed with stuckSyncItems.
+   */
   retrySync: (id?: string) => void;
-  // No-op stub retained for API compatibility; the offline queue it used to
-  // drop items from no longer exists.
+  /**
+   * @deprecated No-op stub retained for API compatibility; the offline queue
+   * it used to drop items from no longer exists. Will be removed with stuckSyncItems.
+   */
   discardSync: (id: string) => void;
   // Insert a server-returned case into local state without creating a new UUID
   // or syncing back to the server. Used by the QR barcode lookup to ensure

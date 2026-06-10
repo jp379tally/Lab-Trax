@@ -697,11 +697,11 @@ export default function CaseDetailScreen() {
   //
   // Strategy:
   // 1. Fetch GET /api/cases/:id (the current case). For canonical remake cases
-  //    the server already returns `originalCaseEvents` (CaseEvent[]) in the
-  //    response — convert them to ActivityEntry format and use them.
-  // 2. If the canonical endpoint is unavailable or returns no originalCaseEvents
-  //    (legacy mobile case), fall back to fetching the original case via
-  //    GET /api/legacy/cases/:remakeOfCaseId and reading its activityLog.
+  //    the server already returns `originalCaseEvents` (CaseEvent[]) and
+  //    `remakeOriginal` in the response — use them directly.
+  // 2. If the response has no originalCaseEvents (original is a legacy case),
+  //    attempt GET /api/cases/:remakeOfCaseId. If that also fails (legacy
+  //    non-UUID ID → 404), omit the activity log gracefully.
   const remakeOfCaseId = caseItemBase?.remakeOfCaseId;
 
   function caseEventToActivityEntry(e: {
@@ -757,6 +757,7 @@ export default function CaseDetailScreen() {
     async function fetchOriginalHistory() {
       // Try canonical endpoint first — returns originalCaseEvents for remake cases.
       const canonicalRes = await resilientFetch(`/api/cases/${encodeURIComponent(id as string)}`).catch(() => null);
+      let resolvedCaseNumber: string | null = null;
       if (!cancelled && canonicalRes && canonicalRes.ok) {
         const data = await canonicalRes.json().catch(() => null);
         const events: unknown[] = Array.isArray(data?.originalCaseEvents) ? data.originalCaseEvents : [];
@@ -766,19 +767,32 @@ export default function CaseDetailScreen() {
           setOriginalCaseNumber(data?.remakeOriginal?.caseNumber ?? null);
           return;
         }
+        // Server resolved the original case reference but found no caseEvents
+        // (the original is likely a legacy case with no canonical event rows).
+        // Capture the case number so it can still be shown even if we cannot
+        // load an activity log.
+        resolvedCaseNumber = data?.remakeOriginal?.caseNumber ?? null;
       }
 
-      // Fallback: fetch the original (legacy) case directly.
+      // Attempt to fetch the original case directly via the canonical endpoint.
+      // For cases that pre-date the canonical rebuild the remakeOfCaseId may be
+      // a non-UUID legacy identifier; the canonical endpoint returns 404 for
+      // those and we omit the activity log gracefully rather than falling back
+      // to the legacy endpoint.
       if (cancelled) return;
-      const legacyRes = await resilientFetch(`/api/legacy/cases/${encodeURIComponent(remakeOfCaseId as string)}`).catch(() => null); // legacy-fence:allow — read-only remake-chain lookup for cases that pre-date the canonical rebuild; remove once all remakes reference canonical UUIDs
-      if (cancelled || !legacyRes || !legacyRes.ok) return;
-      const legacyData = await legacyRes.json().catch(() => null);
+      const originalRes = await resilientFetch(`/api/cases/${encodeURIComponent(remakeOfCaseId as string)}`).catch(() => null);
+      if (cancelled || !originalRes || !originalRes.ok) {
+        if (resolvedCaseNumber) setOriginalCaseNumber(resolvedCaseNumber);
+        return;
+      }
+      const originalData = await originalRes.json().catch(() => null);
       if (cancelled) return;
-      const originalCase = legacyData?.case;
-      if (!originalCase) return;
-      const log: ActivityEntry[] = Array.isArray(originalCase.activityLog) ? originalCase.activityLog : [];
-      setOriginalActivityLog(log);
-      setOriginalCaseNumber(originalCase.caseNumber ?? null);
+      const originalEvents: unknown[] = Array.isArray(originalData?.events) ? originalData.events : [];
+      if (originalEvents.length > 0) {
+        const entries = (originalEvents as Parameters<typeof caseEventToActivityEntry>[0][]).map(caseEventToActivityEntry);
+        setOriginalActivityLog(entries);
+      }
+      setOriginalCaseNumber(originalData?.caseNumber ?? resolvedCaseNumber ?? null);
     }
 
     void fetchOriginalHistory();
