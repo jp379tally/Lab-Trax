@@ -83,7 +83,7 @@ interface AppContextValue {
   addCaseNote: (caseId: string, note: string, user?: string) => void;
   addCasePhotosWithNote: (caseId: string, photoUris: string[], note: string, user?: string) => Promise<void>;
   addTrackingNumber: (caseId: string, tracking: string) => void;
-  addCaseItem: (caseId: string, caseType: CaseTypeValue, selectedTeeth: number[], toothTypes: Record<number, ToothType>, material: string, extras?: { subType?: string; gingivaShade?: string; customNotes?: string; applianceSubType?: string; nightGuardType?: string }) => void;
+  addCaseItem: (caseId: string, caseType: CaseTypeValue, selectedTeeth: number[], toothTypes: Record<number, ToothType>, material: string, extras?: { subType?: string; gingivaShade?: string; customNotes?: string; applianceSubType?: string; nightGuardType?: string }, unitPrice?: number) => void;
   notifications: Notification[];
   markNotificationRead: (id: string) => void;
   markAllNotificationsRead: () => void;
@@ -2874,7 +2874,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }
 
-  function addCaseItem(caseId: string, caseType: CaseTypeValue, selectedTeeth: number[], toothTypesMap: Record<number, ToothType>, mat: string, extras?: { subType?: string; gingivaShade?: string; customNotes?: string; applianceSubType?: string; nightGuardType?: string }) {
+  function addCaseItem(caseId: string, caseType: CaseTypeValue, selectedTeeth: number[], toothTypesMap: Record<number, ToothType>, mat: string, extras?: { subType?: string; gingivaShade?: string; customNotes?: string; applianceSubType?: string; nightGuardType?: string }, unitPrice?: number) {
     setCases((prevCases) => {
       const updated = prevCases.map((c) => {
         if (c.id === caseId) {
@@ -2901,8 +2901,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const hasPontic = selectedTeeth.some((t) => (toothTypesMap[t] || "normal") === "bridge");
           const billable = normalCount + (hasPontic ? 1 : 0);
           const caseForPrice = cases.find(cc => cc.id === caseId);
-          const unitPrice = resolvePriceForCase(mat, caseType, caseForPrice?.doctorName || "", clients, pricingTiers);
-          const price = unitPrice * Math.max(billable, 1);
+          const resolvedUnitPrice = unitPrice ?? resolvePriceForCase(mat, caseType, caseForPrice?.doctorName || "", clients, pricingTiers);
+          const price = resolvedUnitPrice * Math.max(billable, 1);
 
           let descParts = [`Item added: ${caseType}`];
           if (extras?.subType) descParts.push(extras.subType);

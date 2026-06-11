@@ -85,6 +85,8 @@ import type {
   ReceivePaymentsResult,
   RegenerateBackupCodesInput,
   RegenerateBackupCodesResult,
+  ResolveItemPrice200,
+  ResolveItemPriceParams,
   RestoreBackupBody,
   RestoreStartResult,
   RestoreStatusResult,
@@ -4022,6 +4024,107 @@ export const useAcknowledgeAiReview = <
 > => {
   return useMutation(getAcknowledgeAiReviewMutationOptions(options));
 };
+
+/**
+ * Checks per-doctor overrides, practice-level pricing tiers, and lab
+defaults in that priority order — the same logic used when generating
+invoices. Any active lab member may call this endpoint.
+
+ * @summary Resolve the canonical unit price for a case item
+ */
+export const getResolveItemPriceUrl = (params: ResolveItemPriceParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/pricing/resolve?${stringifiedParams}`
+    : `/api/pricing/resolve`;
+};
+
+export const resolveItemPrice = async (
+  params: ResolveItemPriceParams,
+  options?: RequestInit,
+): Promise<ResolveItemPrice200> => {
+  return customFetch<ResolveItemPrice200>(getResolveItemPriceUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getResolveItemPriceQueryKey = (
+  params?: ResolveItemPriceParams,
+) => {
+  return [`/api/pricing/resolve`, ...(params ? [params] : [])] as const;
+};
+
+export const getResolveItemPriceQueryOptions = <
+  TData = Awaited<ReturnType<typeof resolveItemPrice>>,
+  TError = ErrorType<void>,
+>(
+  params: ResolveItemPriceParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof resolveItemPrice>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getResolveItemPriceQueryKey(params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof resolveItemPrice>>
+  > = ({ signal }) => resolveItemPrice(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof resolveItemPrice>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ResolveItemPriceQueryResult = NonNullable<
+  Awaited<ReturnType<typeof resolveItemPrice>>
+>;
+export type ResolveItemPriceQueryError = ErrorType<void>;
+
+/**
+ * @summary Resolve the canonical unit price for a case item
+ */
+
+export function useResolveItemPrice<
+  TData = Awaited<ReturnType<typeof resolveItemPrice>>,
+  TError = ErrorType<void>,
+>(
+  params: ResolveItemPriceParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof resolveItemPrice>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getResolveItemPriceQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
 
 /**
  * Returns the merged label map for the caller's lab: admin-configured

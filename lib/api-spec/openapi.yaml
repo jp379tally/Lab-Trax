@@ -1089,6 +1089,56 @@ paths:
                     properties:
                       caseId: { type: string }
                       needsAiReview: { type: boolean }
+  /pricing/resolve:
+    get:
+      operationId: resolveItemPrice
+      tags: [invoices]
+      summary: Resolve the canonical unit price for a case item
+      description: |
+        Checks per-doctor overrides, practice-level pricing tiers, and lab
+        defaults in that priority order — the same logic used when generating
+        invoices. Any active lab member may call this endpoint.
+      parameters:
+        - in: query
+          name: labOrganizationId
+          required: true
+          schema: { type: string }
+          description: Lab organisation to resolve pricing for.
+        - in: query
+          name: doctorName
+          required: false
+          schema: { type: string }
+          description: Doctor name for per-doctor override lookup.
+        - in: query
+          name: caseType
+          required: false
+          schema: { type: string }
+          description: Case/restoration type (e.g. "Crown", "Appliance").
+        - in: query
+          name: material
+          required: false
+          schema: { type: string }
+          description: Material or appliance subtype (e.g. "Zirconia", "Snore Guard").
+      responses:
+        "200":
+          description: Resolved price for the item
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, data]
+                properties:
+                  ok: { type: boolean }
+                  data:
+                    type: object
+                    required: [price]
+                    properties:
+                      price:
+                        type: number
+                        nullable: true
+                        description: Resolved unit price, or null when no price can be determined.
+        "403":
+          description: Caller is not a member of the specified lab.
   /pricing/item-labels:
     get:
       operationId: getItemLabels

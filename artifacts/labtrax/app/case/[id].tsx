@@ -32,7 +32,7 @@ import * as DocumentPicker from "expo-document-picker";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { useApp } from "@/lib/app-context";
 import { resilientFetch, getAccessToken, getApiUrl, chunkedUploadCaseMedia } from "@/lib/query-client";
-import { useCase, type CanonicalCase as CanonicalCaseType } from "@workspace/api-client-react";
+import { useCase, resolveItemPrice, type CanonicalCase as CanonicalCaseType } from "@workspace/api-client-react";
 import { caseMediaSource, isSameApiOrigin } from "@/lib/case-media-source";
 import { AuthedImage } from "@/components/ui/AuthedImage";
 import * as FileSystem from "expo-file-system";
@@ -1377,7 +1377,7 @@ export default function CaseDetailScreen() {
     updateInvoice(linkedInv.id, { lineItems: updLi, amount: updLi.reduce((s, li) => s + li.amount, 0) });
   }
 
-  function handleSaveItem() {
+  async function handleSaveItem() {
     if (!itemCaseType) {
       Alert.alert("Missing Info", "Please select a case type.");
       return;
@@ -1403,11 +1403,29 @@ export default function CaseDetailScreen() {
       extras = { applianceSubType: applianceSubtype, nightGuardType: nightGuardType || undefined };
     }
 
-    addCaseItem(caseItem!.id, itemCaseType, itemSelectedTeeth, itemToothTypes, mat, extras);
+    // Resolve unit price server-side so per-doctor overrides and practice-tier
+    // assignments in the database are always applied correctly. Falls back to
+    // the locally-cached tier lookup only when the network call fails.
+    const labOrgId = typeof caseItem?.affiliationKey === "string"
+      ? caseItem.affiliationKey.replace(/^org:/, "")
+      : (allLabOrganizationIds[0] ?? "");
+    let unitPrice = 0;
+    try {
+      const resolved = await resolveItemPrice({
+        labOrganizationId: labOrgId,
+        doctorName: caseItem?.doctorName,
+        caseType: itemCaseType,
+        material: mat,
+      });
+      unitPrice = resolved?.data?.price
+        ?? resolvePriceForCase(mat, itemCaseType, caseItem?.doctorName || "", clients, pricingTiers);
+    } catch {
+      unitPrice = resolvePriceForCase(mat, itemCaseType, caseItem?.doctorName || "", clients, pricingTiers);
+    }
+    addCaseItem(caseItem!.id, itemCaseType, itemSelectedTeeth, itemToothTypes, mat, extras, unitPrice);
 
     const linkedInvoice = caseItem!.invoiceId ? invoices.find((inv) => inv.id === caseItem!.invoiceId) : undefined;
     if (linkedInvoice) {
-      const unitPrice = resolvePriceForCase(mat, itemCaseType, caseItem?.doctorName || "", clients, pricingTiers);
       const toothCount = Math.max(itemSelectedTeeth.length, 1);
       const newLineItem = {
         qty: toothCount,

@@ -15,16 +15,7 @@ export function findExistingInvoice(
     const direct = invoices.find((inv) => inv.id === caseItem.invoiceId);
     if (direct) return direct;
   }
-  const safeDoctorName = caseItem.doctorName || "";
-  const safePatientName = caseItem.patientName || "";
-  return invoices.find(
-    (inv) =>
-      inv.caseIds.includes(caseItem.id) ||
-      ((inv.patientName || "").toLowerCase() === safePatientName.toLowerCase() &&
-        (inv.clientName || "")
-          .toLowerCase()
-          .includes(safeDoctorName.split(" ").pop()?.toLowerCase() || "")),
-  );
+  return invoices.find((inv) => inv.caseIds.includes(caseItem.id));
 }
 
 export function buildDraftInvoice(input: {

@@ -23,6 +23,7 @@ import {
   DEFAULT_TIER_KEYS,
   fetchLabItemLabels,
   resolveAllPricesForContext,
+  resolveServerPrice,
   saveLabItemLabels,
 } from "../lib/pricing";
 
@@ -739,6 +740,37 @@ router.get(
     );
     return ok(res, { entries });
   })
+);
+
+// ---- Price Resolution ----
+
+/**
+ * GET /pricing/resolve
+ * Resolve the canonical unit price for a specific item in the caller's lab.
+ * Checks per-doctor overrides, practice-level pricing tiers, and lab defaults
+ * in that priority order — the same logic used when the API generates invoices.
+ * Any active lab member may call this endpoint.
+ */
+router.get(
+  "/resolve",
+  asyncHandler(async (req, res) => {
+    const schema = z.object({
+      labOrganizationId: z.string(),
+      doctorName: z.string().optional(),
+      caseType: z.string().optional(),
+      material: z.string().optional(),
+    });
+    const input = schema.parse(req.query);
+    // Verify caller is a member of that lab (throws 403 if not)
+    await resolveLabIdForMember(req, input.labOrganizationId);
+
+    const price = await resolveServerPrice(
+      { labOrganizationId: input.labOrganizationId, doctorName: input.doctorName },
+      input.material,
+      input.caseType,
+    );
+    return ok(res, { price });
+  }),
 );
 
 // ---- Item Labels ----

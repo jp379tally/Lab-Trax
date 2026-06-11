@@ -67,22 +67,14 @@ describe("findCaseInvoice", () => {
     expect(findCaseInvoice(c, [inv])?.id).toBe("inv-by-caseids");
   });
 
-  it("matches by patient name + doctor surname when no explicit linkage exists", () => {
+  it("returns null when there is no invoiceId match and no caseIds match", () => {
     const inv = makeInvoice({
       id: "inv-by-name",
       patientName: "Alice Smith",
       clientName: "Bloom DDS",
     });
     const c = makeCase();
-    expect(findCaseInvoice(c, [inv])?.id).toBe("inv-by-name");
-  });
-
-  it("does not match an invoice with the same patient but a different doctor surname", () => {
-    const inv = makeInvoice({
-      patientName: "Alice Smith",
-      clientName: "Other Provider",
-    });
-    expect(findCaseInvoice(makeCase(), [inv])).toBeNull();
+    expect(findCaseInvoice(c, [inv])).toBeNull();
   });
 
   it("returns null when nothing in the invoice list looks related", () => {

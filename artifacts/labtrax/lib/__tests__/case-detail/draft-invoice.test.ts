@@ -40,14 +40,14 @@ describe("findExistingInvoice", () => {
     const inv = { id: "inv-1", caseIds: ["case-1"], patientName: "", clientName: "" } as unknown as Invoice;
     expect(findExistingInvoice(baseCase, [inv])).toBe(inv);
   });
-  it("matches loosely on patient + last word of doctor name", () => {
+  it("returns undefined when no direct match or caseIds match", () => {
     const inv = {
       id: "inv-2",
       caseIds: [],
       patientName: "jane doe",
       clientName: "Dr. Smith",
     } as unknown as Invoice;
-    expect(findExistingInvoice(baseCase, [inv])).toBe(inv);
+    expect(findExistingInvoice(baseCase, [inv])).toBeUndefined();
   });
 });
 

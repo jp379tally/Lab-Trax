@@ -1376,6 +1376,45 @@ export const AcknowledgeAiReviewResponse = zod.object({
 });
 
 /**
+ * Checks per-doctor overrides, practice-level pricing tiers, and lab
+defaults in that priority order — the same logic used when generating
+invoices. Any active lab member may call this endpoint.
+
+ * @summary Resolve the canonical unit price for a case item
+ */
+export const ResolveItemPriceQueryParams = zod.object({
+  labOrganizationId: zod.coerce
+    .string()
+    .describe("Lab organisation to resolve pricing for."),
+  doctorName: zod.coerce
+    .string()
+    .optional()
+    .describe("Doctor name for per-doctor override lookup."),
+  caseType: zod.coerce
+    .string()
+    .optional()
+    .describe('Case\/restoration type (e.g. \"Crown\", \"Appliance\").'),
+  material: zod.coerce
+    .string()
+    .optional()
+    .describe(
+      'Material or appliance subtype (e.g. \"Zirconia\", \"Snore Guard\").',
+    ),
+});
+
+export const ResolveItemPriceResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.object({
+    price: zod
+      .number()
+      .nullable()
+      .describe(
+        "Resolved unit price, or null when no price can be determined.",
+      ),
+  }),
+});
+
+/**
  * Returns the merged label map for the caller's lab: admin-configured
 labels where set, and static defaults for the rest. Every known price
 key is always included in the response. Any active lab member may call

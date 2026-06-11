@@ -4,8 +4,6 @@ import type { Client, Invoice, LabCase, PricingTier } from "./data";
 import { resolvePriceForCase } from "./pricing";
 import { invoiceDueDate } from "./invoice-due-date";
 
-// Prefer explicit case.invoiceId; otherwise legacy "same patient + same
-// doctor surname" heuristic.
 export function findCaseInvoice(
   caseItem: LabCase,
   invoices: readonly Invoice[]
@@ -14,16 +12,7 @@ export function findCaseInvoice(
     const found = invoices.find((inv) => inv.id === caseItem.invoiceId);
     if (found) return found;
   }
-  const patient = (caseItem.patientName || "").toLowerCase();
-  const doctorSurname =
-    caseItem.doctorName.split(" ").pop()?.toLowerCase() || "";
-  const matched = invoices.find(
-    (inv) =>
-      inv.caseIds.includes(caseItem.id) ||
-      (inv.patientName.toLowerCase() === patient &&
-        inv.clientName.toLowerCase().includes(doctorSurname))
-  );
-  return matched ?? null;
+  return invoices.find((inv) => inv.caseIds.includes(caseItem.id)) ?? null;
 }
 
 // Synthetic invoice shown when no real invoice exists yet.

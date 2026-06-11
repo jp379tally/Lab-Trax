@@ -1359,6 +1359,35 @@ export type AcknowledgeAiReview200 = {
   data?: AcknowledgeAiReview200Data;
 };
 
+export type ResolveItemPriceParams = {
+  /**
+   * Lab organisation to resolve pricing for.
+   */
+  labOrganizationId: string;
+  /**
+   * Doctor name for per-doctor override lookup.
+   */
+  doctorName?: string;
+  /**
+   * Case/restoration type (e.g. "Crown", "Appliance").
+   */
+  caseType?: string;
+  /**
+   * Material or appliance subtype (e.g. "Zirconia", "Snore Guard").
+   */
+  material?: string;
+};
+
+export type ResolveItemPrice200Data = {
+  /** Resolved unit price, or null when no price can be determined. */
+  price: number | null;
+};
+
+export type ResolveItemPrice200 = {
+  ok: boolean;
+  data: ResolveItemPrice200Data;
+};
+
 export type GetItemLabelsParams = {
   /**
    * Lab org to fetch labels for. Defaults to the caller's first active lab.

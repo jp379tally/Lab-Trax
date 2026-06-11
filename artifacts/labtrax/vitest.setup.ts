@@ -557,6 +557,7 @@ vi.mock("@workspace/api-client-react", () => ({
     isLoading: false,
     refetch: vi.fn(async () => undefined),
   }),
+  resolveItemPrice: vi.fn(async () => ({ ok: true, data: { price: null } })),
   setBaseUrl: vi.fn(),
   setAuthTokenGetter: vi.fn(),
   setAuthRefresher: vi.fn(),
