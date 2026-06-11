@@ -17,6 +17,12 @@ android/.gradle/
 # Static web export
 static-build/
 
+# Stale compiled Express server bundle — NOT a production artifact.
+# Production serving is `build` (static-build/) + `serve` (server/serve.js).
+# Never commit a regenerated bundle here; it can contain legacy-path code that
+# is invisible to the mobile legacy-path fence (see scripts/src/lint-mobile-legacy-paths.ts).
+server_dist/
+
 # Attached assets archives — large source-zip uploads, never commit
 attached_assets/*.zip
 attached_assets/*.tar.gz
