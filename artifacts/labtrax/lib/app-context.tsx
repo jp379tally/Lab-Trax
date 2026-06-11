@@ -77,7 +77,7 @@ interface AppContextValue {
   setAdminUnlocked: (v: boolean) => void;
   cases: LabCase[];
   addCase: (c: Omit<LabCase, "id" | "createdAt" | "updatedAt" | "routeHistory">) => LabCase;
-  createCanonicalScanCase: (c: Omit<LabCase, "id" | "createdAt" | "updatedAt" | "routeHistory">) => Promise<LabCase | null>;
+  createCanonicalScanCase: (c: Omit<LabCase, "id" | "createdAt" | "updatedAt" | "routeHistory">, resolvedProviderOrganizationId?: string) => Promise<LabCase | null>;
   updateCaseStatus: (caseId: string, newStatus: CaseStatus, user?: string) => void;
   addCasePhoto: (caseId: string, photoUri: string, user?: string) => Promise<void>;
   addCaseNote: (caseId: string, note: string, user?: string) => void;
@@ -2368,21 +2368,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // addCase → syncCaseToServer → legacy endpoint).
   async function createCanonicalScanCase(
     c: Omit<LabCase, "id" | "createdAt" | "updatedAt" | "routeHistory">,
+    resolvedProviderOrganizationId?: string,
   ): Promise<LabCase | null> {
     if (!activeLabAffiliationKey?.startsWith("org:")) return null;
     const labOrganizationId = activeLabAffiliationKey.slice(4);
 
-    // Resolve the server-side provider org for this doctor name via the
-    // rx-practice-aliases lookup table (populated when a lab admin links a
-    // doctor name to a provider org).
-    const aliasQs = new URLSearchParams({
-      labOrganizationId,
-      rxName: c.doctorName.trim(),
-    });
-    const aliasRes = await resilientFetch(`/api/rx-practice-aliases?${aliasQs}`).catch(() => null);
-    if (!aliasRes?.ok) return null;
-    const aliasBody = await aliasRes.json().catch(() => null);
-    const providerOrganizationId = aliasBody?.data?.providerOrganizationId as string | null | undefined;
+    // Resolve the server-side provider org. When the caller already obtained a
+    // providerOrganizationId (e.g. just created via POST /api/organizations in
+    // the "Add Provider" flow), use it directly — skip the alias lookup.
+    // Otherwise fall back to the rx-practice-aliases table as before.
+    let providerOrganizationId: string | null | undefined = resolvedProviderOrganizationId ?? null;
+    if (!providerOrganizationId) {
+      const aliasQs = new URLSearchParams({
+        labOrganizationId,
+        rxName: c.doctorName.trim(),
+      });
+      const aliasRes = await resilientFetch(`/api/rx-practice-aliases?${aliasQs}`).catch(() => null);
+      if (!aliasRes?.ok) return null;
+      const aliasBody = await aliasRes.json().catch(() => null);
+      providerOrganizationId = aliasBody?.data?.providerOrganizationId as string | null | undefined;
+    }
     if (!providerOrganizationId) return null;
 
     // The canonical endpoint requires separate first/last name fields.

@@ -71,6 +71,52 @@ Protected sub-behaviors:
 
 ---
 
+## Protected Workflow: Mobile AI Reader Unknown Provider Workflow Parity
+
+Mobile AI Reader unknown providers must follow desktop/web provider creation workflow.
+
+When the AI Reader scans a prescription whose doctor name has no existing alias or fuzzy
+match in the provider list, the app must offer an interactive path to create a canonical
+server-side provider org — it must never dead-end with "Ask your lab admin."
+
+This mirrors the desktop/web `DashboardDropZone.submitNewPractice` flow exactly.
+
+Protected sub-behaviors:
+
+- **"Add Provider" creates a canonical org** — tapping "Add Provider" in the "New Provider
+  Detected" alert calls `POST /api/organizations` with `type:"provider"`,
+  `parentLabOrganizationId`, and Rx-extracted name/phone/doctorName. The returned
+  `id` is stored as `resolvedProviderOrgId` in scan state.
+- **Alias registered for future scans** — after a successful org creation, a non-blocking
+  `POST /api/rx-practice-aliases` registers the doctor name → org ID mapping so the next
+  scan of the same doctor auto-matches without prompting.
+- **Case creation uses the resolved org ID directly** — `createCanonicalScanCase` receives
+  `resolvedProviderOrgId` and skips the alias lookup when it is set. The canonical case is
+  created with the correct `providerOrganizationId`.
+- **New provider visible on web/desktop** — the created org appears in the web/desktop
+  Practices list immediately after case creation (`GET /api/organizations?type=provider`).
+- **Invoice auto-generated once** — the server's auto-invoice trigger fires for the
+  canonical case, linked to the new provider org. No duplicate invoice is created.
+- **No dead-end alert** — the "This doctor is not linked to a provider practice. Ask your
+  lab admin…" alert must NOT fire when the user has tapped "Add Provider" and the org was
+  successfully created.
+- **Failure is visible, not silent** — if `POST /api/organizations` fails, the case creation
+  falls through to the existing dead-end path (same as before the fix). The user is not
+  silently blocked with no explanation.
+- **Existing paths unaffected** — exact match, similar match, "Pick Existing", "Not Now",
+  and the non-affiliated `addCase` fallback must all continue to behave as before.
+
+| Layer | File | What it guards |
+|-------|------|----------------|
+| Mobile unit | `artifacts/labtrax/lib/__tests__/screens/scan.smoke.test.tsx` | Unknown doctor → Add Provider → canonical org created → case created without dead-end alert |
+
+Run command:
+```
+pnpm --filter @workspace/labtrax run test -- scan.smoke
+```
+
+---
+
 ## Protected Workflow: E2E Browser Tests
 
 Playwright end-to-end specs that exercise live app flows in a real browser. They complement unit and API tests but do **not** replace real-device TestFlight verification — native rendering, OS-level permissions, camera access, biometric lock, and push notifications can only be confirmed on a real device.

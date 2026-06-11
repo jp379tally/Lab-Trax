@@ -1,0 +1,58 @@
+Stop patching individual mobile bugs.
+
+The direction is now:
+
+Rebuild the LabTrax mobile app from the ground up, derived directly from the working desktop/web version.
+
+The current mobile app has taken months because it keeps getting patched around legacy mobile architecture. That stops now.
+
+Do not treat the unknown-provider AI Reader issue as a standalone bug fix. Treat it as proof that the mobile app still does not have desktop/web workflow parity.
+
+Required direction:
+
+1. The desktop/web version is the source of truth.
+2. The new mobile app must use the same database, same canonical APIs, same workflows, same provider/practice logic, same case logic, same invoice logic, same media/attachment logic, same pricing logic, same case history logic, and same location/status/station logic as desktop/web.
+3. Do not continue patching the old mobile implementation.
+4. Do not create mobile-only workflows unless they are strictly mobile hardware features, such as camera, QR scan, share intent, or biometric lock.
+5. Mobile-specific hardware features must feed into the same desktop/web canonical workflows.
+6. Any place where mobile behaves differently from desktop/web must be rebuilt to match desktop/web.
+
+The rebuild must include workflow parity, not just API parity.
+
+Required mobile rebuild scope:
+
+* Dashboard/HUD derived from desktop/web
+* Cases list
+* Case detail
+* Case history
+* New case creation
+* AI Reader case creation
+* Unknown provider/practice creation
+* Provider/practice linking
+* Photo/document upload
+* Case attachments
+* Invoices
+* Pricing
+* Location/status/station updates
+* Long-press locate
+* QR/barcode lookup
+* Share intent
+* Biometric lock/session handling
+
+Before writing more code, produce a clear rebuild execution plan that answers:
+
+1. Which current mobile files will be retired or replaced?
+2. Which desktop/web screens, hooks, API paths, and workflows will be used as the source of truth?
+3. Which mobile screens will be rebuilt first?
+4. What desktop/web workflow each mobile screen must match?
+5. What mobile-only hardware features will be preserved and how they connect to canonical workflows?
+6. What tests will prove mobile matches desktop/web behavior?
+7. What TestFlight checklist must pass before approval?
+
+Do not ask me to approve another isolated bug patch unless it is required to keep the app usable while the rebuild is underway.
+
+The goal is not:
+“Fix the unknown doctor provider alert.”
+
+The goal is:
+“Build a new mobile app from the desktop/web version so this class of mobile-only regressions stops.”

@@ -205,6 +205,10 @@ export default function ScanScreen() {
   const [doctorSearch, setDoctorSearch] = useState("");
   const [providerPickerOpen, setProviderPickerOpen] = useState(false);
   const [providerPickerSearch, setProviderPickerSearch] = useState("");
+  // Set when the user taps "Add Provider" and a canonical org is successfully
+  // created via POST /api/organizations. Threaded into createCanonicalScanCase
+  // so the alias lookup is bypassed for this scan. Reset on each new Rx analysis.
+  const [resolvedProviderOrgId, setResolvedProviderOrgId] = useState<string | null>(null);
   const [patientDropdownOpen, setPatientDropdownOpen] = useState(false);
   const [patientSearch, setPatientSearch] = useState("");
   const [addingNewPatient, setAddingNewPatient] = useState(false);
@@ -1848,6 +1852,9 @@ export default function ScanScreen() {
 
         if (result.success && result.data) {
           const d = result.data;
+          // Clear any org ID resolved from a previous Rx so it cannot bleed
+          // into this new prescription's case creation.
+          setResolvedProviderOrgId(null);
           const fields = mapRxResponseToFormFields(d);
           if (fields.doctorName) setDoctorName(fields.doctorName);
           if (fields.patientName) setPatientName(fields.patientName);
@@ -1902,8 +1909,10 @@ export default function ScanScreen() {
               setDoctorName(entry.providerName);
             };
 
-            const addAsNew = () => {
+            const addAsNew = async () => {
               const drName = ensureDr(d.doctorName);
+              // Keep the local client record for immediate UI feedback and
+              // non-canonical (non-affiliated) fallback path.
               addClient({
                 practiceName: d.practiceName || drName,
                 leadDoctor: drName,
@@ -1914,6 +1923,55 @@ export default function ScanScreen() {
                 discountRate: 0,
               });
               setDoctorName(drName);
+
+              // Create a canonical server-side provider org so case creation
+              // can use providerOrganizationId directly — mirrors the desktop
+              // DashboardDropZone.submitNewPractice flow.
+              const labOrgId = activeLabAffiliationKey?.startsWith("org:")
+                ? activeLabAffiliationKey.slice(4)
+                : null;
+              if (labOrgId) {
+                try {
+                  const orgRes = await resilientFetch("/api/organizations", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      type: "provider",
+                      name: (d.practiceName || drName).trim(),
+                      displayName: (d.practiceName || drName).trim(),
+                      parentLabOrganizationId: labOrgId,
+                      ...(drName.trim() ? { doctorName: drName.trim() } : {}),
+                      ...(d.practicePhone?.trim()
+                        ? { phone: d.practicePhone.trim() }
+                        : {}),
+                    }),
+                  });
+                  if (orgRes?.ok) {
+                    const orgBody = await orgRes.json().catch(() => null);
+                    const newOrgId: string | undefined =
+                      orgBody?.id ?? orgBody?.data?.id;
+                    if (newOrgId) {
+                      setResolvedProviderOrgId(newOrgId);
+                      // Register the alias non-blocking so future scans
+                      // auto-match this doctor name to the new org.
+                      void resilientFetch("/api/rx-practice-aliases", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          labOrganizationId: labOrgId,
+                          rxName: drName.trim(),
+                          providerOrganizationId: newOrgId,
+                        }),
+                      }).catch(() => null);
+                    }
+                  }
+                } catch {
+                  // Non-blocking — case creation will surface the existing
+                  // "doctor not linked" message if the org ID is still missing,
+                  // matching prior behaviour for unregistered doctors.
+                }
+              }
+
               setTimeout(() => {
                 Alert.alert(
                   "Provider Added ✓",
@@ -2760,7 +2818,10 @@ export default function ScanScreen() {
     // registered in the lab's rx-practice-aliases table; surface that as a
     // visible error so the user knows to ask the admin to add the alias.
     // Non-affiliated users still go through addCase → legacy sync.
-    const canonical = await createCanonicalScanCase(caseParams);
+    const canonical = await createCanonicalScanCase(
+      caseParams,
+      resolvedProviderOrgId ?? undefined,
+    );
     if (activeLabAffiliationKey?.startsWith("org:") && !canonical) {
       Alert.alert(
         "Cannot Create Case",
