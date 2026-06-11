@@ -19,11 +19,7 @@ import React, {
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system";
 import { getApiUrl, resilientFetch, getAccessToken, chunkedUploadCaseMedia, retryAsync, fireWithRetry, logDebugEvent, waitForHydration } from "./query-client";
-import {
-  isSyncSuccess,
-  syncFailureFromStatus,
-  type SyncResult,
-} from "./sync-types";
+import { isSyncSuccess } from "./sync-types";
 import {
   type PendingUpload,
   pendingUploadsStorageKey as pendingUploadsStorageKeyFor,
