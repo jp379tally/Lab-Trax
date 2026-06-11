@@ -1,8 +1,9 @@
-// legacy-mobile-fence:disable-file — This file is grandfathered from the
-// pre-canonical-API era and cannot be migrated in one shot without breaking
-// existing cached cases on live devices.  All DEPRECATED symbols in this file
-// are kept for backward compatibility only.  Do NOT add new references to
-// /api/legacy/cases, lab_cases, or any of the legacy sync helpers here.
+// This file retains a few grandfathered /api/legacy/cases calls for syncing
+// pre-canonical-API cached cases on live devices. Those individual lines are
+// exempted with `// legacy-fence:allow`; the rest of the file is now covered by
+// the mobile legacy-path fence (the file-level disable marker was removed once
+// PendingSyncBanner stopped reading the deprecated sync fields). Do NOT add new
+// references to /api/legacy/cases, lab_cases, or the legacy sync fields here.
 // New case operations belong in components that use the @workspace/api-client-react
 // hooks (useCases, useCase, useInvoices, …) directly.
 import React, {
@@ -21,7 +22,6 @@ import { getApiUrl, resilientFetch, getAccessToken, chunkedUploadCaseMedia, retr
 import {
   isSyncSuccess,
   syncFailureFromStatus,
-  type StuckQueueItem,
   type SyncResult,
 } from "./sync-types";
 import {
@@ -31,6 +31,8 @@ import {
   savePendingUploads,
   upsertPendingUpload,
   processPendingUploadsList,
+  setPendingUploadsSnapshot,
+  registerPendingUploadHandlers,
 } from "./pending-uploads";
 import { Alert, AppState, Platform } from "react-native";
 import {
@@ -173,32 +175,6 @@ interface AppContextValue {
   updateWorkStatus: (status: "available" | "break" | "out_of_office") => Promise<{ success: boolean; error?: string }>;
   invoiceTemplate: { customTexts: any[]; defaultTextBlocks: any[] } | null;
   fetchInvoiceTemplate: () => Promise<void>;
-  /**
-   * @deprecated Vestigial counter from the removed offline queue. Syncing is
-   * now direct (fireWithRetry + chunked uploads), so this always stays at 0.
-   * PendingSyncBanner is the only grandfathered consumer; do NOT add new reads.
-   * Will be removed once PendingSyncBanner is rewritten.
-   * @see {@link pendingUploads}
-   */
-  pendingSyncCount: number;
-  /**
-   * @deprecated Vestigial list from the removed offline queue; always empty now
-   * that changes sync straight to the server. PendingSyncBanner is the only
-   * grandfathered consumer; do NOT add new reads. Will be removed once
-   * PendingSyncBanner is rewritten.
-   * @see {@link pendingUploads}
-   */
-  stuckSyncItems: StuckQueueItem[];
-  /**
-   * @deprecated No-op stub retained for API compatibility; the offline queue
-   * it used to re-drive no longer exists. Will be removed with stuckSyncItems.
-   */
-  retrySync: (id?: string) => void;
-  /**
-   * @deprecated No-op stub retained for API compatibility; the offline queue
-   * it used to drop items from no longer exists. Will be removed with stuckSyncItems.
-   */
-  discardSync: (id: string) => void;
   // Insert a server-returned case into local state without creating a new UUID
   // or syncing back to the server. Used by the QR barcode lookup to ensure
   // the case is present in app state before navigation so case/[id] doesn't
@@ -219,25 +195,6 @@ export type ToastVariant = "error" | "info";
 export type ToastMessage = { id: string; message: string; variant: ToastVariant };
 
 const AppContext = createContext<AppContextValue | null>(null);
-
-// Module-level once-flag for the legacy-fields deprecation warning so the
-// console is not flooded on every AppProvider re-render. Fires once per JS
-// runtime session in __DEV__ builds only.
-let _legacyFieldsDeprecationWarnedOnce = false;
-function _warnLegacyFieldsOnce() {
-  if (!__DEV__) return;
-  if (_legacyFieldsDeprecationWarnedOnce) return;
-  _legacyFieldsDeprecationWarnedOnce = true;
-  // eslint-disable-next-line no-console
-  console.error(
-    "[app-context] DEPRECATED: pendingSyncCount / stuckSyncItems are " +
-    "legacy fields from the pre-canonical-API era. Only PendingSyncBanner " +
-    "(legacy-mobile-fence:disable-file) is permitted to read them. " +
-    "New code must source pending-upload data from lib/pending-uploads.ts directly. " +
-    "TODO: Remove after PendingSyncBanner is rewired to source data from " +
-    "loadPendingUploads() in lib/pending-uploads.ts, bypassing app-context.",
-  );
-}
 
 const CASES_KEY = "@drivesync_cases";
 const ROLE_KEY = "@drivesync_role";
@@ -548,7 +505,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           );
         }
         if (!labCase.ownerId) return false;
-        const res = await resilientFetch("/api/legacy/cases", {
+        const res = await resilientFetch("/api/legacy/cases", { // legacy-fence:allow
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -569,7 +526,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   async function deleteCaseFromServer(caseId: string) {
     try {
-      await resilientFetch(`/api/legacy/cases/${caseId}`, { method: "DELETE" });
+      await resilientFetch(`/api/legacy/cases/${caseId}`, { method: "DELETE" }); // legacy-fence:allow
     } catch (e) {
       console.log("Could not delete case from server:", e);
     }
@@ -589,7 +546,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   async function fetchCasesFromServer(): Promise<FetchCasesResult> {
     try {
-      const res = await resilientFetch(`/api/legacy/cases`);
+      const res = await resilientFetch(`/api/legacy/cases`); // legacy-fence:allow
       if (res.ok) {
         try {
           const data = await res.json();
@@ -1009,38 +966,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // through the same uploadPhotoAndCreateAttachment path (which itself reuses
   // the server resume session via GET /api/media/upload-session/:id), swaps the
   // device-local uri for the canonical serving URL on success, and clears the
-  // entry. `pendingSyncCount` / `stuckSyncItems` expose the queue to any badge.
+  // entry. The live queue is mirrored into the reactive pending-uploads store
+  // (lib/pending-uploads.ts) so the PendingSyncBanner can observe it directly.
   const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([]);
   const pendingUploadsRef = useRef<PendingUpload[]>([]);
   const processingUploadsRef = useRef(false);
 
-  // ⚠️  DEPRECATED — `pendingSyncCount` and `stuckSyncItems` are legacy fields
-  // from the pre-canonical-API sync model. They are kept here so the
-  // PendingSyncBanner component (which predates the rebuild) continues to work
-  // without changes. New code must not introduce additional reads of these
-  // fields from outside app-context. They will be removed in a follow-up task
-  // once PendingSyncBanner is updated to source its data directly from the
-  // pending-uploads helpers.
-  //
-  // TODO: Remove pendingSyncCount and stuckSyncItems once PendingSyncBanner is
-  // rewired to source its data from the pending-uploads helpers directly
-  // (lib/pending-uploads.ts) instead of going through app-context.
-  // Canonical path: import { loadPendingUploads } from "@/lib/pending-uploads"
-  // and derive count/items there, bypassing these context fields entirely.
-  // Fire the deprecation warning once per JS runtime session (not per render)
-  // so the console is not flooded on every re-render.
-  _warnLegacyFieldsOnce();
-  const pendingSyncCount = pendingUploads.length;
-  const stuckSyncItems: StuckQueueItem[] = useMemo(
-    () =>
-      pendingUploads.map((u) => ({
-        id: u.id,
-        caseId: u.caseId,
-        type: "photo" as const,
-        attempts: u.attempts,
-      })),
-    [pendingUploads],
-  );
+  // Mirror the live queue into the reactive pending-uploads store so the
+  // PendingSyncBanner can observe it directly (lib/pending-uploads.ts) instead
+  // of through legacy context fields. app-context stays the single writer.
+  useEffect(() => {
+    setPendingUploadsSnapshot(pendingUploads);
+  }, [pendingUploads]);
 
   // Scope the queue to the signed-in user so a shared device / account switch
   // never inherits another user's parked uploads (whose cases the new user may
@@ -1178,17 +1115,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, [currentUserId, processPendingUploads]);
 
-  // Manual retry from a badge/banner — kick the background pass immediately.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  function retrySync(_id?: string) {
-    void processPendingUploads();
-  }
+  // Manual retry from the banner — kick the background pass immediately.
+  const retrySync = useCallback(
+    (_id?: string) => {
+      void processPendingUploads();
+    },
+    [processPendingUploads],
+  );
   // Drop a parked upload from the persistent queue (e.g. user dismisses it).
-  function discardSync(id: string) {
-    void persistPendingUploads(
-      pendingUploadsRef.current.filter((u) => u.id !== id),
-    );
-  }
+  const discardSync = useCallback(
+    (id: string) => {
+      void persistPendingUploads(
+        pendingUploadsRef.current.filter((u) => u.id !== id),
+      );
+    },
+    [persistPendingUploads],
+  );
+
+  // Register the retry/discard handlers with the reactive store so the banner
+  // can drive the queue without these functions being exposed on the context.
+  useEffect(() => {
+    registerPendingUploadHandlers({ retry: retrySync, discard: discardSync });
+  }, [retrySync, discardSync]);
 
   function hydrateServerCase(sc: LabCase): void {
     setCases((prev) => (prev.some((c) => c.id === sc.id) ? prev : [...prev, sc]));
@@ -4264,16 +4212,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       updateWorkStatus,
       invoiceTemplate,
       fetchInvoiceTemplate,
-      pendingSyncCount,
-      stuckSyncItems,
-      retrySync,
-      discardSync,
       hydrateServerCase,
       toast,
       showToast,
       dismissToast,
     }),
-    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, pendingInvoiceEditId, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, labAffiliationReady, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers, allLabOrganizationIds, activeLabAffiliationKey, activeLabAffiliationName, allLabAffiliationKeysList, invoiceTemplate, pendingSyncCount, stuckSyncItems, toast, showToast, dismissToast],
+    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, pendingInvoiceEditId, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, labAffiliationReady, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers, allLabOrganizationIds, activeLabAffiliationKey, activeLabAffiliationName, allLabAffiliationKeysList, invoiceTemplate, toast, showToast, dismissToast],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

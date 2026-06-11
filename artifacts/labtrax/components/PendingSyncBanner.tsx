@@ -1,8 +1,3 @@
-// legacy-mobile-fence:disable-file — PendingSyncBanner is a pre-rebuild
-// component that directly consumes `pendingSyncCount` and `stuckSyncItems`
-// from app-context.  It is grandfathered until a follow-up task rewires
-// it to source data from the pending-uploads helpers directly.  Do NOT
-// add new references to the legacy sync fields in this file.
 import React, { useMemo, useState } from "react";
 import {
   View,
@@ -16,63 +11,35 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
-import { useApp } from "@/lib/app-context";
 import {
-  messageForCategory,
-  type StuckQueueItem,
-  type SyncFailureCategory,
-} from "@/lib/sync-types";
+  type PendingUpload,
+  usePendingUploads,
+  requestRetryPendingUpload,
+  requestDiscardPendingUpload,
+} from "@/lib/pending-uploads";
 
-const TYPE_LABELS: Record<StuckQueueItem["type"], string> = {
-  photo: "Photo",
-  note: "Note",
-  status: "Station move",
-};
-
-const TYPE_ICONS: Record<StuckQueueItem["type"], keyof typeof Ionicons.glyphMap> = {
-  photo: "image-outline",
-  note: "chatbubble-ellipses-outline",
-  status: "swap-horizontal-outline",
-};
-
-// Build a single plain-language reason for the stuck items. A permanent
-// rejection (the lab said no) is more actionable than "lost connection", so it
-// wins when the stuck items are a mix. Falls back to the per-item lastError
-// message, then to a generic line.
-function stuckReason(items: StuckQueueItem[]): string {
-  if (items.length === 0) return "";
-  const order: SyncFailureCategory[] = [
-    "rejected",
-    "validation",
-    "server",
-    "network",
-  ];
-  const present = new Set(
-    items
-      .map((i) => i.lastErrorCategory)
-      .filter((c): c is SyncFailureCategory => !!c)
-  );
-  for (const category of order) {
-    if (present.has(category)) return messageForCategory(category);
-  }
-  return items[0].lastError ?? "Couldn't reach the server";
+// The persistent upload queue only ever holds case media (photos/videos), so a
+// single label/icon pair covers every entry.
+function typeLabel(item: PendingUpload): string {
+  return item.isVid ? "Video" : "Photo";
+}
+function typeIcon(item: PendingUpload): keyof typeof Ionicons.glyphMap {
+  return item.isVid ? "videocam-outline" : "image-outline";
 }
 
-// Per-item plain-language reason, falling back to the shared reason so every
-// row always says something actionable.
-function itemReason(item: StuckQueueItem, fallback: string): string {
-  if (item.lastErrorCategory) return messageForCategory(item.lastErrorCategory);
-  if (item.lastError) return item.lastError;
-  return fallback;
-}
+// Parked uploads carry no per-item error detail — they are simply files whose
+// chunked upload exhausted its in-session retries — so the reason is a single
+// plain-language line shared across the queue.
+const QUEUE_REASON = "Couldn't reach the server — will keep trying";
 
 // Persistent indicator for case media that finished capture but is still
 // parked in the upload retry queue (lib/pending-uploads.ts). It is purely a
-// *visibility* layer over the existing queue — it reads `pendingSyncCount` /
-// `stuckSyncItems` and drives the queue's own `retrySync` / `discardSync`; it
-// never uploads or mutates the queue itself. Mounted once at the authed root.
+// *visibility* layer over the existing queue — it reads the live queue snapshot
+// directly from the pending-uploads helpers and drives the queue's own retry /
+// discard handlers; it never uploads or mutates the queue itself. Mounted once
+// at the authed root.
 export function PendingSyncBanner() {
-  const { pendingSyncCount, stuckSyncItems, retrySync, discardSync } = useApp();
+  const pendingUploads = usePendingUploads();
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
@@ -81,12 +48,12 @@ export function PendingSyncBanner() {
   // When the queue drains the banner disappears and the management sheet (which
   // is nested inside this component) unmounts with it — requirement: the
   // indicator must clear once everything has uploaded.
-  if (!pendingSyncCount || pendingSyncCount <= 0) {
+  if (pendingUploads.length <= 0) {
     return null;
   }
 
-  const count = pendingSyncCount;
-  const reason = stuckReason(stuckSyncItems);
+  const count = pendingUploads.length;
+  const reason = QUEUE_REASON;
   const summary =
     count === 1
       ? "1 attachment still uploading"
@@ -153,7 +120,7 @@ export function PendingSyncBanner() {
           </View>
 
           <Pressable
-            onPress={() => retrySync()}
+            onPress={() => requestRetryPendingUpload()}
             accessibilityRole="button"
             accessibilityLabel="Retry all uploads"
             style={styles.retryAllBtn}
@@ -163,28 +130,28 @@ export function PendingSyncBanner() {
           </Pressable>
 
           <ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
-            {stuckSyncItems.map((item) => (
+            {pendingUploads.map((item) => (
               <View key={item.id} style={styles.row}>
                 <Ionicons
-                  name={TYPE_ICONS[item.type]}
+                  name={typeIcon(item)}
                   size={20}
                   color={colors.textSecondary}
                   style={styles.rowIcon}
                 />
                 <View style={styles.rowTextWrap}>
                   <Text style={styles.rowTitle} numberOfLines={1}>
-                    {TYPE_LABELS[item.type]}
+                    {typeLabel(item)}
                     {item.attempts > 0
                       ? ` · ${item.attempts} ${item.attempts === 1 ? "try" : "tries"}`
                       : ""}
                   </Text>
                   <Text style={styles.rowReason} numberOfLines={2}>
-                    {itemReason(item, reason)}
+                    {reason}
                   </Text>
                 </View>
                 <View style={styles.rowActions}>
                   <Pressable
-                    onPress={() => retrySync(item.id)}
+                    onPress={() => requestRetryPendingUpload(item.id)}
                     accessibilityRole="button"
                     accessibilityLabel="Retry now"
                     style={[styles.actionBtn, styles.retryBtn]}
@@ -192,7 +159,7 @@ export function PendingSyncBanner() {
                     <Text style={styles.retryBtnText}>Retry now</Text>
                   </Pressable>
                   <Pressable
-                    onPress={() => discardSync(item.id)}
+                    onPress={() => requestDiscardPendingUpload(item.id)}
                     accessibilityRole="button"
                     accessibilityLabel="Discard"
                     style={[styles.actionBtn, styles.discardBtn]}

@@ -8,6 +8,7 @@
 // another user's parked uploads.
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useSyncExternalStore } from "react";
 
 const PENDING_UPLOADS_KEY = "@drivesync_pending_uploads";
 
@@ -144,4 +145,66 @@ export async function processPendingUploadsList(
     }
   }
   return { remaining: working, recovered };
+}
+
+// ─── Reactive store ─────────────────────────────────────────────────────────
+// A lightweight, app-context-independent mirror of the live queue so UI (the
+// PendingSyncBanner) can observe pending uploads and request retry/discard
+// without going through the deprecated `pendingSyncCount` / `stuckSyncItems`
+// context fields. app-context remains the single writer: it pushes the current
+// snapshot via `setPendingUploadsSnapshot` and registers the retry/discard
+// handlers it already owns (those need the upload + persistence machinery).
+
+type PendingUploadsListener = () => void;
+
+let pendingUploadsSnapshot: PendingUpload[] = [];
+const pendingUploadsListeners = new Set<PendingUploadsListener>();
+
+let retryHandler: ((id?: string) => void) | null = null;
+let discardHandler: ((id: string) => void) | null = null;
+
+// Push the latest queue snapshot. Called by app-context whenever its
+// per-user queue state changes; notifies every subscribed component.
+export function setPendingUploadsSnapshot(list: PendingUpload[]): void {
+  pendingUploadsSnapshot = list;
+  for (const listener of pendingUploadsListeners) listener();
+}
+
+function subscribePendingUploads(listener: PendingUploadsListener): () => void {
+  pendingUploadsListeners.add(listener);
+  return () => {
+    pendingUploadsListeners.delete(listener);
+  };
+}
+
+function getPendingUploadsSnapshot(): PendingUpload[] {
+  return pendingUploadsSnapshot;
+}
+
+// Subscribe a component to the live pending-uploads queue. Re-renders whenever
+// the snapshot changes (enqueue, drain, discard, account switch).
+export function usePendingUploads(): PendingUpload[] {
+  return useSyncExternalStore(
+    subscribePendingUploads,
+    getPendingUploadsSnapshot,
+    getPendingUploadsSnapshot,
+  );
+}
+
+// app-context registers the handlers that actually re-drive the upload pass and
+// drop entries from persistent storage; the banner only requests them.
+export function registerPendingUploadHandlers(handlers: {
+  retry: (id?: string) => void;
+  discard: (id: string) => void;
+}): void {
+  retryHandler = handlers.retry;
+  discardHandler = handlers.discard;
+}
+
+export function requestRetryPendingUpload(id?: string): void {
+  retryHandler?.(id);
+}
+
+export function requestDiscardPendingUpload(id: string): void {
+  discardHandler?.(id);
 }

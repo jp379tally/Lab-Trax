@@ -2,39 +2,48 @@
 // (Task #1421). The retry queue itself (lib/pending-uploads.ts + app-context)
 // is covered elsewhere; these tests cover only the banner that exposes it:
 //
-// - badge/banner appears when pendingSyncCount > 0
+// - badge/banner appears when there are pending uploads
 // - it is hidden when the queue is empty
-// - tapping it shows the stuck items from stuckSyncItems
-// - "Retry now" calls retrySync, "Discard" calls discardSync
+// - tapping it shows the parked uploads
+// - "Retry now" requests a retry, "Discard" requests a discard
 // - the banner clears once the queue drains
 //
-// The banner reads pendingSyncCount / stuckSyncItems and drives the queue's own
-// retrySync / discardSync via useApp(), so we drive it with setMockAppState.
+// The banner now sources its data directly from the pending-uploads helpers
+// (lib/pending-uploads.ts) instead of the deprecated app-context sync fields,
+// so we drive it with the reactive store: setPendingUploadsSnapshot pushes the
+// live queue and registerPendingUploadHandlers captures the retry/discard
+// requests the banner makes.
 import React from "react";
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { cleanup, fireEvent, render } from "@testing-library/react-native";
-import { resetMockAppState, setMockAppState } from "../../../vitest.setup";
 
 import { PendingSyncBanner } from "@/components/PendingSyncBanner";
-import type { StuckQueueItem } from "@/lib/sync-types";
+import {
+  type PendingUpload,
+  setPendingUploadsSnapshot,
+  registerPendingUploadHandlers,
+} from "@/lib/pending-uploads";
 
-function stuckPhoto(id: string, attempts = 0): StuckQueueItem {
-  return { id, caseId: `case-${id}`, type: "photo", attempts };
+function pendingPhoto(id: string, attempts = 0): PendingUpload {
+  return {
+    id,
+    caseId: `case-${id}`,
+    fileUri: `file:///tmp/${id}.jpg`,
+    isVid: false,
+    createdAt: 0,
+    attempts,
+  };
 }
 
 afterEach(() => {
   cleanup();
-  resetMockAppState();
+  setPendingUploadsSnapshot([]);
+  registerPendingUploadHandlers({ retry: () => undefined, discard: () => undefined });
 });
 
 describe("PendingSyncBanner", () => {
-  it("shows the badge/banner when pendingSyncCount > 0", () => {
-    setMockAppState({
-      pendingSyncCount: 2,
-      stuckSyncItems: [stuckPhoto("a"), stuckPhoto("b")],
-      retrySync: vi.fn(),
-      discardSync: vi.fn(),
-    });
+  it("shows the badge/banner when there are pending uploads", () => {
+    setPendingUploadsSnapshot([pendingPhoto("a"), pendingPhoto("b")]);
 
     const { getByText } = render(<PendingSyncBanner />);
     expect(getByText("2 attachments still uploading")).toBeTruthy();
@@ -43,25 +52,15 @@ describe("PendingSyncBanner", () => {
   });
 
   it("is hidden when the queue is empty", () => {
-    setMockAppState({
-      pendingSyncCount: 0,
-      stuckSyncItems: [],
-      retrySync: vi.fn(),
-      discardSync: vi.fn(),
-    });
+    setPendingUploadsSnapshot([]);
 
     const { queryByText, toJSON } = render(<PendingSyncBanner />);
     expect(queryByText(/still uploading/)).toBeNull();
     expect(toJSON()).toBeNull();
   });
 
-  it("shows the stuck items when the banner is tapped", () => {
-    setMockAppState({
-      pendingSyncCount: 1,
-      stuckSyncItems: [stuckPhoto("a", 3)],
-      retrySync: vi.fn(),
-      discardSync: vi.fn(),
-    });
+  it("shows the parked uploads when the banner is tapped", () => {
+    setPendingUploadsSnapshot([pendingPhoto("a", 3)]);
 
     const { getByText, getByLabelText, queryByLabelText } = render(
       <PendingSyncBanner />,
@@ -77,58 +76,40 @@ describe("PendingSyncBanner", () => {
     expect(getByLabelText("Discard")).toBeTruthy();
   });
 
-  it('"Retry now" calls retrySync with the item id', () => {
-    const retrySync = vi.fn();
-    setMockAppState({
-      pendingSyncCount: 1,
-      stuckSyncItems: [stuckPhoto("item-1")],
-      retrySync,
-      discardSync: vi.fn(),
-    });
+  it('"Retry now" requests a retry with the item id', () => {
+    const retry = vi.fn();
+    registerPendingUploadHandlers({ retry, discard: vi.fn() });
+    setPendingUploadsSnapshot([pendingPhoto("item-1")]);
 
     const { getByLabelText } = render(<PendingSyncBanner />);
     fireEvent.press(getByLabelText(/Tap to manage pending uploads/));
     fireEvent.press(getByLabelText("Retry now"));
 
-    expect(retrySync).toHaveBeenCalledTimes(1);
-    expect(retrySync).toHaveBeenCalledWith("item-1");
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(retry).toHaveBeenCalledWith("item-1");
   });
 
-  it('"Discard" calls discardSync with the item id', () => {
-    const discardSync = vi.fn();
-    setMockAppState({
-      pendingSyncCount: 1,
-      stuckSyncItems: [stuckPhoto("item-9")],
-      retrySync: vi.fn(),
-      discardSync,
-    });
+  it('"Discard" requests a discard with the item id', () => {
+    const discard = vi.fn();
+    registerPendingUploadHandlers({ retry: vi.fn(), discard });
+    setPendingUploadsSnapshot([pendingPhoto("item-9")]);
 
     const { getByLabelText } = render(<PendingSyncBanner />);
     fireEvent.press(getByLabelText(/Tap to manage pending uploads/));
     fireEvent.press(getByLabelText("Discard"));
 
-    expect(discardSync).toHaveBeenCalledTimes(1);
-    expect(discardSync).toHaveBeenCalledWith("item-9");
+    expect(discard).toHaveBeenCalledTimes(1);
+    expect(discard).toHaveBeenCalledWith("item-9");
   });
 
   it("clears the banner after the queue drains", () => {
-    setMockAppState({
-      pendingSyncCount: 1,
-      stuckSyncItems: [stuckPhoto("a")],
-      retrySync: vi.fn(),
-      discardSync: vi.fn(),
-    });
+    setPendingUploadsSnapshot([pendingPhoto("a")]);
 
     const { queryByText, rerender } = render(<PendingSyncBanner />);
     expect(queryByText("1 attachment still uploading")).toBeTruthy();
 
-    // Queue drains (e.g. uploads recovered) → pendingSyncCount goes to 0.
-    setMockAppState({
-      pendingSyncCount: 0,
-      stuckSyncItems: [],
-      retrySync: vi.fn(),
-      discardSync: vi.fn(),
-    });
+    // Queue drains (e.g. uploads recovered) → snapshot goes empty.
+    setPendingUploadsSnapshot([]);
     rerender(<PendingSyncBanner />);
 
     expect(queryByText(/still uploading/)).toBeNull();
