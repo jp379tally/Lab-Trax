@@ -543,6 +543,13 @@ vi.mock("@workspace/api-client-react", () => ({
     isPending: false,
     isError: false,
   }),
+  useUpdateCase: () => ({
+    mutateAsync: vi.fn(async () => ({ ok: true, data: null })),
+    mutate: vi.fn(),
+    isPending: false,
+    isError: false,
+  }),
+  UpdateCaseInputStatus: {},
   useInvoices: () => ({
     data: (mockAppOverrides.current.invoices as unknown[]) ?? [],
     isLoading: false,

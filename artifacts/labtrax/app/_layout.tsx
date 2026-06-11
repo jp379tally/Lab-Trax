@@ -7,7 +7,7 @@ import * as Linking from "expo-linking";
 import React, { useEffect, useMemo } from "react";
 import { View, ActivityIndicator, StyleSheet, PanResponder, Platform } from "react-native";
 import { pushSharedFile } from "@/lib/shared-file-inbox";
-import { resilientFetch } from "@/lib/query-client";
+import { resilientFetch, queryClient, getAccessToken, refreshAndGetAccessToken } from "@/lib/query-client";
 import { useShareIntent } from "expo-share-intent";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
@@ -20,7 +20,7 @@ import {
   Inter_700Bold,
 } from "@expo-google-fonts/inter";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { queryClient } from "@/lib/query-client";
+import { setAuthTokenGetter, setAuthRefresher } from "@workspace/api-client-react";
 import { AppProvider } from "@/lib/app-context";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { ThemeProvider } from "@/lib/theme-context";
@@ -34,6 +34,12 @@ import { RevenueCatProvider } from "@/lib/revenuecat";
 import LoginScreen from "@/components/LoginScreen";
 import LockScreen from "@/components/LockScreen";
 import Colors from "@/constants/colors";
+
+// Wire the mobile token store into customFetch once, at module load time.
+// Every generated hook (useListCases, useUpdateCase, etc.) uses customFetch,
+// so this must run before any QueryClientProvider renders.
+setAuthTokenGetter(getAccessToken);
+setAuthRefresher(refreshAndGetAccessToken);
 
 const TransparentNavTheme = {
   dark: false,

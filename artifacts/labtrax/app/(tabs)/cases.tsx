@@ -24,7 +24,7 @@ import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { getStationInfo, STATIONS, CaseStatus, LabCase, cleanDoctorDisplay, Invoice, normalizeCaseStatus } from "@/lib/data";
-import { useListCases, type CanonicalCase } from "@workspace/api-client-react";
+import { useListCases, useUpdateCase, UpdateCaseInputStatus, type CanonicalCase } from "@workspace/api-client-react";
 import { ChatButton } from "@/components/ChatButton";
 import InvoicePDFViewer from "@/components/InvoicePDFViewer";
 import { CaseProgressBar } from "@/components/CaseProgressBar";
@@ -92,7 +92,7 @@ function formatDueDate(d: string | number | undefined | null): string {
 }
 
 export default function CasesScreen() {
-  const { role, adminUnlocked, findCaseByBarcode, updateCaseStatus, customStationLabels, invoices, updateInvoice, addInvoice, updateCase, addCaseNote, clients, pricingTiers, setPendingInvoiceEditId, hydrateInvoiceFromServer, allLabOrganizationIds, invoiceTemplate, fetchInvoiceTemplate } = useApp();
+  const { role, adminUnlocked, customStationLabels, invoices, updateInvoice, addInvoice, updateCase, addCaseNote, clients, pricingTiers, setPendingInvoiceEditId, hydrateInvoiceFromServer, invoiceTemplate, fetchInvoiceTemplate } = useApp();
   const [refreshing, setRefreshing] = useState(false);
   const { userType, currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
@@ -101,6 +101,11 @@ export default function CasesScreen() {
   const locStyles = useMemo(() => makeLocStyles(colors), [colors]);
 
   const { data: caseListResult, isLoading: casesLoading, refetch: refetchCases } = useListCases();
+  // Canonical mutation: PATCH /api/cases/:id via the generated hook.
+  // Refreshes the cases list on success so the UI reflects server state.
+  const { mutate: updateCaseMutation } = useUpdateCase({
+    mutation: { onSuccess: () => { void refetchCases(); } },
+  });
   // Split canonical (server-native) cases from bridged legacy mobile cases (_source === "mobile").
   // Legacy cases are shown in a separate labeled read-only section.
   const rawCases = useMemo<CanonicalCase[]>(() => caseListResult?.data ?? [], [caseListResult]);
@@ -155,7 +160,9 @@ export default function CasesScreen() {
     setBarcodeLocateScanned(true);
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
-    const found = findCaseByBarcode(data);
+    // Search the already-loaded canonical list by assigned barcode first.
+    // Falls through to id/caseNumber match for QR codes that encode those fields.
+    const found = cases.find(c => c.assignedBarcode === data);
     if (found) {
       setShowBarcodeLocate(false);
       setBarcodeLocateScanned(false);
@@ -654,7 +661,10 @@ export default function CasesScreen() {
                     key={station.id}
                     onPress={() => {
                       if (!isCurrent && locateCaseId) {
-                        updateCaseStatus(locateCaseId, station.id, userInitials);
+                        updateCaseMutation({
+                          caseId: locateCaseId,
+                          data: { status: station.id as UpdateCaseInputStatus },
+                        });
                         if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                         setLocateCaseId(null);
                       }

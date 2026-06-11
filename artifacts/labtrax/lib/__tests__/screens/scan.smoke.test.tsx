@@ -395,9 +395,11 @@ describe("ScanScreen (smoke)", () => {
       ).toBeTruthy();
     });
     const expectedNumber = inProgressCase.caseNumber.replace("#", "");
-    expect(
-      screen.getAllByText(new RegExp(expectedNumber)).length,
-    ).toBeGreaterThan(0);
+    await waitFor(() => {
+      expect(
+        screen.getAllByText(new RegExp(expectedNumber)).length,
+      ).toBeGreaterThan(0);
+    });
   });
 
   describe("barcode lookup — server case not in local state", () => {

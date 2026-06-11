@@ -57,7 +57,7 @@ beforeEach(() => {
   // Default filesystem: no cached files, downloads succeed
   vi.mocked(FileSystemLegacy.getInfoAsync).mockResolvedValue({ exists: false } as any);
   vi.mocked(FileSystemLegacy.downloadAsync).mockImplementation(
-    async (_url: string, dest: string) => ({ status: 200, uri: dest }),
+    async (_url: string, dest: string) => ({ status: 200, uri: dest } as any),
   );
   vi.mocked(FileSystemLegacy.deleteAsync).mockResolvedValue(undefined);
   vi.mocked(FileSystemLegacy.makeDirectoryAsync).mockResolvedValue(undefined);
@@ -114,11 +114,11 @@ describe("getAuthedMediaUri", () => {
   it("refreshes token and retries after a 401 response", async () => {
     // First download: 401 (expired token); second (after refresh): 200
     vi.mocked(FileSystemLegacy.downloadAsync)
-      .mockResolvedValueOnce({ status: 401, uri: "" })
+      .mockResolvedValueOnce({ status: 401, uri: "" } as any)
       .mockImplementation(async (_url: string, dest: string) => ({
         status: 200,
         uri: dest,
-      }));
+      } as any));
 
     const result = await getAuthedMediaUri(SAME_ORIGIN_URL);
     expect(result).toBeTruthy();
@@ -140,7 +140,7 @@ describe("getAuthedMediaUri", () => {
     vi.mocked(FileSystemLegacy.downloadAsync).mockResolvedValueOnce({
       status: 401,
       uri: "",
-    });
+    } as any);
 
     const result = await getAuthedMediaUri(SAME_ORIGIN_URL);
     expect(result).toBeNull();
@@ -166,11 +166,11 @@ describe("refreshAuthedMediaUri", () => {
 
   it("refreshes token and retries after a 401", async () => {
     vi.mocked(FileSystemLegacy.downloadAsync)
-      .mockResolvedValueOnce({ status: 401, uri: "" })
+      .mockResolvedValueOnce({ status: 401, uri: "" } as any)
       .mockImplementation(async (_url: string, dest: string) => ({
         status: 200,
         uri: dest,
-      }));
+      } as any));
 
     const result = await refreshAuthedMediaUri(SAME_ORIGIN_URL);
     expect(result).toBeTruthy();
@@ -187,7 +187,7 @@ describe("refreshAuthedMediaUri", () => {
     vi.mocked(FileSystemLegacy.downloadAsync).mockResolvedValueOnce({
       status: 401,
       uri: "",
-    });
+    } as any);
 
     const result = await refreshAuthedMediaUri(SAME_ORIGIN_URL);
     expect(result).toBeNull();
