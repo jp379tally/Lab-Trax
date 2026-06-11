@@ -538,6 +538,46 @@ offending change before any new feature work continues.
 
 ---
 
+## Protected Workflow: Legacy Mobile Path Fence
+
+Before any rebuild work on the mobile app, every legacy data path must be
+statically fenced so new code cannot accidentally reach back into them. This
+fence is enforced by `scripts/src/lint-mobile-legacy-paths.ts`.
+
+### Fenced symbols
+
+| Symbol | Why fenced |
+|---|---|
+| `/api/legacy/cases` | Legacy sync endpoint that writes to `lab_cases`. New cases must go through `POST /api/cases` and receive a canonical UUID. |
+| `lab_cases` | Legacy PostgreSQL table name. All new case data lives in the canonical `cases` table. |
+| `pendingSyncCount` | Vestigial `AppContext` field from the offline-queue era. Only `PendingSyncBanner` (marked `legacy-mobile-fence:disable-file`) is permitted to read it. |
+| `stuckSyncItems` | Same rationale as `pendingSyncCount`. |
+| `unionActivityLog` | Legacy client-side activity-log merge helper. New activity data must come from the canonical API response (`originalCaseEvents`). |
+
+### Escape hatches (use sparingly — always include a justification)
+
+- **File-level:** add `// legacy-mobile-fence:disable-file` as the first non-blank line of a file. Reserved for files that are grandfathered from the pre-canonical-API era and cannot be migrated in bulk (currently `lib/app-context.tsx` and `components/PendingSyncBanner.tsx`).
+- **Per-line:** add `// legacy-mobile-fence:allow` or `// legacy-fence:allow` at the end of the line. Reserved for individual read-only backward-compatibility calls (e.g. the remake-chain lookup in `app/case/[id].tsx`).
+
+### Guard command
+
+```
+pnpm --filter @workspace/scripts run lint-mobile-legacy-paths
+```
+
+### Pre-Phase-1 gate
+
+**Phase 1 (canonical API client & auth foundation) must not begin until this script is passing on `main`.** Every subsequent phase must keep the script passing; a new violation is a regression that blocks the merge.
+
+### Protected sub-behaviors
+
+- **`lint-mobile-legacy-paths` exits 0 on the current codebase** — the fence is not retroactively applied to grandfathered files; it only catches new introductions.
+- **`lint-mobile-legacy-paths` exits 1 when a fenced symbol appears in a non-exempt file** — any `.ts`/`.tsx` file under `artifacts/labtrax/app/`, `lib/`, `components/`, `hooks/`, or `constants/` that references a fenced symbol without a disable-file header or per-line allow marker must fail the guard.
+- **`console.error` fires in `__DEV__` for legacy `AppContext` fields** — `app-context.tsx` emits a once-per-session `console.error` at the `pendingSyncCount`/`stuckSyncItems` definition site and at the legacy POST branch of `syncCaseToServer`, so developers are alerted when these deprecated paths are active.
+- **No regression on existing tests** — the existing mobile unit tests, API integration tests, and Playwright E2E tests must all continue to pass after the fence is applied.
+
+---
+
 ## How to Add a Protected Workflow
 
 A workflow becomes protected when the user explicitly confirms it is working and should not regress. The lifecycle is:

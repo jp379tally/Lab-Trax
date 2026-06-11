@@ -220,6 +220,25 @@ export type ToastMessage = { id: string; message: string; variant: ToastVariant 
 
 const AppContext = createContext<AppContextValue | null>(null);
 
+// Module-level once-flag for the legacy-fields deprecation warning so the
+// console is not flooded on every AppProvider re-render. Fires once per JS
+// runtime session in __DEV__ builds only.
+let _legacyFieldsDeprecationWarnedOnce = false;
+function _warnLegacyFieldsOnce() {
+  if (!__DEV__) return;
+  if (_legacyFieldsDeprecationWarnedOnce) return;
+  _legacyFieldsDeprecationWarnedOnce = true;
+  // eslint-disable-next-line no-console
+  console.error(
+    "[app-context] DEPRECATED: pendingSyncCount / stuckSyncItems are " +
+    "legacy fields from the pre-canonical-API era. Only PendingSyncBanner " +
+    "(legacy-mobile-fence:disable-file) is permitted to read them. " +
+    "New code must source pending-upload data from lib/pending-uploads.ts directly. " +
+    "TODO: Remove after PendingSyncBanner is rewired to source data from " +
+    "loadPendingUploads() in lib/pending-uploads.ts, bypassing app-context.",
+  );
+}
+
 const CASES_KEY = "@drivesync_cases";
 const ROLE_KEY = "@drivesync_role";
 const LAB_AFFILIATED_CACHE_KEY = "@drivesync_lab_affiliated";
@@ -1002,6 +1021,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // fields from outside app-context. They will be removed in a follow-up task
   // once PendingSyncBanner is updated to source its data directly from the
   // pending-uploads helpers.
+  //
+  // TODO: Remove pendingSyncCount and stuckSyncItems once PendingSyncBanner is
+  // rewired to source its data from the pending-uploads helpers directly
+  // (lib/pending-uploads.ts) instead of going through app-context.
+  // Canonical path: import { loadPendingUploads } from "@/lib/pending-uploads"
+  // and derive count/items there, bypassing these context fields entirely.
+  // Fire the deprecation warning once per JS runtime session (not per render)
+  // so the console is not flooded on every re-render.
+  _warnLegacyFieldsOnce();
   const pendingSyncCount = pendingUploads.length;
   const stuckSyncItems: StuckQueueItem[] = useMemo(
     () =>
