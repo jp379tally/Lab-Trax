@@ -315,6 +315,7 @@ describe("mid-session 401 triggers transparent token refresh and retry", () => {
 });
 
 // ── Scenario 7: logout sequence ──────────────────────────────────────────────
+
 describe("logout sequence", () => {
   it("clearTokens resets the hydration singleton so the next loadTokens re-reads the store", async () => {
     vi.mocked(SecureStore.getItemAsync).mockResolvedValue(
@@ -363,5 +364,94 @@ describe("logout sequence", () => {
 
     await clearTokens();
     expect(getAccessToken()).toBeNull();
+  });
+});
+
+// ── Scenario 8: setAuthRefresher / setAuthTokenGetter registration contract ──
+//
+// The module-level side-effects in query-client.ts (lines 929–947) call
+// setAuthRefresher() and setAuthTokenGetter() from @workspace/api-client-react
+// immediately when the module is loaded — before any React Query hook mounts or
+// fires its first request.
+//
+// vitest.setup.ts replaces @workspace/api-client-react with a vi.mock() factory
+// that provides fresh vi.fn() stubs per test file. When this test file does
+// vi.unmock("@/lib/query-client") and imports the real implementation, those
+// module-level calls fire against the stubs, leaving a call record we can
+// inspect to confirm the registration happened before any test body ran.
+describe("module-init wiring: setAuthRefresher and setAuthTokenGetter registration", () => {
+  it("registers a callable refresher via setAuthRefresher before any protected fetch", async () => {
+    const { setAuthRefresher } = await import("@workspace/api-client-react");
+    const mock = vi.mocked(setAuthRefresher);
+
+    // Must have been called at least once — at module load time.
+    expect(mock).toHaveBeenCalled();
+
+    // The most-recent registration must be a callable function (not undefined or null).
+    const registeredFn = mock.mock.calls[mock.mock.calls.length - 1]?.[0];
+    expect(typeof registeredFn).toBe("function");
+  });
+
+  it("registers a callable token getter via setAuthTokenGetter before any protected fetch", async () => {
+    const { setAuthTokenGetter } = await import("@workspace/api-client-react");
+    const mock = vi.mocked(setAuthTokenGetter);
+
+    expect(mock).toHaveBeenCalled();
+
+    const registeredFn = mock.mock.calls[mock.mock.calls.length - 1]?.[0];
+    expect(typeof registeredFn).toBe("function");
+  });
+});
+
+// ── Scenario 9: no legacy /api/legacy routing ────────────────────────────────
+//
+// All case mutations must route to the canonical /api/cases endpoint.
+// resilientFetch must never construct or forward a URL containing /api/legacy/
+// for case create/update requests. This is the regression guard for the
+// dual-path routing that was removed in Phase 1.
+describe("no legacy routing: resilientFetch targets /api/cases for case mutations", () => {
+  it("POST to /api/cases goes to the canonical endpoint (no /legacy/ in URL)", async () => {
+    await saveTokens("no-legacy-access", "no-legacy-refresh");
+
+    const capturedUrls: string[] = [];
+    setMockFetchHandler((url) => {
+      capturedUrls.push(url);
+      return jsonOk({ ok: true, data: { id: "c-001" } });
+    });
+
+    const res = await resilientFetch("/api/cases", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ caseNumber: "TEST001", labOrganizationId: "org-1" }),
+    });
+
+    expect(res.ok).toBe(true);
+    // At least one request must have targeted /api/cases.
+    expect(capturedUrls.some((u) => u.includes("/api/cases"))).toBe(true);
+    // No request — including auth retries — may contain a legacy path segment.
+    for (const url of capturedUrls) {
+      expect(url).not.toContain("/legacy/");
+    }
+  });
+
+  it("PATCH to /api/cases/:id goes to the canonical endpoint (no /legacy/ in URL)", async () => {
+    await saveTokens("no-legacy-patch-access", "no-legacy-patch-refresh");
+
+    const capturedUrls: string[] = [];
+    setMockFetchHandler((url) => {
+      capturedUrls.push(url);
+      return jsonOk({ ok: true, data: { id: "c-001" } });
+    });
+
+    const res = await resilientFetch("/api/cases/c-001", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "active" }),
+    });
+
+    expect(res.ok).toBe(true);
+    for (const url of capturedUrls) {
+      expect(url).not.toContain("/legacy/");
+    }
   });
 });

@@ -693,6 +693,64 @@ export const MarkAllNotificationsReadResponse = zod.object({
 });
 
 /**
+ * Returns up to 500 most-recent canonical cases (plus projected legacy
+mobile cases) for all organizations the caller is a member of, or a
+single org when `organizationId` is provided. Provider users
+automatically include cross-lab linked-doctor cases.
+
+ * @summary List cases visible to the authenticated user
+ */
+export const ListCasesQueryParams = zod.object({
+  organizationId: zod.coerce
+    .string()
+    .optional()
+    .describe("Filter to a single lab\/provider org (optional)."),
+  include: zod.coerce
+    .string()
+    .optional()
+    .describe('Comma-separated extras to include (e.g. \"restorations\").'),
+});
+
+export const ListCasesResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .array(
+      zod
+        .record(zod.string(), zod.unknown())
+        .describe("Case row (canonical or projected legacy)"),
+    )
+    .optional(),
+});
+
+/**
+ * Creates a new case row in the canonical `cases` table. The caller must
+be an active member of `labOrganizationId`. Auto-generates an invoice
+when the case has a `providerOrganizationId`.
+
+ * @summary Create a canonical case
+ */
+export const CreateCaseBody = zod.object({
+  caseNumber: zod
+    .string()
+    .describe("Client-supplied case number (ignored for remakes)."),
+  labOrganizationId: zod.string(),
+  providerOrganizationId: zod.string().nullish(),
+  patientFirstName: zod.string().nullish(),
+  patientLastName: zod.string().nullish(),
+  doctorName: zod.string().nullish(),
+  status: zod.string().nullish(),
+  remakeOfCaseId: zod
+    .string()
+    .nullish()
+    .describe("ID of the case being remade."),
+  notes: zod.string().nullish(),
+  shade: zod.string().nullish(),
+  dueDate: zod.coerce.date().nullish(),
+  rushOrder: zod.boolean().nullish(),
+  needsAiReview: zod.boolean().nullish(),
+});
+
+/**
  * Updates a list of cases to the same status in one operation. Every
 case ID must belong to a lab the caller is a member of. Returns the
 count of cases actually updated.
@@ -1225,6 +1283,25 @@ export const NotifyCaseNoteResponse = zod.object({
 });
 
 /**
+ * Returns the full case detail including restorations, notes, attachments,
+events, and location history. Falls back to projecting a legacy mobile
+case when the ID is not found in the canonical `cases` table.
+
+ * @summary Get full case detail
+ */
+export const GetCaseParams = zod.object({
+  caseId: zod.coerce.string(),
+});
+
+export const GetCaseResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .record(zod.string(), zod.unknown())
+    .optional()
+    .describe("Full case detail with nested relations"),
+});
+
+/**
  * Partially update a case. All fields are optional. The caller must be
 an active member of the case's lab organization.
 `providerOrganizationId` is validated to be an active, non-deleted
@@ -1464,6 +1541,124 @@ export const UpdateStatementScheduleResponse = zod.object({
       updatedAt: zod.coerce.date().optional(),
     })
     .optional(),
+});
+
+/**
+ * Returns invoices for all organizations the caller is an active member
+of. Supports filtering by `caseId`, `practiceId`, `practiceIds`,
+`labOrganizationId`, `status`, `dateFrom`, and `dateTo`.
+
+ * @summary List invoices visible to the authenticated user
+ */
+export const ListInvoicesQueryParams = zod.object({
+  caseId: zod.coerce
+    .string()
+    .optional()
+    .describe("Filter to invoices for a specific case."),
+  practiceId: zod.coerce
+    .string()
+    .optional()
+    .describe("Filter to invoices for a specific provider org."),
+  practiceIds: zod.coerce
+    .string()
+    .optional()
+    .describe("Comma-separated list of provider org IDs."),
+  labOrganizationId: zod.coerce
+    .string()
+    .optional()
+    .describe("Filter to a specific lab org."),
+  status: zod.coerce
+    .string()
+    .optional()
+    .describe("Filter by status: 'open', 'all', or comma-separated statuses."),
+  dateFrom: zod
+    .date()
+    .optional()
+    .describe("Return invoices issued at or after this date."),
+  dateTo: zod
+    .date()
+    .optional()
+    .describe("Return invoices issued at or before this date."),
+});
+
+export const ListInvoicesResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .array(
+      zod
+        .record(zod.string(), zod.unknown())
+        .describe("Invoice row with line items"),
+    )
+    .optional(),
+});
+
+/**
+ * Partially updates an invoice. Requires a billing role (owner, admin,
+or billing) on the invoice's lab. Replaces the entire `items` array
+when supplied. Returns the updated invoice with totals.
+
+ * @summary Update an invoice (status, line items, metadata)
+ */
+export const UpdateInvoiceParams = zod.object({
+  invoiceId: zod.coerce.string(),
+});
+
+export const updateInvoiceBodyTaxMin = 0;
+
+export const updateInvoiceBodyDiscountMin = 0;
+
+export const UpdateInvoiceBody = zod.object({
+  status: zod
+    .enum(["draft", "open", "partially_paid", "paid", "void"])
+    .nullish(),
+  tax: zod.number().min(updateInvoiceBodyTaxMin).nullish(),
+  discount: zod.number().min(updateInvoiceBodyDiscountMin).nullish(),
+  dueAt: zod.coerce.date().nullish(),
+  issuedAt: zod.coerce.date().nullish(),
+  invoiceNumber: zod.string().nullish(),
+  notes: zod.string().nullish(),
+  providerOrganizationId: zod.string().nullish(),
+  items: zod
+    .array(
+      zod.object({
+        id: zod.string().optional(),
+        toothNumber: zod.number().nullish(),
+        toothLabel: zod.string().nullish(),
+        description: zod.string(),
+        quantity: zod.number(),
+        unitPrice: zod.number(),
+        sortOrder: zod.number().optional(),
+      }),
+    )
+    .nullish(),
+  layoutPresetId: zod.string().nullish(),
+});
+
+export const UpdateInvoiceResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .record(zod.string(), zod.unknown())
+    .optional()
+    .describe("Invoice row with line items and totals"),
+});
+
+/**
+ * Creates a draft invoice for the specified case, pre-filling line items
+from the case's restorations and display metadata from the case fields.
+Idempotent — returns the existing invoice when one with the derived
+invoice number already exists. Requires a billing role on the case's lab.
+
+ * @summary Generate an invoice for a canonical case
+ */
+export const GenerateInvoiceForCaseParams = zod.object({
+  caseId: zod.coerce.string(),
+});
+
+export const GenerateInvoiceForCaseBody = zod.object({
+  layoutPresetId: zod
+    .string()
+    .nullish()
+    .describe("Optional layout preset to apply to the generated invoice."),
 });
 
 /**

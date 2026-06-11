@@ -6,6 +6,103 @@
  * OpenAPI spec version: 0.1.0
  */
 /**
+ * Case row (canonical or projected legacy)
+ */
+export type CaseListResultDataItem = { [key: string]: unknown };
+
+export interface CaseListResult {
+  ok?: boolean;
+  data?: CaseListResultDataItem[];
+}
+
+export interface CreateCaseInput {
+  /** Client-supplied case number (ignored for remakes). */
+  caseNumber: string;
+  labOrganizationId: string;
+  providerOrganizationId?: string | null;
+  patientFirstName?: string | null;
+  patientLastName?: string | null;
+  doctorName?: string | null;
+  status?: string | null;
+  /** ID of the case being remade. */
+  remakeOfCaseId?: string | null;
+  notes?: string | null;
+  shade?: string | null;
+  dueDate?: string | null;
+  rushOrder?: boolean | null;
+  needsAiReview?: boolean | null;
+}
+
+/**
+ * Full case detail with nested relations
+ */
+export type CaseDetailResultData = { [key: string]: unknown };
+
+export interface CaseDetailResult {
+  ok?: boolean;
+  /** Full case detail with nested relations */
+  data?: CaseDetailResultData;
+}
+
+/**
+ * Invoice row with line items
+ */
+export type InvoiceListResultDataItem = { [key: string]: unknown };
+
+export interface InvoiceListResult {
+  ok?: boolean;
+  data?: InvoiceListResultDataItem[];
+}
+
+/**
+ * Invoice row with line items and totals
+ */
+export type InvoiceDetailResultData = { [key: string]: unknown };
+
+export interface InvoiceDetailResult {
+  ok?: boolean;
+  /** Invoice row with line items and totals */
+  data?: InvoiceDetailResultData;
+}
+
+export type UpdateInvoiceInputStatus =
+  | (typeof UpdateInvoiceInputStatus)[keyof typeof UpdateInvoiceInputStatus]
+  | null;
+
+export const UpdateInvoiceInputStatus = {
+  draft: "draft",
+  open: "open",
+  partially_paid: "partially_paid",
+  paid: "paid",
+  void: "void",
+} as const;
+
+export type UpdateInvoiceInputItemsItem = {
+  id?: string;
+  toothNumber?: number | null;
+  toothLabel?: string | null;
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  sortOrder?: number;
+};
+
+export interface UpdateInvoiceInput {
+  status?: UpdateInvoiceInputStatus;
+  /** @minimum 0 */
+  tax?: number | null;
+  /** @minimum 0 */
+  discount?: number | null;
+  dueAt?: string | null;
+  issuedAt?: string | null;
+  invoiceNumber?: string | null;
+  notes?: string | null;
+  providerOrganizationId?: string | null;
+  items?: UpdateInvoiceInputItemsItem[] | null;
+  layoutPresetId?: string | null;
+}
+
+/**
  * Map of priceKey → display label (all known keys always included)
  */
 export type ItemLabelsResultDataLabels = { [key: string]: string };
@@ -1123,6 +1220,17 @@ export type MarkAllNotificationsRead200 = {
   data?: MarkAllNotificationsRead200Data;
 };
 
+export type ListCasesParams = {
+  /**
+   * Filter to a single lab/provider org (optional).
+   */
+  organizationId?: string;
+  /**
+   * Comma-separated extras to include (e.g. "restorations").
+   */
+  include?: string;
+};
+
 export type ImportCaseFromIteroRxBody = {
   /** Rx PDF or image (binary upload) */
   file: string;
@@ -1256,6 +1364,42 @@ export type GetItemLabelsParams = {
    * Lab org to fetch labels for. Defaults to the caller's first active lab.
    */
   labOrganizationId?: string;
+};
+
+export type ListInvoicesParams = {
+  /**
+   * Filter to invoices for a specific case.
+   */
+  caseId?: string;
+  /**
+   * Filter to invoices for a specific provider org.
+   */
+  practiceId?: string;
+  /**
+   * Comma-separated list of provider org IDs.
+   */
+  practiceIds?: string;
+  /**
+   * Filter to a specific lab org.
+   */
+  labOrganizationId?: string;
+  /**
+   * Filter by status: 'open', 'all', or comma-separated statuses.
+   */
+  status?: string;
+  /**
+   * Return invoices issued at or after this date.
+   */
+  dateFrom?: string;
+  /**
+   * Return invoices issued at or before this date.
+   */
+  dateTo?: string;
+};
+
+export type GenerateInvoiceForCaseBody = {
+  /** Optional layout preset to apply to the generated invoice. */
+  layoutPresetId?: string | null;
 };
 
 export type ListOpenInvoicesParams = {

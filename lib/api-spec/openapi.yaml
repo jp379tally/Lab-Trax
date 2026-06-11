@@ -485,6 +485,61 @@ paths:
                     type: object
                     properties:
                       ok: { type: boolean }
+  /cases:
+    get:
+      operationId: listCases
+      tags: [cases]
+      summary: List cases visible to the authenticated user
+      description: |
+        Returns up to 500 most-recent canonical cases (plus projected legacy
+        mobile cases) for all organizations the caller is a member of, or a
+        single org when `organizationId` is provided. Provider users
+        automatically include cross-lab linked-doctor cases.
+      parameters:
+        - name: organizationId
+          in: query
+          schema: { type: string }
+          description: Filter to a single lab/provider org (optional).
+        - name: include
+          in: query
+          schema: { type: string }
+          description: Comma-separated extras to include (e.g. "restorations").
+      responses:
+        "200":
+          description: Case list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CaseListResult"
+        "401":
+          description: Not authenticated
+    post:
+      operationId: createCase
+      tags: [cases]
+      summary: Create a canonical case
+      description: |
+        Creates a new case row in the canonical `cases` table. The caller must
+        be an active member of `labOrganizationId`. Auto-generates an invoice
+        when the case has a `providerOrganizationId`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCaseInput"
+      responses:
+        "201":
+          description: Created case
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CaseDetailResult"
+        "400":
+          description: Validation error
+        "403":
+          description: Caller is not a member of the lab
+        "503":
+          description: Server busy — retry
   /cases/bulk-status:
     post:
       operationId: bulkChangeCaseStatus
@@ -944,6 +999,32 @@ paths:
         "403":
           description: Caller is not a lab member
   /cases/{caseId}:
+    get:
+      operationId: getCase
+      tags: [cases]
+      summary: Get full case detail
+      description: |
+        Returns the full case detail including restorations, notes, attachments,
+        events, and location history. Falls back to projecting a legacy mobile
+        case when the ID is not found in the canonical `cases` table.
+      parameters:
+        - in: path
+          name: caseId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Case detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CaseDetailResult"
+        "401":
+          description: Not authenticated
+        "403":
+          description: Caller is not a member of the case's lab
+        "404":
+          description: Case not found
     patch:
       operationId: updateCase
       tags: [cases]
@@ -1094,6 +1175,123 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/StatementScheduleResult"
+  /invoices:
+    get:
+      operationId: listInvoices
+      tags: [invoices]
+      summary: List invoices visible to the authenticated user
+      description: |
+        Returns invoices for all organizations the caller is an active member
+        of. Supports filtering by `caseId`, `practiceId`, `practiceIds`,
+        `labOrganizationId`, `status`, `dateFrom`, and `dateTo`.
+      parameters:
+        - name: caseId
+          in: query
+          schema: { type: string }
+          description: Filter to invoices for a specific case.
+        - name: practiceId
+          in: query
+          schema: { type: string }
+          description: Filter to invoices for a specific provider org.
+        - name: practiceIds
+          in: query
+          schema: { type: string }
+          description: Comma-separated list of provider org IDs.
+        - name: labOrganizationId
+          in: query
+          schema: { type: string }
+          description: Filter to a specific lab org.
+        - name: status
+          in: query
+          schema: { type: string }
+          description: "Filter by status: 'open', 'all', or comma-separated statuses."
+        - name: dateFrom
+          in: query
+          schema: { type: string, format: date-time }
+          description: Return invoices issued at or after this date.
+        - name: dateTo
+          in: query
+          schema: { type: string, format: date-time }
+          description: Return invoices issued at or before this date.
+      responses:
+        "200":
+          description: Invoice list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvoiceListResult"
+        "401":
+          description: Not authenticated
+  /invoices/{invoiceId}:
+    patch:
+      operationId: updateInvoice
+      tags: [invoices]
+      summary: Update an invoice (status, line items, metadata)
+      description: |
+        Partially updates an invoice. Requires a billing role (owner, admin,
+        or billing) on the invoice's lab. Replaces the entire `items` array
+        when supplied. Returns the updated invoice with totals.
+      parameters:
+        - in: path
+          name: invoiceId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateInvoiceInput"
+      responses:
+        "200":
+          description: Updated invoice
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvoiceDetailResult"
+        "400":
+          description: Validation error
+        "403":
+          description: Caller lacks a billing role
+        "404":
+          description: Invoice not found
+  /invoices/cases/{caseId}/generate-invoice:
+    post:
+      operationId: generateInvoiceForCase
+      tags: [invoices]
+      summary: Generate an invoice for a canonical case
+      description: |
+        Creates a draft invoice for the specified case, pre-filling line items
+        from the case's restorations and display metadata from the case fields.
+        Idempotent — returns the existing invoice when one with the derived
+        invoice number already exists. Requires a billing role on the case's lab.
+      parameters:
+        - in: path
+          name: caseId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                layoutPresetId:
+                  type: string
+                  nullable: true
+                  description: Optional layout preset to apply to the generated invoice.
+      responses:
+        "201":
+          description: Generated (or existing) invoice
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvoiceDetailResult"
+        "403":
+          description: Caller lacks a billing role on the case's lab
+        "404":
+          description: Case not found
   /invoices/open:
     get:
       operationId: listOpenInvoices
@@ -1642,6 +1840,135 @@ paths:
           description: Marked as read
 components:
   schemas:
+    CaseListResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: array
+          items:
+            type: object
+            description: Case row (canonical or projected legacy)
+            additionalProperties: true
+    CreateCaseInput:
+      type: object
+      required: [caseNumber, labOrganizationId]
+      properties:
+        caseNumber:
+          type: string
+          description: Client-supplied case number (ignored for remakes).
+        labOrganizationId:
+          type: string
+        providerOrganizationId:
+          type: string
+          nullable: true
+        patientFirstName:
+          type: string
+          nullable: true
+        patientLastName:
+          type: string
+          nullable: true
+        doctorName:
+          type: string
+          nullable: true
+        status:
+          type: string
+          nullable: true
+        remakeOfCaseId:
+          type: string
+          nullable: true
+          description: ID of the case being remade.
+        notes:
+          type: string
+          nullable: true
+        shade:
+          type: string
+          nullable: true
+        dueDate:
+          type: string
+          format: date-time
+          nullable: true
+        rushOrder:
+          type: boolean
+          nullable: true
+        needsAiReview:
+          type: boolean
+          nullable: true
+    CaseDetailResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          description: Full case detail with nested relations
+          additionalProperties: true
+    InvoiceListResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: array
+          items:
+            type: object
+            description: Invoice row with line items
+            additionalProperties: true
+    InvoiceDetailResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          description: Invoice row with line items and totals
+          additionalProperties: true
+    UpdateInvoiceInput:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [draft, open, partially_paid, paid, void]
+          nullable: true
+        tax:
+          type: number
+          minimum: 0
+          nullable: true
+        discount:
+          type: number
+          minimum: 0
+          nullable: true
+        dueAt:
+          type: string
+          format: date-time
+          nullable: true
+        issuedAt:
+          type: string
+          format: date-time
+          nullable: true
+        invoiceNumber:
+          type: string
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+        providerOrganizationId:
+          type: string
+          nullable: true
+        items:
+          type: array
+          nullable: true
+          items:
+            type: object
+            required: [description, quantity, unitPrice]
+            properties:
+              id: { type: string }
+              toothNumber: { type: integer, nullable: true }
+              toothLabel: { type: string, nullable: true }
+              description: { type: string }
+              quantity: { type: number }
+              unitPrice: { type: number }
+              sortOrder: { type: integer }
+        layoutPresetId:
+          type: string
+          nullable: true
     ItemLabelsResult:
       type: object
       properties:

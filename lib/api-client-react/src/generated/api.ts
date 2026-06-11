@@ -29,8 +29,11 @@ import type {
   BulkReassignCasesResult,
   BulkStatusCasesInput,
   BulkStatusCasesResult,
+  CaseDetailResult,
+  CaseListResult,
   ChatMessageResult,
   ConversationListResult,
+  CreateCaseInput,
   CreateCategoryInput,
   CreateConversationInput,
   CreateConversationResult,
@@ -46,6 +49,7 @@ import type {
   EmailInvoiceBody,
   EmailPreferencesInput,
   EmailPreferencesResult,
+  GenerateInvoiceForCaseBody,
   GetCaseByBarcode200,
   GetCaseByBarcodeParams,
   GetConversationMessagesParams,
@@ -56,13 +60,17 @@ import type {
   ImportCaseFromIteroRxBody,
   ImportCaseFromIteroZipBody,
   ImportCasesFromIteroZipBatchBody,
+  InvoiceDetailResult,
+  InvoiceListResult,
   ItemLabelsInput,
   ItemLabelsResult,
   IteroImportHistoryResult,
   IteroImportResult,
   IteroZipBatchImportResult,
   IteroZipImportResult,
+  ListCasesParams,
   ListCategoriesParams,
+  ListInvoicesParams,
   ListOpenInvoicesParams,
   ListVendorsParams,
   MarkAllNotificationsRead200,
@@ -104,6 +112,7 @@ import type {
   UpdateCase200,
   UpdateCaseInput,
   UpdateCategoryInput,
+  UpdateInvoiceInput,
   UpdateOrganizationLogoPlacements200,
   UpdateOrganizationLogoPlacementsBody,
   UpdateVendorInput,
@@ -2310,6 +2319,195 @@ export const useMarkAllNotificationsRead = <
 };
 
 /**
+ * Returns up to 500 most-recent canonical cases (plus projected legacy
+mobile cases) for all organizations the caller is a member of, or a
+single org when `organizationId` is provided. Provider users
+automatically include cross-lab linked-doctor cases.
+
+ * @summary List cases visible to the authenticated user
+ */
+export const getListCasesUrl = (params?: ListCasesParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/cases?${stringifiedParams}`
+    : `/api/cases`;
+};
+
+export const listCases = async (
+  params?: ListCasesParams,
+  options?: RequestInit,
+): Promise<CaseListResult> => {
+  return customFetch<CaseListResult>(getListCasesUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getListCasesQueryKey = (params?: ListCasesParams) => {
+  return [`/api/cases`, ...(params ? [params] : [])] as const;
+};
+
+export const getListCasesQueryOptions = <
+  TData = Awaited<ReturnType<typeof listCases>>,
+  TError = ErrorType<void>,
+>(
+  params?: ListCasesParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listCases>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getListCasesQueryKey(params);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof listCases>>> = ({
+    signal,
+  }) => listCases(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof listCases>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ListCasesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listCases>>
+>;
+export type ListCasesQueryError = ErrorType<void>;
+
+/**
+ * @summary List cases visible to the authenticated user
+ */
+
+export function useListCases<
+  TData = Awaited<ReturnType<typeof listCases>>,
+  TError = ErrorType<void>,
+>(
+  params?: ListCasesParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listCases>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getListCasesQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Creates a new case row in the canonical `cases` table. The caller must
+be an active member of `labOrganizationId`. Auto-generates an invoice
+when the case has a `providerOrganizationId`.
+
+ * @summary Create a canonical case
+ */
+export const getCreateCaseUrl = () => {
+  return `/api/cases`;
+};
+
+export const createCase = async (
+  createCaseInput: CreateCaseInput,
+  options?: RequestInit,
+): Promise<CaseDetailResult> => {
+  return customFetch<CaseDetailResult>(getCreateCaseUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(createCaseInput),
+  });
+};
+
+export const getCreateCaseMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createCase>>,
+    TError,
+    { data: BodyType<CreateCaseInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof createCase>>,
+  TError,
+  { data: BodyType<CreateCaseInput> },
+  TContext
+> => {
+  const mutationKey = ["createCase"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof createCase>>,
+    { data: BodyType<CreateCaseInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return createCase(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type CreateCaseMutationResult = NonNullable<
+  Awaited<ReturnType<typeof createCase>>
+>;
+export type CreateCaseMutationBody = BodyType<CreateCaseInput>;
+export type CreateCaseMutationError = ErrorType<void>;
+
+/**
+ * @summary Create a canonical case
+ */
+export const useCreateCase = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createCase>>,
+    TError,
+    { data: BodyType<CreateCaseInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof createCase>>,
+  TError,
+  { data: BodyType<CreateCaseInput> },
+  TContext
+> => {
+  return useMutation(getCreateCaseMutationOptions(options));
+};
+
+/**
  * Updates a list of cases to the same status in one operation. Every
 case ID must belong to a lab the caller is a member of. Returns the
 count of cases actually updated.
@@ -3564,6 +3762,87 @@ export const useNotifyCaseNote = <
 };
 
 /**
+ * Returns the full case detail including restorations, notes, attachments,
+events, and location history. Falls back to projecting a legacy mobile
+case when the ID is not found in the canonical `cases` table.
+
+ * @summary Get full case detail
+ */
+export const getGetCaseUrl = (caseId: string) => {
+  return `/api/cases/${caseId}`;
+};
+
+export const getCase = async (
+  caseId: string,
+  options?: RequestInit,
+): Promise<CaseDetailResult> => {
+  return customFetch<CaseDetailResult>(getGetCaseUrl(caseId), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetCaseQueryKey = (caseId: string) => {
+  return [`/api/cases/${caseId}`] as const;
+};
+
+export const getGetCaseQueryOptions = <
+  TData = Awaited<ReturnType<typeof getCase>>,
+  TError = ErrorType<void>,
+>(
+  caseId: string,
+  options?: {
+    query?: UseQueryOptions<Awaited<ReturnType<typeof getCase>>, TError, TData>;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetCaseQueryKey(caseId);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getCase>>> = ({
+    signal,
+  }) => getCase(caseId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!caseId,
+    ...queryOptions,
+  } as UseQueryOptions<Awaited<ReturnType<typeof getCase>>, TError, TData> & {
+    queryKey: QueryKey;
+  };
+};
+
+export type GetCaseQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getCase>>
+>;
+export type GetCaseQueryError = ErrorType<void>;
+
+/**
+ * @summary Get full case detail
+ */
+
+export function useGetCase<
+  TData = Awaited<ReturnType<typeof getCase>>,
+  TError = ErrorType<void>,
+>(
+  caseId: string,
+  options?: {
+    query?: UseQueryOptions<Awaited<ReturnType<typeof getCase>>, TError, TData>;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetCaseQueryOptions(caseId, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
  * Partially update a case. All fields are optional. The caller must be
 an active member of the case's lab organization.
 `providerOrganizationId` is validated to be an active, non-deleted
@@ -4115,6 +4394,291 @@ export const useUpdateStatementSchedule = <
   TContext
 > => {
   return useMutation(getUpdateStatementScheduleMutationOptions(options));
+};
+
+/**
+ * Returns invoices for all organizations the caller is an active member
+of. Supports filtering by `caseId`, `practiceId`, `practiceIds`,
+`labOrganizationId`, `status`, `dateFrom`, and `dateTo`.
+
+ * @summary List invoices visible to the authenticated user
+ */
+export const getListInvoicesUrl = (params?: ListInvoicesParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/invoices?${stringifiedParams}`
+    : `/api/invoices`;
+};
+
+export const listInvoices = async (
+  params?: ListInvoicesParams,
+  options?: RequestInit,
+): Promise<InvoiceListResult> => {
+  return customFetch<InvoiceListResult>(getListInvoicesUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getListInvoicesQueryKey = (params?: ListInvoicesParams) => {
+  return [`/api/invoices`, ...(params ? [params] : [])] as const;
+};
+
+export const getListInvoicesQueryOptions = <
+  TData = Awaited<ReturnType<typeof listInvoices>>,
+  TError = ErrorType<void>,
+>(
+  params?: ListInvoicesParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listInvoices>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getListInvoicesQueryKey(params);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof listInvoices>>> = ({
+    signal,
+  }) => listInvoices(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof listInvoices>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ListInvoicesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listInvoices>>
+>;
+export type ListInvoicesQueryError = ErrorType<void>;
+
+/**
+ * @summary List invoices visible to the authenticated user
+ */
+
+export function useListInvoices<
+  TData = Awaited<ReturnType<typeof listInvoices>>,
+  TError = ErrorType<void>,
+>(
+  params?: ListInvoicesParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listInvoices>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getListInvoicesQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Partially updates an invoice. Requires a billing role (owner, admin,
+or billing) on the invoice's lab. Replaces the entire `items` array
+when supplied. Returns the updated invoice with totals.
+
+ * @summary Update an invoice (status, line items, metadata)
+ */
+export const getUpdateInvoiceUrl = (invoiceId: string) => {
+  return `/api/invoices/${invoiceId}`;
+};
+
+export const updateInvoice = async (
+  invoiceId: string,
+  updateInvoiceInput: UpdateInvoiceInput,
+  options?: RequestInit,
+): Promise<InvoiceDetailResult> => {
+  return customFetch<InvoiceDetailResult>(getUpdateInvoiceUrl(invoiceId), {
+    ...options,
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(updateInvoiceInput),
+  });
+};
+
+export const getUpdateInvoiceMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateInvoice>>,
+    TError,
+    { invoiceId: string; data: BodyType<UpdateInvoiceInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof updateInvoice>>,
+  TError,
+  { invoiceId: string; data: BodyType<UpdateInvoiceInput> },
+  TContext
+> => {
+  const mutationKey = ["updateInvoice"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof updateInvoice>>,
+    { invoiceId: string; data: BodyType<UpdateInvoiceInput> }
+  > = (props) => {
+    const { invoiceId, data } = props ?? {};
+
+    return updateInvoice(invoiceId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UpdateInvoiceMutationResult = NonNullable<
+  Awaited<ReturnType<typeof updateInvoice>>
+>;
+export type UpdateInvoiceMutationBody = BodyType<UpdateInvoiceInput>;
+export type UpdateInvoiceMutationError = ErrorType<void>;
+
+/**
+ * @summary Update an invoice (status, line items, metadata)
+ */
+export const useUpdateInvoice = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateInvoice>>,
+    TError,
+    { invoiceId: string; data: BodyType<UpdateInvoiceInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof updateInvoice>>,
+  TError,
+  { invoiceId: string; data: BodyType<UpdateInvoiceInput> },
+  TContext
+> => {
+  return useMutation(getUpdateInvoiceMutationOptions(options));
+};
+
+/**
+ * Creates a draft invoice for the specified case, pre-filling line items
+from the case's restorations and display metadata from the case fields.
+Idempotent — returns the existing invoice when one with the derived
+invoice number already exists. Requires a billing role on the case's lab.
+
+ * @summary Generate an invoice for a canonical case
+ */
+export const getGenerateInvoiceForCaseUrl = (caseId: string) => {
+  return `/api/invoices/cases/${caseId}/generate-invoice`;
+};
+
+export const generateInvoiceForCase = async (
+  caseId: string,
+  generateInvoiceForCaseBody?: GenerateInvoiceForCaseBody,
+  options?: RequestInit,
+): Promise<InvoiceDetailResult> => {
+  return customFetch<InvoiceDetailResult>(
+    getGenerateInvoiceForCaseUrl(caseId),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(generateInvoiceForCaseBody),
+    },
+  );
+};
+
+export const getGenerateInvoiceForCaseMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof generateInvoiceForCase>>,
+    TError,
+    { caseId: string; data: BodyType<GenerateInvoiceForCaseBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof generateInvoiceForCase>>,
+  TError,
+  { caseId: string; data: BodyType<GenerateInvoiceForCaseBody> },
+  TContext
+> => {
+  const mutationKey = ["generateInvoiceForCase"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof generateInvoiceForCase>>,
+    { caseId: string; data: BodyType<GenerateInvoiceForCaseBody> }
+  > = (props) => {
+    const { caseId, data } = props ?? {};
+
+    return generateInvoiceForCase(caseId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type GenerateInvoiceForCaseMutationResult = NonNullable<
+  Awaited<ReturnType<typeof generateInvoiceForCase>>
+>;
+export type GenerateInvoiceForCaseMutationBody =
+  BodyType<GenerateInvoiceForCaseBody>;
+export type GenerateInvoiceForCaseMutationError = ErrorType<void>;
+
+/**
+ * @summary Generate an invoice for a canonical case
+ */
+export const useGenerateInvoiceForCase = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof generateInvoiceForCase>>,
+    TError,
+    { caseId: string; data: BodyType<GenerateInvoiceForCaseBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof generateInvoiceForCase>>,
+  TError,
+  { caseId: string; data: BodyType<GenerateInvoiceForCaseBody> },
+  TContext
+> => {
+  return useMutation(getGenerateInvoiceForCaseMutationOptions(options));
 };
 
 /**
