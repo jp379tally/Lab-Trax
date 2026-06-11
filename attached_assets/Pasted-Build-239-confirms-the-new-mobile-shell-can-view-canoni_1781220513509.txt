@@ -1,0 +1,70 @@
+Build 239 confirms the new mobile shell can view canonical data, but the mobile app must not stay read-only.
+
+The goal is still full desktop/web functionality translated to mobile.
+
+Current Build 239 findings:
+
+* Case history is visible — good.
+* Invoice is visible — good.
+* Cases load — good.
+* But invoice cannot be interacted with or edited.
+* Lab slip cannot be edited or printed.
+* Overview cannot be edited.
+* Tooth chart / files / thumbnails need interaction.
+* The viewer is a good shell, but it is not the final product.
+
+Important clarification:
+Do not treat Phase 1 as the final mobile app. It is only the foundation.
+
+All desktop/web case functionality must eventually exist in mobile, adapted for mobile UI:
+
+* edit overview
+* edit restorations/tooth chart
+* view/open files and photos
+* edit notes where desktop allows
+* view and interact with invoice
+* edit invoice where desktop allows
+* print lab slip
+* print case label
+* view/print/download documents
+* inspect full case history
+* status/location/station actions
+* provider/practice workflows
+* AI Reader and case intake
+
+Next step:
+Do not jump directly to AI Reader yet.
+
+Create a revised Phase 2 plan called:
+
+“Mobile Case Detail Functionality — Desktop Parity”
+
+Phase 2 should derive from the desktop case drawer/case detail workflow and add interaction to the mobile case detail screen.
+
+Phase 2 scope:
+
+1. Interactive tooth chart/restoration details.
+2. Edit overview fields that desktop allows.
+3. View/open files, photos, PDFs, and documents.
+4. Edit notes if desktop allows.
+5. Invoice interaction/editing if desktop allows.
+6. Lab slip view/edit/print.
+7. Case label print path if available from desktop data.
+8. Preserve canonical database/API only.
+9. No local-only saves.
+10. No AI Reader yet unless needed only as a data source reference.
+11. No mobile-only workflow divergence.
+
+For each feature, show:
+
+* desktop source component/workflow
+* mobile implementation plan
+* canonical API endpoint/hook
+* tests
+* TestFlight acceptance check
+
+Do not start coding Phase 2 until I approve the Phase 2 plan.
+
+Checkpoint for plan:
+
+“Mobile Case Detail Desktop Parity Plan”

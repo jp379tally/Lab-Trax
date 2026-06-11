@@ -60,3 +60,9 @@ id = "eYCzMJMCTbjhdTJLalv8b"
 uri = "file://attached_assets/labtrax-logo-transparent.png"
 type = "image"
 title = "LabTrax Logo (transparent background)"
+
+[[outputs]]
+id = "Zk05gUjZ88vj8WWoUo9VK"
+uri = "file://docs/phase2-mobile-case-detail-parity-plan.md"
+type = "text"
+title = "Phase 2 Plan — Mobile Case Detail Desktop Parity"
