@@ -136,12 +136,20 @@ function scanFile(file: string): Violation[] {
 function* walkTs(dir: string): Generator<string> {
   if (!fs.existsSync(dir)) return;
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    // Build-output folders (`build`, `dist`, and the deprecated `server_dist`)
+    // are intentionally excluded: they contain compiled bundles, not source.
+    // The fence guards *source* — if a bundle reintroduces a legacy path, the
+    // fence will catch it at the source that produced the bundle. A committed
+    // bundle, by contrast, can hide stale legacy code from this scan, so such
+    // folders are gitignored (see artifacts/labtrax/.gitignore) and must never
+    // be the canonical build checked into source control.
     if (
       entry.name === "node_modules" ||
       entry.name.startsWith(".") ||
       entry.name === "__tests__" ||
       entry.name === "build" ||
-      entry.name === "dist"
+      entry.name === "dist" ||
+      entry.name === "server_dist"
     ) {
       continue;
     }

@@ -487,6 +487,16 @@ Protected sub-behaviors:
   per-line exemptions in the mobile codebase.
 - **Fence passes clean today** — running `pnpm --filter @workspace/scripts
   run lint-mobile-legacy-paths` exits 0 with no violations.
+- **Build-output folders are excluded by design** — `walkTs` skips `build`,
+  `dist`, and `server_dist`. These hold compiled bundles, not source; the fence
+  guards source so any reintroduced legacy path is caught where the bundle is
+  produced. A *committed* bundle could hide stale legacy code from the scan, so
+  these folders are gitignored (`artifacts/labtrax/.gitignore`) and must never
+  be the canonical build in source control. The previously-committed
+  `artifacts/labtrax/server_dist/index.js` (a stale Express bundle that still
+  referenced `/api/legacy/cases` and `lab_cases`) has been removed — it was not
+  a production artifact (production serving is `build` → `static-build/` +
+  `serve` → `server/serve.js`) and is now gitignored.
 
 | Layer | File | What it guards |
 |-------|------|----------------|
