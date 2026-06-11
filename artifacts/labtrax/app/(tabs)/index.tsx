@@ -42,7 +42,7 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import { getStationInfo, STATIONS, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, formatAcctNum, formatInvNum, formatPhone, cleanDoctorDisplay, LabCase, ProviderContact } from "@/lib/data";
 import { CaseProgressBar } from "@/components/CaseProgressBar";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
-import { apiRequest, getApiUrl, getAccessToken } from "@/lib/query-client";
+import { apiRequest, getApiUrl, getAccessToken, resilientFetch } from "@/lib/query-client";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
 import { useColumnWidths } from "@/hooks/useColumnWidths";
@@ -1749,7 +1749,7 @@ function ColResizeHandle({ colIdx, widthRef, onWidthChange }: {
 }
 
 function AdminDashboard() {
-  const { cases, clients, addClient, updateClient, addCase, users, addUser, updateUser, removeUser, invoices, updateInvoice, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, addNotification, customStationLabels, updateStationLabel, removeCase, removeClient, deactivateClient, reactivateClient, deletedClientInvoices, inactiveClients, sendLabInvite, pendingInvoiceEditId, setPendingInvoiceEditId, allLabOrganizationIds } = useApp();
+  const { cases, clients, updateClient, createCanonicalScanCase, activeLabAffiliationKey, users, addUser, updateUser, removeUser, invoices, updateInvoice, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, addNotification, customStationLabels, updateStationLabel, removeCase, removeClient, deactivateClient, reactivateClient, deletedClientInvoices, inactiveClients, sendLabInvite, pendingInvoiceEditId, setPendingInvoiceEditId, allLabOrganizationIds } = useApp();
   const { currentUser, currentUserId, registeredUsers } = useAuth();
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
@@ -1989,24 +1989,52 @@ function AdminDashboard() {
     return adminUser?.email || "";
   }
 
-  function handleAddClient() {
+  async function handleAddClient() {
     if (!newClientName.trim() || !newClientDoctor.trim()) {
       Alert.alert("Required", "Practice name and main provider are required.");
       return;
     }
-    const filteredProviders = newClientAdditionalProviders.map(p => p.trim()).filter(p => p.length > 0);
-    addClient({
-      practiceName: newClientName.trim(),
-      leadDoctor: newClientDoctor.trim(),
-      additionalProviders: filteredProviders.length > 0 ? filteredProviders : undefined,
-      phone: newClientPhone.trim(),
-      email: newClientEmail.trim(),
-      address: newClientAddress.trim(),
-      tier: newClientTier,
-      discountRate: newClientTier === "Elite" ? 15 : newClientTier === "Premium" ? 10 : 0,
-    });
+    const labOrgId = allLabOrganizationIds[0] ?? null;
+    if (!labOrgId) {
+      Alert.alert("Lab Required", "You must be affiliated with a lab to add a provider.");
+      return;
+    }
+    try {
+      const orgRes = await resilientFetch("/api/organizations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "provider",
+          name: newClientName.trim(),
+          parentLabOrganizationId: labOrgId,
+          ...(newClientDoctor.trim() ? { doctorName: newClientDoctor.trim() } : {}),
+          ...(newClientPhone.trim() ? { phone: newClientPhone.trim() } : {}),
+          ...(newClientAddress.trim() ? { address: newClientAddress.trim() } : {}),
+        }),
+      });
+      if (!orgRes?.ok) {
+        Alert.alert("Error", "Could not create provider. Please try again.");
+        return;
+      }
+      const orgBody = await orgRes.json().catch(() => null);
+      const newOrgId: string | undefined = orgBody?.id ?? orgBody?.data?.id;
+      if (newOrgId && newClientDoctor.trim()) {
+        void resilientFetch("/api/rx-practice-aliases", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            labOrganizationId: labOrgId,
+            rxName: newClientDoctor.trim(),
+            providerOrganizationId: newOrgId,
+          }),
+        }).catch(() => null);
+      }
+    } catch {
+      Alert.alert("Error", "Could not create provider. Please try again.");
+      return;
+    }
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    Alert.alert("Client Added", `${newClientName.trim()} has been onboarded.`);
+    Alert.alert("Provider Added", `${newClientName.trim()} has been onboarded.`);
     resetClientForm();
     setAdminView("hub");
   }
@@ -3574,16 +3602,35 @@ function AdminDashboard() {
                     ))}
                     {editInvBillToSearch.trim().length > 0 && providerSearchResults.length === 0 && (
                       <Pressable
-                        onPress={() => {
+                        onPress={async () => {
                           const name = editInvBillToSearch.trim();
-                          const newClient = addClient({ practiceName: name, leadDoctor: name, phone: "", email: "", address: "" } as any);
-                          if (newClient) {
-                            setEditInvBillTo(name);
-                            setEditInvBillToSearch(name);
-                            setEditInvClientId(newClient.id);
-                            setEditInvClientName(name);
-                            setEditInvSubProvider(name);
+                          const labOrgId = allLabOrganizationIds[0] ?? null;
+                          let newOrgId: string | undefined;
+                          if (labOrgId) {
+                            try {
+                              const orgRes = await resilientFetch("/api/organizations", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ type: "provider", name, parentLabOrganizationId: labOrgId }),
+                              });
+                              if (orgRes?.ok) {
+                                const orgBody = await orgRes.json().catch(() => null);
+                                newOrgId = orgBody?.id ?? orgBody?.data?.id;
+                                if (newOrgId) {
+                                  void resilientFetch("/api/rx-practice-aliases", {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ labOrganizationId: labOrgId, rxName: name, providerOrganizationId: newOrgId }),
+                                  }).catch(() => null);
+                                }
+                              }
+                            } catch {}
                           }
+                          setEditInvBillTo(name);
+                          setEditInvBillToSearch(name);
+                          setEditInvClientId(newOrgId ?? name);
+                          setEditInvClientName(name);
+                          setEditInvSubProvider(name);
                           setEditInvShowProviderDrop(false);
                         }}
                         style={({ pressed }) => ({ flexDirection: "row" as const, alignItems: "center" as const, padding: 10, backgroundColor: pressed ? colors.warningLight : colors.warningSurface, borderRadius: 8, gap: 8 })}
@@ -6802,7 +6849,7 @@ function AdminDashboard() {
     }
   }
 
-  function handleCreateCaseFromImport(rx: typeof iteroImportResults[0], idx: number) {
+  async function handleCreateCaseFromImport(rx: typeof iteroImportResults[0], idx: number) {
     const currentYear = new Date().getFullYear();
     const yy = String(currentYear).slice(-2);
     const yearCases = cases.filter(c => c.caseNumber.startsWith(`${yy}-`));
@@ -6812,13 +6859,13 @@ function AdminDashboard() {
       return n > max ? n : max;
     }, 0);
     const caseNumber = `${yy}-${maxN + 1}`;
-
     const patientName = "iTero Import";
     const initials = "IT";
+    const doctorName = rx.doctor || "Unknown Provider";
 
-    addCase({
+    const created = await createCanonicalScanCase({
       caseNumber,
-      doctorName: rx.doctor || "Unknown Provider",
+      doctorName,
       patientName,
       patientInitials: initials,
       toothIndices: rx.teeth || "",
@@ -6833,13 +6880,21 @@ function AdminDashboard() {
       activityLog: [],
     });
 
+    if (!created) {
+      Alert.alert(
+        "Cannot Create Case",
+        `The doctor "${doctorName}" is not linked to a provider practice. Ask your lab admin to register this doctor in lab settings before importing.`,
+      );
+      return;
+    }
+
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
     const updated = [...iteroImportResults];
     updated.splice(idx, 1);
     setIteroImportResults(updated);
 
-    Alert.alert("Case Created", `Case ${caseNumber} created for ${rx.doctor || "Unknown Provider"}.`);
+    Alert.alert("Case Created", `Case ${caseNumber} created for ${doctorName}.`);
   }
 
   function renderIntegrations() {

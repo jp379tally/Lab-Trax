@@ -1,11 +1,11 @@
-// This file retains a few grandfathered /api/legacy/cases calls for syncing
-// pre-canonical-API cached cases on live devices. Those individual lines are
-// exempted with `// legacy-fence:allow`; the rest of the file is now covered by
-// the mobile legacy-path fence (the file-level disable marker was removed once
-// PendingSyncBanner stopped reading the deprecated sync fields). Do NOT add new
-// references to /api/legacy/cases, lab_cases, or the legacy sync fields here.
-// New case operations belong in components that use the @workspace/api-client-react
-// hooks (useCases, useCase, useInvoices, …) directly.
+// Phase 0 — Canonical Data Layer: The legacy write paths (addCase,
+// syncCaseToServer non-UUID branch, addClient) have been removed. Case and
+// provider creation now go exclusively through the canonical REST API
+// (POST /api/cases, POST /api/organizations).
+// One grandfathered READ call remains (GET /api/legacy/cases in
+// fetchCasesFromServer) to display legacy cases as read-only display items
+// until Phase 1 replaces that fetch with canonical GET /api/cases.
+// Do NOT add new /api/legacy/cases, lab_cases, or legacy sync field references.
 import React, {
   createContext,
   useContext,
@@ -76,7 +76,6 @@ interface AppContextValue {
   adminUnlocked: boolean;
   setAdminUnlocked: (v: boolean) => void;
   cases: LabCase[];
-  addCase: (c: Omit<LabCase, "id" | "createdAt" | "updatedAt" | "routeHistory">) => LabCase;
   createCanonicalScanCase: (c: Omit<LabCase, "id" | "createdAt" | "updatedAt" | "routeHistory">, resolvedProviderOrganizationId?: string) => Promise<LabCase | null>;
   updateCaseStatus: (caseId: string, newStatus: CaseStatus, user?: string) => void;
   addCasePhoto: (caseId: string, photoUri: string, user?: string) => Promise<void>;
@@ -93,7 +92,6 @@ interface AppContextValue {
   rushCaseCount: number;
   isLoading: boolean;
   clients: Client[];
-  addClient: (c: Omit<Client, "id" | "clientNumber" | "createdAt" | "accountNumber">) => Client;
   updateClient: (id: string, c: Partial<Client>) => void;
   pricingTiers: PricingTier[];
   updateTierPricing: (tierId: string, prices: Record<string, number>) => void;
@@ -492,33 +490,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         void logDebugEvent("SYNC_PATCH_DONE", { caseId: labCase.id, httpStatus: res?.status ?? -1, ok: res?.ok ?? false });
         return res?.ok ?? false;
       } else {
-        // ⚠️  DEPRECATED — Legacy non-UUID case → upsert into lab_cases.
-        //
-        // TODO: Remove this branch once all active devices have migrated to
-        //       the canonical API architecture.  New cases must be created via
-        //       POST /api/cases and receive a canonical UUID; this path exists
-        //       only so existing cached cases (with client-generated IDs) keep
-        //       syncing until devices upgrade.
-        //       See: Rebuild mobile app on canonical API architecture task.
-        if (__DEV__) {
-          console.error(
-            "[app-context] syncCaseToServer: DEPRECATED legacy POST branch executed for case",
-            labCase.id,
-            "— this path is deprecated and will be removed. New cases must go through POST /api/cases.",
-          );
-        }
-        if (!labCase.ownerId) return false;
-        const res = await resilientFetch("/api/legacy/cases", { // legacy-fence:allow
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            id: labCase.id,
-            ownerId: labCase.ownerId,
-            caseData: labCase,
-          }),
-        });
-        void logDebugEvent("SYNC_LEGACY_POST_DONE", { caseId: labCase.id, httpStatus: res?.status ?? -1, ok: res?.ok ?? false });
-        return res?.ok ?? false;
+        // Legacy non-UUID case (pre-canonical-API): read-only display item,
+        // no longer synced to server. Phase 0: all new cases go through
+        // POST /api/cases and receive canonical UUIDs.
+        void logDebugEvent("SYNC_SKIP_LEGACY_ID", { caseId: labCase.id });
+        return false;
       }
     } catch (e) {
       void logDebugEvent("SYNC_CATCH", { caseId: labCase.id, err: String(e) });
@@ -527,13 +503,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  async function deleteCaseFromServer(caseId: string) {
-    try {
-      await resilientFetch(`/api/legacy/cases/${caseId}`, { method: "DELETE" }); // legacy-fence:allow
-    } catch (e) {
-      console.log("Could not delete case from server:", e);
-    }
-  }
 
   // Server decides visibility purely from the authenticated user's lab
   // memberships. The client passes nothing — no scope keys, no viewer id —
@@ -1823,25 +1792,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // failure.
         return;
       }
-      // Server response is authoritative. mergeServerCases reconciles:
-      // adopts server payloads, drops local lab-tagged ghosts the server
-      // no longer authorizes, preserves local-only private cases.
+      // Server response is authoritative (Phase 0: no local-only cases exist).
       mergeServerCases(result.cases);
-      // Push any local-only private cases the server may not have yet
-      // (e.g. scans created offline). We deliberately do NOT re-push
-      // lab-tagged cases that disappeared from the server response —
-      // mergeServerCases just dropped them because the server says we
-      // can't see them, so re-pushing would only cause a 403/strip cycle.
-      const localSnapshot = [...allCases];
-      const serverIds = new Set(result.cases.map((s) => s.id));
-      for (const c of localSnapshot) {
-        if (!c.ownerId) continue;
-        if (serverIds.has(c.id)) continue;
-        const key =
-          typeof c.affiliationKey === "string" ? c.affiliationKey.trim() : "";
-        if (key.startsWith("org:")) continue;
-        pushCaseToServerOnce(c);
-      }
     } catch (e) {
       console.log("Could not full-refresh cases:", e);
     }
@@ -1894,25 +1846,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }
 
   // Replace local cache with the authoritative server response. The server is
-  // the single source of truth for cases; we do not attempt to reconcile local
-  // edits that haven't been synced yet — all writes go through the canonical API.
+  // the single source of truth; no local-only non-UUID cases are preserved
+  // (Phase 0: all new cases go through POST /api/cases and receive canonical
+  // UUIDs — there is no offline-creation path that needs preservation).
   function mergeServerCases(serverCases: LabCase[]) {
     setAllCases((prev) => {
-      // Server cases are authoritative for their own records. Preserve
-      // local-only private cases (non-UUID device IDs) that haven't reached
-      // the server yet — e.g. a case scanned offline or mid-network-blip.
-      // UUID-format IDs were issued by the server; if the server no longer
-      // returns them, they're gone (membership revoked, deleted, etc.).
-      const serverIds = new Set(serverCases.map((c) => c.id));
-      const localOnly = prev.filter(
-        (c) => !serverIds.has(c.id) && !CANONICAL_ID_RE.test(c.id) && !!c.ownerId
-      );
-      const merged =
-        localOnly.length > 0 ? [...serverCases, ...localOnly] : serverCases;
-      if (merged === prev) return prev;
-      AsyncStorage.setItem(CASES_KEY, JSON.stringify(merged));
-      prevCasesRef.current = merged;
-      return merged;
+      if (prev === serverCases) return prev;
+      AsyncStorage.setItem(CASES_KEY, JSON.stringify(serverCases));
+      prevCasesRef.current = serverCases;
+      return serverCases;
     });
   }
 
@@ -2053,9 +1995,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // Only push additions/updates here. Do NOT auto-delete server cases when
     // they go missing from local state — "missing locally" can mean many
     // benign things (refresh returned a partial list, user switched lab/org,
-    // affiliation scope changed, server briefly unavailable). Explicit user
-    // deletes already call deleteCaseFromServer() inline from removeCase(),
-    // so a separate auto-delete pass here would only ever cause data loss.
+    // affiliation scope changed, server briefly unavailable).
     for (const c of allCases) {
       if (!c.ownerId) continue;
       const old = prev.find(p => p.id === c.id);
@@ -2193,37 +2133,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setDeletedClientInvoices(JSON.parse(savedDeletedClientInvoices));
       }
 
-      const pendingClientRaw = await AsyncStorage.getItem("@drivesync_pending_client");
-      if (pendingClientRaw) {
-        try {
-          const pc = JSON.parse(pendingClientRaw);
-          const freshClients = await AsyncStorage.getItem(CLIENTS_KEY);
-          const loadedClients: Client[] = freshClients ? JSON.parse(freshClients) : [];
-          const alreadyExists = loadedClients.some(
-            (c) => c.leadDoctor?.toLowerCase() === pc.leadDoctor?.toLowerCase() && c.practiceName?.toLowerCase() === pc.practiceName?.toLowerCase()
-          );
-          if (!alreadyExists) {
-            const maxClientNum = loadedClients.reduce((max, c) => Math.max(max, c.clientNumber || 0), 0);
-            const newClient: Client = {
-              id: generateId(),
-              clientNumber: maxClientNum + 1,
-              accountNumber: `DS-${(maxClientNum + 1).toString().padStart(6, "0")}`,
-              practiceName: pc.practiceName || "",
-              leadDoctor: pc.leadDoctor || "",
-              phone: pc.phone || "",
-              email: pc.email || "",
-              address: pc.address || "",
-              tier: pc.tier || "Standard",
-              discountRate: pc.discountRate || 0,
-              createdAt: Date.now(),
-            };
-            const updatedClients = [...loadedClients, newClient];
-            setClients(updatedClients);
-            await AsyncStorage.setItem(CLIENTS_KEY, JSON.stringify(updatedClients));
-          }
-        } catch {}
-        AsyncStorage.removeItem("@drivesync_pending_client");
-      }
     } catch (e) {
       // Same rule as above: never wipe state from a load error. The server
       // fetch reconciles authoritatively; clearing here can race-stomp a
@@ -2239,133 +2148,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
     AsyncStorage.setItem(ROLE_KEY, r);
   }
 
-  function addCase(
-    c: Omit<LabCase, "id" | "createdAt" | "updatedAt" | "routeHistory">,
-  ): LabCase {
-    const now = Date.now();
-    const privateAffiliationKey = buildPrivateAffiliationKey(currentUserId);
-    const fallbackLabAffiliationName = hasActiveLabMembership
-      ? activeLabAffiliationName
-      : null;
-    const fallbackLegacyLabAffiliationKey = hasActiveLabMembership
-      ? buildLegacyLabAffiliationKey(fallbackLabAffiliationName)
-      : null;
-    const caseAffiliationKey =
-      activeLabAffiliationKey || fallbackLegacyLabAffiliationKey || privateAffiliationKey;
-    const caseAffiliationName =
-      caseAffiliationKey && caseAffiliationKey !== privateAffiliationKey
-        ? fallbackLabAffiliationName
-        : null;
-    const createdEntry: import("@/lib/data").ActivityEntry = {
-      id: generateId(),
-      type: "created",
-      timestamp: now,
-      description: "Case created and scanned in at Intake",
-      station: c.status,
-    };
-    const caseId = generateId();
-    const newCase: LabCase = {
-      ...c,
-      id: caseId,
-      ownerId: currentUserId || undefined,
-      affiliationKey: caseAffiliationKey,
-      affiliationName: caseAffiliationName,
-      createdAt: now,
-      updatedAt: now,
-      routeHistory: [{ station: c.status, timestamp: now }],
-      photos: c.photos || [],
-      activityLog: [...(c.activityLog || []), createdEntry],
-    };
+  // REMOVED (Phase 0): addCase — local-only case creation is retired.
+  // All new cases go through createCanonicalScanCase → POST /api/cases.
+  // This placeholder keeps the location visible during Phase 0 code review;
+  // it can be removed once all screen phases are complete.
 
-    const clientMatch = clients.find(
-      (cl) => cl.leadDoctor?.toLowerCase() === c.doctorName.toLowerCase() || cl.practiceName?.toLowerCase() === c.doctorName.toLowerCase()
-    );
-
-    const toothStr = c.toothIndices || "";
-    const materialStr = c.material || "";
-    const lineItems: import("@/lib/data").InvoiceLineItem[] = [];
-    if (materialStr) {
-      const toothCount = c.toothMap?.length || toothStr.split(",").filter(Boolean).length || 1;
-      const perUnitPrice = resolvePriceForCase(materialStr, c.caseType, c.doctorName, clients, pricingTiers);
-      const totalPrice = c.price || (toothCount * perUnitPrice);
-      const subtypeMatch = c.notes?.match(/^\[([^\]]+)\]/);
-      const subtypeLabel = subtypeMatch ? ` - ${subtypeMatch[1]}` : "";
-      lineItems.push({
-        qty: toothCount,
-        item: materialStr,
-        description: `${c.caseType || "Restorative"}${subtypeLabel} - ${toothStr || "N/A"}`,
-        rate: perUnitPrice,
-        amount: totalPrice,
-      });
-    }
-
-    const invoiceNum = `INV-${c.caseNumber}`;
-    const dueAt = now + 30 * 24 * 60 * 60 * 1000;
-
-    const newInvoice: Invoice = {
-      id: generateId(),
-      invoiceNumber: invoiceNum,
-      clientId: clientMatch?.id || "",
-      clientName: clientMatch?.practiceName || c.doctorName,
-      caseIds: [caseId],
-      amount: c.isRemake ? 0 : (c.price || lineItems.reduce((sum, li) => sum + li.amount, 0)),
-      credits: 0,
-      status: "open",
-      issuedAt: now,
-      dueAt,
-      billTo: clientMatch?.address || "",
-      patientName: c.patientName,
-      caseType: c.caseType || "",
-      teeth: toothStr,
-      shade: c.shade || "",
-      caseNotes: c.notes || "",
-      lineItems,
-    };
-
-    newCase.invoiceId = newInvoice.id;
-
-    const updatedInvoices = [newInvoice, ...invoices];
-    setInvoices(updatedInvoices);
-    AsyncStorage.setItem(INVOICES_KEY, JSON.stringify(updatedInvoices));
-
-    const updated = [newCase, ...allCases];
-    setAllCases(updated);
-    AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
-    void logDebugEvent("ADD_CASE_QUEUED", { caseId: newCase.id, affiliationKey: caseAffiliationKey ?? null, ownerId: currentUserId ?? null });
-    void (async () => {
-      void logDebugEvent("SYNC_IIFE_ENTERED", { caseId: newCase.id });
-      const ok = await syncCaseToServer(newCase);
-      void logDebugEvent("SYNC_IIFE_DONE", { caseId: newCase.id, ok });
-      if (!ok) {
-        // Case is already saved locally. A blocking alert here fires mid-form
-        // and misleadingly implies data loss when there is none.
-        return;
-      }
-      await generateServerInvoiceForCase(newCase.id, newInvoice.id);
-    })();
-
-    const newNotif: Notification = {
-      id: generateId(),
-      title: "New Case Scanned",
-      message: `Case ${c.caseNumber} (${c.doctorName}) has been added`,
-      type: "update",
-      caseId: newCase.id,
-      read: false,
-      timestamp: now,
-    };
-    const updatedNotifs = [newNotif, ...notifications];
-    setNotifications(updatedNotifs);
-    AsyncStorage.setItem(NOTIFS_KEY, JSON.stringify(updatedNotifs));
-
-    return newCase;
-  }
-
-  // Try to create a new case via the canonical POST /api/cases endpoint.
+  // Create a new case via the canonical POST /api/cases endpoint.
   // Requires the user to have an active lab affiliation and a matching
   // rxPracticeNameAliases entry (doctor-name → providerOrganizationId) so the
-  // server can resolve the provider org.  Returns the new LabCase on success,
-  // or null when the canonical path is unavailable (caller falls back to
-  // addCase → syncCaseToServer → legacy endpoint).
+  // server can resolve the provider org. Returns the new LabCase on success,
+  // or null when the canonical path is unavailable (no lab affiliation or
+  // no matching alias — caller must handle null explicitly; the old addCase
+  // fallback to the legacy endpoint has been removed in Phase 0).
   async function createCanonicalScanCase(
     c: Omit<LabCase, "id" | "createdAt" | "updatedAt" | "routeHistory">,
     resolvedProviderOrganizationId?: string,
@@ -2975,7 +2769,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
       return updated;
     });
-    deleteCaseFromServer(caseId);
   }
 
   function removeInvoice(invoiceId: string) {
@@ -3247,15 +3040,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const updated = notifications.filter((n) => n.id !== id);
     setNotifications(updated);
     AsyncStorage.setItem(NOTIFS_KEY, JSON.stringify(updated));
-  }
-
-  function addClient(c: Omit<Client, "id" | "clientNumber" | "createdAt" | "accountNumber">): Client {
-    const maxNum = clients.reduce((max, cl) => Math.max(max, cl.clientNumber || 0), 0);
-    const newClient: Client = { ...c, id: generateId(), clientNumber: maxNum + 1, accountNumber: "DS-" + Date.now().toString().slice(-6), createdAt: Date.now() };
-    const updated = [newClient, ...clients];
-    setClients(updated);
-    AsyncStorage.setItem(CLIENTS_KEY, JSON.stringify(updated));
-    return newClient;
   }
 
   function updateClient(id: string, c: Partial<Client>) {
@@ -3652,18 +3436,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 requestingUser.practiceName.toLowerCase())
         );
 
-        if (!alreadyClient) {
-          addClient({
-            practiceName:
-              requestingUser.practiceName ||
-              `${requestingUser.doctorName || requestingUser.username}'s Practice`,
-            leadDoctor: doctorLabel,
-            phone: requestingUser.practicePhone || requestingUser.phone || "",
-            email: requestingUser.email || "",
-            address: requestingUser.practiceAddress || "",
-            tier: "Standard",
-            discountRate: 0,
-          });
+        if (!alreadyClient && request.organizationId) {
+          void resilientFetch("/api/organizations", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              type: "provider",
+              name:
+                requestingUser.practiceName ||
+                `${requestingUser.doctorName || requestingUser.username}'s Practice`,
+              parentLabOrganizationId: request.organizationId,
+              ...(doctorLabel ? { doctorName: doctorLabel } : {}),
+              ...(requestingUser.practicePhone || requestingUser.phone
+                ? { phone: requestingUser.practicePhone || requestingUser.phone }
+                : {}),
+            }),
+          }).catch(() => null);
         }
       }
 
@@ -4118,7 +3906,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       adminUnlocked,
       setAdminUnlocked,
       cases,
-      addCase,
       createCanonicalScanCase,
       updateCaseStatus,
       addCasePhoto,
@@ -4135,7 +3922,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       rushCaseCount,
       isLoading,
       clients,
-      addClient,
       updateClient,
       pricingTiers,
       updateTierPricing,

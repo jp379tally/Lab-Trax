@@ -207,13 +207,14 @@ describe("normalized case status reaches useApp().cases", () => {
     const cachedCase = rawCase({ id: "hydrate-1", status: "SHIP" });
     await AsyncStorage.setItem(CASES_KEY, JSON.stringify([cachedCase]));
 
-    // Server returns no cases so the visible status can only come from the
-    // hydration path. mergeServerCases([]) preserves local-only non-UUID
-    // private cases, so the hydrated case survives reconciliation.
+    // mergeServerCases is now server-authoritative: local-only cases are not
+    // preserved. The server must return the case for it to appear. The test
+    // still validates the normalization path (SHIP → shipped) by having the
+    // server echo back the same raw case.
     setMockFetchHandler((url, init) => {
       const method = (init?.method ?? "GET").toUpperCase();
       if (method === "GET" && url.endsWith("/api/legacy/cases")) {
-        return new Response(JSON.stringify({ cases: [] }), { status: 200 });
+        return new Response(JSON.stringify({ cases: [cachedCase] }), { status: 200 });
       }
       return new Response(JSON.stringify({}), { status: 200 });
     });

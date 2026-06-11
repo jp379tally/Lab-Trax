@@ -121,7 +121,7 @@ export default function ScanScreen() {
   const manualModeRequested = params?.mode === "manual";
   const manualModeNonce = typeof params?.n === "string" ? params.n : null;
   const lastAppliedManualNonceRef = useRef<string | null>(null);
-  const { addCase, createCanonicalScanCase, hydrateServerCase, addCasePhoto, cases, clients, addClient, role, adminUnlocked, invoices, updateCase, removeInvoice, attachCaseToInvoice, assignBarcodeToCase, findCaseByBarcode, pricingTiers, activeLabAffiliationKey } = useApp();
+  const { createCanonicalScanCase, hydrateServerCase, addCasePhoto, cases, clients, role, adminUnlocked, invoices, updateCase, removeInvoice, attachCaseToInvoice, assignBarcodeToCase, findCaseByBarcode, pricingTiers, activeLabAffiliationKey } = useApp();
   // Keep a ref so useFocusEffect can read the latest cases without listing
   // cases as a dependency (which would re-fire the effect on every sync).
   const casesRef = useRef(cases);
@@ -1911,17 +1911,6 @@ export default function ScanScreen() {
 
             const addAsNew = async () => {
               const drName = ensureDr(d.doctorName);
-              // Keep the local client record for immediate UI feedback and
-              // non-canonical (non-affiliated) fallback path.
-              addClient({
-                practiceName: d.practiceName || drName,
-                leadDoctor: drName,
-                phone: d.practicePhone || "",
-                email: "",
-                address: d.practiceAddress || "",
-                tier: "Standard",
-                discountRate: 0,
-              });
               setDoctorName(drName);
 
               // Create a canonical server-side provider org so case creation
@@ -2817,19 +2806,20 @@ export default function ScanScreen() {
     // createCanonicalScanCase returns null when the doctor name is not yet
     // registered in the lab's rx-practice-aliases table; surface that as a
     // visible error so the user knows to ask the admin to add the alias.
-    // Non-affiliated users still go through addCase → legacy sync.
     const canonical = await createCanonicalScanCase(
       caseParams,
       resolvedProviderOrgId ?? undefined,
     );
-    if (activeLabAffiliationKey?.startsWith("org:") && !canonical) {
+    if (!canonical) {
       Alert.alert(
         "Cannot Create Case",
-        "This doctor is not linked to a provider practice. Ask your lab admin to register the doctor name in lab settings before scanning.",
+        activeLabAffiliationKey?.startsWith("org:")
+          ? "This doctor is not linked to a provider practice. Ask your lab admin to register the doctor name in lab settings before scanning."
+          : "You must be affiliated with a lab to create cases.",
       );
       return;
     }
-    const newCase = canonical ?? addCase(caseParams);
+    const newCase = canonical;
     void logDebugEvent("CREATE_CASE_ADD_DONE", { caseId: newCase.id });
 
     // Upload the auto-generated prescription PDF (if any) as a case attachment
@@ -3762,20 +3752,43 @@ export default function ScanScreen() {
                         <Text style={styles.addNewPatientCancelText}>Cancel</Text>
                       </Pressable>
                       <Pressable
-                        onPress={() => {
+                        onPress={async () => {
                           if (!newDoctorInput.trim()) return;
                           const drName = newDoctorInput.trim().startsWith("Dr.") ? newDoctorInput.trim() : `Dr. ${newDoctorInput.trim()}`;
                           setDoctorName(drName);
                           setAiFilledFields(prev => { const n = new Set(prev); n.delete("doctorName"); return n; });
-                          addClient({
-                            practiceName: newDoctorPractice.trim() || drName,
-                            leadDoctor: drName,
-                            phone: newDoctorPhone.trim(),
-                            email: newDoctorEmail.trim(),
-                            address: newDoctorAddress.trim(),
-                            tier: "Standard",
-                            discountRate: 0,
-                          });
+                          const labOrgId = activeLabAffiliationKey?.startsWith("org:") ? activeLabAffiliationKey.slice(4) : null;
+                          if (labOrgId) {
+                            try {
+                              const orgRes = await resilientFetch("/api/organizations", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                  type: "provider",
+                                  name: (newDoctorPractice.trim() || drName).trim(),
+                                  parentLabOrganizationId: labOrgId,
+                                  ...(drName.trim() ? { doctorName: drName.trim() } : {}),
+                                  ...(newDoctorPhone.trim() ? { phone: newDoctorPhone.trim() } : {}),
+                                }),
+                              });
+                              if (orgRes?.ok) {
+                                const orgBody = await orgRes.json().catch(() => null);
+                                const newOrgId: string | undefined = orgBody?.id ?? orgBody?.data?.id;
+                                if (newOrgId) {
+                                  setResolvedProviderOrgId(newOrgId);
+                                  void resilientFetch("/api/rx-practice-aliases", {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({
+                                      labOrganizationId: labOrgId,
+                                      rxName: drName.trim(),
+                                      providerOrganizationId: newOrgId,
+                                    }),
+                                  }).catch(() => null);
+                                }
+                              }
+                            } catch {}
+                          }
                           setDoctorDropdownOpen(false);
                           setAddingNewDoctor(false);
                           setNewDoctorInput("");
