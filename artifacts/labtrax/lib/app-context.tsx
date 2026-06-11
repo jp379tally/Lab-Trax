@@ -19,7 +19,7 @@ import React, {
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system";
 import { getApiUrl, resilientFetch, getAccessToken, chunkedUploadCaseMedia, retryAsync, fireWithRetry, logDebugEvent, waitForHydration } from "./query-client";
-import { useGenerateInvoiceForCase, useUpdateInvoice } from "@workspace/api-client-react";
+import { useGenerateInvoiceForCase, useUpdateInvoice, useCreateCase } from "@workspace/api-client-react";
 import { isSyncSuccess } from "./sync-types";
 import {
   type PendingUpload,
@@ -298,6 +298,7 @@ function inferImageMimeType(imageUri: string) {
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const { currentUserId, currentUser, userType, registeredUsers, refreshUsers } = useAuth();
+  const createCaseMutation = useCreateCase();
   const [role, setRoleState] = useState<UserRole>("user");
   const [adminUnlocked, setAdminUnlocked] = useState(false);
   const [allCases, setAllCases] = useState<LabCase[]>([]);
@@ -2409,15 +2410,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
         : {}),
     };
 
-    const createRes = await resilientFetch("/api/cases", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    }).catch(() => null);
+    // Use the generated useCreateCase mutation (POST /api/cases). The server
+    // schema still reads `priority`/`remakeReason`/`remakeCharged`, which are
+    // not part of the generated CreateCaseInput type, so the payload is cast —
+    // customFetch JSON-stringifies it verbatim, preserving those fields.
+    const created = await createCaseMutation
+      .mutateAsync({
+        data: payload as unknown as Parameters<typeof createCaseMutation.mutateAsync>[0]["data"],
+      })
+      .catch(() => null);
 
-    if (!createRes || createRes.status !== 201) return null;
-    const created = await createRes.json().catch(() => null);
-    const serverId: unknown = created?.id ?? created?.data?.id;
+    if (!created) return null;
+    const createdRecord = created as { id?: unknown; data?: { id?: unknown } };
+    const serverId: unknown = createdRecord.id ?? createdRecord.data?.id;
     if (typeof serverId !== "string") return null;
 
     const now = Date.now();

@@ -32,7 +32,7 @@ import * as DocumentPicker from "expo-document-picker";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { useApp } from "@/lib/app-context";
 import { resilientFetch, getAccessToken, getApiUrl, chunkedUploadCaseMedia } from "@/lib/query-client";
-import { useCase, resolveItemPrice, type CanonicalCase as CanonicalCaseType } from "@workspace/api-client-react";
+import { useGetCase, resolveItemPrice, type CanonicalCase as CanonicalCaseType } from "@workspace/api-client-react";
 import { caseMediaSource, isSameApiOrigin } from "@/lib/case-media-source";
 import { AuthedImage } from "@/components/ui/AuthedImage";
 import * as FileSystem from "expo-file-system";
@@ -263,7 +263,8 @@ export default function CaseDetailScreen() {
   const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addCasePhotosWithNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, addInvoice, updateCase, clients, pricingTiers, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate, assignBarcodeToCase, findCaseByBarcode, customStationLabels, addNotification, hardRefresh, hydrateInvoiceFromServer, allLabOrganizationIds, invoiceTemplate, fetchInvoiceTemplate } = useApp();
   // Canonical API hook — drives fullCaseData and provides a fallback for
   // caseItemBase when this case isn't yet in the AppContext cases array.
-  const { data: canonicalCase, refetch: refetchCanonicalCase } = useCase(id);
+  const { data: canonicalCaseResult, refetch: refetchCanonicalCase } = useGetCase(id ?? "");
+  const canonicalCase = (canonicalCaseResult?.data ?? null) as CanonicalCaseType | null;
   const { currentUser, userType, registeredUsers } = useAuth();
   const currentRegisteredUser = registeredUsers.find(
     (user) => user.username?.toLowerCase() === (currentUser || "").toLowerCase()

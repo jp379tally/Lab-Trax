@@ -515,6 +515,34 @@ vi.mock("@workspace/api-client-react", () => ({
     isError: false,
     refetch: vi.fn(async () => undefined),
   }),
+  // Generated OpenAPI hooks return the `{ ok, data }` envelope; screens unwrap
+  // `.data`. These mirror the hand-written useCases/useCase mocks above.
+  useListCases: () => ({
+    data: { ok: true, data: (mockAppOverrides.current.cases as unknown[]) ?? [] },
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(async () => undefined),
+  }),
+  useGetCase: (id?: string) => ({
+    data: id
+      ? {
+          ok: true,
+          data:
+            (mockAppOverrides.current.cases as Array<{ id: string }> | undefined)?.find(
+              (c) => c.id === id,
+            ) ?? null,
+        }
+      : undefined,
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(async () => undefined),
+  }),
+  useCreateCase: () => ({
+    mutateAsync: vi.fn(async () => ({ ok: true, data: { id: "test-mock-case-id" } })),
+    mutate: vi.fn(),
+    isPending: false,
+    isError: false,
+  }),
   useInvoices: () => ({
     data: (mockAppOverrides.current.invoices as unknown[]) ?? [],
     isLoading: false,

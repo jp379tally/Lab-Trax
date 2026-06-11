@@ -23,8 +23,8 @@ import { useAuth } from "@/lib/auth-context";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { getStationInfo, STATIONS, CaseStatus, LabCase, cleanDoctorDisplay, Invoice } from "@/lib/data";
-import { useCases, type CanonicalCase } from "@workspace/api-client-react";
+import { getStationInfo, STATIONS, CaseStatus, LabCase, cleanDoctorDisplay, Invoice, normalizeCaseStatus } from "@/lib/data";
+import { useListCases, type CanonicalCase } from "@workspace/api-client-react";
 import { ChatButton } from "@/components/ChatButton";
 import InvoicePDFViewer from "@/components/InvoicePDFViewer";
 import { CaseProgressBar } from "@/components/CaseProgressBar";
@@ -100,9 +100,10 @@ export default function CasesScreen() {
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const locStyles = useMemo(() => makeLocStyles(colors), [colors]);
 
-  const { data: rawCases = [], isLoading: casesLoading, refetch: refetchCases } = useCases();
+  const { data: caseListResult, isLoading: casesLoading, refetch: refetchCases } = useListCases();
   // Split canonical (server-native) cases from bridged legacy mobile cases (_source === "mobile").
   // Legacy cases are shown in a separate labeled read-only section.
+  const rawCases = useMemo<CanonicalCase[]>(() => (caseListResult?.data ?? []) as CanonicalCase[], [caseListResult]);
   const canonicalRaw = useMemo(() => rawCases.filter(c => c._source !== "mobile"), [rawCases]);
   const legacyRaw = useMemo(() => rawCases.filter(c => c._source === "mobile"), [rawCases]);
   const cases = useMemo<LabCase[]>(() => canonicalRaw.map(canonicalCaseToDisplay), [canonicalRaw]);
