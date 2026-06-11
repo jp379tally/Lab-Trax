@@ -1,0 +1,79 @@
+Based on that audit, I would not choose either extreme right now (neither "keep everything blindly" nor "roll back everything immediately").
+
+The strongest option is:
+
+Create a Review Branch and Freeze
+Preserve the current Phase 1–4 work (0c808720) in a dedicated review branch.
+Reset main to the approved Phase 0 checkpoint (c9dfaae2).
+Stop all remaining mobile-rebuild work.
+Do not submit additional TestFlight builds.
+Do not merge Phase 5.
+
+Why?
+
+What looks reasonably safe
+
+Several of the merged changes appear low-risk and potentially beneficial:
+
+Legacy-path fence
+Auth hydration improvements
+Media 401→refresh→retry logic
+Dead-code cleanup
+Additional test coverage
+What worries me
+
+The highest-risk changes are exactly the ones that touch the workflows you've been fighting all week:
+
+Cases screen rewrite
+Case-detail rewrite
+Invoice rewrite
+Server-side pricing resolution changes
+Generated-hook migration
+PendingSyncBanner/context changes
+
+Those are the areas that can create:
+
+missing case history
+duplicate invoices
+photo visibility issues
+location sync failures
+status synchronization problems
+
+And importantly:
+
+421 tests passing does not prove those workflows work on a real device.
+
+You already have multiple examples where automated tests passed and TestFlight behavior regressed.
+
+Build 236
+
+The audit's most important finding is that Build 236 is the first build that contains the Phase 1–4 rewrite.
+
+I would not promote Build 236 until it passes a complete real-device checklist:
+
+Create case from AI Reader
+Verify same UUID on mobile/web/desktop
+Verify case history
+Verify photo upload
+Verify invoice generation
+Verify pricing
+Verify location update
+Verify status update
+Verify QR lookup
+Verify biometric lock/unlock
+My recommendation
+
+If you want the lowest-risk path:
+
+Freeze all mobile rebuild work.
+Create a review branch from 0c808720.
+Reset main to c9dfaae2.
+Evaluate Build 236 separately against the acceptance checklist.
+Only re-merge individual Phase 1–4 pieces after they prove themselves on a physical device.
+
+That gives you:
+
+a stable production branch,
+a complete copy of the rebuild work,
+no loss of effort,
+and no risk of continuing to stack unverified changes on top of an already large rewrite.
