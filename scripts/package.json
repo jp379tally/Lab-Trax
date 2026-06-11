@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test": "vitest run",
     "hello": "tsx ./src/hello.ts",
     "run-finance-cron": "tsx ./src/run-finance-cron.ts",
     "cleanup-orphaned-case-media": "tsx ./src/cleanup-orphaned-case-media.ts",
@@ -33,6 +34,7 @@
     "@types/node": "catalog:",
     "@types/semver": "^7.7.1",
     "google-auth-library": "^10.6.2",
-    "tsx": "catalog:"
+    "tsx": "catalog:",
+    "vitest": "^4.1.5"
   }
 }

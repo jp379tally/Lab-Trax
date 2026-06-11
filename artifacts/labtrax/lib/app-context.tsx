@@ -178,6 +178,7 @@ interface AppContextValue {
    * now direct (fireWithRetry + chunked uploads), so this always stays at 0.
    * PendingSyncBanner is the only grandfathered consumer; do NOT add new reads.
    * Will be removed once PendingSyncBanner is rewritten.
+   * @see {@link pendingUploads}
    */
   pendingSyncCount: number;
   /**
@@ -185,6 +186,7 @@ interface AppContextValue {
    * that changes sync straight to the server. PendingSyncBanner is the only
    * grandfathered consumer; do NOT add new reads. Will be removed once
    * PendingSyncBanner is rewritten.
+   * @see {@link pendingUploads}
    */
   stuckSyncItems: StuckQueueItem[];
   /**

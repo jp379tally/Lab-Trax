@@ -36,16 +36,16 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "..", "..");
 const MOBILE_APP = path.resolve(REPO_ROOT, "artifacts", "labtrax");
 
-const FILE_DISABLE_MARKER = "legacy-mobile-fence:disable-file";
-const LINE_ALLOW_MARKER = "legacy-fence:allow";
+export const FILE_DISABLE_MARKER = "legacy-mobile-fence:disable-file";
+export const LINE_ALLOW_MARKER = "legacy-fence:allow";
 
-interface ForbiddenPattern {
+export interface ForbiddenPattern {
   id: string;
   regex: RegExp;
   reason: string;
 }
 
-const FORBIDDEN: ForbiddenPattern[] = [
+export const FORBIDDEN: ForbiddenPattern[] = [
   {
     id: "api-legacy-cases",
     regex: /\/api\/legacy\/cases/,
@@ -85,12 +85,52 @@ const FORBIDDEN: ForbiddenPattern[] = [
   },
 ];
 
-interface Violation {
+export interface Violation {
   file: string;
   line: number;
   text: string;
   patternId: string;
   reason: string;
+}
+
+function isCommentLine(raw: string): boolean {
+  const t = raw.trim();
+  return t.startsWith("//") || t.startsWith("*") || t.startsWith("/*");
+}
+
+/**
+ * Scan raw file content for forbidden patterns.
+ * `filePath` is used only for the `file` field of returned violations — no
+ * filesystem reads are performed here. This makes the function easy to unit-test.
+ */
+export function scanContent(content: string, filePath: string): Violation[] {
+  const violations: Violation[] = [];
+
+  if (content.includes(FILE_DISABLE_MARKER)) return violations;
+
+  const lines = content.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (isCommentLine(line)) continue;
+    if (line.includes(LINE_ALLOW_MARKER)) continue;
+
+    for (const p of FORBIDDEN) {
+      if (p.regex.test(line)) {
+        violations.push({
+          file: filePath,
+          line: i + 1,
+          text: line.trim(),
+          patternId: p.id,
+          reason: p.reason,
+        });
+      }
+    }
+  }
+  return violations;
+}
+
+function scanFile(file: string): Violation[] {
+  return scanContent(fs.readFileSync(file, "utf8"), file);
 }
 
 function* walkTs(dir: string): Generator<string> {
@@ -116,38 +156,6 @@ function* walkTs(dir: string): Generator<string> {
       yield full;
     }
   }
-}
-
-function isCommentLine(raw: string): boolean {
-  const t = raw.trim();
-  return t.startsWith("//") || t.startsWith("*") || t.startsWith("/*");
-}
-
-function scanFile(file: string): Violation[] {
-  const violations: Violation[] = [];
-  const raw = fs.readFileSync(file, "utf8");
-
-  if (raw.includes(FILE_DISABLE_MARKER)) return violations;
-
-  const lines = raw.split(/\r?\n/);
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (isCommentLine(line)) continue;
-    if (line.includes(LINE_ALLOW_MARKER)) continue;
-
-    for (const p of FORBIDDEN) {
-      if (p.regex.test(line)) {
-        violations.push({
-          file,
-          line: i + 1,
-          text: line.trim(),
-          patternId: p.id,
-          reason: p.reason,
-        });
-      }
-    }
-  }
-  return violations;
 }
 
 function main() {
@@ -198,4 +206,10 @@ function main() {
   process.exit(1);
 }
 
-main();
+const isDirectRun =
+  process.argv[1] != null &&
+  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+
+if (isDirectRun) {
+  main();
+}

@@ -221,6 +221,7 @@ Before publishing a release, **all four gates** must pass:
 |------|---------|-------|
 | Mobile unit tests | `pnpm --filter @workspace/labtrax run test` | All mobile unit / smoke tests green |
 | API integration tests | `pnpm --filter @workspace/api-server run test` | All server-side integration tests green |
+| Legacy-path fence | `pnpm --filter @workspace/scripts run lint-mobile-legacy-paths && pnpm --filter @workspace/scripts run test` | No new legacy paths; lint unit tests pass |
 | E2E browser tests | `pnpm test:e2e` | All Playwright specs pass against the running stack |
 | Real-device TestFlight | Manual | See below — no automated test replaces this |
 
@@ -434,6 +435,7 @@ pnpm --filter @workspace/labtrax-desktop exec vitest run src/pages/__tests__/pri
 pnpm --filter @workspace/api-server run test -- cases-ai-reader analyze-prescription invoices cases-core cases-invoice-creation mobile-sync-invoice cases-attachments cases-prescription-photo cases-location-sync cases-canonical-mobile
 pnpm --filter @workspace/labtrax run test -- cases.smoke case-detail.smoke scan.smoke normalize-case-status case-status-normalization-boundaries auth-hydration reconnecting-indicator pending-uploads pending-sync-banner
 pnpm --filter @workspace/scripts run lint-mobile-legacy-paths
+pnpm --filter @workspace/scripts run test
 pnpm test:e2e
 ```
 
@@ -489,11 +491,13 @@ Protected sub-behaviors:
 | Layer | File | What it guards |
 |-------|------|----------------|
 | Lint script | `scripts/src/lint-mobile-legacy-paths.ts` | Exits non-zero if any new mobile code references `/api/legacy/cases`, `lab_cases`, `pendingSyncCount`, `stuckSyncItems`, or `unionActivityLog` |
+| Script unit | `scripts/src/__tests__/lint-mobile-legacy-paths.test.ts` | Each forbidden pattern triggers a violation; `// legacy-fence:allow` and `legacy-mobile-fence:disable-file` suppress correctly; clean code passes; line numbers are accurate |
 | API integration | `artifacts/api-server/src/routes/cases-canonical-mobile.test.ts` | Canonical case UUID round-trip, invoice not duplicated, status PATCH visible in GET, event history available, cross-client list/detail identity |
 
 Run command:
 ```bash
 pnpm --filter @workspace/scripts run lint-mobile-legacy-paths
+pnpm --filter @workspace/scripts run test
 pnpm --filter @workspace/api-server run test -- cases-canonical-mobile
 ```
 
