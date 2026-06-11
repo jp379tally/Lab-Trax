@@ -221,6 +221,15 @@ export function getAccessToken() {
   return _accessToken;
 }
 
+// Exported wrapper so the authed-media-cache (and any other non-fetch caller)
+// can refresh the bearer token without depending on resilientFetch internals.
+// The underlying refreshAccessToken() is deduplicated — concurrent callers all
+// await the same in-flight promise, so multiple simultaneous image loads that
+// each get a 401 do not each trigger a separate refresh request.
+export async function refreshAndGetAccessToken(): Promise<string | null> {
+  return refreshAccessToken();
+}
+
 export function logDebugEvent(tag: string, payload: Record<string, unknown>): void {
   void (async () => {
     try {
