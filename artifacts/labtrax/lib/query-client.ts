@@ -262,9 +262,18 @@ async function refreshAccessToken(): Promise<string | null> {
     try {
       const apiUrl = getApiUrl();
       const url = new URL("/api/auth/refresh", apiUrl).toString();
+      const refreshHeaders: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      // Identify the client on the refresh call as well. The server uses this
+      // header to route bearer vs. cookie auth; omitting it on the refresh
+      // request would make it indistinguishable from a web client request.
+      if (Platform.OS !== "web") {
+        refreshHeaders["x-labtrax-client"] = "mobile/2";
+      }
       const res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: refreshHeaders,
         body: JSON.stringify({ refreshToken: _refreshToken }),
       });
       if (!res.ok) {

@@ -382,6 +382,18 @@ Run command:
 pnpm --filter @workspace/labtrax run test -- auth-hydration
 ```
 
+### Mobile Rebuild Phase 1 — Auth Foundation
+
+| Layer | File | What it guards |
+|-------|------|----------------|
+| Mobile smoke | `artifacts/labtrax/app/__tests__/auth-hydration.smoke.ts` | Phase 1 acceptance criteria end-to-end: SecureStore hydration → protected request; `x-labtrax-client: mobile/2` on protected requests, refresh calls, and retried requests; mid-session 401 → transparent refresh + retry; in-memory token updated after refresh; second request uses rotated token |
+| Mobile unit | `artifacts/labtrax/lib/__tests__/auth-hydration.test.ts` | `X-LabTrax-Client: mobile/2` header present on every API request; `Authorization: Bearer <token>` header present when token is available; mid-session 401 triggers transparent refresh + retry using new token; retry also carries `mobile/2` header; no retry when refresh token is absent (401 surface); in-memory token updated to refreshed value after mid-session refresh |
+
+Run command:
+```
+pnpm --filter @workspace/labtrax run test -- auth-hydration
+```
+
 ### Mobile Reconnecting Indicator
 
 | Layer | File | What it guards |
@@ -420,10 +432,26 @@ pnpm --filter @workspace/labtrax-desktop exec vitest run src/pages/__tests__/pri
 
 ```bash
 pnpm --filter @workspace/api-server run test -- cases-ai-reader analyze-prescription invoices cases-core cases-invoice-creation mobile-sync-invoice cases-attachments cases-prescription-photo cases-location-sync cases-canonical-mobile
-pnpm --filter @workspace/labtrax run test -- cases.smoke case-detail.smoke scan.smoke normalize-case-status case-status-normalization-boundaries auth-hydration reconnecting-indicator
+pnpm --filter @workspace/labtrax run test -- cases.smoke case-detail.smoke scan.smoke normalize-case-status case-status-normalization-boundaries auth-hydration reconnecting-indicator pending-uploads pending-sync-banner
 pnpm --filter @workspace/scripts run lint-mobile-legacy-paths
 pnpm test:e2e
 ```
+
+---
+
+## Protected Workflow: Mobile Rebuild Phase 1 — Auth Foundation Stable
+
+The canonical mobile rebuild depends on JWT bearer auth being fully stable before any screen-level rebuilds begin. These behaviors must remain correct end-to-end through any future change to the auth layer, token store, or networking stack.
+
+Protected sub-behaviors:
+
+- **SecureStore hydration on app start** — `loadTokens()` reads `@labtrax_tokens` from `SecureStore` on first call and populates `_accessToken` / `_refreshToken` in memory. `getIsHydrated()` returns `true` only after the read completes. Concurrent callers at startup all await the same singleton promise (one SecureStore read, not N).
+- **`X-LabTrax-Client: mobile/2` on every request** — `injectAuthHeaders` unconditionally adds the `x-labtrax-client: mobile/2` header on the native (non-web) path. No API request may leave the device without this identifier, including retried requests after a 401.
+- **`Authorization: Bearer <token>` when token is available** — `injectAuthHeaders` attaches `Authorization: Bearer <accessToken>` when `_accessToken` is non-null. A request issued after a successful hydration must carry this header.
+- **Mid-session 401 → transparent refresh → retry** — when a protected request returns 401 and `_refreshToken` is available, `resilientFetch` calls `refreshAccessToken()`, updates the in-memory token, and retries the original request with the new token. The caller receives the successful response transparently. The in-memory `_accessToken` is updated to the refreshed value.
+- **Retry carries `mobile/2` header** — the retried request (after a mid-session 401 + refresh) must also carry `x-labtrax-client: mobile/2`.
+- **No retry when refresh token is absent** — if `_refreshToken` is falsy, `resilientFetch` does not attempt a refresh; the 401 response is returned as-is.
+- **Startup refresh when access token is missing** — if `loadTokens()` finds no access token but a refresh token is present, `ensureHydrated()` proactively calls `refreshAccessToken()` so the first protected request goes out with a valid bearer token rather than failing immediately.
 
 ---
 

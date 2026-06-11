@@ -72,6 +72,11 @@ export default defineConfig({
     globals: true,
     environment: "node",
     setupFiles: ["./vitest.setup.ts"],
-    include: ["lib/**/*.test.ts", "lib/**/*.test.tsx"],
+    include: [
+      "lib/**/*.test.ts",
+      "lib/**/*.test.tsx",
+      "app/__tests__/**/*.ts",
+      "app/__tests__/**/*.tsx",
+    ],
   },
 });
