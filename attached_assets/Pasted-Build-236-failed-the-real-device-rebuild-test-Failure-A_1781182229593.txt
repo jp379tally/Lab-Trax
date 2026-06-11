@@ -1,0 +1,47 @@
+Build 236 failed the real-device rebuild test.
+
+Failure:
+AI Reader reads the prescription, but case creation is blocked with:
+
+“This doctor is not linked to a provider practice. Ask your lab admin to register the doctor's name and lab settings before scanning.”
+
+This is not acceptable because the desktop/web version already has the correct workflow:
+
+* If the doctor/provider is not found,
+* the app asks whether to create/link a new provider/practice,
+* asks follow-up questions,
+* then continues case creation.
+
+The rebuilt mobile app must be derived from desktop/web behavior, not just desktop/web endpoints.
+
+This confirms the mobile rebuild is incomplete.
+
+Required decision:
+Scrap the legacy mobile workflow behavior entirely and rebuild the mobile app from desktop/web workflows.
+
+Requirements:
+
+1. Mobile AI Reader must use the same provider/practice matching workflow as desktop/web.
+2. If a doctor/provider is missing, mobile must offer the same path to create/link provider/practice.
+3. Mobile must not dead-end with “ask your lab admin” if desktop/web can resolve it interactively.
+4. Mobile case creation must match desktop/web case creation rules.
+5. Mobile must share the same database, canonical API, provider/practice model, pricing model, invoice model, case history, attachment model, and workflow decisions as desktop/web.
+6. The mobile UI/HUD should be derived from the desktop/web UX, adapted for mobile screen size.
+7. No mobile-only shortcuts that bypass desktop/web logic.
+8. No mobile-only blocking behavior that desktop/web does not have.
+
+Stop treating this as a data-layer-only migration.
+
+The rebuild must include workflow parity.
+
+Add this to the acceptance checklist:
+
+AI Reader scans prescription with an unknown doctor
+→ app prompts to create/link provider/practice
+→ user completes provider/practice setup
+→ canonical case is created
+→ invoice is generated once
+→ case appears on web/desktop
+→ provider/practice is visible on web/desktop
+
+Do not proceed until this workflow is implemented and tested.
