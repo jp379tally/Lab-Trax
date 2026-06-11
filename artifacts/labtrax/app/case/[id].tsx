@@ -39,7 +39,7 @@ import * as FileSystem from "expo-file-system";
 import * as LegacyFileSystem from "expo-file-system/legacy";
 import { useAuth } from "@/lib/auth-context";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
-import { getStationInfo, STATIONS, CaseStatus, ToothType, MATERIAL_PRICES, CaseTypeValue, Invoice, LabCase, SHADE_OPTIONS, cleanDoctorDisplay, formatInvNum, ActivityEntry, normalizeCaseStatus } from "@/lib/data";
+import { getStationInfo, STATIONS, CaseStatus, ToothType, MATERIAL_PRICES, CaseTypeValue, Invoice, LabCase, SHADE_OPTIONS, cleanDoctorDisplay, formatInvNum, ActivityEntry } from "@/lib/data";
 import { resolvePriceForCase } from "@/lib/pricing";
 import { ChatButton } from "@/components/ChatButton";
 import InvoicePDFViewer from "@/components/InvoicePDFViewer";
@@ -108,7 +108,7 @@ function canonicalCaseToDisplayBase(c: CanonicalCaseType): import("@/lib/data").
     patientName,
     patientInitials: initials,
     doctorName: (c.doctorName as string | null | undefined) ?? "",
-    status: normalizeCaseStatus(c.status as string | null | undefined),
+    status: ((c.status as string | null | undefined) ?? "received") as CaseStatus,
     // canonical field names differ from LabCase; explicit mappings take priority
     material: (c.restorationMaterials as string | null | undefined) ?? (raw.material as string | undefined) ?? "",
     shade: (c.shade as string | null | undefined) ?? "",

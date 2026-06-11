@@ -23,7 +23,7 @@ import { useAuth } from "@/lib/auth-context";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { getStationInfo, STATIONS, CaseStatus, LabCase, cleanDoctorDisplay, Invoice, normalizeCaseStatus } from "@/lib/data";
+import { getStationInfo, STATIONS, CaseStatus, LabCase, cleanDoctorDisplay, Invoice } from "@/lib/data";
 import { useCases, type CanonicalCase } from "@workspace/api-client-react";
 import { ChatButton } from "@/components/ChatButton";
 import InvoicePDFViewer from "@/components/InvoicePDFViewer";
@@ -49,7 +49,7 @@ function canonicalCaseToDisplay(c: CanonicalCase): LabCase {
     patientName,
     patientInitials: initials,
     doctorName: (c.doctorName as string | null | undefined) ?? "",
-    status: normalizeCaseStatus(c.status as string | null | undefined),
+    status: ((c.status as string | null | undefined) ?? "received") as CaseStatus,
     material: (c.restorationMaterials as string | null | undefined) ?? "",
     shade: (c.shade as string | null | undefined) ?? "",
     toothIndices: (c.teeth as string | null | undefined) ?? "",
@@ -101,7 +101,12 @@ export default function CasesScreen() {
   const locStyles = useMemo(() => makeLocStyles(colors), [colors]);
 
   const { data: rawCases = [], isLoading: casesLoading, refetch: refetchCases } = useCases();
-  const cases = useMemo<LabCase[]>(() => rawCases.map(canonicalCaseToDisplay), [rawCases]);
+  // Split canonical (server-native) cases from bridged legacy mobile cases (_source === "mobile").
+  // Legacy cases are shown in a separate labeled read-only section.
+  const canonicalRaw = useMemo(() => rawCases.filter(c => c._source !== "mobile"), [rawCases]);
+  const legacyRaw = useMemo(() => rawCases.filter(c => c._source === "mobile"), [rawCases]);
+  const cases = useMemo<LabCase[]>(() => canonicalRaw.map(canonicalCaseToDisplay), [canonicalRaw]);
+  const legacyCases = useMemo<LabCase[]>(() => legacyRaw.map(canonicalCaseToDisplay), [legacyRaw]);
   const [companyLogo, setCompanyLogo] = useState<string | null>(null);
   useEffect(() => {
     AsyncStorage.getItem("@drivesync_company_logo").then((uri) => {
@@ -211,6 +216,19 @@ export default function CasesScreen() {
     }
     return result;
   }, [baseCases, filterStatus, search]);
+
+  // Legacy cases are not subject to status filter — only search applies.
+  const filteredLegacyCases = useMemo(() => {
+    if (!search.trim()) return legacyCases;
+    const q = search.toLowerCase();
+    return legacyCases.filter(c =>
+      (c.caseNumber || "").toLowerCase().includes(q) ||
+      (c.doctorName || "").toLowerCase().includes(q) ||
+      (c.patientName || "").toLowerCase().includes(q) ||
+      (c.material || "").toLowerCase().includes(q) ||
+      (c.shade || "").toLowerCase().includes(q)
+    );
+  }, [legacyCases, search]);
 
   const showPrice = role === "admin" && adminUnlocked;
 
@@ -375,6 +393,54 @@ export default function CasesScreen() {
     );
   }
 
+  function renderLegacyCaseItem(item: LabCase) {
+    const stationInfo = getStationInfo(item.status, customStationLabels);
+    return (
+      <Pressable
+        testID={`case-card-${item.id}`}
+        style={({ pressed }) => [
+          styles.caseCard,
+          styles.legacyCaseCard,
+          pressed && { opacity: 0.6 },
+        ]}
+        onPress={() =>
+          router.push({
+            pathname: "/case/[id]",
+            params: { id: item.id },
+          })
+        }
+      >
+        <View style={styles.caseTop}>
+          <View style={styles.caseLeft}>
+            <View style={styles.caseHeader}>
+              <Text style={styles.casePatient}>{item.patientName}</Text>
+            </View>
+            <Text style={styles.caseDoctor}>{cleanDoctorDisplay(item.doctorName)}</Text>
+            <Text style={styles.caseMeta}>
+              {item.toothIndices} · {item.shade} · {item.material}
+            </Text>
+          </View>
+          <View style={styles.caseRight}>
+            <View
+              style={[
+                styles.statusBadge,
+                { backgroundColor: stationInfo.color + "18" },
+              ]}
+            >
+              <Text style={[styles.statusText, { color: stationInfo.color }]}>
+                {stationInfo.label.toUpperCase()}
+              </Text>
+            </View>
+          </View>
+        </View>
+        <View style={styles.caseBottom}>
+          <Text style={styles.caseDue}>{item.caseNumber} · Due: {formatDueDate(item.dueDate)}</Text>
+          <Feather name="chevron-right" size={16} color={colors.textTertiary} />
+        </View>
+      </Pressable>
+    );
+  }
+
   const filters: { id: CaseStatus | "ALL"; label: string }[] = [
     { id: "ALL", label: "All" },
     ...STATIONS.map((s) => ({
@@ -486,15 +552,32 @@ export default function CasesScreen() {
           setRefreshing(false);
         }}
         ListEmptyComponent={
-          <EmptyState
-            featherIcon="inbox"
-            title="No cases found"
-            description={
-              search.trim() || filterStatus !== "ALL"
-                ? "Try adjusting your search or filter."
-                : "New cases will appear here as they come in."
-            }
-          />
+          filteredLegacyCases.length > 0 ? null : (
+            <EmptyState
+              featherIcon="inbox"
+              title="No cases found"
+              description={
+                search.trim() || filterStatus !== "ALL"
+                  ? "Try adjusting your search or filter."
+                  : "New cases will appear here as they come in."
+              }
+            />
+          )
+        }
+        ListFooterComponent={
+          filteredLegacyCases.length > 0 ? (
+            <View style={styles.legacySection}>
+              <View style={styles.legacySectionHeader}>
+                <Ionicons name="time-outline" size={13} color={colors.textSecondary} />
+                <Text style={styles.legacySectionTitle}>Legacy Cases — read-only</Text>
+              </View>
+              <View style={styles.legacyList}>
+                {filteredLegacyCases.map(item => (
+                  <View key={item.id}>{renderLegacyCaseItem(item)}</View>
+                ))}
+              </View>
+            </View>
+          ) : null
         }
       />
 
@@ -905,5 +988,29 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
     color: colors.violet,
+  },
+  legacySection: {
+    marginTop: Spacing.lg,
+  },
+  legacySectionHeader: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    gap: 6,
+    paddingHorizontal: 2,
+    paddingBottom: Spacing.sm,
+  },
+  legacySectionTitle: {
+    fontSize: 11,
+    fontFamily: "Inter_600SemiBold",
+    color: colors.textSecondary,
+    textTransform: "uppercase" as const,
+    letterSpacing: 0.5,
+  },
+  legacyList: {
+    gap: Spacing.sm,
+  },
+  legacyCaseCard: {
+    opacity: 0.75,
+    borderStyle: "dashed" as const,
   },
 });
