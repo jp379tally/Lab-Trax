@@ -1,0 +1,42 @@
+This screenshot is actually useful because it tells us something very specific:
+
+The new viewer loaded.
+
+* You are logged in.
+* The new Cases screen rendered.
+* The search box rendered.
+* The tab bar rendered.
+* The API request failed.
+
+The important part is that this is not the old mobile-app behavior anymore. The old app would usually show stale local data, cached cases, sync banners, or legacy case lists. This screen is doing exactly what the new Phase 1 viewer was designed to do:
+
+Ask the server for cases → if it can’t get them, show “Couldn’t load cases.”
+
+The fact that it says 0 cases and Couldn’t load cases means one of these is happening:
+
+1. The mobile app is not attaching the auth token correctly to the cases request.
+2. The cases endpoint URL is wrong for the TestFlight environment.
+3. The server is returning 401/403.
+4. The server is returning an unexpected response shape and the hook is treating it as a failure.
+5. The lab organization context isn’t being sent, so the query returns nothing.
+
+What’s notable is that this is not a data-sync problem. It’s a request problem.
+
+If I were directing Replit right now, I would not start Phase 2. I’d open a bug against Phase 1:
+
+Phase 1 Viewer Regression
+
+* Login succeeds.
+* Cases screen renders.
+* Cases query fails.
+* Screen displays “Couldn’t load cases.”
+* No cases visible.
+* Need actual network response from the device logs:
+    * request URL
+    * status code
+    * response body
+    * whether Authorization header is present
+
+Until that is fixed, there’s no point evaluating whether Erik Steffen appears, whether notes match desktop, or whether the viewer is correct, because the viewer isn’t receiving data yet.
+
+From an architecture standpoint, what you’re seeing actually supports the reset strategy you wanted. The app is now behaving like a thin desktop-derived client. The failure is at the API boundary instead of somewhere in the old local-sync machinery. The next step is finding out why the cases API call is failing, not adding more features.

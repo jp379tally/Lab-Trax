@@ -30,7 +30,8 @@ import {
 } from "@/lib/query-client";
 import * as SecureStore from "expo-secure-store";
 
-const TOKEN_KEY = "@labtrax_tokens";
+const TOKEN_KEY = "labtrax_tokens";
+const LEGACY_TOKEN_KEY = "@labtrax_tokens";
 
 function tokenBlob(accessToken: string | null, refreshToken: string): string {
   return JSON.stringify({ accessToken, refreshToken });
@@ -87,6 +88,46 @@ describe("startup with a valid stored token", () => {
       expect.anything(),
     );
     consoleSpy.mockRestore();
+  });
+});
+
+// ── Scenario 1b: migration from the legacy "@labtrax_tokens" key ────────────
+describe("startup migrates tokens from the legacy @-prefixed key", () => {
+  it("reads the legacy key, re-persists under the valid key, and deletes the legacy key", async () => {
+    // New key is empty; the only stored value lives under the legacy key.
+    vi.mocked(SecureStore.getItemAsync).mockImplementation(async (key) =>
+      key === LEGACY_TOKEN_KEY ? tokenBlob("legacy-access", "legacy-refresh") : null,
+    );
+
+    await loadTokens();
+
+    // Token state hydrated from the legacy value.
+    expect(getAccessToken()).toBe("legacy-access");
+    // Re-persisted under the SecureStore-valid key.
+    expect(vi.mocked(SecureStore.setItemAsync).mock.calls.some(
+      ([key]) => key === TOKEN_KEY,
+    )).toBe(true);
+    // Legacy key removed so the migration runs only once.
+    expect(vi.mocked(SecureStore.deleteItemAsync).mock.calls.some(
+      ([key]) => key === LEGACY_TOKEN_KEY,
+    )).toBe(true);
+  });
+
+  it("does not touch the legacy key when the valid key already has tokens", async () => {
+    vi.mocked(SecureStore.getItemAsync).mockImplementation(async (key) =>
+      key === TOKEN_KEY ? tokenBlob("current-access", "current-refresh") : null,
+    );
+
+    await loadTokens();
+
+    expect(getAccessToken()).toBe("current-access");
+    // No migration write/delete when the valid key is already populated.
+    expect(vi.mocked(SecureStore.setItemAsync).mock.calls.some(
+      ([key]) => key === TOKEN_KEY,
+    )).toBe(false);
+    expect(vi.mocked(SecureStore.deleteItemAsync).mock.calls.some(
+      ([key]) => key === LEGACY_TOKEN_KEY,
+    )).toBe(false);
   });
 });
 

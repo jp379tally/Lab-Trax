@@ -13,7 +13,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as LocalAuthentication from "expo-local-authentication";
 import * as SecureStore from "expo-secure-store";
 import { logAudit } from "./audit";
-import { getApiUrl, resilientFetch, saveTokens, clearTokens, loadTokens, uploadCaseMedia, setReconnectingListener, createReconnectingTracker } from "./query-client";
+import { getApiUrl, resilientFetch, saveTokens, clearTokens, loadTokens, getHasUsableToken, uploadCaseMedia, setReconnectingListener, createReconnectingTracker } from "./query-client";
 
 interface StoredUser {
   id?: string;
@@ -283,6 +283,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
 
         if (auth.loggedIn && auth.username) {
+          // No usable token could be loaded (e.g. upgrading from a build where
+          // the bearer token was stored under a key SecureStore now rejects, so
+          // it never persisted). Without a token every authenticated request
+          // 401s — leaving the user "logged in" but unable to load any data,
+          // because resilientFetch (/api/auth/me) throws on a missing token and
+          // is swallowed by the offline-auth fallback below, while the generated
+          // customFetch (/api/cases) sends unauthenticated and gets 401. Route
+          // to a clean login so the next sign-in persists tokens properly. Web
+          // authenticates via session cookie, so its in-memory token may be
+          // empty legitimately — only gate native here.
+          if (Platform.OS !== "web" && !getHasUsableToken()) {
+            await clearTokens();
+            await AsyncStorage.removeItem(AUTH_KEY);
+            setProfilePicUriState(null);
+            return;
+          }
           try {
             const meRes = await resilientFetch("/api/auth/me");
             if (meRes.ok) {

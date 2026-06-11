@@ -9,7 +9,13 @@ let cachedBaseUrl: string | null = null;
 
 const PRODUCTION_URL = "https://lab-trax.replit.app/";
 
-const TOKEN_KEY = "@labtrax_tokens";
+const TOKEN_KEY = "labtrax_tokens";
+// Legacy key used before expo-secure-store enforced its alphanumeric/._- key
+// rule. The "@" prefix is rejected by SecureStore on native (it throws
+// "Invalid key"), so tokens written under this key never persisted there — and
+// on web they lived in AsyncStorage. loadTokens() migrates any value found
+// under this key to the valid TOKEN_KEY above on first launch, then deletes it.
+const LEGACY_TOKEN_KEY = "@labtrax_tokens";
 
 function normalizeBaseUrl(url: string): string {
   return url.endsWith("/") ? url : `${url}/`;
@@ -161,11 +167,18 @@ export function loadTokens(): Promise<void> {
   _hydrationPromise = (async () => {
     try {
       let raw = await secureGetItem(TOKEN_KEY);
-      if (!raw && Platform.OS !== "web") {
-        raw = await AsyncStorage.getItem(TOKEN_KEY);
-        if (raw) {
-          await SecureStore.setItemAsync(TOKEN_KEY, raw);
-          await AsyncStorage.removeItem(TOKEN_KEY);
+      // One-time migration from the legacy "@labtrax_tokens" key (see
+      // LEGACY_TOKEN_KEY). secureGetItem handles both stores: on native the
+      // legacy SecureStore read throws on the invalid "@" key and is swallowed
+      // (nothing persisted there anyway); on web it reads the legacy
+      // AsyncStorage value. Anything found is re-persisted under the valid key
+      // and the legacy key removed.
+      if (!raw) {
+        const legacy = await secureGetItem(LEGACY_TOKEN_KEY);
+        if (legacy) {
+          raw = legacy;
+          await secureSetItem(TOKEN_KEY, legacy);
+          await secureRemoveItem(LEGACY_TOKEN_KEY);
         }
       }
       if (raw) {
@@ -219,6 +232,14 @@ export async function clearTokens() {
 
 export function getAccessToken() {
   return _accessToken;
+}
+
+// True when a bearer or refresh token is present in memory. Callers use this
+// after loadTokens() to decide whether a persisted session can actually be
+// restored: a session with neither token cannot make any authenticated request,
+// so it should route to login rather than a logged-in-but-401 dead end.
+export function getHasUsableToken(): boolean {
+  return Boolean(_accessToken || _refreshToken);
 }
 
 // Exported wrapper so the authed-media-cache (and any other non-fetch caller)
