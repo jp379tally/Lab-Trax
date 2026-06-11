@@ -1,117 +1,83 @@
 import React from "react";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, fireEvent, act } from "@testing-library/react-native";
-import { Alert } from "react-native";
-import {
-  resetMockAppState,
-  setMockAppState,
-} from "../../../vitest.setup";
+import { render, fireEvent } from "@testing-library/react-native";
+import { router } from "expo-router";
+import { resetMockAppState, setMockAppState } from "../../../vitest.setup";
 
-import CasesScreen from "@/app/(tabs)/cases";
-import {
-  completedCaseWithInvoice,
-  inProgressCase,
-  sampleClient,
-  sampleInvoice,
-} from "./__fixtures__/cases";
+import CasesListScreen from "@/app/(tabs)/index";
+import { completedCaseWithInvoice, inProgressCase } from "./__fixtures__/cases";
 
 afterEach(() => {
   resetMockAppState();
   vi.clearAllMocks();
 });
 
-describe("CasesScreen (smoke)", () => {
+describe("CasesListScreen (read-only canonical list)", () => {
   it("renders without throwing when the case list is empty", () => {
-    expect(() => render(<CasesScreen />)).not.toThrow();
+    expect(() => render(<CasesListScreen />)).not.toThrow();
   });
 
-  it("produces a non-empty rendered tree on mount", () => {
-    const { toJSON } = render(<CasesScreen />);
-    expect(toJSON()).not.toBeNull();
-  });
-
-  it('renders the "Cases" header', () => {
-    const { getAllByText } = render(<CasesScreen />);
-    expect(getAllByText("Cases").length).toBeGreaterThan(0);
+  it('renders the "Cases" header and the empty state', () => {
+    const { getByText } = render(<CasesListScreen />);
+    expect(getByText("Cases")).toBeTruthy();
+    expect(getByText("No cases yet")).toBeTruthy();
   });
 
   describe("with a populated case list", () => {
     beforeEach(() => {
-      setMockAppState({
-        cases: [inProgressCase, completedCaseWithInvoice],
-        invoices: [sampleInvoice],
-        clients: [sampleClient],
-      });
+      setMockAppState({ cases: [inProgressCase, completedCaseWithInvoice] });
     });
 
-    it("renders without throwing when real cases are present", () => {
-      expect(() => render(<CasesScreen />)).not.toThrow();
-    });
-
-    it("renders the case numbers from state", () => {
-      const { getAllByText } = render(<CasesScreen />);
+    it("renders patient names and case numbers from canonical data", () => {
+      const { getByText, getAllByText } = render(<CasesListScreen />);
+      expect(getByText("Jane Doe")).toBeTruthy();
+      expect(getByText("John Roe")).toBeTruthy();
       expect(getAllByText(/#5001/).length).toBeGreaterThan(0);
       expect(getAllByText(/#5002/).length).toBeGreaterThan(0);
     });
+
+    it("shows the case count in the header", () => {
+      const { getByText } = render(<CasesListScreen />);
+      expect(getByText("2 cases")).toBeTruthy();
+    });
+
+    it("navigates to the case detail route when a row is pressed", () => {
+      const { getByTestId } = render(<CasesListScreen />);
+      fireEvent.press(getByTestId(`case-row-${inProgressCase.id}`));
+      expect(router.push).toHaveBeenCalledWith(`/case/${inProgressCase.id}`);
+    });
   });
 
-  describe("long-press locate", () => {
+  describe("in-memory search", () => {
     beforeEach(() => {
-      setMockAppState({
-        cases: [inProgressCase],
-        invoices: [],
-        clients: [],
-      });
+      setMockAppState({ cases: [inProgressCase, completedCaseWithInvoice] });
     });
 
-    it("fires Alert with 'Locate Case' title on long-press of a case card", () => {
-      const { getByTestId } = render(<CasesScreen />);
-      const card = getByTestId(`case-card-${inProgressCase.id}`);
-      fireEvent(card, "longPress");
-      expect(Alert.alert).toHaveBeenCalledWith(
-        "Locate Case",
-        expect.any(String),
-        expect.arrayContaining([
-          expect.objectContaining({ text: "No" }),
-          expect.objectContaining({ text: "Yes" }),
-        ]),
-      );
+    it("filters by case number", () => {
+      const { getByTestId, queryAllByText } = render(<CasesListScreen />);
+      fireEvent.changeText(getByTestId("cases-search"), "5002");
+      expect(queryAllByText(/#5001/).length).toBe(0);
+      expect(queryAllByText(/#5002/).length).toBeGreaterThan(0);
     });
 
-    it("pressing Yes on the alert opens the locate modal with patient name and case number", async () => {
-      const { getByTestId, queryAllByText } = render(<CasesScreen />);
-
-      expect(queryAllByText(/Jane Doe \(#5001\)/).length).toBe(0);
-
-      fireEvent(getByTestId(`case-card-${inProgressCase.id}`), "longPress");
-
-      const alertCall = (Alert.alert as ReturnType<typeof vi.fn>).mock.calls[0];
-      const buttons: Array<{ text: string; onPress?: () => void }> = alertCall[2];
-      const yesBtn = buttons.find((b) => b.text === "Yes");
-      expect(yesBtn).toBeDefined();
-
-      await act(async () => {
-        yesBtn!.onPress?.();
-      });
-
-      expect(queryAllByText(/Jane Doe \(#5001\)/).length).toBeGreaterThan(0);
+    it("filters by doctor name", () => {
+      const noMatchDoctor = {
+        ...completedCaseWithInvoice,
+        id: "case-other-doc",
+        caseNumber: "5099",
+        doctorName: "Dr. Nguyen",
+      };
+      setMockAppState({ cases: [inProgressCase, noMatchDoctor] });
+      const { getByTestId, queryAllByText } = render(<CasesListScreen />);
+      fireEvent.changeText(getByTestId("cases-search"), "Nguyen");
+      expect(queryAllByText(/#5001/).length).toBe(0);
+      expect(queryAllByText(/#5099/).length).toBeGreaterThan(0);
     });
 
-    it("pressing No on the alert does not open the locate modal", async () => {
-      const { getByTestId, queryAllByText } = render(<CasesScreen />);
-
-      fireEvent(getByTestId(`case-card-${inProgressCase.id}`), "longPress");
-
-      const alertCall = (Alert.alert as ReturnType<typeof vi.fn>).mock.calls[0];
-      const buttons: Array<{ text: string; onPress?: () => void; style?: string }> = alertCall[2];
-      const noBtn = buttons.find((b) => b.text === "No");
-      expect(noBtn).toBeDefined();
-
-      await act(async () => {
-        noBtn!.onPress?.();
-      });
-
-      expect(queryAllByText(/Jane Doe \(#5001\)/).length).toBe(0);
+    it("shows the no-results empty state when nothing matches", () => {
+      const { getByTestId, getByText } = render(<CasesListScreen />);
+      fireEvent.changeText(getByTestId("cases-search"), "zzz-nothing-matches");
+      expect(getByText("No matching cases")).toBeTruthy();
     });
   });
 });

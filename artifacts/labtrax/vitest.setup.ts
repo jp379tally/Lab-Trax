@@ -76,10 +76,11 @@ export function setMockSearchParams(
   mockSearchParams.current = params;
 }
 
-// Mutable slice of the mocked `useApp()` payload. Tests override only the
-// fields they care about (cases, invoices, clients, …); everything else
-// stays at the empty defaults. `resetMockAppState()` is called between
-// tests so overrides don't leak across files.
+// Mutable data slice that drives the mocked `@workspace/api-client-react`
+// hooks below (useCases / useCase / useInvoices / useInvoice). Tests seed the
+// canonical cases/invoices they care about via `setMockAppState({ cases,
+// invoices })`; everything else stays empty. `resetMockAppState()` runs
+// between tests so overrides don't leak across files.
 type MockAppOverrides = Record<string, unknown>;
 const mockAppOverrides: { current: MockAppOverrides } = { current: {} };
 export function setMockAppState(overrides: MockAppOverrides): void {
@@ -394,49 +395,6 @@ vi.mock("react-native-safe-area-context", () => ({
   useSafeAreaFrame: () => ({ x: 0, y: 0, width: 375, height: 812 }),
 }));
 
-vi.mock("@/lib/app-context", () => ({
-  useApp: () => ({
-    cases: [],
-    invoices: [],
-    notifications: [],
-    clients: [],
-    pricingTiers: [],
-    users: [],
-    role: "user",
-    adminUnlocked: false,
-    customStationLabels: {},
-    addCase: vi.fn((c: any) => ({ ...c, id: "test-mock-case-id", createdAt: Date.now(), updatedAt: Date.now(), routeHistory: [] })),
-    createCanonicalScanCase: vi.fn(async () => null),
-    hydrateServerCase: vi.fn(),
-    findCaseByBarcode: () => null,
-    updateCaseStatus: vi.fn(),
-    addCasePhoto: vi.fn(),
-    addCaseNote: vi.fn(),
-    addCasePhotosWithNote: vi.fn(),
-    addTrackingNumber: vi.fn(),
-    addCaseItem: vi.fn(),
-    updateInvoice: vi.fn(),
-    addInvoice: vi.fn(),
-    updateCase: vi.fn(),
-    sendCourtesyText: vi.fn(),
-    respondToCourtesyText: vi.fn(),
-    proposeDeliveryDate: vi.fn(),
-    respondToProposedDate: vi.fn(),
-    assignBarcodeToCase: vi.fn(),
-    addNotification: vi.fn(),
-    hardRefresh: vi.fn(async () => undefined),
-    hydrateInvoiceFromServer: vi.fn(async () => undefined),
-    refreshCases: vi.fn(async () => undefined),
-    fullRefreshCases: vi.fn(async () => undefined),
-    setPendingInvoiceEditId: vi.fn(),
-    allLabOrganizationIds: [],
-    invoiceTemplate: null,
-    fetchInvoiceTemplate: vi.fn(async () => undefined),
-    ...mockAppOverrides.current,
-  }),
-  AppProvider: passthrough,
-}));
-
 vi.mock("@/lib/auth-context", () => ({
   useAuth: () => ({
     currentUser: "tester",
@@ -468,20 +426,8 @@ vi.mock("@/lib/query-client", () => ({
   queryClient: { clear: vi.fn() },
 }));
 
-vi.mock("@/components/ChatButton", () => ({ ChatButton: nullComponent }));
-vi.mock("@/components/InvoicePDFViewer", () => ({ default: nullComponent }));
-vi.mock("@/components/KeyboardAwareScrollViewCompat", () => ({
-  KeyboardAwareScrollViewCompat: passthrough,
-}));
-vi.mock("@/components/ManualCropOverlay", () => ({
-  ManualCropOverlay: nullComponent,
-}));
 vi.mock("@/components/ReadOnlyToothChart", () => ({
   ReadOnlyToothChart: nullComponent,
-}));
-
-vi.mock("@/lib/pdfToImages", () => ({
-  convertPdfToImages: vi.fn(async () => []),
 }));
 
 vi.mock("@/lib/audit", () => ({ logAudit: vi.fn(async () => undefined) }));
@@ -619,19 +565,53 @@ vi.mock("@/lib/theme-context", () => {
     text: "#0F172A",
     textSecondary: "#64748B",
     textTertiary: "#8FA1B5",
+    textInverse: "#FFFFFF",
     background: "transparent",
     backgroundSolid: "#F4F7FB",
+    surface: "#FFFFFF",
+    surfaceAlt: "#EEF2F7",
     tint: "#145DA0",
     tintLight: "#D9E9F7",
     tintDark: "#0F4C81",
     border: "#E2E8F0",
+    warning: "#B45309",
     icon: "#64748B",
     tabIconDefault: "#94A3B8",
     tabIconSelected: "#145DA0",
     card: "#FFFFFF",
     shadow: "rgba(0,0,0,0.08)",
   };
-  const ctx = { mode: "light" as const, colors: Colors, isDark: false, setMode: vi.fn() };
+  // Mirror the design-token scales `useTheme()` re-exports so primitives that
+  // read spacing/radius/typography/shadows (e.g. Card) don't crash in tests.
+  const spacing = { xs: 4, sm: 8, md: 12, lg: 16, xl: 20, xxl: 24, xxxl: 32, huge: 40 };
+  const radius = { xs: 6, sm: 8, md: 12, lg: 16, xl: 20, xxl: 28, full: 999 };
+  const typography = {
+    display: { fontSize: 28 },
+    h1: { fontSize: 22 },
+    h2: { fontSize: 18 },
+    h3: { fontSize: 16 },
+    bodyLg: { fontSize: 15 },
+    bodyLgMedium: { fontSize: 15 },
+    body: { fontSize: 14 },
+    bodyMedium: { fontSize: 14 },
+    bodySemibold: { fontSize: 14 },
+    caption: { fontSize: 12 },
+    captionMedium: { fontSize: 12 },
+    captionSemibold: { fontSize: 12 },
+    label: { fontSize: 11 },
+    tiny: { fontSize: 10 },
+  };
+  const shadows = { none: {}, sm: {}, md: {}, lg: {} };
+  const ctx = {
+    mode: "light" as const,
+    colors: Colors,
+    isDark: false,
+    setMode: vi.fn(),
+    spacing,
+    radius,
+    typography,
+    shadows,
+  };
   const React = require("react");
   return {
     useTheme: () => ctx,

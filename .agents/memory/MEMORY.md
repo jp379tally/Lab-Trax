@@ -35,5 +35,4 @@
 - [Mobile shim removal](mobile-shim-removal.md) — offline-queue + case-reconciliation deleted; syncCaseToServer is dual-path (UUID→canonical PATCH, non-UUID→legacy POST); 410 only for UUID IDs via mobile/2 header.
 - [Mobile CaseStatus canonical](mobile-case-status-canonical.md) — mobile uses server lowercase statuses, but legacy endpoints still emit UPPERCASE; normalize on ingest, don't change server.
 - [Orval generated hook usage](orval-generated-query-hook-usage.md) — list hooks return the envelope not an array; query.select breaks typecheck; rebuild libs for "no exported member"; mirror hooks in vitest mock.
-- [mergeServerCases server-authoritative](merge-server-cases-phase0.md) — Phase 0 removed local-only case preservation; mergeServerCases is now server-only. Tests that relied on local-only cases surviving reconciliation must instead mock the server to return them.
 - [Vitest mock completeness causes cross-file flakes](vitest-mock-completeness-flake.md) — adding a hook to a vi.mock factory can expose timing gaps in unrelated tests that previously short-circuited; bare assertions after waitFor must themselves be wrapped in waitFor.

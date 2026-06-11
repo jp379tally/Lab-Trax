@@ -4,16 +4,34 @@ When the user confirms that a feature or workflow is working, that behavior beco
 
 ---
 
-## Protected Workflow: AI Reader
+## Retired pending Phase 2 rebuild (user-approved 2026-06-11)
 
-The AI Reader is the Scan-tab flow where a lab technician photographs or attaches an Rx PDF and the app uses OpenAI to extract patient name, doctor name, case type, shade, and other fields, then pre-fills the new-case form.
+The mobile app (`artifacts/labtrax`) was reset to a **read-only, desktop-derived case viewer** in Phase 1 of the approved mobile rebuild. The old local-first UI/state layer (offline queue, AsyncStorage case cache, `app-context.tsx`, drawer/messenger contexts) and every create/edit/scan/upload/messaging surface were removed. The native shell (bundle id, EAS/TestFlight config, `app.json` plugins), auth, biometric lock, and theming were kept.
+
+The workflows below were **mobile-only** and depended on those removed features. They are **no longer protected** because the code and their guarding tests were deleted in the reset. They will be re-protected — with fresh tests — when Phase 2 rebuilds the corresponding create/edit/scan/upload features. Do **not** treat their absence as a regression.
+
+| Retired workflow | Why retired | Guarding test (removed) |
+|------------------|-------------|--------------------------|
+| Mobile AI Reader / Scan tab (form prefill, exact-match provider auto-assign, similar-provider prompt, duplicate-patient warning) | Scan tab removed in Phase 1 | `lib/__tests__/screens/scan.smoke.test.tsx` |
+| Mobile AI Reader Unknown-Provider creation parity | Scan/create flow removed | `lib/__tests__/screens/scan.smoke.test.tsx` |
+| Mobile case create + edit propagation (new-case form, edit-save → invoice, add-item → invoice) | Viewer is read-only | edit/add-item portions of the old `case-detail` suite |
+| Mobile photo/media upload + "Upload Failed" alert | Upload UI removed | `lib/__tests__/screens/case-attach-failure.smoke.test.tsx` |
+| Mobile Failed-Upload Retry queue | Offline upload queue removed | `lib/__tests__/pending-uploads.test.ts` |
+| Pending Upload Queue banner UI | `PendingSyncBanner` + queue removed | `lib/__tests__/screens/pending-sync-banner.smoke.test.tsx` |
+| Mobile status-normalization **ingestion boundaries** (server fetch + AsyncStorage hydration through `app-context`) | `app-context`/local cache removed; viewer reads canonical `/api/cases` directly | `lib/__tests__/case-status-normalization-boundaries.test.tsx` |
+| Mobile single/batch **locate** UI (station picker, barcode batch locate) | Locate UI removed | covered previously via screen smoke + E2E |
+| E2E Playwright mobile specs (AI Reader scan, long-press locate) | Underlying mobile flows removed | `e2e/ai-reader-mobile-scan.spec.ts`, `e2e/long-press-locate-case.spec.ts` |
+
+**Still protected (not retired):** all server/API workflows below (AI Reader endpoints, Invoice, case lifecycle, attachment serving, location-sync server bridge, Same-Case-ID invariant), the canonical read-only mobile viewer (list + search + read-only detail), the `normalizeCaseStatus()` helper, mobile auth/hydration + reconnecting indicator, the share-intent native firewall test, the desktop Pricing workflows, and the Mobile Legacy-Path Fence.
+
+---
+
+## Protected Workflow: AI Reader (server + desktop)
+
+The AI Reader uses OpenAI to extract patient name, doctor name, case type, shade, and other fields from an Rx image/PDF and pre-fills a new-case form. The **mobile Scan-tab entry point is retired** (see above); the **server endpoints and the desktop/web `DashboardDropZone` flow remain protected**.
 
 Protected sub-behaviors:
 
-- **Exact provider match auto-assign** — when the AI-extracted doctor last name exactly matches a provider on file, the form is silently pre-filled with the on-file spelling (not the raw AI string).
-- **Similar provider prompt** — when the extracted name is close but not identical (edit distance ≤ 1 on the last name), the app prompts "Similar Provider Found" and shows both spellings before assigning. It must NOT silently auto-assign.
-- **All extracted fields propagate** — patient name, case type, and shade all arrive on the new-case form after the AI flow completes. A break in the AI-response → setState wiring must surface as a test failure.
-- **Duplicate patient warning** — when the selected patient already has an open case at the same practice, the app shows a "Possible duplicate / remake?" prompt before submission.
 - **503 when AI is not configured** — `POST /api/analyze-prescription` returns `{ success: false }` with HTTP 503 when `AI_INTEGRATIONS_OPENAI_API_KEY` is absent.
 - **400 for bad input** — truncated payloads return `IMAGE_TOO_SMALL`; HEIC images return an explicit HEIC error; missing image body returns 400.
 - **Model chain resilience** — if the lead model fails, the endpoint falls through the chain; if every model fails, it returns 500. The current-gen model must never send `temperature` (gpt-5+ rejects it). Nullable fields must use `anyOf` in the JSON schema, not the array-union shorthand.
@@ -25,15 +43,13 @@ Protected sub-behaviors:
 
 ## Protected Workflow: Mobile/Web/Desktop Sync
 
-Cases, invoices, and case events created or updated in any client (mobile, desktop, or web) must appear consistently across all clients without requiring a manual refresh that the user would not normally perform.
+Cases and invoices created or updated in any client (mobile, desktop, or web) must appear consistently across all clients. With the mobile app now a read-only viewer, the protected mobile guarantee is that it **renders server state faithfully**; write-side propagation (edit-save, add-item) is retired pending Phase 2 (see above).
 
 Protected sub-behaviors:
 
-- **Case list reflects server state** — the mobile Cases screen renders case numbers and statuses sourced from the server-synced local state.
-- **Case detail reflects server state** — the case detail screen renders the correct case header (case number, patient name), activity log entries, and invoice badge.
-- **Edit saves propagate** — editing a case field (e.g. material) calls both `updateCase` and `updateInvoice` with the recomputed caseType so the invoice line item stays in sync with the case.
-- **Add-item propagates to invoice** — adding an appliance item calls `addCaseItem` and `updateInvoice` with the correct line item (item name, rate, amount) derived from the practice's pricing tier.
-- **AI-imported banner renders** — when `needsAiReview: true` and `aiImportSource: 'itero'` arrive from the full case hydration fetch, the amber "AI-imported — needs review" banner is visible in the case detail screen.
+- **Case list reflects server state** — the mobile Cases screen renders case numbers, patient names, and statuses sourced from the canonical `GET /api/cases` payload.
+- **Case detail reflects server state** — the mobile case detail screen renders the correct case header (case number, patient name), the read-only sections (overview, restorations, notes, files, invoice, history), and the activity log, all from the canonical `GET /api/cases/:id` payload.
+- **Same Case ID invariant (server)** — a client-generated case ID is preserved unchanged from sync into `GET /api/cases`, so the same case resolves identically across clients.
 
 ---
 
@@ -51,170 +67,52 @@ Protected sub-behaviors:
 
 ---
 
-## Protected Workflow: Mobile Case Interactions
+## Protected Workflow: Mobile Case Viewer (Read-Only)
 
-Core case interactions on the mobile app — creating cases, viewing case details, and locating cases from the list — must remain functional.
+Core read-only case interactions on the mobile app — viewing the canonical case list, searching it, and opening a read-only case detail — must remain functional. (Create/edit/locate are retired pending Phase 2.)
 
 Protected sub-behaviors:
 
-- **Cases screen renders** — the Cases tab renders without throwing, shows the "Cases" header, and displays case numbers from state (e.g. `#5001`, `#5002`).
-- **Case detail renders** — the case detail screen renders the case header (case number, patient name) and activity log entries without throwing. An unknown case ID shows "Case not found".
-- **Completed-case detail renders** — a completed case with an attached paid invoice renders without throwing.
-- **Long-press locate** _(tests pending restoration)_ — long-pressing a case on the list triggers the locate/highlight workflow. This behavior is protected and must be covered by a regression test once the companion restore task is complete.
-- **Case Detail Notes Rendering** — the case detail screen must render without crashing regardless of the shape of the `notes` field returned by the API. Protected sub-behaviors:
-  - Case detail renders when `notes` is `undefined`.
-  - Case detail renders when `notes` is `null`.
-  - Case detail renders when `notes` is an array.
-  - Case detail renders when `notes` is an object.
-  - Non-string `notes` values must never crash the screen.
-  - Notes normalization (`normalizeNotes`) must remain applied at all case-detail ingestion, render, and edit boundaries — canonical mapper, Rx Summary `.trim()` check, both notes render sites, the notes-card empty check, edit/quick-edit initializers, and the quick-edit price-comparison snapshot.
+- **Cases screen renders** — the Cases tab renders without throwing, shows the "Cases" header and case count, and displays case numbers and patient names from the canonical list (e.g. `#5001`, `#5002`).
+- **In-memory search** — typing in the search box filters the list by patient name, doctor name, or case number; a non-matching query shows a no-results empty state.
+- **Row navigation** — pressing a case row navigates to `/case/:id`.
+- **Case detail renders (read-only)** — the case detail screen renders the case header and the section tabs (overview, restorations, notes, files, invoice, history) without throwing. An unknown case ID shows the "Unable to load this case" empty state.
+- **Completed-case detail renders** — a completed case with an attached paid invoice renders without throwing, and the invoice section shows the invoice number.
+- **Case Detail Notes Rendering** — the case detail screen must render without crashing regardless of the shape of the `notes` field returned by the API (undefined, null, array, or object). Non-string `notes` values must never crash the screen.
 
 ---
 
-## Protected Workflow: Mobile AI Reader Unknown Provider Workflow Parity
+## Protected Workflow: Prescription / Case Media Cross-Platform Serving (server)
 
-Mobile AI Reader unknown providers must follow desktop/web provider creation workflow.
-
-When the AI Reader scans a prescription whose doctor name has no existing alias or fuzzy
-match in the provider list, the app must offer an interactive path to create a canonical
-server-side provider org — it must never dead-end with "Ask your lab admin."
-
-This mirrors the desktop/web `DashboardDropZone.submitNewPractice` flow exactly.
+Case media stored as a server-side attachment must be retrievable by any authenticated client for the same Case ID, scoped to lab membership. (The mobile **camera-upload UI** is retired pending Phase 2; the **server attachment + serving behavior** remains protected.)
 
 Protected sub-behaviors:
 
-- **"Add Provider" creates a canonical org** — tapping "Add Provider" in the "New Provider
-  Detected" alert calls `POST /api/organizations` with `type:"provider"`,
-  `parentLabOrganizationId`, and Rx-extracted name/phone/doctorName. The returned
-  `id` is stored as `resolvedProviderOrgId` in scan state.
-- **Alias registered for future scans** — after a successful org creation, a non-blocking
-  `POST /api/rx-practice-aliases` registers the doctor name → org ID mapping so the next
-  scan of the same doctor auto-matches without prompting.
-- **Case creation uses the resolved org ID directly** — `createCanonicalScanCase` receives
-  `resolvedProviderOrgId` and skips the alias lookup when it is set. The canonical case is
-  created with the correct `providerOrganizationId`.
-- **New provider visible on web/desktop** — the created org appears in the web/desktop
-  Practices list immediately after case creation (`GET /api/organizations?type=provider`).
-- **Invoice auto-generated once** — the server's auto-invoice trigger fires for the
-  canonical case, linked to the new provider org. No duplicate invoice is created.
-- **No dead-end alert** — the "This doctor is not linked to a provider practice. Ask your
-  lab admin…" alert must NOT fire when the user has tapped "Add Provider" and the org was
-  successfully created.
-- **Failure is visible, not silent** — if `POST /api/organizations` fails, the case creation
-  falls through to the existing dead-end path (same as before the fix). The user is not
-  silently blocked with no explanation.
-- **Existing paths unaffected** — exact match, similar match, "Pick Existing", "Not Now",
-  and the non-affiliated `addCase` fallback must all continue to behave as before.
-
-| Layer | File | What it guards |
-|-------|------|----------------|
-| Mobile unit | `artifacts/labtrax/lib/__tests__/screens/scan.smoke.test.tsx` | Unknown doctor → Add Provider → canonical org created → case created without dead-end alert |
-
-Run command:
-```
-pnpm --filter @workspace/labtrax run test -- scan.smoke
-```
+- **Attachment linked to Case ID** — a `case_attachments` row carries `labCaseId` referencing the case row; the same `caseId` is used as the lookup key.
+- **Web/desktop/mobile Files tab shows the image** — `GET /api/cases/:caseId/attachments` returns the image attachment (with `fileType` starting with `image/`) for the same `caseId`.
+- **Auth-gated serving** — the serving route (`GET /api/cases/:caseId/attachments/:attachmentId/file`) authorizes the download via `labCaseId` membership check and returns the file bytes; it does not return 401 or 403 for a valid lab member, and must not become publicly retrievable by guessing a filename.
 
 ---
 
-## Protected Workflow: E2E Browser Tests
+## Protected Workflow: Case Location Cross-Platform Sync (server bridge)
 
-Playwright end-to-end specs that exercise live app flows in a real browser. They complement unit and API tests but do **not** replace real-device TestFlight verification — native rendering, OS-level permissions, camera access, biometric lock, and push notifications can only be confirmed on a real device.
+The canonical `/api/cases` endpoints must present a consistent, correct location/status for a case across all clients. (The mobile **locate UI** — single and batch barcode — is retired pending Phase 2; the **server status bridge** that the read-only viewer depends on remains protected.)
 
 Protected sub-behaviors:
 
-- **AI Reader scan flow** — the Scan tab is reachable, the upload/gallery path triggers a stubbed `POST /api/analyze-prescription`, and extracted fields (patient name, doctor name, shade) appear in the UI after analysis.
-- **Mobile photo web view** — a photo attachment seeded via the API is accessible (no 401/403) from the case attachment endpoint; the desktop case page renders without crashing and no attachment URL returns a 401.
-- **Long-press locate case** — long-pressing (contextmenu) a case card triggers the "Locate Case" dialog or browser alert, and accepting it opens the station-picker modal ("Select a station:").
+- **List bridges legacy statuses correctly** — `GET /api/cases` bridges the `lab_cases.caseData.status` field into the desktop status format using `MOBILE_TO_DESKTOP_STATUS`. All 13 mobile statuses (INTAKE, DESIGN, SCAN, MILLING, POST_MILL, SINTERING_FURNACE, MODEL_ROOM, PORCELAIN, QC_CHECK, COMPLETE, DELIVERY, ON_HOLD, REMAKE) must map correctly; an unknown status falls back to `"received"`. `COMPLETE` maps to `"complete"`, not `"delivered"`.
+- **Detail bridge agrees with list** — `GET /api/cases/:id` for a mobile-created case uses `tryProjectLegacyCaseForDesktop()` to project the `lab_cases` blob into the canonical shape; the `status` field in that response must match what the list returns for the same case.
+- **Auth guard** — both endpoints require an authenticated lab member and never leak another lab's cases.
 
 ---
 
-## Protected Workflow: Mobile Prescription Image Cross-Platform Visibility
+## Protected Workflow: Case Status Normalization Helper
 
-A prescription photo captured on mobile (AI Reader camera flow) must be visible in the web and desktop case detail for the same Case ID. The image must be stored as a server-side attachment — not a device-local URI — so that any authenticated client can view it.
-
-Protected sub-behaviors:
-
-- **Camera photo uploaded to server** — after case creation via the AI Reader scan flow, each photo in `casePhotos` is uploaded to `/api/media/upload` and a `case_attachments` row is created via `POST /api/cases/:caseId/attachments`.
-- **Attachment linked to Case ID** — the `case_attachments` row carries `labCaseId` referencing the mobile case's `lab_cases` row; the same `caseId` the mobile app generated is used as the lookup key.
-- **Web/desktop Files tab shows the image** — `GET /api/cases/:caseId/attachments` returns the uploaded image attachment (with `fileType` starting with `image/`) for the same `caseId`.
-- **Auth-gated serving** — the serving route (`GET /api/cases/:caseId/attachments/:attachmentId/file`) authorizes the download via `labCaseId` membership check and returns the file bytes; it does not return 401 or 403 for a valid lab member.
-- **No regression on core workflow** — the AI Reader → case creation → invoice → case sync workflow must continue to pass after any change to the photo-upload path.
-
----
-
-## Protected Workflow: Mobile Case Location Cross-Platform Sync
-
-When a lab technician locates (moves) a case to a station on the mobile app — whether by tapping a single case or using the Batch Locate barcode scanner — that location change must appear immediately on the web and desktop clients without requiring any manual refresh.
-
-Two bugs were fixed to make this work:
-1. `batchLocateCases()` only saved the new status to AsyncStorage; it never called `syncCaseToServer()`, so batch location changes were silently lost. Single-case `updateCaseStatus()` already synced correctly.
-2. The `GET /api/cases` list endpoint had a local `MOBILE_TO_DESKTOP_STATUS` map that was incomplete (missing SCAN, POST_MILL, SINTERING_FURNACE, MODEL_ROOM) and mapped COMPLETE to `"delivered"` instead of `"complete"`, causing the web list view to show the wrong location even when the mobile client had correctly synced the status to the server.
+Case status tokens still arrive from sources that emit legacy uppercase and desktop-bridge tokens (e.g. `DELIVERY`, `SHIP`, `ON_HOLD`, `QC_CHECK`). The canonical normalization **helper** must remain correct so any consumer that needs to coerce a token gets canonical lowercase. (The mobile **ingestion-boundary** integration — normalizing inside the old `app-context` fetch/hydration paths — is retired with `app-context`; see the retired section.)
 
 Protected sub-behaviors:
 
-- **Single locate syncs to server** — moving a case to a station from the case detail screen or from the long-press "Locate Case" menu calls `syncCaseToServer()`, which POSTs the updated `caseData` blob (including the new `status`) to `POST /api/legacy/cases`. The server stores the new status in `lab_cases.caseData`.
-- **Batch locate syncs to server** — using the Batch Locate barcode scanner on the dashboard calls `batchLocateCases()`, which now calls `syncCaseToServer()` for each case in the batch, mirroring the single-case path.
-- **Offline fallback** — if the sync request fails (e.g. network offline), the case ID is enqueued via `enqueueStatus()` so the location change is retried when connectivity is restored.
-- **Web/desktop list shows updated location** — `GET /api/cases` bridges the `lab_cases.caseData.status` field into the desktop status format using `MOBILE_TO_DESKTOP_STATUS`. All 13 mobile statuses (INTAKE, DESIGN, SCAN, MILLING, POST_MILL, SINTERING_FURNACE, MODEL_ROOM, PORCELAIN, QC_CHECK, COMPLETE, DELIVERY, ON_HOLD, REMAKE) must map correctly; an unknown status falls back to `"received"`.
-- **Web/desktop detail shows updated location** — `GET /api/cases/:id` for a mobile-created case uses `tryProjectLegacyCaseForDesktop()` to project the `lab_cases` blob into the canonical shape; the `status` field in that response must match what the list returns.
-- **List and detail agree** — the location shown in `GET /api/cases` (list) must be the same as what `GET /api/cases/:id` (detail) returns for the same case. The two endpoints must use the same `MOBILE_TO_DESKTOP_STATUS` mapping.
-- **No regression on existing workflows** — AI Reader, invoice, image upload, and case creation must continue to pass after any change to the locate/sync path.
-
----
-
-## Protected Workflow: Case Status Normalization Boundaries
-
-Case status tokens arrive in the mobile app from sources that still emit legacy uppercase and desktop-bridge tokens (e.g. `DELIVERY`, `SHIP`, `ON_HOLD`, `QC_CHECK`). Every status must be coerced to the canonical lowercase `CaseStatus` at the moment it is ingested, so the mobile domain model stays canonical end-to-end. If normalization is skipped at any ingestion boundary, status drift silently breaks downstream features — most visibly the "shipped shows as Intake" bug.
-
-Status drift caused by a missed normalization breaks:
-
-- **Case lists** — cases sort/group/display under the wrong status.
-- **Location/station views** — the station a case is shown at no longer matches its real status.
-- **Invoice eligibility** — status-gated invoice logic misfires on raw tokens.
-- **Shipped/delivered tracking** — completion and delivery tracking reads the wrong state.
-
-`normalizeCaseStatus()` / `normalizeCaseStatuses()` (in `artifacts/labtrax/lib/data.ts`) are unit-tested for their token mappings, but a correct helper is useless if a refactor stops calling it at the boundaries. These behaviors are protected:
-
-- **Desktop/server tokens normalize on fetch** — cases pulled from `/api/legacy/cases` via `fetchCasesFromServer()` are passed through `normalizeCaseStatuses()` before reaching UI/state. Legacy uppercase and desktop-bridge tokens become canonical lowercase.
-- **AsyncStorage-hydrated tokens normalize on load** — cases hydrated from the local cache (`CASES_KEY`) in `loadData()` on mount are passed through `normalizeCaseStatuses()` before reaching UI/state.
-- **Normalized status reaches the screen** — the canonical status must survive `mergeServerCases()` reconciliation and the `cases` selector and appear in the `cases` value a real consumer of `useApp()` sees. A raw uppercase token (e.g. `DELIVERY`, `SHIP`) must never reach `useApp().cases` via either the server-fetch or the AsyncStorage-hydration path. This protects against a regression where normalization runs but a later merge/dedup/selector bug re-introduces a raw token.
-- **No regression on the helper itself** — the `normalizeCaseStatus()` token mappings (uppercase mobile tokens, desktop-bridge tokens, whitespace trimming, unknown-value fallback to `received`) must remain correct.
-
-## Protected Workflow: Mobile Failed-Upload Retry
-
-Failed mobile photo uploads must retry when connection returns and eventually become visible on web/desktop.
-
-When a chunked photo/video upload exhausts its in-session retries, the file is parked in a persistent, user-scoped retry queue (`@drivesync_pending_uploads:<userId>`) instead of being lost. A background pass re-drives each parked entry through the existing upload + attachment-create path once the app returns to the foreground (connectivity-returned proxy) or on a slow interval, so the photo eventually lands on the server and is visible on web/desktop for the same Case ID.
-
-Protected sub-behaviors:
-
-- **Failed upload enters retry queue** — a photo/video upload that fails after in-session retries is enqueued (`enqueuePendingUpload`) with its `caseId` + device-local `fileUri`; the toast/badge reflects the pending state.
-- **Persists across app restarts** — the queue is written to AsyncStorage and reloaded on sign-in, so a parked upload survives an app restart and is retried on the next pass.
-- **User-scoped** — the queue is keyed per signed-in user; a shared device / account switch never inherits or exposes another user's parked uploads.
-- **Retries only failed photo uploads** — only case media (photos/videos) is queued. Case creation, invoice generation, status/location sync, and AI Reader extraction are NOT routed through this queue.
-- **No duplicate attachments** — a recovered upload is removed from the queue on success, so a subsequent background pass never re-uploads it or creates a second `case_attachments` row; entries are also de-duplicated on `(caseId, fileUri)` at enqueue time.
-- **Clears on success + becomes visible** — on success the device-local uri is swapped for the canonical serving URL in the case's photos/activity log, the case is re-synced, and the queue entry is cleared, so the photo is visible on web/desktop.
-- **Local-only warning** — while an upload is still parked (local-only), the user sees a clear warning that the photo will upload automatically when back online.
-- **No regression on existing workflows** — AI Reader → case creation → invoice → case sync and location sync must continue to pass after any change to the retry path.
-
----
-
-## Protected Workflow: Pending Upload Queue UI
-
-The user must be able to *see and manage* photos/videos still waiting to upload. This is a visibility layer over the existing Mobile Failed-Upload Retry queue (above) — it reads the queue and drives the queue's own actions; it must never reimplement or redesign the queue itself.
-
-`PendingSyncBanner` (mounted once at the authed root, `app/_layout.tsx`) reads `pendingSyncCount` / `stuckSyncItems` from app-context and drives the queue's `retrySync` / `discardSync`.
-
-Protected sub-behaviors:
-
-- **Badge/banner appears while uploads are pending** — when `pendingSyncCount > 0` the user sees a persistent banner stating attachments are still uploading and are not yet visible on web/desktop.
-- **Hidden when the queue is empty** — when `pendingSyncCount` is 0 the banner (and its management sheet) render nothing.
-- **Tap reveals the stuck items** — tapping the banner opens a sheet listing each entry from `stuckSyncItems`.
-- **Per-item Retry now → `retrySync`** — each item exposes a "Retry now" action that calls `retrySync(item.id)` (kicks an immediate queue pass).
-- **Per-item Discard → `discardSync`** — each item exposes a "Discard" action that calls `discardSync(item.id)` (drops the entry).
-- **Indicator clears when the queue drains** — once everything uploads (`pendingSyncCount` returns to 0) the banner disappears on its own.
-- **No queue redesign** — the banner must not change the retry/resume/persistence logic, case sync, AI Reader, case creation, invoice generation, or location sync.
+- **Helper token mappings are correct** — `normalizeCaseStatus()` / `normalizeCaseStatuses()` (in `artifacts/labtrax/lib/data.ts`) map canonical identity, legacy uppercase mobile tokens, desktop-bridge tokens, whitespace trimming, and unknown-value fallback to `received`.
 
 ---
 
@@ -261,25 +159,30 @@ Every code change that touches a protected workflow must follow this process, in
 
 ### Pre-publish checklist
 
-Before publishing a release, **all four gates** must pass:
+Before publishing a release, the applicable gates must pass:
 
 | Gate | Command | Notes |
 |------|---------|-------|
-| Mobile unit tests | `pnpm --filter @workspace/labtrax run test` | All mobile unit / smoke tests green |
+| Mobile unit tests | `pnpm --filter @workspace/labtrax run test` | All mobile unit / smoke tests green (read-only viewer scope) |
 | API integration tests | `pnpm --filter @workspace/api-server run test` | All server-side integration tests green |
 | Legacy-path fence | `pnpm --filter @workspace/scripts run lint-mobile-legacy-paths && pnpm --filter @workspace/scripts run test` | No new legacy paths; lint unit tests pass |
-| E2E browser tests | `pnpm test:e2e` | All Playwright specs pass against the running stack |
 | Real-device TestFlight | Manual | See below — no automated test replaces this |
 
-**Real-device TestFlight verification (required before every production release):**
+> **E2E browser specs:** the Playwright mobile specs (`ai-reader-mobile-scan`, `long-press-locate-case`) are **retired pending Phase 2** because the underlying mobile flows were removed in the Phase 1 reset. Re-add an E2E gate when Phase 2 restores scan/create/locate.
 
-Install the TestFlight build on a physical iOS device and manually walk the following flow end-to-end:
+**Real-device TestFlight verification (Phase 1 read-only viewer):**
 
-1. **AI Reader → case creation** — photograph or attach an Rx; confirm AI extracts patient name, doctor name, and shade; confirm the new-case form is pre-filled correctly.
-2. **Case sync** — create the case on mobile and verify it appears immediately in the desktop/web client without a manual refresh.
-3. **Invoice** — open the auto-created invoice from the new case; add a line item; confirm the subtotal is correct; mark it paid.
+Install the TestFlight build on a physical iOS device and manually walk this flow end-to-end:
 
-This flow exercises native camera permissions, OS-level secure storage, biometric lock, and the full JWT refresh cycle — none of which can be replicated in a browser-based E2E test.
+1. **Login** — log in on a fresh install; the Cases list loads from the server.
+2. **Search** — search by patient, doctor, or case number; the list filters correctly.
+3. **Open a case (read-only)** — open a case and confirm the header and read-only sections (overview, restorations, notes, files, invoice, history) render correctly and match desktop/web for the same case.
+4. **Biometric lock** — the lock screen appears after inactivity; Face ID / Touch ID unlocks without re-login.
+5. **Share intent** — sharing a PDF into LabTrax from the Files app is still routed by the share-intent plugin (native firewall).
+
+> The full **create case → scan → upload → invoice** real-device flow returns to this checklist when Phase 2 rebuilds those features.
+
+This flow exercises native secure storage, biometric lock, the JWT refresh cycle, and the share-sheet plugin — none of which can be replicated in a browser-based E2E test.
 
 ---
 
@@ -287,27 +190,25 @@ This flow exercises native camera permissions, OS-level secure storage, biometri
 
 Each protected workflow is guarded by the following test files. Run them to verify the workflow has not regressed.
 
-### AI Reader
+### AI Reader (server + desktop)
 
 | Layer | File | What it guards |
 |-------|------|----------------|
 | API integration | `artifacts/api-server/src/routes/analyze-prescription.test.ts` | Full endpoint behavior: bad input, model chain, name-order fix, schema correctness, 503 on missing key |
 | API integration | `artifacts/api-server/src/routes/cases-ai-reader.test.ts` | Case creation auth, iTero import (stub path), dedup idempotency, AI review acknowledgement, auto-invoice |
-| Mobile unit | `artifacts/labtrax/lib/__tests__/screens/scan.smoke.test.tsx` | Exact-match auto-assign, similar-provider prompt, duplicate-patient warning, AI-flow field propagation |
 
 Run command:
 ```
 pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-ai-reader analyze-prescription
-pnpm --filter @workspace/labtrax run test -- scan.smoke
 ```
 
 ### Mobile/Web/Desktop Sync
 
 | Layer | File | What it guards |
 |-------|------|----------------|
-| Mobile unit | `artifacts/labtrax/lib/__tests__/screens/cases.smoke.test.tsx` | Cases list renders with server-synced state |
-| Mobile unit | `artifacts/labtrax/lib/__tests__/screens/case-detail.smoke.test.tsx` | Case detail renders; edit-save propagation to invoice; add-item propagation; AI-imported banner |
-| API integration | `artifacts/api-server/src/routes/mobile-sync-invoice.test.ts` | Same Case ID invariant (test h): client-generated ID preserved unchanged from mobile sync into GET /api/cases |
+| Mobile unit | `artifacts/labtrax/lib/__tests__/screens/cases.smoke.test.tsx` | Cases list renders patient names + case numbers from canonical server state |
+| Mobile unit | `artifacts/labtrax/lib/__tests__/screens/case-detail.smoke.test.tsx` | Read-only case detail renders from canonical server state |
+| API integration | `artifacts/api-server/src/routes/mobile-sync-invoice.test.ts` | Same Case ID invariant: client-generated ID preserved unchanged into GET /api/cases |
 
 Run command:
 ```
@@ -328,12 +229,12 @@ Run command:
 pnpm --filter @workspace/api-server run test -- --reporter=verbose invoices cases-ai-reader cases-invoice-creation
 ```
 
-### Mobile Case Interactions
+### Mobile Case Viewer (Read-Only)
 
 | Layer | File | What it guards |
 |-------|------|----------------|
-| Mobile unit | `artifacts/labtrax/lib/__tests__/screens/cases.smoke.test.tsx` | Cases screen renders, case numbers visible, long-press locate alert + modal |
-| Mobile unit | `artifacts/labtrax/lib/__tests__/screens/case-detail.smoke.test.tsx` | Case detail renders, empty state, completed case; non-string `notes` (undefined/null/array/object) never crashes the screen |
+| Mobile unit | `artifacts/labtrax/lib/__tests__/screens/cases.smoke.test.tsx` | Cases list renders + case count; in-memory search by patient/doctor/caseNumber; no-results state; row → `/case/:id` navigation |
+| Mobile unit | `artifacts/labtrax/lib/__tests__/screens/case-detail.smoke.test.tsx` | Read-only detail renders all sections; unknown id → "Unable to load this case"; completed case + invoice; non-string `notes` never crashes |
 | API integration | `artifacts/api-server/src/routes/cases-core.test.ts` | Case lifecycle: create, read, list, patch status, cross-lab scoping, soft-delete |
 
 Run command:
@@ -342,81 +243,39 @@ pnpm --filter @workspace/labtrax run test -- cases.smoke case-detail.smoke
 pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-core
 ```
 
-### Mobile Prescription Image Cross-Platform Visibility
+### Prescription / Case Media Cross-Platform Serving (server)
 
 | Layer | File | What it guards |
 |-------|------|----------------|
 | API integration | `artifacts/api-server/src/routes/cases-attachments.test.ts` | Legacy mobile case photo upload creates attachment row with `labCaseId`; attachment surfaces via `GET /api/cases/:caseId/attachments` |
-| API integration (E2E chain) | `artifacts/api-server/src/routes/cases-prescription-photo.test.ts` | Full chain: case creation → photo upload → DB integrity (labCaseId, fileType) → list endpoint (web/desktop Files tab) → file-serving auth (not 401/403) → invoice generation |
-| Mobile unit | `artifacts/labtrax/lib/__tests__/screens/case-attach-failure.smoke.test.tsx` | The user-facing "Upload Failed" alert fires when `uploadAttachment` gets `{ ok: false }` across **all three** attach sources (Browse Files, Camera, Photo Library) and stays silent on success — so a failed photo upload can never silently vanish |
+| API integration (E2E chain) | `artifacts/api-server/src/routes/cases-prescription-photo.test.ts` | Full chain: case creation → photo upload → DB integrity (labCaseId, fileType) → list endpoint (Files tab) → file-serving auth (not 401/403) → invoice generation |
 
 Run command:
 ```
 pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-attachments cases-prescription-photo
-pnpm --filter @workspace/labtrax run test -- case-attach-failure.smoke
 ```
 
-### Mobile Case Location Cross-Platform Sync
+### Case Location Cross-Platform Sync (server bridge)
 
 | Layer | File | What it guards |
 |-------|------|----------------|
-| API integration | `artifacts/api-server/src/routes/cases-location-sync.test.ts` | POST syncs status to lab_cases; GET /api/cases list maps all 13 mobile statuses correctly; batch locate (two cases); GET /api/cases/:id detail bridge; list+detail agree on COMPLETE→"complete"; auth guard |
+| API integration | `artifacts/api-server/src/routes/cases-location-sync.test.ts` | POST syncs status to lab_cases; GET /api/cases list maps all 13 mobile statuses correctly; batch case bridge; GET /api/cases/:id detail bridge; list+detail agree on COMPLETE→"complete"; auth guard |
 
 Run command:
 ```
 pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-location-sync
 ```
 
-### Case Status Normalization Boundaries
+### Case Status Normalization Helper
 
 | Layer | File | What it guards |
 |-------|------|----------------|
 | Mobile unit | `artifacts/labtrax/lib/__tests__/normalize-case-status.test.ts` | `normalizeCaseStatus()` / `normalizeCaseStatuses()` token mappings: canonical identity, legacy uppercase + desktop-bridge tokens, whitespace trimming, unknown-value fallback to `received` |
-| Mobile unit | `artifacts/labtrax/lib/__tests__/case-status-normalization-boundaries.test.tsx` | Both real ingestion boundaries call `normalizeCaseStatuses()`: server fetch (`/api/legacy/cases` → `fetchCasesFromServer()`) and AsyncStorage hydration (`CASES_KEY` → `loadData()`). Plus end-to-end: a legacy token (`DELIVERY`/`SHIP`) ingested via either path surfaces as canonical lowercase (`shipped`) in `useApp().cases`, proving the normalized status survives merge/dedup and the `cases` selector |
 
 Run command:
 ```
-pnpm --filter @workspace/labtrax run test -- normalize-case-status case-status-normalization-boundaries
+pnpm --filter @workspace/labtrax run test -- normalize-case-status
 ```
-
-### Mobile Failed-Upload Retry
-
-| Layer | File | What it guards |
-|-------|------|----------------|
-| Mobile unit | `artifacts/labtrax/lib/__tests__/pending-uploads.test.ts` | Failed upload enters retry queue; retry resumes after app restart (persist + reload); successful retry removes item; duplicate retries do not re-upload / create duplicate attachments; queue scoped per user; vanished local file dropped |
-
-Run command:
-```
-pnpm --filter @workspace/labtrax run test -- pending-uploads
-```
-
-### Pending Upload Queue UI
-
-| Layer | File | What it guards |
-|-------|------|----------------|
-| Mobile unit | `artifacts/labtrax/lib/__tests__/screens/pending-sync-banner.smoke.test.tsx` | Badge appears when `pendingSyncCount > 0`; hidden when empty; tapping shows stuck items; "Retry now" calls `retrySync(id)`; "Discard" calls `discardSync(id)`; banner clears after the queue drains |
-
-Run command:
-```
-pnpm --filter @workspace/labtrax run test -- pending-sync-banner
-```
-
-### E2E Browser Tests
-
-| Layer | File | What it guards |
-|-------|------|----------------|
-| E2E (Playwright) | `e2e/ai-reader-mobile-scan.spec.ts` | Scan tab reachable; upload path calls `/api/analyze-prescription`; AI-extracted fields appear in UI |
-| E2E (Playwright) | `e2e/mobile-photo-web-view.spec.ts` | Case attachment endpoint returns non-401/403; desktop case page renders; no attachment URL returns 401 |
-| E2E (Playwright) | `e2e/long-press-locate-case.spec.ts` | Long-press (contextmenu) on a case card opens "Locate Case" dialog; accepting it opens the station-picker modal |
-
-Run command:
-```
-pnpm test:e2e
-```
-
-Set `PLAYWRIGHT_BASE_URL` to the target deployment URL when running against staging or production (defaults to `http://localhost:80`).
-
-> **Note:** E2E specs run against the Expo web build in a browser. They do **not** cover native rendering, OS permissions, camera, biometric lock, or push notifications — those require real-device TestFlight verification (see Pre-publish checklist above).
 
 ### Mobile Auth Hydration Guard
 
@@ -452,6 +311,17 @@ Run command:
 pnpm --filter @workspace/labtrax run test -- reconnecting-indicator
 ```
 
+### Share-Intent Native Firewall
+
+| Layer | File | What it guards |
+|-------|------|----------------|
+| Mobile unit | `artifacts/labtrax/lib/__tests__/share-intent-config.test.ts` | The `expo-share-intent` plugin block stays present in `app.json` so LabTrax remains in the iOS/Android share sheet (native-only; can't be browser-tested) |
+
+Run command:
+```
+pnpm --filter @workspace/labtrax run test -- share-intent-config
+```
+
 ### Pricing Tier Decimal Consistency
 
 | Layer | File | What it guards |
@@ -479,17 +349,16 @@ pnpm --filter @workspace/labtrax-desktop exec vitest run src/pages/__tests__/pri
 
 ```bash
 pnpm --filter @workspace/api-server run test -- cases-ai-reader analyze-prescription invoices cases-core cases-invoice-creation mobile-sync-invoice cases-attachments cases-prescription-photo cases-location-sync cases-canonical-mobile
-pnpm --filter @workspace/labtrax run test -- cases.smoke case-detail.smoke scan.smoke normalize-case-status case-status-normalization-boundaries auth-hydration reconnecting-indicator pending-uploads pending-sync-banner
+pnpm --filter @workspace/labtrax run test -- cases.smoke case-detail.smoke normalize-case-status auth-hydration reconnecting-indicator share-intent-config
 pnpm --filter @workspace/scripts run lint-mobile-legacy-paths
 pnpm --filter @workspace/scripts run test
-pnpm test:e2e
 ```
 
 ---
 
 ## Protected Workflow: Mobile Rebuild Phase 1 — Auth Foundation Stable
 
-The canonical mobile rebuild depends on JWT bearer auth being fully stable before any screen-level rebuilds begin. These behaviors must remain correct end-to-end through any future change to the auth layer, token store, or networking stack.
+The canonical mobile rebuild depends on JWT bearer auth being fully stable. These behaviors must remain correct end-to-end through any future change to the auth layer, token store, or networking stack.
 
 Protected sub-behaviors:
 
@@ -507,9 +376,11 @@ Protected sub-behaviors:
 
 The mobile app must not introduce new direct calls to the legacy case endpoints
 (`/api/legacy/cases`, `lab_cases` table references, `pendingSyncCount`,
-`stuckSyncItems`, `unionActivityLog`) outside the grandfathered files that
-pre-date the canonical rebuild. This is enforced by a compile-time lint script
-that fails the build if any violation is found.
+`stuckSyncItems`, `unionActivityLog`). This is enforced by a compile-time lint
+script that fails the build if any violation is found. After the Phase 1 reset,
+the previously-grandfathered files (`lib/app-context.tsx`,
+`components/PendingSyncBanner.tsx`) were **deleted**, so there are now **zero**
+file-level or per-line exemptions in the mobile codebase.
 
 Protected sub-behaviors:
 
@@ -520,29 +391,21 @@ Protected sub-behaviors:
 - **Fence blocks `lab_cases`** — direct table-name references are forbidden
   in new mobile code; data access goes through `/api/cases`.
 - **Fence blocks legacy sync fields** — `pendingSyncCount` and `stuckSyncItems`
-  must not be imported or referenced outside their grandfathered files.
+  must not be imported or referenced in mobile code.
 - **Fence blocks `unionActivityLog`** — the legacy server-side union helper
-  must not be called from new mobile code paths.
-- **Grandfathered files exempt via file-level marker** —
-  `artifacts/labtrax/lib/app-context.tsx` and
-  `artifacts/labtrax/components/PendingSyncBanner.tsx` carry a
-  `// legacy-mobile-fence:disable-file` marker and are entirely exempt.
-- **Per-line escape hatch** — any single line that must be individually
-  exempted may end with `// legacy-fence:allow` with a comment explaining
-  why it cannot be migrated now. There are currently **zero** active
-  per-line exemptions in the mobile codebase.
+  must not be called from mobile code paths.
+- **Per-line escape hatch exists but is unused** — a single line that must be
+  individually exempted may end with `// legacy-fence:allow` with a justifying
+  comment. There are currently **zero** active per-line exemptions.
+- **File-level escape hatch exists but is unused** — `// legacy-mobile-fence:disable-file`
+  as the first non-blank line exempts a whole file. There are currently **zero**
+  exempt files (the former grandfathered files were deleted in the Phase 1 reset).
 - **Fence passes clean today** — running `pnpm --filter @workspace/scripts
   run lint-mobile-legacy-paths` exits 0 with no violations.
 - **Build-output folders are excluded by design** — `walkTs` skips `build`,
-  `dist`, and `server_dist`. These hold compiled bundles, not source; the fence
-  guards source so any reintroduced legacy path is caught where the bundle is
-  produced. A *committed* bundle could hide stale legacy code from the scan, so
-  these folders are gitignored (`artifacts/labtrax/.gitignore`) and must never
-  be the canonical build in source control. The previously-committed
-  `artifacts/labtrax/server_dist/index.js` (a stale Express bundle that still
-  referenced `/api/legacy/cases` and `lab_cases`) has been removed — it was not
-  a production artifact (production serving is `build` → `static-build/` +
-  `serve` → `server/serve.js`) and is now gitignored.
+  `dist`, and `server_dist`. These hold compiled bundles, not source; they are
+  gitignored (`artifacts/labtrax/.gitignore`) and must never be the canonical
+  build in source control.
 
 | Layer | File | What it guards |
 |-------|------|----------------|
@@ -559,68 +422,25 @@ pnpm --filter @workspace/api-server run test -- cases-canonical-mobile
 
 ---
 
-## TestFlight Smoke Test Checklist (Mobile Rebuild — Phase 0+)
+## TestFlight Smoke Test Checklist (Mobile — Phase 1 read-only viewer)
 
-When submitting a build for TestFlight acceptance after any mobile change, the
+When submitting a build for TestFlight acceptance after a mobile change, the
 following real-device smoke tests must pass before the build is approved. These
 supplement the automated regression suite; they cannot be replaced by unit tests.
+The create/scan/upload rows return when Phase 2 rebuilds those features.
 
 | # | Step | Expected result |
 |---|------|-----------------|
-| 1 | Log in on a fresh install | Auth succeeds; home screen loads with case list |
-| 2 | Create a new case via the + button | Case appears immediately in the list; case UUID visible in case detail header |
-| 3 | Open the same case on web or desktop | Identical case UUID, case number, and patient name visible |
-| 4 | Open the Invoices tab | Invoice for the new case shown exactly once; no duplicates |
-| 5 | Change case status (e.g. Received → In Design) | Status change visible immediately on mobile and on web/desktop without manual refresh |
-| 6 | Open Scan tab, photograph an Rx | AI extracts patient/doctor/case type; tapping Create opens pre-filled new-case form |
-| 7 | Upload a photo on the case detail screen | Photo appears on the web/desktop case detail without re-upload; no spinner stuck state |
-| 8 | Lock screen via biometric | Lock screen appears after inactivity; Face ID / Touch ID unlocks without re-login |
-| 9 | Share a PDF into LabTrax from Files app | Share intent received; PDF attached to a new or existing case |
-| 10 | Force-quit and reopen the app | Session is restored; no login required; pending upload queue (if non-empty) auto-retries |
+| 1 | Log in on a fresh install | Auth succeeds; Cases list loads from the server |
+| 2 | Search the case list | Filtering by patient / doctor / case number works |
+| 3 | Open a case | Read-only sections (overview, restorations, notes, files, invoice, history) render and match web/desktop for the same case |
+| 4 | Lock screen via biometric | Lock screen appears after inactivity; Face ID / Touch ID unlocks without re-login |
+| 5 | Share a PDF into LabTrax from Files app | Share intent received (native plugin firewall) |
+| 6 | Force-quit and reopen the app | Session is restored; no login required |
 
 **Zero-regression rule:** If any row above breaks in a new build, the build is
 rejected from TestFlight promotion and a regression issue is filed against the
 offending change before any new feature work continues.
-
----
-
-## Protected Workflow: Legacy Mobile Path Fence
-
-Before any rebuild work on the mobile app, every legacy data path must be
-statically fenced so new code cannot accidentally reach back into them. This
-fence is enforced by `scripts/src/lint-mobile-legacy-paths.ts`.
-
-### Fenced symbols
-
-| Symbol | Why fenced |
-|---|---|
-| `/api/legacy/cases` | Legacy sync endpoint that writes to `lab_cases`. New cases must go through `POST /api/cases` and receive a canonical UUID. |
-| `lab_cases` | Legacy PostgreSQL table name. All new case data lives in the canonical `cases` table. |
-| `pendingSyncCount` | Vestigial `AppContext` field from the offline-queue era. Only `PendingSyncBanner` (marked `legacy-mobile-fence:disable-file`) is permitted to read it. |
-| `stuckSyncItems` | Same rationale as `pendingSyncCount`. |
-| `unionActivityLog` | Legacy client-side activity-log merge helper. New activity data must come from the canonical API response (`originalCaseEvents`). |
-
-### Escape hatches (use sparingly — always include a justification)
-
-- **File-level:** add `// legacy-mobile-fence:disable-file` as the first non-blank line of a file. Reserved for files that are grandfathered from the pre-canonical-API era and cannot be migrated in bulk (currently `lib/app-context.tsx` and `components/PendingSyncBanner.tsx`).
-- **Per-line:** add `// legacy-mobile-fence:allow` or `// legacy-fence:allow` at the end of the line. Reserved for individual read-only backward-compatibility calls (e.g. the remake-chain lookup in `app/case/[id].tsx`).
-
-### Guard command
-
-```
-pnpm --filter @workspace/scripts run lint-mobile-legacy-paths
-```
-
-### Pre-Phase-1 gate
-
-**Phase 1 (canonical API client & auth foundation) must not begin until this script is passing on `main`.** Every subsequent phase must keep the script passing; a new violation is a regression that blocks the merge.
-
-### Protected sub-behaviors
-
-- **`lint-mobile-legacy-paths` exits 0 on the current codebase** — the fence is not retroactively applied to grandfathered files; it only catches new introductions.
-- **`lint-mobile-legacy-paths` exits 1 when a fenced symbol appears in a non-exempt file** — any `.ts`/`.tsx` file under `artifacts/labtrax/app/`, `lib/`, `components/`, `hooks/`, or `constants/` that references a fenced symbol without a disable-file header or per-line allow marker must fail the guard.
-- **`console.error` fires in `__DEV__` for legacy `AppContext` fields** — `app-context.tsx` emits a once-per-session `console.error` at the `pendingSyncCount`/`stuckSyncItems` definition site and at the legacy POST branch of `syncCaseToServer`, so developers are alerted when these deprecated paths are active.
-- **No regression on existing tests** — the existing mobile unit tests, API integration tests, and Playwright E2E tests must all continue to pass after the fence is applied.
 
 ---
 

@@ -1,7 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Stack, router } from "expo-router";
 import { ThemeProvider as NavThemeProvider } from "@react-navigation/native";
-import { MessengerProvider } from "@/lib/messenger-context";
 import * as SplashScreen from "expo-splash-screen";
 import * as Linking from "expo-linking";
 import React, { useEffect, useMemo } from "react";
@@ -21,23 +20,16 @@ import {
 } from "@expo-google-fonts/inter";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { setAuthTokenGetter, setAuthRefresher } from "@workspace/api-client-react";
-import { AppProvider } from "@/lib/app-context";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { ThemeProvider } from "@/lib/theme-context";
-import { DrawerProvider } from "@/lib/drawer-context";
-import { AppDrawer } from "@/components/AppDrawer";
-import { GlobalAIFAB } from "@/components/GlobalAIFAB";
-import { Toast } from "@/components/Toast";
-import { PendingSyncBanner } from "@/components/PendingSyncBanner";
 import { ReconnectingBanner } from "@/components/ReconnectingBanner";
-import { RevenueCatProvider } from "@/lib/revenuecat";
 import LoginScreen from "@/components/LoginScreen";
 import LockScreen from "@/components/LockScreen";
 import Colors from "@/constants/colors";
 
 // Wire the mobile token store into customFetch once, at module load time.
-// Every generated hook (useListCases, useUpdateCase, etc.) uses customFetch,
-// so this must run before any QueryClientProvider renders.
+// Every generated/mobile hook (useCases, useCase, …) uses customFetch, so this
+// must run before any QueryClientProvider renders.
 setAuthTokenGetter(getAccessToken);
 setAuthRefresher(refreshAndGetAccessToken);
 
@@ -89,70 +81,10 @@ function RootLayoutNav() {
     <NavThemeProvider value={TransparentNavTheme}>
       <Stack screenOptions={{ headerBackTitle: "Back", contentStyle: { backgroundColor: Colors.light.backgroundSolid } }}>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen
-          name="case/[id]"
-          options={{ headerShown: false, presentation: "card" }}
-        />
-        <Stack.Screen
-          name="settings"
-          options={{ headerShown: false, presentation: "card" }}
-        />
-        <Stack.Screen
-          name="chat"
-          options={{ headerShown: false }}
-        />
-        <Stack.Screen
-          name="smile-preview"
-          options={{ headerShown: false }}
-        />
-        <Stack.Screen
-          name="customers"
-          options={{ headerShown: false, presentation: "card" }}
-        />
-        <Stack.Screen
-          name="messenger/[id]"
-          options={{ headerShown: false, presentation: "card" }}
-        />
-        <Stack.Screen
-          name="invoices"
-          options={{ headerShown: false, presentation: "card" }}
-        />
-        <Stack.Screen
-          name="bank-register"
-          options={{ headerShown: false, presentation: "card" }}
-        />
-        <Stack.Screen
-          name="statements"
-          options={{ headerShown: false, presentation: "card" }}
-        />
-        <Stack.Screen
-          name="pricing"
-          options={{ headerShown: false, presentation: "card" }}
-        />
-        <Stack.Screen
-          name="reports"
-          options={{ headerShown: false, presentation: "card" }}
-        />
-        <Stack.Screen
-          name="lists"
-          options={{ headerShown: false, presentation: "card" }}
-        />
-        <Stack.Screen
-          name="invoice/[id]"
-          options={{ headerShown: false, presentation: "card" }}
-        />
-        <Stack.Screen
-          name="download"
-          options={{ headerShown: false, presentation: "card" }}
-        />
-        <Stack.Screen
-          name="privacy-policy"
-          options={{ headerShown: false, presentation: "modal" }}
-        />
-        <Stack.Screen
-          name="terms-of-service"
-          options={{ headerShown: false, presentation: "modal" }}
-        />
+        <Stack.Screen name="case/[id]" options={{ headerShown: false, presentation: "card" }} />
+        <Stack.Screen name="two-factor" options={{ headerShown: false, presentation: "card" }} />
+        <Stack.Screen name="privacy-policy" options={{ headerShown: false, presentation: "modal" }} />
+        <Stack.Screen name="terms-of-service" options={{ headerShown: false, presentation: "modal" }} />
       </Stack>
     </NavThemeProvider>
   );
@@ -181,7 +113,7 @@ function InactivityWrapper({ children }: { children: React.ReactNode }) {
 }
 
 function AuthGate() {
-  const { isAuthenticated, isAuthLoading, isLocked, currentUserId } = useAuth();
+  const { isAuthenticated, isAuthLoading, isLocked } = useAuth();
 
   // After login, drain any QR-scan deep-link that arrived before auth.
   useEffect(() => {
@@ -208,42 +140,30 @@ function AuthGate() {
   }
 
   return (
-    <RevenueCatProvider userId={currentUserId}>
-      <ThemeProvider>
-        <DrawerProvider>
-          <AppProvider>
-            <InactivityWrapper>
-              <View style={{ flex: 1, backgroundColor: Colors.light.backgroundSolid }}>
-                <LinearGradient
-                  colors={["rgba(20,93,160,0.14)", "rgba(20,93,160,0.03)", "rgba(244,247,251,0)"]}
-                  locations={[0, 0.35, 1]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={StyleSheet.absoluteFill}
-                  pointerEvents="none"
-                />
-                <LinearGradient
-                  colors={["rgba(15,118,110,0.08)", "rgba(15,118,110,0)", "rgba(8,17,29,0.06)"]}
-                  locations={[0, 0.45, 1]}
-                  start={{ x: 1, y: 0 }}
-                  end={{ x: 0, y: 1 }}
-                  style={StyleSheet.absoluteFill}
-                  pointerEvents="none"
-                />
-                <MessengerProvider>
-                  <RootLayoutNav />
-                </MessengerProvider>
-                <AppDrawer />
-                <GlobalAIFAB />
-                <PendingSyncBanner />
-                <ReconnectingBanner />
-                <Toast />
-              </View>
-            </InactivityWrapper>
-          </AppProvider>
-        </DrawerProvider>
-      </ThemeProvider>
-    </RevenueCatProvider>
+    <ThemeProvider>
+      <InactivityWrapper>
+        <View style={{ flex: 1, backgroundColor: Colors.light.backgroundSolid }}>
+          <LinearGradient
+            colors={["rgba(20,93,160,0.14)", "rgba(20,93,160,0.03)", "rgba(244,247,251,0)"]}
+            locations={[0, 0.35, 1]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={StyleSheet.absoluteFill}
+            pointerEvents="none"
+          />
+          <LinearGradient
+            colors={["rgba(15,118,110,0.08)", "rgba(15,118,110,0)", "rgba(8,17,29,0.06)"]}
+            locations={[0, 0.45, 1]}
+            start={{ x: 1, y: 0 }}
+            end={{ x: 0, y: 1 }}
+            style={StyleSheet.absoluteFill}
+            pointerEvents="none"
+          />
+          <RootLayoutNav />
+          <ReconnectingBanner />
+        </View>
+      </InactivityWrapper>
+    </ThemeProvider>
   );
 }
 
@@ -273,7 +193,9 @@ export default function RootLayout() {
     Inter_700Bold,
   });
 
-  // Capture content shared from the iOS/Android Share sheet (e.g. a screenshot)
+  // Capture content shared from the iOS/Android Share sheet (e.g. a screenshot).
+  // The native share target stays registered (app.json plugin); shared files are
+  // stored in the inbox and the app lands on the cases list.
   const { hasShareIntent, shareIntent, resetShareIntent } = useShareIntent({
     debug: false,
     resetOnBackground: true,
@@ -294,10 +216,6 @@ export default function RootLayout() {
       .catch(() => {})
       .finally(() => {
         resetShareIntent();
-        // Jump to the dashboard so the LabFileDropZone picks the shared
-        // file(s) up into the lab's case media intake area. We intentionally
-        // do NOT route to the new-case (scan) flow — shared screenshots
-        // should land in the intake/drop zone, not auto-start a new case.
         try {
           router.replace("/(tabs)");
         } catch {}
@@ -310,7 +228,7 @@ export default function RootLayout() {
     }
   }, [fontsLoaded, fontError]);
 
-  // Handle files shared to LabTrax from iOS/Android share sheet
+  // Handle files shared to LabTrax from iOS/Android share sheet + case deep-links
   useEffect(() => {
     if (Platform.OS === "web") return;
 
@@ -336,12 +254,9 @@ export default function RootLayout() {
           const caseMatch = parsed.pathname.match(/^\/cases\/([^/?#]+)/);
           if (caseMatch) {
             const caseNumber = decodeURIComponent(caseMatch[1]);
-            // Try to resolve caseNumber → case ID and navigate immediately.
-            // This succeeds when the user is already authenticated.
             resolveCaseAndNavigate(caseNumber)
               .then((resolved) => {
                 if (!resolved) {
-                  // Not authenticated yet — store for AuthGate to handle after login.
                   pendingCaseNumber = caseNumber;
                 }
               })
@@ -353,16 +268,13 @@ export default function RootLayout() {
       }
     }
 
-    // Incoming URL while app is running
     const sub = Linking.addEventListener("url", handleUrl);
-    // File opened while app was closed or via QR scan
     Linking.getInitialURL().then((url) => {
       if (url) handleUrl({ url });
     }).catch(() => {});
 
     return () => sub.remove();
   }, []);
-
 
   if (!fontsLoaded && !fontError) {
     return null;

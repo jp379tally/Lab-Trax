@@ -1,0 +1,142 @@
+New direction. Stop the current mobile rebuild approach.
+
+I do not want the old mobile app UI/HUD preserved with new hooks underneath.
+
+I want the existing mobile app removed from the LabTrax product direction and rebuilt from the desktop app as the foundation.
+
+The desktop/web app is the source of truth for:
+
+* database
+* workflows
+* case structure
+* case detail layout
+* restorations
+* notes
+* files
+* invoices
+* history
+* provider/practice workflows
+* pricing
+* labels
+* barcode/pan workflows
+
+The new mobile app should be a mobile adaptation of the desktop app, not a continuation of the old mobile app.
+
+## Phase 1 — Mobile Viewer / Case Lookup Only
+
+Remove old mobile functionality from the active app.
+
+Phase 1 scope is intentionally basic:
+
+1. Login / logout.
+2. Load cases from the same database used by desktop/web.
+3. Cases entered on desktop/web must appear on mobile.
+4. Mobile must be able to search/look up cases.
+5. User must be able to open a case, such as Erik Steffen, and see:
+
+   * overview
+   * restorations
+   * notes
+   * files
+   * invoice
+   * history
+6. Read-only is acceptable for Phase 1.
+7. No AI Reader in Phase 1.
+8. No mobile case creation in Phase 1.
+9. No mobile invoicing in Phase 1.
+10. No mobile photo upload in Phase 1.
+11. No barcode assignment in Phase 1.
+12. No location changes in Phase 1.
+
+The purpose of Phase 1 is to prove that mobile can accurately display the same desktop/web case data using the same database and workflows.
+
+Phase 1 acceptance:
+
+* User can log in.
+* User can log out.
+* Desktop-created cases appear on mobile.
+* Erik Steffen’s case appears on mobile.
+* Opening a case shows the same overview/restorations/notes/files/invoice/history as desktop/web.
+* No local-only mobile case data.
+* No `/api/legacy/cases`.
+* No mobile-only invoice reconstruction.
+* No mobile-only case history.
+* No mobile-only attachments.
+
+## Phase 2 — AI Reader + Case Intake + Pan Barcode
+
+Only after Phase 1 passes, add mobile creation/intake.
+
+Phase 2 scope:
+
+1. AI Reader prescription capture.
+2. Automatic prescription detection similar to OneDrive.
+3. Toggle automatic shutter on/off.
+4. Manual capture still available.
+5. AI reads prescription.
+6. Mobile follows the same case creation workflow as desktop/web.
+7. Unknown provider/practice workflow must match desktop/web.
+8. Case is created in the same database as desktop/web.
+9. Invoice is created using the same desktop/web invoice workflow.
+10. User assigns physical case pan using barcode scan.
+11. Barcode is tied to the canonical case.
+12. Barcode can then be used to locate the case throughout the lab.
+13. User can hard-press/long-press case to locate it.
+14. After barcode assignment, prompt:
+    “Print case label?”
+15. Printed case label uses the same format/data as desktop/web.
+16. At the end of Phase 2:
+
+* case is entered
+* invoice is created
+* pan barcode is assigned
+* label print prompt has happened
+
+Do not add other features before Phase 2 is approved.
+
+## Required implementation approach
+
+Do not keep patching the existing mobile app.
+
+Create a new mobile shell derived from the desktop/web app.
+
+Use desktop/web as the foundation:
+
+* same canonical APIs
+* same generated hooks
+* same case detail sections
+* same invoice model
+* same attachment model
+* same case history/event model
+* same label data
+* same provider/practice workflow
+
+Mobile-specific features are adapters only:
+
+* camera
+* barcode scanner
+* hard press/long press
+* biometric lock
+* share intent
+
+They must feed into the same desktop/web workflows.
+
+## Before coding
+
+Provide a revised implementation plan with only these phases:
+
+Phase 1:
+Desktop/web-derived mobile case viewer.
+
+Phase 2:
+AI Reader + canonical case creation + invoice + pan barcode + label prompt.
+
+Do not proceed with the old phased plan.
+
+Do not keep building the old mobile UI.
+
+Do not start coding until I approve the revised two-phase plan.
+
+Checkpoint for plan:
+
+“Mobile Rebuild Reset — Desktop-Derived Two-Phase Plan”

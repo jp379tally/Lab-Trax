@@ -1,5 +1,6 @@
 // Lightweight inbox for files shared to LabTrax via the iOS/Android share sheet.
-// Root layout writes incoming file URLs here; LabFileDropZone reads and clears them.
+// Root layout writes incoming file URLs here. As of the Phase 1 read-only reset
+// there is no consumer of these entries; a share-target consumer returns in Phase 2.
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const KEY = "@labtrax_shared_file_inbox";
@@ -9,9 +10,9 @@ export interface InboxEntry {
   receivedAt: number;
 }
 
-// Lightweight pub/sub so consumers (e.g. the dashboard's LabFileDropZone) can
-// react to new inbox entries even when their focus state hasn't changed —
-// e.g. a share intent arriving while the user is already on the dashboard.
+// Lightweight pub/sub kept for the future Phase 2 share-target consumer, so it
+// can react to new inbox entries even when its focus state hasn't changed —
+// e.g. a share intent arriving while the user is already in the app.
 type Listener = () => void;
 const listeners = new Set<Listener>();
 
