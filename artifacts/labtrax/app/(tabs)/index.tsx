@@ -48,6 +48,7 @@ import * as SecureStore from "expo-secure-store";
 import { useColumnWidths } from "@/hooks/useColumnWidths";
 import { StatTile } from "@/components/ui/StatTile";
 import { Card } from "@/components/ui/Card";
+import { LabFileDropZone } from "@/components/LabFileDropZone";
 
 function formatCurrency(amount: number): string {
   return `$${amount.toFixed(2)}`;
@@ -1125,6 +1126,14 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
         <Ionicons name="chevron-forward" size={20} color={colors.textTertiary} />
       </Pressable>
     </ScrollView>
+    <LabFileDropZone
+      cases={cases}
+      clients={clients}
+      currentUser={currentUser}
+      onAddToCase={(caseId, fileUri) => addCasePhoto(caseId, fileUri, currentUserInitials)}
+      isAdmin={isLabAdmin}
+      isFocused={dashboardFocused}
+    />
     </View>
 
     <Modal
