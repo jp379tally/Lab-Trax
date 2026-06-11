@@ -531,6 +531,27 @@ vi.mock("@workspace/api-client-react", () => ({
     isError: false,
     refetch: vi.fn(async () => undefined),
   }),
+  useListInvoices: () => {
+    const raw = (mockAppOverrides.current.invoices as unknown[]) ?? [];
+    return {
+      data: { ok: true, data: raw },
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(async () => undefined),
+    };
+  },
+  useUpdateInvoice: () => ({
+    mutateAsync: vi.fn(async () => ({ ok: true, data: null })),
+    mutate: vi.fn(),
+    isPending: false,
+  }),
+  useGenerateInvoiceForCase: () => ({
+    mutateAsync: vi.fn(async () => ({ ok: true, data: null })),
+    mutate: vi.fn(),
+    isPending: false,
+  }),
   useCaseAttachments: () => ({
     data: [],
     isLoading: false,

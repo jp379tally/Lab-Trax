@@ -19,6 +19,7 @@ import React, {
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system";
 import { getApiUrl, resilientFetch, getAccessToken, chunkedUploadCaseMedia, retryAsync, fireWithRetry, logDebugEvent, waitForHydration } from "./query-client";
+import { useGenerateInvoiceForCase, useUpdateInvoice } from "@workspace/api-client-react";
 import { isSyncSuccess } from "./sync-types";
 import {
   type PendingUpload,
@@ -318,6 +319,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   };
   const [pendingInvoiceEditId, setPendingInvoiceEditId] = useState<string | null>(null);
+  // Generated OpenAPI mutations — route server-side invoice generate/patch
+  // through the shared customFetch client (auth + 401-refresh) instead of raw
+  // fetch. Optimistic local invoice state is still owned by this provider.
+  const { mutateAsync: generateServerInvoiceAsync } = useGenerateInvoiceForCase();
+  const { mutateAsync: updateServerInvoiceAsync } = useUpdateInvoice();
   const [shippingAccounts, setShippingAccounts] = useState<ShippingAccount[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -1729,21 +1735,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (inFlightInvoiceGenIdsRef.current.has(localInvoiceId)) return;
     inFlightInvoiceGenIdsRef.current.add(localInvoiceId);
     try {
-      const res = await resilientFetch(
-        `/api/invoices/cases/${caseId}/generate-invoice`,
-        { method: "POST" }
-      );
-      if (!res.ok) {
-        console.log(
-          "Generate invoice failed:",
-          caseId,
-          res.status,
-          await res.text().catch(() => "")
-        );
-        return;
-      }
-      const payload = await res.json().catch(() => null);
-      const serverInvoice = payload?.data ?? payload;
+      const payload = await generateServerInvoiceAsync({ caseId, data: {} });
+      const serverInvoice = (payload?.data ?? payload) as
+        | { id?: string }
+        | null;
       const serverInvoiceId: string | undefined = serverInvoice?.id;
       if (!serverInvoiceId) return;
       setInvoices((prev) => {
@@ -1785,19 +1780,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     body: Record<string, any>
   ) {
     try {
-      const res = await resilientFetch(`/api/invoices/${serverId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+      // Mobile sends a richer body (displayMetadata, sub-items) than the
+      // OpenAPI UpdateInvoiceInput models; the server accepts the extra
+      // fields, so we route through the generated client and cast.
+      await updateServerInvoiceAsync({
+        invoiceId: serverId,
+        data: body as Record<string, unknown>,
       });
-      if (!res.ok) {
-        console.log(
-          "Invoice PATCH failed:",
-          serverId,
-          res.status,
-          await res.text().catch(() => "")
-        );
-      }
     } catch (e) {
       console.log("Could not PATCH invoice:", e);
     }

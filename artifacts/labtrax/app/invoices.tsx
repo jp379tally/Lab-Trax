@@ -16,7 +16,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { AppHeader } from "@/components/ui/AppHeader";
 import { FilterBar } from "@/components/ui/FilterBar";
 import { StatusBadge } from "@/components/ui/StatusBadge";
-import { useInvoices } from "@workspace/api-client-react";
+import { useListInvoices } from "@workspace/api-client-react";
 
 type InvoiceStatus = "all" | "open" | "paid" | "overdue" | "draft" | "void";
 
@@ -94,14 +94,40 @@ function AIInsightBanner({ invoices }: { invoices: ApiInvoice[] }) {
   );
 }
 
+function ErrorRetryBanner({ onRetry }: { onRetry: () => void }) {
+  const { colors } = useTheme();
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: "#F59E0B15", borderWidth: 1, borderColor: "#F59E0B40", borderRadius: 10, marginHorizontal: 16, marginVertical: 8, padding: 12, gap: 10 }}>
+      <Ionicons name="cloud-offline-outline" size={18} color="#B45309" />
+      <View style={{ flex: 1 }}>
+        <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#B45309" }}>Can't reach the server</Text>
+        <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textSecondary, marginTop: 2 }}>Showing your last saved invoices. Check your connection and retry.</Text>
+      </View>
+      <Pressable onPress={onRetry} hitSlop={8} style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, backgroundColor: "#B45309" }}>
+        <Ionicons name="refresh" size={13} color="#FFFFFF" />
+        <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#FFFFFF" }}>Retry</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 export default function InvoicesScreen() {
   const { colors, isDark } = useTheme();
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<InvoiceStatus>("all");
 
-  const { data: rawInvoices = [], isLoading: loading, isFetching, refetch } = useInvoices();
+  const {
+    data: invoiceResult,
+    isLoading: loading,
+    isFetching,
+    isError,
+    refetch,
+  } = useListInvoices();
+  const invoices = useMemo<ApiInvoice[]>(
+    () => (invoiceResult?.data ?? []) as unknown as ApiInvoice[],
+    [invoiceResult],
+  );
   const refreshing = isFetching && !loading;
-  const invoices = rawInvoices as ApiInvoice[];
 
   const enriched = useMemo(() =>
     invoices.map((inv) => ({
@@ -174,6 +200,8 @@ export default function InvoicesScreen() {
           </Pressable>
         )}
       </View>
+
+      {isError && <ErrorRetryBanner onRetry={() => { void refetch(); }} />}
 
       {!loading && <AIInsightBanner invoices={enriched} />}
 
