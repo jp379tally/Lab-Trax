@@ -5,9 +5,9 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import type { CaseListResultDataItem } from "./caseListResultDataItem";
+import type { CanonicalCase } from "./canonicalCase";
 
 export interface CaseListResult {
   ok?: boolean;
-  data?: CaseListResultDataItem[];
+  data?: CanonicalCase[];
 }

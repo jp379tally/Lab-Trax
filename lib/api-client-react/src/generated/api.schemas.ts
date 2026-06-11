@@ -5,14 +5,102 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-/**
- * Case row (canonical or projected legacy)
- */
-export type CaseListResultDataItem = { [key: string]: unknown };
+export interface CanonicalActivityEntry {
+  id?: string | null;
+  type?: string | null;
+  timestamp?: number | string | null;
+  description?: string | null;
+  imageUri?: string | null;
+  attachmentId?: string | null;
+  fileType?: string | null;
+  station?: string | null;
+  user?: string | null;
+  [key: string]: unknown;
+}
+
+export interface CanonicalAttachment {
+  id: string;
+  caseId?: string | null;
+  fileName?: string | null;
+  fileType?: string | null;
+  storageKey?: string | null;
+  visibility?: string | null;
+  createdAt?: string | null;
+  uploaderName?: string | null;
+  [key: string]: unknown;
+}
+
+export interface CanonicalRestoration {
+  id?: string | null;
+  toothNumber?: string | null;
+  restorationType?: string | null;
+  restorationSubtype?: string | null;
+  material?: string | null;
+  shade?: string | null;
+  notes?: string | null;
+  quantity?: number | null;
+  [key: string]: unknown;
+}
+
+export interface CanonicalRemakeRef {
+  id: string;
+  caseNumber: string;
+  patientFirstName?: string | null;
+  patientLastName?: string | null;
+  status?: string | null;
+  createdAt?: string | null;
+  remakeReason?: string | null;
+  remakeCharged?: boolean | null;
+  [key: string]: unknown;
+}
+
+export interface CanonicalCase {
+  id: string;
+  caseNumber: string;
+  labOrganizationId?: string | null;
+  providerOrganizationId?: string | null;
+  patientFirstName?: string | null;
+  patientLastName?: string | null;
+  doctorName?: string | null;
+  status: string;
+  priority?: string | null;
+  dueDate?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  restorationCount?: number | null;
+  restorationTypes?: string | null;
+  restorationMaterials?: string | null;
+  teeth?: string | null;
+  totalPrice?: string | null;
+  casePanBarcode?: string | null;
+  remakeOfCaseId?: string | null;
+  remakeReason?: string | null;
+  remakeCharged?: boolean | null;
+  needsAiReview?: boolean | null;
+  aiImportSource?: string | null;
+  shade?: string | null;
+  notes?: string | null;
+  patientDob?: string | null;
+  trackingNumber?: string | null;
+  expectedDeliveryDate?: string | null;
+  createdByUserId?: string | null;
+  suggestedProviderOrgId?: string | null;
+  suggestedPracticeName?: string | null;
+  suggestedDoctorName?: string | null;
+  photos?: string[] | null;
+  videos?: string[] | null;
+  activityLog?: CanonicalActivityEntry[] | null;
+  attachments?: CanonicalAttachment[] | null;
+  restorations?: CanonicalRestoration[] | null;
+  remakeOriginal?: CanonicalRemakeRef | null;
+  remakeChildren?: CanonicalRemakeRef[] | null;
+  _source?: string;
+  [key: string]: unknown;
+}
 
 export interface CaseListResult {
   ok?: boolean;
-  data?: CaseListResultDataItem[];
+  data?: CanonicalCase[];
 }
 
 export interface CreateCaseInput {
@@ -33,15 +121,9 @@ export interface CreateCaseInput {
   needsAiReview?: boolean | null;
 }
 
-/**
- * Full case detail with nested relations
- */
-export type CaseDetailResultData = { [key: string]: unknown };
-
 export interface CaseDetailResult {
   ok?: boolean;
-  /** Full case detail with nested relations */
-  data?: CaseDetailResultData;
+  data?: CanonicalCase;
 }
 
 /**

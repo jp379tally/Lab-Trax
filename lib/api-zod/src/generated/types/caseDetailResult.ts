@@ -5,10 +5,9 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import type { CaseDetailResultData } from "./caseDetailResultData";
+import type { CanonicalCase } from "./canonicalCase";
 
 export interface CaseDetailResult {
   ok?: boolean;
-  /** Full case detail with nested relations */
-  data?: CaseDetailResultData;
+  data?: CanonicalCase;
 }

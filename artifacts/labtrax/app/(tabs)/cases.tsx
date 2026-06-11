@@ -103,7 +103,7 @@ export default function CasesScreen() {
   const { data: caseListResult, isLoading: casesLoading, refetch: refetchCases } = useListCases();
   // Split canonical (server-native) cases from bridged legacy mobile cases (_source === "mobile").
   // Legacy cases are shown in a separate labeled read-only section.
-  const rawCases = useMemo<CanonicalCase[]>(() => (caseListResult?.data ?? []) as CanonicalCase[], [caseListResult]);
+  const rawCases = useMemo<CanonicalCase[]>(() => caseListResult?.data ?? [], [caseListResult]);
   const canonicalRaw = useMemo(() => rawCases.filter(c => c._source !== "mobile"), [rawCases]);
   const legacyRaw = useMemo(() => rawCases.filter(c => c._source === "mobile"), [rawCases]);
   const cases = useMemo<LabCase[]>(() => canonicalRaw.map(canonicalCaseToDisplay), [canonicalRaw]);

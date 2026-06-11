@@ -264,7 +264,7 @@ export default function CaseDetailScreen() {
   // Canonical API hook — drives fullCaseData and provides a fallback for
   // caseItemBase when this case isn't yet in the AppContext cases array.
   const { data: canonicalCaseResult, refetch: refetchCanonicalCase } = useGetCase(id ?? "");
-  const canonicalCase = (canonicalCaseResult?.data ?? null) as CanonicalCaseType | null;
+  const canonicalCase = canonicalCaseResult?.data ?? null;
   const { currentUser, userType, registeredUsers } = useAuth();
   const currentRegisteredUser = registeredUsers.find(
     (user) => user.username?.toLowerCase() === (currentUser || "").toLowerCase()

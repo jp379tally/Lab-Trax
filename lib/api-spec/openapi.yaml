@@ -1890,6 +1890,131 @@ paths:
           description: Marked as read
 components:
   schemas:
+    CanonicalActivityEntry:
+      type: object
+      properties:
+        id: { type: string, nullable: true }
+        type: { type: string, nullable: true }
+        timestamp:
+          nullable: true
+          oneOf:
+            - type: number
+            - type: string
+        description: { type: string, nullable: true }
+        imageUri: { type: string, nullable: true }
+        attachmentId: { type: string, nullable: true }
+        fileType: { type: string, nullable: true }
+        station: { type: string, nullable: true }
+        user: { type: string, nullable: true }
+      additionalProperties: true
+    CanonicalAttachment:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string }
+        caseId: { type: string, nullable: true }
+        fileName: { type: string, nullable: true }
+        fileType: { type: string, nullable: true }
+        storageKey: { type: string, nullable: true }
+        visibility: { type: string, nullable: true }
+        createdAt: { type: string, nullable: true }
+        uploaderName: { type: string, nullable: true }
+      additionalProperties: true
+    CanonicalRestoration:
+      type: object
+      properties:
+        id: { type: string, nullable: true }
+        toothNumber: { type: string, nullable: true }
+        restorationType: { type: string, nullable: true }
+        restorationSubtype: { type: string, nullable: true }
+        material: { type: string, nullable: true }
+        shade: { type: string, nullable: true }
+        notes: { type: string, nullable: true }
+        quantity: { type: number, nullable: true }
+      additionalProperties: true
+    CanonicalRemakeRef:
+      type: object
+      required: [id, caseNumber]
+      properties:
+        id: { type: string }
+        caseNumber: { type: string }
+        patientFirstName: { type: string, nullable: true }
+        patientLastName: { type: string, nullable: true }
+        status: { type: string, nullable: true }
+        createdAt: { type: string, nullable: true }
+        remakeReason: { type: string, nullable: true }
+        remakeCharged: { type: boolean, nullable: true }
+      additionalProperties: true
+    CanonicalCase:
+      type: object
+      required: [id, caseNumber, status]
+      properties:
+        id: { type: string }
+        caseNumber: { type: string }
+        labOrganizationId: { type: string, nullable: true }
+        providerOrganizationId: { type: string, nullable: true }
+        patientFirstName: { type: string, nullable: true }
+        patientLastName: { type: string, nullable: true }
+        doctorName: { type: string, nullable: true }
+        status: { type: string }
+        priority: { type: string, nullable: true }
+        dueDate: { type: string, nullable: true }
+        createdAt: { type: string, nullable: true }
+        updatedAt: { type: string, nullable: true }
+        restorationCount: { type: number, nullable: true }
+        restorationTypes: { type: string, nullable: true }
+        restorationMaterials: { type: string, nullable: true }
+        teeth: { type: string, nullable: true }
+        totalPrice: { type: string, nullable: true }
+        casePanBarcode: { type: string, nullable: true }
+        remakeOfCaseId: { type: string, nullable: true }
+        remakeReason: { type: string, nullable: true }
+        remakeCharged: { type: boolean, nullable: true }
+        needsAiReview: { type: boolean, nullable: true }
+        aiImportSource: { type: string, nullable: true }
+        shade: { type: string, nullable: true }
+        notes: { type: string, nullable: true }
+        patientDob: { type: string, nullable: true }
+        trackingNumber: { type: string, nullable: true }
+        expectedDeliveryDate: { type: string, nullable: true }
+        createdByUserId: { type: string, nullable: true }
+        suggestedProviderOrgId: { type: string, nullable: true }
+        suggestedPracticeName: { type: string, nullable: true }
+        suggestedDoctorName: { type: string, nullable: true }
+        photos:
+          type: array
+          items: { type: string }
+          nullable: true
+        videos:
+          type: array
+          items: { type: string }
+          nullable: true
+        activityLog:
+          type: array
+          items:
+            $ref: "#/components/schemas/CanonicalActivityEntry"
+          nullable: true
+        attachments:
+          type: array
+          items:
+            $ref: "#/components/schemas/CanonicalAttachment"
+          nullable: true
+        restorations:
+          type: array
+          items:
+            $ref: "#/components/schemas/CanonicalRestoration"
+          nullable: true
+        remakeOriginal:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/CanonicalRemakeRef"
+        remakeChildren:
+          type: array
+          items:
+            $ref: "#/components/schemas/CanonicalRemakeRef"
+          nullable: true
+        _source: { type: string }
+      additionalProperties: true
     CaseListResult:
       type: object
       properties:
@@ -1897,9 +2022,7 @@ components:
         data:
           type: array
           items:
-            type: object
-            description: Case row (canonical or projected legacy)
-            additionalProperties: true
+            $ref: "#/components/schemas/CanonicalCase"
     CreateCaseInput:
       type: object
       required: [caseNumber, labOrganizationId]
@@ -1949,9 +2072,7 @@ components:
       properties:
         ok: { type: boolean }
         data:
-          type: object
-          description: Full case detail with nested relations
-          additionalProperties: true
+          $ref: "#/components/schemas/CanonicalCase"
     InvoiceListResult:
       type: object
       properties:

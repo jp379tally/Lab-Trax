@@ -715,9 +715,112 @@ export const ListCasesResponse = zod.object({
   ok: zod.boolean().optional(),
   data: zod
     .array(
-      zod
-        .record(zod.string(), zod.unknown())
-        .describe("Case row (canonical or projected legacy)"),
+      zod.object({
+        id: zod.string(),
+        caseNumber: zod.string(),
+        labOrganizationId: zod.string().nullish(),
+        providerOrganizationId: zod.string().nullish(),
+        patientFirstName: zod.string().nullish(),
+        patientLastName: zod.string().nullish(),
+        doctorName: zod.string().nullish(),
+        status: zod.string(),
+        priority: zod.string().nullish(),
+        dueDate: zod.string().nullish(),
+        createdAt: zod.string().nullish(),
+        updatedAt: zod.string().nullish(),
+        restorationCount: zod.number().nullish(),
+        restorationTypes: zod.string().nullish(),
+        restorationMaterials: zod.string().nullish(),
+        teeth: zod.string().nullish(),
+        totalPrice: zod.string().nullish(),
+        casePanBarcode: zod.string().nullish(),
+        remakeOfCaseId: zod.string().nullish(),
+        remakeReason: zod.string().nullish(),
+        remakeCharged: zod.boolean().nullish(),
+        needsAiReview: zod.boolean().nullish(),
+        aiImportSource: zod.string().nullish(),
+        shade: zod.string().nullish(),
+        notes: zod.string().nullish(),
+        patientDob: zod.string().nullish(),
+        trackingNumber: zod.string().nullish(),
+        expectedDeliveryDate: zod.string().nullish(),
+        createdByUserId: zod.string().nullish(),
+        suggestedProviderOrgId: zod.string().nullish(),
+        suggestedPracticeName: zod.string().nullish(),
+        suggestedDoctorName: zod.string().nullish(),
+        photos: zod.array(zod.string()).nullish(),
+        videos: zod.array(zod.string()).nullish(),
+        activityLog: zod
+          .array(
+            zod.object({
+              id: zod.string().nullish(),
+              type: zod.string().nullish(),
+              timestamp: zod.union([zod.number(), zod.string()]).nullish(),
+              description: zod.string().nullish(),
+              imageUri: zod.string().nullish(),
+              attachmentId: zod.string().nullish(),
+              fileType: zod.string().nullish(),
+              station: zod.string().nullish(),
+              user: zod.string().nullish(),
+            }),
+          )
+          .nullish(),
+        attachments: zod
+          .array(
+            zod.object({
+              id: zod.string(),
+              caseId: zod.string().nullish(),
+              fileName: zod.string().nullish(),
+              fileType: zod.string().nullish(),
+              storageKey: zod.string().nullish(),
+              visibility: zod.string().nullish(),
+              createdAt: zod.string().nullish(),
+              uploaderName: zod.string().nullish(),
+            }),
+          )
+          .nullish(),
+        restorations: zod
+          .array(
+            zod.object({
+              id: zod.string().nullish(),
+              toothNumber: zod.string().nullish(),
+              restorationType: zod.string().nullish(),
+              restorationSubtype: zod.string().nullish(),
+              material: zod.string().nullish(),
+              shade: zod.string().nullish(),
+              notes: zod.string().nullish(),
+              quantity: zod.number().nullish(),
+            }),
+          )
+          .nullish(),
+        remakeOriginal: zod
+          .object({
+            id: zod.string(),
+            caseNumber: zod.string(),
+            patientFirstName: zod.string().nullish(),
+            patientLastName: zod.string().nullish(),
+            status: zod.string().nullish(),
+            createdAt: zod.string().nullish(),
+            remakeReason: zod.string().nullish(),
+            remakeCharged: zod.boolean().nullish(),
+          })
+          .nullish(),
+        remakeChildren: zod
+          .array(
+            zod.object({
+              id: zod.string(),
+              caseNumber: zod.string(),
+              patientFirstName: zod.string().nullish(),
+              patientLastName: zod.string().nullish(),
+              status: zod.string().nullish(),
+              createdAt: zod.string().nullish(),
+              remakeReason: zod.string().nullish(),
+              remakeCharged: zod.boolean().nullish(),
+            }),
+          )
+          .nullish(),
+        _source: zod.string().optional(),
+      }),
     )
     .optional(),
 });
@@ -1296,9 +1399,113 @@ export const GetCaseParams = zod.object({
 export const GetCaseResponse = zod.object({
   ok: zod.boolean().optional(),
   data: zod
-    .record(zod.string(), zod.unknown())
-    .optional()
-    .describe("Full case detail with nested relations"),
+    .object({
+      id: zod.string(),
+      caseNumber: zod.string(),
+      labOrganizationId: zod.string().nullish(),
+      providerOrganizationId: zod.string().nullish(),
+      patientFirstName: zod.string().nullish(),
+      patientLastName: zod.string().nullish(),
+      doctorName: zod.string().nullish(),
+      status: zod.string(),
+      priority: zod.string().nullish(),
+      dueDate: zod.string().nullish(),
+      createdAt: zod.string().nullish(),
+      updatedAt: zod.string().nullish(),
+      restorationCount: zod.number().nullish(),
+      restorationTypes: zod.string().nullish(),
+      restorationMaterials: zod.string().nullish(),
+      teeth: zod.string().nullish(),
+      totalPrice: zod.string().nullish(),
+      casePanBarcode: zod.string().nullish(),
+      remakeOfCaseId: zod.string().nullish(),
+      remakeReason: zod.string().nullish(),
+      remakeCharged: zod.boolean().nullish(),
+      needsAiReview: zod.boolean().nullish(),
+      aiImportSource: zod.string().nullish(),
+      shade: zod.string().nullish(),
+      notes: zod.string().nullish(),
+      patientDob: zod.string().nullish(),
+      trackingNumber: zod.string().nullish(),
+      expectedDeliveryDate: zod.string().nullish(),
+      createdByUserId: zod.string().nullish(),
+      suggestedProviderOrgId: zod.string().nullish(),
+      suggestedPracticeName: zod.string().nullish(),
+      suggestedDoctorName: zod.string().nullish(),
+      photos: zod.array(zod.string()).nullish(),
+      videos: zod.array(zod.string()).nullish(),
+      activityLog: zod
+        .array(
+          zod.object({
+            id: zod.string().nullish(),
+            type: zod.string().nullish(),
+            timestamp: zod.union([zod.number(), zod.string()]).nullish(),
+            description: zod.string().nullish(),
+            imageUri: zod.string().nullish(),
+            attachmentId: zod.string().nullish(),
+            fileType: zod.string().nullish(),
+            station: zod.string().nullish(),
+            user: zod.string().nullish(),
+          }),
+        )
+        .nullish(),
+      attachments: zod
+        .array(
+          zod.object({
+            id: zod.string(),
+            caseId: zod.string().nullish(),
+            fileName: zod.string().nullish(),
+            fileType: zod.string().nullish(),
+            storageKey: zod.string().nullish(),
+            visibility: zod.string().nullish(),
+            createdAt: zod.string().nullish(),
+            uploaderName: zod.string().nullish(),
+          }),
+        )
+        .nullish(),
+      restorations: zod
+        .array(
+          zod.object({
+            id: zod.string().nullish(),
+            toothNumber: zod.string().nullish(),
+            restorationType: zod.string().nullish(),
+            restorationSubtype: zod.string().nullish(),
+            material: zod.string().nullish(),
+            shade: zod.string().nullish(),
+            notes: zod.string().nullish(),
+            quantity: zod.number().nullish(),
+          }),
+        )
+        .nullish(),
+      remakeOriginal: zod
+        .object({
+          id: zod.string(),
+          caseNumber: zod.string(),
+          patientFirstName: zod.string().nullish(),
+          patientLastName: zod.string().nullish(),
+          status: zod.string().nullish(),
+          createdAt: zod.string().nullish(),
+          remakeReason: zod.string().nullish(),
+          remakeCharged: zod.boolean().nullish(),
+        })
+        .nullish(),
+      remakeChildren: zod
+        .array(
+          zod.object({
+            id: zod.string(),
+            caseNumber: zod.string(),
+            patientFirstName: zod.string().nullish(),
+            patientLastName: zod.string().nullish(),
+            status: zod.string().nullish(),
+            createdAt: zod.string().nullish(),
+            remakeReason: zod.string().nullish(),
+            remakeCharged: zod.boolean().nullish(),
+          }),
+        )
+        .nullish(),
+      _source: zod.string().optional(),
+    })
+    .optional(),
 });
 
 /**
