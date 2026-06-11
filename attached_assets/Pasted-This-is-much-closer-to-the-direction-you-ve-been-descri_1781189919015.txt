@@ -1,0 +1,138 @@
+This is much closer to the direction you've been describing than the earlier patch-style tasks.
+
+My assessment of #1473:
+
+### What it gets right
+
+* Treats the desktop/web workflows as the source of truth.
+* Eliminates the dual-data-model problem instead of adding more sync layers.
+* Moves mobile to the same canonical API contracts.
+* Pushes business logic back to the server/API layer.
+* Treats camera, AI Reader, QR scanning, share intent, etc. as adapters rather than separate data systems.
+* Defines real TestFlight acceptance criteria instead of relying only on unit tests. 
+
+### What I would change before approving implementation
+
+#### 1. Don't promise "no local state" for offline recovery
+
+There's a contradiction in the document.
+
+Early on it says:
+
+> No AsyncStorage case/invoice/photo state.
+
+But acceptance criterion #10 says:
+
+> Mutations queued during 60 s airplane mode flush successfully on reconnect. 
+
+Those two statements conflict.
+
+You need to decide:
+
+**Option A (recommended):**
+
+* Online-first.
+* No offline mutation queue.
+* If offline, show an error and don't save.
+
+**Option B:**
+
+* Keep a real mutation queue.
+* Persist it locally.
+* Explicitly design and test it.
+
+Trying to do both is how you got into this situation originally.
+
+---
+
+#### 2. Rebuild Case Detail before Scan
+
+I would change the order:
+
+Current:
+
+1. Foundation
+2. Cases
+3. Scan
+
+I'd do:
+
+1. Foundation
+2. Cases list
+3. Case detail
+4. Photo upload/view
+5. Scan / AI Reader
+6. Invoices
+
+Reason:
+If Case Detail isn't canonical first, Scan has nowhere trustworthy to send users after creating a case.
+
+---
+
+#### 3. Add a hard stop after each phase
+
+The earlier rebuild ran ahead without approval.
+
+Add:
+
+> After each phase:
+>
+> * Build TestFlight
+> * Run device checklist
+> * Obtain approval
+> * Then proceed
+
+No automatic Phase 1→5 chain.
+
+---
+
+#### 4. Keep Build 236 as the comparison build
+
+Build 236 is actually useful now.
+
+Not because it's the final answer.
+
+Because it provides a baseline for:
+
+* AI Reader behavior
+* photo uploads
+* token refresh
+* provider creation
+* QR lookup
+
+You can compare each rebuilt phase against a known build.
+
+---
+
+#### 5. Expand provider creation into the rebuild
+
+The issue you just hit:
+
+> "Doctor is not linked to a provider practice."
+
+should not be another standalone task.
+
+It belongs inside the Scan rebuild phase.
+
+Desktop behavior should be copied exactly:
+
+* find provider
+* suggest matches
+* create provider
+* create alias
+* create case
+
+all in one workflow.
+
+---
+
+### What I would tell Replit
+
+Approve #1473 as the master rebuild task **with four modifications**:
+
+1. Resolve the offline-recovery contradiction.
+2. Reorder work: Cases → Case Detail → Photos → Scan → Invoices.
+3. Mandatory approval checkpoint after every phase.
+4. Unknown-provider creation becomes part of Scan rebuild, not a separate task.
+
+That gives you one clear path instead of fifty separate patch tasks fighting each other.
