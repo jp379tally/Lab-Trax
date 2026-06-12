@@ -17,6 +17,47 @@ set -euo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 APP_JSON="$REPO_ROOT/artifacts/labtrax/app.json"
 
+# ── 0. Manual-approval gate ─────────────────────────────────────────────────
+# EAS/TestFlight builds are MANUAL-ONLY and require explicit approval.
+#
+# This workflow auto-restarts after every Replit merge and package install.
+# Without this gate, each merge would burn a pay-as-you-go build credit.
+# The gate is a one-shot sentinel file: create it to approve exactly one build,
+# then it is consumed (deleted) at the start of that run so future auto-restarts
+# continue to no-op.
+#
+# To approve and run a build:
+#   1. Confirm all automated gates pass (see REGRESSION_GUARDRAILS.md)
+#   2. Walk the TestFlight smoke-test checklist (see REGRESSION_GUARDRAILS.md)
+#   3. Drop the approval token:
+#        touch .local/.eas-build-approved
+#   4. Restart the "EAS iOS Build + Submit" workflow in the Replit workflow pane
+#
+APPROVAL_TOKEN="$REPO_ROOT/.local/.eas-build-approved"
+if [ ! -f "$APPROVAL_TOKEN" ]; then
+  echo "==> EAS build requires manual approval."
+  echo ""
+  echo "    This workflow auto-restarts on every merge and package install."
+  echo "    To prevent accidental credit usage, builds are gated behind a"
+  echo "    one-shot approval token."
+  echo ""
+  echo "    To approve a build:"
+  echo "      touch .local/.eas-build-approved"
+  echo "      (then restart the 'EAS iOS Build + Submit' workflow)"
+  echo ""
+  echo "    See REGRESSION_GUARDRAILS.md > Mobile Beta Protected Workflows"
+  echo "    for the full pre-build checklist that must pass first."
+  echo ""
+  echo "==> Exiting without building (no credit consumed)."
+  exit 0
+fi
+
+# Consume the token immediately — this build is approved, but future
+# auto-restarts will not be (they see no token and exit cleanly above).
+rm -f "$APPROVAL_TOKEN"
+echo "==> Build approved (token consumed). Proceeding with EAS build..."
+echo ""
+
 # Stays false until the build completes; the trap reverts the bump only on a
 # pre-build failure so we don't burn a slot when nothing was uploaded.
 persisted=false
