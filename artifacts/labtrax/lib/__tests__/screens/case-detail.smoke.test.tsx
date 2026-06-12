@@ -11,6 +11,7 @@ import {
 } from "../../../vitest.setup";
 
 import * as Sharing from "expo-sharing";
+import { router } from "expo-router";
 
 import CaseDetailScreen from "@/app/case/[id]";
 import {
@@ -170,30 +171,69 @@ describe("CaseDetailScreen (read-only viewer)", () => {
       uploaderName: "Lab Tech",
       createdAt: "2026-06-10T12:00:00.000Z",
     };
+    const stlAttachment = {
+      id: "att-stl-1",
+      fileName: "scan.stl",
+      fileType: "model/stl",
+      uploaderName: "Lab Tech",
+      createdAt: "2026-06-10T12:00:00.000Z",
+    };
 
     beforeEach(() => {
       setMockSearchParams({ id: inProgressCase.id });
+    });
+
+    it("renders a tappable card for a PDF attachment", () => {
       setMockAppState({
         cases: [inProgressCase],
         invoices: [],
         attachments: [pdfAttachment],
       });
-    });
-
-    it("renders a tappable card for a PDF attachment", () => {
       const { getByTestId } = render(<CaseDetailScreen />);
       fireEvent.press(getByTestId("section-tab-files"));
       expect(getByTestId(`doc-open-${pdfAttachment.id}`)).toBeTruthy();
     });
 
-    it("opens a tapped PDF attachment through the system viewer", async () => {
+    it("opens a tapped PDF in the in-app viewer (never the share sheet)", async () => {
+      setMockAppState({
+        cases: [inProgressCase],
+        invoices: [],
+        attachments: [pdfAttachment],
+      });
       const { getByTestId } = render(<CaseDetailScreen />);
       fireEvent.press(getByTestId("section-tab-files"));
       fireEvent.press(getByTestId(`doc-open-${pdfAttachment.id}`));
 
       await waitFor(() => {
+        expect(vi.mocked(router.push)).toHaveBeenCalledWith(
+          expect.objectContaining({
+            pathname: "/pdf-viewer",
+            params: expect.objectContaining({
+              url: `/api/cases/${inProgressCase.id}/attachments/${pdfAttachment.id}/file`,
+              fileName: pdfAttachment.fileName,
+              fileType: pdfAttachment.fileType,
+            }),
+          }),
+        );
+      });
+      // Tapping a PDF must not invoke the OS share sheet.
+      expect(vi.mocked(Sharing.shareAsync)).not.toHaveBeenCalled();
+    });
+
+    it("opens a tapped non-PDF document through the system viewer / share sheet", async () => {
+      setMockAppState({
+        cases: [inProgressCase],
+        invoices: [],
+        attachments: [stlAttachment],
+      });
+      const { getByTestId } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-files"));
+      fireEvent.press(getByTestId(`doc-open-${stlAttachment.id}`));
+
+      await waitFor(() => {
         expect(vi.mocked(Sharing.shareAsync)).toHaveBeenCalled();
       });
+      expect(vi.mocked(router.push)).not.toHaveBeenCalled();
     });
   });
 });

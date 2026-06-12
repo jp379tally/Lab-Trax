@@ -10,6 +10,7 @@ import {
   RefreshControl,
   TextInput,
   Alert,
+  Platform,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, router } from "expo-router";
@@ -173,6 +174,12 @@ function invoiceVariant(status: string | null | undefined): BadgeVariant {
 function isImageAttachment(fileType?: string | null, fileName?: string | null): boolean {
   if (fileType && fileType.toLowerCase().startsWith("image")) return true;
   if (fileName && /\.(jpe?g|png|heic|heif|gif|webp)$/i.test(fileName)) return true;
+  return false;
+}
+
+function isPdfAttachment(fileType?: string | null, fileName?: string | null): boolean {
+  if (fileType && fileType.toLowerCase().includes("pdf")) return true;
+  if (fileName && /\.pdf$/i.test(fileName.trim())) return true;
   return false;
 }
 
@@ -1268,10 +1275,29 @@ function FilesSection({
     fileType?: string | null;
   }): Promise<void> {
     if (openingId) return;
+    const url = `/api/cases/${caseId}/attachments/${a.id}/file`;
+
+    // iOS: open PDFs in the full in-app document viewer (zoom, scroll, page
+    // navigation via WKWebView). Tapping must never show the share sheet — that
+    // is reserved for the explicit Share action inside the viewer. Everything
+    // else — non-PDF documents, and PDFs on Android (WebView can't render PDFs
+    // inline) — falls back to the OS viewer / "open with".
+    if (Platform.OS === "ios" && isPdfAttachment(a.fileType, a.fileName)) {
+      router.push({
+        pathname: "/pdf-viewer",
+        params: {
+          url,
+          fileName: a.fileName ?? "",
+          fileType: a.fileType ?? "",
+        },
+      });
+      return;
+    }
+
     setOpeningId(a.id);
     try {
       const result = await openAttachment({
-        url: `/api/cases/${caseId}/attachments/${a.id}/file`,
+        url,
         fileName: a.fileName,
         fileType: a.fileType,
       });
