@@ -1636,9 +1636,28 @@ router.get(
       return tb - ta;
     });
 
+    // Deduplicate: when a canonical and legacy hit share the same normalized
+    // patient name + doctor, keep only the canonical row. A migrated legacy
+    // case can appear in both sources; the canonical version is authoritative.
+    const canonicalKeys = new Set(
+      hits
+        .filter((h) => h.source === "canonical")
+        .map(
+          (h) =>
+            `${h.patientFirstName.trim().toLowerCase()}|${h.patientLastName.trim().toLowerCase()}|${h.doctorName.trim().toLowerCase()}`,
+        ),
+    );
+    const dedupedHits = hits.filter(
+      (h) =>
+        h.source === "canonical" ||
+        !canonicalKeys.has(
+          `${h.patientFirstName.trim().toLowerCase()}|${h.patientLastName.trim().toLowerCase()}|${h.doctorName.trim().toLowerCase()}`,
+        ),
+    );
+
     // No result cap — Task #331 requires that remakes from years ago are
     // still surfaced, so we never truncate the candidate list.
-    return ok(res, { matches: hits });
+    return ok(res, { matches: dedupedHits });
   }),
 );
 

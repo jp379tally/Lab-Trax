@@ -386,6 +386,65 @@ maybe("GET /api/cases/patient-similarity (db integration)", () => {
     expect(nickIdx).toBeLessThan(fuzzyIdx);
   });
 
+  // ── Deduplication — canonical beats legacy ────────────────────────────────
+
+  it("returns only the canonical hit when canonical and legacy share the same patient + doctor", async () => {
+    const { db, labCases } = dbMod as any;
+
+    // Insert a canonical case for the patient.
+    const canonicalId = await trackInsert({
+      patientFirst: "Diana",
+      patientLast: "Prince",
+      doctorName: "Dr. Fate",
+    });
+
+    // Insert a legacy lab_cases row that represents the same patient + doctor
+    // (simulating a migrated record that still exists in both tables).
+    const legacyId = rid("lc");
+    await db.insert(labCases).values({
+      id: legacyId,
+      ownerId: adminUserId,
+      organizationId: labOrgId,
+      caseData: JSON.stringify({
+        patientName: "Diana Prince",
+        doctorName: "Dr. Fate",
+        status: "completed",
+        caseNumber: "LGY-001",
+      }),
+    });
+
+    try {
+      const r = await request(appMod.default)
+        .get("/api/cases/patient-similarity")
+        .set("Authorization", `Bearer ${tokens.admin}`)
+        .query({
+          patientFirstName: "Diana",
+          patientLastName: "Prince",
+          doctorName: "Dr. Fate",
+          labOrganizationId: labOrgId,
+        });
+
+      expect(r.status).toBe(200);
+      const matches: { id: string; source: string }[] = r.body.data.matches;
+
+      const canonicalHit = matches.find((m) => m.id === canonicalId);
+      const legacyHit = matches.find((m) => m.id === legacyId);
+
+      expect(canonicalHit, "canonical hit must be present").toBeDefined();
+      expect(canonicalHit?.source).toBe("canonical");
+      expect(legacyHit, "legacy duplicate must be suppressed when canonical exists").toBeUndefined();
+
+      // Confirm only one entry for this patient from the same doctor.
+      const patientHits = matches.filter(
+        (m) =>
+          m.id === canonicalId || m.id === legacyId,
+      );
+      expect(patientHits).toHaveLength(1);
+    } finally {
+      await db.delete(labCases).where(eq(labCases.id, legacyId));
+    }
+  });
+
   // ── Empty result ──────────────────────────────────────────────────────────
 
   it("returns an empty matches array when no case matches", async () => {
