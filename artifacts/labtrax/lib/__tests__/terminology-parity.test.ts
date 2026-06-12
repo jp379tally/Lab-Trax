@@ -13,6 +13,7 @@ import { dirname, resolve } from "node:path";
 const here = dirname(fileURLToPath(import.meta.url));
 const DESKTOP_CASES = resolve(here, "../../../labtrax-desktop/src/pages/cases.tsx");
 const MOBILE_CASE = resolve(here, "../../app/case/[id].tsx");
+const MOBILE_STATIONS = resolve(here, "../../lib/case-stations.ts");
 
 interface ValueLabel {
   value: string;
@@ -48,12 +49,15 @@ function statusChangedLabel(source: string): string | null {
 describe("terminology parity: mobile case stages mirror desktop", () => {
   const desktop = readFileSync(DESKTOP_CASES, "utf8");
   const mobile = readFileSync(MOBILE_CASE, "utf8");
+  const mobileStationsSource = readFileSync(MOBILE_STATIONS, "utf8");
 
   it("mobile STATUS_OPTIONS equals desktop STATUS_FILTERS (minus the 'all' filter)", () => {
     const desktopStages = parseValueLabelArray(desktop, "STATUS_FILTERS").filter(
       (s) => s.value !== "all",
     );
-    const mobileStages = parseValueLabelArray(mobile, "STATUS_OPTIONS");
+    // Station list was extracted to the shared lib/case-stations.ts module;
+    // read it from there using the CASE_STATIONS marker.
+    const mobileStages = parseValueLabelArray(mobileStationsSource, "CASE_STATIONS");
 
     expect(desktopStages.length).toBeGreaterThan(0);
     expect(mobileStages.length).toBeGreaterThan(0);

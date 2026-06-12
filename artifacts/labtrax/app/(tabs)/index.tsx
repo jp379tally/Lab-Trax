@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -14,11 +14,17 @@ import {
   Platform,
   TouchableWithoutFeedback,
   Keyboard,
+  Alert,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { useCases, type CanonicalCase } from "@workspace/api-client-react";
+import {
+  useCases,
+  useUpdateCase,
+  type CanonicalCase,
+  type UpdateCaseInputStatus,
+} from "@workspace/api-client-react";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
@@ -29,24 +35,7 @@ import {
   type InboxEntry,
 } from "@/lib/shared-file-inbox";
 import { StatusBadge, type BadgeVariant } from "@/components/ui/StatusBadge";
-
-// ── Station labels (mirrors STATUS_OPTIONS in case/[id].tsx) ────────────────
-const CASE_STATIONS: { value: string; label: string }[] = [
-  { value: "received", label: "Received" },
-  { value: "in_design", label: "In Design" },
-  { value: "scan", label: "Scan" },
-  { value: "in_milling", label: "In Milling" },
-  { value: "post_mill", label: "Post Mill" },
-  { value: "sintering_furnace", label: "Sintering Furnace" },
-  { value: "model_room", label: "Model Room" },
-  { value: "in_porcelain", label: "Porcelain" },
-  { value: "qc", label: "Quality Check" },
-  { value: "complete", label: "Complete" },
-  { value: "shipped", label: "Shipping" },
-  { value: "on_hold", label: "On Hold" },
-  { value: "delivered", label: "Delivered" },
-  { value: "remake", label: "Remake" },
-];
+import { CASE_STATIONS } from "@/lib/case-stations";
 
 type DueFilter = "all" | "today" | "tomorrow" | "custom";
 
@@ -141,6 +130,46 @@ export default function CasesListScreen() {
   // ── Location filter
   const [locationFilter, setLocationFilter] = useState<string>("all");
   const [showLocationModal, setShowLocationModal] = useState(false);
+
+  // ── Long-press locate
+  // Guard: after a long-press fires, the subsequent pressOut→onPress must not navigate.
+  const longPressActiveRef = useRef(false);
+
+  const [locatingCase, setLocatingCase] = useState<CanonicalCase | null>(null);
+  const [locateTarget, setLocateTarget] = useState<string | null>(null);
+  const [locating, setLocating] = useState(false);
+  const [locateSuccessId, setLocateSuccessId] = useState<string | null>(null);
+  const updateCase = useUpdateCase();
+
+  async function confirmLocate() {
+    if (!locatingCase || !locateTarget) return;
+    setLocating(true);
+    try {
+      await updateCase.mutateAsync({
+        caseId: locatingCase.id,
+        data: { status: locateTarget as UpdateCaseInputStatus },
+      });
+      const successId = locatingCase.id;
+      setLocatingCase(null);
+      setLocateTarget(null);
+      setLocateSuccessId(successId);
+      await casesQuery.refetch();
+      setTimeout(() => setLocateSuccessId(null), 2500);
+    } catch (e) {
+      Alert.alert(
+        "Couldn't locate case",
+        e instanceof Error ? e.message : "Please try again.",
+      );
+    } finally {
+      setLocating(false);
+    }
+  }
+
+  function dismissLocate() {
+    longPressActiveRef.current = false;
+    setLocatingCase(null);
+    setLocateTarget(null);
+  }
 
   // ── Share-intent inbox
   const [pendingShared, setPendingShared] = useState<InboxEntry[]>([]);
@@ -452,8 +481,21 @@ export default function CasesListScreen() {
           keyExtractor={(c) => c.id}
           renderItem={({ item }) => (
             <Pressable
-              onPress={() => router.push(`/case/${item.id}` as never)}
+              onPress={() => {
+                if (longPressActiveRef.current) {
+                  longPressActiveRef.current = false;
+                  return;
+                }
+                router.push(`/case/${item.id}` as never);
+              }}
+              onLongPress={() => {
+                longPressActiveRef.current = true;
+                setLocatingCase(item);
+                setLocateTarget(null);
+              }}
+              delayLongPress={400}
               testID={`case-row-${item.id}`}
+              style={({ pressed }) => pressed ? styles.rowPressed : undefined}
             >
               <Card style={styles.row}>
                 <View style={styles.rowMain}>
@@ -468,7 +510,14 @@ export default function CasesListScreen() {
                 </View>
                 <View style={styles.rowRight}>
                   <StatusBadge label={titleCase(item.status ?? "—")} variant={statusVariant(item.status)} />
-                  <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+                  {locateSuccessId === item.id ? (
+                    <View style={styles.locatedBadge}>
+                      <Ionicons name="checkmark-circle" size={14} color={colors.tint} />
+                      <Text style={[styles.locatedBadgeText, { color: colors.tint }]}>Located</Text>
+                    </View>
+                  ) : (
+                    <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+                  )}
                 </View>
               </Card>
             </Pressable>
@@ -618,6 +667,79 @@ export default function CasesListScreen() {
                 );
               })}
             </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ══ Long-press Locate Modal ══════════════════════════════════════════ */}
+      <Modal
+        visible={locatingCase !== null}
+        transparent
+        animationType="slide"
+        onRequestClose={dismissLocate}
+      >
+        <TouchableWithoutFeedback onPress={dismissLocate}>
+          <View style={styles.modalBackdrop} />
+        </TouchableWithoutFeedback>
+
+        <View style={[styles.modalSheet, styles.locationSheet]}>
+          <View style={[styles.sheetInner, { paddingBottom: Math.max(insets.bottom, Spacing.lg) }]}>
+            <View style={styles.sheetHandle} />
+
+            {/* Header */}
+            <View>
+              <Text style={styles.sheetTitle}>Locate Case</Text>
+              {locatingCase ? (
+                <Text style={styles.locateSubtitle} numberOfLines={1}>
+                  {patientName(locatingCase)}
+                  {locatingCase.caseNumber ? `  ·  #${locatingCase.caseNumber}` : ""}
+                </Text>
+              ) : null}
+            </View>
+
+            {/* Station list */}
+            <ScrollView style={styles.locationList} bounces={false}>
+              {CASE_STATIONS.filter(
+                (s) => s.value !== (locatingCase?.status ?? "").toLowerCase()
+              ).map((station) => {
+                const active = locateTarget === station.value;
+                return (
+                  <Pressable
+                    key={station.value}
+                    style={styles.locationRow}
+                    onPress={() => setLocateTarget(station.value)}
+                    testID={`locate-option-${station.value}`}
+                  >
+                    <Text style={[styles.locationLabel, { color: active ? colors.tint : colors.text }]}>
+                      {station.label}
+                    </Text>
+                    {active && <Ionicons name="checkmark" size={18} color={colors.tint} />}
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+
+            {/* Actions */}
+            <View style={styles.sheetActions}>
+              <Pressable style={styles.clearBtn} onPress={dismissLocate} disabled={locating}>
+                <Text style={[styles.clearBtnText, { color: colors.textSecondary }]}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                style={[
+                  styles.applyBtn,
+                  { backgroundColor: locateTarget && !locating ? colors.tint : colors.border },
+                ]}
+                onPress={confirmLocate}
+                disabled={!locateTarget || locating}
+                testID="locate-confirm"
+              >
+                {locating ? (
+                  <ActivityIndicator size="small" color={colors.textInverse} />
+                ) : (
+                  <Text style={[styles.applyBtnText, { color: colors.textInverse }]}>Locate</Text>
+                )}
+              </Pressable>
+            </View>
           </View>
         </View>
       </Modal>
@@ -810,5 +932,19 @@ function makeStyles(c: ThemeColors) {
     },
     locationLabel: { ...Typography.body },
     locationDivider: { height: 1, marginBottom: Spacing.xs },
+
+    // Long-press row feedback
+    rowPressed: { opacity: 0.7 },
+
+    // Locate success inline badge
+    locatedBadge: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 3,
+    },
+    locatedBadgeText: { ...Typography.captionSemibold },
+
+    // Locate modal subtitle
+    locateSubtitle: { ...Typography.caption, color: c.textSecondary, marginTop: 2 },
   });
 }

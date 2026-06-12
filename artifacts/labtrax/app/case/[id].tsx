@@ -48,6 +48,7 @@ import { StatusBadge, type BadgeVariant } from "@/components/ui/StatusBadge";
 import { AuthedImage } from "@/components/ui/AuthedImage";
 import { ReadOnlyToothChart } from "@/components/ReadOnlyToothChart";
 import { deriveRxSummary, buildHighlightedToothSet, formatRxTeethLabel } from "@/lib/rx-summary";
+import { CASE_STATIONS as STATUS_OPTIONS } from "@/lib/case-stations";
 import {
   attachmentFileUrl,
   isImageAttachment,
@@ -264,22 +265,6 @@ function eventAttachment(
 }
 
 // ─── Edit constants (mirror desktop STATUS_FILTERS / priority exactly) ────────
-const STATUS_OPTIONS: { value: string; label: string }[] = [
-  { value: "received", label: "Received" },
-  { value: "in_design", label: "In Design" },
-  { value: "scan", label: "Scan" },
-  { value: "in_milling", label: "In Milling" },
-  { value: "post_mill", label: "Post Mill" },
-  { value: "sintering_furnace", label: "Sintering Furnace" },
-  { value: "model_room", label: "Model Room" },
-  { value: "in_porcelain", label: "Porcelain" },
-  { value: "qc", label: "Quality Check" },
-  { value: "complete", label: "Complete" },
-  { value: "shipped", label: "Shipping" },
-  { value: "on_hold", label: "On Hold" },
-  { value: "delivered", label: "Delivered" },
-  { value: "remake", label: "Remake" },
-];
 
 const PRIORITY_OPTIONS: { value: string; label: string }[] = [
   { value: "normal", label: "Normal" },
