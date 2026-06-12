@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Image,
   Keyboard,
   Modal,
   Platform,
@@ -161,6 +162,9 @@ export default function AiReaderExtractedScreen() {
   const [similarHits, setSimilarHits] = useState<SimilarityHit[]>([]);
   const [duplicateModalVisible, setDuplicateModalVisible] = useState(false);
   const [remakeOfCaseId, setRemakeOfCaseId] = useState<string | null>(null);
+
+  // ── Confidence tooltip ──
+  const [confidenceTooltipVisible, setConfidenceTooltipVisible] = useState(false);
 
   // ── Submission ──
   const [submitting, setSubmitting] = useState(false);
@@ -571,8 +575,14 @@ ${pages.map((p) => `<div class="page"><img src="${p.base64}" /></div>`).join("\n
     );
   }
 
-  const confidence = extracted.confidence ?? 0;
-  const lowConfidence = confidence > 0 && confidence < 0.6;
+  const confidence = extracted.confidence;
+  const lowConfidence = confidence !== null && confidence < 0.6;
+  const confidenceTier: "high" | "medium" | "low" | "none" =
+    confidence === null ? "none"
+    : confidence >= 0.85 ? "high"
+    : confidence >= 0.6 ? "medium"
+    : "low";
+  const firstPageUri = session.pages[0]?.uri ?? null;
   const providerResolved = !!providerOrgId;
   const providerLabel = providerResolved
     ? doctorName
@@ -589,11 +599,7 @@ ${pages.map((p) => `<div class="page"><img src="${p.base64}" /></div>`).join("\n
         </Pressable>
         <View style={styles.headerTitle}>
           <Text style={styles.title}>Review Extraction</Text>
-          {confidence > 0 && (
-            <Text style={[styles.subtitle, lowConfidence && { color: colors.warningStrong }]}>
-              {Math.round(confidence * 100)}% confidence{lowConfidence ? " — review carefully" : ""}
-            </Text>
-          )}
+          <Text style={styles.subtitle}>Verify all fields before creating the case</Text>
         </View>
         <View style={{ width: 40 }} />
       </View>
@@ -603,6 +609,76 @@ ${pages.map((p) => `<div class="page"><img src="${p.base64}" /></div>`).join("\n
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
       >
+        {/* Scan preview + confidence badge */}
+        {(firstPageUri || confidenceTier !== "none") && (
+          <View style={styles.scanPreviewRow}>
+            {firstPageUri ? (
+              <Image source={{ uri: firstPageUri }} style={styles.scanThumb} resizeMode="contain" />
+            ) : (
+              <View style={[styles.scanThumb, styles.scanThumbPlaceholder]}>
+                <Ionicons name="document-outline" size={28} color={colors.textTertiary} />
+              </View>
+            )}
+            <View style={styles.scanPreviewRight}>
+              <Text style={styles.scanPreviewLabel}>Scanned Rx</Text>
+              {confidenceTier !== "none" ? (
+                <Pressable
+                  onPress={() => setConfidenceTooltipVisible(true)}
+                  style={[
+                    styles.confidenceBadge,
+                    confidenceTier === "high" && styles.confidenceBadgeHigh,
+                    confidenceTier === "medium" && styles.confidenceBadgeMedium,
+                    confidenceTier === "low" && styles.confidenceBadgeLow,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Scan confidence: ${confidenceTier === "high" ? "High" : confidenceTier === "medium" ? "Medium" : "Low"} — ${Math.round((confidence ?? 0) * 100)}%. Tap for details.`}
+                  hitSlop={8}
+                >
+                  <View style={[
+                    styles.confidenceDot,
+                    confidenceTier === "high" && styles.confidenceDotHigh,
+                    confidenceTier === "medium" && styles.confidenceDotMedium,
+                    confidenceTier === "low" && styles.confidenceDotLow,
+                  ]} />
+                  <Text style={[
+                    styles.confidenceBadgeText,
+                    confidenceTier === "high" && styles.confidenceBadgeTextHigh,
+                    confidenceTier === "medium" && styles.confidenceBadgeTextMedium,
+                    confidenceTier === "low" && styles.confidenceBadgeTextLow,
+                  ]}>
+                    {confidenceTier === "high" ? "High" : confidenceTier === "medium" ? "Medium" : "Low"} Confidence
+                  </Text>
+                  <Text style={[
+                    styles.confidencePct,
+                    confidenceTier === "high" && styles.confidenceBadgeTextHigh,
+                    confidenceTier === "medium" && styles.confidenceBadgeTextMedium,
+                    confidenceTier === "low" && styles.confidenceBadgeTextLow,
+                  ]}>
+                    {Math.round((confidence ?? 0) * 100)}%
+                  </Text>
+                  <Ionicons
+                    name="information-circle-outline"
+                    size={14}
+                    color={
+                      confidenceTier === "high" ? "#15803d"
+                      : confidenceTier === "medium" ? "#92400e"
+                      : "#991b1b"
+                    }
+                  />
+                </Pressable>
+              ) : (
+                <Text style={styles.scanPreviewNoConfidence}>No confidence score</Text>
+              )}
+              {confidenceTier === "low" && (
+                <Text style={styles.scanPreviewLowHint}>Review all fields carefully</Text>
+              )}
+              {confidenceTier === "medium" && (
+                <Text style={styles.scanPreviewMediumHint}>Some fields may need correction</Text>
+              )}
+            </View>
+          </View>
+        )}
+
         {/* Low confidence warning */}
         {lowConfidence && (
           <View style={styles.warnBanner}>
@@ -911,6 +987,42 @@ ${pages.map((p) => `<div class="page"><img src="${p.base64}" /></div>`).join("\n
           )}
         </Pressable>
       </View>
+
+      {/* Confidence tooltip modal */}
+      <Modal visible={confidenceTooltipVisible} transparent animationType="fade">
+        <Pressable style={styles.modalOverlay} onPress={() => setConfidenceTooltipVisible(false)}>
+          <View style={[styles.modalSheet, styles.tooltipSheet]}>
+            <View style={styles.modalHandle} />
+            <View style={styles.tooltipHeader}>
+              <Ionicons name="sparkles" size={20} color={colors.tint} />
+              <Text style={styles.modalTitle}>Scan Confidence</Text>
+            </View>
+            <Text style={styles.modalBody}>
+              Confidence is a score (0–100%) reflecting how clearly the AI read this prescription.
+            </Text>
+            <View style={styles.tooltipTiers}>
+              <View style={styles.tooltipTierRow}>
+                <View style={[styles.confidenceDot, styles.confidenceDotHigh]} />
+                <Text style={styles.tooltipTierLabel}>High (≥ 85%)</Text>
+                <Text style={styles.tooltipTierDesc}>Fields are likely accurate.</Text>
+              </View>
+              <View style={styles.tooltipTierRow}>
+                <View style={[styles.confidenceDot, styles.confidenceDotMedium]} />
+                <Text style={styles.tooltipTierLabel}>Medium (60–84%)</Text>
+                <Text style={styles.tooltipTierDesc}>A few fields may need correction.</Text>
+              </View>
+              <View style={styles.tooltipTierRow}>
+                <View style={[styles.confidenceDot, styles.confidenceDotLow]} />
+                <Text style={styles.tooltipTierLabel}>Low (&lt; 60%)</Text>
+                <Text style={styles.tooltipTierDesc}>Poor scan or unusual format — verify all fields.</Text>
+              </View>
+            </View>
+            <Pressable style={styles.newCaseBtn} onPress={() => setConfidenceTooltipVisible(false)}>
+              <Text style={styles.newCaseBtnText}>Got it</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
 
       {/* Duplicate detection modal */}
       <Modal visible={duplicateModalVisible} transparent animationType="slide">
@@ -1243,5 +1355,136 @@ function makeStyles(c: ThemeColors) {
 
     ghostBtn: { paddingVertical: Spacing.sm, alignItems: "center" },
     ghostBtnText: { ...Typography.body, color: c.textTertiary },
+
+    // ── Scan preview + confidence badge ───────────────────────────────────────
+    scanPreviewRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.md,
+      backgroundColor: c.surface,
+      borderRadius: Radius.md,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: c.border,
+      padding: Spacing.md,
+    },
+    scanThumb: {
+      width: 72,
+      height: 96,
+      borderRadius: Radius.sm,
+      backgroundColor: c.backgroundSolid,
+    },
+    scanThumbPlaceholder: {
+      alignItems: "center",
+      justifyContent: "center",
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: c.border,
+    },
+    scanPreviewRight: {
+      flex: 1,
+      gap: Spacing.xs,
+    },
+    scanPreviewLabel: {
+      ...Typography.captionSemibold,
+      color: c.textSecondary,
+      textTransform: "uppercase",
+      letterSpacing: 0.5,
+    },
+    scanPreviewNoConfidence: {
+      ...Typography.caption,
+      color: c.textTertiary,
+    },
+    scanPreviewLowHint: {
+      ...Typography.tiny,
+      color: "#991b1b",
+      marginTop: 2,
+    },
+    scanPreviewMediumHint: {
+      ...Typography.tiny,
+      color: "#92400e",
+      marginTop: 2,
+    },
+
+    confidenceBadge: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 5,
+      alignSelf: "flex-start",
+      paddingHorizontal: Spacing.sm,
+      paddingVertical: 5,
+      borderRadius: Radius.full,
+      borderWidth: 1,
+      borderColor: c.border,
+      backgroundColor: c.surface,
+    },
+    confidenceBadgeHigh: {
+      backgroundColor: "#f0fdf4",
+      borderColor: "#86efac",
+    },
+    confidenceBadgeMedium: {
+      backgroundColor: "#fffbeb",
+      borderColor: "#fcd34d",
+    },
+    confidenceBadgeLow: {
+      backgroundColor: "#fef2f2",
+      borderColor: "#fca5a5",
+    },
+
+    confidenceDot: {
+      width: 8,
+      height: 8,
+      borderRadius: 4,
+      backgroundColor: c.textTertiary,
+    },
+    confidenceDotHigh: { backgroundColor: "#16a34a" },
+    confidenceDotMedium: { backgroundColor: "#d97706" },
+    confidenceDotLow: { backgroundColor: "#dc2626" },
+
+    confidenceBadgeText: {
+      ...Typography.captionSemibold,
+      color: c.textSecondary,
+    },
+    confidenceBadgeTextHigh: { color: "#15803d" },
+    confidenceBadgeTextMedium: { color: "#92400e" },
+    confidenceBadgeTextLow: { color: "#991b1b" },
+
+    confidencePct: {
+      ...Typography.captionSemibold,
+      color: c.textTertiary,
+    },
+
+    // ── Confidence tooltip modal ──────────────────────────────────────────────
+    tooltipSheet: {
+      borderRadius: Radius.xl,
+      marginHorizontal: Spacing.xl,
+      marginBottom: 0,
+      alignSelf: "center",
+      width: "auto",
+    },
+    tooltipHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.sm,
+    },
+    tooltipTiers: {
+      gap: Spacing.sm,
+      backgroundColor: c.backgroundSolid,
+      borderRadius: Radius.md,
+      padding: Spacing.md,
+    },
+    tooltipTierRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.sm,
+    },
+    tooltipTierLabel: {
+      ...Typography.captionSemibold,
+      color: c.text,
+      width: 100,
+    },
+    tooltipTierDesc: {
+      ...Typography.caption,
+      color: c.textSecondary,
+      flex: 1,
+    },
   });
 }

@@ -30,7 +30,7 @@ export interface ExtractedRx {
   practiceName: string | null;
   practiceAddress: string | null;
   practicePhone: string | null;
-  confidence: number;
+  confidence: number | null;
 }
 
 export interface AiReaderRestoration {

@@ -176,7 +176,7 @@ export default function AiReaderReviewScreen() {
         practiceName: data.data.practiceName ?? null,
         practiceAddress: data.data.practiceAddress ?? null,
         practicePhone: data.data.practicePhone ?? null,
-        confidence: data.data.confidence ?? 0,
+        confidence: data.data.confidence ?? null,
       };
 
       setAiReaderSession({ extracted });
