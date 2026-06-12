@@ -1,0 +1,405 @@
+/**
+ * Integration tests for GET /api/cases/patient-similarity
+ *
+ * Guards the AI Reader's duplicate/remake detection flow end-to-end at the HTTP
+ * layer. The companion unit-level suite (cases-similarity.test.ts) tests the
+ * library helpers (getDoctorNameSetForProviderOrg, resolveRemakeOriginal) in
+ * isolation; this file verifies the mounted route behaviour including auth,
+ * tenant isolation, and matchKind ranking.
+ *
+ * Skipped when DATABASE_URL is not configured — matches the convention used
+ * by all other api-server integration tests. All inserted rows are removed in
+ * afterAll so the suite is safe to run against a shared dev DB.
+ *
+ * Coverage:
+ *  - GET /api/cases/patient-similarity — returns 401 when unauthenticated
+ *  - GET /api/cases/patient-similarity — returns 400 when required params are missing
+ *  - GET /api/cases/patient-similarity — returns 403 when caller is not a lab member
+ *  - GET /api/cases/patient-similarity — returns exact-matched canonical cases
+ *  - GET /api/cases/patient-similarity — does NOT return cases from a different lab
+ *  - GET /api/cases/patient-similarity — classifies nickname matches correctly
+ *  - GET /api/cases/patient-similarity — classifies fuzzy (edit-distance ≤ 1) matches
+ *  - GET /api/cases/patient-similarity — non-matching patients are excluded
+ *  - GET /api/cases/patient-similarity — scopes results by providerOrganizationId
+ *  - GET /api/cases/patient-similarity — results are ranked exact > nickname > fuzzy
+ */
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { eq, inArray } from "drizzle-orm";
+import { randomBytes, createHash } from "node:crypto";
+import request from "supertest";
+import * as path from "node:path";
+import * as os from "node:os";
+import * as fs from "node:fs";
+
+const TEST_MEDIA_DIR = path.join(os.tmpdir(), "labtrax-test-media-patsim");
+
+vi.mock("../lib/backup.js", () => ({
+  restartScheduledBackupJob: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));
+vi.mock("../lib/statements.js", () => ({ startStatementScheduler: vi.fn() }));
+vi.mock("../lib/case-media.js", () => ({
+  startDailyOrphanedMediaCleanup: vi.fn(),
+  caseMediaDir: path.join(require("os").tmpdir(), "labtrax-test-media-patsim"),
+  extractMediaFileName: () => null,
+}));
+
+const SHOULD_RUN = !!process.env["DATABASE_URL"];
+const maybe = SHOULD_RUN ? describe : describe.skip;
+
+function rid(prefix: string) {
+  return `${prefix}_${randomBytes(8).toString("hex")}`;
+}
+
+maybe("GET /api/cases/patient-similarity (db integration)", () => {
+  let dbMod: typeof import("@workspace/db");
+  let appMod: { default: import("express").Express };
+  let auth: typeof import("../lib/auth.js");
+
+  const labOrgId = rid("lab");
+  const otherLabOrgId = rid("lab2");
+  const providerAOrgId = rid("provA");
+  const providerBOrgId = rid("provB");
+  const adminUserId = rid("uadmin");
+  const outsiderUserId = rid("uout");
+
+  const tokens = { admin: "", outsider: "" };
+
+  async function makeSession(userId: string): Promise<string> {
+    const { db, userSessions } = dbMod as any;
+    const sessionId = rid("sess");
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+    const token = auth.signAccessToken(userId, sessionId);
+    const hash = createHash("sha256").update(token).digest("hex");
+    await db.insert(userSessions).values({ id: sessionId, userId, tokenHash: hash, expiresAt });
+    return token;
+  }
+
+  async function insertCase(opts: {
+    patientFirst: string;
+    patientLast: string;
+    labId?: string;
+    providerOrgId?: string;
+    doctorName?: string;
+  }): Promise<string> {
+    const { db, cases } = dbMod as any;
+    const id = rid("c");
+    await db.insert(cases).values({
+      id,
+      caseNumber: rid("CN"),
+      labOrganizationId: opts.labId ?? labOrgId,
+      providerOrganizationId: opts.providerOrgId ?? providerAOrgId,
+      patientFirstName: opts.patientFirst,
+      patientLastName: opts.patientLast,
+      doctorName: opts.doctorName ?? "Dr. House",
+      status: "received",
+      createdByUserId: adminUserId,
+    });
+    return id;
+  }
+
+  // Tracks all case IDs inserted during the suite so afterAll can clean them up.
+  const insertedCaseIds: string[] = [];
+  async function trackInsert(opts: Parameters<typeof insertCase>[0]): Promise<string> {
+    const id = await insertCase(opts);
+    insertedCaseIds.push(id);
+    return id;
+  }
+
+  beforeAll(async () => {
+    fs.mkdirSync(TEST_MEDIA_DIR, { recursive: true });
+    process.env["JWT_SECRET"] =
+      process.env["JWT_SECRET"] ?? "labtrax-test-secret-patsim";
+    dbMod = await import("@workspace/db");
+    appMod = await import("../app.js");
+    auth = await import("../lib/auth.js");
+
+    const { db, organizations, users, organizationMemberships } = dbMod as any;
+
+    await db.insert(users).values([
+      { id: adminUserId, username: `adm_${adminUserId}`, password: "x" },
+      { id: outsiderUserId, username: `out_${outsiderUserId}`, password: "x" },
+    ]);
+
+    await db.insert(organizations).values([
+      { id: labOrgId, type: "lab", name: "Sim Test Lab" },
+      { id: otherLabOrgId, type: "lab", name: "Other Lab" },
+      { id: providerAOrgId, type: "provider", name: "Provider A", parentLabOrganizationId: labOrgId },
+      { id: providerBOrgId, type: "provider", name: "Provider B", parentLabOrganizationId: labOrgId },
+    ]);
+
+    // adminUserId is a member of labOrgId; outsiderUserId has no membership.
+    await db.insert(organizationMemberships).values([
+      { id: rid("m"), labId: labOrgId, userId: adminUserId, role: "admin", status: "active" },
+    ]);
+
+    tokens.admin = await makeSession(adminUserId);
+    tokens.outsider = await makeSession(outsiderUserId);
+  });
+
+  afterAll(async () => {
+    if (!SHOULD_RUN) return;
+    const { db, organizations, users, cases, organizationMemberships, userSessions, auditLogs } =
+      dbMod as any;
+
+    if (insertedCaseIds.length) {
+      await db.delete(cases).where(inArray(cases.id, insertedCaseIds));
+    }
+    await db.delete(auditLogs).where(
+      inArray(auditLogs.organizationId, [labOrgId, otherLabOrgId]),
+    );
+    await db.delete(organizationMemberships).where(
+      inArray(organizationMemberships.userId, [adminUserId, outsiderUserId]),
+    );
+    await db.delete(userSessions).where(
+      inArray(userSessions.userId, [adminUserId, outsiderUserId]),
+    );
+    await db.delete(organizations).where(
+      inArray(organizations.id, [labOrgId, otherLabOrgId, providerAOrgId, providerBOrgId]),
+    );
+    await db.delete(users).where(
+      inArray(users.id, [adminUserId, outsiderUserId]),
+    );
+  });
+
+  // ── Auth / input validation ───────────────────────────────────────────────
+
+  it("returns 401 when unauthenticated", async () => {
+    const r = await request(appMod.default)
+      .get("/api/cases/patient-similarity")
+      .query({
+        patientFirstName: "Jane",
+        patientLastName: "Doe",
+        labOrganizationId: labOrgId,
+      });
+    expect(r.status).toBe(401);
+  });
+
+  it("returns 400 when patientFirstName is missing", async () => {
+    const r = await request(appMod.default)
+      .get("/api/cases/patient-similarity")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({ patientLastName: "Doe", labOrganizationId: labOrgId });
+    expect(r.status).toBe(400);
+  });
+
+  it("returns 400 when patientLastName is missing", async () => {
+    const r = await request(appMod.default)
+      .get("/api/cases/patient-similarity")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({ patientFirstName: "Jane", labOrganizationId: labOrgId });
+    expect(r.status).toBe(400);
+  });
+
+  it("returns 400 when labOrganizationId is missing", async () => {
+    const r = await request(appMod.default)
+      .get("/api/cases/patient-similarity")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({ patientFirstName: "Jane", patientLastName: "Doe" });
+    expect(r.status).toBe(400);
+  });
+
+  it("returns 403 when caller is not a member of the lab", async () => {
+    const r = await request(appMod.default)
+      .get("/api/cases/patient-similarity")
+      .set("Authorization", `Bearer ${tokens.outsider}`)
+      .query({
+        patientFirstName: "Jane",
+        patientLastName: "Doe",
+        labOrganizationId: labOrgId,
+      });
+    expect(r.status).toBe(403);
+  });
+
+  // ── Happy path — exact match ──────────────────────────────────────────────
+
+  it("returns matching canonical cases with matchKind:exact", async () => {
+    const caseId = await trackInsert({
+      patientFirst: "Jane",
+      patientLast: "Doe",
+    });
+
+    const r = await request(appMod.default)
+      .get("/api/cases/patient-similarity")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({
+        patientFirstName: "Jane",
+        patientLastName: "Doe",
+        labOrganizationId: labOrgId,
+      });
+
+    expect(r.status).toBe(200);
+    expect(Array.isArray(r.body.data.matches)).toBe(true);
+    const hit = r.body.data.matches.find((m: any) => m.id === caseId);
+    expect(hit, "inserted case must appear in matches").toBeDefined();
+    expect(hit.matchKind).toBe("exact");
+    expect(hit.source).toBe("canonical");
+  });
+
+  // ── Tenant isolation ──────────────────────────────────────────────────────
+
+  it("does NOT return cases from a different lab", async () => {
+    const otherCaseId = await trackInsert({
+      patientFirst: "Jane",
+      patientLast: "Doe",
+      labId: otherLabOrgId,
+      providerOrgId: providerAOrgId,
+    });
+
+    const r = await request(appMod.default)
+      .get("/api/cases/patient-similarity")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({
+        patientFirstName: "Jane",
+        patientLastName: "Doe",
+        labOrganizationId: labOrgId,
+      });
+
+    expect(r.status).toBe(200);
+    const ids = r.body.data.matches.map((m: any) => m.id);
+    expect(ids, "cross-lab case must NOT appear").not.toContain(otherCaseId);
+  });
+
+  // ── MatchKind classification ──────────────────────────────────────────────
+
+  it("classifies nickname matches correctly (Mike ↔ Michael)", async () => {
+    const caseId = await trackInsert({
+      patientFirst: "Michael",
+      patientLast: "Jordan",
+    });
+
+    const r = await request(appMod.default)
+      .get("/api/cases/patient-similarity")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({
+        patientFirstName: "Mike",
+        patientLastName: "Jordan",
+        labOrganizationId: labOrgId,
+      });
+
+    expect(r.status).toBe(200);
+    const hit = r.body.data.matches.find((m: any) => m.id === caseId);
+    expect(hit, "Michael Jordan must match query Mike Jordan").toBeDefined();
+    expect(hit.matchKind).toBe("nickname");
+  });
+
+  it("classifies fuzzy (edit-distance ≤ 1) matches correctly", async () => {
+    const caseId = await trackInsert({
+      patientFirst: "Stephanie",
+      patientLast: "Brown",
+    });
+
+    const r = await request(appMod.default)
+      .get("/api/cases/patient-similarity")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({
+        // "Stephenie" is one edit away from "Stephanie"
+        patientFirstName: "Stephenie",
+        patientLastName: "Brown",
+        labOrganizationId: labOrgId,
+      });
+
+    expect(r.status).toBe(200);
+    const hit = r.body.data.matches.find((m: any) => m.id === caseId);
+    expect(hit, "Stephenie Brown must fuzzy-match Stephanie Brown").toBeDefined();
+    expect(hit.matchKind).toBe("fuzzy");
+  });
+
+  it("does NOT return patients whose last name differs", async () => {
+    const caseId = await trackInsert({
+      patientFirst: "Jane",
+      patientLast: "Smith",
+    });
+
+    const r = await request(appMod.default)
+      .get("/api/cases/patient-similarity")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({
+        patientFirstName: "Jane",
+        patientLastName: "Doe",
+        labOrganizationId: labOrgId,
+      });
+
+    expect(r.status).toBe(200);
+    const ids = r.body.data.matches.map((m: any) => m.id);
+    expect(ids, "case with different last name must not appear").not.toContain(caseId);
+  });
+
+  // ── providerOrganizationId scoping ────────────────────────────────────────
+
+  it("restricts results to providerOrganizationId when supplied", async () => {
+    const caseA = await trackInsert({
+      patientFirst: "Alice",
+      patientLast: "Cooper",
+      providerOrgId: providerAOrgId,
+    });
+    const caseB = await trackInsert({
+      patientFirst: "Alice",
+      patientLast: "Cooper",
+      providerOrgId: providerBOrgId,
+    });
+
+    const r = await request(appMod.default)
+      .get("/api/cases/patient-similarity")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({
+        patientFirstName: "Alice",
+        patientLastName: "Cooper",
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerAOrgId,
+      });
+
+    expect(r.status).toBe(200);
+    const ids = r.body.data.matches.map((m: any) => m.id);
+    expect(ids).toContain(caseA);
+    expect(ids, "provider B case must be excluded when scoped to provider A").not.toContain(caseB);
+  });
+
+  // ── Result ranking ────────────────────────────────────────────────────────
+
+  it("ranks results exact > nickname > fuzzy", async () => {
+    // Insert three cases with the same last name "Wells" but different first
+    // names so each gets a different matchKind against the query "Rob".
+    const exactId = await trackInsert({ patientFirst: "Rob", patientLast: "Wells" });    // exact
+    const nicknameId = await trackInsert({ patientFirst: "Robert", patientLast: "Wells" }); // nickname
+    const fuzzyId = await trackInsert({ patientFirst: "Robb", patientLast: "Wells" });   // fuzzy (1 edit)
+
+    const r = await request(appMod.default)
+      .get("/api/cases/patient-similarity")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({
+        patientFirstName: "Rob",
+        patientLastName: "Wells",
+        labOrganizationId: labOrgId,
+      });
+
+    expect(r.status).toBe(200);
+    const hits: { id: string; matchKind: string }[] = r.body.data.matches;
+    const exactIdx = hits.findIndex((h) => h.id === exactId);
+    const nickIdx = hits.findIndex((h) => h.id === nicknameId);
+    const fuzzyIdx = hits.findIndex((h) => h.id === fuzzyId);
+
+    expect(exactIdx).toBeGreaterThanOrEqual(0);
+    expect(nickIdx).toBeGreaterThanOrEqual(0);
+    expect(fuzzyIdx).toBeGreaterThanOrEqual(0);
+    expect(exactIdx).toBeLessThan(nickIdx);
+    expect(nickIdx).toBeLessThan(fuzzyIdx);
+  });
+
+  // ── Empty result ──────────────────────────────────────────────────────────
+
+  it("returns an empty matches array when no case matches", async () => {
+    const r = await request(appMod.default)
+      .get("/api/cases/patient-similarity")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({
+        patientFirstName: "NoSuch",
+        patientLastName: "XYZZYPatient",
+        labOrganizationId: labOrgId,
+      });
+
+    expect(r.status).toBe(200);
+    expect(Array.isArray(r.body.data.matches)).toBe(true);
+    expect(r.body.data.matches).toHaveLength(0);
+  });
+});
