@@ -91,10 +91,34 @@ export const FlatList: React.FC<FlatListProps> = (props) => {
 FlatList.displayName = "FlatList";
 export const Modal = makeHost("Modal");
 export const KeyboardAvoidingView = makeHost("KeyboardAvoidingView");
+export const TouchableWithoutFeedback = makeHost("TouchableWithoutFeedback");
 export const RefreshControl = makeHost("RefreshControl");
 export const Image = makeHost("Image");
 export const ActivityIndicator = nullComponent;
 export const StatusBar = nullComponent;
+
+export const Keyboard = {
+  dismiss: vi.fn(),
+  addListener: vi.fn(() => ({ remove: (): void => {} })),
+  removeAllListeners: vi.fn(),
+};
+
+export const UIManager = {
+  setLayoutAnimationEnabledExperimental: vi.fn(),
+  getViewManagerConfig: vi.fn(() => ({})),
+};
+
+export const LayoutAnimation = {
+  configureNext: vi.fn(),
+  create: vi.fn(),
+  Presets: {
+    easeInEaseOut: {},
+    linear: {},
+    spring: {},
+  },
+  Types: { spring: "spring", linear: "linear", easeInEaseOut: "easeInEaseOut" },
+  Properties: { opacity: "opacity", scaleXY: "scaleXY" },
+};
 
 export const StyleSheet = {
   create: <T extends Record<string, object>>(s: T): T => s,
@@ -169,10 +193,14 @@ const reactNativeStub = {
   FlatList,
   Modal,
   KeyboardAvoidingView,
+  TouchableWithoutFeedback,
   RefreshControl,
   Image,
   ActivityIndicator,
   StatusBar,
+  Keyboard,
+  UIManager,
+  LayoutAnimation,
   StyleSheet,
   Platform,
   Dimensions,
