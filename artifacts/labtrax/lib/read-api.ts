@@ -41,3 +41,40 @@ export async function getJson<T>(path: string): Promise<T> {
   }
   return body as T;
 }
+
+// Mutation counterpart to getJson — issues a write request through the same
+// resilientFetch path (so cookies/CSRF on web and bearer tokens on native are
+// handled), unwraps the `{ ok, data }` envelope, and throws an ApiError on a
+// non-2xx so screens can distinguish a 403 (role can't edit this lab) from a
+// generic failure. The server message is surfaced when present.
+export async function sendJson<T>(
+  method: "POST" | "PATCH" | "PUT" | "DELETE",
+  path: string,
+  body?: unknown,
+): Promise<T> {
+  const res = await resilientFetch(path, {
+    method,
+    headers: body !== undefined ? { "Content-Type": "application/json" } : {},
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    let message = `Request failed (${res.status}).`;
+    try {
+      const parsed = (await res.json()) as { error?: string; message?: string };
+      if (parsed?.error) message = parsed.error;
+      else if (parsed?.message) message = parsed.message;
+    } catch {
+      // non-JSON error body — keep the generic message
+    }
+    throw new ApiError(res.status, message);
+  }
+  const parsed = (await res.json().catch(() => null)) as unknown;
+  if (
+    parsed &&
+    typeof parsed === "object" &&
+    "data" in (parsed as Record<string, unknown>)
+  ) {
+    return (parsed as { data: T }).data;
+  }
+  return parsed as T;
+}

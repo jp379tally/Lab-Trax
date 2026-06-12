@@ -1,3 +1,4 @@
+- [Registering a lab owner for e2e](register-lab-owner-for-e2e.md) — register needs practiceName+createOrganization+userType lab or you get a user with NO membership; every EDIT_ROLES gate then reads "Not available" (looks like a gating bug).
 - [EAS iOS non-interactive auth](eas-ios-non-interactive-auth.md) — `--non-interactive` builds need 5 env vars or eas-cli silently prompts and hangs in CI.
 - [EAS iOS build-number collision](eas-ios-build-number-collision.md) — persist the bumped build number after `eas build`, before submit; reverting on a submit-only failure causes a permanent CFBundleVersion collision loop.
 - [EAS submit silent account-level block](eas-submit-account-block.md) — submit ERRORED with error:null+empty logs while ASC API reads all 200 and IPA is unique = pending App Store Connect agreement (account-holder must accept), not a build problem.
@@ -43,3 +44,4 @@
 - [Metro stale cache after deletions](metro-stale-cache-after-deletions.md) — bulk-deleting Expo routes while dev server runs leaves Metro graph stale; iOS bundle ENOENTs on deleted files though typecheck/web pass; restart the expo workflow to rebuild.
 - [EAS build provenance](eas-build-provenance.md) — log filename timestamp ≠ build time; verify which task a build belongs to via the build-number bump commit + submit "Build Date" vs file mtimes.
 - [Background commands die on return](background-commands-die-on-return.md) — nohup/backgrounded bash is SIGKILLed on tool-call return; run long jobs (api-server vitest ~2min) via a workflow, not `&`.
+- [LabTrax mobile manage-screen gating](labtrax-manage-screen-gating.md) — Pricing/Reports admin-only, Lists billing (item-label edit admin); gate on server RBAC not desktop isAdmin; non-eligible roles blocked not read-only.

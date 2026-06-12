@@ -1,12 +1,15 @@
-import React, { useMemo } from "react";
-import { View, Text, StyleSheet } from "react-native";
+import React, { useMemo, useState } from "react";
+import { View, Text, StyleSheet, Pressable, Alert, ActivityIndicator } from "react-native";
 import { useQuery } from "@tanstack/react-query";
+import { Ionicons } from "@expo/vector-icons";
+import * as FileSystem from "expo-file-system/legacy";
+import * as Sharing from "expo-sharing";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
-import { Spacing, Typography } from "@/constants/tokens";
+import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
 import { ListScreen } from "@/components/ui/ListScreen";
 import { getJson } from "@/lib/read-api";
-import { useMe, primaryLabOrgId, canEditAnyLab } from "@/lib/auth-me";
+import { useMe, primaryAdminLabOrgId, canAdminAnyLab } from "@/lib/auth-me";
 import { titleCase, toNumber, formatMoney } from "@/lib/format";
 
 interface BilledRow {
@@ -18,12 +21,40 @@ interface BilledRow {
   avgPrice?: string | number | null;
 }
 
+function csvCell(value: unknown): string {
+  const s = value == null ? "" : String(value);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function buildCsv(rows: BilledRow[]): string {
+  const header = ["Restoration", "Material", "Units billed", "Cases", "Total revenue", "Avg price"];
+  const lines = [header.map(csvCell).join(",")];
+  for (const r of rows) {
+    lines.push(
+      [
+        r.restorationType ?? "",
+        r.material ?? "",
+        r.unitsBilled ?? 0,
+        r.caseCount ?? 0,
+        toNumber(r.totalRevenue).toFixed(2),
+        toNumber(r.avgPrice).toFixed(2),
+      ]
+        .map(csvCell)
+        .join(","),
+    );
+  }
+  return lines.join("\n");
+}
+
 export default function ReportsScreen() {
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const me = useMe().data;
-  const labOrgId = primaryLabOrgId(me);
-  const canEdit = canEditAnyLab(me);
+  // The billed report (/api/pricing/billed) is admin-only on the server
+  // (resolveLabId → owner/admin), so gate the screen on admin to match.
+  const labOrgId = primaryAdminLabOrgId(me);
+  const canEdit = canAdminAnyLab(me);
+  const [exporting, setExporting] = useState(false);
 
   const query = useQuery<BilledRow[]>({
     queryKey: ["billed-report", labOrgId ?? ""],
@@ -41,6 +72,30 @@ export default function ReportsScreen() {
   const totalRevenue = useMemo(() => rows.reduce((sum, r) => sum + toNumber(r.totalRevenue), 0), [rows]);
   const totalUnits = useMemo(() => rows.reduce((sum, r) => sum + (r.unitsBilled ?? 0), 0), [rows]);
 
+  async function handleExport() {
+    if (rows.length === 0 || exporting) return;
+    setExporting(true);
+    try {
+      const available = await Sharing.isAvailableAsync();
+      if (!available) {
+        Alert.alert("Sharing unavailable", "Exporting isn’t supported on this device.");
+        return;
+      }
+      const stamp = new Date().toISOString().slice(0, 10);
+      const uri = `${FileSystem.cacheDirectory ?? ""}billed-report-${stamp}.csv`;
+      await FileSystem.writeAsStringAsync(uri, buildCsv(rows));
+      await Sharing.shareAsync(uri, {
+        mimeType: "text/csv",
+        dialogTitle: "Export billed report",
+        UTI: "public.comma-separated-values-text",
+      });
+    } catch {
+      Alert.alert("Couldn’t export", "Please try again.");
+    } finally {
+      setExporting(false);
+    }
+  }
+
   const header =
     rows.length > 0 ? (
       <Card style={styles.summary}>
@@ -56,6 +111,17 @@ export default function ReportsScreen() {
       </Card>
     ) : null;
 
+  const exportBtn =
+    canEdit && labOrgId && rows.length > 0 ? (
+      <Pressable style={styles.exportBtn} onPress={handleExport} disabled={exporting} testID="reports-export">
+        {exporting ? (
+          <ActivityIndicator size="small" color={colors.tint} />
+        ) : (
+          <Ionicons name="share-outline" size={22} color={colors.tint} />
+        )}
+      </Pressable>
+    ) : null;
+
   return (
     <ListScreen<BilledRow>
       title="Reports"
@@ -63,6 +129,7 @@ export default function ReportsScreen() {
       query={query}
       keyExtractor={(r) => `${r.restorationType ?? "?"}:${r.material ?? "?"}`}
       ListHeader={header}
+      headerRight={exportBtn}
       emptyIcon="bar-chart-outline"
       emptyTitle="No billed data"
       emptyBody="Billed revenue will appear here once invoices are created."
@@ -72,15 +139,9 @@ export default function ReportsScreen() {
           ? {
               icon: "lock-closed-outline",
               title: "Not available",
-              body: "Reports are available to lab owners, admins, and billing users.",
+              body: "Reports are available to lab owners and admins.",
             }
-          : labOrgId
-          ? null
-          : {
-              icon: "bar-chart-outline",
-              title: "No lab selected",
-              body: "Reports are scoped to a lab. This view is available to lab members.",
-            }
+          : null
       }
       renderItem={(r) => (
         <Card style={styles.row}>
@@ -110,6 +171,14 @@ function makeStyles(c: ThemeColors) {
     summaryDivider: { width: StyleSheet.hairlineWidth, alignSelf: "stretch", backgroundColor: c.border },
     summaryValue: { ...Typography.h2, color: c.text },
     summaryLabel: { ...Typography.caption, color: c.textSecondary },
+    exportBtn: {
+      width: 40,
+      height: 40,
+      borderRadius: Radius.full,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: c.tint + "1A",
+    },
     row: { flexDirection: "row", alignItems: "center", gap: Spacing.md },
     main: { flex: 1, gap: 2 },
     name: { ...Typography.bodySemibold, color: c.text },

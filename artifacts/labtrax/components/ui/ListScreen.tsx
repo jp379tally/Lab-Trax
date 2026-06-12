@@ -47,6 +47,9 @@ interface ListScreenProps<T> {
   errorTitle?: string;
   // When set, render this message instead of the list (e.g. permission gate).
   blocked?: BlockedState | null;
+  // Optional element rendered on the right side of the header (e.g. an export
+  // or add action).
+  headerRight?: React.ReactElement | null;
 }
 
 /**
@@ -66,6 +69,7 @@ export function ListScreen<T>({
   emptyBody = "Items will appear here.",
   errorTitle = "Couldn’t load",
   blocked = null,
+  headerRight = null,
 }: ListScreenProps<T>) {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
@@ -88,6 +92,7 @@ export function ListScreen<T>({
             </Text>
           ) : null}
         </View>
+        {headerRight ? <View style={styles.headerRight}>{headerRight}</View> : null}
       </View>
 
       {blocked ? (
@@ -160,6 +165,7 @@ function makeStyles(c: ThemeColors) {
       justifyContent: "center",
     },
     headerText: { flex: 1 },
+    headerRight: { marginLeft: Spacing.xs },
     title: { ...Typography.h1, color: c.text },
     subtitle: { ...Typography.caption, color: c.textSecondary, marginTop: 2 },
     listContent: { padding: Spacing.lg, paddingTop: Spacing.sm, gap: Spacing.sm },

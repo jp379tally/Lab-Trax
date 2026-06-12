@@ -6,7 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
-import { useMe, canEditAnyLab } from "@/lib/auth-me";
+import { useMe, canEditAnyLab, canAdminAnyLab } from "@/lib/auth-me";
 
 type IconName = React.ComponentProps<typeof Ionicons>["name"];
 
@@ -15,7 +15,10 @@ interface MenuItem {
   subtitle: string;
   icon: IconName;
   route: string;
+  // billing-or-better (owner/admin/billing) — vendors/categories
   requiresEdit?: boolean;
+  // owner/admin only — pricing, billed report, item-label writes
+  requiresAdmin?: boolean;
 }
 
 const ITEMS: MenuItem[] = [
@@ -30,6 +33,7 @@ const ITEMS: MenuItem[] = [
     subtitle: "Tiers and per-item prices",
     icon: "pricetags-outline",
     route: "/manage/pricing",
+    requiresAdmin: true,
   },
   {
     title: "Lists",
@@ -43,7 +47,7 @@ const ITEMS: MenuItem[] = [
     subtitle: "Billed revenue by restoration",
     icon: "bar-chart-outline",
     route: "/manage/reports",
-    requiresEdit: true,
+    requiresAdmin: true,
   },
 ];
 
@@ -53,8 +57,11 @@ export default function MoreMenuScreen() {
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const meQuery = useMe();
   const canEdit = canEditAnyLab(meQuery.data);
+  const canAdmin = canAdminAnyLab(meQuery.data);
 
-  const visible = ITEMS.filter((item) => !item.requiresEdit || canEdit);
+  const visible = ITEMS.filter(
+    (item) => (!item.requiresEdit || canEdit) && (!item.requiresAdmin || canAdmin),
+  );
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
