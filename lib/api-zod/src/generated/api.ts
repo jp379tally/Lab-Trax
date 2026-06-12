@@ -1096,11 +1096,15 @@ export const GetCaseByBarcodeResponse = zod.object({
  * Returns patient-similarity hits for the given first+last name within a
 lab (and optional provider org or doctor name). Uses bigram similarity
 and nickname matching to surface potential duplicates. The caller must
-be an active member of `labOrganizationId`. No row cap — remakes from
-years ago must still be detected.
+be an active member of `labOrganizationId`. Results are capped at
+`limit` (default 50, max 200); when truncated the response includes
+`truncated: true` and `totalFound`.
 
  * @summary Find similar patients for duplicate/remake detection
  */
+export const getPatientSimilarityQueryLimitDefault = 50;
+export const getPatientSimilarityQueryLimitMax = 200;
+
 export const GetPatientSimilarityQueryParams = zod.object({
   patientFirstName: zod.coerce.string(),
   patientLastName: zod.coerce.string(),
@@ -1115,31 +1119,49 @@ export const GetPatientSimilarityQueryParams = zod.object({
     .describe(
       "Fallback doctor-name scope when providerOrganizationId is not known.",
     ),
+  limit: zod.coerce
+    .number()
+    .min(1)
+    .max(getPatientSimilarityQueryLimitMax)
+    .default(getPatientSimilarityQueryLimitDefault)
+    .describe(
+      "Maximum number of hits to return (default 50, max 200). When the full result set exceeds this value, the response includes truncated:true and totalFound.",
+    ),
 });
 
 export const GetPatientSimilarityResponse = zod.object({
   ok: zod.boolean().optional(),
   data: zod
     .object({
-      matches: zod
-        .array(
-          zod.object({
-            id: zod.string(),
-            source: zod.enum(["canonical", "legacy"]),
-            caseNumber: zod.string().nullish(),
-            patientFirstName: zod.string().nullish(),
-            patientLastName: zod.string().nullish(),
-            doctorName: zod.string().nullish(),
-            status: zod.string().nullish(),
-            matchKind: zod.enum(["exact", "nickname", "fuzzy"]),
-            createdAt: zod.string().nullish(),
-            dueDate: zod.string().nullish(),
-            toothNumbers: zod.string().nullish(),
-            restorationTypes: zod.string().nullish(),
-            hasInvoice: zod.boolean().optional(),
-          }),
-        )
-        .optional(),
+      matches: zod.array(
+        zod.object({
+          id: zod.string(),
+          source: zod.enum(["canonical", "legacy"]),
+          caseNumber: zod.string().nullish(),
+          patientFirstName: zod.string().nullish(),
+          patientLastName: zod.string().nullish(),
+          doctorName: zod.string().nullish(),
+          status: zod.string().nullish(),
+          matchKind: zod.enum(["exact", "nickname", "fuzzy"]),
+          createdAt: zod.string().nullish(),
+          dueDate: zod.string().nullish(),
+          toothNumbers: zod.string().nullish(),
+          restorationTypes: zod.string().nullish(),
+          hasInvoice: zod.boolean().optional(),
+        }),
+      ),
+      truncated: zod
+        .boolean()
+        .optional()
+        .describe(
+          "Present and true when the result set was capped by the limit parameter.",
+        ),
+      totalFound: zod
+        .number()
+        .optional()
+        .describe(
+          "Total number of hits before the cap was applied. Only present when truncated is true.",
+        ),
     })
     .optional(),
 });

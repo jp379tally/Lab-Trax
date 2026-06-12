@@ -3197,8 +3197,9 @@ export function useGetCaseByBarcode<
  * Returns patient-similarity hits for the given first+last name within a
 lab (and optional provider org or doctor name). Uses bigram similarity
 and nickname matching to surface potential duplicates. The caller must
-be an active member of `labOrganizationId`. No row cap — remakes from
-years ago must still be detected.
+be an active member of `labOrganizationId`. Results are capped at
+`limit` (default 50, max 200); when truncated the response includes
+`truncated: true` and `totalFound`.
 
  * @summary Find similar patients for duplicate/remake detection
  */

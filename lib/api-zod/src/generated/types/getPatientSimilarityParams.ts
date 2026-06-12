@@ -18,4 +18,10 @@ export type GetPatientSimilarityParams = {
    * Fallback doctor-name scope when providerOrganizationId is not known.
    */
   doctorName?: string;
+  /**
+   * Maximum number of hits to return (default 50, max 200). When the full result set exceeds this value, the response includes truncated:true and totalFound.
+   * @minimum 1
+   * @maximum 200
+   */
+  limit?: number;
 };

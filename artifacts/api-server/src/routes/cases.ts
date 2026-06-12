@@ -1655,9 +1655,25 @@ router.get(
         ),
     );
 
-    // No result cap — Task #331 requires that remakes from years ago are
-    // still surfaced, so we never truncate the candidate list.
-    return ok(res, { matches: dedupedHits });
+    // Apply a configurable cap (default 50, max 200) to prevent large-lab
+    // slowdowns on common surnames. When truncated, totalFound is included so
+    // the caller knows more results exist. Remakes from years ago are still
+    // detected because hits are sorted by relevance before slicing.
+    const DEFAULT_LIMIT = 50;
+    const MAX_LIMIT = 200;
+    const rawLimit = Number(req.query.limit);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0
+      ? Math.min(Math.floor(rawLimit), MAX_LIMIT)
+      : DEFAULT_LIMIT;
+
+    const totalFound = dedupedHits.length;
+    const truncated = totalFound > limit;
+    const page = truncated ? dedupedHits.slice(0, limit) : dedupedHits;
+
+    if (truncated) {
+      return ok(res, { matches: page, truncated: true, totalFound });
+    }
+    return ok(res, { matches: page });
   }),
 );
 

@@ -809,8 +809,9 @@ paths:
         Returns patient-similarity hits for the given first+last name within a
         lab (and optional provider org or doctor name). Uses bigram similarity
         and nickname matching to surface potential duplicates. The caller must
-        be an active member of `labOrganizationId`. No row cap — remakes from
-        years ago must still be detected.
+        be an active member of `labOrganizationId`. Results are capped at
+        `limit` (default 50, max 200); when truncated the response includes
+        `truncated: true` and `totalFound`.
       parameters:
         - in: query
           name: patientFirstName
@@ -834,6 +835,11 @@ paths:
           required: false
           schema: { type: string }
           description: Fallback doctor-name scope when providerOrganizationId is not known.
+        - in: query
+          name: limit
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+          description: Maximum number of hits to return (default 50, max 200). When the full result set exceeds this value, the response includes truncated:true and totalFound.
       responses:
         "200":
           description: Similarity matches (may be empty array)
@@ -3790,11 +3796,18 @@ components:
         ok: { type: boolean }
         data:
           type: object
+          required: [matches]
           properties:
             matches:
               type: array
               items:
                 $ref: "#/components/schemas/PatientSimilarityHit"
+            truncated:
+              type: boolean
+              description: Present and true when the result set was capped by the limit parameter.
+            totalFound:
+              type: integer
+              description: Total number of hits before the cap was applied. Only present when truncated is true.
     SuccessResult:
       type: object
       required: [success]

@@ -445,6 +445,65 @@ maybe("GET /api/cases/patient-similarity (db integration)", () => {
     }
   });
 
+  // ── Limit / truncation ────────────────────────────────────────────────────
+
+  it("truncates results when hits exceed the limit and sets truncated+totalFound", async () => {
+    // Insert 4 cases with last name "Truncson" then request limit=2.
+    const truncIds: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      truncIds.push(
+        await trackInsert({ patientFirst: `FirstName${i}`, patientLast: "Truncson" }),
+      );
+    }
+
+    const r = await request(appMod.default)
+      .get("/api/cases/patient-similarity")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({
+        patientFirstName: "FirstName0",
+        patientLastName: "Truncson",
+        labOrganizationId: labOrgId,
+        limit: "2",
+      });
+
+    expect(r.status).toBe(200);
+    expect(r.body.data.matches).toHaveLength(2);
+    expect(r.body.data.truncated).toBe(true);
+    expect(r.body.data.totalFound).toBeGreaterThanOrEqual(4);
+  });
+
+  it("does not set truncated when hits are within the limit", async () => {
+    const r = await request(appMod.default)
+      .get("/api/cases/patient-similarity")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({
+        patientFirstName: "NoSuch",
+        patientLastName: "XYZZYPatient2",
+        labOrganizationId: labOrgId,
+        limit: "50",
+      });
+
+    expect(r.status).toBe(200);
+    expect(r.body.data.truncated).toBeUndefined();
+    expect(r.body.data.totalFound).toBeUndefined();
+  });
+
+  it("clamps limit to the max of 200", async () => {
+    const r = await request(appMod.default)
+      .get("/api/cases/patient-similarity")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({
+        patientFirstName: "Jane",
+        patientLastName: "Doe",
+        labOrganizationId: labOrgId,
+        limit: "9999",
+      });
+
+    // Should not error — 9999 is clamped to 200 server-side.
+    expect(r.status).toBe(200);
+    expect(Array.isArray(r.body.data.matches)).toBe(true);
+  });
+
   // ── Empty result ──────────────────────────────────────────────────────────
 
   it("returns an empty matches array when no case matches", async () => {

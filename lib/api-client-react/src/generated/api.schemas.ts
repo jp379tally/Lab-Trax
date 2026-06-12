@@ -1501,7 +1501,11 @@ export interface PatientSimilarityHit {
 }
 
 export type PatientSimilarityResultData = {
-  matches?: PatientSimilarityHit[];
+  matches: PatientSimilarityHit[];
+  /** Present and true when the result set was capped by the limit parameter. */
+  truncated?: boolean;
+  /** Total number of hits before the cap was applied. Only present when truncated is true. */
+  totalFound?: number;
 };
 
 export interface PatientSimilarityResult {
@@ -1623,6 +1627,12 @@ export type GetPatientSimilarityParams = {
    * Fallback doctor-name scope when providerOrganizationId is not known.
    */
   doctorName?: string;
+  /**
+   * Maximum number of hits to return (default 50, max 200). When the full result set exceeds this value, the response includes truncated:true and totalFound.
+   * @minimum 1
+   * @maximum 200
+   */
+  limit?: number;
 };
 
 export type GetIteroImportHistoryParams = {
