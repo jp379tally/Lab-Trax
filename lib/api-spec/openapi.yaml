@@ -2907,6 +2907,12 @@ components:
           format: date-time
           nullable: true
           description: Expected delivery date; `null` clears it.
+        casePanBarcode:
+          type: string
+          description: |
+            Physical tray (pan) barcode assigned to this case. An empty
+            string or omitted value leaves the existing barcode unchanged.
+            Trimmed server-side.
     IteroImportResult:
       type: object
       properties:

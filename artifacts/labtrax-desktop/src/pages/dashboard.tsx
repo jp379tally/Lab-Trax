@@ -788,6 +788,13 @@ function CaseRow({ c, onSelect }: { c: LabCase; onSelect: (c: LabCase) => void }
       <td className="py-3">
         <StatusBadge status={c.status} />
       </td>
+      <td className="py-3 font-mono text-xs text-muted-foreground">
+        {c.casePanBarcode
+          ? c.casePanBarcode.length > 12
+            ? c.casePanBarcode.slice(0, 12) + "…"
+            : c.casePanBarcode
+          : "—"}
+      </td>
       <td className="py-3 text-muted-foreground pr-5">{formatDate(c.dueDate)}</td>
     </tr>
   );
@@ -814,20 +821,21 @@ function CasesTable({
             <th className="text-left font-medium py-2.5">Patient</th>
             <th className="text-left font-medium py-2.5">Doctor</th>
             <th className="text-left font-medium py-2.5">Location</th>
+            <th className="text-left font-medium py-2.5">Pan</th>
             <th className="text-left font-medium py-2.5 pr-5">Due</th>
           </tr>
         </thead>
         <tbody>
           {loading && (
             <tr>
-              <td colSpan={6} className="px-5 py-8 text-center text-sm text-muted-foreground">
+              <td colSpan={7} className="px-5 py-8 text-center text-sm text-muted-foreground">
                 Loading…
               </td>
             </tr>
           )}
           {!loading && cases.length === 0 && (
             <tr>
-              <td colSpan={6} className="px-5 py-8 text-center text-sm text-muted-foreground">
+              <td colSpan={7} className="px-5 py-8 text-center text-sm text-muted-foreground">
                 {emptyText}
               </td>
             </tr>

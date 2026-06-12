@@ -506,6 +506,12 @@ export default function CasesListScreen() {
                     {item.caseNumber ? `#${item.caseNumber}` : "No case #"}
                     {item.doctorName ? `  ·  ${item.doctorName}` : ""}
                   </Text>
+                  {item.casePanBarcode ? (
+                    <View style={styles.panRow}>
+                      <Ionicons name="barcode-outline" size={12} color={colors.textTertiary} />
+                      <Text style={styles.panText} numberOfLines={1}>{item.casePanBarcode}</Text>
+                    </View>
+                  ) : null}
                   <Text style={styles.rowDue}>Due {formatDate(item.dueDate)}</Text>
                 </View>
                 <View style={styles.rowRight}>
@@ -833,6 +839,8 @@ function makeStyles(c: ThemeColors) {
     rowName: { ...Typography.bodySemibold, color: c.text },
     rowMeta: { ...Typography.caption, color: c.textSecondary },
     rowDue: { ...Typography.caption, color: c.textTertiary, marginTop: 2 },
+    panRow: { flexDirection: "row", alignItems: "center", gap: 3, marginTop: 2 },
+    panText: { ...Typography.caption, color: c.textTertiary, fontVariant: ["tabular-nums"] as any },
     rowRight: { alignItems: "flex-end", gap: Spacing.xs },
     center: {
       flex: 1,

@@ -1658,6 +1658,12 @@ export const UpdateCaseBody = zod.object({
     .date()
     .nullish()
     .describe("Expected delivery date; `null` clears it."),
+  casePanBarcode: zod
+    .string()
+    .optional()
+    .describe(
+      "Physical tray (pan) barcode assigned to this case. An empty\nstring or omitted value leaves the existing barcode unchanged.\nTrimmed server-side.\n",
+    ),
 });
 
 export const UpdateCaseResponse = zod.object({

@@ -1634,6 +1634,7 @@ export default function CasesPage() {
                   { label: "Teeth", align: "left" },
                   { label: "Priority", align: "left" },
                   { label: <SortHeader k="status">Status</SortHeader>, align: "left" },
+                  { label: "Pan", align: "left" },
                   { label: <SortHeader k="dueDate">Due</SortHeader>, align: "left" },
                   { label: <SortHeader k="totalPrice">Price</SortHeader>, align: "right" },
                   { label: "Notes", align: "left" },
@@ -1673,7 +1674,7 @@ export default function CasesPage() {
             <tbody>
               {isLoading && (
                 <tr>
-                  <td colSpan={13} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={14} className="px-5 py-12 text-center text-muted-foreground">
                     <Loader2 size={16} className="inline animate-spin mr-2" />
                     Loading cases…
                   </td>
@@ -1681,14 +1682,14 @@ export default function CasesPage() {
               )}
               {error && (
                 <tr>
-                  <td colSpan={13} className="px-5 py-12 text-center text-destructive">
+                  <td colSpan={14} className="px-5 py-12 text-center text-destructive">
                     {(error as Error).message}
                   </td>
                 </tr>
               )}
               {!isLoading && filtered.length === 0 && (
                 <tr>
-                  <td colSpan={13} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={14} className="px-5 py-12 text-center text-muted-foreground">
                     No cases match the current filters.
                   </td>
                 </tr>
@@ -1753,6 +1754,13 @@ export default function CasesPage() {
                     )}
                   </td>
                   <td className="py-3"><StatusBadge status={c.status} /></td>
+                  <td className="py-3 text-muted-foreground font-mono text-xs">
+                    {c.casePanBarcode
+                      ? c.casePanBarcode.length > 12
+                        ? c.casePanBarcode.slice(0, 12) + "…"
+                        : c.casePanBarcode
+                      : "—"}
+                  </td>
                   <td className="py-3 text-muted-foreground">{formatDate(c.dueDate)}</td>
                   <td className="py-3 text-right tabular-nums">
                     {Number(c.totalPrice ?? 0) > 0 ? formatMoney(c.totalPrice) : "—"}

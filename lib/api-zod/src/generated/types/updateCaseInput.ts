@@ -33,4 +33,9 @@ clears all connectors on the case.
   bridgeConnectors?: string;
   /** Expected delivery date; `null` clears it. */
   expectedDeliveryDate?: Date | null;
+  /** Physical tray (pan) barcode assigned to this case. An empty
+string or omitted value leaves the existing barcode unchanged.
+Trimmed server-side.
+ */
+  casePanBarcode?: string;
 }

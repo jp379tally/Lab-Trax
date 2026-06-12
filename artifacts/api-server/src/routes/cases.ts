@@ -3819,6 +3819,10 @@ const updateCaseSchema = z.object({
   bridgeConnectors: z.string().optional(),
   expectedDeliveryDate: z.union([z.string(), z.null()]).optional(),
   clearDeliveryDateProposal: z.boolean().optional(),
+  casePanBarcode: z
+    .string()
+    .transform((v) => v.trim())
+    .optional(),
 });
 
 router.patch(
@@ -3946,6 +3950,8 @@ router.patch(
     }
     if (input.bridgeConnectors !== undefined)
       updates.bridgeConnectors = input.bridgeConnectors || null;
+    if (input.casePanBarcode !== undefined)
+      updates.casePanBarcode = input.casePanBarcode || null;
     if (input.expectedDeliveryDate !== undefined)
       updates.expectedDeliveryDate = input.expectedDeliveryDate
         ? new Date(input.expectedDeliveryDate)
