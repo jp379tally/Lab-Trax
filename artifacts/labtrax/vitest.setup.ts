@@ -547,7 +547,7 @@ vi.mock("@workspace/api-client-react", () => ({
     isPending: false,
   }),
   useCaseAttachments: () => ({
-    data: [],
+    data: (mockAppOverrides.current.attachments as unknown[]) ?? [],
     isLoading: false,
     refetch: vi.fn(async () => undefined),
   }),
@@ -571,6 +571,7 @@ vi.mock("expo-file-system/legacy", () => ({
   downloadAsync: vi.fn(async (_url: string, dest: string) => ({ status: 200, uri: dest })),
   deleteAsync: vi.fn(async () => undefined),
   readAsStringAsync: vi.fn(async () => ""),
+  copyAsync: vi.fn(async () => undefined),
 }));
 
 vi.mock("@/lib/theme-context", () => {

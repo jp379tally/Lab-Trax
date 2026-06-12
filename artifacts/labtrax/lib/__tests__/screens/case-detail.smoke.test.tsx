@@ -10,6 +10,8 @@ import {
   mockAddCaseNoteMutateAsync,
 } from "../../../vitest.setup";
 
+import * as Sharing from "expo-sharing";
+
 import CaseDetailScreen from "@/app/case/[id]";
 import {
   completedCaseWithInvoice,
@@ -157,6 +159,41 @@ describe("CaseDetailScreen (read-only viewer)", () => {
       const { getByTestId, getByText } = render(<CaseDetailScreen />);
       fireEvent.press(getByTestId("section-tab-invoice"));
       expect(getByText(/Invoice #INV-2024-002/)).toBeTruthy();
+    });
+  });
+
+  describe("files (open attachment) — desktop parity", () => {
+    const pdfAttachment = {
+      id: "att-pdf-1",
+      fileName: "iTero_Rx_309233315.pdf",
+      fileType: "application/pdf",
+      uploaderName: "Lab Tech",
+      createdAt: "2026-06-10T12:00:00.000Z",
+    };
+
+    beforeEach(() => {
+      setMockSearchParams({ id: inProgressCase.id });
+      setMockAppState({
+        cases: [inProgressCase],
+        invoices: [],
+        attachments: [pdfAttachment],
+      });
+    });
+
+    it("renders a tappable card for a PDF attachment", () => {
+      const { getByTestId } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-files"));
+      expect(getByTestId(`doc-open-${pdfAttachment.id}`)).toBeTruthy();
+    });
+
+    it("opens a tapped PDF attachment through the system viewer", async () => {
+      const { getByTestId } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-files"));
+      fireEvent.press(getByTestId(`doc-open-${pdfAttachment.id}`));
+
+      await waitFor(() => {
+        expect(vi.mocked(Sharing.shareAsync)).toHaveBeenCalled();
+      });
     });
   });
 });

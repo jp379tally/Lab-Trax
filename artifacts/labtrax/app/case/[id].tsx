@@ -33,6 +33,7 @@ import { StatusBadge, type BadgeVariant } from "@/components/ui/StatusBadge";
 import { AuthedImage } from "@/components/ui/AuthedImage";
 import { ReadOnlyToothChart } from "@/components/ReadOnlyToothChart";
 import { deriveRxSummary, buildHighlightedToothSet, formatRxTeethLabel } from "@/lib/rx-summary";
+import { openAttachment } from "@/lib/open-attachment";
 
 // ─── Viewer-local detail shape ────────────────────────────────────────────────
 // GET /api/cases/:id returns the full desktop DetailedCase payload. The
@@ -1259,6 +1260,34 @@ function FilesSection({
   styles: Styles;
   colors: ThemeColors;
 }) {
+  const [openingId, setOpeningId] = useState<string | null>(null);
+
+  async function handleOpenDoc(a: {
+    id: string;
+    fileName?: string | null;
+    fileType?: string | null;
+  }): Promise<void> {
+    if (openingId) return;
+    setOpeningId(a.id);
+    try {
+      const result = await openAttachment({
+        url: `/api/cases/${caseId}/attachments/${a.id}/file`,
+        fileName: a.fileName,
+        fileType: a.fileType,
+      });
+      if (result === "unavailable") {
+        Alert.alert("Can't open file", "Opening files isn't supported on this device.");
+      } else if (result === "error") {
+        Alert.alert(
+          "Couldn't open file",
+          "This file could not be downloaded or opened. Please try again.",
+        );
+      }
+    } finally {
+      setOpeningId(null);
+    }
+  }
+
   if (loading) {
     return (
       <View style={styles.center}>
@@ -1288,22 +1317,30 @@ function FilesSection({
         </View>
       ) : null}
 
-      {docs.map((a) => (
-        <Card key={a.id}>
-          <View style={styles.docRow}>
-            <Ionicons name="document-text-outline" size={22} color={colors.tint} />
-            <View style={styles.docInfo}>
-              <Text style={styles.docName} numberOfLines={1}>
-                {a.fileName || "File"}
-              </Text>
-              <Text style={styles.docMeta}>
-                {a.uploaderName ? `${a.uploaderName} · ` : ""}
-                {formatDate(a.createdAt)}
-              </Text>
+      {docs.map((a) => {
+        const opening = openingId === a.id;
+        return (
+          <Card key={a.id} onPress={() => handleOpenDoc(a)} testID={`doc-open-${a.id}`}>
+            <View style={styles.docRow}>
+              <Ionicons name="document-text-outline" size={22} color={colors.tint} />
+              <View style={styles.docInfo}>
+                <Text style={styles.docName} numberOfLines={1}>
+                  {a.fileName || "File"}
+                </Text>
+                <Text style={styles.docMeta}>
+                  {a.uploaderName ? `${a.uploaderName} · ` : ""}
+                  {formatDate(a.createdAt)}
+                </Text>
+              </View>
+              {opening ? (
+                <ActivityIndicator color={colors.tint} />
+              ) : (
+                <Ionicons name="open-outline" size={18} color={colors.textTertiary} />
+              )}
             </View>
-          </View>
-        </Card>
-      ))}
+          </Card>
+        );
+      })}
     </View>
   );
 }
