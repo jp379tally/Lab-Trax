@@ -60,6 +60,9 @@ import {
   printInvoice,
   printTabContent,
 } from "@/lib/print";
+import QRCodeLib from "qrcode";
+import { useAuth } from "@/lib/auth-context";
+import { printInvoicePdf, type InvoicePdfOptions } from "@/lib/export";
 import {
   ToothChart,
   parseToothField,
@@ -2211,6 +2214,7 @@ export function CaseDrawer({
   onOpenCaseId?: (id: string) => void;
 }) {
   const qc = useQueryClient();
+  const { user } = useAuth();
   const { openPanel: openAiPanel } = useAiPanel();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [fileDragOver, setFileDragOver] = useState(false);
@@ -2285,6 +2289,8 @@ export function CaseDrawer({
   const [generatingInvoice, setGeneratingInvoice] = useState(false);
   const [invError, setInvError] = useState<string | null>(null);
   const [generatePresetId, setGeneratePresetId] = useState<string>("");
+  const [invoicePrintLogoDataUrl, setInvoicePrintLogoDataUrl] = useState<string | null>(null);
+  const [invoicePrintQrDataUrl, setInvoicePrintQrDataUrl] = useState<string | null>(null);
 
   const generatePresetsQuery = useQuery({
     queryKey: ["invoice-template-presets", labCase.labOrganizationId],
@@ -2459,6 +2465,46 @@ export function CaseDrawer({
         }
       >(`/invoices/${caseInvoice!.id}`),
   });
+
+  // Pre-fetch lab logo as a data URL for invoice PDF printing (mirrors
+  // the same logic in InvoiceEditor so the output is identical).
+  const invoicePlacementActive = !!(user?.practiceLogoplacements?.includes("invoices"));
+  useEffect(() => {
+    const logoUrl = user?.practiceLogoUrl;
+    if (!invoicePlacementActive || !logoUrl) {
+      setInvoicePrintLogoDataUrl(null);
+      return;
+    }
+    let cancelled = false;
+    fetch(logoUrl)
+      .then((r) => r.blob())
+      .then(
+        (blob) =>
+          new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          }),
+      )
+      .then((dataUrl) => { if (!cancelled) setInvoicePrintLogoDataUrl(dataUrl); })
+      .catch(() => { if (!cancelled) setInvoicePrintLogoDataUrl(null); });
+    return () => { cancelled = true; };
+  }, [invoicePlacementActive, user?.practiceLogoUrl]);
+
+  // Pre-generate a QR code data URL for the invoice PDF print.
+  useEffect(() => {
+    if (!caseInvoice || !labCase.caseNumber) {
+      setInvoicePrintQrDataUrl(null);
+      return;
+    }
+    const qrUrl = `${window.location.origin}/cases/${encodeURIComponent(labCase.caseNumber)}`;
+    let cancelled = false;
+    QRCodeLib.toDataURL(qrUrl, { margin: 1, width: 120 })
+      .then((dataUrl) => { if (!cancelled) setInvoicePrintQrDataUrl(dataUrl); })
+      .catch(() => { if (!cancelled) setInvoicePrintQrDataUrl(null); });
+    return () => { cancelled = true; };
+  }, [caseInvoice?.id, labCase.caseNumber]);
 
   // Sync connectedPairs from server data when the detail query resolves
   // (bridgeConnectors is not included in the list-level LabCase, only in
@@ -4858,13 +4904,40 @@ export function CaseDrawer({
                 {caseInvoice && (
                   <button
                     type="button"
-                    onClick={() =>
-                      printInvoice(
-                        caseInvoice,
-                        data ?? labCase,
-                        { items: invoiceDetailQuery.data?.items ?? [] },
-                      )
-                    }
+                    onClick={() => {
+                      const lc = data ?? labCase;
+                      const inv = invoiceDetailQuery.data ?? caseInvoice;
+                      const dm = inv.displayMetadata ?? inv.displayMetadataJson;
+                      const opts: InvoicePdfOptions = {
+                        invoiceNumber: inv.invoiceNumber,
+                        labName: inv.labOrganization?.name ?? caseInvoice.labOrganization?.name ?? "",
+                        practiceName: inv.providerOrganization?.name ?? caseInvoice.providerOrganization?.name ?? "",
+                        patientName: dm?.patientName ?? (`${lc.patientFirstName ?? ""} ${lc.patientLastName ?? ""}`.trim() || null),
+                        billTo: dm?.billTo ?? inv.providerOrganization?.name ?? null,
+                        teeth: dm?.teeth ?? lc.teeth ?? null,
+                        shade: dm?.shade ?? null,
+                        caseNotes: dm?.caseNotes ?? lc.caseNotes ?? null,
+                        issuedAt: inv.issuedAt ?? null,
+                        dueAt: inv.dueDate ?? inv.dueAt ?? null,
+                        status: inv.status,
+                        items: (invoiceDetailQuery.data?.items ?? []).map((it) => ({
+                          description: it.description,
+                          quantity: it.quantity,
+                          unitPrice: it.unitPrice,
+                          lineTotal: it.lineTotal,
+                        })),
+                        subtotal: inv.subtotal ?? 0,
+                        total: inv.total ?? 0,
+                        balanceDue: inv.balanceDue ?? null,
+                        notes: inv.notes ?? null,
+                        generatedAt: new Date(),
+                        logoUrl: invoicePrintLogoDataUrl,
+                        logoPdfSize: (user?.practiceLogoSize as "small" | "medium" | "large" | null) ?? null,
+                        caseNumber: lc.caseNumber ?? null,
+                        qrCodeDataUrl: invoicePrintQrDataUrl,
+                      };
+                      printInvoicePdf(opts);
+                    }}
                     className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
                     title="Print invoice"
                   >
