@@ -24,6 +24,7 @@ import {
   Search,
   Send,
   Sparkles,
+  Stethoscope,
   Trash2,
   TrendingUp,
   X,
@@ -47,6 +48,7 @@ import {
   formatRxTeethWithShades,
 } from "@/lib/rx-summary";
 import { StatusBadge } from "@/components/StatusBadge";
+import { PrescriptionPreview } from "@/components/PrescriptionPreview";
 import {
   buildInvoicePdf,
   downloadInvoicePdf,
@@ -1085,6 +1087,7 @@ export function InvoiceEditor({
   });
   const rxAttachments = caseAttachmentsQuery.data ?? [];
   const [rxDropdownOpen, setRxDropdownOpen] = useState(false);
+  const [prescriptionPreviewOpen, setPrescriptionPreviewOpen] = useState(false);
 
   async function openAttachmentFile(att: CaseAttachment) {
     const url = `${getApiOrigin()}/api/cases/${att.caseId}/attachments/${att.id}/file`;
@@ -1584,6 +1587,16 @@ export function InvoiceEditor({
             >
               <CreditCard size={14} /> Record Payment
             </button>
+            {caseIdForPricing && (
+              <button
+                type="button"
+                onClick={() => setPrescriptionPreviewOpen(true)}
+                title="Preview the linked case's prescriptions, files & history"
+                className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary"
+              >
+                <Stethoscope size={14} /> Preview prescription
+              </button>
+            )}
             {rxAttachments.length === 1 && (
               <button
                 type="button"
@@ -2669,6 +2682,13 @@ export function InvoiceEditor({
           )}
         </div>
       </div>
+      {prescriptionPreviewOpen && caseIdForPricing && (
+        <PrescriptionPreview
+          caseId={caseIdForPricing}
+          invoiceCaseId={caseIdForPricing}
+          onClose={() => setPrescriptionPreviewOpen(false)}
+        />
+      )}
       {emailOpen && (
         <EmailInvoiceDialog
           invoice={invoice}
