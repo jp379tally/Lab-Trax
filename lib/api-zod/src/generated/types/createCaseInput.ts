@@ -5,6 +5,8 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { CreateCaseInputPriority } from "./createCaseInputPriority";
+import type { CreateCaseInputRestorationsItem } from "./createCaseInputRestorationsItem";
 
 export interface CreateCaseInput {
   /** Client-supplied case number (ignored for remakes). */
@@ -21,5 +23,8 @@ export interface CreateCaseInput {
   shade?: string | null;
   dueDate?: Date | null;
   rushOrder?: boolean | null;
+  priority?: CreateCaseInputPriority;
+  /** Inline restoration line items created alongside the case. */
+  restorations?: CreateCaseInputRestorationsItem[] | null;
   needsAiReview?: boolean | null;
 }

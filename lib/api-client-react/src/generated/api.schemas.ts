@@ -103,6 +103,25 @@ export interface CaseListResult {
   data?: CanonicalCase[];
 }
 
+export type CreateCaseInputPriority =
+  | (typeof CreateCaseInputPriority)[keyof typeof CreateCaseInputPriority]
+  | null;
+
+export const CreateCaseInputPriority = {
+  normal: "normal",
+  rush: "rush",
+} as const;
+
+export type CreateCaseInputRestorationsItem = {
+  toothNumber: string;
+  restorationType: string;
+  material?: string | null;
+  shade?: string | null;
+  notes?: string | null;
+  quantity?: number | null;
+  unitPrice?: number | null;
+};
+
 export interface CreateCaseInput {
   /** Client-supplied case number (ignored for remakes). */
   caseNumber: string;
@@ -118,6 +137,9 @@ export interface CreateCaseInput {
   shade?: string | null;
   dueDate?: string | null;
   rushOrder?: boolean | null;
+  priority?: CreateCaseInputPriority;
+  /** Inline restoration line items created alongside the case. */
+  restorations?: CreateCaseInputRestorationsItem[] | null;
   needsAiReview?: boolean | null;
 }
 

@@ -726,6 +726,7 @@ export async function chunkedUploadCaseMedia(
   fileUri: string,
   fileName: string,
   mimeType: string,
+  onProgress?: (fraction: number) => void,
 ): Promise<ChunkedUploadResult> {
   // Use the shared ensureHydrated() singleton instead of an ad hoc guard.
   if (Platform.OS !== "web") {
@@ -786,6 +787,7 @@ export async function chunkedUploadCaseMedia(
         if (typeof statusData?.fileSize === "number" && statusData.fileSize === fileSize) {
           sessionId = cachedSessionId;
           uploadedBytes = (statusData.uploadedBytes as number) ?? 0;
+          if (uploadedBytes > 0) onProgress?.(Math.min(uploadedBytes / fileSize, 1));
         }
       }
     } catch {
@@ -853,10 +855,12 @@ export async function chunkedUploadCaseMedia(
 
       if (patchBody.complete && patchBody.url) {
         resumableSessionCache.delete(cacheKey);
+        onProgress?.(1);
         return { ok: true, url: patchBody.url as string };
       }
 
       uploadedBytes = (patchBody.uploadedBytes as number) ?? uploadedBytes + chunkBuffer.byteLength;
+      onProgress?.(Math.min(uploadedBytes / fileSize, 1));
     }
   } catch (e) {
     return {

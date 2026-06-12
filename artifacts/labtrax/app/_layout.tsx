@@ -82,6 +82,7 @@ function RootLayoutNav() {
       <Stack screenOptions={{ headerBackTitle: "Back", contentStyle: { backgroundColor: Colors.light.backgroundSolid } }}>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="case/[id]" options={{ headerShown: false, presentation: "card" }} />
+        <Stack.Screen name="new-case" options={{ headerShown: false, presentation: "card" }} />
         <Stack.Screen name="pdf-viewer" options={{ headerShown: false, presentation: "card" }} />
         <Stack.Screen name="two-factor" options={{ headerShown: false, presentation: "card" }} />
         <Stack.Screen name="privacy-policy" options={{ headerShown: false, presentation: "modal" }} />

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -33,7 +33,17 @@ import {
   type UpdateInvoiceInput,
   type UpdateInvoiceInputItemsItem,
 } from "@workspace/api-client-react";
+import * as ImagePicker from "expo-image-picker";
+import * as DocumentPicker from "expo-document-picker";
 import { resilientFetch } from "@/lib/query-client";
+import { uploadCaseAttachment } from "@/lib/uploadCaseAttachment";
+import {
+  peekSharedFiles,
+  popSharedFiles,
+  subscribeSharedFileInbox,
+  type InboxEntry,
+} from "@/lib/shared-file-inbox";
+import { useMe, canEditOrg } from "@/lib/auth-me";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
@@ -240,8 +250,6 @@ const PRIORITY_OPTIONS: { value: string; label: string }[] = [
   { value: "normal", label: "Normal" },
   { value: "rush", label: "Rush" },
 ];
-
-const BILLING_ROLES = ["owner", "admin", "billing"] as const;
 
 const INVOICE_STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "draft", label: "Draft" },
@@ -671,20 +679,57 @@ export default function CaseDetailScreen() {
   const invoiceQuery = useInvoice(primaryInvoiceId);
   const invoice = invoiceQuery.data ?? invoiceList[0] ?? null;
 
-  const meQuery = useQuery({
-    queryKey: ["auth-me"],
-    queryFn: () =>
-      resilientFetch("/api/auth/me") as unknown as Promise<{
-        memberships: { organizationId: string; role: string; status: string }[];
-      }>,
-    staleTime: 60_000,
-  });
+  const meQuery = useMe();
   const caseOrgId = c?.organizationId ?? c?.labOrganizationId ?? null;
-  const canEdit = (BILLING_ROLES as readonly string[]).includes(
-    (meQuery.data?.memberships ?? [])
-      .find((m) => m.status === "active" && m.organizationId === caseOrgId)
-      ?.role ?? "",
-  );
+  const canEdit = canEditOrg(meQuery.data, caseOrgId);
+
+  // Share-intent consumer: when files were shared into LabTrax from another app
+  // (root layout writes them to the inbox), offer to attach them to THIS case.
+  // Confirming hands the entries to FilesSection's upload pipeline and clears
+  // the inbox so the Cases-list "waiting to attach" banner resets.
+  const [pendingShared, setPendingShared] = useState<InboxEntry[] | null>(null);
+  const sharePromptOpenRef = useRef(false);
+  useEffect(() => {
+    let cancelled = false;
+    async function checkInbox() {
+      if (!canEdit || sharePromptOpenRef.current) return;
+      const entries = await peekSharedFiles();
+      if (cancelled || entries.length === 0 || sharePromptOpenRef.current) return;
+      sharePromptOpenRef.current = true;
+      Alert.alert(
+        "Attach shared files?",
+        `${entries.length} file${entries.length === 1 ? "" : "s"} shared with LabTrax. Attach ${
+          entries.length === 1 ? "it" : "them"
+        } to this case?`,
+        [
+          {
+            text: "Not now",
+            style: "cancel",
+            onPress: () => {
+              sharePromptOpenRef.current = false;
+            },
+          },
+          {
+            text: "Attach",
+            onPress: () => {
+              void (async () => {
+                const popped = await popSharedFiles();
+                setPendingShared(popped);
+                setActive("files");
+                sharePromptOpenRef.current = false;
+              })();
+            },
+          },
+        ],
+      );
+    }
+    void checkInbox();
+    const unsub = subscribeSharedFileInbox(() => void checkInbox());
+    return () => {
+      cancelled = true;
+      unsub();
+    };
+  }, [canEdit]);
 
   const rxSummary = useMemo(
     () =>
@@ -845,6 +890,8 @@ export default function CaseDetailScreen() {
             onOpenImage={setLightboxUrl}
             canEdit={canEdit}
             onRefresh={onRefresh}
+            pendingShared={pendingShared}
+            onConsumedShared={() => setPendingShared(null)}
             styles={styles}
             colors={colors}
           />
@@ -1305,6 +1352,33 @@ function NotesSection({
   );
 }
 
+const SHARED_MIME_BY_EXT: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  heic: "image/heic",
+  heif: "image/heif",
+  gif: "image/gif",
+  webp: "image/webp",
+  pdf: "application/pdf",
+  zip: "application/zip",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+};
+
+function deriveSharedFileMeta(url: string): { name: string; mimeType: string } {
+  let path = url;
+  try {
+    path = decodeURIComponent(url.split("?")[0].split("#")[0]);
+  } catch {
+    path = url.split("?")[0];
+  }
+  const seg = path.split("/").filter(Boolean).pop() || `shared-${Date.now()}`;
+  const ext = seg.includes(".") ? seg.split(".").pop()!.toLowerCase() : "";
+  const mimeType = SHARED_MIME_BY_EXT[ext] ?? "application/octet-stream";
+  return { name: seg, mimeType };
+}
+
 function FilesSection({
   caseId,
   attachments,
@@ -1312,6 +1386,8 @@ function FilesSection({
   onOpenImage,
   canEdit,
   onRefresh,
+  pendingShared,
+  onConsumedShared,
   styles,
   colors,
 }: {
@@ -1321,12 +1397,150 @@ function FilesSection({
   onOpenImage: (url: string) => void;
   canEdit: boolean;
   onRefresh: () => void;
+  pendingShared: InboxEntry[] | null;
+  onConsumedShared: () => void;
   styles: Styles;
   colors: ThemeColors;
 }) {
   const [openingId, setOpeningId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const deleteAttachment = useDeleteCaseAttachment();
+
+  interface UploadJob {
+    key: string;
+    fileName: string;
+    mimeType: string;
+    fileUri: string;
+    progress: number;
+    status: "uploading" | "error" | "done";
+    error?: string;
+  }
+  const [uploads, setUploads] = useState<UploadJob[]>([]);
+
+  function updateJob(key: string, patch: Partial<UploadJob>) {
+    setUploads((prev) => prev.map((j) => (j.key === key ? { ...j, ...patch } : j)));
+  }
+
+  async function runUpload(job: UploadJob) {
+    updateJob(job.key, { status: "uploading", progress: 0, error: undefined });
+    const result = await uploadCaseAttachment({
+      caseId,
+      fileUri: job.fileUri,
+      fileName: job.fileName,
+      mimeType: job.mimeType,
+      onProgress: (f) => updateJob(job.key, { progress: f }),
+    });
+    if (result.ok) {
+      updateJob(job.key, { status: "done", progress: 1 });
+      onRefresh();
+      setTimeout(() => {
+        setUploads((prev) => prev.filter((j) => j.key !== job.key));
+      }, 1200);
+    } else {
+      updateJob(job.key, { status: "error", error: result.error });
+    }
+  }
+
+  function startJobs(files: { uri: string; name: string; mimeType: string }[]) {
+    if (files.length === 0) return;
+    const jobs: UploadJob[] = files.map((f, i) => ({
+      key: `${Date.now()}-${i}-${Math.random().toString(36).slice(2, 7)}`,
+      fileName: f.name,
+      mimeType: f.mimeType,
+      fileUri: f.uri,
+      progress: 0,
+      status: "uploading",
+    }));
+    setUploads((prev) => [...jobs, ...prev]);
+    jobs.forEach((j) => void runUpload(j));
+  }
+
+  async function pickFromCamera() {
+    try {
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!(perm.granted || perm.status === "granted")) {
+        Alert.alert("Camera permission needed", "Enable camera access in Settings to take photos.");
+        return;
+      }
+      const res = await ImagePicker.launchCameraAsync({ quality: 0.85, mediaTypes: ["images"] });
+      if (res.canceled) return;
+      startJobs(
+        res.assets.map((a) => ({
+          uri: a.uri,
+          name: a.fileName || `photo-${Date.now()}.jpg`,
+          mimeType: a.mimeType || "image/jpeg",
+        })),
+      );
+    } catch (e) {
+      Alert.alert("Couldn't open camera", errorMessage(e));
+    }
+  }
+
+  async function pickFromLibrary() {
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!(perm.granted || perm.status === "granted")) {
+        Alert.alert("Photo permission needed", "Enable photo library access in Settings to choose photos.");
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        quality: 0.85,
+        allowsMultipleSelection: true,
+        mediaTypes: ["images"],
+      });
+      if (res.canceled) return;
+      startJobs(
+        res.assets.map((a, i) => ({
+          uri: a.uri,
+          name: a.fileName || `photo-${Date.now()}-${i}.jpg`,
+          mimeType: a.mimeType || "image/jpeg",
+        })),
+      );
+    } catch (e) {
+      Alert.alert("Couldn't open library", errorMessage(e));
+    }
+  }
+
+  async function pickDocument() {
+    try {
+      const res = await DocumentPicker.getDocumentAsync({ multiple: true, copyToCacheDirectory: true });
+      if (res.canceled) return;
+      startJobs(
+        res.assets.map((a, i) => ({
+          uri: a.uri,
+          name: a.name || `file-${Date.now()}-${i}`,
+          mimeType: a.mimeType || "application/octet-stream",
+        })),
+      );
+    } catch (e) {
+      Alert.alert("Couldn't pick file", errorMessage(e));
+    }
+  }
+
+  function openAddSheet() {
+    Alert.alert("Add to case", undefined, [
+      { text: "Take Photo", onPress: () => void pickFromCamera() },
+      { text: "Choose from Library", onPress: () => void pickFromLibrary() },
+      { text: "Attach File", onPress: () => void pickDocument() },
+      { text: "Cancel", style: "cancel" },
+    ]);
+  }
+
+  // Consume files handed over by the share-intent prompt (parent peeks the inbox
+  // and, on confirm, passes the popped entries here for upload via the same
+  // pipeline as the manual Add button).
+  useEffect(() => {
+    if (!pendingShared || pendingShared.length === 0) return;
+    startJobs(
+      pendingShared.map((e) => {
+        const meta = deriveSharedFileMeta(e.url);
+        return { uri: e.url, name: meta.name, mimeType: meta.mimeType };
+      }),
+    );
+    onConsumedShared();
+    // startJobs is a stable local closure; only re-run when new shared files arrive.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingShared]);
 
   async function handleOpenDoc(a: {
     id: string;
@@ -1405,15 +1619,108 @@ function FilesSection({
       </View>
     );
   }
-  if (attachments.length === 0) {
-    return <EmptyState icon="images-outline" text="No files on this case." styles={styles} colors={colors} />;
-  }
 
   const images = attachments.filter((a) => isImageAttachment(a.fileType, a.fileName));
   const docs = attachments.filter((a) => !isImageAttachment(a.fileType, a.fileName));
+  const isEmpty = attachments.length === 0 && uploads.length === 0;
 
   return (
     <View style={styles.sectionGap}>
+      {canEdit ? (
+        <Pressable
+          onPress={openAddSheet}
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: Spacing.sm,
+            paddingVertical: Spacing.md,
+            borderRadius: Radius.md,
+            borderWidth: 1,
+            borderColor: colors.tint,
+            borderStyle: "dashed",
+          }}
+          testID="files-add-button"
+        >
+          <Ionicons name="add-circle-outline" size={20} color={colors.tint} />
+          <Text style={{ ...Typography.bodySemibold, color: colors.tint }}>Add photo or file</Text>
+        </Pressable>
+      ) : null}
+
+      {uploads.map((job) => {
+        const pct = Math.round(job.progress * 100);
+        return (
+          <View
+            key={job.key}
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: Spacing.md,
+              padding: Spacing.md,
+              borderRadius: Radius.md,
+              backgroundColor: colors.surfaceAlt,
+            }}
+          >
+            <Ionicons
+              name={
+                job.status === "error"
+                  ? "alert-circle-outline"
+                  : job.status === "done"
+                    ? "checkmark-circle"
+                    : "cloud-upload-outline"
+              }
+              size={20}
+              color={
+                job.status === "error"
+                  ? colors.error
+                  : job.status === "done"
+                    ? colors.success
+                    : colors.tint
+              }
+            />
+            <View style={{ flex: 1, gap: 4 }}>
+              <Text style={{ ...Typography.caption, color: colors.text }} numberOfLines={1}>
+                {job.fileName}
+              </Text>
+              {job.status === "error" ? (
+                <Text style={{ ...Typography.caption, color: colors.error }} numberOfLines={2}>
+                  {job.error || "Upload failed."}
+                </Text>
+              ) : (
+                <View
+                  style={{
+                    height: 4,
+                    borderRadius: 2,
+                    backgroundColor: colors.border,
+                    overflow: "hidden",
+                  }}
+                >
+                  <View
+                    style={{
+                      height: 4,
+                      borderRadius: 2,
+                      backgroundColor: job.status === "done" ? colors.success : colors.tint,
+                      width: `${pct}%`,
+                    }}
+                  />
+                </View>
+              )}
+            </View>
+            {job.status === "error" ? (
+              <Pressable onPress={() => void runUpload(job)} hitSlop={8} testID={`upload-retry-${job.key}`}>
+                <Ionicons name="refresh" size={18} color={colors.tint} />
+              </Pressable>
+            ) : job.status === "uploading" ? (
+              <Text style={{ ...Typography.caption, color: colors.textTertiary }}>{pct}%</Text>
+            ) : null}
+          </View>
+        );
+      })}
+
+      {isEmpty ? (
+        <EmptyState icon="images-outline" text="No files on this case." styles={styles} colors={colors} />
+      ) : null}
+
       {images.length > 0 ? (
         <View style={styles.imageGrid}>
           {images.map((a) => {

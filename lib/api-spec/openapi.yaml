@@ -2291,6 +2291,37 @@ components:
         rushOrder:
           type: boolean
           nullable: true
+        priority:
+          type: string
+          enum: [normal, rush]
+          nullable: true
+        restorations:
+          type: array
+          nullable: true
+          description: Inline restoration line items created alongside the case.
+          items:
+            type: object
+            required: [toothNumber, restorationType]
+            properties:
+              toothNumber:
+                type: string
+              restorationType:
+                type: string
+              material:
+                type: string
+                nullable: true
+              shade:
+                type: string
+                nullable: true
+              notes:
+                type: string
+                nullable: true
+              quantity:
+                type: number
+                nullable: true
+              unitPrice:
+                type: number
+                nullable: true
         needsAiReview:
           type: boolean
           nullable: true

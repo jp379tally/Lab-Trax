@@ -576,6 +576,13 @@ vi.mock("@workspace/api-client-react", () => ({
     mutate: vi.fn(),
     isPending: false,
   }),
+  useSearchDoctors: () => ({
+    data: { ok: true, data: { entries: [] } },
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(async () => undefined),
+  }),
+  getSearchDoctorsQueryKey: (params?: unknown) => ["/api/doctors/search", params],
   resolveItemPrice: vi.fn(async () => ({ ok: true, data: { price: null } })),
   setBaseUrl: vi.fn(),
   setAuthTokenGetter: vi.fn(),

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -10,12 +10,18 @@ import {
   RefreshControl,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { router } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useCases, type CanonicalCase } from "@workspace/api-client-react";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
+import {
+  peekSharedFiles,
+  popSharedFiles,
+  subscribeSharedFileInbox,
+  type InboxEntry,
+} from "@/lib/shared-file-inbox";
 import { StatusBadge, type BadgeVariant } from "@/components/ui/StatusBadge";
 
 function patientName(c: CanonicalCase): string {
@@ -53,9 +59,36 @@ export default function CasesListScreen() {
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const [query, setQuery] = useState("");
+  const [pendingShared, setPendingShared] = useState<InboxEntry[]>([]);
 
   const casesQuery = useCases();
   const cases = casesQuery.data ?? [];
+
+  const refreshShared = useCallback(() => {
+    peekSharedFiles()
+      .then(setPendingShared)
+      .catch(() => setPendingShared([]));
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      refreshShared();
+    }, [refreshShared]),
+  );
+
+  useEffect(() => {
+    const unsubscribe = subscribeSharedFileInbox(refreshShared);
+    return unsubscribe;
+  }, [refreshShared]);
+
+  async function dismissShared() {
+    try {
+      await popSharedFiles();
+    } catch {
+      // ignore — clearing the local inbox is best-effort
+    }
+    setPendingShared([]);
+  }
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -98,11 +131,35 @@ export default function CasesListScreen() {
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Text style={styles.title}>Cases</Text>
-        <Text style={styles.subtitle}>
-          {casesQuery.isLoading ? "Loading…" : `${filtered.length} case${filtered.length === 1 ? "" : "s"}`}
-        </Text>
+        <View style={styles.headerText}>
+          <Text style={styles.title}>Cases</Text>
+          <Text style={styles.subtitle}>
+            {casesQuery.isLoading ? "Loading…" : `${filtered.length} case${filtered.length === 1 ? "" : "s"}`}
+          </Text>
+        </View>
+        <Pressable
+          style={styles.newBtn}
+          onPress={() => router.push("/new-case" as never)}
+          testID="new-case-button"
+        >
+          <Ionicons name="add" size={18} color={colors.textInverse} />
+          <Text style={styles.newBtnText}>New</Text>
+        </Pressable>
       </View>
+
+      {pendingShared.length > 0 ? (
+        <Pressable
+          style={styles.shareBanner}
+          onPress={dismissShared}
+          testID="share-banner"
+        >
+          <Ionicons name="cloud-upload-outline" size={18} color={colors.tint} />
+          <Text style={styles.shareBannerText}>
+            {pendingShared.length} file{pendingShared.length === 1 ? "" : "s"} ready — open a case to attach.
+          </Text>
+          <Ionicons name="close" size={16} color={colors.textTertiary} />
+        </Pressable>
+      ) : null}
 
       <View style={styles.searchWrap}>
         <Ionicons name="search" size={18} color={colors.textTertiary} />
@@ -172,9 +229,42 @@ type Styles = ReturnType<typeof makeStyles>;
 function makeStyles(c: ThemeColors) {
   return StyleSheet.create({
     screen: { flex: 1, backgroundColor: c.backgroundSolid },
-    header: { paddingHorizontal: Spacing.lg, paddingTop: Spacing.sm, paddingBottom: Spacing.xs },
+    header: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingHorizontal: Spacing.lg,
+      paddingTop: Spacing.sm,
+      paddingBottom: Spacing.xs,
+      gap: Spacing.md,
+    },
+    headerText: { flex: 1 },
     title: { ...Typography.h1, color: c.text },
     subtitle: { ...Typography.caption, color: c.textSecondary, marginTop: 2 },
+    newBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.xs,
+      paddingHorizontal: Spacing.lg,
+      paddingVertical: Spacing.sm,
+      borderRadius: Radius.full,
+      backgroundColor: c.tint,
+    },
+    newBtnText: { ...Typography.bodySemibold, color: c.textInverse },
+    shareBanner: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.sm,
+      marginHorizontal: Spacing.lg,
+      marginTop: Spacing.sm,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Spacing.sm,
+      borderRadius: Radius.md,
+      backgroundColor: c.surfaceAlt,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    shareBannerText: { flex: 1, ...Typography.caption, color: c.textSecondary },
     searchWrap: {
       flexDirection: "row",
       alignItems: "center",

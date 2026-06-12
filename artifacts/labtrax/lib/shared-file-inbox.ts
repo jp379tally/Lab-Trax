@@ -50,3 +50,16 @@ export async function popSharedFiles(): Promise<InboxEntry[]> {
     return [];
   }
 }
+
+// Non-destructive read of pending shared files — used to render the "files
+// waiting to attach" banner without consuming the inbox. Consumers must still
+// call popSharedFiles() once they have actually handled the files.
+export async function peekSharedFiles(): Promise<InboxEntry[]> {
+  try {
+    const raw = await AsyncStorage.getItem(KEY);
+    if (!raw) return [];
+    return JSON.parse(raw) as InboxEntry[];
+  } catch {
+    return [];
+  }
+}

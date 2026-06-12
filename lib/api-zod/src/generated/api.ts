@@ -850,6 +850,21 @@ export const CreateCaseBody = zod.object({
   shade: zod.string().nullish(),
   dueDate: zod.coerce.date().nullish(),
   rushOrder: zod.boolean().nullish(),
+  priority: zod.enum(["normal", "rush"]).nullish(),
+  restorations: zod
+    .array(
+      zod.object({
+        toothNumber: zod.string(),
+        restorationType: zod.string(),
+        material: zod.string().nullish(),
+        shade: zod.string().nullish(),
+        notes: zod.string().nullish(),
+        quantity: zod.number().nullish(),
+        unitPrice: zod.number().nullish(),
+      }),
+    )
+    .nullish()
+    .describe("Inline restoration line items created alongside the case."),
   needsAiReview: zod.boolean().nullish(),
 });
 

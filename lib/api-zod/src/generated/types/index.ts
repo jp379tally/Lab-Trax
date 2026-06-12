@@ -56,6 +56,8 @@ export * from "./conversationSummary";
 export * from "./createCaseAttachmentInput";
 export * from "./createCaseAttachmentInputVisibility";
 export * from "./createCaseInput";
+export * from "./createCaseInputPriority";
+export * from "./createCaseInputRestorationsItem";
 export * from "./createCategoryInput";
 export * from "./createCategoryInputKind";
 export * from "./createConversationInput";
