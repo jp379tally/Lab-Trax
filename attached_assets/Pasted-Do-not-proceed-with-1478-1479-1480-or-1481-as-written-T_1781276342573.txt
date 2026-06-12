@@ -1,0 +1,78 @@
+Do not proceed with #1478, #1479, #1480, or #1481 as written.
+
+They are too broad and they jump ahead of the current priority.
+
+Current priority is still:
+
+Mobile Case Detail Desktop Parity.
+
+Build 239 proved the new shell works. The next work must focus on the missing case-detail functionality I already identified:
+
+* interact with/open files, photos, PDFs, and documents
+* interact with the tooth chart/restorations
+* edit overview fields where desktop allows
+* add/edit/delete notes where desktop allows
+* interact with invoice where desktop allows
+* view/print lab slip
+* view/print case label
+* ensure all changes appear on desktop/web
+
+Do not add:
+
+* new tabs
+* contacts page
+* invoices page
+* new case creation
+* AI Reader
+* share-intent upload
+* broad navigation changes
+* full-parity build task
+
+Those come later.
+
+Rewrite the next tasks as smaller milestones in this order:
+
+1. Mobile Case Detail — Files/Documents Interaction
+
+   * tap thumbnails
+   * open photos/PDFs/documents
+   * full-screen preview
+   * no upload yet unless specifically approved
+   * verify desktop-attached files open on mobile
+
+2. Mobile Case Detail — Tooth Chart and Restorations
+
+   * tap teeth
+   * view restoration details
+   * edit restorations where desktop allows
+   * changes visible on desktop/web
+
+3. Mobile Case Detail — Overview and Notes
+
+   * edit overview fields desktop allows
+   * add/edit/delete notes where desktop allows
+   * changes visible on desktop/web
+
+4. Mobile Case Detail — Invoice Interaction
+
+   * view invoice
+   * edit line items where desktop allows
+   * generate invoice if missing
+   * no duplicate invoices
+   * changes visible on desktop/web
+
+5. Mobile Case Detail — Lab Slip and Case Label
+
+   * view/print lab slip
+   * view/print case label
+   * use desktop format/data
+
+Each milestone must:
+
+* be canonical API only
+* have no local-only saves
+* not reintroduce old mobile architecture
+* pass tests/typecheck/lint
+* only trigger TestFlight with explicit approval
+
+Do not start AI Reader, new case creation, contacts, global invoices tab, or share-intent upload until the case-detail desktop parity milestones are complete.
