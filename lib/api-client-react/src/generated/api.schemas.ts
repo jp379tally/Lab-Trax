@@ -298,6 +298,15 @@ export const UpdateInvoiceInputStatus = {
   void: "void",
 } as const;
 
+export type UpdateInvoiceInputItemsItemSubItemsItem = {
+  id?: string;
+  toothNumber?: number | null;
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  sortOrder?: number;
+};
+
 export type UpdateInvoiceInputItemsItem = {
   id?: string;
   toothNumber?: number | null;
@@ -306,7 +315,15 @@ export type UpdateInvoiceInputItemsItem = {
   quantity: number;
   unitPrice: number;
   sortOrder?: number;
+  subItems?: UpdateInvoiceInputItemsItemSubItemsItem[];
 };
+
+/**
+ * Free-form invoice presentation metadata (teeth, shade, patientName, billTo, caseNotes, credits, lineItems). Server merges/overwrites displayMetadataJson; credits drive total. Spread existing metadata before writing to avoid clobbering desktop-authored fields.
+ */
+export type UpdateInvoiceInputDisplayMetadata = {
+  [key: string]: unknown;
+} | null;
 
 export interface UpdateInvoiceInput {
   status?: UpdateInvoiceInputStatus;
@@ -320,6 +337,8 @@ export interface UpdateInvoiceInput {
   notes?: string | null;
   providerOrganizationId?: string | null;
   items?: UpdateInvoiceInputItemsItem[] | null;
+  /** Free-form invoice presentation metadata (teeth, shade, patientName, billTo, caseNotes, credits, lineItems). Server merges/overwrites displayMetadataJson; credits drive total. Spread existing metadata before writing to avoid clobbering desktop-authored fields. */
+  displayMetadata?: UpdateInvoiceInputDisplayMetadata;
   layoutPresetId?: string | null;
 }
 

@@ -30,11 +30,38 @@ export default function TabLayout() {
         }}
       >
         <Tabs.Screen
+          name="dashboard"
+          options={{
+            title: "Dashboard",
+            tabBarIcon: ({ color, focused }) => (
+              <Ionicons name={focused ? "grid" : "grid-outline"} size={22} color={color} />
+            ),
+          }}
+        />
+        <Tabs.Screen
           name="index"
           options={{
             title: "Cases",
             tabBarIcon: ({ color, focused }) => (
               <Ionicons name={focused ? "file-tray-full" : "file-tray-full-outline"} size={22} color={color} />
+            ),
+          }}
+        />
+        <Tabs.Screen
+          name="financial"
+          options={{
+            title: "Financial",
+            tabBarIcon: ({ color, focused }) => (
+              <Ionicons name={focused ? "card" : "card-outline"} size={22} color={color} />
+            ),
+          }}
+        />
+        <Tabs.Screen
+          name="more"
+          options={{
+            title: "More",
+            tabBarIcon: ({ color, focused }) => (
+              <Ionicons name={focused ? "ellipsis-horizontal-circle" : "ellipsis-horizontal-circle-outline"} size={22} color={color} />
             ),
           }}
         />

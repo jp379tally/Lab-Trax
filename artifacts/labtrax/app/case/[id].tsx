@@ -10,7 +10,6 @@ import {
   RefreshControl,
   TextInput,
   Alert,
-  Platform,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, router } from "expo-router";
@@ -24,15 +23,12 @@ import {
   useUpdateCase,
   useAddCaseNote,
   useDeleteCaseAttachment,
-  useUpdateInvoice,
   useGenerateInvoiceForCase,
   useEmailInvoice,
   type UpdateCaseInput,
   type UpdateCaseInputStatus,
   type UpdateCaseInputPriority,
   type AddCaseNoteInputVisibility,
-  type UpdateInvoiceInput,
-  type UpdateInvoiceInputItemsItem,
 } from "@workspace/api-client-react";
 import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
@@ -52,7 +48,11 @@ import { StatusBadge, type BadgeVariant } from "@/components/ui/StatusBadge";
 import { AuthedImage } from "@/components/ui/AuthedImage";
 import { ReadOnlyToothChart } from "@/components/ReadOnlyToothChart";
 import { deriveRxSummary, buildHighlightedToothSet, formatRxTeethLabel } from "@/lib/rx-summary";
-import { openAttachment } from "@/lib/open-attachment";
+import {
+  attachmentFileUrl,
+  isImageAttachment,
+  openAttachmentPreview,
+} from "@/lib/attachment-preview";
 import { buildCaseCardHtml, buildInvoiceHtml, generatePdf, sharePdf } from "@/lib/case-pdf";
 
 // ─── Viewer-local detail shape ────────────────────────────────────────────────
@@ -105,6 +105,7 @@ interface DetailedCase {
   dueDate?: string | null;
   expectedDeliveryDate?: string | null;
   bridgeConnectors?: string | null;
+  casePanBarcode?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
   shade?: string | null;
@@ -192,16 +193,13 @@ function invoiceVariant(status: string | null | undefined): BadgeVariant {
   return "open";
 }
 
-function isImageAttachment(fileType?: string | null, fileName?: string | null): boolean {
-  if (fileType && fileType.toLowerCase().startsWith("image")) return true;
-  if (fileName && /\.(jpe?g|png|heic|heif|gif|webp)$/i.test(fileName)) return true;
-  return false;
-}
-
-function isPdfAttachment(fileType?: string | null, fileName?: string | null): boolean {
-  if (fileType && fileType.toLowerCase().includes("pdf")) return true;
-  if (fileName && /\.pdf$/i.test(fileName.trim())) return true;
-  return false;
+// Mirror desktop formatEventType: the "Locate Case" action PATCHes the canonical
+// case status, which the server records as a "status_changed" event. Users think
+// of that as "locating" the case at a station, so surface it as "Location Changed".
+function formatEventType(eventType?: string | null): string {
+  if (!eventType) return "Event";
+  if (eventType === "status_changed") return "Location Changed";
+  return titleCase(eventType);
 }
 
 // Best-effort one-line description from a history event's metadata blob.
@@ -230,6 +228,41 @@ function eventDescription(ev: DetailEvent): string | null {
   return null;
 }
 
+// Tappable attachment carried by a history event's metadata, mirroring desktop:
+// prefer the legacy/mobile imageUri (works without auth headers, including data:
+// URIs) and fall back to the canonical id-based /file route. Returns null for
+// non-attachment events or when no openable source is present.
+function eventAttachment(
+  ev: DetailEvent,
+  caseId: string,
+): { url: string; fileName: string | null; fileType: string | null; isImage: boolean } | null {
+  if (!ev.eventType || !ev.eventType.includes("attachment")) return null;
+  let meta: Record<string, unknown> | null = null;
+  if (ev.metadataJson && typeof ev.metadataJson === "object") {
+    meta = ev.metadataJson as Record<string, unknown>;
+  } else if (typeof ev.metadataJson === "string" && ev.metadataJson.trim()) {
+    try {
+      const parsed = JSON.parse(ev.metadataJson);
+      if (parsed && typeof parsed === "object") meta = parsed as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+  if (!meta) return null;
+  const fileType = meta.fileType != null ? String(meta.fileType) : null;
+  const mediaKind = meta.mediaKind != null ? String(meta.mediaKind) : "";
+  const fileName = meta.fileName != null ? String(meta.fileName) : null;
+  const directSrc = meta.imageUri != null ? String(meta.imageUri) : null;
+  const attachmentId = meta.attachmentId != null ? String(meta.attachmentId) : null;
+  const url = directSrc || (attachmentId ? attachmentFileUrl(caseId, attachmentId) : null);
+  if (!url) return null;
+  const isImage =
+    fileType?.startsWith("image/") === true ||
+    mediaKind === "photo" ||
+    isImageAttachment(fileType, fileName);
+  return { url, fileName, fileType, isImage };
+}
+
 // ─── Edit constants (mirror desktop STATUS_FILTERS / priority exactly) ────────
 const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "received", label: "Received" },
@@ -248,54 +281,9 @@ const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "remake", label: "Remake" },
 ];
 
-// Forward-progress pipeline used to suggest the next status as tappable chips.
-// `on_hold` / `remake` are off-pipeline targets always offered as quick actions.
-const STATUS_PIPELINE = [
-  "received",
-  "in_design",
-  "scan",
-  "in_milling",
-  "post_mill",
-  "sintering_furnace",
-  "model_room",
-  "in_porcelain",
-  "qc",
-  "complete",
-  "shipped",
-  "delivered",
-] as const;
-
-const QUICK_STATUS_TARGETS = ["complete", "shipped", "delivered", "on_hold", "remake"] as const;
-
-// Suggested next statuses for the current status: the next pipeline step plus a
-// fixed set of milestone/off-pipeline targets, de-duped and minus the current.
-function nextStatusChips(current: string | null | undefined): { value: string; label: string }[] {
-  const cur = (current ?? "").toLowerCase();
-  const candidates: string[] = [];
-  const i = STATUS_PIPELINE.indexOf(cur as (typeof STATUS_PIPELINE)[number]);
-  if (i >= 0 && i < STATUS_PIPELINE.length - 1) candidates.push(STATUS_PIPELINE[i + 1]);
-  for (const t of QUICK_STATUS_TARGETS) candidates.push(t);
-  const seen = new Set<string>();
-  const result: { value: string; label: string }[] = [];
-  for (const v of candidates) {
-    if (v === cur || seen.has(v)) continue;
-    seen.add(v);
-    result.push({ value: v, label: labelFor(STATUS_OPTIONS, v) });
-  }
-  return result;
-}
-
 const PRIORITY_OPTIONS: { value: string; label: string }[] = [
   { value: "normal", label: "Normal" },
   { value: "rush", label: "Rush" },
-];
-
-const INVOICE_STATUS_OPTIONS: { value: string; label: string }[] = [
-  { value: "draft", label: "Draft" },
-  { value: "open", label: "Open" },
-  { value: "partially_paid", label: "Partially Paid" },
-  { value: "paid", label: "Paid" },
-  { value: "void", label: "Void" },
 ];
 
 const PAYMENT_METHOD_OPTIONS: { value: string; label: string }[] = [
@@ -383,7 +371,6 @@ interface OverviewForm {
   patientFirstName: string;
   patientLastName: string;
   doctorName: string;
-  status: string;
   priority: string;
   dueDate: string | null;
   expectedDeliveryDate: string | null;
@@ -394,7 +381,6 @@ function formFromCase(c: DetailedCase): OverviewForm {
     patientFirstName: c.patientFirstName ?? "",
     patientLastName: c.patientLastName ?? "",
     doctorName: c.doctorName ?? "",
-    status: (c.status ?? "").toLowerCase(),
     priority: (c.priority ?? "normal").toLowerCase(),
     dueDate: toDateInput(c.dueDate),
     expectedDeliveryDate: toDateInput(c.expectedDeliveryDate),
@@ -414,9 +400,6 @@ function buildOverviewPayload(c: DetailedCase, form: OverviewForm): UpdateCaseIn
   }
   if (form.doctorName !== (c.doctorName ?? "")) {
     payload.doctorName = form.doctorName;
-  }
-  if (form.status && form.status !== (c.status ?? "").toLowerCase()) {
-    payload.status = form.status as UpdateCaseInputStatus;
   }
   if (form.priority && form.priority !== (c.priority ?? "normal").toLowerCase()) {
     payload.priority = form.priority as UpdateCaseInputPriority;
@@ -1008,7 +991,15 @@ export default function CaseDetailScreen() {
           />
         )}
 
-        {active === "history" && <HistorySection events={history} styles={styles} colors={colors} />}
+        {active === "history" && (
+          <HistorySection
+            events={history}
+            caseId={c.id}
+            onOpenImage={setLightboxUrl}
+            styles={styles}
+            colors={colors}
+          />
+        )}
       </ScrollView>
 
       {/* Full-screen image viewer */}
@@ -1094,21 +1085,35 @@ function OverviewSection({
 }) {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<OverviewForm>(() => formFromCase(c));
-  const [picker, setPicker] = useState<"status" | "dueDate" | "expectedDeliveryDate" | null>(null);
-  const [pendingStatus, setPendingStatus] = useState<string | null>(null);
+  const [picker, setPicker] = useState<"dueDate" | "expectedDeliveryDate" | "locate" | null>(null);
   const update = useUpdateCase();
-  const statusChips = useMemo(() => nextStatusChips(c.status), [c.status]);
 
-  // One-tap status transition (canonical PATCH /cases/:id) used by the chips.
-  async function quickSetStatus(value: string) {
-    setPendingStatus(value);
+  // ── Locate Case ─────────────────────────────────────────────────────────────
+  // Mirrors the desktop "Locate Case" control: pick a destination station, then
+  // press "Locate" to move the case there. Location IS the canonical case status
+  // (PATCH /cases/:id { status }) — the same field/endpoint the desktop writes.
+  const [locateTarget, setLocateTarget] = useState<string | null>(null);
+  const [locating, setLocating] = useState(false);
+  const [locateMsg, setLocateMsg] = useState<string | null>(null);
+
+  async function locate() {
+    if (!locateTarget) return;
+    setLocating(true);
     try {
-      await update.mutateAsync({ caseId, data: { status: value as UpdateCaseInputStatus } });
+      await update.mutateAsync({ caseId, data: { status: locateTarget as UpdateCaseInputStatus } });
+      // Mirror desktop: locating to "complete" releases a held case-pan barcode.
+      const released =
+        locateTarget === "complete" && !!(c.casePanBarcode && c.casePanBarcode.trim());
+      setLocateMsg(
+        released ? "Case located successfully. Barcode released." : "Case located successfully.",
+      );
+      setLocateTarget(null);
       await onSaved();
+      setTimeout(() => setLocateMsg(null), 3000);
     } catch (e) {
-      Alert.alert("Couldn't update status", errorMessage(e));
+      Alert.alert("Couldn't locate case", errorMessage(e));
     } finally {
-      setPendingStatus(null);
+      setLocating(false);
     }
   }
 
@@ -1173,14 +1178,6 @@ function OverviewSection({
               onChangeText={(t) => setForm((f) => ({ ...f, doctorName: t }))}
               styles={styles}
               colors={colors}
-            />
-            <SelectRow
-              label="Status"
-              valueLabel={labelFor(STATUS_OPTIONS, form.status)}
-              onPress={() => setPicker("status")}
-              styles={styles}
-              colors={colors}
-              testID="select-status"
             />
             <SegmentedRow
               label="Priority"
@@ -1249,26 +1246,42 @@ function OverviewSection({
         )}
       </Card>
 
-      {canEdit && !editing && statusChips.length > 0 ? (
+      {canEdit && !editing ? (
         <Card>
-          <Text style={styles.cardHeading}>Update status</Text>
-          <View style={styles.chipRow}>
-            {statusChips.map((s) => (
-              <Pressable
-                key={s.value}
-                style={[styles.statusChip, pendingStatus !== null && styles.btnDisabled]}
-                onPress={() => quickSetStatus(s.value)}
-                disabled={pendingStatus !== null}
-                testID={`status-chip-${s.value}`}
-              >
-                {pendingStatus === s.value ? (
-                  <ActivityIndicator size="small" color={colors.tint} />
-                ) : (
-                  <Text style={styles.statusChipText}>Mark {s.label}</Text>
-                )}
-              </Pressable>
-            ))}
-          </View>
+          <Text style={styles.cardHeading}>Locate Case</Text>
+          <Text style={styles.locateCurrent}>
+            Currently at{" "}
+            <Text style={styles.locateCurrentStrong}>{labelFor(STATUS_OPTIONS, c.status)}</Text>
+          </Text>
+          <SelectRow
+            label="Move to station"
+            valueLabel={locateTarget ? labelFor(STATUS_OPTIONS, locateTarget) : "Select station…"}
+            onPress={() => setPicker("locate")}
+            styles={styles}
+            colors={colors}
+            testID="locate-select"
+          />
+          <Pressable
+            style={[
+              styles.btnPrimary,
+              styles.locateBtn,
+              (!locateTarget || locating) && styles.btnDisabled,
+            ]}
+            onPress={locate}
+            disabled={!locateTarget || locating}
+            testID="locate-confirm"
+          >
+            {locating ? (
+              <ActivityIndicator color={colors.textInverse} size="small" />
+            ) : (
+              <Text style={styles.btnPrimaryText}>Locate</Text>
+            )}
+          </Pressable>
+          {locateMsg ? (
+            <Text style={styles.locateSuccess} testID="locate-success">
+              {locateMsg}
+            </Text>
+          ) : null}
         </Card>
       ) : null}
 
@@ -1297,12 +1310,12 @@ function OverviewSection({
       ) : null}
 
       <OptionPickerModal
-        visible={picker === "status"}
-        title="Status"
-        options={STATUS_OPTIONS}
-        selected={form.status}
+        visible={picker === "locate"}
+        title="Locate Case"
+        options={STATUS_OPTIONS.filter((s) => s.value !== (c.status ?? "").toLowerCase())}
+        selected={locateTarget}
         onSelect={(v) => {
-          setForm((f) => ({ ...f, status: v }));
+          setLocateTarget(v);
           setPicker(null);
         }}
         onClose={() => setPicker(null)}
@@ -1703,43 +1716,21 @@ function FilesSection({
     fileType?: string | null;
   }): Promise<void> {
     if (openingId) return;
-    const url = `/api/cases/${caseId}/attachments/${a.id}/file`;
-
-    // iOS: open PDFs in the full in-app document viewer (zoom, scroll, page
-    // navigation via WKWebView). Tapping must never show the share sheet — that
-    // is reserved for the explicit Share action inside the viewer. Everything
-    // else — non-PDF documents, and PDFs on Android (WebView can't render PDFs
-    // inline) — falls back to the OS viewer / "open with".
-    if (Platform.OS === "ios" && isPdfAttachment(a.fileType, a.fileName)) {
-      router.push({
-        pathname: "/pdf-viewer",
-        params: {
-          url,
-          fileName: a.fileName ?? "",
-          fileType: a.fileType ?? "",
-        },
-      });
-      return;
-    }
-
-    setOpeningId(a.id);
-    try {
-      const result = await openAttachment({
-        url,
+    // Shared routing: iOS PDFs open in the in-app /pdf-viewer; everything else
+    // (non-PDF docs, Android PDFs) falls back to the OS viewer / share sheet.
+    // Images never reach here — they tap straight into the lightbox.
+    await openAttachmentPreview(
+      {
+        url: attachmentFileUrl(caseId, a.id),
         fileName: a.fileName,
         fileType: a.fileType,
-      });
-      if (result === "unavailable") {
-        Alert.alert("Can't open file", "Opening files isn't supported on this device.");
-      } else if (result === "error") {
-        Alert.alert(
-          "Couldn't open file",
-          "This file could not be downloaded or opened. Please try again.",
-        );
-      }
-    } finally {
-      setOpeningId(null);
-    }
+      },
+      {
+        onOpenImage,
+        onError: (title, message) => Alert.alert(title, message),
+        setBusy: (busy) => setOpeningId(busy ? a.id : null),
+      },
+    );
   }
 
   function handleDeleteAttachment(a: { id: string; fileName?: string | null }) {
@@ -1879,7 +1870,7 @@ function FilesSection({
       {images.length > 0 ? (
         <View style={styles.imageGrid}>
           {images.map((a) => {
-            const url = `/api/cases/${caseId}/attachments/${a.id}/file`;
+            const url = attachmentFileUrl(caseId, a.id);
             const isDeleting = deletingId === a.id;
             return (
               <Pressable
@@ -1962,33 +1953,6 @@ interface InvoiceLineItem {
   subItems?: unknown;
 }
 
-interface EditItem {
-  id: string | null;
-  description: string;
-  quantity: string;
-  unitPrice: string;
-  toothNumber: string;
-}
-
-const BLANK_ITEM: EditItem = {
-  id: null,
-  description: "",
-  quantity: "1",
-  unitPrice: "",
-  toothNumber: "",
-};
-
-function toUpdateItemPayload(
-  li: InvoiceLineItem,
-): UpdateInvoiceInputItemsItem & { subItems?: unknown } {
-  return {
-    id: li.id,
-    description: li.description ?? "",
-    quantity: Math.round(Number(li.quantity ?? 1)),
-    unitPrice: parseFloat(String(li.unitPrice ?? "0")),
-    ...(li.subItems !== undefined ? { subItems: li.subItems } : {}),
-  };
-}
 // ─────────────────────────────────────────────────────────────────────────────
 
 function InvoiceSection({
@@ -2026,20 +1990,6 @@ function InvoiceSection({
   colors: ThemeColors;
 }) {
   // ── State
-  const [editHeader, setEditHeader] = useState(false);
-  const [headerForm, setHeaderForm] = useState<{
-    status: string;
-    issuedAt: string | null;
-    dueAt: string | null;
-  }>({ status: "", issuedAt: null, dueAt: null });
-  const [headerPicker, setHeaderPicker] = useState<"status" | "issuedAt" | "dueAt" | null>(null);
-
-  const [itemSheet, setItemSheet] = useState<{
-    open: boolean;
-    mode: "add" | "edit";
-    item: EditItem;
-  }>({ open: false, mode: "add", item: BLANK_ITEM });
-
   const [paySheet, setPaySheet] = useState(false);
   const [payForm, setPayForm] = useState<{ amount: string; method: string }>({
     amount: "",
@@ -2050,9 +2000,8 @@ function InvoiceSection({
 
   // ── Mutations
   const generateInvoice = useGenerateInvoiceForCase();
-  const updateInvoice = useUpdateInvoice();
   const emailInvoice = useEmailInvoice();
-  const anyPending = generateInvoice.isPending || updateInvoice.isPending;
+  const anyPending = generateInvoice.isPending;
   const [sharing, setSharing] = useState(false);
 
   const lines: InvoiceLineItem[] = (invoice?.items ?? invoice?.lineItems ?? []) as InvoiceLineItem[];
@@ -2133,122 +2082,6 @@ function InvoiceSection({
     }
   }
 
-  function openEditHeader() {
-    setHeaderForm({
-      status: invoice?.status ?? "draft",
-      issuedAt: toDateInput(invoice?.issuedAt),
-      dueAt: toDateInput(invoice?.dueAt),
-    });
-    setEditHeader(true);
-  }
-
-  async function saveHeader() {
-    if (!invoiceId) return;
-    try {
-      await updateInvoice.mutateAsync({
-        invoiceId,
-        data: {
-          status: (headerForm.status || undefined) as UpdateInvoiceInput["status"],
-          issuedAt: headerForm.issuedAt ? `${headerForm.issuedAt}T00:00:00.000Z` : undefined,
-          dueAt: headerForm.dueAt ? `${headerForm.dueAt}T00:00:00.000Z` : undefined,
-        },
-      });
-      setEditHeader(false);
-      onRefresh();
-    } catch (e) {
-      Alert.alert("Couldn't save changes", errorMessage(e));
-    }
-  }
-
-  function openAddItem() {
-    setItemSheet({ open: true, mode: "add", item: BLANK_ITEM });
-  }
-
-  function openEditItem(li: InvoiceLineItem) {
-    setItemSheet({
-      open: true,
-      mode: "edit",
-      item: {
-        id: li.id,
-        description: li.description ?? "",
-        quantity: String(Math.round(Number(li.quantity ?? 1))),
-        unitPrice: String(parseFloat(String(li.unitPrice ?? "0"))),
-        toothNumber: li.toothNumbers ?? "",
-      },
-    });
-  }
-
-  async function saveItem() {
-    if (!invoiceId) return;
-    const { item, mode } = itemSheet;
-    const desc = item.description.trim();
-    if (!desc) {
-      Alert.alert("Description required", "Enter a description for this item.");
-      return;
-    }
-    const qty = Math.max(1, Math.round(parseFloat(item.quantity) || 1));
-    const price = parseFloat(item.unitPrice) || 0;
-    const toothNum = parseInt(item.toothNumber, 10) || undefined;
-
-    let newItems: (UpdateInvoiceInputItemsItem & { subItems?: unknown })[];
-    if (mode === "add") {
-      newItems = [
-        ...lines.map(toUpdateItemPayload),
-        { description: desc, quantity: qty, unitPrice: price, toothNumber: toothNum },
-      ];
-    } else {
-      newItems = lines.map((li) => {
-        if (li.id === item.id) {
-          return {
-            ...toUpdateItemPayload(li),
-            description: desc,
-            quantity: qty,
-            unitPrice: price,
-            toothNumber: toothNum,
-          };
-        }
-        return toUpdateItemPayload(li);
-      });
-    }
-
-    try {
-      await updateInvoice.mutateAsync({
-        invoiceId,
-        data: { items: newItems as unknown as UpdateInvoiceInputItemsItem[] },
-      });
-      setItemSheet((s) => ({ ...s, open: false }));
-      onRefresh();
-    } catch (e) {
-      Alert.alert("Couldn't save item", errorMessage(e));
-    }
-  }
-
-  function confirmDeleteItem(itemId: string) {
-    Alert.alert("Remove item?", "This item will be permanently removed from the invoice.", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Remove",
-        style: "destructive",
-        onPress: async () => {
-          if (!invoiceId) return;
-          const newItems = lines
-            .filter((li) => li.id !== itemId)
-            .map(toUpdateItemPayload);
-          try {
-            await updateInvoice.mutateAsync({
-              invoiceId,
-              data: { items: newItems as unknown as UpdateInvoiceInputItemsItem[] },
-            });
-            setItemSheet((s) => ({ ...s, open: false }));
-            onRefresh();
-          } catch (e) {
-            Alert.alert("Couldn't remove item", errorMessage(e));
-          }
-        },
-      },
-    ]);
-  }
-
   async function savePayment() {
     if (!invoiceId) return;
     const amount = parseFloat(payForm.amount);
@@ -2327,24 +2160,25 @@ function InvoiceSection({
                 variant={invoiceVariant(invoice.status)}
               />
             ) : null}
-            {canEdit ? (
-              <Pressable
-                style={styles.editBtn}
-                onPress={openEditHeader}
-                disabled={anyPending}
-                hitSlop={8}
-                testID="invoice-edit-header"
-              >
-                <Ionicons name="create-outline" size={16} color={colors.tint} />
-                <Text style={styles.editBtnText}>Edit</Text>
-              </Pressable>
-            ) : null}
           </View>
         </View>
         <FieldRow label="Issued" value={formatDate(invoice.issuedAt)} styles={styles} />
         <FieldRow label="Due" value={formatDate(invoice.dueAt)} styles={styles} />
         <FieldRow label="Total" value={money(invoice.total)} styles={styles} />
         <FieldRow label="Balance" value={money(invoice.balanceDue)} styles={styles} />
+        {canEdit && invoiceId ? (
+          <View style={styles.invoiceActions}>
+            <Pressable
+              style={[styles.btnSecondary, styles.invoiceActionBtn]}
+              onPress={() => router.push(`/invoice-editor/${invoiceId}` as never)}
+              disabled={anyPending}
+              testID="invoice-open-editor"
+            >
+              <Ionicons name="create-outline" size={16} color={colors.text} />
+              <Text style={styles.btnSecondaryText}>Open in editor</Text>
+            </Pressable>
+          </View>
+        ) : null}
         <View style={styles.invoiceActions}>
           <Pressable
             style={[styles.btnSecondary, styles.invoiceActionBtn, sharing && styles.btnDisabled]}
@@ -2381,31 +2215,18 @@ function InvoiceSection({
         </View>
       </Card>
 
-      {/* ── Line items card ── */}
+      {/* ── Line items card (read-only; edit via the full-screen editor) ── */}
       <Card>
         <View style={styles.cardHeaderRow}>
           <Text style={[styles.cardHeading, styles.cardHeadingFlush]}>Line items</Text>
-          {canEdit ? (
-            <Pressable
-              style={styles.editBtn}
-              onPress={openAddItem}
-              disabled={anyPending}
-              hitSlop={8}
-              testID="add-invoice-item"
-            >
-              <Ionicons name="add" size={16} color={colors.tint} />
-              <Text style={styles.editBtnText}>Add</Text>
-            </Pressable>
-          ) : null}
         </View>
         {lines.length === 0 ? (
           <Text style={styles.noteEmptyHint}>No line items yet.</Text>
         ) : (
           lines.map((li) => (
-            <Pressable
+            <View
               key={li.id}
               style={styles.lineItem}
-              onPress={canEdit ? () => openEditItem(li) : undefined}
               testID={`invoice-item-${li.id}`}
             >
               <View style={styles.lineItemMain}>
@@ -2415,11 +2236,10 @@ function InvoiceSection({
                 </Text>
                 <Text style={styles.lineSub}>
                   {li.quantity ?? 1} × {money(li.unitPrice)}
-                  {canEdit ? "  ·  tap to edit" : ""}
                 </Text>
               </View>
               <Text style={styles.lineTotal}>{money(li.lineTotal)}</Text>
-            </Pressable>
+            </View>
           ))
         )}
       </Card>
@@ -2438,199 +2258,6 @@ function InvoiceSection({
           <Text style={styles.btnPrimaryText}>Record payment</Text>
         </Pressable>
       ) : null}
-
-      {/* ════ Edit header sheet ════ */}
-      <Modal
-        visible={editHeader}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setEditHeader(false)}
-      >
-        <Pressable style={styles.sheetBackdrop} onPress={() => setEditHeader(false)}>
-          <Pressable style={styles.sheet} onPress={() => undefined}>
-            <Text style={styles.sheetTitle}>Edit Invoice</Text>
-            <SelectRow
-              label="Status"
-              valueLabel={labelFor(INVOICE_STATUS_OPTIONS, headerForm.status)}
-              onPress={() => setHeaderPicker("status")}
-              styles={styles}
-              colors={colors}
-              testID="invoice-status-select"
-            />
-            <SelectRow
-              label="Issued date"
-              valueLabel={formatDateInput(headerForm.issuedAt) || "Not set"}
-              icon="calendar-outline"
-              onPress={() => setHeaderPicker("issuedAt")}
-              styles={styles}
-              colors={colors}
-              testID="invoice-issued-select"
-            />
-            <SelectRow
-              label="Due date"
-              valueLabel={formatDateInput(headerForm.dueAt) || "Not set"}
-              icon="calendar-outline"
-              onPress={() => setHeaderPicker("dueAt")}
-              styles={styles}
-              colors={colors}
-              testID="invoice-due-select"
-            />
-            <View style={styles.editActions}>
-              <Pressable
-                style={styles.btnSecondary}
-                onPress={() => setEditHeader(false)}
-                disabled={updateInvoice.isPending}
-              >
-                <Text style={styles.btnSecondaryText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.btnPrimary, updateInvoice.isPending && styles.btnDisabled]}
-                onPress={saveHeader}
-                disabled={updateInvoice.isPending}
-                testID="invoice-header-save"
-              >
-                {updateInvoice.isPending ? (
-                  <ActivityIndicator color={colors.textInverse} size="small" />
-                ) : (
-                  <Text style={styles.btnPrimaryText}>Save</Text>
-                )}
-              </Pressable>
-            </View>
-          </Pressable>
-        </Pressable>
-      </Modal>
-
-      <OptionPickerModal
-        visible={headerPicker === "status"}
-        title="Invoice status"
-        options={INVOICE_STATUS_OPTIONS}
-        selected={headerForm.status}
-        onSelect={(v) => { setHeaderForm((f) => ({ ...f, status: v })); setHeaderPicker(null); }}
-        onClose={() => setHeaderPicker(null)}
-        styles={styles}
-        colors={colors}
-      />
-      <DatePickerModal
-        visible={headerPicker === "issuedAt"}
-        title="Issued date"
-        value={headerForm.issuedAt}
-        onSelect={(v) => { setHeaderForm((f) => ({ ...f, issuedAt: v })); setHeaderPicker(null); }}
-        onClear={() => { setHeaderForm((f) => ({ ...f, issuedAt: null })); setHeaderPicker(null); }}
-        onClose={() => setHeaderPicker(null)}
-        styles={styles}
-        colors={colors}
-      />
-      <DatePickerModal
-        visible={headerPicker === "dueAt"}
-        title="Due date"
-        value={headerForm.dueAt}
-        onSelect={(v) => { setHeaderForm((f) => ({ ...f, dueAt: v })); setHeaderPicker(null); }}
-        onClear={() => { setHeaderForm((f) => ({ ...f, dueAt: null })); setHeaderPicker(null); }}
-        onClose={() => setHeaderPicker(null)}
-        styles={styles}
-        colors={colors}
-      />
-
-      {/* ════ Item sheet ════ */}
-      <Modal
-        visible={itemSheet.open}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setItemSheet((s) => ({ ...s, open: false }))}
-      >
-        <Pressable
-          style={styles.sheetBackdrop}
-          onPress={() => setItemSheet((s) => ({ ...s, open: false }))}
-        >
-          <Pressable style={styles.sheet} onPress={() => undefined}>
-            <Text style={styles.sheetTitle}>
-              {itemSheet.mode === "add" ? "Add Item" : "Edit Item"}
-            </Text>
-            <EditTextRow
-              label="Description"
-              value={itemSheet.item.description}
-              onChangeText={(t) =>
-                setItemSheet((s) => ({ ...s, item: { ...s.item, description: t } }))
-              }
-              styles={styles}
-              colors={colors}
-              autoCapitalize="sentences"
-            />
-            <EditTextRow
-              label="Quantity"
-              value={itemSheet.item.quantity}
-              onChangeText={(t) =>
-                setItemSheet((s) => ({ ...s, item: { ...s.item, quantity: t } }))
-              }
-              styles={styles}
-              colors={colors}
-              autoCapitalize="none"
-            />
-            <EditTextRow
-              label="Unit price ($)"
-              value={itemSheet.item.unitPrice}
-              onChangeText={(t) =>
-                setItemSheet((s) => ({ ...s, item: { ...s.item, unitPrice: t } }))
-              }
-              styles={styles}
-              colors={colors}
-              autoCapitalize="none"
-            />
-            <EditTextRow
-              label="Tooth # (optional)"
-              value={itemSheet.item.toothNumber}
-              onChangeText={(t) =>
-                setItemSheet((s) => ({ ...s, item: { ...s.item, toothNumber: t } }))
-              }
-              styles={styles}
-              colors={colors}
-              autoCapitalize="none"
-            />
-            <View style={styles.editActions}>
-              {itemSheet.mode === "edit" && itemSheet.item.id ? (
-                <Pressable
-                  style={[styles.btnSecondary, styles.btnDanger]}
-                  onPress={() => {
-                    if (itemSheet.item.id) confirmDeleteItem(itemSheet.item.id);
-                  }}
-                  disabled={updateInvoice.isPending}
-                  testID="delete-invoice-item"
-                >
-                  <Text style={[styles.btnSecondaryText, styles.btnDangerText]}>Remove</Text>
-                </Pressable>
-              ) : (
-                <Pressable
-                  style={styles.btnSecondary}
-                  onPress={() => setItemSheet((s) => ({ ...s, open: false }))}
-                  disabled={updateInvoice.isPending}
-                >
-                  <Text style={styles.btnSecondaryText}>Cancel</Text>
-                </Pressable>
-              )}
-              <Pressable
-                style={[styles.btnPrimary, updateInvoice.isPending && styles.btnDisabled]}
-                onPress={saveItem}
-                disabled={updateInvoice.isPending}
-                testID="save-invoice-item"
-              >
-                {updateInvoice.isPending ? (
-                  <ActivityIndicator color={colors.textInverse} size="small" />
-                ) : (
-                  <Text style={styles.btnPrimaryText}>Save</Text>
-                )}
-              </Pressable>
-            </View>
-            {itemSheet.mode === "edit" ? (
-              <Pressable
-                style={styles.sheetCancel}
-                onPress={() => setItemSheet((s) => ({ ...s, open: false }))}
-              >
-                <Text style={styles.sheetCancelText}>Cancel</Text>
-              </Pressable>
-            ) : null}
-          </Pressable>
-        </Pressable>
-      </Modal>
 
       {/* ════ Payment sheet ════ */}
       <Modal
@@ -2699,27 +2326,77 @@ function InvoiceSection({
 
 function HistorySection({
   events,
+  caseId,
+  onOpenImage,
   styles,
   colors,
 }: {
   events: DetailEvent[];
+  caseId: string;
+  onOpenImage: (url: string) => void;
   styles: Styles;
   colors: ThemeColors;
 }) {
+  const [openingId, setOpeningId] = useState<string | null>(null);
+
   if (events.length === 0) {
     return <EmptyState icon="time-outline" text="No history yet." styles={styles} colors={colors} />;
   }
+
+  function openEventAttachment(
+    ev: DetailEvent,
+    att: NonNullable<ReturnType<typeof eventAttachment>>,
+  ) {
+    if (openingId) return;
+    void openAttachmentPreview(
+      { url: att.url, fileName: att.fileName, fileType: att.fileType },
+      {
+        onOpenImage,
+        onError: (title, message) => Alert.alert(title, message),
+        setBusy: (busy) => setOpeningId(busy ? ev.id : null),
+      },
+    );
+  }
+
   return (
     <Card padding="none">
       {events.map((ev, i) => {
         const desc = eventDescription(ev);
         const actor = ev.actorName || ev.actorInitials;
+        const att = eventAttachment(ev, caseId);
+        const opening = openingId === ev.id;
         return (
           <View key={ev.id} style={[styles.eventRow, i > 0 && styles.eventDivider]}>
             <View style={styles.eventDot} />
             <View style={styles.eventBody}>
-              <Text style={styles.eventTitle}>{titleCase(ev.eventType ?? "Event")}</Text>
+              <Text style={styles.eventTitle}>{formatEventType(ev.eventType)}</Text>
               {desc ? <Text style={styles.eventDesc}>{desc}</Text> : null}
+              {att ? (
+                att.isImage ? (
+                  <Pressable
+                    onPress={() => openEventAttachment(ev, att)}
+                    style={styles.historyAttachThumb}
+                    testID={`history-attachment-${ev.id}`}
+                  >
+                    <AuthedImage url={att.url} style={styles.thumbImage} contentFit="cover" />
+                  </Pressable>
+                ) : (
+                  <Pressable
+                    onPress={() => openEventAttachment(ev, att)}
+                    style={styles.historyAttachRow}
+                    testID={`history-attachment-${ev.id}`}
+                  >
+                    {opening ? (
+                      <ActivityIndicator color={colors.tint} size="small" />
+                    ) : (
+                      <Ionicons name="attach-outline" size={16} color={colors.tint} />
+                    )}
+                    <Text style={styles.historyAttachText} numberOfLines={1}>
+                      {att.fileName || "Open file"}
+                    </Text>
+                  </Pressable>
+                )
+              ) : null}
               <Text style={styles.eventMeta}>
                 {actor ? `${actor} · ` : ""}
                 {formatDateTime(ev.occurredAt ?? ev.createdAt)}
@@ -2824,6 +2501,23 @@ function makeStyles(c: ThemeColors) {
       backgroundColor: c.surfaceAlt,
     },
     thumbImage: { width: "100%", height: "100%" },
+    historyAttachThumb: {
+      width: 72,
+      height: 72,
+      borderRadius: Radius.md,
+      overflow: "hidden",
+      marginTop: Spacing.xs,
+      backgroundColor: c.surfaceAlt,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: c.border,
+    },
+    historyAttachRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.xs,
+      marginTop: Spacing.xs,
+    },
+    historyAttachText: { ...Typography.caption, color: c.tint, flexShrink: 1 },
     docRow: { flexDirection: "row", alignItems: "center", gap: Spacing.md },
     docInfo: { flex: 1 },
     docName: { ...Typography.bodyMedium, color: c.text },
@@ -2928,20 +2622,10 @@ function makeStyles(c: ThemeColors) {
     btnDisabled: { opacity: 0.5 },
     headerRightGroup: { flexDirection: "row", alignItems: "center", gap: Spacing.sm },
     headerIconBtn: { padding: Spacing.xs },
-    chipRow: { flexDirection: "row", flexWrap: "wrap", gap: Spacing.sm },
-    statusChip: {
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "center",
-      paddingVertical: Spacing.sm,
-      paddingHorizontal: Spacing.md,
-      borderRadius: Radius.full,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: c.border,
-      backgroundColor: c.surfaceAlt,
-      minHeight: 36,
-    },
-    statusChipText: { ...Typography.captionSemibold, color: c.tint },
+    locateCurrent: { ...Typography.body, color: c.textSecondary, marginBottom: Spacing.md },
+    locateCurrentStrong: { ...Typography.bodySemibold, color: c.text },
+    locateBtn: { flex: 0, alignSelf: "flex-start", paddingHorizontal: Spacing.xl, marginTop: Spacing.md },
+    locateSuccess: { ...Typography.captionSemibold, color: c.success, marginTop: Spacing.sm },
     invoiceActions: { flexDirection: "row", gap: Spacing.sm, marginTop: Spacing.md },
     invoiceActionBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: Spacing.xs },
     noteInput: {

@@ -74,3 +74,36 @@ export function canEditOrg(me: MeResponse | undefined, caseOrgId: string | null 
   );
   return roleCanEdit(membership?.role);
 }
+
+// All active memberships, regardless of org type or role.
+export function activeMemberships(me: MeResponse | undefined): MeMembership[] {
+  return (me?.memberships ?? []).filter((m) => m.status === "active");
+}
+
+// The user's primary lab organization id — the org that scopes the lab-centric
+// financial/management read screens. Prefers a lab where the user has an editing
+// role (matching the data they can actually act on), then falls back to any
+// active lab membership. Returns null for pure provider/practice users.
+export function primaryLabOrgId(me: MeResponse | undefined): string | null {
+  const editable = editableLabMemberships(me)[0]?.organizationId;
+  if (editable) return editable;
+  const anyLab = activeMemberships(me).find(
+    (m) => (m.organization?.type ?? "").toLowerCase() === "lab",
+  );
+  return anyLab?.organizationId ?? null;
+}
+
+// The user's primary provider/practice organization id (first active non-lab
+// membership), or null. Used to scope invoices a provider receives.
+export function primaryProviderOrgId(me: MeResponse | undefined): string | null {
+  const provider = activeMemberships(me).find(
+    (m) => (m.organization?.type ?? "").toLowerCase() !== "lab",
+  );
+  return provider?.organizationId ?? null;
+}
+
+// Mobile equivalent of the desktop `billingOnly` gate: the user owns/admins or
+// has billing access to at least one active lab. Gates the Lists/Reports areas.
+export function canEditAnyLab(me: MeResponse | undefined): boolean {
+  return editableLabMemberships(me).length > 0;
+}

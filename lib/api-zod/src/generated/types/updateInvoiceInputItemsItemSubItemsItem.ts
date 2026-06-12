@@ -5,15 +5,12 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import type { UpdateInvoiceInputItemsItemSubItemsItem } from "./updateInvoiceInputItemsItemSubItemsItem";
 
-export type UpdateInvoiceInputItemsItem = {
+export type UpdateInvoiceInputItemsItemSubItemsItem = {
   id?: string;
   toothNumber?: number | null;
-  toothLabel?: string | null;
   description: string;
   quantity: number;
   unitPrice: number;
   sortOrder?: number;
-  subItems?: UpdateInvoiceInputItemsItemSubItemsItem[];
 };

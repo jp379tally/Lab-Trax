@@ -84,6 +84,15 @@ function RootLayoutNav() {
         <Stack.Screen name="case/[id]" options={{ headerShown: false, presentation: "card" }} />
         <Stack.Screen name="new-case" options={{ headerShown: false, presentation: "card" }} />
         <Stack.Screen name="pdf-viewer" options={{ headerShown: false, presentation: "card" }} />
+        <Stack.Screen name="invoice-editor/[id]" options={{ headerShown: false, presentation: "card" }} />
+        <Stack.Screen name="finance/invoices" options={{ headerShown: false, presentation: "card" }} />
+        <Stack.Screen name="finance/customers" options={{ headerShown: false, presentation: "card" }} />
+        <Stack.Screen name="finance/statements" options={{ headerShown: false, presentation: "card" }} />
+        <Stack.Screen name="finance/bank-register" options={{ headerShown: false, presentation: "card" }} />
+        <Stack.Screen name="manage/accounts" options={{ headerShown: false, presentation: "card" }} />
+        <Stack.Screen name="manage/pricing" options={{ headerShown: false, presentation: "card" }} />
+        <Stack.Screen name="manage/lists" options={{ headerShown: false, presentation: "card" }} />
+        <Stack.Screen name="manage/reports" options={{ headerShown: false, presentation: "card" }} />
         <Stack.Screen name="two-factor" options={{ headerShown: false, presentation: "card" }} />
         <Stack.Screen name="privacy-policy" options={{ headerShown: false, presentation: "modal" }} />
         <Stack.Screen name="terms-of-service" options={{ headerShown: false, presentation: "modal" }} />

@@ -5,6 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { UpdateInvoiceInputDisplayMetadata } from "./updateInvoiceInputDisplayMetadata";
 import type { UpdateInvoiceInputItemsItem } from "./updateInvoiceInputItemsItem";
 import type { UpdateInvoiceInputStatus } from "./updateInvoiceInputStatus";
 
@@ -20,5 +21,7 @@ export interface UpdateInvoiceInput {
   notes?: string | null;
   providerOrganizationId?: string | null;
   items?: UpdateInvoiceInputItemsItem[] | null;
+  /** Free-form invoice presentation metadata (teeth, shade, patientName, billTo, caseNotes, credits, lineItems). Server merges/overwrites displayMetadataJson; credits drive total. Spread existing metadata before writing to avoid clobbering desktop-authored fields. */
+  displayMetadata?: UpdateInvoiceInputDisplayMetadata;
   layoutPresetId?: string | null;
 }

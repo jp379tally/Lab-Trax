@@ -110,19 +110,31 @@ describe("CaseDetailScreen (read-only viewer)", () => {
       await waitFor(() => expect(queryByTestId("overview-edit")).toBeTruthy());
     });
 
-    it("changes status through the JS option picker", async () => {
+    it("locates the case to a new station via useUpdateCase (canonical status write)", async () => {
+      // Status/location is changed exclusively through the desktop-style
+      // "Locate Case" control (editor-only), not the edit form.
+      const editableCase = { ...inProgressCase, organizationId: "org-1" };
+      setMockSearchParams({ id: editableCase.id });
+      setMockAppState({
+        cases: [editableCase],
+        invoices: [],
+        meMemberships: [{ organizationId: "org-1", role: "owner", status: "active" }],
+      });
+
       const { getByTestId } = render(<CaseDetailScreen />);
-      fireEvent.press(getByTestId("overview-edit"));
-      fireEvent.press(getByTestId("select-status"));
+      // Pick a destination station, then press Locate (mirrors desktop).
+      fireEvent.press(getByTestId("locate-select"));
       fireEvent.press(getByTestId("option-complete"));
-      fireEvent.press(getByTestId("overview-save"));
+      fireEvent.press(getByTestId("locate-confirm"));
 
       await waitFor(() => {
         expect(mockUpdateCaseMutateAsync).toHaveBeenCalledWith({
-          caseId: inProgressCase.id,
+          caseId: editableCase.id,
           data: { status: "complete" },
         });
       });
+      // Confirmation mirrors desktop's "Case located successfully."
+      await waitFor(() => expect(getByTestId("locate-success")).toBeTruthy());
     });
 
     it("adds a note via useAddCaseNote with the default internal visibility", async () => {
@@ -158,31 +170,12 @@ describe("CaseDetailScreen (read-only viewer)", () => {
       expect(queryByTestId("note-input")).toBeNull();
     });
 
-    it("does not render status-transition chips when the user cannot edit", () => {
+    it("does not render the Locate Case card when the user cannot edit", () => {
+      // Default membership stub → canEdit === false: the Locate Case control
+      // (like every editor-only affordance) is absent.
       const { queryByTestId } = render(<CaseDetailScreen />);
-      // in_design → next pipeline step is "scan"; chips are editor-only.
-      expect(queryByTestId("status-chip-scan")).toBeNull();
-    });
-
-    it("performs a one-tap status transition via useUpdateCase when editable", async () => {
-      const editableCase = { ...inProgressCase, organizationId: "org-1" };
-      setMockSearchParams({ id: editableCase.id });
-      setMockAppState({
-        cases: [editableCase],
-        invoices: [],
-        meMemberships: [{ organizationId: "org-1", role: "owner", status: "active" }],
-      });
-
-      const { getByTestId } = render(<CaseDetailScreen />);
-      // in_design advances to "scan" as the next pipeline step.
-      fireEvent.press(getByTestId("status-chip-scan"));
-
-      await waitFor(() => {
-        expect(mockUpdateCaseMutateAsync).toHaveBeenCalledWith({
-          caseId: editableCase.id,
-          data: { status: "scan" },
-        });
-      });
+      expect(queryByTestId("locate-select")).toBeNull();
+      expect(queryByTestId("locate-confirm")).toBeNull();
     });
   });
 
@@ -398,6 +391,109 @@ describe("CaseDetailScreen (read-only viewer)", () => {
       } finally {
         alertSpy.mockRestore();
       }
+    });
+  });
+
+  describe("history (interactive attachments) — desktop parity", () => {
+    const historyImageEvent = {
+      id: "evt-att-img",
+      eventType: "attachment_added",
+      actorInitials: "AB",
+      metadataJson: {
+        attachmentId: "att-h-img",
+        fileName: "occlusal.jpg",
+        fileType: "image/jpeg",
+      },
+      occurredAt: "2024-01-12T10:00:00.000Z",
+    };
+    const historyPdfEvent = {
+      id: "evt-att-pdf",
+      eventType: "attachment_added",
+      actorInitials: "AB",
+      metadataJson: {
+        attachmentId: "att-h-pdf",
+        fileName: "iTero_Rx.pdf",
+        fileType: "application/pdf",
+      },
+      occurredAt: "2024-01-12T11:00:00.000Z",
+    };
+    const caseWithHistoryAttachments = {
+      ...inProgressCase,
+      id: "case-history-att",
+      events: [...inProgressCase.events, historyImageEvent, historyPdfEvent],
+    };
+
+    beforeEach(() => {
+      setMockSearchParams({ id: caseWithHistoryAttachments.id });
+      setMockAppState({ cases: [caseWithHistoryAttachments], invoices: [] });
+    });
+
+    it("renders a tappable thumbnail for an image attachment event", () => {
+      const { getByTestId } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-history"));
+      expect(getByTestId(`history-attachment-${historyImageEvent.id}`)).toBeTruthy();
+    });
+
+    it("opens a history image attachment in the full-screen lightbox preview", async () => {
+      const { getByTestId, queryByTestId } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-history"));
+
+      expect(queryByTestId("lightbox-image")).toBeNull();
+      fireEvent.press(getByTestId(`history-attachment-${historyImageEvent.id}`));
+
+      await waitFor(() => expect(getByTestId("lightbox-image")).toBeTruthy());
+      expect(vi.mocked(Sharing.shareAsync)).not.toHaveBeenCalled();
+    });
+
+    it("renders a tappable row for a non-image attachment event", () => {
+      const { getByTestId } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-history"));
+      expect(getByTestId(`history-attachment-${historyPdfEvent.id}`)).toBeTruthy();
+    });
+
+    it("opens a history PDF attachment in the in-app viewer (never the share sheet)", async () => {
+      const { getByTestId } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-history"));
+      fireEvent.press(getByTestId(`history-attachment-${historyPdfEvent.id}`));
+
+      await waitFor(() => {
+        expect(vi.mocked(router.push)).toHaveBeenCalledWith(
+          expect.objectContaining({
+            pathname: "/pdf-viewer",
+            params: expect.objectContaining({
+              url: `/api/cases/${caseWithHistoryAttachments.id}/attachments/${historyPdfEvent.metadataJson.attachmentId}/file`,
+              fileName: historyPdfEvent.metadataJson.fileName,
+              fileType: historyPdfEvent.metadataJson.fileType,
+            }),
+          }),
+        );
+      });
+      expect(vi.mocked(Sharing.shareAsync)).not.toHaveBeenCalled();
+    });
+
+    it("prefers the legacy imageUri over the canonical /file route when present", () => {
+      const legacyEvent = {
+        id: "evt-att-legacy",
+        eventType: "attachment_added",
+        actorInitials: "AB",
+        metadataJson: {
+          imageUri: "data:image/png;base64,AAAA",
+          fileName: "legacy.png",
+          fileType: "image/png",
+        },
+        occurredAt: "2024-01-12T12:00:00.000Z",
+      };
+      const legacyCase = {
+        ...inProgressCase,
+        id: "case-history-legacy",
+        events: [...inProgressCase.events, legacyEvent],
+      };
+      setMockSearchParams({ id: legacyCase.id });
+      setMockAppState({ cases: [legacyCase], invoices: [] });
+
+      const { getByTestId } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-history"));
+      expect(getByTestId(`history-attachment-${legacyEvent.id}`)).toBeTruthy();
     });
   });
 });

@@ -2071,9 +2071,27 @@ export const UpdateInvoiceBody = zod.object({
         quantity: zod.number(),
         unitPrice: zod.number(),
         sortOrder: zod.number().optional(),
+        subItems: zod
+          .array(
+            zod.object({
+              id: zod.string().optional(),
+              toothNumber: zod.number().nullish(),
+              description: zod.string(),
+              quantity: zod.number(),
+              unitPrice: zod.number(),
+              sortOrder: zod.number().optional(),
+            }),
+          )
+          .optional(),
       }),
     )
     .nullish(),
+  displayMetadata: zod
+    .record(zod.string(), zod.unknown())
+    .nullish()
+    .describe(
+      "Free-form invoice presentation metadata (teeth, shade, patientName, billTo, caseNotes, credits, lineItems). Server merges\/overwrites displayMetadataJson; credits drive total. Spread existing metadata before writing to avoid clobbering desktop-authored fields.",
+    ),
   layoutPresetId: zod.string().nullish(),
 });
 

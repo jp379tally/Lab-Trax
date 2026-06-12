@@ -2499,6 +2499,27 @@ components:
               quantity: { type: number }
               unitPrice: { type: number }
               sortOrder: { type: integer }
+              subItems:
+                type: array
+                items:
+                  type: object
+                  required: [description, quantity, unitPrice]
+                  properties:
+                    id: { type: string }
+                    toothNumber: { type: integer, nullable: true }
+                    description: { type: string }
+                    quantity: { type: number }
+                    unitPrice: { type: number }
+                    sortOrder: { type: integer }
+        displayMetadata:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: >-
+            Free-form invoice presentation metadata (teeth, shade, patientName,
+            billTo, caseNotes, credits, lineItems). Server merges/overwrites
+            displayMetadataJson; credits drive total. Spread existing metadata
+            before writing to avoid clobbering desktop-authored fields.
         layoutPresetId:
           type: string
           nullable: true
