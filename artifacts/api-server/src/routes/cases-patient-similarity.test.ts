@@ -504,6 +504,85 @@ maybe("GET /api/cases/patient-similarity (db integration)", () => {
     expect(Array.isArray(r.body.data.matches)).toBe(true);
   });
 
+  // ── Ranking preserved under truncation ───────────────────────────────────
+
+  it("exact matches appear first even when the result set is truncated", async () => {
+    // 1 exact + 5 truly fuzzy (each is exactly 1 edit from "Rana") → limit=3.
+    // All fuzzy names differ from "Rana" by exactly one substitution so the
+    // fuzzy matcher picks them up.  "Rona0" would be d=2 (sub + digit) — avoid.
+    const exactId = await trackInsert({ patientFirst: "Rana", patientLast: "Rankson" });
+    // d=1 substitutions: Rona, Rena, Rina, Runa, Ranu
+    for (const fuzz of ["Rona", "Rena", "Rina", "Runa", "Ranu"]) {
+      await trackInsert({ patientFirst: fuzz, patientLast: "Rankson" });
+    }
+
+    const r = await request(appMod.default)
+      .get("/api/cases/patient-similarity")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({
+        patientFirstName: "Rana",
+        patientLastName: "Rankson",
+        labOrganizationId: labOrgId,
+        limit: "3",
+      });
+
+    expect(r.status).toBe(200);
+    expect(r.body.data.truncated).toBe(true);
+    const hits: { id: string; matchKind: string }[] = r.body.data.matches;
+    expect(hits.length).toBe(3);
+    // Exact match must be present and must lead the list.
+    const exactHit = hits.find((h) => h.id === exactId);
+    expect(exactHit, "exact match must survive truncation").toBeDefined();
+    expect(hits[0]?.matchKind).toBe("exact");
+  });
+
+  // ── Large-lab scenario ────────────────────────────────────────────────────
+
+  it("large-lab: exact matches lead ranking and response completes within 3 s", async () => {
+    // Seed 55 cases with the surname "Largelab":
+    //   - 5 exact: first name "Taylor"
+    //   - 50 fuzzy (d=1): first name "Taylar" (one substitution from "Taylor")
+    // All 55 are genuine matches so the result set exceeds limit=10 and truncation fires.
+    for (let i = 0; i < 5; i++) {
+      await trackInsert({ patientFirst: "Taylor", patientLast: "Largelab" });
+    }
+    for (let i = 0; i < 50; i++) {
+      await trackInsert({ patientFirst: "Taylar", patientLast: "Largelab" });
+    }
+
+    const start = Date.now();
+    const r = await request(appMod.default)
+      .get("/api/cases/patient-similarity")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({
+        patientFirstName: "Taylor",
+        patientLastName: "Largelab",
+        labOrganizationId: labOrgId,
+        limit: "10",
+      });
+    const elapsed = Date.now() - start;
+
+    expect(r.status).toBe(200);
+    expect(elapsed, `response took ${elapsed} ms — must be < 3000 ms`).toBeLessThan(3000);
+
+    const hits: { matchKind: string }[] = r.body.data.matches;
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits.length).toBeLessThanOrEqual(10);
+
+    // Truncated because 55 results exceed the limit of 10.
+    expect(r.body.data.truncated).toBe(true);
+    expect(r.body.data.totalFound).toBeGreaterThanOrEqual(55);
+
+    // Every exact hit must precede every non-exact hit in the returned slice.
+    const exactIndices = hits.map((h, i) => (h.matchKind === "exact" ? i : -1)).filter((i) => i >= 0);
+    const nonExactIndices = hits.map((h, i) => (h.matchKind !== "exact" ? i : -1)).filter((i) => i >= 0);
+    if (exactIndices.length > 0 && nonExactIndices.length > 0) {
+      const lastExact = Math.max(...exactIndices);
+      const firstNonExact = Math.min(...nonExactIndices);
+      expect(lastExact, "all exact hits must precede non-exact hits").toBeLessThan(firstNonExact);
+    }
+  });
+
   // ── Empty result ──────────────────────────────────────────────────────────
 
   it("returns an empty matches array when no case matches", async () => {

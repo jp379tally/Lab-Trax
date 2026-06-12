@@ -162,6 +162,8 @@ export default function AiReaderExtractedScreen() {
   const [similarHits, setSimilarHits] = useState<SimilarityHit[]>([]);
   const [duplicateModalVisible, setDuplicateModalVisible] = useState(false);
   const [remakeOfCaseId, setRemakeOfCaseId] = useState<string | null>(null);
+  const [duplicateTruncated, setDuplicateTruncated] = useState(false);
+  const [duplicateTotalFound, setDuplicateTotalFound] = useState(0);
 
   // ── Confidence tooltip ──
   const [confidenceTooltipVisible, setConfidenceTooltipVisible] = useState(false);
@@ -322,8 +324,12 @@ export default function AiReaderExtractedScreen() {
   }
 
   // ── Patient similarity ──
-  async function checkDuplicates(): Promise<SimilarityHit[]> {
-    if (!selectedLabId || !patientFirst.trim() || !patientLast.trim()) return [];
+  async function checkDuplicates(): Promise<{
+    hits: SimilarityHit[];
+    truncated?: boolean;
+    totalFound?: number;
+  }> {
+    if (!selectedLabId || !patientFirst.trim() || !patientLast.trim()) return { hits: [] };
     try {
       const params = new URLSearchParams({
         patientFirstName: patientFirst.trim(),
@@ -333,11 +339,17 @@ export default function AiReaderExtractedScreen() {
         ...(doctorName.trim() ? { doctorName: doctorName.trim() } : {}),
       });
       const res = await resilientFetch(`/api/cases/patient-similarity?${params}`);
-      if (!res.ok) return [];
-      const body = (await res.json()) as { data?: { matches?: SimilarityHit[] } };
-      return body?.data?.matches ?? [];
+      if (!res.ok) return { hits: [] };
+      const body = (await res.json()) as {
+        data?: { matches?: SimilarityHit[]; truncated?: boolean; totalFound?: number };
+      };
+      return {
+        hits: body?.data?.matches ?? [],
+        truncated: body?.data?.truncated,
+        totalFound: body?.data?.totalFound,
+      };
     } catch {
-      return [];
+      return { hits: [] };
     }
   }
 
@@ -444,9 +456,11 @@ ${pages.map((p) => `<div class="page"><img src="${p.base64}" /></div>`).join("\n
       setSubmitting(true);
       setUploadProgress(0);
       try {
-        const hits = await checkDuplicates();
+        const { hits, truncated, totalFound } = await checkDuplicates();
         if (hits.length > 0) {
           setSimilarHits(hits);
+          setDuplicateTruncated(truncated ?? false);
+          setDuplicateTotalFound(totalFound ?? hits.length);
           setDuplicateModalVisible(true);
           setSubmitting(false);
           return;
@@ -1034,6 +1048,12 @@ ${pages.map((p) => `<div class="page"><img src="${p.base64}" /></div>`).join("\n
               These existing cases may be a match. How would you like to proceed?
             </Text>
 
+            {duplicateTruncated ? (
+              <Text style={styles.truncationNotice}>
+                Showing top {similarHits.length} of {duplicateTotalFound} possible matches
+              </Text>
+            ) : null}
+
             <ScrollView style={{ maxHeight: 280 }}>
               {similarHits.slice(0, 5).map((hit, i) => (
                 <Pressable
@@ -1339,6 +1359,14 @@ function makeStyles(c: ThemeColors) {
       alignItems: "center",
     },
     newCaseBtnText: { ...Typography.bodySemibold, color: "#fff" },
+
+    truncationNotice: {
+      ...Typography.caption,
+      color: c.textTertiary,
+      textAlign: "center",
+      paddingVertical: Spacing.xs,
+      marginBottom: Spacing.xs,
+    },
 
     duplicateBtn: {
       flexDirection: "row",
