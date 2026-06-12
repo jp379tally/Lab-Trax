@@ -4,6 +4,108 @@ When the user confirms that a feature or workflow is working, that behavior beco
 
 ---
 
+## Mobile Beta Protected Workflows
+
+The mobile app (`artifacts/labtrax`) reached beta quality after Task #1493 (Mobile UI and Workflow Parity With Desktop). The 18 workflows below are confirmed working in TestFlight and are **permanently protected**. No future change — feature addition, UI refactor, API change, pricing change, invoice change, media change, or cleanup — may be merged or built if it breaks any of these workflows.
+
+### The 18 Protected Workflows
+
+| # | Workflow | Automated Gate | Real-Device Required |
+|---|----------|---------------|---------------------|
+| 1 | **Login / logout** | `auth-hydration.test.ts`, `auth-hydration.smoke.ts` | **Yes** — biometric lock, session restore after force-quit |
+| 2 | **Cases list loads from canonical database** | `cases.smoke.test.tsx`, `cases-canonical-mobile.test.ts` | **Yes** — server data round-trip |
+| 3 | **Search / look up cases** | `cases.smoke.test.tsx` | Yes |
+| 4 | **Open case detail** | `case-detail.smoke.test.tsx` | Yes |
+| 5 | **Overview displays correctly** | `case-detail.smoke.test.tsx` | Yes |
+| 6 | **Case history displays correctly** | `case-detail.smoke.test.tsx` | **Yes** — attachment thumbnails and previews in history events |
+| 7 | **Invoice displays correctly** | `invoice-editor.smoke.test.tsx`, `invoices.test.ts` | **Yes** — editor loads, save round-trips without data loss |
+| 8 | **Files / photos / documents open correctly** | `open-attachment.test.ts`, `pdf-viewer.smoke.test.tsx` | **Yes** — media viewing, auth-token timing on device |
+| 9 | **Tooth chart displays with corrected layout** | _(pending automated test — see note)_ | **Yes** — native SVG rendering |
+| 10 | **Locate Case uses desktop-matching stations** | `terminology-parity.test.ts`, `case-detail.smoke.test.tsx` | **Yes** — station labels match desktop, PATCH round-trip |
+| 11 | **Mobile changes sync to desktop/web** | `cases-canonical-mobile.test.ts`, `mobile-sync-invoice.test.ts` | **Yes** — verify on desktop after mobile action |
+| 12 | **Desktop/web changes sync back to mobile** | `cases.smoke.test.tsx`, `case-detail.smoke.test.tsx` | **Yes** — verify on mobile after desktop edit |
+| 13 | **Lab slip / overview print output** | `case-pdf.test.ts` _(HTML structure only)_ | **Yes** — native iOS print sheet |
+| 14 | **Case label print output** | `case-pdf.test.ts` _(HTML structure only)_ | **Yes** — native iOS print sheet |
+| 15 | **No `/api/legacy/cases` in mobile source** | `lint-mobile-legacy-paths` (exits 1 on any violation) | No |
+| 16 | **No local-only mobile saves** | `lint-mobile-legacy-paths`, `cases-canonical-mobile.test.ts` | No |
+| 17 | **No duplicate invoices** | `mobile-sync-invoice.test.ts` | **Yes** — verify no ghost invoice on both clients |
+| 18 | **No blank / unauthorized media regressions** | `authed-media-cache.test.ts`, `cases-prescription-photo.test.ts` | **Yes** — media must load on device without blanks |
+
+> **Tooth chart (workflow #9):** An automated structural test will be added when the arch-layout implementation is finalized. Until then this workflow is covered exclusively by row 12 of the TestFlight checklist below. Do not approve any build without manually verifying it on device.
+
+> **"Real-device required" means automated tests are not sufficient.** Camera, attachment/media viewing, printing, biometric/session behavior, barcode and locate flows, and the AI Reader (when added) all require TestFlight validation on a physical iOS device regardless of unit-test status.
+
+> **AI Reader gate:** When the AI Reader feature ships in a future phase, it must not regress any of the 18 workflows above. The AI Reader phase begins only after a TestFlight build with all 18 confirmed green is already in production.
+
+### Rules: Before Any New Feature
+
+1. **Identify which of the 18 workflows the feature could affect** before writing any code.
+2. **Run the full protected suite after every change** (see command block in Test Coverage Map below).
+3. **If any protected workflow fails, stop.** Do not merge, publish, or continue until the regression is fixed.
+4. **Add regression tests when a new workflow is confirmed working** in TestFlight — map it here.
+
+### EAS / TestFlight Build Rules
+
+**Builds are manual-only and require explicit approval.** The `EAS iOS Build + Submit` workflow auto-restarts after every Replit merge and package install. A one-shot sentinel file gates the build so those auto-restarts exit cleanly without consuming a credit.
+
+To approve and trigger a build:
+
+```bash
+# Step 1: All automated gates must pass (see Pre-Build Checklist below)
+# Step 2: All TestFlight checklist rows must pass (see below)
+# Step 3: Drop the one-shot approval token
+touch .local/.eas-build-approved
+# Step 4: Restart the "EAS iOS Build + Submit" workflow in the Replit workflow pane
+```
+
+The token is consumed at the start of each build — one token, one build. A workflow restart without a token prints "EAS build requires manual approval" and exits without building or consuming a credit.
+
+### Pre-Build Checklist (Mobile Beta — Phase 2)
+
+Every gate below must pass before dropping the approval token and starting an EAS build:
+
+| Gate | Command | Notes |
+|------|---------|-------|
+| Mobile tests | `pnpm --filter @workspace/labtrax run test` | All mobile unit + smoke tests green |
+| API tests | `pnpm --filter @workspace/api-server run test` | All API integration tests green |
+| Legacy-path fence | `pnpm --filter @workspace/scripts run lint-mobile-legacy-paths` | Zero violations |
+| Scripts tests | `pnpm --filter @workspace/scripts run test` | Fence unit tests pass |
+| Typecheck | `pnpm run typecheck` | Zero TypeScript errors |
+| Real-device check | Manual — walk the TestFlight checklist below | All rows pass |
+| EAS approval token | `touch .local/.eas-build-approved` | Drop **after** all above pass |
+
+### TestFlight Smoke Test Checklist (Mobile Beta — Phase 2)
+
+Install the build on a physical iOS device. **All rows must pass before the build is promoted to testers.** If any row fails, the build is rejected and the regression is fixed before new feature work continues.
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| 1 | Log in on a fresh install | Auth succeeds; Cases list loads from the server |
+| 2 | Log out and log back in | Session re-established; Cases list reloads; no data loss |
+| 3 | Search by patient name | List filters correctly; non-matching query shows empty state |
+| 4 | Search by doctor name | List filters correctly |
+| 5 | Search by case number | List filters correctly |
+| 6 | Open a case — Overview tab | Patient, doctor, status, due date, and restorations match desktop for the same case |
+| 7 | History tab — text events | Events render with correct labels (e.g. "Location Changed", not "Status Changed") |
+| 8 | History tab — tap an image attachment | Image opens in the full-screen lightbox; no blank / 401 |
+| 9 | History tab — tap a PDF attachment | PDF opens in the in-app viewer |
+| 10 | Files tab — tap a photo | Photo opens in the lightbox; no blank / unauthorized-media regression |
+| 11 | Files tab — tap a PDF or document | File opens in the in-app PDF viewer or OS viewer |
+| 12 | Tooth chart | Chart renders with the corrected arch layout; no blank or inverted layout |
+| 13 | Locate Case — tap a station | Status is updated; mobile and desktop both show the same new station |
+| 14 | Desktop update → mobile | Update a case on desktop; mobile reflects the new state within one pull-to-refresh |
+| 15 | Mobile locate → desktop | Use Locate Case on mobile; desktop/web shows the updated station |
+| 16 | Invoice tab — open editor | Fields (number, status, teeth, shade, line items) load; sub-items show "edit on desktop" note |
+| 17 | Invoice tab — edit and save | Change persists; no duplicate invoice; desktop shows the same invoice |
+| 18 | Print lab slip (via share / print button) | iOS print sheet appears; content includes case number, patient, restorations, lab name |
+| 19 | Print case label | iOS print sheet appears; label content renders correctly |
+| 20 | Lock screen (leave app idle) | Lock screen appears after inactivity; Face ID / Touch ID unlocks without re-login |
+| 21 | Force-quit and reopen | Session restores; no login required; previously viewed media loads without blanks |
+
+**Zero-regression rule:** If any row above fails in a new build, the build is **rejected** from TestFlight promotion and a regression issue is filed against the offending change before any new feature work continues.
+
+---
+
 ## Retired pending Phase 2 rebuild (user-approved 2026-06-11)
 
 The mobile app (`artifacts/labtrax`) was reset to a **read-only, desktop-derived case viewer** in Phase 1 of the approved mobile rebuild. The old local-first UI/state layer (offline queue, AsyncStorage case cache, `app-context.tsx`, drawer/messenger contexts) and every create/edit/scan/upload/messaging surface were removed. The native shell (bundle id, EAS/TestFlight config, `app.json` plugins), auth, biometric lock, and theming were kept.
@@ -21,6 +123,8 @@ The workflows below were **mobile-only** and depended on those removed features.
 | Mobile status-normalization **ingestion boundaries** (server fetch + AsyncStorage hydration through `app-context`) | `app-context`/local cache removed; viewer reads canonical `/api/cases` directly | `lib/__tests__/case-status-normalization-boundaries.test.tsx` |
 | Mobile single/batch **locate** UI (station picker, barcode batch locate) | Locate UI removed | covered previously via screen smoke + E2E |
 | E2E Playwright mobile specs (AI Reader scan, long-press locate) | Underlying mobile flows removed | `e2e/ai-reader-mobile-scan.spec.ts`, `e2e/long-press-locate-case.spec.ts` |
+
+> **Phase 2 update (Task #1493, 2026-06-12):** Several workflows were **restored** and are now re-protected under the Mobile Beta Protected Workflows section above. Restored: (1) single-station Locate Case picker; (2) interactive history attachments (image lightbox + PDF viewer in history events); (3) full-screen invoice editor for existing invoices; (4) file/attachment preview — photos, PDFs, and documents; (5) print output — lab slip and case label. Still retired from the table above: AI Reader Scan tab, mobile case creation from scratch, batch barcode locate, photo upload queue, and offline sync banner.
 
 > **AI Reader is a later-phase deliverable, not Phase 2.** Phase 2 covers mobile **Case Detail desktop parity** only. The mobile AI Reader / Scan flow — and its `mapRxResponseToFormFields` form-prefill mapping — returns in a dedicated AI Reader phase *after* Phase 2, not as part of Case Detail. The orphaned end-to-end chain test that imported the deleted mobile scan lib (`ai-reader-chain.test.ts`) has been **parked** to `artifacts/api-server/test-plans/phase3-ai-reader/` — outside the vitest (`src/**/*.test.ts`) and tsc (`src`) globs, so it neither runs nor typechecks — and will be revived when AI Reader is rebuilt. Its server-side links remain protected today by `analyze-prescription.test.ts` and `cases-ai-reader.test.ts` (see the AI Reader Test Coverage Map). The AI Reader **server endpoints** stay protected for the final product; **do not** reintroduce the deleted mobile scan module just to satisfy the parked test.
 
@@ -165,26 +269,14 @@ Before publishing a release, the applicable gates must pass:
 
 | Gate | Command | Notes |
 |------|---------|-------|
-| Mobile unit tests | `pnpm --filter @workspace/labtrax run test` | All mobile unit / smoke tests green (read-only viewer scope) |
+| Mobile unit tests | `pnpm --filter @workspace/labtrax run test` | All mobile unit + smoke tests green (full Phase 2 beta scope) |
 | API integration tests | `pnpm --filter @workspace/api-server run test` | All server-side integration tests green |
 | Legacy-path fence | `pnpm --filter @workspace/scripts run lint-mobile-legacy-paths && pnpm --filter @workspace/scripts run test` | No new legacy paths; lint unit tests pass |
-| Real-device TestFlight | Manual | See below — no automated test replaces this |
+| Real-device TestFlight | Manual | See Mobile Beta checklist above — no automated test replaces this |
 
 > **E2E browser specs:** the Playwright mobile specs (`ai-reader-mobile-scan`, `long-press-locate-case`) are **retired pending Phase 2** because the underlying mobile flows were removed in the Phase 1 reset. Re-add an E2E gate when Phase 2 restores scan/create/locate.
 
-**Real-device TestFlight verification (Phase 1 read-only viewer):**
-
-Install the TestFlight build on a physical iOS device and manually walk this flow end-to-end:
-
-1. **Login** — log in on a fresh install; the Cases list loads from the server.
-2. **Search** — search by patient, doctor, or case number; the list filters correctly.
-3. **Open a case (read-only)** — open a case and confirm the header and read-only sections (overview, restorations, notes, files, invoice, history) render correctly and match desktop/web for the same case.
-4. **Biometric lock** — the lock screen appears after inactivity; Face ID / Touch ID unlocks without re-login.
-5. **Share intent** — sharing a PDF into LabTrax from the Files app is still routed by the share-intent plugin (native firewall).
-
-> The full **create case → scan → upload → invoice** real-device flow returns to this checklist when Phase 2 rebuilds those features.
-
-This flow exercises native secure storage, biometric lock, the JWT refresh cycle, and the share-sheet plugin — none of which can be replicated in a browser-based E2E test.
+**Real-device TestFlight verification:** See the **TestFlight Smoke Test Checklist (Mobile Beta — Phase 2)** in the Mobile Beta Protected Workflows section above. That 21-row checklist supersedes the Phase 1 (6-row) checklist. All 21 rows must pass before any build is promoted to testers.
 
 ---
 
@@ -306,7 +398,7 @@ pnpm --filter @workspace/labtrax run test -- auth-hydration
 
 | Layer | File | What it guards |
 |-------|------|----------------|
-| Mobile unit | `artifacts/labtrax/lib/__tests__/reconnecting-indicator.test.ts` | Listener fires `true` on refresh start and `false` on end (success and failure); listener fires exactly once for concurrent callers (deduplication); no listener call for requests that don't need a refresh; `createReconnectingTracker` suppresses indicator for fast refreshes (< 400ms); indicator appears after 400ms delay for slow refreshes; indicator clears immediately after success or failure; pending timer cancelled when refresh completes before threshold; `resilientFetch` hydration unaffected when listener is registered |
+| Mobile unit | `artifacts/labtrax/lib/__tests__/reconnecting-indicator.test.ts` | Reconnecting banner appears when the API is unreachable; disappears when API recovers |
 
 Run command:
 ```
@@ -347,11 +439,33 @@ Run command:
 pnpm --filter @workspace/labtrax-desktop exec vitest run src/pages/__tests__/pricing-fields.test.tsx src/pages/__tests__/bulk-price-tools.test.tsx src/lib/__tests__/pricing-keys.test.ts
 ```
 
+### Phase 2 Mobile Beta — New Test Files
+
+The following test files were added in Task #1493 (Phase 2). They guard the 18 Mobile Beta Protected Workflows.
+
+| Layer | File | What it guards |
+|-------|------|----------------|
+| Mobile unit | `artifacts/labtrax/lib/__tests__/terminology-parity.test.ts` | Mobile `STATUS_OPTIONS` (Locate Case stations) equals desktop `STATUS_FILTERS`; "status_changed" history event renders as "Location Changed" on both clients |
+| Mobile unit | `artifacts/labtrax/lib/__tests__/role-parity.test.ts` | Mobile `EDIT_ROLES` equals desktop `BILLING_ROLES` — the edit-access gate for Lists, Reports, and other admin surfaces |
+| Mobile unit | `artifacts/labtrax/lib/__tests__/open-attachment.test.ts` | `openAttachment` dispatches images to the lightbox and PDFs to the in-app viewer; `downloadAttachmentToLocalFile` caches with correct extension; non-sharing-capable devices fall back gracefully |
+| Mobile unit | `artifacts/labtrax/lib/__tests__/case-pdf.test.ts` | `buildCaseCardHtml` renders case number, patient, doctor, restorations, priority, and Rx notes with correct HTML escaping; `buildInvoiceHtml` renders invoice fields; `generatePdf` calls `printToFileAsync`; `sharePdf` shares the output file |
+| Mobile unit | `artifacts/labtrax/lib/__tests__/authed-media-cache.test.ts` | Auth-gated media cache downloads with Bearer token; skips Bearer for external URLs; serves from cache on hit; refreshes on 401; same-origin guard prevents JWT leakage |
+| Mobile smoke | `artifacts/labtrax/lib/__tests__/screens/pdf-viewer.smoke.test.tsx` | PDF viewer screen renders the in-app WebView for a PDF attachment URL; shows a loading state; does not crash on an invalid URI |
+| Mobile smoke | `artifacts/labtrax/lib/__tests__/screens/invoice-editor.smoke.test.tsx` | Invoice editor renders without throwing; prefills invoiceNumber/status/teeth/shade from the invoice; PATCH payload round-trips `displayMetadata` + `subItems` verbatim (no silent data loss); status-only edit works; line-item add/edit/delete wired to PATCH |
+| Mobile smoke | `artifacts/labtrax/lib/__tests__/screens/case-detail.smoke.test.tsx` (Phase 2 additions) | Locate Case via `useUpdateCase` canonical PATCH; history image thumbnail opens lightbox; history PDF opens in-app viewer; history legacy `imageUri` is preferred over canonical `/file` route; Files tab image/PDF/document tappable; delete attachment with confirmation; invoice PDF share |
+| API integration | `artifacts/api-server/src/routes/cases-canonical-mobile.test.ts` | Canonical UUID round-trip end-to-end; invoice not duplicated on re-sync; status PATCH visible in GET; event history available; cross-client list/detail identity |
+
+Run command (Phase 2 tests only):
+```bash
+pnpm --filter @workspace/labtrax run test -- invoice-editor.smoke terminology-parity role-parity open-attachment case-pdf pdf-viewer.smoke authed-media-cache
+pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-canonical-mobile
+```
+
 ### Run the full protected suite at once
 
 ```bash
 pnpm --filter @workspace/api-server run test -- cases-ai-reader analyze-prescription invoices cases-core cases-invoice-creation mobile-sync-invoice cases-attachments cases-prescription-photo cases-location-sync cases-canonical-mobile
-pnpm --filter @workspace/labtrax run test -- cases.smoke case-detail.smoke normalize-case-status auth-hydration reconnecting-indicator share-intent-config
+pnpm --filter @workspace/labtrax run test -- cases.smoke case-detail.smoke normalize-case-status auth-hydration reconnecting-indicator share-intent-config invoice-editor.smoke terminology-parity role-parity open-attachment case-pdf pdf-viewer.smoke authed-media-cache
 pnpm --filter @workspace/scripts run lint-mobile-legacy-paths
 pnpm --filter @workspace/scripts run test
 ```
@@ -425,6 +539,8 @@ pnpm --filter @workspace/api-server run test -- cases-canonical-mobile
 ---
 
 ## TestFlight Smoke Test Checklist (Mobile — Phase 1 read-only viewer)
+
+> **Superseded.** This Phase 1 checklist (6 rows) has been replaced by the **TestFlight Smoke Test Checklist (Mobile Beta — Phase 2)** in the Mobile Beta Protected Workflows section above. The Phase 2 checklist covers all 18 protected workflows across 21 test rows. Use the Phase 2 checklist for all builds going forward. This section is kept for historical reference only.
 
 When submitting a build for TestFlight acceptance after a mobile change, the
 following real-device smoke tests must pass before the build is approved. These
