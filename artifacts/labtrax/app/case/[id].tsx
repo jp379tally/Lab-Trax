@@ -55,6 +55,7 @@ import {
   openAttachmentPreview,
 } from "@/lib/attachment-preview";
 import { buildCaseCardHtml, buildInvoiceHtml, generatePdf, sharePdf } from "@/lib/case-pdf";
+import { setAiReaderSession, clearAiReaderSession } from "@/lib/ai-reader-store";
 
 // ─── Viewer-local detail shape ────────────────────────────────────────────────
 // GET /api/cases/:id returns the full desktop DetailedCase payload. The
@@ -917,6 +918,7 @@ export default function CaseDetailScreen() {
             c={c}
             caseId={c.id}
             canEdit={canEdit}
+            labName={labName}
             onSaved={() => caseQuery.refetch()}
             styles={styles}
             colors={colors}
@@ -1057,6 +1059,7 @@ function OverviewSection({
   c,
   caseId,
   canEdit,
+  labName,
   onSaved,
   styles,
   colors,
@@ -1064,6 +1067,7 @@ function OverviewSection({
   c: DetailedCase;
   caseId: string;
   canEdit: boolean;
+  labName: string | null;
   onSaved: () => void | Promise<unknown>;
   styles: Styles;
   colors: ThemeColors;
@@ -1227,6 +1231,37 @@ function OverviewSection({
               <FieldRow label="Bridge connectors" value={c.bridgeConnectors} styles={styles} />
             ) : null}
             <FieldRow label="Created" value={formatDate(c.createdAt)} styles={styles} />
+            <View style={styles.fieldRow}>
+              <Text style={styles.fieldLabel}>Pan Barcode</Text>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: Spacing.xs, flexShrink: 1, justifyContent: "flex-end" }}>
+                <Text style={[styles.fieldValue, { flexShrink: 1 }]} numberOfLines={1}>
+                  {c.casePanBarcode && c.casePanBarcode.trim() ? c.casePanBarcode.trim() : "—"}
+                </Text>
+                {canEdit ? (
+                  <Pressable
+                    hitSlop={8}
+                    testID="scan-barcode-btn"
+                    onPress={() => {
+                      clearAiReaderSession();
+                      setAiReaderSession({
+                        caseId,
+                        caseNumber: c.caseNumber ?? null,
+                        patientName: [c.patientFirstName, c.patientLastName]
+                          .filter(Boolean)
+                          .join(" ") || null,
+                        doctorName: c.doctorName ?? null,
+                        dueDate: c.dueDate ?? null,
+                        labOrgId: c.labOrganizationId ?? c.organizationId ?? null,
+                        labName: labName ?? null,
+                      });
+                      router.push("/ai-reader/barcode" as never);
+                    }}
+                  >
+                    <Ionicons name="barcode-outline" size={20} color={colors.tint} />
+                  </Pressable>
+                ) : null}
+              </View>
+            </View>
           </View>
         )}
       </Card>
