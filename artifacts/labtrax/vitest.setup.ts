@@ -446,6 +446,16 @@ vi.mock("react-native-qrcode-svg", () => ({
   default: nullComponent,
 }));
 
+// ── @tanstack/react-query: stub useQuery so CaseDetailScreen's auth/me call
+// doesn't require a real QueryClientProvider. Returns empty data (canEdit=false).
+vi.mock("@tanstack/react-query", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@tanstack/react-query")>();
+  return {
+    ...actual,
+    useQuery: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
+  };
+});
+
 // ── @workspace/api-client-react: mock React Query hooks so screens that use
 // useCases / useCase / useInvoices / useInvoice don't need a QueryClientProvider.
 // Hook data is driven by the same mockAppOverrides used for the AppContext mock.
@@ -550,6 +560,11 @@ vi.mock("@workspace/api-client-react", () => ({
     data: (mockAppOverrides.current.attachments as unknown[]) ?? [],
     isLoading: false,
     refetch: vi.fn(async () => undefined),
+  }),
+  useDeleteCaseAttachment: () => ({
+    mutateAsync: vi.fn(async () => ({ ok: true, data: null })),
+    mutate: vi.fn(),
+    isPending: false,
   }),
   resolveItemPrice: vi.fn(async () => ({ ok: true, data: { price: null } })),
   setBaseUrl: vi.fn(),

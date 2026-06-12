@@ -1,6 +1,6 @@
 ---
 name: EAS build must run as a persistent workflow
-description: Long-running CLI jobs (EAS build/submit) die if backgrounded from bash; run them as a Replit workflow instead. Plus when an Apple build number is actually consumed.
+description: Long-running CLI jobs (EAS build/submit) die if backgrounded from bash; run them as a Replit workflow instead. Plus .easignore root-level fix and when an Apple build number is actually consumed.
 ---
 
 # Run long EAS build/submit jobs as a Replit workflow, never a backgrounded bash process
@@ -10,6 +10,14 @@ description: Long-running CLI jobs (EAS build/submit) die if backgrounded from b
 **Why:** A `nohup ... &` background process started inside a `bash` tool call gets **SIGKILLed** when that tool call returns — the process group is torn down. Observed symptom: the EAS build reached "Compressing project files" and then vanished between tool calls. Because it was SIGKILL, the script's `trap ... EXIT` cleanup did **not** run, so the build-number bump in `app.json` was left dangling/uncommitted. Only Replit workflows persist across agent turns.
 
 **How to apply:** For EAS builds, slow imports/exports, or any job >~30s that must survive to the next turn, use a workflow. Don't edit tracked files or install packages while it runs — that restarts the workflow and kills the in-flight build (re-running the script bumps the build number again).
+
+# Root .easignore must explicitly exclude artifacts/labtrax-desktop/
+
+**Rule:** The root `.easignore` (at workspace root) must list `artifacts/labtrax-desktop/` explicitly. The per-project `.easignore` at `artifacts/labtrax/.easignore` is a sub-directory override and does NOT prevent the desktop artifact from being archived from the workspace root.
+
+**Why:** With `EAS_NO_VCS=1`, EAS archives from the monorepo root. `artifacts/labtrax-desktop/` is 566 MB of Electron binaries. Without the explicit root exclusion, EAS "Compressing project files" step consistently exceeds 2 min and times out. After adding it plus `artifacts/api-server/` (31 MB), the archive shrinks to ~1.5 MB and compression completes in seconds.
+
+**How to apply:** After any workspace restructuring, verify `.easignore` at workspace root has all non-mobile artifact directories listed. Also confirm `attached_assets/` is listed — `artifacts/labtrax/attached_assets/` alone is 1.1 GB.
 
 # When an Apple build number is actually consumed
 

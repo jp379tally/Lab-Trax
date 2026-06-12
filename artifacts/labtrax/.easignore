@@ -13,11 +13,18 @@ server_dist/
 .expo/
 *.tsbuildinfo
 
-# Uploaded case media (server-side only, not needed for mobile build)
-artifacts/api-server/uploads/
+# Desktop app — not needed for mobile build (Electron binaries are huge)
+artifacts/labtrax-desktop/
 
-# Large assets not needed for mobile build
+# API server artifact — not needed for mobile build
+artifacts/api-server/
+
+# Mockup sandbox — not needed for mobile build
+artifacts/mockup-sandbox/
+
+# Large assets — explicit paths in case EAS archives from workspace root
 attached_assets/
+artifacts/labtrax/attached_assets/
 
 # Binaries and archives
 *.exe
@@ -32,7 +39,3 @@ attached_assets/
 logs/
 tmp/
 .local/
-
-# Desktop app artifact (not needed for mobile build)
-artifacts/labtrax-desktop/node_modules/
-artifacts/labtrax-desktop/dist/

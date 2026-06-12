@@ -8,14 +8,30 @@ node_modules/
 # Build outputs
 dist/
 build/
+static-build/
+server_dist/
 .expo/
 *.tsbuildinfo
 
-# Uploaded case media (server-side only)
-artifacts/api-server/uploads/
+# Desktop app artifact — Electron + native binaries (566 MB), not needed for mobile build
+artifacts/labtrax-desktop/
+
+# API server artifact — not needed for mobile build
+artifacts/api-server/
+
+# Mockup sandbox — not needed for mobile build
+artifacts/mockup-sandbox/
 
 # Large assets not needed for mobile build
 attached_assets/
+
+# Replit-internal / cache directories
+.cache/
+.upm/
+.agents/
+.config/
+.migration-backup/
+.pythonlibs/
 
 # Binaries and archives
 *.exe
@@ -28,4 +44,5 @@ attached_assets/
 # Logs and temp files
 *.log
 logs/
+tmp/
 .local/

@@ -15,6 +15,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { useQuery } from "@tanstack/react-query";
 import {
   useCase,
   useInvoices,
@@ -22,11 +23,17 @@ import {
   useCaseAttachments,
   useUpdateCase,
   useAddCaseNote,
+  useDeleteCaseAttachment,
+  useUpdateInvoice,
+  useGenerateInvoiceForCase,
   type UpdateCaseInput,
   type UpdateCaseInputStatus,
   type UpdateCaseInputPriority,
   type AddCaseNoteInputVisibility,
+  type UpdateInvoiceInput,
+  type UpdateInvoiceInputItemsItem,
 } from "@workspace/api-client-react";
+import { resilientFetch } from "@/lib/query-client";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
@@ -98,6 +105,8 @@ interface DetailedCase {
   remakeOriginal?: DetailRemakeRef | null;
   remakeChildren?: DetailRemakeRef[] | null;
   remakeReason?: string | null;
+  organizationId?: string | null;
+  labOrganizationId?: string | null;
 }
 
 type SectionKey = "overview" | "restorations" | "notes" | "files" | "invoice" | "history";
@@ -230,6 +239,24 @@ const STATUS_OPTIONS: { value: string; label: string }[] = [
 const PRIORITY_OPTIONS: { value: string; label: string }[] = [
   { value: "normal", label: "Normal" },
   { value: "rush", label: "Rush" },
+];
+
+const BILLING_ROLES = ["owner", "admin", "billing"] as const;
+
+const INVOICE_STATUS_OPTIONS: { value: string; label: string }[] = [
+  { value: "draft", label: "Draft" },
+  { value: "open", label: "Open" },
+  { value: "partially_paid", label: "Partially Paid" },
+  { value: "paid", label: "Paid" },
+  { value: "void", label: "Void" },
+];
+
+const PAYMENT_METHOD_OPTIONS: { value: string; label: string }[] = [
+  { value: "check", label: "Check" },
+  { value: "cash", label: "Cash" },
+  { value: "card", label: "Card" },
+  { value: "ach", label: "ACH / Bank Transfer" },
+  { value: "other", label: "Other" },
 ];
 
 const VISIBILITY_OPTIONS: { value: AddCaseNoteInputVisibility; label: string }[] = [
@@ -644,6 +671,21 @@ export default function CaseDetailScreen() {
   const invoiceQuery = useInvoice(primaryInvoiceId);
   const invoice = invoiceQuery.data ?? invoiceList[0] ?? null;
 
+  const meQuery = useQuery({
+    queryKey: ["auth-me"],
+    queryFn: () =>
+      resilientFetch("/api/auth/me") as unknown as Promise<{
+        memberships: { organizationId: string; role: string; status: string }[];
+      }>,
+    staleTime: 60_000,
+  });
+  const caseOrgId = c?.organizationId ?? c?.labOrganizationId ?? null;
+  const canEdit = (BILLING_ROLES as readonly string[]).includes(
+    (meQuery.data?.memberships ?? [])
+      .find((m) => m.status === "active" && m.organizationId === caseOrgId)
+      ?.role ?? "",
+  );
+
   const rxSummary = useMemo(
     () =>
       deriveRxSummary(
@@ -801,6 +843,8 @@ export default function CaseDetailScreen() {
             attachments={attachments}
             loading={attachmentsQuery.isLoading}
             onOpenImage={setLightboxUrl}
+            canEdit={canEdit}
+            onRefresh={onRefresh}
             styles={styles}
             colors={colors}
           />
@@ -810,6 +854,10 @@ export default function CaseDetailScreen() {
           <InvoiceSection
             invoice={invoice}
             loading={invoicesQuery.isLoading || invoiceQuery.isLoading}
+            canEdit={canEdit}
+            caseId={c.id}
+            invoiceId={primaryInvoiceId}
+            onRefresh={onRefresh}
             styles={styles}
             colors={colors}
           />
@@ -1257,6 +1305,8 @@ function FilesSection({
   attachments,
   loading,
   onOpenImage,
+  canEdit,
+  onRefresh,
   styles,
   colors,
 }: {
@@ -1264,10 +1314,14 @@ function FilesSection({
   attachments: { id: string; fileName?: string | null; fileType?: string | null; uploaderName?: string | null; createdAt?: string | null }[];
   loading: boolean;
   onOpenImage: (url: string) => void;
+  canEdit: boolean;
+  onRefresh: () => void;
   styles: Styles;
   colors: ThemeColors;
 }) {
   const [openingId, setOpeningId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const deleteAttachment = useDeleteCaseAttachment();
 
   async function handleOpenDoc(a: {
     id: string;
@@ -1314,6 +1368,31 @@ function FilesSection({
     }
   }
 
+  function handleDeleteAttachment(a: { id: string; fileName?: string | null }) {
+    Alert.alert(
+      "Delete attachment?",
+      `"${a.fileName || "This file"}" will be permanently removed.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            setDeletingId(a.id);
+            try {
+              await deleteAttachment.mutateAsync({ caseId, attachmentId: a.id });
+              onRefresh();
+            } catch (e) {
+              Alert.alert("Couldn't delete file", errorMessage(e));
+            } finally {
+              setDeletingId(null);
+            }
+          },
+        },
+      ],
+    );
+  }
+
   if (loading) {
     return (
       <View style={styles.center}>
@@ -1334,9 +1413,24 @@ function FilesSection({
         <View style={styles.imageGrid}>
           {images.map((a) => {
             const url = `/api/cases/${caseId}/attachments/${a.id}/file`;
+            const isDeleting = deletingId === a.id;
             return (
               <Pressable key={a.id} style={styles.thumb} onPress={() => onOpenImage(url)}>
                 <AuthedImage url={url} style={styles.thumbImage} contentFit="cover" />
+                {canEdit ? (
+                  <Pressable
+                    style={styles.thumbTrashBtn}
+                    onPress={() => handleDeleteAttachment(a)}
+                    hitSlop={4}
+                    testID={`img-delete-${a.id}`}
+                  >
+                    {isDeleting ? (
+                      <ActivityIndicator color="#fff" size="small" />
+                    ) : (
+                      <Ionicons name="trash-outline" size={14} color="#fff" />
+                    )}
+                  </Pressable>
+                ) : null}
               </Pressable>
             );
           })}
@@ -1345,6 +1439,7 @@ function FilesSection({
 
       {docs.map((a) => {
         const opening = openingId === a.id;
+        const isDeleting = deletingId === a.id;
         return (
           <Card key={a.id} onPress={() => handleOpenDoc(a)} testID={`doc-open-${a.id}`}>
             <View style={styles.docRow}>
@@ -1358,10 +1453,23 @@ function FilesSection({
                   {formatDate(a.createdAt)}
                 </Text>
               </View>
-              {opening ? (
+              {isDeleting ? (
+                <ActivityIndicator color={colors.warning} />
+              ) : opening ? (
                 <ActivityIndicator color={colors.tint} />
               ) : (
-                <Ionicons name="open-outline" size={18} color={colors.textTertiary} />
+                <View style={styles.docActions}>
+                  <Ionicons name="open-outline" size={18} color={colors.textTertiary} />
+                  {canEdit ? (
+                    <Pressable
+                      onPress={() => handleDeleteAttachment(a)}
+                      hitSlop={8}
+                      testID={`doc-delete-${a.id}`}
+                    >
+                      <Ionicons name="trash-outline" size={18} color={colors.warning} />
+                    </Pressable>
+                  ) : null}
+                </View>
               )}
             </View>
           </Card>
@@ -1371,28 +1479,255 @@ function FilesSection({
   );
 }
 
+// ─── Invoice editing helpers ──────────────────────────────────────────────────
+interface InvoiceLineItem {
+  id: string;
+  description?: string | null;
+  quantity?: number | null;
+  unitPrice?: string | number | null;
+  lineTotal?: string | number | null;
+  toothNumbers?: string | null;
+  subItems?: unknown;
+}
+
+interface EditItem {
+  id: string | null;
+  description: string;
+  quantity: string;
+  unitPrice: string;
+  toothNumber: string;
+}
+
+const BLANK_ITEM: EditItem = {
+  id: null,
+  description: "",
+  quantity: "1",
+  unitPrice: "",
+  toothNumber: "",
+};
+
+function toUpdateItemPayload(
+  li: InvoiceLineItem,
+): UpdateInvoiceInputItemsItem & { subItems?: unknown } {
+  return {
+    id: li.id,
+    description: li.description ?? "",
+    quantity: Math.round(Number(li.quantity ?? 1)),
+    unitPrice: parseFloat(String(li.unitPrice ?? "0")),
+    ...(li.subItems !== undefined ? { subItems: li.subItems } : {}),
+  };
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 function InvoiceSection({
   invoice,
   loading,
+  canEdit,
+  caseId,
+  invoiceId,
+  onRefresh,
   styles,
   colors,
 }: {
-  invoice:
-    | {
-        invoiceNumber?: string;
-        status?: string;
-        total?: string | number | null;
-        balanceDue?: string | number | null;
-        issuedAt?: string | null;
-        dueAt?: string | null;
-        items?: { id: string; description?: string | null; quantity?: number | null; unitPrice?: string | number | null; lineTotal?: string | number | null; toothNumbers?: string | null }[];
-        lineItems?: { id: string; description?: string | null; quantity?: number | null; unitPrice?: string | number | null; lineTotal?: string | number | null; toothNumbers?: string | null }[];
-      }
-    | null;
+  invoice: {
+    invoiceNumber?: string;
+    status?: string;
+    total?: string | number | null;
+    balanceDue?: string | number | null;
+    issuedAt?: string | null;
+    dueAt?: string | null;
+    items?: InvoiceLineItem[];
+    lineItems?: InvoiceLineItem[];
+  } | null;
   loading: boolean;
+  canEdit: boolean;
+  caseId: string;
+  invoiceId: string | null;
+  onRefresh: () => void;
   styles: Styles;
   colors: ThemeColors;
 }) {
+  // ── State
+  const [editHeader, setEditHeader] = useState(false);
+  const [headerForm, setHeaderForm] = useState<{
+    status: string;
+    issuedAt: string | null;
+    dueAt: string | null;
+  }>({ status: "", issuedAt: null, dueAt: null });
+  const [headerPicker, setHeaderPicker] = useState<"status" | "issuedAt" | "dueAt" | null>(null);
+
+  const [itemSheet, setItemSheet] = useState<{
+    open: boolean;
+    mode: "add" | "edit";
+    item: EditItem;
+  }>({ open: false, mode: "add", item: BLANK_ITEM });
+
+  const [paySheet, setPaySheet] = useState(false);
+  const [payForm, setPayForm] = useState<{ amount: string; method: string }>({
+    amount: "",
+    method: "check",
+  });
+  const [payMethodPicker, setPayMethodPicker] = useState(false);
+  const [paymentPending, setPaymentPending] = useState(false);
+
+  // ── Mutations
+  const generateInvoice = useGenerateInvoiceForCase();
+  const updateInvoice = useUpdateInvoice();
+  const anyPending = generateInvoice.isPending || updateInvoice.isPending;
+
+  const lines: InvoiceLineItem[] = (invoice?.items ?? invoice?.lineItems ?? []) as InvoiceLineItem[];
+
+  // ── Handlers
+  async function handleCreate() {
+    try {
+      await generateInvoice.mutateAsync({ caseId, data: {} });
+      onRefresh();
+    } catch (e) {
+      Alert.alert("Couldn't create invoice", errorMessage(e));
+    }
+  }
+
+  function openEditHeader() {
+    setHeaderForm({
+      status: invoice?.status ?? "draft",
+      issuedAt: toDateInput(invoice?.issuedAt),
+      dueAt: toDateInput(invoice?.dueAt),
+    });
+    setEditHeader(true);
+  }
+
+  async function saveHeader() {
+    if (!invoiceId) return;
+    try {
+      await updateInvoice.mutateAsync({
+        invoiceId,
+        data: {
+          status: (headerForm.status || undefined) as UpdateInvoiceInput["status"],
+          issuedAt: headerForm.issuedAt ? `${headerForm.issuedAt}T00:00:00.000Z` : undefined,
+          dueAt: headerForm.dueAt ? `${headerForm.dueAt}T00:00:00.000Z` : undefined,
+        },
+      });
+      setEditHeader(false);
+      onRefresh();
+    } catch (e) {
+      Alert.alert("Couldn't save changes", errorMessage(e));
+    }
+  }
+
+  function openAddItem() {
+    setItemSheet({ open: true, mode: "add", item: BLANK_ITEM });
+  }
+
+  function openEditItem(li: InvoiceLineItem) {
+    setItemSheet({
+      open: true,
+      mode: "edit",
+      item: {
+        id: li.id,
+        description: li.description ?? "",
+        quantity: String(Math.round(Number(li.quantity ?? 1))),
+        unitPrice: String(parseFloat(String(li.unitPrice ?? "0"))),
+        toothNumber: li.toothNumbers ?? "",
+      },
+    });
+  }
+
+  async function saveItem() {
+    if (!invoiceId) return;
+    const { item, mode } = itemSheet;
+    const desc = item.description.trim();
+    if (!desc) {
+      Alert.alert("Description required", "Enter a description for this item.");
+      return;
+    }
+    const qty = Math.max(1, Math.round(parseFloat(item.quantity) || 1));
+    const price = parseFloat(item.unitPrice) || 0;
+    const toothNum = parseInt(item.toothNumber, 10) || undefined;
+
+    let newItems: (UpdateInvoiceInputItemsItem & { subItems?: unknown })[];
+    if (mode === "add") {
+      newItems = [
+        ...lines.map(toUpdateItemPayload),
+        { description: desc, quantity: qty, unitPrice: price, toothNumber: toothNum },
+      ];
+    } else {
+      newItems = lines.map((li) => {
+        if (li.id === item.id) {
+          return {
+            ...toUpdateItemPayload(li),
+            description: desc,
+            quantity: qty,
+            unitPrice: price,
+            toothNumber: toothNum,
+          };
+        }
+        return toUpdateItemPayload(li);
+      });
+    }
+
+    try {
+      await updateInvoice.mutateAsync({
+        invoiceId,
+        data: { items: newItems as unknown as UpdateInvoiceInputItemsItem[] },
+      });
+      setItemSheet((s) => ({ ...s, open: false }));
+      onRefresh();
+    } catch (e) {
+      Alert.alert("Couldn't save item", errorMessage(e));
+    }
+  }
+
+  function confirmDeleteItem(itemId: string) {
+    Alert.alert("Remove item?", "This item will be permanently removed from the invoice.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Remove",
+        style: "destructive",
+        onPress: async () => {
+          if (!invoiceId) return;
+          const newItems = lines
+            .filter((li) => li.id !== itemId)
+            .map(toUpdateItemPayload);
+          try {
+            await updateInvoice.mutateAsync({
+              invoiceId,
+              data: { items: newItems as unknown as UpdateInvoiceInputItemsItem[] },
+            });
+            setItemSheet((s) => ({ ...s, open: false }));
+            onRefresh();
+          } catch (e) {
+            Alert.alert("Couldn't remove item", errorMessage(e));
+          }
+        },
+      },
+    ]);
+  }
+
+  async function savePayment() {
+    if (!invoiceId) return;
+    const amount = parseFloat(payForm.amount);
+    if (!amount || amount <= 0) {
+      Alert.alert("Invalid amount", "Enter a valid payment amount greater than zero.");
+      return;
+    }
+    setPaymentPending(true);
+    try {
+      await resilientFetch(`/api/invoices/${invoiceId}/payments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amount, paymentMethod: payForm.method }),
+      });
+      setPaySheet(false);
+      setPayForm({ amount: "", method: "check" });
+      onRefresh();
+    } catch (e) {
+      Alert.alert("Couldn't record payment", errorMessage(e));
+    } finally {
+      setPaymentPending(false);
+    }
+  }
+
+  // ── Render: loading
   if (loading) {
     return (
       <View style={styles.center}>
@@ -1400,22 +1735,65 @@ function InvoiceSection({
       </View>
     );
   }
+
+  // ── Render: no invoice
   if (!invoice) {
-    return <EmptyState icon="receipt-outline" text="No invoice for this case." styles={styles} colors={colors} />;
+    return (
+      <View style={styles.sectionGap}>
+        <EmptyState
+          icon="receipt-outline"
+          text="No invoice for this case."
+          styles={styles}
+          colors={colors}
+        />
+        {canEdit ? (
+          <Pressable
+            style={[styles.btnPrimary, generateInvoice.isPending && styles.btnDisabled]}
+            onPress={handleCreate}
+            disabled={generateInvoice.isPending}
+            testID="create-invoice"
+          >
+            {generateInvoice.isPending ? (
+              <ActivityIndicator color={colors.textInverse} size="small" />
+            ) : (
+              <Text style={styles.btnPrimaryText}>Create Invoice</Text>
+            )}
+          </Pressable>
+        ) : null}
+      </View>
+    );
   }
 
-  const lines = invoice.items ?? invoice.lineItems ?? [];
+  const canPay = canEdit && invoice.status !== "paid" && invoice.status !== "void";
 
   return (
     <View style={styles.sectionGap}>
+      {/* ── Invoice header card ── */}
       <Card>
-        <View style={styles.restHeaderRow}>
-          <Text style={styles.cardHeading}>
+        <View style={styles.cardHeaderRow}>
+          <Text style={[styles.cardHeading, styles.cardHeadingFlush]}>
             {invoice.invoiceNumber ? `Invoice #${invoice.invoiceNumber}` : "Invoice"}
           </Text>
-          {invoice.status ? (
-            <StatusBadge label={titleCase(invoice.status)} variant={invoiceVariant(invoice.status)} />
-          ) : null}
+          <View style={styles.invHeaderRight}>
+            {invoice.status ? (
+              <StatusBadge
+                label={titleCase(invoice.status)}
+                variant={invoiceVariant(invoice.status)}
+              />
+            ) : null}
+            {canEdit ? (
+              <Pressable
+                style={styles.editBtn}
+                onPress={openEditHeader}
+                disabled={anyPending}
+                hitSlop={8}
+                testID="invoice-edit-header"
+              >
+                <Ionicons name="create-outline" size={16} color={colors.tint} />
+                <Text style={styles.editBtnText}>Edit</Text>
+              </Pressable>
+            ) : null}
+          </View>
         </View>
         <FieldRow label="Issued" value={formatDate(invoice.issuedAt)} styles={styles} />
         <FieldRow label="Due" value={formatDate(invoice.dueAt)} styles={styles} />
@@ -1423,25 +1801,318 @@ function InvoiceSection({
         <FieldRow label="Balance" value={money(invoice.balanceDue)} styles={styles} />
       </Card>
 
-      {lines.length > 0 ? (
-        <Card>
-          <Text style={styles.cardHeading}>Line items</Text>
-          {lines.map((li) => (
-            <View key={li.id} style={styles.lineItem}>
+      {/* ── Line items card ── */}
+      <Card>
+        <View style={styles.cardHeaderRow}>
+          <Text style={[styles.cardHeading, styles.cardHeadingFlush]}>Line items</Text>
+          {canEdit ? (
+            <Pressable
+              style={styles.editBtn}
+              onPress={openAddItem}
+              disabled={anyPending}
+              hitSlop={8}
+              testID="add-invoice-item"
+            >
+              <Ionicons name="add" size={16} color={colors.tint} />
+              <Text style={styles.editBtnText}>Add</Text>
+            </Pressable>
+          ) : null}
+        </View>
+        {lines.length === 0 ? (
+          <Text style={styles.noteEmptyHint}>No line items yet.</Text>
+        ) : (
+          lines.map((li) => (
+            <Pressable
+              key={li.id}
+              style={styles.lineItem}
+              onPress={canEdit ? () => openEditItem(li) : undefined}
+              testID={`invoice-item-${li.id}`}
+            >
               <View style={styles.lineItemMain}>
                 <Text style={styles.lineDesc} numberOfLines={2}>
                   {li.description || "Item"}
                   {li.toothNumbers ? `  ·  #${li.toothNumbers}` : ""}
                 </Text>
                 <Text style={styles.lineSub}>
-                  {(li.quantity ?? 1)} × {money(li.unitPrice)}
+                  {li.quantity ?? 1} × {money(li.unitPrice)}
+                  {canEdit ? "  ·  tap to edit" : ""}
                 </Text>
               </View>
               <Text style={styles.lineTotal}>{money(li.lineTotal)}</Text>
-            </View>
-          ))}
-        </Card>
+            </Pressable>
+          ))
+        )}
+      </Card>
+
+      {/* ── Record payment button ── */}
+      {canPay ? (
+        <Pressable
+          style={[styles.btnPrimary, (anyPending || paymentPending) && styles.btnDisabled]}
+          onPress={() => {
+            setPayForm({ amount: "", method: "check" });
+            setPaySheet(true);
+          }}
+          disabled={anyPending || paymentPending}
+          testID="record-payment"
+        >
+          <Text style={styles.btnPrimaryText}>Record payment</Text>
+        </Pressable>
       ) : null}
+
+      {/* ════ Edit header sheet ════ */}
+      <Modal
+        visible={editHeader}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setEditHeader(false)}
+      >
+        <Pressable style={styles.sheetBackdrop} onPress={() => setEditHeader(false)}>
+          <Pressable style={styles.sheet} onPress={() => undefined}>
+            <Text style={styles.sheetTitle}>Edit Invoice</Text>
+            <SelectRow
+              label="Status"
+              valueLabel={labelFor(INVOICE_STATUS_OPTIONS, headerForm.status)}
+              onPress={() => setHeaderPicker("status")}
+              styles={styles}
+              colors={colors}
+              testID="invoice-status-select"
+            />
+            <SelectRow
+              label="Issued date"
+              valueLabel={formatDateInput(headerForm.issuedAt) || "Not set"}
+              icon="calendar-outline"
+              onPress={() => setHeaderPicker("issuedAt")}
+              styles={styles}
+              colors={colors}
+              testID="invoice-issued-select"
+            />
+            <SelectRow
+              label="Due date"
+              valueLabel={formatDateInput(headerForm.dueAt) || "Not set"}
+              icon="calendar-outline"
+              onPress={() => setHeaderPicker("dueAt")}
+              styles={styles}
+              colors={colors}
+              testID="invoice-due-select"
+            />
+            <View style={styles.editActions}>
+              <Pressable
+                style={styles.btnSecondary}
+                onPress={() => setEditHeader(false)}
+                disabled={updateInvoice.isPending}
+              >
+                <Text style={styles.btnSecondaryText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.btnPrimary, updateInvoice.isPending && styles.btnDisabled]}
+                onPress={saveHeader}
+                disabled={updateInvoice.isPending}
+                testID="invoice-header-save"
+              >
+                {updateInvoice.isPending ? (
+                  <ActivityIndicator color={colors.textInverse} size="small" />
+                ) : (
+                  <Text style={styles.btnPrimaryText}>Save</Text>
+                )}
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <OptionPickerModal
+        visible={headerPicker === "status"}
+        title="Invoice status"
+        options={INVOICE_STATUS_OPTIONS}
+        selected={headerForm.status}
+        onSelect={(v) => { setHeaderForm((f) => ({ ...f, status: v })); setHeaderPicker(null); }}
+        onClose={() => setHeaderPicker(null)}
+        styles={styles}
+        colors={colors}
+      />
+      <DatePickerModal
+        visible={headerPicker === "issuedAt"}
+        title="Issued date"
+        value={headerForm.issuedAt}
+        onSelect={(v) => { setHeaderForm((f) => ({ ...f, issuedAt: v })); setHeaderPicker(null); }}
+        onClear={() => { setHeaderForm((f) => ({ ...f, issuedAt: null })); setHeaderPicker(null); }}
+        onClose={() => setHeaderPicker(null)}
+        styles={styles}
+        colors={colors}
+      />
+      <DatePickerModal
+        visible={headerPicker === "dueAt"}
+        title="Due date"
+        value={headerForm.dueAt}
+        onSelect={(v) => { setHeaderForm((f) => ({ ...f, dueAt: v })); setHeaderPicker(null); }}
+        onClear={() => { setHeaderForm((f) => ({ ...f, dueAt: null })); setHeaderPicker(null); }}
+        onClose={() => setHeaderPicker(null)}
+        styles={styles}
+        colors={colors}
+      />
+
+      {/* ════ Item sheet ════ */}
+      <Modal
+        visible={itemSheet.open}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setItemSheet((s) => ({ ...s, open: false }))}
+      >
+        <Pressable
+          style={styles.sheetBackdrop}
+          onPress={() => setItemSheet((s) => ({ ...s, open: false }))}
+        >
+          <Pressable style={styles.sheet} onPress={() => undefined}>
+            <Text style={styles.sheetTitle}>
+              {itemSheet.mode === "add" ? "Add Item" : "Edit Item"}
+            </Text>
+            <EditTextRow
+              label="Description"
+              value={itemSheet.item.description}
+              onChangeText={(t) =>
+                setItemSheet((s) => ({ ...s, item: { ...s.item, description: t } }))
+              }
+              styles={styles}
+              colors={colors}
+              autoCapitalize="sentences"
+            />
+            <EditTextRow
+              label="Quantity"
+              value={itemSheet.item.quantity}
+              onChangeText={(t) =>
+                setItemSheet((s) => ({ ...s, item: { ...s.item, quantity: t } }))
+              }
+              styles={styles}
+              colors={colors}
+              autoCapitalize="none"
+            />
+            <EditTextRow
+              label="Unit price ($)"
+              value={itemSheet.item.unitPrice}
+              onChangeText={(t) =>
+                setItemSheet((s) => ({ ...s, item: { ...s.item, unitPrice: t } }))
+              }
+              styles={styles}
+              colors={colors}
+              autoCapitalize="none"
+            />
+            <EditTextRow
+              label="Tooth # (optional)"
+              value={itemSheet.item.toothNumber}
+              onChangeText={(t) =>
+                setItemSheet((s) => ({ ...s, item: { ...s.item, toothNumber: t } }))
+              }
+              styles={styles}
+              colors={colors}
+              autoCapitalize="none"
+            />
+            <View style={styles.editActions}>
+              {itemSheet.mode === "edit" && itemSheet.item.id ? (
+                <Pressable
+                  style={[styles.btnSecondary, styles.btnDanger]}
+                  onPress={() => {
+                    if (itemSheet.item.id) confirmDeleteItem(itemSheet.item.id);
+                  }}
+                  disabled={updateInvoice.isPending}
+                  testID="delete-invoice-item"
+                >
+                  <Text style={[styles.btnSecondaryText, styles.btnDangerText]}>Remove</Text>
+                </Pressable>
+              ) : (
+                <Pressable
+                  style={styles.btnSecondary}
+                  onPress={() => setItemSheet((s) => ({ ...s, open: false }))}
+                  disabled={updateInvoice.isPending}
+                >
+                  <Text style={styles.btnSecondaryText}>Cancel</Text>
+                </Pressable>
+              )}
+              <Pressable
+                style={[styles.btnPrimary, updateInvoice.isPending && styles.btnDisabled]}
+                onPress={saveItem}
+                disabled={updateInvoice.isPending}
+                testID="save-invoice-item"
+              >
+                {updateInvoice.isPending ? (
+                  <ActivityIndicator color={colors.textInverse} size="small" />
+                ) : (
+                  <Text style={styles.btnPrimaryText}>Save</Text>
+                )}
+              </Pressable>
+            </View>
+            {itemSheet.mode === "edit" ? (
+              <Pressable
+                style={styles.sheetCancel}
+                onPress={() => setItemSheet((s) => ({ ...s, open: false }))}
+              >
+                <Text style={styles.sheetCancelText}>Cancel</Text>
+              </Pressable>
+            ) : null}
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* ════ Payment sheet ════ */}
+      <Modal
+        visible={paySheet}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPaySheet(false)}
+      >
+        <Pressable style={styles.sheetBackdrop} onPress={() => setPaySheet(false)}>
+          <Pressable style={styles.sheet} onPress={() => undefined}>
+            <Text style={styles.sheetTitle}>Record Payment</Text>
+            <EditTextRow
+              label="Amount ($)"
+              value={payForm.amount}
+              onChangeText={(t) => setPayForm((f) => ({ ...f, amount: t }))}
+              styles={styles}
+              colors={colors}
+              autoCapitalize="none"
+            />
+            <SelectRow
+              label="Method"
+              valueLabel={labelFor(PAYMENT_METHOD_OPTIONS, payForm.method)}
+              onPress={() => setPayMethodPicker(true)}
+              styles={styles}
+              colors={colors}
+              testID="payment-method-select"
+            />
+            <View style={styles.editActions}>
+              <Pressable
+                style={styles.btnSecondary}
+                onPress={() => setPaySheet(false)}
+                disabled={paymentPending}
+              >
+                <Text style={styles.btnSecondaryText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.btnPrimary, paymentPending && styles.btnDisabled]}
+                onPress={savePayment}
+                disabled={paymentPending}
+                testID="save-payment"
+              >
+                {paymentPending ? (
+                  <ActivityIndicator color={colors.textInverse} size="small" />
+                ) : (
+                  <Text style={styles.btnPrimaryText}>Save</Text>
+                )}
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <OptionPickerModal
+        visible={payMethodPicker}
+        title="Payment method"
+        options={PAYMENT_METHOD_OPTIONS}
+        selected={payForm.method}
+        onSelect={(v) => { setPayForm((f) => ({ ...f, method: v })); setPayMethodPicker(false); }}
+        onClose={() => setPayMethodPicker(false)}
+        styles={styles}
+        colors={colors}
+      />
     </View>
   );
 }
@@ -1744,5 +2415,20 @@ function makeStyles(c: ThemeColors) {
     lightbox: { flex: 1, backgroundColor: "rgba(0,0,0,0.92)", alignItems: "center", justifyContent: "center" },
     lightboxImage: { width: "100%", height: "80%" },
     lightboxClose: { position: "absolute", right: Spacing.lg },
+    thumbTrashBtn: {
+      position: "absolute",
+      top: 4,
+      right: 4,
+      width: 26,
+      height: 26,
+      borderRadius: 13,
+      backgroundColor: "rgba(0,0,0,0.55)",
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    docActions: { flexDirection: "row", alignItems: "center", gap: Spacing.sm },
+    invHeaderRight: { flexDirection: "row", alignItems: "center", gap: Spacing.sm },
+    btnDanger: { borderColor: c.warning },
+    btnDangerText: { color: c.warning },
   });
 }
