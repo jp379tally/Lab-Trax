@@ -363,7 +363,49 @@ maybe("Invoices (db integration)", () => {
     expect(r.body.data?.id).toBe(canonicalId);
   });
 
-  it("GET /api/invoices/mobile:<localId> returns 409 when no canonical invoice exists yet", async () => {
+  it("GET /api/invoices/mobile:<localId> returns 403 when caller lacks billing role", async () => {
+    const { db, labCases, users: usersTable, organizationMemberships } = dbMod as any;
+
+    // Create a viewer-role member (not in BILLING_ROLES).
+    const viewerId = rid("viewer");
+    await db.insert(usersTable).values({ id: viewerId, username: `invviewer_${viewerId}`, password: "x" });
+    await db.insert(organizationMemberships).values({
+      id: rid("m"),
+      labId: labOrgId,
+      userId: viewerId,
+      role: "viewer",
+      status: "active",
+      approvedByUserId: labOwnerId,
+      joinedAt: new Date(),
+    });
+
+    const { access } = await makeSession(viewerId);
+    const localInvoiceId = `${Date.now()}viewertest`;
+    const caseId = rid("case");
+    await db.insert(labCases).values({
+      id: caseId,
+      ownerId: labOwnerId,
+      organizationId: labOrgId,
+      caseData: JSON.stringify({
+        caseNumber: "9999",
+        invoiceId: localInvoiceId,
+        patientName: "Viewer Patient",
+        price: 50,
+      }),
+    });
+
+    const r = await request(appMod.default)
+      .get(`/api/invoices/${encodeURIComponent(`mobile:${localInvoiceId}`)}`)
+      .set("Authorization", `Bearer ${access}`);
+
+    expect(r.status).toBe(403);
+
+    // Cleanup viewer
+    await db.delete(organizationMemberships).where(eq(organizationMemberships.userId, viewerId));
+    await db.delete(usersTable).where(eq(usersTable.id, viewerId));
+  });
+
+  it("GET /api/invoices/mobile:<localId> auto-generates canonical invoice when none exists yet", async () => {
     const { db, labCases } = dbMod as any;
     const { access } = await makeSession(labOwnerId);
 
@@ -377,6 +419,7 @@ maybe("Invoices (db integration)", () => {
         caseNumber: "5678",
         invoiceId: localInvoiceId,
         patientName: "No Canonical Patient",
+        caseType: "Crown",
         price: 100,
       }),
     });
@@ -385,8 +428,24 @@ maybe("Invoices (db integration)", () => {
       .get(`/api/invoices/${encodeURIComponent(`mobile:${localInvoiceId}`)}`)
       .set("Authorization", `Bearer ${access}`);
 
-    expect(r.status).toBe(409);
-    expect(String(r.body.error ?? r.body.message ?? "")).toMatch(/older version/i);
+    // Should auto-generate and return 200 with the new invoice.
+    expect(r.status).toBe(200);
+    const inv = r.body.data ?? r.body;
+    expect(inv.invoiceNumber).toBe("INV-5678");
+    expect(inv.labOrganizationId).toBe(labOrgId);
+    // Blob price was 100 — should produce one line item and set invoice to open.
+    expect(inv.status).toBe("open");
+    // The GET endpoint returns nested items in the response body.
+    expect(Array.isArray(inv.items)).toBe(true);
+    expect(inv.items).toHaveLength(1);
+    expect(Number(inv.items[0].unitPrice)).toBeCloseTo(100, 2);
+
+    // Calling again should be idempotent — same invoice returned.
+    const r2 = await request(appMod.default)
+      .get(`/api/invoices/${encodeURIComponent(`mobile:${localInvoiceId}`)}`)
+      .set("Authorization", `Bearer ${access}`);
+    expect(r2.status).toBe(200);
+    expect((r2.body.data ?? r2.body).id).toBe(inv.id);
   });
 
   it("GET /api/invoices/mobile:<unknownId> returns 404 when no matching case exists", async () => {

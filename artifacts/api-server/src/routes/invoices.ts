@@ -2149,13 +2149,107 @@ async function resolveMobileInvoiceId(
       )
     ),
   });
-  if (!canonical)
-    throw new HttpError(
-      409,
-      "This invoice was created in an older version of the app and isn't editable yet. Open the case to generate an editable invoice."
-    );
+  if (canonical) return canonical.id;
 
-  return canonical.id;
+  // No canonical invoice yet — auto-generate one on the fly so the user lands
+  // straight in the editor instead of hitting a dead-end message. Mirrors the
+  // legacy mobile case path in POST /cases/:caseId/generate-invoice.
+  if (!matched.orgId)
+    throw new HttpError(422, "Legacy case has no associated lab organization.");
+
+  // Enforce the same billing-role gate as the generate-invoice endpoint:
+  // only billing-role members may create financial records.
+  await requireAnyRole(callerId, matched.orgId, BILLING_ROLES);
+
+  const lcRow = await db.query.labCases.findFirst({
+    where: and(eq(labCases.id, matched.labCaseId), isNull(labCases.deletedAt)),
+  });
+  if (!lcRow)
+    throw new HttpError(404, "Invoice not found.");
+
+  let parsedBlob: any;
+  try {
+    parsedBlob =
+      typeof lcRow.caseData === "string"
+        ? JSON.parse(lcRow.caseData)
+        : (lcRow.caseData ?? {});
+  } catch {
+    throw new HttpError(422, "Legacy case data is malformed.");
+  }
+
+  const legacyCaseNumber = matched.caseNumber || String(matched.labCaseId);
+  const displayMetadataJson = {
+    patientName: String(parsedBlob.patientName ?? ""),
+    billTo: String(parsedBlob.doctorName ?? ""),
+    teeth: String(parsedBlob.toothIndices ?? ""),
+    shade: String(parsedBlob.shade ?? ""),
+    caseNotes: "",
+  };
+
+  const [newInvoice] = await db
+    .insert(invoices)
+    .values({
+      invoiceNumber: nextInvoiceNumber(legacyCaseNumber),
+      caseId: null,
+      labOrganizationId: matched.orgId,
+      providerOrganizationId: null,
+      status: "draft",
+      displayMetadataJson,
+      createdByUserId: callerId,
+      updatedByUserId: callerId,
+    })
+    .onConflictDoNothing({ target: [invoices.labOrganizationId, invoices.invoiceNumber] })
+    .returning();
+
+  const targetInvoice =
+    newInvoice ??
+    (await db.query.invoices.findFirst({
+      where: and(
+        eq(invoices.labOrganizationId, matched.orgId),
+        eq(invoices.invoiceNumber, nextInvoiceNumber(legacyCaseNumber)),
+      ),
+    }));
+  if (!targetInvoice)
+    throw new HttpError(500, "Invoice could not be generated.");
+
+  // Synthesize a line item from the mobile blob's price only when the invoice
+  // was freshly created (newInvoice truthy). When onConflictDoNothing fired,
+  // a concurrent request already handled line-item synthesis — skip to avoid
+  // duplicate rows and inconsistent totals.
+  if (newInvoice) {
+    const blobPrice = Number(parsedBlob.price ?? 0);
+    if (Number.isFinite(blobPrice) && blobPrice > 0) {
+      const desc = parsedBlob.caseType
+        ? String(parsedBlob.caseType)
+        : parsedBlob.patientName
+          ? `Case for ${parsedBlob.patientName}`
+          : "Dental restoration";
+      const lineTotalStr = calculateLineTotal(1, String(blobPrice));
+      await db.insert(invoiceLineItems).values({
+        invoiceId: targetInvoice.id,
+        toothNumber: null,
+        description: desc,
+        quantity: 1,
+        unitPrice: String(blobPrice),
+        lineTotal: lineTotalStr,
+        sortOrder: 0,
+      });
+      await db
+        .update(invoices)
+        .set({
+          subtotal: lineTotalStr,
+          total: lineTotalStr,
+          balanceDue: lineTotalStr,
+          issuedAt: new Date(),
+          status: "open",
+          dueAt: invoiceDueDate(new Date()),
+          updatedByUserId: callerId,
+        })
+        .where(eq(invoices.id, targetInvoice.id));
+    }
+  }
+
+  return targetInvoice.id;
 }
 
 router.get(
