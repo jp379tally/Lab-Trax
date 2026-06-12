@@ -1,0 +1,177 @@
+Mobile rebuild clarification: desktop parity means UI/workflow parity, not just shared data.
+
+The mobile app is still missing major desktop/web UI and workflow behavior. The goal is not merely to show the same data. The goal is for the mobile app to function like the desktop app, adapted to a mobile layout.
+
+## Required correction
+
+Before adding new case creation, AI Reader, uploads, or intake, rebuild the mobile interface and workflows to match the desktop/web application.
+
+The desktop app is the source of truth for:
+
+* navigation
+* dashboard/HUD concepts
+* case detail layout
+* locate case workflow
+* case history behavior
+* invoice editing workflow
+* documents/files behavior
+* reports/lists/accounts/financial/pricing access
+* status/location/station terminology
+
+## Navigation / HUD parity
+
+The desktop version has major navigation areas:
+
+* Dashboard
+* Cases
+* Accounts
+* Financial
+* Pricing
+* Lists
+* Reports
+
+The mobile app does not need to place these on the left side like desktop, but these sections must exist somewhere appropriate for mobile, such as:
+
+* bottom tabs
+* drawer menu
+* more menu
+* account/menu tab
+
+Do not leave the mobile app with only a stripped-down Cases/Profile interface if the desktop app has broader operational areas.
+
+Create a mobile navigation plan that maps every desktop navigation section to a mobile location.
+
+## Case overview / locate case workflow
+
+The mobile Overview section currently shows an “Update Status” area with buttons like:
+
+* Mark Scan
+* Mark Complete
+
+This is not desktop parity.
+
+Replace this with the desktop-style “Locate Case” workflow.
+
+The mobile app should have a “Locate Case” section with a dropdown/select list matching the desktop locations/stations, including values such as:
+
+* Receive
+* InDesign
+* Scan
+* Milling
+* Post-Mill
+* and all other desktop location/station options
+
+The selected location/station must write to the same canonical field/API that desktop uses.
+
+Acceptance:
+
+* Locate case on mobile.
+* Refresh desktop.
+* Desktop shows the same location/station.
+* Locate case on desktop.
+* Refresh mobile.
+* Mobile shows the same location/station.
+* Labels must match desktop terminology exactly, for example “InDesign” should not appear as “Design” if desktop says “InDesign.”
+
+## Case history parity
+
+Mobile case history currently shows the same data, but it does not behave like desktop.
+
+Desktop history includes interactive links/thumbnails for related records, such as attachments added to the case.
+
+Mobile history must match this behavior:
+
+* If a history event references an attachment, show a tappable link/thumbnail.
+* Tapping the link opens the attachment/document/photo.
+* Do not merely show plain text like “attachment added” when desktop shows an interactive link.
+* History event labels and formatting should follow desktop behavior as closely as possible.
+
+Acceptance:
+
+* Add/view an attachment event on desktop.
+* Open history on mobile.
+* Mobile shows a tappable link/thumbnail.
+* Tapping it opens the same attachment.
+
+## Invoice workflow parity
+
+Mobile currently allows a direct “add line item” behavior that does not match desktop.
+
+Desktop behavior:
+
+* Invoice section has an “Open in editor” / “Open invoice in editor” action.
+* The invoice editor allows editing:
+
+  * invoice number
+  * invoice status
+  * tooth number
+  * shade
+  * line items
+  * quantities
+  * prices
+  * other invoice fields desktop supports
+
+Mobile must follow the same workflow:
+
+* In the case Invoice section, show “Open in editor.”
+* Opening it should present a mobile invoice editor derived from the desktop invoice editor.
+* Do not expose mobile-only shortcut workflows that desktop does not have.
+* Do not allow simplified invoice edits if desktop uses a dedicated editor workflow.
+
+Acceptance:
+
+* Open invoice from mobile case detail.
+* Mobile shows an invoice editor workflow equivalent to desktop.
+* Edit invoice number/status/line items/tooth/shade where desktop allows.
+* Save.
+* Refresh desktop.
+* Desktop shows identical invoice data.
+
+## Files/documents parity
+
+Mobile must support desktop-like interaction with documents and thumbnails:
+
+* tap thumbnails
+* open images
+* open PDFs
+* open documents
+* show full-screen preview
+* support links from history events into attachments
+
+This should be read/view interaction first. Uploads can remain a later phase unless explicitly approved.
+
+## Required next task
+
+Create a new task:
+
+“Mobile UI and Workflow Parity With Desktop”
+
+This task should audit and implement parity for:
+
+1. Mobile navigation/HUD mapped from desktop sections.
+2. Case overview locate-case workflow replacing mobile-only “Update Status” buttons.
+3. Case history interactive links/thumbnails matching desktop.
+4. Invoice section using desktop-style “Open in editor” workflow.
+5. Files/documents thumbnail and preview behavior.
+6. Terminology parity for status/location/station names.
+7. Test coverage proving mobile and desktop use the same data and same workflow.
+
+Do not continue with new case creation, AI Reader, file upload, contacts, or broad new tabs until these desktop-parity gaps are resolved or explicitly scheduled.
+
+## TestFlight acceptance
+
+Use a real case such as Erik Steffen and verify:
+
+* Mobile navigation exposes the same major operational areas as desktop.
+* Locate Case dropdown uses the same options/labels as desktop.
+* Changing location on mobile updates desktop.
+* Changing location on desktop updates mobile.
+* History event with attachment shows tappable mobile link/thumbnail.
+* Invoice section has “Open in editor.”
+* Invoice editor can edit the same fields desktop allows.
+* Files/photos/documents open from mobile.
+* No mobile-only workflow remains where desktop has a different workflow.
+
+Checkpoint:
+
+“Mobile Desktop UI Workflow Parity”
