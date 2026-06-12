@@ -1,4 +1,26 @@
 /**
+ * ⏸️  PARKED / DEFERRED — THIS FILE IS NOT RUN AND NOT TYPECHECKED.
+ *
+ * It lives in `artifacts/api-server/test-plans/phase3-ai-reader/` (outside
+ * `src/`) on purpose: the api-server vitest config only runs `src/**\/*.test.ts`
+ * and tsconfig only compiles `src`, so nothing here executes or typechecks. It
+ * is preserved as the AI Reader end-to-end test plan for the dedicated AI Reader
+ * phase that follows Phase 2 (Mobile Case Detail Desktop Parity).
+ *
+ * Why parked: link (b) below imports `mapRxResponseToFormFields` from the mobile
+ * scan lib (`artifacts/labtrax/lib/scan/rx-to-form`), which was deleted in the
+ * Phase 1 mobile reset. AI Reader / Scan is intentionally deferred — do NOT
+ * reintroduce the deleted mobile module just to make this run.
+ *
+ * Server-side links remain protected today by:
+ *   - artifacts/api-server/src/routes/analyze-prescription.test.ts  (links a, c)
+ *   - artifacts/api-server/src/routes/cases-ai-reader.test.ts       (link d)
+ *
+ * To revive in the AI Reader phase: restore the mobile scan lib (or relocate the
+ * mapping into a shared lib), fix the import below, and move this file back under
+ * `src/routes/`.
+ */
+/**
  * End-to-end regression suite for the AI Reader workflow.
  *
  * Exercises the full chain in one place so any break at any link is caught:

@@ -40,7 +40,7 @@ Some desktop write actions hit **server routes that are not in the OpenAPI spec*
 
 Already typed/available (no contract work): `useGetCase`/`useCase`, `useUpdateCase`, `useCaseAttachments`, `useInvoice`/`useInvoices`, `useUpdateInvoice`, `useGenerateInvoiceForCase`, `useReceiveInvoicePayments`, `useNotifyCaseNote`, `useEmailInvoice`, `useSmsInvoice`.
 
-**Decision needed (D1):** `expectedDeliveryDate` and `bridgeConnectors` are edited on desktop but are **not** part of canonical `UpdateCaseInput`. Either (a) add them to the spec so mobile can edit them canonically, or (b) leave them desktop-only for now. Default proposal: **(a)** add `bridgeConnectors` (needed for the interactive tooth chart) and `expectedDeliveryDate` to `UpdateCaseInput`.
+**Decision LOCKED (D1 → a):** Add `bridgeConnectors` and `expectedDeliveryDate` to canonical `UpdateCaseInput` — desktop edits both and mobile needs them for true case-detail parity. **M0** adds them to the OpenAPI spec + regenerates so mobile edits them canonically (no mobile-only divergence).
 
 ---
 
@@ -53,7 +53,7 @@ Already typed/available (no contract work): `useGetCase`/`useCase`, `useUpdateCa
 | 4. Edit notes | M1 | `POST /cases/:id/notes`, `POST .../notify` | 1 new | Low |
 | 3. Files/photos/PDFs/docs (view+open+upload) | M2 | `GET/POST/DELETE /cases/:id/attachments`, `.../file` | 2 new | Med (upload/proxy) |
 | 1. Interactive tooth chart / restorations | M3 | `POST/PATCH/DELETE /cases/:id/restorations`, pricing | 4 new | Med-High |
-| 5. Invoice interaction/editing | M4 | `GET/PATCH /invoices/:id`, generate, receive-payments | existing | Med (billing) |
+| 5. Invoice interaction/editing | M4 | `GET/PATCH /invoices/:id`, generate *(payments/email/SMS deferred per D2)* | existing | Med (billing) |
 | 6. Lab slip view/print | M5 | `GET /cases/:id` (client-rendered via expo-print) | none | Low-Med |
 | 7. Case label print | M5 | `GET /cases/:id` (client-rendered via expo-print) | none | Low |
 
@@ -73,7 +73,7 @@ Each feature lists: **Desktop source → Mobile plan → Canonical API/hook → 
 ### Feature 2 — Edit overview fields *(M1)*
 - **Desktop source:** `CaseDrawer` `startEdit`/`Field` in `src/pages/cases.tsx` (patient first/last, doctor with datalist, due date, priority).
 - **Mobile plan:** Overview tab gains an Edit toggle → inline form (text inputs, doctor suggestions from existing data, date picker, priority segmented control). Save → `useUpdateCase`; cancel discards. No staged/local persistence.
-- **Canonical API/hook:** `useUpdateCase` → `PATCH /cases/:id`. Editable fields = canonical `UpdateCaseInput`: `patientFirstName`, `patientLastName`, `doctorName`, `dueDate`, `priority` (and `expectedDeliveryDate` only if D1(a)).
+- **Canonical API/hook:** `useUpdateCase` → `PATCH /cases/:id`. Editable fields = canonical `UpdateCaseInput`: `patientFirstName`, `patientLastName`, `doctorName`, `dueDate`, `priority`, `expectedDeliveryDate` (added in M0 per D1).
 - **Tests:** mutation hook test; form validation (required name, valid date); hydration test extension.
 - **TestFlight acceptance:** Edit patient name + due date + priority → save → reload → persisted; desktop reflects the change.
 
@@ -94,10 +94,10 @@ Each feature lists: **Desktop source → Mobile plan → Canonical API/hook → 
 ### Feature 5 — Invoice interaction / editing *(M4)*
 - **Desktop source:** `InvoiceEditor` in `src/pages/invoices.tsx` — generate from restorations, edit line items (desc/qty/price/tax/discount), receive payments.
 - **Mobile plan:** Invoice tab: if none, "Generate invoice"; if present, view line items + edit (mobile line-item editor) and save; receive payment (scope-gated). Invoice PDF for view/email/SMS is client-rendered (see Feature 6 approach) → `pdfBase64`.
-- **Canonical API/hook:** `useInvoice`/`useGetInvoice` (`GET /invoices/:id`), `useGenerateInvoiceForCase` (`POST /invoices/cases/:id/generate-invoice`), `useUpdateInvoice` (`PATCH /invoices/:id`), `useReceiveInvoicePayments`, `useEmailInvoice`/`useSmsInvoice`. Org-scoped; payment/edit gated to `BILLING_ROLES` server-side.
+- **Canonical API/hook (Phase 2 scope):** `useInvoice`/`useGetInvoice` (`GET /invoices/:id`), `useGenerateInvoiceForCase` (`POST /invoices/cases/:id/generate-invoice`), `useUpdateInvoice` (`PATCH /invoices/:id`). Org-scoped; edit gated to `BILLING_ROLES` server-side. *(Deferred per D2 — NOT wired in Phase 2: `useReceiveInvoicePayments`, `useEmailInvoice`, `useSmsInvoice`; they return in a later invoice/payment phase.)*
 - **Tests:** invoice update hook + line-item totals; role-gating (non-billing user blocked); generate-from-case path.
-- **TestFlight acceptance:** Generate an invoice from a case, edit a line-item price, save → persists + desktop matches; (if in D2 scope) receive a payment updates balance.
-- **Decision needed (D2):** Invoice scope for Phase 2 — full parity (edit line items **+ receive payments + email/SMS**) or **view + line-item edit only** (defer payments)? Default proposal: **view + line-item edit + generate**, defer receive-payments/email to a later pass to keep billing risk contained.
+- **TestFlight acceptance:** Generate an invoice from a case, edit a line-item price, save → persists + desktop matches. *(Receive-payments/email/SMS deferred per D2 — not in this build.)*
+- **Decision LOCKED (D2):** Phase 2 invoice scope = **view + line-item edit + generate only**. **Receive-payments, email, and SMS are deferred** to a later invoice/payment phase to keep billing risk contained.
 
 ### Feature 6 — Lab slip view / edit / print *(M5)*
 - **Desktop source:** **client-side** print — `src/lib/print.ts` (`printCaseOverview`) + `src/styles/print.css`, rendered via hidden iframe + `window.print()`. **There is no server lab-slip PDF endpoint.**
@@ -131,7 +131,7 @@ Dependencies are explicit; within a milestone, work is parallelizable.
 | **M4 — Invoice** | Feature 5 | M0 (+D2) | Build N+3 |
 | **M5 — Lab slip + label print** | Features 6, 7 | M1, M3 (so printed data reflects edits) | Build N+4 |
 
-Each TestFlight build is **explicitly approved before it runs**, auto-bumps the build number, and is preceded by full dev-client verification. Builds can be combined (e.g. M1+M2 in one build) if you want fewer paid builds — your call per milestone.
+**Build policy (D3 LOCKED):** Spend an EAS/TestFlight build **only on milestones that change user-visible mobile behavior**, and only with your explicit approval per build. **Contract-/spec-only milestones (e.g. M0) never trigger a paid build.** Each approved build auto-bumps the build number and is preceded by full dev-client verification. Builds may still be combined (e.g. M1+M2) to save credits — your call per milestone.
 
 ---
 
@@ -145,11 +145,11 @@ Each TestFlight build is **explicitly approved before it runs**, auto-bumps the 
 
 ---
 
-## 7. Risks & Open Decisions (need your input)
+## 7. Risks & Locked Decisions
 
-- **D1 — Tooth chart fields:** add `bridgeConnectors` (required for interactive chart) and `expectedDeliveryDate` to canonical `UpdateCaseInput`? *(Default: yes.)*
-- **D2 — Invoice scope:** full parity incl. receive-payments + email/SMS, or view + line-item edit + generate first, deferring payments? *(Default: defer payments.)*
-- **D3 — Build batching:** one TestFlight build per milestone (5 builds) or combine milestones to spend fewer credits? *(Default: per milestone, you approve each.)*
+- **D1 — Tooth chart fields → LOCKED (yes):** add `bridgeConnectors` and `expectedDeliveryDate` to canonical `UpdateCaseInput` (M0 spec + codegen).
+- **D2 — Invoice scope → LOCKED:** view + line-item edit + generate only; defer receive-payments / email / SMS to a later invoice/payment phase.
+- **D3 — Build batching → LOCKED:** a TestFlight build only when a milestone changes user-visible mobile behavior, each explicitly approved; never for contract-/spec-only milestones.
 - **Media upload risk:** large STL/3D files vs the ~20 MB proxy limit — chunked upload path must be used (already understood from Phase 0/1 memory).
 - **Mobile-only sensitive-key residual** (`@drivesync_*` AsyncStorage fallback) is tracked as a **separate** follow-up, **not** part of Phase 2.
 
@@ -166,4 +166,4 @@ Each TestFlight build is **explicitly approved before it runs**, auto-bumps the 
 
 ## 9. What Happens Next
 
-**Awaiting approval.** On approval (and answers to D1–D3), implementation starts at **M0 (contract + foundation)** — no EAS build — followed by milestone-by-milestone delivery, each gated on your explicit TestFlight build approval. **No Phase 2 code will be written until you approve.**
+**Plan direction approved; decisions D1–D3 locked (see §7).** Implementation starts at **M0 (contract + foundation)** — no EAS build — followed by milestone-by-milestone delivery, each gated on your explicit TestFlight build approval (and only for milestones that change user-visible behavior). **M0 is presented for your approval before any Phase 2 code is written.**
