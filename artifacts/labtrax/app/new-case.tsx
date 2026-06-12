@@ -27,6 +27,7 @@ import { useMe, editableLabMemberships, type MeMembership } from "@/lib/auth-me"
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
+import { DateField } from "@/components/DateField";
 
 interface RestorationDraft {
   key: string;
@@ -51,8 +52,6 @@ function errorMessage(e: unknown): string {
   if (typeof e === "string") return e;
   return "Something went wrong. Please try again.";
 }
-
-const DUE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export default function NewCaseScreen() {
   const insets = useSafeAreaInsets();
@@ -156,14 +155,12 @@ export default function NewCaseScreen() {
   }
 
   // ── Validation ──
-  const dueDateValid = dueDate.trim() === "" || DUE_DATE_RE.test(dueDate.trim());
   const errors = {
     lab: !selectedLabId,
     caseNumber: caseNumber.trim().length === 0,
     patientFirst: patientFirst.trim().length === 0,
     patientLast: patientLast.trim().length === 0,
     doctor: !providerOrgId || doctorName.trim().length === 0,
-    dueDate: !dueDateValid,
   };
   const hasErrors = Object.values(errors).some(Boolean);
 
@@ -482,19 +479,12 @@ export default function NewCaseScreen() {
 
         {/* Due date */}
         <Field label="Due Date" styles={styles}>
-          <TextInput
-            style={[styles.input, showError("dueDate") && styles.inputError]}
+          <DateField
             value={dueDate}
-            onChangeText={setDueDate}
-            placeholder="YYYY-MM-DD"
-            placeholderTextColor={colors.textTertiary}
-            autoCapitalize="none"
-            autoCorrect={false}
+            onChange={setDueDate}
+            placeholder="Select a due date"
             testID="new-case-due-date"
           />
-          {showError("dueDate") ? (
-            <Text style={styles.errorText}>Use the format YYYY-MM-DD.</Text>
-          ) : null}
         </Field>
 
         {/* Priority */}

@@ -1423,21 +1423,28 @@ function FilesSection({
 
   async function runUpload(job: UploadJob) {
     updateJob(job.key, { status: "uploading", progress: 0, error: undefined });
-    const result = await uploadCaseAttachment({
-      caseId,
-      fileUri: job.fileUri,
-      fileName: job.fileName,
-      mimeType: job.mimeType,
-      onProgress: (f) => updateJob(job.key, { progress: f }),
-    });
-    if (result.ok) {
-      updateJob(job.key, { status: "done", progress: 1 });
-      onRefresh();
-      setTimeout(() => {
-        setUploads((prev) => prev.filter((j) => j.key !== job.key));
-      }, 1200);
-    } else {
-      updateJob(job.key, { status: "error", error: result.error });
+    try {
+      const result = await uploadCaseAttachment({
+        caseId,
+        fileUri: job.fileUri,
+        fileName: job.fileName,
+        mimeType: job.mimeType,
+        onProgress: (f) => updateJob(job.key, { progress: f }),
+      });
+      if (result.ok) {
+        updateJob(job.key, { status: "done", progress: 1 });
+        onRefresh();
+        setTimeout(() => {
+          setUploads((prev) => prev.filter((j) => j.key !== job.key));
+        }, 1200);
+      } else {
+        updateJob(job.key, { status: "error", error: result.error });
+      }
+    } catch (e) {
+      // uploadCaseAttachment can throw (missing token, unreadable file URI,
+      // network retries exhausted). Mark this job failed so its retry button
+      // shows and the serial queue keeps draining the remaining jobs.
+      updateJob(job.key, { status: "error", error: errorMessage(e) });
     }
   }
 
@@ -1452,7 +1459,13 @@ function FilesSection({
       status: "uploading",
     }));
     setUploads((prev) => [...jobs, ...prev]);
-    jobs.forEach((j) => void runUpload(j));
+    // Serial uploads: run one at a time to avoid mobile network/CPU contention
+    // when several large photos are queued at once.
+    void (async () => {
+      for (const job of jobs) {
+        await runUpload(job);
+      }
+    })();
   }
 
   async function pickFromCamera() {
