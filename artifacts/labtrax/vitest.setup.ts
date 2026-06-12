@@ -95,6 +95,7 @@ export function resetMockAppState(): void {
 export const mockUpdateCaseMutateAsync = vi.fn(async () => ({ ok: true, data: null }));
 export const mockAddCaseNoteMutateAsync = vi.fn(async () => ({ ok: true, data: null }));
 export const mockDeleteAttachmentMutateAsync = vi.fn(async () => ({ ok: true, data: null }));
+export const mockEmailInvoiceMutateAsync = vi.fn(async () => ({ ok: true, data: null }));
 
 // Mutable handler for the mocked `resilientFetch`. The default returns
 // `{ data: null }` (preserves the previous behaviour). Tests that need
@@ -290,7 +291,7 @@ vi.mock("expo-haptics", () => ({
 }));
 
 vi.mock("expo-print", () => ({
-  printToFileAsync: vi.fn(async () => ({ uri: "file:///tmp/test.pdf" })),
+  printToFileAsync: vi.fn(async () => ({ uri: "file:///tmp/test.pdf", base64: "dGVzdA==" })),
 }));
 
 vi.mock("expo-sharing", () => ({
@@ -563,6 +564,11 @@ vi.mock("@workspace/api-client-react", () => ({
   }),
   useGenerateInvoiceForCase: () => ({
     mutateAsync: vi.fn(async () => ({ ok: true, data: null })),
+    mutate: vi.fn(),
+    isPending: false,
+  }),
+  useEmailInvoice: () => ({
+    mutateAsync: mockEmailInvoiceMutateAsync,
     mutate: vi.fn(),
     isPending: false,
   }),

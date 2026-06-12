@@ -126,6 +126,16 @@ describe("CaseDetailScreen (read-only viewer)", () => {
     });
 
     it("adds a note via useAddCaseNote with the default internal visibility", async () => {
+      // The note composer is gated to editors, so seed an editable case +
+      // active billing-role membership on its org → canEdit === true.
+      const editableCase = { ...inProgressCase, organizationId: "org-1" };
+      setMockSearchParams({ id: editableCase.id });
+      setMockAppState({
+        cases: [editableCase],
+        invoices: [],
+        meMemberships: [{ organizationId: "org-1", role: "owner", status: "active" }],
+      });
+
       const { getByTestId } = render(<CaseDetailScreen />);
       fireEvent.press(getByTestId("section-tab-notes"));
       fireEvent.changeText(getByTestId("note-input"), "Follow-up scheduled");
@@ -133,8 +143,44 @@ describe("CaseDetailScreen (read-only viewer)", () => {
 
       await waitFor(() => {
         expect(mockAddCaseNoteMutateAsync).toHaveBeenCalledWith({
-          caseId: inProgressCase.id,
+          caseId: editableCase.id,
           data: { noteText: "Follow-up scheduled", visibility: "internal_lab_only" },
+        });
+      });
+    });
+
+    it("hides the note composer when the user cannot edit", () => {
+      // Default membership stub → canEdit === false: notes remain readable but
+      // the composer input is absent.
+      const { getByTestId, queryByTestId, getAllByText } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-notes"));
+      expect(getAllByText(/Initial impression looks good/).length).toBeGreaterThan(0);
+      expect(queryByTestId("note-input")).toBeNull();
+    });
+
+    it("does not render status-transition chips when the user cannot edit", () => {
+      const { queryByTestId } = render(<CaseDetailScreen />);
+      // in_design → next pipeline step is "scan"; chips are editor-only.
+      expect(queryByTestId("status-chip-scan")).toBeNull();
+    });
+
+    it("performs a one-tap status transition via useUpdateCase when editable", async () => {
+      const editableCase = { ...inProgressCase, organizationId: "org-1" };
+      setMockSearchParams({ id: editableCase.id });
+      setMockAppState({
+        cases: [editableCase],
+        invoices: [],
+        meMemberships: [{ organizationId: "org-1", role: "owner", status: "active" }],
+      });
+
+      const { getByTestId } = render(<CaseDetailScreen />);
+      // in_design advances to "scan" as the next pipeline step.
+      fireEvent.press(getByTestId("status-chip-scan"));
+
+      await waitFor(() => {
+        expect(mockUpdateCaseMutateAsync).toHaveBeenCalledWith({
+          caseId: editableCase.id,
+          data: { status: "scan" },
         });
       });
     });
@@ -162,6 +208,30 @@ describe("CaseDetailScreen (read-only viewer)", () => {
       const { getByTestId, getByText } = render(<CaseDetailScreen />);
       fireEvent.press(getByTestId("section-tab-invoice"));
       expect(getByText(/Invoice #INV-2024-002/)).toBeTruthy();
+    });
+
+    it("exports the invoice PDF to the OS share sheet (available to all viewers)", async () => {
+      const { getByTestId } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-invoice"));
+      // Export is not gated to editors — a read-only viewer can still export.
+      fireEvent.press(getByTestId("invoice-export"));
+
+      await waitFor(() => {
+        expect(vi.mocked(Sharing.shareAsync)).toHaveBeenCalled();
+      });
+      const [, opts] = vi.mocked(Sharing.shareAsync).mock.calls[0] as [
+        string,
+        { mimeType?: string },
+      ];
+      expect(opts.mimeType).toBe("application/pdf");
+    });
+
+    it("hides the Email action for a read-only viewer", () => {
+      const { getByTestId, queryByTestId } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-invoice"));
+      // Export is always present; Email is editor-only.
+      expect(getByTestId("invoice-export")).toBeTruthy();
+      expect(queryByTestId("invoice-email")).toBeNull();
     });
   });
 

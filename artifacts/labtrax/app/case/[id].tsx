@@ -26,6 +26,7 @@ import {
   useDeleteCaseAttachment,
   useUpdateInvoice,
   useGenerateInvoiceForCase,
+  useEmailInvoice,
   type UpdateCaseInput,
   type UpdateCaseInputStatus,
   type UpdateCaseInputPriority,
@@ -52,6 +53,7 @@ import { AuthedImage } from "@/components/ui/AuthedImage";
 import { ReadOnlyToothChart } from "@/components/ReadOnlyToothChart";
 import { deriveRxSummary, buildHighlightedToothSet, formatRxTeethLabel } from "@/lib/rx-summary";
 import { openAttachment } from "@/lib/open-attachment";
+import { buildCaseCardHtml, buildInvoiceHtml, generatePdf, sharePdf } from "@/lib/case-pdf";
 
 // ─── Viewer-local detail shape ────────────────────────────────────────────────
 // GET /api/cases/:id returns the full desktop DetailedCase payload. The
@@ -245,6 +247,43 @@ const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "delivered", label: "Delivered" },
   { value: "remake", label: "Remake" },
 ];
+
+// Forward-progress pipeline used to suggest the next status as tappable chips.
+// `on_hold` / `remake` are off-pipeline targets always offered as quick actions.
+const STATUS_PIPELINE = [
+  "received",
+  "in_design",
+  "scan",
+  "in_milling",
+  "post_mill",
+  "sintering_furnace",
+  "model_room",
+  "in_porcelain",
+  "qc",
+  "complete",
+  "shipped",
+  "delivered",
+] as const;
+
+const QUICK_STATUS_TARGETS = ["complete", "shipped", "delivered", "on_hold", "remake"] as const;
+
+// Suggested next statuses for the current status: the next pipeline step plus a
+// fixed set of milestone/off-pipeline targets, de-duped and minus the current.
+function nextStatusChips(current: string | null | undefined): { value: string; label: string }[] {
+  const cur = (current ?? "").toLowerCase();
+  const candidates: string[] = [];
+  const i = STATUS_PIPELINE.indexOf(cur as (typeof STATUS_PIPELINE)[number]);
+  if (i >= 0 && i < STATUS_PIPELINE.length - 1) candidates.push(STATUS_PIPELINE[i + 1]);
+  for (const t of QUICK_STATUS_TARGETS) candidates.push(t);
+  const seen = new Set<string>();
+  const result: { value: string; label: string }[] = [];
+  for (const v of candidates) {
+    if (v === cur || seen.has(v)) continue;
+    seen.add(v);
+    result.push({ value: v, label: labelFor(STATUS_OPTIONS, v) });
+  }
+  return result;
+}
 
 const PRIORITY_OPTIONS: { value: string; label: string }[] = [
   { value: "normal", label: "Normal" },
@@ -683,6 +722,24 @@ export default function CaseDetailScreen() {
   const caseOrgId = c?.organizationId ?? c?.labOrganizationId ?? null;
   const canEdit = canEditOrg(meQuery.data, caseOrgId);
 
+  // Lab name for PDF headers: resolve the viewer's membership org that owns this case.
+  const labName = useMemo(() => {
+    const memberships =
+      (
+        meQuery.data as
+          | {
+              memberships?: {
+                organizationId?: string | null;
+                organization?: { name?: string | null } | null;
+              }[];
+            }
+          | null
+          | undefined
+      )?.memberships ?? [];
+    const match = memberships.find((m) => m.organizationId === caseOrgId);
+    return match?.organization?.name ?? null;
+  }, [meQuery.data, caseOrgId]);
+
   // Share-intent consumer: when files were shared into LabTrax from another app
   // (root layout writes them to the inbox), offer to attach them to THIS case.
   // Confirming hands the entries to FilesSection's upload pipeline and clears
@@ -769,6 +826,29 @@ export default function CaseDetailScreen() {
     else router.replace("/(tabs)" as never);
   }
 
+  // Render the case work-order card to a PDF and hand it to the OS share sheet.
+  async function handlePrintCaseCard() {
+    if (!c) return;
+    try {
+      const html = buildCaseCardHtml({
+        caseNumber: c.caseNumber,
+        patientName: patientName(c),
+        doctorName: c.doctorName,
+        dueDate: c.dueDate,
+        expectedDeliveryDate: c.expectedDeliveryDate,
+        priority: c.priority,
+        status: c.status,
+        rxNotes: c.caseNotes,
+        restorations: c.restorations ?? [],
+        labName,
+      });
+      const { uri } = await generatePdf(html);
+      await sharePdf(uri, { dialogTitle: c.caseNumber ? `Case #${c.caseNumber}` : "Case" });
+    } catch (e) {
+      Alert.alert("Couldn't create PDF", errorMessage(e));
+    }
+  }
+
   function onRefresh() {
     caseQuery.refetch();
     attachmentsQuery.refetch();
@@ -814,7 +894,20 @@ export default function CaseDetailScreen() {
         onBack={goBack}
         styles={styles}
         colors={colors}
-        right={<StatusBadge label={titleCase(c.status ?? "—")} variant={statusVariant(c.status)} />}
+        right={
+          <View style={styles.headerRightGroup}>
+            <Pressable
+              onPress={handlePrintCaseCard}
+              hitSlop={8}
+              style={styles.headerIconBtn}
+              testID="case-print"
+              accessibilityLabel="Print case card"
+            >
+              <Ionicons name="print-outline" size={20} color={colors.text} />
+            </Pressable>
+            <StatusBadge label={titleCase(c.status ?? "—")} variant={statusVariant(c.status)} />
+          </View>
+        }
       />
 
       {/* Section switcher */}
@@ -855,6 +948,7 @@ export default function CaseDetailScreen() {
           <OverviewSection
             c={c}
             caseId={c.id}
+            canEdit={canEdit}
             onSaved={() => caseQuery.refetch()}
             styles={styles}
             colors={colors}
@@ -876,6 +970,7 @@ export default function CaseDetailScreen() {
             caseNotes={c.caseNotes}
             notes={c.notes ?? []}
             caseId={c.id}
+            canEdit={canEdit}
             onSaved={() => caseQuery.refetch()}
             styles={styles}
             colors={colors}
@@ -904,6 +999,9 @@ export default function CaseDetailScreen() {
             canEdit={canEdit}
             caseId={c.id}
             invoiceId={primaryInvoiceId}
+            patientName={patientName(c)}
+            caseNumber={c.caseNumber ?? null}
+            labName={labName}
             onRefresh={onRefresh}
             styles={styles}
             colors={colors}
@@ -982,12 +1080,14 @@ function FieldRow({ label, value, styles }: { label: string; value: string; styl
 function OverviewSection({
   c,
   caseId,
+  canEdit,
   onSaved,
   styles,
   colors,
 }: {
   c: DetailedCase;
   caseId: string;
+  canEdit: boolean;
   onSaved: () => void | Promise<unknown>;
   styles: Styles;
   colors: ThemeColors;
@@ -995,7 +1095,22 @@ function OverviewSection({
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<OverviewForm>(() => formFromCase(c));
   const [picker, setPicker] = useState<"status" | "dueDate" | "expectedDeliveryDate" | null>(null);
+  const [pendingStatus, setPendingStatus] = useState<string | null>(null);
   const update = useUpdateCase();
+  const statusChips = useMemo(() => nextStatusChips(c.status), [c.status]);
+
+  // One-tap status transition (canonical PATCH /cases/:id) used by the chips.
+  async function quickSetStatus(value: string) {
+    setPendingStatus(value);
+    try {
+      await update.mutateAsync({ caseId, data: { status: value as UpdateCaseInputStatus } });
+      await onSaved();
+    } catch (e) {
+      Alert.alert("Couldn't update status", errorMessage(e));
+    } finally {
+      setPendingStatus(null);
+    }
+  }
 
   function startEdit() {
     setForm(formFromCase(c));
@@ -1134,6 +1249,29 @@ function OverviewSection({
         )}
       </Card>
 
+      {canEdit && !editing && statusChips.length > 0 ? (
+        <Card>
+          <Text style={styles.cardHeading}>Update status</Text>
+          <View style={styles.chipRow}>
+            {statusChips.map((s) => (
+              <Pressable
+                key={s.value}
+                style={[styles.statusChip, pendingStatus !== null && styles.btnDisabled]}
+                onPress={() => quickSetStatus(s.value)}
+                disabled={pendingStatus !== null}
+                testID={`status-chip-${s.value}`}
+              >
+                {pendingStatus === s.value ? (
+                  <ActivityIndicator size="small" color={colors.tint} />
+                ) : (
+                  <Text style={styles.statusChipText}>Mark {s.label}</Text>
+                )}
+              </Pressable>
+            ))}
+          </View>
+        </Card>
+      ) : null}
+
       {c.remakeOriginal || (c.remakeChildren && c.remakeChildren.length > 0) ? (
         <Card>
           <Text style={styles.cardHeading}>Remake</Text>
@@ -1262,6 +1400,7 @@ function NotesSection({
   caseNotes,
   notes,
   caseId,
+  canEdit,
   onSaved,
   styles,
   colors,
@@ -1269,6 +1408,7 @@ function NotesSection({
   caseNotes?: string | null;
   notes: DetailNote[];
   caseId: string;
+  canEdit: boolean;
   onSaved: () => void | Promise<unknown>;
   styles: Styles;
   colors: ThemeColors;
@@ -1292,39 +1432,41 @@ function NotesSection({
 
   return (
     <View style={styles.sectionGap}>
-      <Card>
-        <Text style={styles.cardHeading}>Add a note</Text>
-        <TextInput
-          style={styles.noteInput}
-          value={text}
-          onChangeText={setText}
-          placeholder="Write a note…"
-          placeholderTextColor={colors.textTertiary}
-          multiline
-          textAlignVertical="top"
-          testID="note-input"
-        />
-        <SegmentedRow
-          label="Visibility"
-          options={VISIBILITY_OPTIONS}
-          value={visibility}
-          onChange={(v) => setVisibility(v as AddCaseNoteInputVisibility)}
-          styles={styles}
-          testID="visibility"
-        />
-        <Pressable
-          style={[styles.btnPrimary, styles.noteSubmit, (add.isPending || !trimmed) && styles.btnDisabled]}
-          onPress={submit}
-          disabled={add.isPending || !trimmed}
-          testID="note-submit"
-        >
-          {add.isPending ? (
-            <ActivityIndicator color={colors.textInverse} size="small" />
-          ) : (
-            <Text style={styles.btnPrimaryText}>Add note</Text>
-          )}
-        </Pressable>
-      </Card>
+      {canEdit ? (
+        <Card>
+          <Text style={styles.cardHeading}>Add a note</Text>
+          <TextInput
+            style={styles.noteInput}
+            value={text}
+            onChangeText={setText}
+            placeholder="Write a note…"
+            placeholderTextColor={colors.textTertiary}
+            multiline
+            textAlignVertical="top"
+            testID="note-input"
+          />
+          <SegmentedRow
+            label="Visibility"
+            options={VISIBILITY_OPTIONS}
+            value={visibility}
+            onChange={(v) => setVisibility(v as AddCaseNoteInputVisibility)}
+            styles={styles}
+            testID="visibility"
+          />
+          <Pressable
+            style={[styles.btnPrimary, styles.noteSubmit, (add.isPending || !trimmed) && styles.btnDisabled]}
+            onPress={submit}
+            disabled={add.isPending || !trimmed}
+            testID="note-submit"
+          >
+            {add.isPending ? (
+              <ActivityIndicator color={colors.textInverse} size="small" />
+            ) : (
+              <Text style={styles.btnPrimaryText}>Add note</Text>
+            )}
+          </Pressable>
+        </Card>
+      ) : null}
 
       {hasRx ? (
         <Card>
@@ -1855,6 +1997,9 @@ function InvoiceSection({
   canEdit,
   caseId,
   invoiceId,
+  patientName: patientNameProp,
+  caseNumber,
+  labName,
   onRefresh,
   styles,
   colors,
@@ -1873,6 +2018,9 @@ function InvoiceSection({
   canEdit: boolean;
   caseId: string;
   invoiceId: string | null;
+  patientName?: string | null;
+  caseNumber?: string | null;
+  labName?: string | null;
   onRefresh: () => void;
   styles: Styles;
   colors: ThemeColors;
@@ -1903,11 +2051,79 @@ function InvoiceSection({
   // ── Mutations
   const generateInvoice = useGenerateInvoiceForCase();
   const updateInvoice = useUpdateInvoice();
+  const emailInvoice = useEmailInvoice();
   const anyPending = generateInvoice.isPending || updateInvoice.isPending;
+  const [sharing, setSharing] = useState(false);
 
   const lines: InvoiceLineItem[] = (invoice?.items ?? invoice?.lineItems ?? []) as InvoiceLineItem[];
 
+  // Build the print-ready invoice HTML from the current invoice + case context.
+  function buildInvoiceDoc(): string {
+    return buildInvoiceHtml({
+      invoiceNumber: invoice?.invoiceNumber ?? null,
+      status: invoice?.status ?? null,
+      issuedAt: invoice?.issuedAt ?? null,
+      dueAt: invoice?.dueAt ?? null,
+      total: invoice?.total ?? null,
+      balanceDue: invoice?.balanceDue ?? null,
+      items: lines,
+      patientName: patientNameProp ?? null,
+      caseNumber: caseNumber ?? null,
+      labName: labName ?? null,
+    });
+  }
+
   // ── Handlers
+  // Export the invoice as a PDF and hand it to the OS share sheet (any viewer).
+  async function handleExportInvoice() {
+    if (!invoice) return;
+    setSharing(true);
+    try {
+      const { uri } = await generatePdf(buildInvoiceDoc());
+      await sharePdf(uri, {
+        dialogTitle: invoice.invoiceNumber ? `Invoice #${invoice.invoiceNumber}` : "Invoice",
+      });
+    } catch (e) {
+      Alert.alert("Couldn't export invoice", errorMessage(e));
+    } finally {
+      setSharing(false);
+    }
+  }
+
+  // Email the invoice PDF to the practice's billing email (canonical endpoint).
+  function handleEmailInvoice() {
+    if (!invoiceId || !invoice) return;
+    Alert.alert(
+      "Email invoice?",
+      "Send this invoice as a PDF to the practice's billing email on file.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Send",
+          onPress: async () => {
+            try {
+              const { base64 } = await generatePdf(buildInvoiceDoc(), { base64: true });
+              if (!base64) throw new Error("Could not render the invoice PDF.");
+              const label = invoice.invoiceNumber ?? caseNumber ?? "invoice";
+              await emailInvoice.mutateAsync({
+                invoiceId,
+                data: {
+                  subject: `Invoice ${invoice.invoiceNumber ?? ""}`.trim(),
+                  message: `Please find attached invoice ${invoice.invoiceNumber ?? ""}.`.trim(),
+                  filename: `Invoice-${label}.pdf`,
+                  pdfBase64: base64,
+                },
+              });
+              Alert.alert("Invoice sent", "The invoice was emailed to the practice's billing email.");
+            } catch (e) {
+              Alert.alert("Couldn't email invoice", errorMessage(e));
+            }
+          },
+        },
+      ],
+    );
+  }
+
   async function handleCreate() {
     try {
       await generateInvoice.mutateAsync({ caseId, data: {} });
@@ -2129,6 +2345,40 @@ function InvoiceSection({
         <FieldRow label="Due" value={formatDate(invoice.dueAt)} styles={styles} />
         <FieldRow label="Total" value={money(invoice.total)} styles={styles} />
         <FieldRow label="Balance" value={money(invoice.balanceDue)} styles={styles} />
+        <View style={styles.invoiceActions}>
+          <Pressable
+            style={[styles.btnSecondary, styles.invoiceActionBtn, sharing && styles.btnDisabled]}
+            onPress={handleExportInvoice}
+            disabled={sharing}
+            testID="invoice-export"
+          >
+            {sharing ? (
+              <ActivityIndicator color={colors.tint} size="small" />
+            ) : (
+              <>
+                <Ionicons name="share-outline" size={16} color={colors.text} />
+                <Text style={styles.btnSecondaryText}>Export PDF</Text>
+              </>
+            )}
+          </Pressable>
+          {canEdit ? (
+            <Pressable
+              style={[styles.btnSecondary, styles.invoiceActionBtn, emailInvoice.isPending && styles.btnDisabled]}
+              onPress={handleEmailInvoice}
+              disabled={emailInvoice.isPending}
+              testID="invoice-email"
+            >
+              {emailInvoice.isPending ? (
+                <ActivityIndicator color={colors.tint} size="small" />
+              ) : (
+                <>
+                  <Ionicons name="mail-outline" size={16} color={colors.text} />
+                  <Text style={styles.btnSecondaryText}>Email</Text>
+                </>
+              )}
+            </Pressable>
+          ) : null}
+        </View>
       </Card>
 
       {/* ── Line items card ── */}
@@ -2676,6 +2926,24 @@ function makeStyles(c: ThemeColors) {
     },
     btnSecondaryText: { ...Typography.bodySemibold, color: c.text },
     btnDisabled: { opacity: 0.5 },
+    headerRightGroup: { flexDirection: "row", alignItems: "center", gap: Spacing.sm },
+    headerIconBtn: { padding: Spacing.xs },
+    chipRow: { flexDirection: "row", flexWrap: "wrap", gap: Spacing.sm },
+    statusChip: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      paddingVertical: Spacing.sm,
+      paddingHorizontal: Spacing.md,
+      borderRadius: Radius.full,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: c.border,
+      backgroundColor: c.surfaceAlt,
+      minHeight: 36,
+    },
+    statusChipText: { ...Typography.captionSemibold, color: c.tint },
+    invoiceActions: { flexDirection: "row", gap: Spacing.sm, marginTop: Spacing.md },
+    invoiceActionBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: Spacing.xs },
     noteInput: {
       ...Typography.body,
       color: c.text,

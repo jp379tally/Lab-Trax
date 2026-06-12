@@ -41,3 +41,4 @@
 - [Mobile case-detail desktop parity](mobile-case-detail-parity.md) — note default MUST be internal_lab_only (not shared); dueDate non-nullable so no Clear, expectedDeliveryDate clearable; status via canonical PATCH /cases/:id.
 - [Code-review gate targets active task](code-review-gate-task-targeting.md) — mark_task_complete auto-review grades the platform's ACTIVE task, not your commit/drift; stale pointer → wrong-task reject; fix = user confirm + skip_validation_reason.
 - [Metro stale cache after deletions](metro-stale-cache-after-deletions.md) — bulk-deleting Expo routes while dev server runs leaves Metro graph stale; iOS bundle ENOENTs on deleted files though typecheck/web pass; restart the expo workflow to rebuild.
+- [Background commands die on return](background-commands-die-on-return.md) — nohup/backgrounded bash is SIGKILLed on tool-call return; run long jobs (api-server vitest ~2min) via a workflow, not `&`.
