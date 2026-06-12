@@ -23,6 +23,8 @@ import type {
   AiChatHistoryResult,
   AiChatInput,
   AiChatResult,
+  AnalyzePrescriptionInput,
+  AnalyzePrescriptionResult,
   BackupRunRequest,
   BackupRunResult,
   BackupScheduleInput,
@@ -64,6 +66,7 @@ import type {
   GetConversationMessagesParams,
   GetItemLabelsParams,
   GetIteroImportHistoryParams,
+  GetPatientSimilarityParams,
   GetRxPracticeAliasParams,
   HealthStatus,
   ImportCaseFromIteroRxBody,
@@ -90,6 +93,7 @@ import type {
   NotifyCaseNote200,
   NotifyCaseNoteBody,
   OpenInvoiceListResult,
+  PatientSimilarityResult,
   ReceivePaymentsInput,
   ReceivePaymentsResult,
   RegenerateBackupCodesInput,
@@ -3181,6 +3185,118 @@ export function useGetCaseByBarcode<
   },
 ): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
   const queryOptions = getGetCaseByBarcodeQueryOptions(code, params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Returns patient-similarity hits for the given first+last name within a
+lab (and optional provider org or doctor name). Uses bigram similarity
+and nickname matching to surface potential duplicates. The caller must
+be an active member of `labOrganizationId`. No row cap — remakes from
+years ago must still be detected.
+
+ * @summary Find similar patients for duplicate/remake detection
+ */
+export const getGetPatientSimilarityUrl = (
+  params: GetPatientSimilarityParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/cases/patient-similarity?${stringifiedParams}`
+    : `/api/cases/patient-similarity`;
+};
+
+export const getPatientSimilarity = async (
+  params: GetPatientSimilarityParams,
+  options?: RequestInit,
+): Promise<PatientSimilarityResult> => {
+  return customFetch<PatientSimilarityResult>(
+    getGetPatientSimilarityUrl(params),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetPatientSimilarityQueryKey = (
+  params?: GetPatientSimilarityParams,
+) => {
+  return [
+    `/api/cases/patient-similarity`,
+    ...(params ? [params] : []),
+  ] as const;
+};
+
+export const getGetPatientSimilarityQueryOptions = <
+  TData = Awaited<ReturnType<typeof getPatientSimilarity>>,
+  TError = ErrorType<void>,
+>(
+  params: GetPatientSimilarityParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getPatientSimilarity>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetPatientSimilarityQueryKey(params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getPatientSimilarity>>
+  > = ({ signal }) =>
+    getPatientSimilarity(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getPatientSimilarity>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetPatientSimilarityQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getPatientSimilarity>>
+>;
+export type GetPatientSimilarityQueryError = ErrorType<void>;
+
+/**
+ * @summary Find similar patients for duplicate/remake detection
+ */
+
+export function useGetPatientSimilarity<
+  TData = Awaited<ReturnType<typeof getPatientSimilarity>>,
+  TError = ErrorType<void>,
+>(
+  params: GetPatientSimilarityParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getPatientSimilarity>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetPatientSimilarityQueryOptions(params, options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;
@@ -6359,6 +6475,100 @@ export const useUpsertRxPracticeAlias = <
   TContext
 > => {
   return useMutation(getUpsertRxPracticeAliasMutationOptions(options));
+};
+
+/**
+ * Accepts a base64-encoded primary image (JPEG, PNG, or PDF) and up to
+two additional page images. Uses OpenAI structured-output extraction to
+return patient name, doctor, practice, tooth numbers, material, shade,
+due date, rush flag, notes, and a confidence score. Returns 503 when AI
+is not configured, 400 for IMAGE_TOO_SMALL or HEIC payloads.
+Auth is optional — the caller may be authenticated or not.
+
+ * @summary Extract dental prescription fields from image(s) using AI
+ */
+export const getAnalyzePrescriptionUrl = () => {
+  return `/api/analyze-prescription`;
+};
+
+export const analyzePrescription = async (
+  analyzePrescriptionInput: AnalyzePrescriptionInput,
+  options?: RequestInit,
+): Promise<AnalyzePrescriptionResult> => {
+  return customFetch<AnalyzePrescriptionResult>(getAnalyzePrescriptionUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(analyzePrescriptionInput),
+  });
+};
+
+export const getAnalyzePrescriptionMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof analyzePrescription>>,
+    TError,
+    { data: BodyType<AnalyzePrescriptionInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof analyzePrescription>>,
+  TError,
+  { data: BodyType<AnalyzePrescriptionInput> },
+  TContext
+> => {
+  const mutationKey = ["analyzePrescription"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof analyzePrescription>>,
+    { data: BodyType<AnalyzePrescriptionInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return analyzePrescription(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type AnalyzePrescriptionMutationResult = NonNullable<
+  Awaited<ReturnType<typeof analyzePrescription>>
+>;
+export type AnalyzePrescriptionMutationBody =
+  BodyType<AnalyzePrescriptionInput>;
+export type AnalyzePrescriptionMutationError = ErrorType<void>;
+
+/**
+ * @summary Extract dental prescription fields from image(s) using AI
+ */
+export const useAnalyzePrescription = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof analyzePrescription>>,
+    TError,
+    { data: BodyType<AnalyzePrescriptionInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof analyzePrescription>>,
+  TError,
+  { data: BodyType<AnalyzePrescriptionInput> },
+  TContext
+> => {
+  return useMutation(getAnalyzePrescriptionMutationOptions(options));
 };
 
 /**

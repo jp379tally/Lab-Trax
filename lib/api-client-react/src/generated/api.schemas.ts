@@ -1435,6 +1435,80 @@ export interface AiChatHistoryResult {
   messages: AiChatHistoryMessage[];
 }
 
+export interface ExtractedRxData {
+  doctorName?: string | null;
+  patientName?: string | null;
+  patientInitials?: string | null;
+  caseType?: string | null;
+  toothIndices?: string | null;
+  shade?: string | null;
+  material?: string | null;
+  dueDate?: string | null;
+  isRush?: boolean | null;
+  notes?: string | null;
+  practiceName?: string | null;
+  practiceAddress?: string | null;
+  practicePhone?: string | null;
+  confidence?: number;
+}
+
+export interface AnalyzePrescriptionInput {
+  /** Primary page as a data URI (data:image/jpeg;base64,...) or raw base64. */
+  imageBase64: string;
+  /** Additional pages (same base64 format). */
+  additionalImages?: string[];
+  /** Use the fast model chain (mobile live-preview mode). */
+  fast?: boolean;
+}
+
+export interface AnalyzePrescriptionResult {
+  success: boolean;
+  data?: ExtractedRxData;
+  error?: string | null;
+}
+
+export type PatientSimilarityHitSource =
+  (typeof PatientSimilarityHitSource)[keyof typeof PatientSimilarityHitSource];
+
+export const PatientSimilarityHitSource = {
+  canonical: "canonical",
+  legacy: "legacy",
+} as const;
+
+export type PatientSimilarityHitMatchKind =
+  (typeof PatientSimilarityHitMatchKind)[keyof typeof PatientSimilarityHitMatchKind];
+
+export const PatientSimilarityHitMatchKind = {
+  exact: "exact",
+  nickname: "nickname",
+  fuzzy: "fuzzy",
+} as const;
+
+export interface PatientSimilarityHit {
+  id: string;
+  source: PatientSimilarityHitSource;
+  caseNumber?: string | null;
+  patientFirstName?: string | null;
+  patientLastName?: string | null;
+  doctorName?: string | null;
+  status?: string | null;
+  matchKind: PatientSimilarityHitMatchKind;
+  createdAt?: string | null;
+  dueDate?: string | null;
+  toothNumbers?: string | null;
+  restorationTypes?: string | null;
+  hasInvoice?: boolean;
+}
+
+export type PatientSimilarityResultData = {
+  matches?: PatientSimilarityHit[];
+};
+
+export interface PatientSimilarityResult {
+  ok?: boolean;
+  data?: PatientSimilarityResultData;
+}
+
 export interface SuccessResult {
   success: boolean;
 }
@@ -1535,6 +1609,20 @@ export type GetCaseByBarcode200Data = {
 export type GetCaseByBarcode200 = {
   ok?: boolean;
   data?: GetCaseByBarcode200Data;
+};
+
+export type GetPatientSimilarityParams = {
+  patientFirstName: string;
+  patientLastName: string;
+  labOrganizationId: string;
+  /**
+   * Scope results to a specific provider org when known.
+   */
+  providerOrganizationId?: string;
+  /**
+   * Fallback doctor-name scope when providerOrganizationId is not known.
+   */
+  doctorName?: string;
 };
 
 export type GetIteroImportHistoryParams = {

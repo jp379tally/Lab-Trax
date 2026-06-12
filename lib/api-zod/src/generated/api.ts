@@ -1093,6 +1093,58 @@ export const GetCaseByBarcodeResponse = zod.object({
 });
 
 /**
+ * Returns patient-similarity hits for the given first+last name within a
+lab (and optional provider org or doctor name). Uses bigram similarity
+and nickname matching to surface potential duplicates. The caller must
+be an active member of `labOrganizationId`. No row cap — remakes from
+years ago must still be detected.
+
+ * @summary Find similar patients for duplicate/remake detection
+ */
+export const GetPatientSimilarityQueryParams = zod.object({
+  patientFirstName: zod.coerce.string(),
+  patientLastName: zod.coerce.string(),
+  labOrganizationId: zod.coerce.string(),
+  providerOrganizationId: zod.coerce
+    .string()
+    .optional()
+    .describe("Scope results to a specific provider org when known."),
+  doctorName: zod.coerce
+    .string()
+    .optional()
+    .describe(
+      "Fallback doctor-name scope when providerOrganizationId is not known.",
+    ),
+});
+
+export const GetPatientSimilarityResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      matches: zod
+        .array(
+          zod.object({
+            id: zod.string(),
+            source: zod.enum(["canonical", "legacy"]),
+            caseNumber: zod.string().nullish(),
+            patientFirstName: zod.string().nullish(),
+            patientLastName: zod.string().nullish(),
+            doctorName: zod.string().nullish(),
+            status: zod.string().nullish(),
+            matchKind: zod.enum(["exact", "nickname", "fuzzy"]),
+            createdAt: zod.string().nullish(),
+            dueDate: zod.string().nullish(),
+            toothNumbers: zod.string().nullish(),
+            restorationTypes: zod.string().nullish(),
+            hasInvoice: zod.boolean().optional(),
+          }),
+        )
+        .optional(),
+    })
+    .optional(),
+});
+
+/**
  * Returns import sessions grouped by batchId (newest first). Each session
 shows when it ran, who ran it, how many orders were created vs
 deduplicated, and the resulting case IDs so the client can filter the
@@ -2336,6 +2388,55 @@ export const UpsertRxPracticeAliasResponse = zod.object({
       providerOrganizationId: zod.string().nullish(),
     })
     .optional(),
+});
+
+/**
+ * Accepts a base64-encoded primary image (JPEG, PNG, or PDF) and up to
+two additional page images. Uses OpenAI structured-output extraction to
+return patient name, doctor, practice, tooth numbers, material, shade,
+due date, rush flag, notes, and a confidence score. Returns 503 when AI
+is not configured, 400 for IMAGE_TOO_SMALL or HEIC payloads.
+Auth is optional — the caller may be authenticated or not.
+
+ * @summary Extract dental prescription fields from image(s) using AI
+ */
+export const AnalyzePrescriptionBody = zod.object({
+  imageBase64: zod
+    .string()
+    .describe(
+      "Primary page as a data URI (data:image\/jpeg;base64,...) or raw base64.",
+    ),
+  additionalImages: zod
+    .array(zod.string())
+    .optional()
+    .describe("Additional pages (same base64 format)."),
+  fast: zod
+    .boolean()
+    .optional()
+    .describe("Use the fast model chain (mobile live-preview mode)."),
+});
+
+export const AnalyzePrescriptionResponse = zod.object({
+  success: zod.boolean(),
+  data: zod
+    .object({
+      doctorName: zod.string().nullish(),
+      patientName: zod.string().nullish(),
+      patientInitials: zod.string().nullish(),
+      caseType: zod.string().nullish(),
+      toothIndices: zod.string().nullish(),
+      shade: zod.string().nullish(),
+      material: zod.string().nullish(),
+      dueDate: zod.string().nullish(),
+      isRush: zod.boolean().nullish(),
+      notes: zod.string().nullish(),
+      practiceName: zod.string().nullish(),
+      practiceAddress: zod.string().nullish(),
+      practicePhone: zod.string().nullish(),
+      confidence: zod.number().optional(),
+    })
+    .optional(),
+  error: zod.string().nullish(),
 });
 
 /**

@@ -79,6 +79,10 @@ export default function DashboardScreen() {
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
 
+  function openAiReader() {
+    router.push("/ai-reader/capture?new=1" as never);
+  }
+
   const [dueSoonOpen, setDueSoonOpen] = useState(true);
 
   const casesQuery = useCases();
@@ -106,8 +110,14 @@ export default function DashboardScreen() {
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Text style={styles.title}>Dashboard</Text>
-        <Text style={styles.subtitle}>Your lab at a glance</Text>
+        <View style={styles.headerText}>
+          <Text style={styles.title}>Dashboard</Text>
+          <Text style={styles.subtitle}>Your lab at a glance</Text>
+        </View>
+        <Pressable style={styles.aiReaderBtn} onPress={openAiReader} testID="dashboard-ai-reader-btn">
+          <Ionicons name="sparkles" size={16} color="#fff" />
+          <Text style={styles.aiReaderBtnText}>Scan Rx</Text>
+        </Pressable>
       </View>
 
       {casesQuery.isLoading ? (
@@ -201,12 +211,26 @@ function makeStyles(c: ThemeColors) {
   return StyleSheet.create({
     screen: { flex: 1, backgroundColor: c.backgroundSolid },
     header: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
       paddingHorizontal: Spacing.lg,
       paddingTop: Spacing.sm,
       paddingBottom: Spacing.xs,
     },
+    headerText: { flex: 1 },
     title: { ...Typography.h1, color: c.text },
     subtitle: { ...Typography.caption, color: c.textSecondary, marginTop: 2 },
+    aiReaderBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.xs,
+      backgroundColor: c.tint,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Spacing.sm,
+      borderRadius: Radius.md,
+    },
+    aiReaderBtnText: { ...Typography.captionSemibold, color: "#fff" },
     center: { flex: 1, alignItems: "center", justifyContent: "center", padding: Spacing.xl, minHeight: 280 },
     content: { padding: Spacing.lg, paddingTop: Spacing.sm, gap: Spacing.md },
     sectionHeader: {

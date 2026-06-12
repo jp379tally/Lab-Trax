@@ -139,6 +139,8 @@ export interface CaseCardData {
   rxNotes?: string | null;
   restorations?: CaseCardRestoration[] | null;
   labName?: string | null;
+  /** Case pan barcode value — rendered as a scannable code block when present. */
+  casePanBarcode?: string | null;
 }
 
 export function buildCaseCardHtml(d: CaseCardData): string {
@@ -186,6 +188,16 @@ export function buildCaseCardHtml(d: CaseCardData): string {
     </div>
     <div class="case-id-box">#${esc(d.caseNumber || "—")}</div>
     <div class="meta-grid">${meta}</div>
+    ${d.casePanBarcode?.trim() ? `
+    <div class="barcode-section">
+      <div class="barcode-label">Case Pan Barcode</div>
+      <div class="barcode-value">${esc(d.casePanBarcode.trim())}</div>
+      <div class="barcode-bars" aria-hidden="true">${
+        d.casePanBarcode.trim().split("").map(
+          (ch) => `<div class="bar" style="height:${24 + (ch.charCodeAt(0) % 20)}px;width:${ch.charCodeAt(0) % 2 === 0 ? 2 : 3}px"></div>`
+        ).join("")
+      }</div>
+    </div>` : ""}
     <div class="section-title">Restorations</div>
     <table>
       <thead><tr><th>Tooth</th><th>Type</th><th>Material</th><th>Shade</th><th class="num">Qty</th></tr></thead>

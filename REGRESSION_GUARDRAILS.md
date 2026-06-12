@@ -8,7 +8,9 @@ When the user confirms that a feature or workflow is working, that behavior beco
 
 The mobile app (`artifacts/labtrax`) reached beta quality after Task #1493 (Mobile UI and Workflow Parity With Desktop). The 18 workflows below are confirmed working in TestFlight and are **permanently protected**. No future change — feature addition, UI refactor, API change, pricing change, invoice change, media change, or cleanup — may be merged or built if it breaks any of these workflows.
 
-### The 18 Protected Workflows
+### The 21 Protected Workflows
+
+Workflows 1–18 were confirmed in TestFlight after Task #1493 (Mobile UI Parity). Workflows 19–21 were added in Task #1503 (AI Reader Intake). **All 21 must pass before any build is approved.**
 
 | # | Workflow | Automated Gate | Real-Device Required |
 |---|----------|---------------|---------------------|
@@ -30,12 +32,27 @@ The mobile app (`artifacts/labtrax`) reached beta quality after Task #1493 (Mobi
 | 16 | **No local-only mobile saves** | `lint-mobile-legacy-paths`, `cases-canonical-mobile.test.ts` | No |
 | 17 | **No duplicate invoices** | `mobile-sync-invoice.test.ts` | **Yes** — verify no ghost invoice on both clients |
 | 18 | **No blank / unauthorized media regressions** | `authed-media-cache.test.ts`, `cases-prescription-photo.test.ts` | **Yes** — media must load on device without blanks |
+| 19 | **AI Reader camera capture → review → AI extraction** | `ai-reader.smoke.test.ts` (store + helpers) | **Yes** — camera permission, live capture, base64 round-trip |
+| 20 | **AI Reader provider resolution + duplicate detection + case creation** | `ai-reader.smoke.test.ts` (name/date helpers, codegen guard) | **Yes** — doctor search, practice alias, similarity modal, case PATCH |
+| 21 | **AI Reader barcode assign + label print** | `ai-reader.smoke.test.ts` | **Yes** — CameraView barcode scan, manual entry, `expo-print` share sheet |
 
-> **Tooth chart (workflow #9):** An automated structural test will be added when the arch-layout implementation is finalized. Until then this workflow is covered exclusively by row 12 of the TestFlight checklist below. Do not approve any build without manually verifying it on device.
+> **Tooth chart (workflow #9):** An automated structural test will be added when the arch-layout implementation is finalized. Until then this workflow is covered exclusively by the TestFlight checklist below.
 
-> **"Real-device required" means automated tests are not sufficient.** Camera, attachment/media viewing, printing, biometric/session behavior, barcode and locate flows, and the AI Reader (when added) all require TestFlight validation on a physical iOS device regardless of unit-test status.
+> **"Real-device required" means automated tests are not sufficient.** Camera, attachment/media viewing, printing, biometric/session behavior, barcode and AI Reader flows all require TestFlight validation on a physical iOS device regardless of unit-test status.
 
-> **AI Reader gate:** When the AI Reader feature ships in a future phase, it must not regress any of the 18 workflows above. The AI Reader phase begins only after a TestFlight build with all 18 confirmed green is already in production.
+> **AI Reader TestFlight checklist (workflows 19–21):**
+> 1. Tap "Scan Rx" on Dashboard → camera opens.
+> 2. Capture 1–2 pages → thumbnails appear in tray → tap Next.
+> 3. Review screen shows thumbnails; "Extract with AI" calls `/api/analyze-prescription`.
+> 4. Extracted screen pre-fills patient, doctor, due date, teeth, material, shade.
+> 5. Low-confidence banner appears when confidence < 60%.
+> 6. Doctor search dropdown resolves a provider org; green checkmark appears.
+> 7. Duplicate detection modal opens for same patient; "Create as new" and "Mark as remake" both work.
+> 8. Tap "Create Case" → spinner → case appears in Cases list → Rx PDF is attached in history.
+> 9. Barcode screen opens → scan a real pan barcode → "Barcode assigned!" sheet appears.
+> 10. "Print label" opens iOS print sheet with patient/case/doctor/shade/material.
+> 11. "Skip" on barcode screen → navigates directly to case detail.
+> 12. Entire flow does not degrade any of workflows 1–18 above.
 
 ### Rules: Before Any New Feature
 

@@ -800,6 +800,51 @@ paths:
           description: Caller is not a member of the lab
         "404":
           description: No case found with that barcode
+  /cases/patient-similarity:
+    get:
+      operationId: getPatientSimilarity
+      tags: [cases]
+      summary: Find similar patients for duplicate/remake detection
+      description: |
+        Returns patient-similarity hits for the given first+last name within a
+        lab (and optional provider org or doctor name). Uses bigram similarity
+        and nickname matching to surface potential duplicates. The caller must
+        be an active member of `labOrganizationId`. No row cap — remakes from
+        years ago must still be detected.
+      parameters:
+        - in: query
+          name: patientFirstName
+          required: true
+          schema: { type: string }
+        - in: query
+          name: patientLastName
+          required: true
+          schema: { type: string }
+        - in: query
+          name: labOrganizationId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: providerOrganizationId
+          required: false
+          schema: { type: string }
+          description: Scope results to a specific provider org when known.
+        - in: query
+          name: doctorName
+          required: false
+          schema: { type: string }
+          description: Fallback doctor-name scope when providerOrganizationId is not known.
+      responses:
+        "200":
+          description: Similarity matches (may be empty array)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PatientSimilarityResult"
+        "400":
+          description: Missing required query parameters
+        "403":
+          description: Caller is not a member of the lab
   /cases/itero-import-history:
     get:
       operationId: getIteroImportHistory
@@ -1819,6 +1864,35 @@ paths:
           description: Missing or invalid fields
         "403":
           description: Caller is not a member of the lab
+  /analyze-prescription:
+    post:
+      operationId: analyzePrescription
+      tags: [ai]
+      summary: Extract dental prescription fields from image(s) using AI
+      description: |
+        Accepts a base64-encoded primary image (JPEG, PNG, or PDF) and up to
+        two additional page images. Uses OpenAI structured-output extraction to
+        return patient name, doctor, practice, tooth numbers, material, shade,
+        due date, rush flag, notes, and a confidence score. Returns 503 when AI
+        is not configured, 400 for IMAGE_TOO_SMALL or HEIC payloads.
+        Auth is optional — the caller may be authenticated or not.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnalyzePrescriptionInput"
+      responses:
+        "200":
+          description: AI extraction result (success may be false for refusals)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalyzePrescriptionResult"
+        "400":
+          description: Bad request — image missing, IMAGE_TOO_SMALL, or HEIC format
+        "503":
+          description: AI integration not configured
   /invoices/receive-payments:
     post:
       operationId: receiveInvoicePayments
@@ -3650,6 +3724,77 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AiChatHistoryMessage"
+    ExtractedRxData:
+      type: object
+      properties:
+        doctorName: { type: string, nullable: true }
+        patientName: { type: string, nullable: true }
+        patientInitials: { type: string, nullable: true }
+        caseType: { type: string, nullable: true }
+        toothIndices: { type: string, nullable: true }
+        shade: { type: string, nullable: true }
+        material: { type: string, nullable: true }
+        dueDate: { type: string, nullable: true }
+        isRush: { type: boolean, nullable: true }
+        notes: { type: string, nullable: true }
+        practiceName: { type: string, nullable: true }
+        practiceAddress: { type: string, nullable: true }
+        practicePhone: { type: string, nullable: true }
+        confidence: { type: number }
+    AnalyzePrescriptionInput:
+      type: object
+      required: [imageBase64]
+      properties:
+        imageBase64:
+          type: string
+          description: Primary page as a data URI (data:image/jpeg;base64,...) or raw base64.
+        additionalImages:
+          type: array
+          items: { type: string }
+          description: Additional pages (same base64 format).
+        fast:
+          type: boolean
+          description: Use the fast model chain (mobile live-preview mode).
+    AnalyzePrescriptionResult:
+      type: object
+      required: [success]
+      properties:
+        success: { type: boolean }
+        data:
+          $ref: "#/components/schemas/ExtractedRxData"
+        error: { type: string, nullable: true }
+    PatientSimilarityHit:
+      type: object
+      required: [id, source, matchKind]
+      properties:
+        id: { type: string }
+        source:
+          type: string
+          enum: [canonical, legacy]
+        caseNumber: { type: string, nullable: true }
+        patientFirstName: { type: string, nullable: true }
+        patientLastName: { type: string, nullable: true }
+        doctorName: { type: string, nullable: true }
+        status: { type: string, nullable: true }
+        matchKind:
+          type: string
+          enum: [exact, nickname, fuzzy]
+        createdAt: { type: string, nullable: true }
+        dueDate: { type: string, nullable: true }
+        toothNumbers: { type: string, nullable: true }
+        restorationTypes: { type: string, nullable: true }
+        hasInvoice: { type: boolean }
+    PatientSimilarityResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          properties:
+            matches:
+              type: array
+              items:
+                $ref: "#/components/schemas/PatientSimilarityHit"
     SuccessResult:
       type: object
       required: [success]
