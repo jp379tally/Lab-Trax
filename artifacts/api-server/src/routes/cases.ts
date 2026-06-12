@@ -2566,10 +2566,13 @@ router.get(
       }
     }
 
-    // Apply optional query filters (search, status, barcode)
+    // Apply optional query filters (search, status, barcode, doctorName, providerOrganizationId, openOnly)
     const rawSearch = String(req.query.search ?? "").trim().toLowerCase();
     const rawStatus = String(req.query.status ?? "").trim().toLowerCase();
     const rawBarcode = String(req.query.barcode ?? "").trim();
+    const rawDoctorName = String(req.query.doctorName ?? "").trim().toLowerCase();
+    const rawProviderOrgId = String(req.query.providerOrganizationId ?? "").trim();
+    const rawOpenOnly = String(req.query.openOnly ?? "").trim().toLowerCase();
 
     let filtered = enriched;
     if (rawSearch) {
@@ -2586,6 +2589,16 @@ router.get(
     }
     if (rawBarcode) {
       filtered = filtered.filter((c) => String(c.casePanBarcode ?? "") === rawBarcode);
+    }
+    if (rawDoctorName) {
+      filtered = filtered.filter((c) => String(c.doctorName ?? "").trim().toLowerCase() === rawDoctorName);
+    }
+    if (rawProviderOrgId) {
+      filtered = filtered.filter((c) => String(c.providerOrganizationId ?? "") === rawProviderOrgId);
+    }
+    if (rawOpenOnly === "true" || rawOpenOnly === "1") {
+      const OPEN_SET = new Set(["received","in_design","in_milling","in_porcelain","qc","on_hold","remake"]);
+      filtered = filtered.filter((c) => OPEN_SET.has(String(c.status ?? "").toLowerCase()));
     }
 
     if (!filtered.length) return ok(res, []);

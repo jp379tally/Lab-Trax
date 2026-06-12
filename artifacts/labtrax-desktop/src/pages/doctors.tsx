@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
+import { useLocation } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
+  ArrowUpRight,
   CheckSquare,
   ChevronDown,
   ChevronUp,
@@ -255,10 +257,12 @@ export default function DoctorsPage() {
     return set;
   }, [meQuery.data]);
 
+  const [, setLocation] = useLocation();
   const [search, setSearch] = useState("");
   const [practiceFilter, setPracticeFilter] = useState<string>("all");
   const [sortKey, setSortKey] = useState<SortKey>("totalCases");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [caseView, setCaseView] = useState<"open" | "all">("open");
   const [selected, setSelected] = useState<DoctorRow | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [mergeDialog, setMergeDialog] = useState<{
@@ -709,6 +713,22 @@ export default function DoctorsPage() {
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
           </select>
+          <div className="flex h-9 rounded-md border border-border overflow-hidden text-xs font-medium">
+            <button
+              type="button"
+              onClick={() => setCaseView("open")}
+              className={`px-3 transition-colors ${caseView === "open" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}
+            >
+              Open only
+            </button>
+            <button
+              type="button"
+              onClick={() => setCaseView("all")}
+              className={`px-3 border-l border-border transition-colors ${caseView === "all" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}
+            >
+              All cases
+            </button>
+          </div>
           {picked.size > 0 && (
             <div className="ml-auto flex items-center gap-2">
               <span className="text-xs text-muted-foreground">
@@ -876,7 +896,20 @@ export default function DoctorsPage() {
                     )}
                   </td>
                   <td className="py-3 text-right tabular-nums">{r.totalCases}</td>
-                  <td className="py-3 text-right tabular-nums">{r.openCases}</td>
+                  <td className="py-3 text-right">
+                    {(caseView === "open" ? r.openCases : r.totalCases) > 0 ? (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setSelected(r); }}
+                        className="inline-flex items-center justify-center min-w-[2rem] px-1.5 h-6 rounded-full text-xs font-semibold tabular-nums bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+                        title={caseView === "open" ? "Open cases — click to view" : "All cases — click to view"}
+                      >
+                        {caseView === "open" ? r.openCases : r.totalCases}
+                      </button>
+                    ) : (
+                      <span className="text-muted-foreground tabular-nums text-sm">0</span>
+                    )}
+                  </td>
                   <td className="py-3 text-right tabular-nums">
                     {r.rushCases > 0 ? (
                       <span className="text-destructive font-medium">{r.rushCases}</span>
@@ -898,8 +931,27 @@ export default function DoctorsPage() {
         <DoctorDrawer
           doctor={selected}
           allDoctors={rows}
+          caseView={caseView}
           cases={cases.filter((c) => (c.doctorName || "").toLowerCase() === selected.doctorName.toLowerCase() && c.providerOrganizationId === selected.practiceId)}
+          invoices={(() => {
+            const doctorCaseIds = new Set(
+              cases
+                .filter((c) => (c.doctorName || "").toLowerCase() === selected.doctorName.toLowerCase() && c.providerOrganizationId === selected.practiceId)
+                .map((c) => c.id),
+            );
+            return invoices.filter((inv) =>
+              inv.caseId
+                ? doctorCaseIds.has(inv.caseId)
+                : selected.practiceId
+                ? inv.providerOrganizationId === selected.practiceId
+                : false,
+            );
+          })()}
           onClose={() => setSelected(null)}
+          onNavigateToCases={() => {
+            setSelected(null);
+            setLocation(`/cases?search=${encodeURIComponent(selected.doctorName)}`);
+          }}
           onMergeFromDrawer={(d) => {
             setMergeDialog({
               labOrganizationId: d.labOrganizationId,
@@ -981,18 +1033,39 @@ interface PracticeFields {
 export function DoctorDrawer({
   doctor,
   cases,
+  invoices,
+  caseView,
   onClose,
+  onNavigateToCases,
   onMergeFromDrawer,
 }: {
   doctor: DoctorRow;
   allDoctors: DoctorRow[];
   cases: LabCase[];
+  invoices: Invoice[];
+  caseView: "open" | "all";
   onClose: () => void;
+  onNavigateToCases: () => void;
   onMergeFromDrawer: (d: DoctorRow) => void;
 }) {
   const queryClient = useQueryClient();
   const { user } = useAuth();
-  const sorted = [...cases].sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+
+  const OPEN_STATUSES_DRAWER = new Set([
+    "received","in_design","in_milling","in_porcelain","qc","on_hold","remake",
+  ]);
+
+  const displayedCases = useMemo(() => {
+    const base = caseView === "open"
+      ? cases.filter((c) => OPEN_STATUSES_DRAWER.has(c.status?.toLowerCase() ?? ""))
+      : cases;
+    return [...base].sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+  }, [cases, caseView]);
+
+  const sortedInvoices = useMemo(
+    () => [...invoices].sort((a, b) => (b.issuedAt || b.createdAt || "").localeCompare(a.issuedAt || a.createdAt || "")),
+    [invoices],
+  );
 
   const practiceQuery = useQuery({
     queryKey: ["organization", doctor.practiceId],
@@ -1070,22 +1143,74 @@ export function DoctorDrawer({
           )}
 
           <section>
-            <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">Recent cases</h3>
-            {sorted.length === 0 && <div className="text-sm text-muted-foreground">No cases.</div>}
-            <ul className="space-y-1.5">
-              {sorted.slice(0, 12).map((c) => (
-                <li key={c.id} className="flex items-center justify-between border border-border rounded-md px-3 py-2 text-sm">
-                  <div className="min-w-0">
-                    <div className="font-mono text-xs">{c.caseNumber}</div>
-                    <div className="text-xs text-muted-foreground truncate">
-                      {c.patientFirstName} {c.patientLastName} · {relativeTime(c.createdAt)}
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
+                {caseView === "open" ? "Open cases" : "All cases"}
+                {displayedCases.length > 0 && (
+                  <span className="ml-1.5 text-foreground/70">({displayedCases.length})</span>
+                )}
+              </h3>
+              <button
+                type="button"
+                onClick={onNavigateToCases}
+                className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+              >
+                View all in Cases
+                <ArrowUpRight size={11} />
+              </button>
+            </div>
+            {displayedCases.length === 0 ? (
+              <div className="text-sm text-muted-foreground">
+                {caseView === "open" ? "No open cases." : "No cases."}
+              </div>
+            ) : (
+              <ul className="space-y-1.5">
+                {displayedCases.map((c) => (
+                  <li key={c.id} className="flex items-center justify-between border border-border rounded-md px-3 py-2 text-sm">
+                    <div className="min-w-0">
+                      <div className="font-mono text-xs">{c.caseNumber}</div>
+                      <div className="text-xs text-muted-foreground truncate">
+                        {c.patientFirstName} {c.patientLastName} · {relativeTime(c.createdAt)}
+                      </div>
                     </div>
-                  </div>
-                  <StatusBadge status={c.status} />
-                </li>
-              ))}
-            </ul>
+                    <StatusBadge status={c.status} />
+                  </li>
+                ))}
+              </ul>
+            )}
           </section>
+
+          {sortedInvoices.length > 0 && (
+            <section>
+              <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">
+                Invoices
+                <span className="ml-1.5 text-foreground/70">({sortedInvoices.length})</span>
+              </h3>
+              <ul className="space-y-1.5">
+                {sortedInvoices.slice(0, 20).map((inv) => (
+                  <li key={inv.id} className="flex items-center justify-between border border-border rounded-md px-3 py-2 text-sm">
+                    <div className="min-w-0">
+                      <div className="font-medium text-xs">{inv.invoiceNumber || "Invoice"}</div>
+                      <div className="text-xs text-muted-foreground truncate">
+                        {formatDate(inv.issuedAt)} · Due {formatDate(inv.dueAt)}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="font-medium text-xs tabular-nums">{formatMoney(Number(inv.balanceDue ?? inv.total ?? 0))}</span>
+                      <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold leading-none ${
+                        (inv.status ?? "").toLowerCase().includes("paid") ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" :
+                        (inv.status ?? "").toLowerCase().includes("overdue") ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300" :
+                        (inv.status ?? "").toLowerCase().includes("void") || (inv.status ?? "").toLowerCase().includes("cancel") ? "bg-secondary text-muted-foreground" :
+                        "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                      }`}>
+                        {inv.status ?? "unpaid"}
+                      </span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
         </div>
       </aside>
     </div>

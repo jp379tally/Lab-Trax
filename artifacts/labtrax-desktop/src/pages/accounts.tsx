@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useLocation } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
@@ -95,6 +96,8 @@ export default function AccountsPage() {
   const [editing, setEditing] = useState<Organization | null>(null);
   const [adding, setAdding] = useState(false);
   const [selectedDoctor, setSelectedDoctor] = useState<DoctorRow | null>(null);
+  const [caseView, setCaseView] = useState<"open" | "all">("open");
+  const [, navigate] = useLocation();
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [mergeDialog, setMergeDialog] = useState<{
     sources: MergeSourceInput[];
@@ -403,6 +406,23 @@ export default function AccountsPage() {
             With open cases only
           </label>
 
+          <div className="inline-flex rounded-md border border-border overflow-hidden text-xs font-medium">
+            <button
+              type="button"
+              onClick={() => setCaseView("open")}
+              className={`px-2.5 py-1.5 transition-colors ${caseView === "open" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}
+            >
+              Open
+            </button>
+            <button
+              type="button"
+              onClick={() => setCaseView("all")}
+              className={`px-2.5 py-1.5 border-l border-border transition-colors ${caseView === "all" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}
+            >
+              All
+            </button>
+          </div>
+
           {picked.size > 0 && (
             <div className="ml-auto flex items-center gap-2">
               <span className="text-xs text-muted-foreground">{picked.size} doctor{picked.size === 1 ? "" : "s"} selected</span>
@@ -678,7 +698,25 @@ export default function AccountsPage() {
                         <td className="py-2.5 text-muted-foreground text-xs">—</td>
                         <td className="py-2.5 text-muted-foreground text-xs">—</td>
                         <td className="py-2.5 text-right tabular-nums text-sm">{doctor.totalCases}</td>
-                        <td className="py-2.5 text-right tabular-nums text-sm">{doctor.openCases}</td>
+                        <td
+                          className="py-2.5 text-right"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const count = caseView === "open" ? doctor.openCases : doctor.totalCases;
+                            if (count > 0) setSelectedDoctor(doctor);
+                          }}
+                        >
+                          {(caseView === "open" ? doctor.openCases : doctor.totalCases) > 0 ? (
+                            <span
+                              title={caseView === "open" ? "Open cases — click to view" : "All cases — click to view"}
+                              className="inline-flex items-center justify-center min-w-[2rem] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary text-xs font-semibold tabular-nums cursor-pointer hover:bg-primary/20 transition-colors"
+                            >
+                              {caseView === "open" ? doctor.openCases : doctor.totalCases}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground text-sm tabular-nums">0</span>
+                          )}
+                        </td>
                         <td className="py-2.5 text-right tabular-nums text-sm">
                           {doctor.rushCases > 0 ? (
                             <span className="text-destructive font-medium">{doctor.rushCases}</span>
@@ -719,6 +757,28 @@ export default function AccountsPage() {
               (c.doctorName || "").toLowerCase() === selectedDoctor.doctorName.toLowerCase() &&
               c.providerOrganizationId === selectedDoctor.practiceId,
           )}
+          invoices={(() => {
+            const doctorCaseIds = new Set(
+              cases
+                .filter((c) => (c.doctorName || "").toLowerCase() === selectedDoctor.doctorName.toLowerCase() && c.providerOrganizationId === selectedDoctor.practiceId)
+                .map((c) => c.id),
+            );
+            return invoices.filter((inv) =>
+              inv.caseId
+                ? doctorCaseIds.has(inv.caseId)
+                : selectedDoctor.practiceId
+                ? inv.providerOrganizationId === selectedDoctor.practiceId
+                : false,
+            );
+          })()}
+          caseView={caseView}
+          onNavigateToCases={() => {
+            const qs = selectedDoctor.doctorName
+              ? `?search=${encodeURIComponent(selectedDoctor.doctorName)}`
+              : "";
+            navigate(`/cases${qs}`);
+            setSelectedDoctor(null);
+          }}
           onClose={() => setSelectedDoctor(null)}
           onMergeFromDrawer={(d) => {
             setMergeDialog({

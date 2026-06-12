@@ -802,6 +802,7 @@ router.get(
         doctorName: cases.doctorName,
         providerOrganizationId: cases.providerOrganizationId,
         totalCases: sql<number>`count(*)::int`.as("total"),
+        openCases: sql<number>`count(*) filter (where ${cases.status} in ('received','in_design','in_milling','in_porcelain','qc','on_hold','remake'))::int`.as("open_cases"),
       })
       .from(cases)
       .where(and(...conds))
@@ -838,6 +839,7 @@ router.get(
         providerOrganizationId: g.providerOrganizationId,
         practiceName,
         totalCases: g.totalCases,
+        openCases: g.openCases,
         similarity: sim,
       };
     });
