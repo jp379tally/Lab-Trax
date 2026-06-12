@@ -1,0 +1,57 @@
+The new mobile app is now close to beta quality. From this point forward, zero regression is mandatory.
+
+Create a permanent regression policy and enforcement gate.
+
+Rule:
+Once a mobile workflow is confirmed working in TestFlight, it becomes protected. No future feature, AI Reader addition, UI change, refactor, API change, pricing change, invoice change, media change, or cleanup may be merged or built if it breaks any protected workflow.
+
+Protected workflows now include:
+
+1. Login/logout
+2. Cases list loads from canonical database
+3. Search/look up cases
+4. Open case detail
+5. Overview displays correctly
+6. Case history displays correctly
+7. Invoice displays correctly
+8. Files/photos/documents open correctly
+9. Tooth chart displays with corrected chart layout
+10. Locate case uses desktop-matching locations/stations
+11. Mobile changes sync to desktop/web
+12. Desktop/web changes sync back to mobile
+13. Lab slip / overview print output
+14. Case label print output
+15. No `/api/legacy/cases`
+16. No local-only mobile saves
+17. No duplicate invoices
+18. No blank/unauthorized media regressions
+
+Required enforcement:
+
+1. Add/update `REGRESSION_GUARDRAILS.md`.
+2. Add a Mobile Beta Protected Workflows section.
+3. Map each protected workflow to an automated test or manual TestFlight check.
+4. Add a pre-build checklist that must pass before every EAS/TestFlight build.
+5. Add a rule that EAS/TestFlight builds are manual only and require explicit approval.
+6. Add a CI/lint/test gate that fails if legacy mobile paths are reintroduced.
+7. Add regression tests when a new workflow is confirmed working.
+8. Before any new feature starts, identify which protected workflows it could affect.
+9. After any change, rerun the protected suite.
+10. If any protected workflow fails, stop and fix it before continuing.
+
+Important:
+Do not rely only on unit tests. Real-device TestFlight validation is required for mobile workflows involving:
+
+* camera
+* attachments
+* printing
+* biometric/session behavior
+* media viewing
+* barcode/locate workflows
+* AI Reader
+
+When AI Reader is added later, it must not be allowed to regress the existing beta workflows.
+
+Checkpoint:
+
+“Mobile Beta Zero-Regression Guardrails”

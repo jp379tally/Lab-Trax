@@ -24,10 +24,6 @@ args = "api-server-tests"
 task = "workflow.run"
 args = "regression-tests"
 
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "EAS iOS Build + Submit"
-
 [[workflows.workflow]]
 name = "api-server-tests"
 author = "agent"
@@ -49,17 +45,6 @@ args = "pnpm --filter @workspace/api-server run test && pnpm --filter @workspace
 
 [workflows.workflow.metadata]
 isValidation = true
-
-[[workflows.workflow]]
-name = "EAS iOS Build + Submit"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "bash scripts/eas-ios-build.sh"
-
-[workflows.workflow.metadata]
-outputType = "console"
 
 [agent]
 stack = "PNPM_WORKSPACE"
