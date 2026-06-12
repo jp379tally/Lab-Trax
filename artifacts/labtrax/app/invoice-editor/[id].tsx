@@ -325,6 +325,9 @@ export default function InvoiceEditorScreen() {
       {loading ? (
         <View style={styles.center} testID="invoice-editor-loading">
           <ActivityIndicator color={colors.tint} />
+          {isLegacyMobileInvoice && (
+            <Text style={styles.loadingHint}>Setting up your invoice…</Text>
+          )}
         </View>
       ) : !invoice ? (
         <View style={styles.center} testID="invoice-editor-error">
@@ -622,6 +625,7 @@ function makeStyles(colors: ThemeColors) {
     subtotalValue: { fontSize: 16, fontWeight: "700", color: colors.text },
     center: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24, gap: 12 },
     errorTitle: { fontSize: 16, fontWeight: "600", color: colors.text, textAlign: "center" },
+    loadingHint: { fontSize: 13, color: colors.textSecondary, textAlign: "center", marginTop: 4 },
     errorButton: {
       marginTop: 8,
       paddingHorizontal: 20,

@@ -546,7 +546,7 @@ vi.mock("@workspace/api-client-react", () => ({
           (i) => i.id === id,
         ) ?? null)
       : null,
-    isLoading: false,
+    isLoading: (mockAppOverrides.current.invoiceIsLoading as boolean | undefined) ?? false,
     isError: false,
     refetch: vi.fn(async () => undefined),
   }),

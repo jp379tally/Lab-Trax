@@ -114,7 +114,29 @@ describe("InvoiceEditorScreen — legacy mobile id resolved to canonical invoice
   });
 });
 
-// ── 3. Editor — unresolved legacy id (no canonical invoice exists yet) ────────
+// ── 3. Editor — loading state for a legacy mobile id ─────────────────────────
+
+describe("InvoiceEditorScreen — loading state for a mobile: id", () => {
+  it("shows the 'Setting up your invoice…' hint while loading a mobile: id", () => {
+    setMockSearchParams({ id: legacyMobileInvoice.id });
+    setMockAppState({ invoices: [], invoiceIsLoading: true });
+    const { getByTestId, getByText } = render(<InvoiceEditorScreen />);
+
+    expect(getByTestId("invoice-editor-loading")).toBeTruthy();
+    expect(getByText("Setting up your invoice…")).toBeTruthy();
+  });
+
+  it("does not show the hint while loading a non-mobile invoice", () => {
+    setMockSearchParams({ id: "inv-regular-123" });
+    setMockAppState({ invoices: [], invoiceIsLoading: true });
+    const { getByTestId, queryByText } = render(<InvoiceEditorScreen />);
+
+    expect(getByTestId("invoice-editor-loading")).toBeTruthy();
+    expect(queryByText("Setting up your invoice…")).toBeNull();
+  });
+});
+
+// ── 4. Editor — unresolved legacy id (no canonical invoice exists yet) ────────
 
 describe("InvoiceEditorScreen — legacy mobile id with no canonical invoice", () => {
   function renderUnresolvedEditor() {
@@ -138,13 +160,15 @@ describe("InvoiceEditorScreen — legacy mobile id with no canonical invoice", (
     // The tailored message from [id].tsx when isLegacyMobileInvoice is true.
     expect(
       getByText(
-        /older version of the app/i,
+        /Open the case to try generating an editable invoice/i,
       ),
     ).toBeTruthy();
   });
 
-  it("does not show the generic 'couldn't be loaded' copy for a legacy id", () => {
+  it("does not show the short generic 'couldn't be loaded' copy for a legacy id", () => {
     const { queryByText } = renderUnresolvedEditor();
-    expect(queryByText(/couldn't be loaded/i)).toBeNull();
+    // The legacy path shows a longer tailored message; the short generic form
+    // ("This invoice couldn't be loaded." with nothing after) must not appear.
+    expect(queryByText(/^This invoice couldn't be loaded\.$/)).toBeNull();
   });
 });
