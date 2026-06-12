@@ -54,6 +54,7 @@ import {
   isSameTemplate,
   isTextKind,
   makeImageElement,
+  makeDoctorInfoElement,
   PAGE_H,
   PAGE_W,
   type CasePrintElement,
@@ -805,7 +806,7 @@ export function CasePrintLayoutEditor({
               </h3>
               <div className="space-y-1">
                 {draft.elements
-                  .filter((el) => el.kind !== "image")
+                  .filter((el) => el.kind !== "image" && el.kind !== "doctorInfo")
                   .map((el) => {
                     const isSelected = selectedId === el.id;
                     return (
@@ -930,6 +931,80 @@ export function CasePrintLayoutEditor({
               </div>
             </section>
 
+            {/* Doctor Info elements */}
+            <section>
+              <div className="flex items-center justify-between mb-2 px-1">
+                <h3 className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                  Doctor Info
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const el = makeDoctorInfoElement();
+                  setDraft((prev) => ({
+                    ...prev,
+                    elements: [...prev.elements, el],
+                  }));
+                  setSelectedId(el.id);
+                }}
+                disabled={!isAdmin}
+                className="w-full h-8 rounded-md border border-dashed border-border bg-card hover:bg-secondary/40 inline-flex items-center justify-center gap-1.5 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+                title={isAdmin ? "Add a Doctor Info block to the label" : "Admin only"}
+              >
+                + Add Doctor Info
+              </button>
+              <div className="space-y-1 mt-2">
+                {draft.elements
+                  .filter((el) => el.kind === "doctorInfo")
+                  .map((el) => {
+                    const isSelected = selectedId === el.id;
+                    return (
+                      <div
+                        key={el.id}
+                        className={`flex items-center gap-1.5 px-2 py-1.5 rounded-md border text-xs transition-colors cursor-pointer ${
+                          isSelected
+                            ? "bg-primary/10 border-primary/40"
+                            : "bg-card border-border hover:bg-secondary/40"
+                        } ${!el.visible ? "opacity-60" : ""}`}
+                        onClick={() => setSelectedId(el.id)}
+                      >
+                        <span
+                          className="w-2.5 h-2.5 rounded-sm shrink-0"
+                          style={{ background: ELEMENT_COLORS["doctorInfo"] }}
+                        />
+                        <span className="flex-1 truncate font-medium">
+                          Doctor Info
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDraft((prev) => ({
+                              ...prev,
+                              elements: prev.elements.filter(
+                                (x) => x.id !== el.id,
+                              ),
+                            }));
+                            if (selectedId === el.id) setSelectedId(null);
+                          }}
+                          className="text-muted-foreground hover:text-destructive"
+                          title="Remove Doctor Info block"
+                        >
+                          <Trash2 size={11} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                {draft.elements.filter((el) => el.kind === "doctorInfo")
+                  .length === 0 && (
+                  <p className="text-[10px] text-muted-foreground italic px-1 py-1">
+                    Not on this label.
+                  </p>
+                )}
+              </div>
+            </section>
+
             {/* Grid / Snap controls */}
             <section>
               <h3 className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2 px-1 flex items-center gap-1.5">
@@ -1017,6 +1092,42 @@ export function CasePrintLayoutEditor({
                     el={selectedEl}
                     onChange={(patch) => patchElement(selectedEl.id, patch)}
                   />
+                )}
+
+                {selectedEl.kind === "doctorInfo" && (
+                  <div className="space-y-1.5 pt-1 border-t border-primary/20">
+                    <p className="text-[10px] font-semibold text-primary/80 uppercase tracking-wider">
+                      Practice info fields
+                    </p>
+                    {(
+                      [
+                        {
+                          key: "showPracticeName" as const,
+                          label: "Practice Name",
+                        },
+                        { key: "showAddress" as const, label: "Address" },
+                        { key: "showPhone" as const, label: "Phone" },
+                        { key: "showEmail" as const, label: "Email" },
+                      ] as const
+                    ).map(({ key, label }) => (
+                      <label
+                        key={key}
+                        className="flex items-center gap-2 text-xs cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          className="accent-primary w-3 h-3"
+                          checked={selectedEl[key] !== false}
+                          onChange={(e) =>
+                            patchElement(selectedEl.id, {
+                              [key]: e.target.checked,
+                            })
+                          }
+                        />
+                        <span>{label}</span>
+                      </label>
+                    ))}
+                  </div>
                 )}
 
                 {selectedEl.kind === "image" && (
@@ -1694,6 +1805,7 @@ const SAMPLE_VALUES: Record<string, string> = {
   shade: "A2",
   rxNotes:
     "Please verify shade with photo on file. Light occlusal contacts. Deliver by Friday.",
+  doctorInfo: "Patel Dental Group\n123 Smile Ave, Suite 200\nSpringfield, IL 62701\n(555) 123-4567",
 };
 
 const SAMPLE_TEETH = new Set(["14", "15"]);
@@ -1779,9 +1891,9 @@ function ElementPreview({
   // text element
   const fontPx = Math.max(5, Math.round((el.fontSize ?? 13) * scale));
   const capPx = Math.max(5, Math.round(8 * scale));
-  const showCap = el.kind !== "caseNumber";
+  const showCap = el.kind !== "caseNumber" && el.kind !== "doctorInfo";
   const value = SAMPLE_VALUES[el.kind] ?? "";
-  const isNotes = el.kind === "rxNotes";
+  const isNotes = el.kind === "rxNotes" || el.kind === "doctorInfo";
 
   return (
     <div

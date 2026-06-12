@@ -51,7 +51,13 @@ export const BUILTIN_ELEMENT_KINDS = [
 ] as const;
 export type BuiltinElementKind = (typeof BUILTIN_ELEMENT_KINDS)[number];
 
-export const ELEMENT_KINDS = [...BUILTIN_ELEMENT_KINDS, "image"] as const;
+// "doctorInfo" and "image" are opt-in elements — NOT in BUILTIN_ELEMENT_KINDS
+// so ensureBuiltinElements does not force them into every template.
+export const ELEMENT_KINDS = [
+  ...BUILTIN_ELEMENT_KINDS,
+  "image",
+  "doctorInfo",
+] as const;
 export type ElementKind = (typeof ELEMENT_KINDS)[number];
 
 export const ELEMENT_ALIGN_VALUES = ["left", "center", "right"] as const;
@@ -75,6 +81,11 @@ const elementSchema = z.object({
   storageKey: z.string().min(1).max(256).optional(),
   url: z.string().min(1).max(1024).optional(),
   opacity: z.number().min(0).max(1).optional(),
+  // Doctor Info sub-field toggles (doctorInfo kind only).
+  showPracticeName: z.boolean().optional(),
+  showAddress: z.boolean().optional(),
+  showPhone: z.boolean().optional(),
+  showEmail: z.boolean().optional(),
 });
 
 export const casePrintTemplateSchema = z.object({

@@ -826,6 +826,58 @@ function elTextStyle(el: CasePrintElement): string {
   return `font-family:${ff};font-size:${fs}px;font-weight:${fw};font-style:${fst};text-align:${al}`;
 }
 
+function renderDoctorInfoElement(
+  el: CasePrintElement,
+  labCase: LabCase,
+): string {
+  const contact = labCase.providerOrganizationContact;
+  const style = boxStyle(
+    el,
+    `${elTextStyle(el)};display:flex;flex-direction:column;justify-content:flex-start`,
+  );
+
+  const lines: string[] = [];
+
+  if (el.showPracticeName !== false) {
+    const name =
+      contact?.name ?? labCase.doctorName ?? null;
+    if (name) lines.push(`<div class="lt-el-val">${escapeHtml(name)}</div>`);
+  }
+
+  if (el.showAddress !== false) {
+    const parts: string[] = [];
+    if (contact?.addressLine1) parts.push(contact.addressLine1);
+    if (contact?.addressLine2) parts.push(contact.addressLine2);
+    const cityStateZip = [contact?.city, contact?.state]
+      .filter(Boolean)
+      .join(", ");
+    const cityStateZipFull = [cityStateZip, contact?.zip]
+      .filter(Boolean)
+      .join(" ");
+    if (cityStateZipFull) parts.push(cityStateZipFull);
+    for (const part of parts) {
+      lines.push(`<div class="lt-el-line">${escapeHtml(part)}</div>`);
+    }
+  }
+
+  if (el.showPhone !== false && contact?.phone) {
+    lines.push(`<div class="lt-el-line">${escapeHtml(contact.phone)}</div>`);
+  }
+
+  if (el.showEmail !== false && contact?.billingEmail) {
+    lines.push(
+      `<div class="lt-el-line">${escapeHtml(contact.billingEmail)}</div>`,
+    );
+  }
+
+  const body =
+    lines.length > 0
+      ? lines.join("")
+      : `<div class="lt-el-val lt-el-empty">No contact info.</div>`;
+
+  return `<div class="lt-adv-box" style="${style}">${body}</div>`;
+}
+
 function renderTextElement(
   el: CasePrintElement,
   values: AdvancedCaseValues,
@@ -949,6 +1001,11 @@ export async function printCaseCardAdvanced(
       sections.push(
         `<div class="lt-adv-box" style="${boxStyle(el, "display:flex;flex-direction:column;justify-content:center")}"><div class="lt-adv-barcode-bars"></div><div class="lt-adv-barcode">${escapeHtml(values.caseNumber)}</div></div>`,
       );
+      continue;
+    }
+
+    if (el.kind === "doctorInfo") {
+      sections.push(renderDoctorInfoElement(el, labCase));
       continue;
     }
 

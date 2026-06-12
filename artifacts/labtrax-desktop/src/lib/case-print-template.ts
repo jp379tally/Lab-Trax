@@ -30,7 +30,13 @@ export const BUILTIN_ELEMENT_KINDS = [
 ] as const;
 export type BuiltinElementKind = (typeof BUILTIN_ELEMENT_KINDS)[number];
 
-export const ELEMENT_KINDS = [...BUILTIN_ELEMENT_KINDS, "image"] as const;
+// "doctorInfo" and "image" are opt-in elements — NOT in BUILTIN_ELEMENT_KINDS
+// so ensureBuiltinElements does not force them into every template.
+export const ELEMENT_KINDS = [
+  ...BUILTIN_ELEMENT_KINDS,
+  "image",
+  "doctorInfo",
+] as const;
 export type ElementKind = (typeof ELEMENT_KINDS)[number];
 
 export const ELEMENT_ALIGN_VALUES = ["left", "center", "right"] as const;
@@ -54,6 +60,11 @@ export interface CasePrintElement {
   storageKey?: string;
   url?: string;
   opacity?: number;
+  // Doctor Info sub-field toggles (doctorInfo kind only)
+  showPracticeName?: boolean;
+  showAddress?: boolean;
+  showPhone?: boolean;
+  showEmail?: boolean;
 }
 
 export interface CasePrintTemplate {
@@ -77,6 +88,7 @@ export const ELEMENT_LABELS: Record<ElementKind, string> = {
   toothChart: "Tooth Chart",
   barcode: "Case Pan Barcode",
   image: "Image",
+  doctorInfo: "Doctor Info",
 };
 
 export const ELEMENT_COLORS: Record<ElementKind, string> = {
@@ -93,6 +105,7 @@ export const ELEMENT_COLORS: Record<ElementKind, string> = {
   toothChart: "rgba(234,179,8,0.18)",
   barcode: "rgba(100,116,139,0.18)",
   image: "rgba(0,0,0,0)",
+  doctorInfo: "rgba(16,185,129,0.10)",
 };
 
 export interface FontFamilyOption {
@@ -113,8 +126,13 @@ export const FONT_FAMILIES: FontFamilyOption[] = [
 
 export const DEFAULT_FONT_FAMILY = "Helvetica, Arial, sans-serif";
 
-export function isTextKind(kind: ElementKind): kind is TextElementKind {
-  return (TEXT_ELEMENT_KINDS as readonly string[]).includes(kind);
+export function isTextKind(
+  kind: ElementKind,
+): kind is TextElementKind | "doctorInfo" {
+  return (
+    (TEXT_ELEMENT_KINDS as readonly string[]).includes(kind) ||
+    kind === "doctorInfo"
+  );
 }
 
 // ── Element constructors ───────────────────────────────────────────────
@@ -174,6 +192,27 @@ export function makeImageElement(
   };
 }
 
+export function makeDoctorInfoElement(): CasePrintElement {
+  return {
+    id: `doctorInfo-${Date.now()}`,
+    kind: "doctorInfo",
+    x: 418,
+    y: 166,
+    w: 350,
+    h: 80,
+    visible: true,
+    fontFamily: DEFAULT_FONT_FAMILY,
+    fontSize: 10,
+    bold: false,
+    italic: false,
+    align: "left",
+    showPracticeName: true,
+    showAddress: true,
+    showPhone: true,
+    showEmail: true,
+  };
+}
+
 export const DEFAULT_CASE_PRINT_TEMPLATE: CasePrintTemplate = {
   version: 2,
   elements: [
@@ -206,6 +245,10 @@ function clampNum(
 
 function coerceAlign(v: unknown): ElementAlign {
   return v === "center" || v === "right" || v === "left" ? v : "left";
+}
+
+function coerceBool(v: unknown, fallback: boolean): boolean {
+  return typeof v === "boolean" ? v : fallback;
 }
 
 function defaultForKind(kind: BuiltinElementKind): CasePrintElement {
@@ -250,16 +293,45 @@ function coerceElement(raw: unknown): CasePrintElement | null {
     };
   }
 
+  if (k === "doctorInfo") {
+    const fontFamily =
+      typeof o.fontFamily === "string" && o.fontFamily
+        ? o.fontFamily
+        : DEFAULT_FONT_FAMILY;
+    const fontSize = clampNum(o.fontSize, 5, 200, 10);
+    const bold = coerceBool(o.bold, false);
+    const italic = coerceBool(o.italic, false);
+    const align = coerceAlign(o.align);
+    return {
+      id,
+      kind: "doctorInfo",
+      x,
+      y,
+      w,
+      h,
+      visible,
+      fontFamily,
+      fontSize,
+      bold,
+      italic,
+      align,
+      showPracticeName: coerceBool(o.showPracticeName, true),
+      showAddress: coerceBool(o.showAddress, true),
+      showPhone: coerceBool(o.showPhone, true),
+      showEmail: coerceBool(o.showEmail, true),
+    };
+  }
+
   if (isTextKind(k)) {
     const fontFamily =
       typeof o.fontFamily === "string" && o.fontFamily
         ? o.fontFamily
         : DEFAULT_FONT_FAMILY;
     const fontSize = clampNum(o.fontSize, 5, 200, 13);
-    const bold = typeof o.bold === "boolean" ? o.bold : false;
-    const italic = typeof o.italic === "boolean" ? o.italic : false;
+    const bold = coerceBool(o.bold, false);
+    const italic = coerceBool(o.italic, false);
     const align = coerceAlign(o.align);
-    return { id, kind: k, x, y, w, h, visible, fontFamily, fontSize, bold, italic, align };
+    return { id, kind: k as TextElementKind, x, y, w, h, visible, fontFamily, fontSize, bold, italic, align };
   }
 
   // graphic builtin (toothChart, barcode)
@@ -334,12 +406,12 @@ function migrateV1(value: Record<string, unknown>): CasePrintTemplate | null {
     return null;
   }
 
-  const header = asV1Box(boxes.header, LEGACY_DEFAULT_BOXES.header);
-  const caseDetails = asV1Box(boxes.caseDetails, LEGACY_DEFAULT_BOXES.caseDetails);
-  const rxSummary = asV1Box(boxes.rxSummary, LEGACY_DEFAULT_BOXES.rxSummary);
-  const toothChart = asV1Box(boxes.toothChart, LEGACY_DEFAULT_BOXES.toothChart);
-  const notes = asV1Box(boxes.notes, LEGACY_DEFAULT_BOXES.notes);
-  const barcode = asV1Box(boxes.barcode, LEGACY_DEFAULT_BOXES.barcode);
+  const header = asV1Box(boxes.header, LEGACY_DEFAULT_BOXES.header!);
+  const caseDetails = asV1Box(boxes.caseDetails, LEGACY_DEFAULT_BOXES.caseDetails!);
+  const rxSummary = asV1Box(boxes.rxSummary, LEGACY_DEFAULT_BOXES.rxSummary!);
+  const toothChart = asV1Box(boxes.toothChart, LEGACY_DEFAULT_BOXES.toothChart!);
+  const notes = asV1Box(boxes.notes, LEGACY_DEFAULT_BOXES.notes!);
+  const barcode = asV1Box(boxes.barcode, LEGACY_DEFAULT_BOXES.barcode!);
 
   const fieldSizes = value.fieldSizes as Record<string, unknown> | undefined;
   const cdSizes = fieldSizes?.caseDetails;
@@ -405,21 +477,22 @@ function migrateV1(value: Record<string, unknown>): CasePrintTemplate | null {
 /**
  * Ensure every built-in element kind is present (filling any missing one
  * from the default), preserving the canonical built-in order followed by
- * image elements. Keeps the editor robust against partial saved data.
+ * opt-in elements (image, doctorInfo). Keeps the editor robust against
+ * partial saved data.
  */
 export function ensureBuiltinElements(
   elements: CasePrintElement[],
 ): CasePrintElement[] {
   const byKind = new Map<string, CasePrintElement>();
-  const images: CasePrintElement[] = [];
+  const extras: CasePrintElement[] = []; // images + doctorInfo (opt-in, allow multiples)
   for (const el of elements) {
-    if (el.kind === "image") images.push(el);
+    if (el.kind === "image" || el.kind === "doctorInfo") extras.push(el);
     else if (!byKind.has(el.kind)) byKind.set(el.kind, el);
   }
   const ordered: CasePrintElement[] = BUILTIN_ELEMENT_KINDS.map((kind) => {
     return byKind.get(kind) ?? defaultForKind(kind);
   });
-  return [...ordered, ...images];
+  return [...ordered, ...extras];
 }
 
 export function coerceCasePrintTemplate(value: unknown): CasePrintTemplate {
@@ -431,7 +504,7 @@ export function coerceCasePrintTemplate(value: unknown): CasePrintTemplate {
     const elements = o.elements
       .map(coerceElement)
       .filter((e): e is CasePrintElement => e !== null)
-      .slice(0, 40);
+      .slice(0, 48);
     return { version: 2, elements: ensureBuiltinElements(elements) };
   }
 

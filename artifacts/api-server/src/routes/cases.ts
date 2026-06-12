@@ -3155,6 +3155,36 @@ router.get(
       suggestedPracticeName = suggestedOrg?.name ?? null;
     }
 
+    // Fetch provider org contact details so the desktop print renderer can
+    // populate the Doctor Info label block without an extra round-trip.
+    let providerOrganizationContact: {
+      name?: string | null;
+      addressLine1?: string | null;
+      addressLine2?: string | null;
+      city?: string | null;
+      state?: string | null;
+      zip?: string | null;
+      phone?: string | null;
+      billingEmail?: string | null;
+    } | null = null;
+    if (found.providerOrganizationId) {
+      const providerOrg = await db.query.organizations.findFirst({
+        where: eq(organizations.id, found.providerOrganizationId),
+      });
+      if (providerOrg) {
+        providerOrganizationContact = {
+          name: (providerOrg as any).name ?? null,
+          addressLine1: (providerOrg as any).addressLine1 ?? null,
+          addressLine2: (providerOrg as any).addressLine2 ?? null,
+          city: (providerOrg as any).city ?? null,
+          state: (providerOrg as any).state ?? null,
+          zip: (providerOrg as any).zip ?? null,
+          phone: (providerOrg as any).phone ?? null,
+          billingEmail: (providerOrg as any).billingEmail ?? null,
+        };
+      }
+    }
+
     const STATUS_LABELS: Record<string, string> = {
       received: "Received",
       in_design: "Design",
@@ -3192,6 +3222,7 @@ router.get(
     return ok(res, {
       ...found,
       suggestedPracticeName,
+      providerOrganizationContact,
       restorations,
       notes: enrichedNotes,
       attachments: visibleAttachmentsFor(enrichedAttachments, isLabMember),

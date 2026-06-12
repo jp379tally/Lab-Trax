@@ -69,6 +69,21 @@ export interface LabCase {
   casePanBarcode?: string | null;
   /** Free-text general notes entered on the case. */
   caseNotes?: string | null;
+  /**
+   * Contact details from the provider organization record, populated on
+   * GET /cases/:id so the advanced print renderer can display the Doctor Info
+   * block without an extra round-trip.
+   */
+  providerOrganizationContact?: {
+    name?: string | null;
+    addressLine1?: string | null;
+    addressLine2?: string | null;
+    city?: string | null;
+    state?: string | null;
+    zip?: string | null;
+    phone?: string | null;
+    billingEmail?: string | null;
+  } | null;
 }
 
 /**
