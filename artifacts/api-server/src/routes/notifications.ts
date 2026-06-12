@@ -25,6 +25,28 @@ router.get(
   })
 );
 
+router.patch(
+  "/:id/read",
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId as string;
+    const { id } = req.params;
+
+    const [updated] = await db
+      .update(notifications)
+      .set({ readAt: new Date() })
+      .where(
+        and(eq(notifications.id, id), eq(notifications.userId, userId))
+      )
+      .returning();
+
+    if (!updated) {
+      return ok(res, { ok: false, error: "not_found" });
+    }
+
+    return ok(res, updated);
+  })
+);
+
 router.post(
   "/mark-all-read",
   asyncHandler(async (req, res) => {

@@ -29,6 +29,7 @@ import {
   XCircle,
   HardDrive,
   Zap,
+  ExternalLink,
 } from "lucide-react";
 import { AiChatPanel } from "./AiChatPanel";
 import { AiPanelContext, type AiCaseContext } from "@/lib/ai-panel-context";
@@ -126,10 +127,39 @@ function relativeTime(dateStr: string): string {
   return `${days}d ago`;
 }
 
+const SECURITY_REASONS = new Set([
+  "refresh_token_reuse_detected",
+  "suspicious_login",
+  "suspicious_signin",
+]);
+
+function getNotificationDestination(notif: Notification): string | null {
+  const data = notif.dataJson as Record<string, unknown> | null | undefined;
+
+  if (
+    notif.type === "case_imported_from_itero" ||
+    (notif.type === "alert" && data?.caseId)
+  ) {
+    const caseId = data?.caseId as string | undefined;
+    if (caseId) return `/cases?caseId=${encodeURIComponent(caseId)}`;
+  }
+
+  if (
+    notif.type === "security_session_revoked" ||
+    notif.type === "suspicious_signin" ||
+    (data?.reason && SECURITY_REASONS.has(String(data.reason))) ||
+    (data?.alertReason && String(data.alertReason).toLowerCase().includes("security"))
+  ) {
+    return "/settings?tab=sessions";
+  }
+
+  return null;
+}
+
 const POLL_INTERVAL_MS = 60_000;
 
 export function AppLayout({ children }: Props) {
-  const [location] = useLocation();
+  const [location, setLocation] = useLocation();
   const { user, logout } = useAuth();
   const isAdmin = user?.role === "admin";
   const [menuOpen, setMenuOpen] = useState(false);
@@ -251,6 +281,27 @@ export function AppLayout({ children }: Props) {
       /* ignore */
     } finally {
       markReadInflight.current = false;
+    }
+  }
+
+  async function handleNotificationClick(notif: Notification) {
+    setNotificationsOpen(false);
+
+    if (!notif.readAt) {
+      const now = new Date().toISOString();
+      setNotificationItems((prev) =>
+        prev.map((n) => (n.id === notif.id ? { ...n, readAt: now } : n))
+      );
+      setHasUnread((prev) => {
+        if (!prev) return false;
+        return notificationItems.some((n) => n.id !== notif.id && !n.readAt);
+      });
+      apiFetch(`/notifications/${notif.id}/read`, { method: "PATCH" }).catch(() => {/* ignore */});
+    }
+
+    const dest = getNotificationDestination(notif);
+    if (dest) {
+      setLocation(dest);
     }
   }
 
@@ -561,33 +612,44 @@ export function AppLayout({ children }: Props) {
                     </div>
                   ) : (
                     <ul className="max-h-80 overflow-y-auto scrollbar-thin divide-y divide-border">
-                      {notificationItems.map((notif) => (
-                        <li
-                          key={notif.id}
-                          className={`px-3 py-2.5 ${
-                            !notif.readAt ? "bg-primary/5" : ""
-                          }`}
-                        >
-                          <div className="flex items-start gap-2">
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-1.5">
-                                {!notif.readAt && (
-                                  <span className="shrink-0 h-1.5 w-1.5 rounded-full bg-primary mt-0.5" />
-                                )}
-                                <p className="text-xs font-medium leading-snug truncate">
-                                  {notif.title}
-                                </p>
+                      {notificationItems.map((notif) => {
+                        const dest = getNotificationDestination(notif);
+                        return (
+                          <li key={notif.id}>
+                            <button
+                              type="button"
+                              onClick={() => handleNotificationClick(notif)}
+                              className={`w-full text-left px-3 py-2.5 transition-colors cursor-pointer hover:bg-accent active:bg-accent/80 focus:outline-none focus-visible:ring-1 focus-visible:ring-primary ${
+                                !notif.readAt ? "bg-primary/5 hover:bg-primary/10" : ""
+                              }`}
+                            >
+                              <div className="flex items-start gap-2">
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-1.5">
+                                    {!notif.readAt && (
+                                      <span className="shrink-0 h-1.5 w-1.5 rounded-full bg-primary mt-0.5" />
+                                    )}
+                                    <p className="text-xs font-medium leading-snug truncate">
+                                      {notif.title}
+                                    </p>
+                                  </div>
+                                  <p className="text-[11px] text-muted-foreground mt-0.5 line-clamp-2 leading-snug">
+                                    {notif.body}
+                                  </p>
+                                </div>
+                                <div className="shrink-0 flex flex-col items-end gap-1 mt-0.5">
+                                  <span className="text-[10px] text-muted-foreground/60 whitespace-nowrap">
+                                    {relativeTime(notif.createdAt)}
+                                  </span>
+                                  {dest && (
+                                    <ExternalLink size={11} className="text-muted-foreground/40" />
+                                  )}
+                                </div>
                               </div>
-                              <p className="text-[11px] text-muted-foreground mt-0.5 line-clamp-2 leading-snug">
-                                {notif.body}
-                              </p>
-                            </div>
-                            <span className="shrink-0 text-[10px] text-muted-foreground/60 mt-0.5 whitespace-nowrap">
-                              {relativeTime(notif.createdAt)}
-                            </span>
-                          </div>
-                        </li>
-                      ))}
+                            </button>
+                          </li>
+                        );
+                      })}
                     </ul>
                   )}
                 </div>
