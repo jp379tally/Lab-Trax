@@ -55,6 +55,7 @@ import {
   openAttachmentPreview,
 } from "@/lib/attachment-preview";
 import { buildCaseCardHtml, buildInvoiceHtml, generatePdf, sharePdf } from "@/lib/case-pdf";
+import { printCaseHistory } from "@/lib/printCaseHistory";
 import { setAiReaderSession, clearAiReaderSession } from "@/lib/ai-reader-store";
 
 // ─── Viewer-local detail shape ────────────────────────────────────────────────
@@ -795,6 +796,16 @@ export default function CaseDetailScreen() {
     else router.replace("/(tabs)" as never);
   }
 
+  // Open the native print dialog with a formatted case history document.
+  async function handlePrintHistory() {
+    if (!c) return;
+    try {
+      await printCaseHistory(c, history);
+    } catch (e) {
+      Alert.alert("Couldn't print history", errorMessage(e));
+    }
+  }
+
   // Render the case work-order card to a PDF and hand it to the OS share sheet.
   async function handlePrintCaseCard() {
     if (!c) return;
@@ -865,15 +876,27 @@ export default function CaseDetailScreen() {
         colors={colors}
         right={
           <View style={styles.headerRightGroup}>
-            <Pressable
-              onPress={handlePrintCaseCard}
-              hitSlop={8}
-              style={styles.headerIconBtn}
-              testID="case-print"
-              accessibilityLabel="Print case card"
-            >
-              <Ionicons name="print-outline" size={20} color={colors.text} />
-            </Pressable>
+            {active === "history" ? (
+              <Pressable
+                onPress={handlePrintHistory}
+                hitSlop={8}
+                style={styles.headerIconBtn}
+                testID="case-print-history"
+                accessibilityLabel="Print case history"
+              >
+                <Ionicons name="print-outline" size={20} color={colors.text} />
+              </Pressable>
+            ) : (
+              <Pressable
+                onPress={handlePrintCaseCard}
+                hitSlop={8}
+                style={styles.headerIconBtn}
+                testID="case-print"
+                accessibilityLabel="Print case card"
+              >
+                <Ionicons name="print-outline" size={20} color={colors.text} />
+              </Pressable>
+            )}
             <StatusBadge label={titleCase(c.status ?? "—")} variant={statusVariant(c.status)} />
           </View>
         }
