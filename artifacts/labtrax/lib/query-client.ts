@@ -754,8 +754,8 @@ export async function chunkedUploadCaseMedia(
     } else {
       // Dynamic import avoids bundling issues on web
       const FS = await import("expo-file-system");
-      rawB64 = await (FS as any).readAsStringAsync(fileUri, {
-        encoding: (FS as any).EncodingType.Base64,
+      rawB64 = await (FS.default ?? (FS as any)).readAsStringAsync(fileUri, {
+        encoding: "base64",
       });
     }
     fullBuffer = base64ToArrayBuffer(rawB64);
