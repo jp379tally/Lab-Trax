@@ -1568,7 +1568,7 @@ export default function CasesPage() {
               }}
               className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-secondary text-foreground text-xs font-medium hover:bg-secondary/80 transition-colors border border-border"
             >
-              Change status
+              Change Location
             </button>
             <button
               type="button"
@@ -1876,10 +1876,10 @@ export default function CasesPage() {
             className="bg-card border border-border rounded-2xl shadow-2xl w-full max-w-sm mx-4"
             role="dialog"
             aria-modal="true"
-            aria-label="Change case status"
+            aria-label="Change case location"
           >
             <div className="flex items-center justify-between px-6 py-4 border-b border-border">
-              <h2 className="text-base font-semibold">Change status — {selectedIds.size} case{selectedIds.size !== 1 ? "s" : ""}</h2>
+              <h2 className="text-base font-semibold">Change Location — {selectedIds.size} case{selectedIds.size !== 1 ? "s" : ""}</h2>
               <button
                 type="button"
                 onClick={() => {
@@ -1895,7 +1895,7 @@ export default function CasesPage() {
             <div className="px-6 py-5 space-y-4">
               <div>
                 <label className="block text-xs font-medium text-muted-foreground mb-1.5" htmlFor="bulk-status-select">
-                  New status
+                  New location
                 </label>
                 <select
                   id="bulk-status-select"
