@@ -1,0 +1,281 @@
+Create new task:
+
+# Mobile AI Reader Intake — Desktop Workflow Parity
+
+## What & Why
+
+The mobile app is now close to beta quality. The next major feature is adding the AI Reader intake workflow back into the rebuilt mobile app.
+
+This must not be a restoration of the old mobile AI Reader logic.
+
+The mobile AI Reader must be rebuilt from the desktop/web intake workflow and must preserve every protected mobile beta workflow already confirmed working.
+
+The AI Reader is a mobile hardware adapter:
+
+* camera/document capture happens on mobile
+* AI extraction happens through the canonical API
+* case creation follows the same desktop/web workflow
+* invoice generation follows the same desktop/web workflow
+* files/history/attachments follow the same desktop/web workflow
+* barcode/pan assignment writes to the same canonical case data
+
+No local-only saves.
+No `/api/legacy/cases`.
+No duplicate invoices.
+No regression of existing mobile beta functionality.
+
+## User Workflow
+
+The desired workflow is:
+
+1. User opens mobile AI Reader.
+2. User scans one or more dental prescriptions.
+3. App detects prescription/letter boundaries automatically, similar to OneDrive.
+4. Automatic shutter defaults OFF.
+5. User can toggle automatic shutter ON.
+6. Manual capture remains available at all times.
+7. AI reads the prescription and extracts:
+
+   * dentist/provider name
+   * patient name
+   * material
+   * shade
+   * tooth numbers
+   * restoration type
+   * due date if present
+   * special instructions
+   * any prescription notes
+8. Multiple scanned prescription pages are combined and saved as a PDF.
+9. The PDF is attached to the created case in the Files section.
+10. The same PDF appears in case history as an attachment/history event with a tappable thumbnail/link.
+11. Extracted fields prefill the same case-creation workflow used by desktop/web.
+12. App detects possible duplicates or remake cases using the same rules/workflow as desktop/web.
+13. User confirms:
+
+* new case
+* duplicate
+* remake
+* not a remake
+* link to prior case if applicable
+
+14. Case is created through canonical `POST /api/cases`.
+15. Invoice is generated immediately through the same desktop/web invoice generation workflow.
+16. User is prompted to scan a physical case pan barcode.
+17. Barcode scan assigns that case pan/barcode to the canonical case.
+18. Barcode can later be used to locate the case throughout the lab.
+19. After barcode assignment, app asks:
+    “Print case label?”
+20. If yes, print label using the same desktop/web case-label format.
+21. If no, finish workflow.
+22. End state:
+
+* case exists in production
+* invoice exists once
+* prescription PDF is attached
+* prescription PDF is visible in history
+* pan barcode is assigned
+* case label was offered
+* desktop/web shows the same data
+
+## Requirements
+
+### Capture
+
+* Add mobile AI Reader screen.
+* Support manual capture.
+* Support automatic prescription/letter detection.
+* Auto-shutter must default OFF.
+* User can toggle auto-shutter ON/OFF.
+* Support multiple prescription pages in one intake session.
+* User can review, retake, remove, or reorder pages before submission.
+
+### PDF Creation
+
+* Combine captured prescription images into a single PDF.
+* Attach the PDF to the canonical case.
+* PDF must appear in:
+
+  * Files section
+  * Case history section
+* History event must include a tappable thumbnail/link like desktop.
+
+### AI Extraction
+
+Use the canonical AI prescription analysis endpoint/workflow.
+
+Extract:
+
+* dentist/provider
+* patient
+* material
+* shade
+* tooth numbers
+* restoration type
+* due date
+* notes/special instructions
+
+Do not create a mobile-only parsing model.
+
+### Desktop Workflow Parity
+
+Case creation must follow the desktop/web workflow.
+
+This includes:
+
+* provider/practice matching
+* unknown provider/practice handling
+* duplicate detection
+* remake detection
+* restoration generation
+* invoice generation
+* attachment/history creation
+
+If desktop prompts the user for a decision, mobile must prompt the user for the equivalent decision.
+
+### Unknown Provider / Practice
+
+If provider/practice is unknown:
+
+* mobile must follow the same desktop/web provider creation/linking workflow
+* do not show a dead-end “ask admin” message
+* create/link provider canonically
+* register alias if desktop does
+* continue case creation
+
+### Duplicate / Remake Detection
+
+Mobile must match desktop/web:
+
+* detect possible duplicate patient/case
+* detect possible remake chain
+* user can choose existing case as remake
+* user can choose “not a remake”
+* user can create as new case
+* no silent discard
+* no local-only fallback
+
+### Case Creation
+
+* Case is created using canonical `POST /api/cases`.
+* Same Case UUID appears on mobile, desktop, and web.
+* Created case opens in the rebuilt mobile case detail screen.
+* Case history includes the creation event.
+* Files section includes the prescription PDF.
+
+### Invoice Generation
+
+* Invoice is generated immediately after case creation.
+* Use same desktop/web endpoint/workflow.
+* Invoice must be linked to the same canonical Case UUID.
+* No duplicate invoice.
+* Invoice visible on mobile, web, and desktop.
+
+### Barcode / Case Pan Assignment
+
+After case creation:
+
+* prompt user to scan physical case pan barcode
+* barcode reader must be reliable and fast
+* assign scanned barcode/pan to canonical case
+* barcode can later locate the case
+* this must use the same canonical field/API desktop uses
+
+### Case Label Prompt
+
+After barcode assignment:
+
+* prompt user:
+  “Print case label?”
+* if yes, print label using same desktop/web label format/data
+* if no, finish workflow
+* no other hidden steps
+
+### Regression Protection
+
+Before implementation:
+
+* identify every protected beta workflow this could affect
+* add/update regression tests before changing code
+* update `REGRESSION_GUARDRAILS.md`
+
+Protected workflows that must not regress:
+
+* login/logout
+* cases list
+* case detail
+* overview
+* restorations/tooth chart
+* notes
+* files/photos/documents
+* invoice section
+* history
+* lab slip
+* case label
+* locate case
+* desktop/mobile sync
+* no local-only saves
+* no duplicate invoices
+* media viewing
+* barcode lookup
+* auth/token refresh
+
+## Out of Scope
+
+Do not add unrelated broad navigation changes.
+
+Do not add a global contacts tab unless required by the provider workflow and approved.
+
+Do not add mobile-only intake shortcuts that desktop does not have.
+
+Do not reintroduce the old mobile app architecture.
+
+Do not use `/api/legacy/cases`.
+
+Do not implement offline local case creation.
+
+## Implementation Plan Required Before Coding
+
+Before writing code, provide a plan showing:
+
+1. Desktop/web source workflow/component for AI Reader/intake.
+2. Current canonical API endpoints used.
+3. Missing API/spec gaps if any.
+4. Mobile screens/components to add.
+5. How multiple captured pages become one PDF.
+6. How PDF attaches to case and history.
+7. How duplicate/remake detection matches desktop.
+8. How unknown provider workflow matches desktop.
+9. How invoice is generated once.
+10. How barcode/pan assignment works.
+11. How case label printing works.
+12. Regression tests to add.
+13. TestFlight acceptance checklist.
+
+Do not code until the plan is approved.
+
+## TestFlight Acceptance Checklist
+
+Use a real device.
+
+1. Scan one-page prescription.
+2. Scan multi-page prescription.
+3. Toggle auto-shutter ON/OFF.
+4. Confirm manual capture works.
+5. Confirm AI extracts dentist, patient, material, shade, tooth numbers, restoration type, due date, and notes.
+6. Confirm unknown provider workflow matches desktop.
+7. Confirm duplicate/remake detection works.
+8. Confirm canonical case is created.
+9. Confirm invoice is generated once.
+10. Confirm prescription PDF appears in Files.
+11. Confirm prescription PDF appears in History with tappable thumbnail/link.
+12. Confirm case appears on desktop/web.
+13. Confirm invoice appears on desktop/web.
+14. Confirm barcode/pan assignment works.
+15. Confirm barcode later locates the case.
+16. Confirm case label print prompt appears.
+17. Confirm printed label matches desktop format.
+18. Confirm no existing beta workflow regressed.
+
+Checkpoint:
+
+“Mobile AI Reader Intake Desktop Parity Plan”
