@@ -78,6 +78,7 @@
   },
   "dependencies": {
     "expo-clipboard": "^8.0.8",
+    "expo-dev-client": "~6.0.21",
     "expo-file-system": "~19.0.23",
     "expo-media-library": "~18.2.1",
     "react-native-document-scanner-plugin": "^2.0.4",
