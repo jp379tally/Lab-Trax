@@ -48,6 +48,15 @@ export default function TabLayout() {
           }}
         />
         <Tabs.Screen
+          name="account"
+          options={{
+            title: "Account",
+            tabBarIcon: ({ color, focused }) => (
+              <Ionicons name={focused ? "person" : "person-outline"} size={22} color={color} />
+            ),
+          }}
+        />
+        <Tabs.Screen
           name="financial"
           options={{
             title: "Financial",
@@ -62,15 +71,6 @@ export default function TabLayout() {
             title: "More",
             tabBarIcon: ({ color, focused }) => (
               <Ionicons name={focused ? "ellipsis-horizontal-circle" : "ellipsis-horizontal-circle-outline"} size={22} color={color} />
-            ),
-          }}
-        />
-        <Tabs.Screen
-          name="account"
-          options={{
-            title: "Account",
-            tabBarIcon: ({ color, focused }) => (
-              <Ionicons name={focused ? "person" : "person-outline"} size={22} color={color} />
             ),
           }}
         />
