@@ -1554,6 +1554,16 @@ export const UpdateCaseBody = zod.object({
     .describe(
       'When `true`, clears the AI-generated `suggestedDoctorName` and\n`suggestedProviderOrgId` fields without affecting any other\ncase fields. Used by the \"Keep as-is\" action in the desktop\nreview banner.\n',
     ),
+  bridgeConnectors: zod
+    .string()
+    .optional()
+    .describe(
+      "Comma-separated bridge-connector tooth-pair string controlling\nwhich adjacent restorations form a bridge span. An empty string\nclears all connectors on the case.\n",
+    ),
+  expectedDeliveryDate: zod.coerce
+    .date()
+    .nullish()
+    .describe("Expected delivery date; `null` clears it."),
 });
 
 export const UpdateCaseResponse = zod.object({
@@ -1578,6 +1588,173 @@ export const AcknowledgeAiReviewResponse = zod.object({
     .object({
       caseId: zod.string().optional(),
       needsAiReview: zod.boolean().optional(),
+    })
+    .optional(),
+});
+
+/**
+ * Creates a case note. Lab members author internal or shared notes;
+provider members author notes attributed to their org. Visibility
+defaults to `shared_with_provider`.
+
+ * @summary Add a note to a case
+ */
+export const AddCaseNoteParams = zod.object({
+  caseId: zod.coerce.string(),
+});
+
+export const addCaseNoteBodyVisibilityDefault = `shared_with_provider`;
+
+export const AddCaseNoteBody = zod.object({
+  noteText: zod.string().min(1),
+  visibility: zod
+    .enum(["internal_lab_only", "shared_with_provider"])
+    .default(addCaseNoteBodyVisibilityDefault),
+});
+
+/**
+ * Appends a location-change entry for the case (e.g. moving it to a
+new station). Only lab members may call this endpoint.
+
+ * @summary Record a case location/station change
+ */
+export const ChangeCaseLocationParams = zod.object({
+  caseId: zod.coerce.string(),
+});
+
+export const ChangeCaseLocationBody = zod.object({
+  locationCode: zod.string().min(1),
+  locationName: zod.string().min(1),
+  notes: zod.string().optional(),
+});
+
+/**
+ * Adds a restoration line item (crown, pontic, etc.) to a case. Unit
+price is auto-resolved from pricing when `unitPrice` is omitted or 0.
+Only lab members may call this endpoint.
+
+ * @summary Add a restoration to a case
+ */
+export const AddCaseRestorationParams = zod.object({
+  caseId: zod.coerce.string(),
+});
+
+export const addCaseRestorationBodyQuantityDefault = 1;
+
+export const addCaseRestorationBodyUnitPriceDefault = 0;
+export const addCaseRestorationBodyUnitPriceMin = 0;
+
+export const AddCaseRestorationBody = zod.object({
+  toothNumber: zod.string().min(1),
+  restorationType: zod.string().min(1),
+  material: zod.string().optional(),
+  shade: zod.string().optional(),
+  notes: zod.string().optional(),
+  quantity: zod.number().min(1).default(addCaseRestorationBodyQuantityDefault),
+  unitPrice: zod
+    .number()
+    .min(addCaseRestorationBodyUnitPriceMin)
+    .default(addCaseRestorationBodyUnitPriceDefault),
+});
+
+/**
+ * Partially updates a restoration line item. All fields are optional.
+Setting `unitPrice` marks the price source as manual. Only lab
+members may call this endpoint.
+
+ * @summary Update a case restoration
+ */
+export const UpdateCaseRestorationParams = zod.object({
+  caseId: zod.coerce.string(),
+  restorationId: zod.coerce.string(),
+});
+
+export const updateCaseRestorationBodyUnitPriceMin = 0;
+
+export const UpdateCaseRestorationBody = zod.object({
+  toothNumber: zod.string().min(1).optional(),
+  material: zod.string().optional(),
+  shade: zod.string().optional(),
+  notes: zod.string().optional(),
+  quantity: zod.number().min(1).optional(),
+  unitPrice: zod.number().min(updateCaseRestorationBodyUnitPriceMin).optional(),
+});
+
+export const UpdateCaseRestorationResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      id: zod.string().nullish(),
+      toothNumber: zod.string().nullish(),
+      restorationType: zod.string().nullish(),
+      restorationSubtype: zod.string().nullish(),
+      material: zod.string().nullish(),
+      shade: zod.string().nullish(),
+      notes: zod.string().nullish(),
+      quantity: zod.number().nullish(),
+    })
+    .optional(),
+});
+
+/**
+ * Removes a restoration line item and keeps the case invoice in sync.
+Only lab members may call this endpoint.
+
+ * @summary Delete a case restoration
+ */
+export const DeleteCaseRestorationParams = zod.object({
+  caseId: zod.coerce.string(),
+  restorationId: zod.coerce.string(),
+});
+
+export const DeleteCaseRestorationResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      deleted: zod.boolean().optional(),
+    })
+    .optional(),
+});
+
+/**
+ * Records a case attachment for a file already uploaded to storage
+(referenced by `storageKey`). Only lab members may attach to a
+canonical case. Visibility defaults to `shared_with_provider`.
+
+ * @summary Attach an uploaded file to a case
+ */
+export const UploadCaseAttachmentParams = zod.object({
+  caseId: zod.coerce.string(),
+});
+
+export const uploadCaseAttachmentBodyFileTypeDefault = `application/octet-stream`;
+export const uploadCaseAttachmentBodyVisibilityDefault = `shared_with_provider`;
+
+export const UploadCaseAttachmentBody = zod.object({
+  storageKey: zod.string().min(1),
+  fileName: zod.string().min(1),
+  fileType: zod.string().default(uploadCaseAttachmentBodyFileTypeDefault),
+  visibility: zod
+    .enum(["internal_lab_only", "shared_with_provider"])
+    .default(uploadCaseAttachmentBodyVisibilityDefault),
+});
+
+/**
+ * Soft-deletes a case attachment. Only lab members may call this
+endpoint.
+
+ * @summary Delete a case attachment
+ */
+export const DeleteCaseAttachmentParams = zod.object({
+  caseId: zod.coerce.string(),
+  attachmentId: zod.coerce.string(),
+});
+
+export const DeleteCaseAttachmentResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      deleted: zod.boolean().optional(),
     })
     .optional(),
 });

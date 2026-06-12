@@ -26,4 +26,11 @@ case fields. Used by the "Keep as-is" action in the desktop
 review banner.
  */
   clearSuggestion?: boolean;
+  /** Comma-separated bridge-connector tooth-pair string controlling
+which adjacent restorations form a bridge span. An empty string
+clears all connectors on the case.
+ */
+  bridgeConnectors?: string;
+  /** Expected delivery date; `null` clears it. */
+  expectedDeliveryDate?: Date | null;
 }

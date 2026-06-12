@@ -1089,6 +1089,233 @@ paths:
                     properties:
                       caseId: { type: string }
                       needsAiReview: { type: boolean }
+  /cases/{caseId}/notes:
+    post:
+      operationId: addCaseNote
+      tags: [cases]
+      summary: Add a note to a case
+      description: |
+        Creates a case note. Lab members author internal or shared notes;
+        provider members author notes attributed to their org. Visibility
+        defaults to `shared_with_provider`.
+      parameters:
+        - in: path
+          name: caseId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddCaseNoteInput"
+      responses:
+        "201":
+          description: Note created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CaseNoteResult"
+        "401":
+          description: Not authenticated
+        "403":
+          description: Caller lacks access to the case
+        "404":
+          description: Case not found
+  /cases/{caseId}/location-changes:
+    post:
+      operationId: changeCaseLocation
+      tags: [cases]
+      summary: Record a case location/station change
+      description: |
+        Appends a location-change entry for the case (e.g. moving it to a
+        new station). Only lab members may call this endpoint.
+      parameters:
+        - in: path
+          name: caseId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangeCaseLocationInput"
+      responses:
+        "201":
+          description: Location change recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CaseLocationResult"
+        "401":
+          description: Not authenticated
+        "403":
+          description: Caller is not a member of the case's lab
+        "404":
+          description: Case not found
+  /cases/{caseId}/restorations:
+    post:
+      operationId: addCaseRestoration
+      tags: [cases]
+      summary: Add a restoration to a case
+      description: |
+        Adds a restoration line item (crown, pontic, etc.) to a case. Unit
+        price is auto-resolved from pricing when `unitPrice` is omitted or 0.
+        Only lab members may call this endpoint.
+      parameters:
+        - in: path
+          name: caseId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddCaseRestorationInput"
+      responses:
+        "201":
+          description: Restoration created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CaseRestorationResult"
+        "401":
+          description: Not authenticated
+        "403":
+          description: Caller is not a member of the case's lab
+        "404":
+          description: Case not found
+  /cases/{caseId}/restorations/{restorationId}:
+    patch:
+      operationId: updateCaseRestoration
+      tags: [cases]
+      summary: Update a case restoration
+      description: |
+        Partially updates a restoration line item. All fields are optional.
+        Setting `unitPrice` marks the price source as manual. Only lab
+        members may call this endpoint.
+      parameters:
+        - in: path
+          name: caseId
+          required: true
+          schema: { type: string }
+        - in: path
+          name: restorationId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateCaseRestorationInput"
+      responses:
+        "200":
+          description: Restoration updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CaseRestorationResult"
+        "401":
+          description: Not authenticated
+        "403":
+          description: Caller is not a member of the case's lab
+        "404":
+          description: Case or restoration not found
+    delete:
+      operationId: deleteCaseRestoration
+      tags: [cases]
+      summary: Delete a case restoration
+      description: |
+        Removes a restoration line item and keeps the case invoice in sync.
+        Only lab members may call this endpoint.
+      parameters:
+        - in: path
+          name: caseId
+          required: true
+          schema: { type: string }
+        - in: path
+          name: restorationId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Restoration deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeletedResult"
+        "401":
+          description: Not authenticated
+        "403":
+          description: Caller is not a member of the case's lab
+        "404":
+          description: Case or restoration not found
+  /cases/{caseId}/attachments:
+    post:
+      operationId: uploadCaseAttachment
+      tags: [cases]
+      summary: Attach an uploaded file to a case
+      description: |
+        Records a case attachment for a file already uploaded to storage
+        (referenced by `storageKey`). Only lab members may attach to a
+        canonical case. Visibility defaults to `shared_with_provider`.
+      parameters:
+        - in: path
+          name: caseId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCaseAttachmentInput"
+      responses:
+        "201":
+          description: Attachment created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CaseAttachmentResult"
+        "401":
+          description: Not authenticated
+        "403":
+          description: Caller lacks access to the case
+        "404":
+          description: Case not found
+  /cases/{caseId}/attachments/{attachmentId}:
+    delete:
+      operationId: deleteCaseAttachment
+      tags: [cases]
+      summary: Delete a case attachment
+      description: |
+        Soft-deletes a case attachment. Only lab members may call this
+        endpoint.
+      parameters:
+        - in: path
+          name: caseId
+          required: true
+          schema: { type: string }
+        - in: path
+          name: attachmentId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Attachment deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeletedResult"
+        "401":
+          description: Not authenticated
+        "403":
+          description: Caller lacks access to the case
+        "404":
+          description: Attachment not found
   /pricing/resolve:
     get:
       operationId: resolveItemPrice
@@ -2073,6 +2300,110 @@ components:
         ok: { type: boolean }
         data:
           $ref: "#/components/schemas/CanonicalCase"
+    CaseNote:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string }
+        caseId: { type: string, nullable: true }
+        authorUserId: { type: string, nullable: true }
+        authorOrganizationId: { type: string, nullable: true }
+        noteText: { type: string, nullable: true }
+        visibility: { type: string, nullable: true }
+        createdAt: { type: string, nullable: true }
+        updatedAt: { type: string, nullable: true }
+      additionalProperties: true
+    CaseLocation:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string }
+        caseId: { type: string, nullable: true }
+        locationCode: { type: string, nullable: true }
+        locationName: { type: string, nullable: true }
+        movedByUserId: { type: string, nullable: true }
+        movedAt: { type: string, nullable: true }
+        notes: { type: string, nullable: true }
+      additionalProperties: true
+    CaseNoteResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          $ref: "#/components/schemas/CaseNote"
+    CaseLocationResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          $ref: "#/components/schemas/CaseLocation"
+    CaseRestorationResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          $ref: "#/components/schemas/CanonicalRestoration"
+    CaseAttachmentResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          $ref: "#/components/schemas/CanonicalAttachment"
+    DeletedResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          properties:
+            deleted: { type: boolean }
+    AddCaseNoteInput:
+      type: object
+      required: [noteText]
+      properties:
+        noteText: { type: string, minLength: 1 }
+        visibility:
+          type: string
+          enum: [internal_lab_only, shared_with_provider]
+          default: shared_with_provider
+    ChangeCaseLocationInput:
+      type: object
+      required: [locationCode, locationName]
+      properties:
+        locationCode: { type: string, minLength: 1 }
+        locationName: { type: string, minLength: 1 }
+        notes: { type: string }
+    AddCaseRestorationInput:
+      type: object
+      required: [toothNumber, restorationType]
+      properties:
+        toothNumber: { type: string, minLength: 1 }
+        restorationType: { type: string, minLength: 1 }
+        material: { type: string }
+        shade: { type: string }
+        notes: { type: string }
+        quantity: { type: integer, minimum: 1, default: 1 }
+        unitPrice: { type: number, minimum: 0, default: 0 }
+    UpdateCaseRestorationInput:
+      type: object
+      properties:
+        toothNumber: { type: string, minLength: 1 }
+        material: { type: string }
+        shade: { type: string }
+        notes: { type: string }
+        quantity: { type: integer, minimum: 1 }
+        unitPrice: { type: number, minimum: 0 }
+    CreateCaseAttachmentInput:
+      type: object
+      required: [storageKey, fileName]
+      properties:
+        storageKey: { type: string, minLength: 1 }
+        fileName: { type: string, minLength: 1 }
+        fileType: { type: string, default: application/octet-stream }
+        visibility:
+          type: string
+          enum: [internal_lab_only, shared_with_provider]
+          default: shared_with_provider
     InvoiceListResult:
       type: object
       properties:
@@ -2433,6 +2764,17 @@ components:
             `suggestedProviderOrgId` fields without affecting any other
             case fields. Used by the "Keep as-is" action in the desktop
             review banner.
+        bridgeConnectors:
+          type: string
+          description: |
+            Comma-separated bridge-connector tooth-pair string controlling
+            which adjacent restorations form a bridge span. An empty string
+            clears all connectors on the case.
+        expectedDeliveryDate:
+          type: string
+          format: date-time
+          nullable: true
+          description: Expected delivery date; `null` clears it.
     IteroImportResult:
       type: object
       properties:

@@ -126,6 +126,123 @@ export interface CaseDetailResult {
   data?: CanonicalCase;
 }
 
+export interface CaseNote {
+  id: string;
+  caseId?: string | null;
+  authorUserId?: string | null;
+  authorOrganizationId?: string | null;
+  noteText?: string | null;
+  visibility?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  [key: string]: unknown;
+}
+
+export interface CaseLocation {
+  id: string;
+  caseId?: string | null;
+  locationCode?: string | null;
+  locationName?: string | null;
+  movedByUserId?: string | null;
+  movedAt?: string | null;
+  notes?: string | null;
+  [key: string]: unknown;
+}
+
+export interface CaseNoteResult {
+  ok?: boolean;
+  data?: CaseNote;
+}
+
+export interface CaseLocationResult {
+  ok?: boolean;
+  data?: CaseLocation;
+}
+
+export interface CaseRestorationResult {
+  ok?: boolean;
+  data?: CanonicalRestoration;
+}
+
+export interface CaseAttachmentResult {
+  ok?: boolean;
+  data?: CanonicalAttachment;
+}
+
+export type DeletedResultData = {
+  deleted?: boolean;
+};
+
+export interface DeletedResult {
+  ok?: boolean;
+  data?: DeletedResultData;
+}
+
+export type AddCaseNoteInputVisibility =
+  (typeof AddCaseNoteInputVisibility)[keyof typeof AddCaseNoteInputVisibility];
+
+export const AddCaseNoteInputVisibility = {
+  internal_lab_only: "internal_lab_only",
+  shared_with_provider: "shared_with_provider",
+} as const;
+
+export interface AddCaseNoteInput {
+  /** @minLength 1 */
+  noteText: string;
+  visibility?: AddCaseNoteInputVisibility;
+}
+
+export interface ChangeCaseLocationInput {
+  /** @minLength 1 */
+  locationCode: string;
+  /** @minLength 1 */
+  locationName: string;
+  notes?: string;
+}
+
+export interface AddCaseRestorationInput {
+  /** @minLength 1 */
+  toothNumber: string;
+  /** @minLength 1 */
+  restorationType: string;
+  material?: string;
+  shade?: string;
+  notes?: string;
+  /** @minimum 1 */
+  quantity?: number;
+  /** @minimum 0 */
+  unitPrice?: number;
+}
+
+export interface UpdateCaseRestorationInput {
+  /** @minLength 1 */
+  toothNumber?: string;
+  material?: string;
+  shade?: string;
+  notes?: string;
+  /** @minimum 1 */
+  quantity?: number;
+  /** @minimum 0 */
+  unitPrice?: number;
+}
+
+export type CreateCaseAttachmentInputVisibility =
+  (typeof CreateCaseAttachmentInputVisibility)[keyof typeof CreateCaseAttachmentInputVisibility];
+
+export const CreateCaseAttachmentInputVisibility = {
+  internal_lab_only: "internal_lab_only",
+  shared_with_provider: "shared_with_provider",
+} as const;
+
+export interface CreateCaseAttachmentInput {
+  /** @minLength 1 */
+  storageKey: string;
+  /** @minLength 1 */
+  fileName: string;
+  fileType?: string;
+  visibility?: CreateCaseAttachmentInputVisibility;
+}
+
 /**
  * Invoice row with line items
  */
@@ -471,6 +588,13 @@ case fields. Used by the "Keep as-is" action in the desktop
 review banner.
  */
   clearSuggestion?: boolean;
+  /** Comma-separated bridge-connector tooth-pair string controlling
+which adjacent restorations form a bridge span. An empty string
+clears all connectors on the case.
+ */
+  bridgeConnectors?: string;
+  /** Expected delivery date; `null` clears it. */
+  expectedDeliveryDate?: string | null;
 }
 
 export type IteroImportResultData = {

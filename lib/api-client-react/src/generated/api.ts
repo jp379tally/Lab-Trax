@@ -18,6 +18,8 @@ import type {
 
 import type {
   AcknowledgeAiReview200,
+  AddCaseNoteInput,
+  AddCaseRestorationInput,
   AiChatHistoryResult,
   AiChatInput,
   AiChatResult,
@@ -29,15 +31,22 @@ import type {
   BulkReassignCasesResult,
   BulkStatusCasesInput,
   BulkStatusCasesResult,
+  CaseAttachmentResult,
   CaseDetailResult,
   CaseListResult,
+  CaseLocationResult,
+  CaseNoteResult,
+  CaseRestorationResult,
+  ChangeCaseLocationInput,
   ChatMessageResult,
   ConversationListResult,
+  CreateCaseAttachmentInput,
   CreateCaseInput,
   CreateCategoryInput,
   CreateConversationInput,
   CreateConversationResult,
   CreateVendorInput,
+  DeletedResult,
   DisableBackupSchedule200,
   DisableTwoFactor200,
   DoctorMergePreview,
@@ -113,6 +122,7 @@ import type {
   TwoFactorStatusResult,
   UpdateCase200,
   UpdateCaseInput,
+  UpdateCaseRestorationInput,
   UpdateCategoryInput,
   UpdateInvoiceInput,
   UpdateOrganizationLogoPlacements200,
@@ -4023,6 +4033,677 @@ export const useAcknowledgeAiReview = <
   TContext
 > => {
   return useMutation(getAcknowledgeAiReviewMutationOptions(options));
+};
+
+/**
+ * Creates a case note. Lab members author internal or shared notes;
+provider members author notes attributed to their org. Visibility
+defaults to `shared_with_provider`.
+
+ * @summary Add a note to a case
+ */
+export const getAddCaseNoteUrl = (caseId: string) => {
+  return `/api/cases/${caseId}/notes`;
+};
+
+export const addCaseNote = async (
+  caseId: string,
+  addCaseNoteInput: AddCaseNoteInput,
+  options?: RequestInit,
+): Promise<CaseNoteResult> => {
+  return customFetch<CaseNoteResult>(getAddCaseNoteUrl(caseId), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(addCaseNoteInput),
+  });
+};
+
+export const getAddCaseNoteMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof addCaseNote>>,
+    TError,
+    { caseId: string; data: BodyType<AddCaseNoteInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof addCaseNote>>,
+  TError,
+  { caseId: string; data: BodyType<AddCaseNoteInput> },
+  TContext
+> => {
+  const mutationKey = ["addCaseNote"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof addCaseNote>>,
+    { caseId: string; data: BodyType<AddCaseNoteInput> }
+  > = (props) => {
+    const { caseId, data } = props ?? {};
+
+    return addCaseNote(caseId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type AddCaseNoteMutationResult = NonNullable<
+  Awaited<ReturnType<typeof addCaseNote>>
+>;
+export type AddCaseNoteMutationBody = BodyType<AddCaseNoteInput>;
+export type AddCaseNoteMutationError = ErrorType<void>;
+
+/**
+ * @summary Add a note to a case
+ */
+export const useAddCaseNote = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof addCaseNote>>,
+    TError,
+    { caseId: string; data: BodyType<AddCaseNoteInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof addCaseNote>>,
+  TError,
+  { caseId: string; data: BodyType<AddCaseNoteInput> },
+  TContext
+> => {
+  return useMutation(getAddCaseNoteMutationOptions(options));
+};
+
+/**
+ * Appends a location-change entry for the case (e.g. moving it to a
+new station). Only lab members may call this endpoint.
+
+ * @summary Record a case location/station change
+ */
+export const getChangeCaseLocationUrl = (caseId: string) => {
+  return `/api/cases/${caseId}/location-changes`;
+};
+
+export const changeCaseLocation = async (
+  caseId: string,
+  changeCaseLocationInput: ChangeCaseLocationInput,
+  options?: RequestInit,
+): Promise<CaseLocationResult> => {
+  return customFetch<CaseLocationResult>(getChangeCaseLocationUrl(caseId), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(changeCaseLocationInput),
+  });
+};
+
+export const getChangeCaseLocationMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof changeCaseLocation>>,
+    TError,
+    { caseId: string; data: BodyType<ChangeCaseLocationInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof changeCaseLocation>>,
+  TError,
+  { caseId: string; data: BodyType<ChangeCaseLocationInput> },
+  TContext
+> => {
+  const mutationKey = ["changeCaseLocation"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof changeCaseLocation>>,
+    { caseId: string; data: BodyType<ChangeCaseLocationInput> }
+  > = (props) => {
+    const { caseId, data } = props ?? {};
+
+    return changeCaseLocation(caseId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ChangeCaseLocationMutationResult = NonNullable<
+  Awaited<ReturnType<typeof changeCaseLocation>>
+>;
+export type ChangeCaseLocationMutationBody = BodyType<ChangeCaseLocationInput>;
+export type ChangeCaseLocationMutationError = ErrorType<void>;
+
+/**
+ * @summary Record a case location/station change
+ */
+export const useChangeCaseLocation = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof changeCaseLocation>>,
+    TError,
+    { caseId: string; data: BodyType<ChangeCaseLocationInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof changeCaseLocation>>,
+  TError,
+  { caseId: string; data: BodyType<ChangeCaseLocationInput> },
+  TContext
+> => {
+  return useMutation(getChangeCaseLocationMutationOptions(options));
+};
+
+/**
+ * Adds a restoration line item (crown, pontic, etc.) to a case. Unit
+price is auto-resolved from pricing when `unitPrice` is omitted or 0.
+Only lab members may call this endpoint.
+
+ * @summary Add a restoration to a case
+ */
+export const getAddCaseRestorationUrl = (caseId: string) => {
+  return `/api/cases/${caseId}/restorations`;
+};
+
+export const addCaseRestoration = async (
+  caseId: string,
+  addCaseRestorationInput: AddCaseRestorationInput,
+  options?: RequestInit,
+): Promise<CaseRestorationResult> => {
+  return customFetch<CaseRestorationResult>(getAddCaseRestorationUrl(caseId), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(addCaseRestorationInput),
+  });
+};
+
+export const getAddCaseRestorationMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof addCaseRestoration>>,
+    TError,
+    { caseId: string; data: BodyType<AddCaseRestorationInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof addCaseRestoration>>,
+  TError,
+  { caseId: string; data: BodyType<AddCaseRestorationInput> },
+  TContext
+> => {
+  const mutationKey = ["addCaseRestoration"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof addCaseRestoration>>,
+    { caseId: string; data: BodyType<AddCaseRestorationInput> }
+  > = (props) => {
+    const { caseId, data } = props ?? {};
+
+    return addCaseRestoration(caseId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type AddCaseRestorationMutationResult = NonNullable<
+  Awaited<ReturnType<typeof addCaseRestoration>>
+>;
+export type AddCaseRestorationMutationBody = BodyType<AddCaseRestorationInput>;
+export type AddCaseRestorationMutationError = ErrorType<void>;
+
+/**
+ * @summary Add a restoration to a case
+ */
+export const useAddCaseRestoration = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof addCaseRestoration>>,
+    TError,
+    { caseId: string; data: BodyType<AddCaseRestorationInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof addCaseRestoration>>,
+  TError,
+  { caseId: string; data: BodyType<AddCaseRestorationInput> },
+  TContext
+> => {
+  return useMutation(getAddCaseRestorationMutationOptions(options));
+};
+
+/**
+ * Partially updates a restoration line item. All fields are optional.
+Setting `unitPrice` marks the price source as manual. Only lab
+members may call this endpoint.
+
+ * @summary Update a case restoration
+ */
+export const getUpdateCaseRestorationUrl = (
+  caseId: string,
+  restorationId: string,
+) => {
+  return `/api/cases/${caseId}/restorations/${restorationId}`;
+};
+
+export const updateCaseRestoration = async (
+  caseId: string,
+  restorationId: string,
+  updateCaseRestorationInput: UpdateCaseRestorationInput,
+  options?: RequestInit,
+): Promise<CaseRestorationResult> => {
+  return customFetch<CaseRestorationResult>(
+    getUpdateCaseRestorationUrl(caseId, restorationId),
+    {
+      ...options,
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(updateCaseRestorationInput),
+    },
+  );
+};
+
+export const getUpdateCaseRestorationMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateCaseRestoration>>,
+    TError,
+    {
+      caseId: string;
+      restorationId: string;
+      data: BodyType<UpdateCaseRestorationInput>;
+    },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof updateCaseRestoration>>,
+  TError,
+  {
+    caseId: string;
+    restorationId: string;
+    data: BodyType<UpdateCaseRestorationInput>;
+  },
+  TContext
+> => {
+  const mutationKey = ["updateCaseRestoration"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof updateCaseRestoration>>,
+    {
+      caseId: string;
+      restorationId: string;
+      data: BodyType<UpdateCaseRestorationInput>;
+    }
+  > = (props) => {
+    const { caseId, restorationId, data } = props ?? {};
+
+    return updateCaseRestoration(caseId, restorationId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UpdateCaseRestorationMutationResult = NonNullable<
+  Awaited<ReturnType<typeof updateCaseRestoration>>
+>;
+export type UpdateCaseRestorationMutationBody =
+  BodyType<UpdateCaseRestorationInput>;
+export type UpdateCaseRestorationMutationError = ErrorType<void>;
+
+/**
+ * @summary Update a case restoration
+ */
+export const useUpdateCaseRestoration = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateCaseRestoration>>,
+    TError,
+    {
+      caseId: string;
+      restorationId: string;
+      data: BodyType<UpdateCaseRestorationInput>;
+    },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof updateCaseRestoration>>,
+  TError,
+  {
+    caseId: string;
+    restorationId: string;
+    data: BodyType<UpdateCaseRestorationInput>;
+  },
+  TContext
+> => {
+  return useMutation(getUpdateCaseRestorationMutationOptions(options));
+};
+
+/**
+ * Removes a restoration line item and keeps the case invoice in sync.
+Only lab members may call this endpoint.
+
+ * @summary Delete a case restoration
+ */
+export const getDeleteCaseRestorationUrl = (
+  caseId: string,
+  restorationId: string,
+) => {
+  return `/api/cases/${caseId}/restorations/${restorationId}`;
+};
+
+export const deleteCaseRestoration = async (
+  caseId: string,
+  restorationId: string,
+  options?: RequestInit,
+): Promise<DeletedResult> => {
+  return customFetch<DeletedResult>(
+    getDeleteCaseRestorationUrl(caseId, restorationId),
+    {
+      ...options,
+      method: "DELETE",
+    },
+  );
+};
+
+export const getDeleteCaseRestorationMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof deleteCaseRestoration>>,
+    TError,
+    { caseId: string; restorationId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof deleteCaseRestoration>>,
+  TError,
+  { caseId: string; restorationId: string },
+  TContext
+> => {
+  const mutationKey = ["deleteCaseRestoration"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof deleteCaseRestoration>>,
+    { caseId: string; restorationId: string }
+  > = (props) => {
+    const { caseId, restorationId } = props ?? {};
+
+    return deleteCaseRestoration(caseId, restorationId, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type DeleteCaseRestorationMutationResult = NonNullable<
+  Awaited<ReturnType<typeof deleteCaseRestoration>>
+>;
+
+export type DeleteCaseRestorationMutationError = ErrorType<void>;
+
+/**
+ * @summary Delete a case restoration
+ */
+export const useDeleteCaseRestoration = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof deleteCaseRestoration>>,
+    TError,
+    { caseId: string; restorationId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof deleteCaseRestoration>>,
+  TError,
+  { caseId: string; restorationId: string },
+  TContext
+> => {
+  return useMutation(getDeleteCaseRestorationMutationOptions(options));
+};
+
+/**
+ * Records a case attachment for a file already uploaded to storage
+(referenced by `storageKey`). Only lab members may attach to a
+canonical case. Visibility defaults to `shared_with_provider`.
+
+ * @summary Attach an uploaded file to a case
+ */
+export const getUploadCaseAttachmentUrl = (caseId: string) => {
+  return `/api/cases/${caseId}/attachments`;
+};
+
+export const uploadCaseAttachment = async (
+  caseId: string,
+  createCaseAttachmentInput: CreateCaseAttachmentInput,
+  options?: RequestInit,
+): Promise<CaseAttachmentResult> => {
+  return customFetch<CaseAttachmentResult>(getUploadCaseAttachmentUrl(caseId), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(createCaseAttachmentInput),
+  });
+};
+
+export const getUploadCaseAttachmentMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof uploadCaseAttachment>>,
+    TError,
+    { caseId: string; data: BodyType<CreateCaseAttachmentInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof uploadCaseAttachment>>,
+  TError,
+  { caseId: string; data: BodyType<CreateCaseAttachmentInput> },
+  TContext
+> => {
+  const mutationKey = ["uploadCaseAttachment"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof uploadCaseAttachment>>,
+    { caseId: string; data: BodyType<CreateCaseAttachmentInput> }
+  > = (props) => {
+    const { caseId, data } = props ?? {};
+
+    return uploadCaseAttachment(caseId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UploadCaseAttachmentMutationResult = NonNullable<
+  Awaited<ReturnType<typeof uploadCaseAttachment>>
+>;
+export type UploadCaseAttachmentMutationBody =
+  BodyType<CreateCaseAttachmentInput>;
+export type UploadCaseAttachmentMutationError = ErrorType<void>;
+
+/**
+ * @summary Attach an uploaded file to a case
+ */
+export const useUploadCaseAttachment = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof uploadCaseAttachment>>,
+    TError,
+    { caseId: string; data: BodyType<CreateCaseAttachmentInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof uploadCaseAttachment>>,
+  TError,
+  { caseId: string; data: BodyType<CreateCaseAttachmentInput> },
+  TContext
+> => {
+  return useMutation(getUploadCaseAttachmentMutationOptions(options));
+};
+
+/**
+ * Soft-deletes a case attachment. Only lab members may call this
+endpoint.
+
+ * @summary Delete a case attachment
+ */
+export const getDeleteCaseAttachmentUrl = (
+  caseId: string,
+  attachmentId: string,
+) => {
+  return `/api/cases/${caseId}/attachments/${attachmentId}`;
+};
+
+export const deleteCaseAttachment = async (
+  caseId: string,
+  attachmentId: string,
+  options?: RequestInit,
+): Promise<DeletedResult> => {
+  return customFetch<DeletedResult>(
+    getDeleteCaseAttachmentUrl(caseId, attachmentId),
+    {
+      ...options,
+      method: "DELETE",
+    },
+  );
+};
+
+export const getDeleteCaseAttachmentMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof deleteCaseAttachment>>,
+    TError,
+    { caseId: string; attachmentId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof deleteCaseAttachment>>,
+  TError,
+  { caseId: string; attachmentId: string },
+  TContext
+> => {
+  const mutationKey = ["deleteCaseAttachment"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof deleteCaseAttachment>>,
+    { caseId: string; attachmentId: string }
+  > = (props) => {
+    const { caseId, attachmentId } = props ?? {};
+
+    return deleteCaseAttachment(caseId, attachmentId, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type DeleteCaseAttachmentMutationResult = NonNullable<
+  Awaited<ReturnType<typeof deleteCaseAttachment>>
+>;
+
+export type DeleteCaseAttachmentMutationError = ErrorType<void>;
+
+/**
+ * @summary Delete a case attachment
+ */
+export const useDeleteCaseAttachment = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof deleteCaseAttachment>>,
+    TError,
+    { caseId: string; attachmentId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof deleteCaseAttachment>>,
+  TError,
+  { caseId: string; attachmentId: string },
+  TContext
+> => {
+  return useMutation(getDeleteCaseAttachmentMutationOptions(options));
 };
 
 /**

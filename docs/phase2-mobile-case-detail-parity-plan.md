@@ -32,9 +32,9 @@ Some desktop write actions hit **server routes that are not in the OpenAPI spec*
 | Add restoration | `POST /api/cases/:id/restorations` | ❌ | Add to spec → `useAddCaseRestoration` |
 | Edit restoration | `PATCH /api/cases/:id/restorations/:rid` | ❌ | Add to spec → `useUpdateCaseRestoration` |
 | Delete restoration | `DELETE /api/cases/:id/restorations/:rid` | ❌ | Add to spec → `useDeleteCaseRestoration` |
-| Restoration pricing | `GET /api/cases/restorations/pricing` | ❌ | Add to spec → `useCaseRestorationPricing` |
+| Restoration pricing | _(no such route — see M0 deviation §9)_ | ❌ | **DEFERRED to M3** — `GET /cases/restorations/pricing` does **not** exist; the only pricing route on cases is `PATCH /restorations/pricing` (admin bulk write). Real pricing reads are `/pricing/resolve` (already specced), `/pricing/tiers`, `/pricing/overrides`; exact endpoint chosen when the tooth chart consumes it. |
 | Add note | `POST /api/cases/:id/notes` | ❌ | Add to spec → `useAddCaseNote` |
-| Upload attachment | `POST /api/cases/:id/attachments` | ❌ | Add to spec → `useUploadCaseAttachment` (multipart; mobile keeps XHR `uploadCaseMedia`) |
+| Upload attachment | `POST /api/cases/:id/attachments` | ❌ | Add to spec → `useUploadCaseAttachment` (**JSON** `{storageKey,fileName,fileType?,visibility?}` — _not_ multipart; mobile keeps XHR `uploadCaseMedia` to push the binary, then calls this route to attach) |
 | Delete attachment | `DELETE /api/cases/:id/attachments/:attId` | ❌ | Add to spec → `useDeleteCaseAttachment` |
 | Location/station change | `POST /api/cases/:id/location-changes` | ❌ (verify) | Add to spec → `useChangeCaseLocation` |
 
@@ -152,6 +152,7 @@ Dependencies are explicit; within a milestone, work is parallelizable.
 - **D3 — Build batching → LOCKED:** a TestFlight build only when a milestone changes user-visible mobile behavior, each explicitly approved; never for contract-/spec-only milestones.
 - **Media upload risk:** large STL/3D files vs the ~20 MB proxy limit — chunked upload path must be used (already understood from Phase 0/1 memory).
 - **Mobile-only sensitive-key residual** (`@drivesync_*` AsyncStorage fallback) is tracked as a **separate** follow-up, **not** part of Phase 2.
+- **D1 date-type divergence (M1 watch-out):** orval `useDates:true` makes the **api-zod** `UpdateCaseInput.expectedDeliveryDate` a `Date | null`, while the **api-client-react** type that mobile consumes is `string | null`. M1 must send ISO strings via the api-client-react hook and must **not** import the api-zod type for this field.
 
 ---
 
@@ -166,4 +167,17 @@ Dependencies are explicit; within a milestone, work is parallelizable.
 
 ## 9. What Happens Next
 
-**Plan direction approved; decisions D1–D3 locked (see §7).** Implementation starts at **M0 (contract + foundation)** — no EAS build — followed by milestone-by-milestone delivery, each gated on your explicit TestFlight build approval (and only for milestones that change user-visible behavior). **M0 is presented for your approval before any Phase 2 code is written.**
+**Plan direction approved; decisions D1–D3 locked (see §7).** Implementation starts at **M0 (contract + foundation)** — no EAS build — followed by milestone-by-milestone delivery, each gated on your explicit TestFlight build approval (and only for milestones that change user-visible behavior).
+
+### M0 Outcome (complete) — contract + editing foundation
+
+**Status:** ✅ Complete. Spec-only + codegen; no DB push, no server logic change, no UI, no EAS build (per D3). Gates: codegen purely additive (api-client-react +805 / api-zod +199 insertions, **zero deletions**); `pnpm run typecheck` clean; api-server-tests **537 passed / 6 skipped**; labtrax **85 passed**. Architect `evaluate_task`: **PASS**.
+
+**Hooks generated:** `useAddCaseNote`, `useChangeCaseLocation`, `useAddCaseRestoration`, `useUpdateCaseRestoration`, `useDeleteCaseRestoration`, `useUploadCaseAttachment`, `useDeleteCaseAttachment`; `UpdateCaseInput` gained `bridgeConnectors` + `expectedDeliveryDate`.
+
+**Deviations from the §2 plan (all validated by the architect):**
+1. **Pricing read deferred to M3.** The planned `GET /cases/restorations/pricing` route does not exist (the only pricing route on cases is `PATCH /restorations/pricing`, an admin bulk write), so speccing it would have produced a dead hook. The pricing read endpoint (`/pricing/resolve` vs `/pricing/tiers` / `/pricing/overrides`) is chosen in M3 when the tooth chart consumes it.
+2. **Attachment upload is JSON, not multipart.** `POST /cases/:id/attachments` takes `{storageKey,fileName,fileType?,visibility?}` (multer is used only by the iTero import routes). Mobile keeps its XHR `uploadCaseMedia` to push the binary, then calls this route to attach.
+3. **UI primitives deferred to M1.** M0 has zero consumers of the new hooks, so no component or vitest-mock work was needed (keeps the zero-regression gate trivially green).
+
+**Carried into M3 (advisory):** extend `CanonicalRestoration` with typed `unitPrice` / `lineTotal` / `priceSource` (today only covered by `additionalProperties: true`) so the tooth chart gets typed price access instead of casts.

@@ -38,3 +38,11 @@ The real `AppProvider` is rendered for real in
 `case-status-normalization-boundaries.test.tsx`, so any hook called at provider
 top-level (e.g. invoice mutations moved into app-context) must exist in that
 mock or the test crashes.
+
+**`useDates:true` splits date types across the two generated packages.** For a
+`date-time` field, **api-zod** emits a `Date | null` type (its body schema uses
+`zod.coerce.date().nullish()`) while **api-client-react** keeps `string | null`.
+Artifacts consume the api-client-react type, so send ISO strings and never
+import the api-zod type for a date field — mixing them is a typecheck trap, not
+a runtime bug.
+**Why:** the two generators are configured independently; only api-zod coerces.
