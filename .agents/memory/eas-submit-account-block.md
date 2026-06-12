@@ -41,6 +41,16 @@ different build number. Apple itself allows multiple builds per version string; 
 The `bump-build-number` script only bumps `ios.buildNumber`/`android.versionCode`, NOT
 `expo.version` — that must be changed by hand before starting a new build.
 
+**CORRECTION (verified June 2026): this block is NOT automatic — do NOT pre-bump
+`expo.version` defensively.** For LabTrax's TestFlight flow, builds 236→240 were ALL
+version 1.0.10 with only the build number bumped, and EACH one submitted successfully
+(5 consecutive FINISHED submissions at the same version string). So the established,
+working path is **bump build number only, keep `expo.version`** until Apple/EAS actually
+rejects it. Only bump `expo.version` when `eas submit` returns the explicit
+`SUBMISSION_SERVICE_IOS_OLD_APP_VERSION` error — never speculatively (it needlessly
+churns the user-facing version). Verify current state first with the per-build
+`submissions { status }` GraphQL query, not from memory.
+
 ## Pattern C — Apple account-level delivery block
 
 Agreements tab in App Store Connect shows Active for all agreements, yet the build never
