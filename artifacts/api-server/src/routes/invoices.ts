@@ -2063,11 +2063,113 @@ router.post(
   })
 );
 
+// Legacy mobile-created invoices surface in the list with a synthetic
+// `mobile:<localInvoiceId>` id (see toMobileInvoice) — they have no row in the
+// relational `invoices` table, so a direct lookup 404s. Resolve such an id to
+// its canonical invoice when one now exists for the same case (e.g. it was
+// generated on desktop after the list was loaded). When no canonical invoice
+// exists, throw a clear, friendly error instead of a bare 404 so the editor can
+// explain why the legacy invoice can't be opened.
+const MOBILE_INVOICE_ID_PREFIX = "mobile:";
+
+async function resolveMobileInvoiceId(
+  callerId: string,
+  mobileId: string
+): Promise<string> {
+  const localInvoiceId = mobileId.slice(MOBILE_INVOICE_ID_PREFIX.length).trim();
+  if (!localInvoiceId) throw new HttpError(404, "Invoice not found.");
+
+  // Scope the case scan to the caller's own labs (mirrors GET /api/invoices).
+  const memberships = await db.query.organizationMemberships.findMany({
+    where: eq(organizationMemberships.userId, callerId),
+  });
+  let orgIds = memberships
+    .filter((m: any) => m.status === "active")
+    .map((m: any) => m.labId)
+    .filter((id: any): id is string => !!id);
+  const callerUser = await db.query.users.findFirst({
+    where: eq(users.id, callerId),
+  });
+  if (callerUser?.userType === "provider") {
+    const { providerOrgIds } = await getProviderOrgIdsForUserAndLinks(callerId);
+    orgIds = Array.from(new Set([...orgIds, ...providerOrgIds]));
+  }
+  if (orgIds.length === 0)
+    throw new HttpError(404, "Invoice not found.");
+
+  const caseRows = await db
+    .select()
+    .from(labCases)
+    .where(
+      and(isNull(labCases.deletedAt), inArray(labCases.organizationId, orgIds))
+    );
+
+  let matched:
+    | { labCaseId: string; orgId: string | null; caseNumber: string }
+    | null = null;
+  for (const lc of caseRows as any[]) {
+    try {
+      const parsed =
+        typeof lc.caseData === "string" ? JSON.parse(lc.caseData) : lc.caseData;
+      if (parsed && typeof parsed === "object" && parsed.invoiceId === localInvoiceId) {
+        matched = {
+          labCaseId: lc.id,
+          orgId: lc.organizationId ?? null,
+          caseNumber:
+            typeof parsed.caseNumber === "string" ? parsed.caseNumber : "",
+        };
+        break;
+      }
+    } catch {
+      // skip malformed rows
+    }
+  }
+
+  if (!matched)
+    throw new HttpError(
+      404,
+      "This invoice was created in an older version of the app and isn't available to open. Open the case to generate an editable invoice."
+    );
+
+  // A server invoice generated for a mobile case is linked either by caseId
+  // (once the case is promoted to a canonical `cases` row that reused the
+  // lab_case id) or, for un-promoted cases, by the `INV-<caseNumber>` invoice
+  // number within the same lab (the generate-invoice path sets caseId=null).
+  const canonical = await db.query.invoices.findFirst({
+    where: and(
+      isNull(invoices.deletedAt),
+      or(
+        eq(invoices.caseId, matched.labCaseId),
+        matched.caseNumber && matched.orgId
+          ? and(
+              eq(invoices.invoiceNumber, `INV-${matched.caseNumber}`),
+              eq(invoices.labOrganizationId, matched.orgId)
+            )
+          : undefined
+      )
+    ),
+  });
+  if (!canonical)
+    throw new HttpError(
+      409,
+      "This invoice was created in an older version of the app and isn't editable yet. Open the case to generate an editable invoice."
+    );
+
+  return canonical.id;
+}
+
 router.get(
   "/:invoiceId",
   asyncHandler(async (req, res) => {
+    let lookupId = req.params.invoiceId;
+    if (lookupId.startsWith(MOBILE_INVOICE_ID_PREFIX)) {
+      lookupId = await resolveMobileInvoiceId(
+        (req as any).auth.userId,
+        lookupId
+      );
+    }
     const invoice = await db.query.invoices.findFirst({
-      where: eq(invoices.id, req.params.invoiceId),
+      where: eq(invoices.id, lookupId),
     });
     if (!invoice) throw new HttpError(404, "Invoice not found.");
 

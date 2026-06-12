@@ -201,7 +201,11 @@ export default function InvoiceEditorScreen() {
   );
 
   async function handleSave() {
-    if (!invoiceId) return;
+    // Legacy mobile-created invoices surface with a `mobile:`-prefixed id and no
+    // editable row. The GET resolves such ids to their canonical invoice; always
+    // save against the resolved canonical id, never the synthetic `mobile:` one.
+    const saveId = invoice?.id ?? invoiceId;
+    if (!saveId) return;
     if (!invoiceNumber.trim()) {
       Alert.alert("Invoice number required", "Enter an invoice number.");
       return;
@@ -251,7 +255,7 @@ export default function InvoiceEditorScreen() {
     setSaving(true);
     try {
       await updateInvoice.mutateAsync({
-        invoiceId,
+        invoiceId: saveId,
         data: {
           invoiceNumber: invoiceNumber.trim(),
           status,
@@ -273,6 +277,10 @@ export default function InvoiceEditorScreen() {
 
   const styles = makeStyles(colors);
   const loading = invoiceQuery.isLoading && !invoice;
+  // Legacy mobile-created invoices carry a `mobile:`-prefixed id. When the server
+  // can't resolve one to a canonical, editable invoice, show a tailored message
+  // instead of the generic "couldn't be loaded" copy.
+  const isLegacyMobileInvoice = (invoiceId ?? "").startsWith("mobile:");
 
   return (
     <SafeAreaView style={styles.container} edges={["top", "bottom"]}>
@@ -321,7 +329,11 @@ export default function InvoiceEditorScreen() {
       ) : !invoice ? (
         <View style={styles.center} testID="invoice-editor-error">
           <Ionicons name="receipt-outline" size={44} color={colors.textTertiary} />
-          <Text style={styles.errorTitle}>This invoice couldn&apos;t be loaded.</Text>
+          <Text style={styles.errorTitle}>
+            {isLegacyMobileInvoice
+              ? "This invoice was created in an older version of the app and isn't editable yet. Open the case to generate an editable invoice."
+              : "This invoice couldn't be loaded."}
+          </Text>
           <Pressable onPress={() => router.back()} style={styles.errorButton}>
             <Text style={styles.errorButtonText}>Go back</Text>
           </Pressable>

@@ -98,12 +98,16 @@ maybe("Invoices (db integration)", () => {
       auditLogs,
       invoiceLineItems,
       invoices,
+      labCases,
       userSessions,
       organizationMemberships,
       organizations,
       users,
     } = dbMod as any;
 
+    if (labCases) {
+      await db.delete(labCases).where(inArray(labCases.organizationId, [labOrgId, providerOrgId]));
+    }
     await db.delete(auditLogs).where(inArray(auditLogs.organizationId, [labOrgId, providerOrgId]));
     if (invoiceLineItems) {
       await db.delete(invoiceLineItems).where(
@@ -314,5 +318,84 @@ maybe("Invoices (db integration)", () => {
     expect(list.status).toBe(200);
     const ids: string[] = (list.body.data ?? []).map((inv: any) => inv.id);
     expect(ids).toContain(invoiceId);
+  });
+
+  // ── GET /api/invoices/mobile:<localInvoiceId> (legacy id resolution) ───────
+
+  it("GET /api/invoices/mobile:<localId> resolves to the canonical invoice for that case", async () => {
+    const { db, labCases, invoices } = dbMod as any;
+    const { access } = await makeSession(labOwnerId);
+
+    const localInvoiceId = `${Date.now()}legacymobileid`;
+    const caseNumber = `${Date.now()}`.slice(-6);
+    const caseId = rid("case");
+    await db.insert(labCases).values({
+      id: caseId,
+      ownerId: labOwnerId,
+      organizationId: labOrgId,
+      caseData: JSON.stringify({
+        caseNumber,
+        invoiceId: localInvoiceId,
+        patientName: "Legacy Patient",
+        price: 250,
+      }),
+    });
+
+    // A canonical invoice now exists for that case (e.g. generated on desktop).
+    // The generate-invoice path leaves caseId=null for un-promoted mobile cases
+    // and links by the `INV-<caseNumber>` invoice number within the lab.
+    const canonicalId = rid("inv");
+    await db.insert(invoices).values({
+      id: canonicalId,
+      invoiceNumber: `INV-${caseNumber}`,
+      caseId: null,
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerOrgId,
+      status: "open",
+      createdByUserId: labOwnerId,
+    });
+
+    const r = await request(appMod.default)
+      .get(`/api/invoices/${encodeURIComponent(`mobile:${localInvoiceId}`)}`)
+      .set("Authorization", `Bearer ${access}`);
+
+    expect(r.status).toBe(200);
+    expect(r.body.data?.id).toBe(canonicalId);
+  });
+
+  it("GET /api/invoices/mobile:<localId> returns 409 when no canonical invoice exists yet", async () => {
+    const { db, labCases } = dbMod as any;
+    const { access } = await makeSession(labOwnerId);
+
+    const localInvoiceId = `${Date.now()}nocanonicalid`;
+    const caseId = rid("case");
+    await db.insert(labCases).values({
+      id: caseId,
+      ownerId: labOwnerId,
+      organizationId: labOrgId,
+      caseData: JSON.stringify({
+        caseNumber: "5678",
+        invoiceId: localInvoiceId,
+        patientName: "No Canonical Patient",
+        price: 100,
+      }),
+    });
+
+    const r = await request(appMod.default)
+      .get(`/api/invoices/${encodeURIComponent(`mobile:${localInvoiceId}`)}`)
+      .set("Authorization", `Bearer ${access}`);
+
+    expect(r.status).toBe(409);
+    expect(String(r.body.error ?? r.body.message ?? "")).toMatch(/older version/i);
+  });
+
+  it("GET /api/invoices/mobile:<unknownId> returns 404 when no matching case exists", async () => {
+    const { access } = await makeSession(labOwnerId);
+
+    const r = await request(appMod.default)
+      .get(`/api/invoices/${encodeURIComponent("mobile:doesnotexist")}`)
+      .set("Authorization", `Bearer ${access}`);
+
+    expect(r.status).toBe(404);
   });
 });
