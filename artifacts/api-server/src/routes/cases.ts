@@ -33,6 +33,7 @@ import AdmZip from "adm-zip";
 import { writeAuditLog } from "../lib/audit";
 import { calculateLineTotal, sumMoney } from "../lib/case";
 import { syncInvoiceFromRestorations, buildGroupedLineItemsForInvoice } from "../lib/invoice-sync";
+import { invoiceDueDate } from "../lib/invoice-due-date";
 import {
   classifyMatch,
   splitDisplayName,
@@ -2307,6 +2308,7 @@ router.post(
               // lab knows it needs to be filled in and sent.
               status: "open",
               issuedAt: new Date(),
+              dueAt: invoiceDueDate(new Date()),
               displayMetadataJson: displayMetadata,
               createdByUserId: (req as any).auth.userId,
               updatedByUserId: (req as any).auth.userId,
@@ -5855,6 +5857,7 @@ router.post(
             displayMetadataJson,
             aiGenerated: true,
             aiPricingWarning,
+            dueAt: invoiceDueDate(new Date()),
             createdByUserId: userId,
             updatedByUserId: userId,
           })
@@ -6750,6 +6753,7 @@ router.post(
             displayMetadataJson,
             aiGenerated: true,
             aiPricingWarning,
+            dueAt: invoiceDueDate(new Date()),
             createdByUserId: userId,
             updatedByUserId: userId,
           })
@@ -7321,6 +7325,7 @@ async function processOneIteroZipFile(
         invoiceNumber: `INV-${createdCase.caseNumber}`, caseId: createdCase.id,
         labOrganizationId: createdCase.labOrganizationId, providerOrganizationId: createdCase.providerOrganizationId,
         status: "draft", displayMetadataJson, aiGenerated: true, aiPricingWarning,
+        dueAt: invoiceDueDate(new Date()),
         createdByUserId: userId, updatedByUserId: userId,
       }).onConflictDoNothing().returning();
 

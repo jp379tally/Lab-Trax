@@ -832,6 +832,7 @@ router.post(
           providerOrganizationId: found.providerOrganizationId,
           status: "draft",
           displayMetadataJson,
+          dueAt: invoiceDueDate(new Date()),
           createdByUserId: (req as any).auth.userId,
           updatedByUserId: (req as any).auth.userId,
         })
@@ -1124,6 +1125,7 @@ router.post(
           status: "draft",
           displayMetadataJson,
           ...(bodyLayoutPresetId ? { layoutPresetId: bodyLayoutPresetId } : {}),
+          dueAt: invoiceDueDate(new Date()),
           createdByUserId: userId,
           updatedByUserId: userId,
         })
@@ -1280,6 +1282,7 @@ router.post(
         status: "draft",
         displayMetadataJson,
         ...(bodyLayoutPresetId ? { layoutPresetId: bodyLayoutPresetId } : {}),
+        dueAt: invoiceDueDate(new Date()),
         createdByUserId: userId,
         updatedByUserId: userId,
       })
@@ -2195,6 +2198,7 @@ async function resolveMobileInvoiceId(
       providerOrganizationId: null,
       status: "draft",
       displayMetadataJson,
+      dueAt: invoiceDueDate(new Date()),
       createdByUserId: callerId,
       updatedByUserId: callerId,
     })
