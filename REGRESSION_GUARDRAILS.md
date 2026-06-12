@@ -54,9 +54,37 @@ Workflows 1–18 were confirmed in TestFlight after Task #1493 (Mobile UI Parity
 > 11. "Skip" on barcode screen → navigates directly to case detail.
 > 12. Entire flow does not degrade any of workflows 1–18 above.
 
+### AI Reader TestFlight Build Gate Status (workflows 19–21)
+
+**All automated pre-build gates pass as of 2026-06-12.** A TestFlight build must be cut and the 12-step device checklist above must be walked before workflows 19–21 are promoted to fully confirmed.
+
+**Code fixes applied before gate:**
+- `expo-sensors` package was missing from the installed node_modules even though it was listed in `package.json`; installed via `pnpm --filter @workspace/labtrax add expo-sensors`.
+- Imported `AccelerometerMeasurement` type from `expo-sensors` in `app/ai-reader/capture.tsx` so the Accelerometer listener callback is fully typed (eliminates `TS7031` implicit-any errors that blocked `pnpm run typecheck`).
+
+**Automated gate results (2026-06-12):**
+| Gate | Result |
+|------|--------|
+| Mobile tests (`pnpm --filter @workspace/labtrax run test`) | ✅ 150/150 passed |
+| API tests (`pnpm --filter @workspace/api-server run test`) | ✅ 541 passed, 6 skipped |
+| Legacy-path fence | ✅ Zero violations |
+| Scripts tests | ✅ 18/18 passed |
+| Typecheck (`pnpm run typecheck`) | ✅ Zero errors |
+
+**Device-specific concerns to verify on TestFlight:**
+- **Camera permissions** — `capture.tsx` shows a "Grant access" prompt on first open; verify iOS permission dialog fires before the viewfinder mounts.
+- **Barcode scan loop** — `barcode.tsx` guards via `scanned` state flag and sets `onBarcodeScanned={assigning ? undefined : handler}`; verify a single scan fires exactly once even if the scanner sees multiple frames.
+- **expo-print sheet** — `Print.printAsync({ html })` calls the native iOS print dialog; verify the sheet appears and the label content (patient, case number, doctor, shade, material) renders correctly.
+
+**To trigger the TestFlight build (once all device checks pass):**
+```bash
+touch .local/.eas-build-approved
+# Then restart the "EAS iOS Build + Submit" workflow
+```
+
 ### Rules: Before Any New Feature
 
-1. **Identify which of the 18 workflows the feature could affect** before writing any code.
+1. **Identify which of the 21 workflows the feature could affect** before writing any code.
 2. **Run the full protected suite after every change** (see command block in Test Coverage Map below).
 3. **If any protected workflow fails, stop.** Do not merge, publish, or continue until the regression is fixed.
 4. **Add regression tests when a new workflow is confirmed working** in TestFlight — map it here.

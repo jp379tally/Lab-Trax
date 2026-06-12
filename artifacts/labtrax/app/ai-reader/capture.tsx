@@ -14,7 +14,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { CameraView, useCameraPermissions, type FlashMode } from "expo-camera";
-import { Accelerometer } from "expo-sensors";
+import { Accelerometer, type AccelerometerMeasurement } from "expo-sensors";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import {
@@ -94,7 +94,7 @@ export default function AiReaderCaptureScreen() {
     steadyCountRef.current = 0;
     autoFiringRef.current = false;
     Accelerometer.setUpdateInterval(ACCEL_INTERVAL_MS);
-    accelSubRef.current = Accelerometer.addListener(({ x, y, z }) => {
+    accelSubRef.current = Accelerometer.addListener(({ x, y, z }: AccelerometerMeasurement) => {
       if (autoFiringRef.current) return;
       // Magnitude of total acceleration; subtract 1g (gravity) to get net motion
       const mag = Math.abs(Math.sqrt(x * x + y * y + z * z) - 1);
