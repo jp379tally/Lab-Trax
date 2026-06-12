@@ -34,7 +34,7 @@ export function arrayBufferToBase64(
 // Inlined into the viewer and thumbnail HTML docs so they have no external
 // runtime dependency aside from three.js (loaded from CDN). Exposed as a single
 // constant so the viewer and thumbnail builders stay in sync.
-const PARSERS_AND_HELPERS_JS = `
+export const PARSERS_AND_HELPERS_JS = `
 function postMsg(o){
   var payload=JSON.stringify(o);
   try{ if(window.ReactNativeWebView) window.ReactNativeWebView.postMessage(payload); }catch(_){}
@@ -192,6 +192,13 @@ function readIntBySize(dv,offset,size,le){
     default: return dv.getInt32(offset,le);
   }
 }
+// Normalize a raw color channel to 0–1. Float/double channels are assumed to
+// already be 0–1; integer channels (PLY color is almost always uchar 0–255)
+// are divided by 255.
+function normColorChannel(val,type){
+  if(type==='float'||type==='float32'||type==='double'||type==='float64') return val;
+  return val/255;
+}
 function parsePLY(buf){
   var bytes=new Uint8Array(buf);
   var endMagic=[101,110,100,95,104,101,97,100,101,114];
@@ -242,28 +249,57 @@ function parsePLY(buf){
   var yIdx=vertexProps.findIndex(function(p){return p.name==='y';});
   var zIdx=vertexProps.findIndex(function(p){return p.name==='z';});
   if(xIdx<0||yIdx<0||zIdx<0) return null;
+  function findColorProp(names){
+    for(var n=0;n<names.length;n++){
+      for(var p=0;p<vertexProps.length;p++){
+        if(vertexProps[p].name===names[n]) return p;
+      }
+    }
+    return -1;
+  }
+  // iTero color scans store per-vertex color as red/green/blue (sometimes with
+  // alpha). Accept the common aliases too. Alpha is detected for completeness
+  // but not used by the renderer (gums/teeth are opaque).
+  var color={
+    r:findColorProp(['red','r','diffuse_red']),
+    g:findColorProp(['green','g','diffuse_green']),
+    b:findColorProp(['blue','b','diffuse_blue'])
+  };
   if(format==='ascii'){
     var fullText=new TextDecoder().decode(buf);
-    return parsePLYAscii(fullText,vertexCount,faceCount,xIdx,yIdx,zIdx);
+    return parsePLYAscii(fullText,vertexCount,faceCount,xIdx,yIdx,zIdx,vertexProps,color);
   } else {
     var le=format==='binary_le';
-    return parsePLYBinary(buf,headerEnd,vertexCount,faceCount,vertexProps,xIdx,yIdx,zIdx,le,faceListCountType,faceListIndexType);
+    return parsePLYBinary(buf,headerEnd,vertexCount,faceCount,vertexProps,xIdx,yIdx,zIdx,le,faceListCountType,faceListIndexType,color);
   }
 }
-function parsePLYAscii(fullText,vertexCount,faceCount,xIdx,yIdx,zIdx){
+function parsePLYAscii(fullText,vertexCount,faceCount,xIdx,yIdx,zIdx,vertexProps,color){
   var lines=fullText.split(/\\r?\\n/);
   var dataStart=0;
   for(var i=0;i<lines.length;i++){
     if(lines[i].trim()==='end_header'){dataStart=i+1;break;}
   }
+  var hasColor=color&&color.r>=0&&color.g>=0&&color.b>=0;
+  var rType=hasColor?vertexProps[color.r].type:null;
+  var gType=hasColor?vertexProps[color.g].type:null;
+  var bType=hasColor?vertexProps[color.b].type:null;
   var positions=[];
+  var colors=hasColor?[]:null;
   for(var i=0;i<vertexCount;i++){
     var lineIdx=dataStart+i;
     if(lineIdx>=lines.length) break;
     var parts=lines[lineIdx].trim().split(/\\s+/);
     positions.push(parseFloat(parts[xIdx]),parseFloat(parts[yIdx]),parseFloat(parts[zIdx]));
+    if(hasColor){
+      colors.push(
+        normColorChannel(parseFloat(parts[color.r]),rType),
+        normColorChannel(parseFloat(parts[color.g]),gType),
+        normColorChannel(parseFloat(parts[color.b]),bType)
+      );
+    }
   }
   var vertArr=[];
+  var colArr=hasColor?[]:null;
   var faceStart=dataStart+vertexCount;
   for(var i=0;i<faceCount;i++){
     var lineIdx=faceStart+i;
@@ -282,16 +318,27 @@ function parsePLYAscii(fullText,vertexCount,faceCount,xIdx,yIdx,zIdx){
         positions[i1*3],positions[i1*3+1],positions[i1*3+2],
         positions[i2*3],positions[i2*3+1],positions[i2*3+2]
       );
+      if(hasColor){
+        colArr.push(
+          colors[i0*3],colors[i0*3+1],colors[i0*3+2],
+          colors[i1*3],colors[i1*3+1],colors[i1*3+2],
+          colors[i2*3],colors[i2*3+1],colors[i2*3+2]
+        );
+      }
     }
   }
   if(vertArr.length===0){
     var verts=new Float32Array(positions);
-    return {vertices:verts,normals:computeFlatNormals(verts)};
+    var res={vertices:verts,normals:computeFlatNormals(verts)};
+    if(hasColor) res.colors=new Float32Array(colors);
+    return res;
   }
   var verts=new Float32Array(vertArr);
-  return {vertices:verts,normals:computeFlatNormals(verts)};
+  var res={vertices:verts,normals:computeFlatNormals(verts)};
+  if(hasColor) res.colors=new Float32Array(colArr);
+  return res;
 }
-function parsePLYBinary(buf,dataOffset,vertexCount,faceCount,vertexProps,xIdx,yIdx,zIdx,le,faceListCountType,faceListIndexType){
+function parsePLYBinary(buf,dataOffset,vertexCount,faceCount,vertexProps,xIdx,yIdx,zIdx,le,faceListCountType,faceListIndexType,color){
   var dv=new DataView(buf);
   var vertexStride=0;
   var propOffsets=[];
@@ -299,7 +346,9 @@ function parsePLYBinary(buf,dataOffset,vertexCount,faceCount,vertexProps,xIdx,yI
     propOffsets.push(vertexStride);
     vertexStride+=propByteSize(vertexProps[i].type);
   }
+  var hasColor=color&&color.r>=0&&color.g>=0&&color.b>=0;
   var positions=[];
+  var colors=hasColor?[]:null;
   var off=dataOffset;
   for(var i=0;i<vertexCount;i++){
     positions.push(
@@ -307,11 +356,19 @@ function parsePLYBinary(buf,dataOffset,vertexCount,faceCount,vertexProps,xIdx,yI
       readPropVal(dv,off+propOffsets[yIdx],vertexProps[yIdx].type,le),
       readPropVal(dv,off+propOffsets[zIdx],vertexProps[zIdx].type,le)
     );
+    if(hasColor){
+      colors.push(
+        normColorChannel(readPropVal(dv,off+propOffsets[color.r],vertexProps[color.r].type,le),vertexProps[color.r].type),
+        normColorChannel(readPropVal(dv,off+propOffsets[color.g],vertexProps[color.g].type,le),vertexProps[color.g].type),
+        normColorChannel(readPropVal(dv,off+propOffsets[color.b],vertexProps[color.b].type,le),vertexProps[color.b].type)
+      );
+    }
     off+=vertexStride;
   }
   var countSize=propByteSize(faceListCountType);
   var indexSize=propByteSize(faceListIndexType);
   var vertArr=[];
+  var colArr=hasColor?[]:null;
   if(faceCount>0){
     for(var i=0;i<faceCount;i++){
       var count=readUintBySize(dv,off,countSize); off+=countSize;
@@ -326,15 +383,26 @@ function parsePLYBinary(buf,dataOffset,vertexCount,faceCount,vertexProps,xIdx,yI
           positions[i1*3],positions[i1*3+1],positions[i1*3+2],
           positions[i2*3],positions[i2*3+1],positions[i2*3+2]
         );
+        if(hasColor){
+          colArr.push(
+            colors[i0*3],colors[i0*3+1],colors[i0*3+2],
+            colors[i1*3],colors[i1*3+1],colors[i1*3+2],
+            colors[i2*3],colors[i2*3+1],colors[i2*3+2]
+          );
+        }
       }
     }
   }
   if(vertArr.length===0){
     var verts=new Float32Array(positions);
-    return {vertices:verts,normals:computeFlatNormals(verts)};
+    var res={vertices:verts,normals:computeFlatNormals(verts)};
+    if(hasColor) res.colors=new Float32Array(colors);
+    return res;
   }
   var verts=new Float32Array(vertArr);
-  return {vertices:verts,normals:computeFlatNormals(verts)};
+  var res={vertices:verts,normals:computeFlatNormals(verts)};
+  if(hasColor) res.colors=new Float32Array(colArr);
+  return res;
 }
 
 function parseScanBuffer(buf,format){
@@ -420,9 +488,18 @@ if(!parsed){
   var geo=new THREE.BufferGeometry();
   geo.setAttribute('position',new THREE.BufferAttribute(parsed.vertices,3));
   geo.setAttribute('normal',new THREE.BufferAttribute(parsed.normals,3));
+  var hasColor=!!parsed.colors;
+  if(hasColor) geo.setAttribute('color',new THREE.BufferAttribute(parsed.colors,3));
 
-  var solidMat=new THREE.MeshPhongMaterial({color:0xe2e8f0,specular:0x444444,shininess:40,side:THREE.DoubleSide});
-  var wireframeMat=new THREE.MeshPhongMaterial({color:0xe2e8f0,specular:0x444444,shininess:40,side:THREE.DoubleSide,wireframe:true});
+  // When the scan carries per-vertex color (iTero color PLY), paint with the
+  // vertex colors on a white base so the colors aren't tinted; otherwise keep
+  // the neutral gray material used for STL/OBJ/color-less PLY.
+  var solidMat=hasColor
+    ? new THREE.MeshPhongMaterial({vertexColors:true,color:0xffffff,specular:0x111111,shininess:20,side:THREE.DoubleSide})
+    : new THREE.MeshPhongMaterial({color:0xe2e8f0,specular:0x444444,shininess:40,side:THREE.DoubleSide});
+  var wireframeMat=hasColor
+    ? new THREE.MeshPhongMaterial({vertexColors:true,color:0xffffff,specular:0x111111,shininess:20,side:THREE.DoubleSide,wireframe:true})
+    : new THREE.MeshPhongMaterial({color:0xe2e8f0,specular:0x444444,shininess:40,side:THREE.DoubleSide,wireframe:true});
   var shadedMat=new THREE.MeshNormalMaterial({side:THREE.DoubleSide});
 
   var mesh=new THREE.Mesh(geo,solidMat);
@@ -688,13 +765,17 @@ try {
   var geo=new THREE.BufferGeometry();
   geo.setAttribute('position',new THREE.BufferAttribute(parsed.vertices,3));
   geo.setAttribute('normal',new THREE.BufferAttribute(parsed.normals,3));
+  var hasColor=!!parsed.colors;
+  if(hasColor) geo.setAttribute('color',new THREE.BufferAttribute(parsed.colors,3));
   geo.computeBoundingBox();
   var box=geo.boundingBox;
   var center=new THREE.Vector3(); box.getCenter(center);
   var size3=new THREE.Vector3(); box.getSize(size3);
   var maxDim=Math.max(size3.x,size3.y,size3.z)||1;
 
-  var mat=new THREE.MeshPhongMaterial({color:0xe2e8f0,specular:0x444444,shininess:40,side:THREE.DoubleSide});
+  var mat=hasColor
+    ? new THREE.MeshPhongMaterial({vertexColors:true,color:0xffffff,specular:0x111111,shininess:20,side:THREE.DoubleSide})
+    : new THREE.MeshPhongMaterial({color:0xe2e8f0,specular:0x444444,shininess:40,side:THREE.DoubleSide});
   var mesh=new THREE.Mesh(geo,mat);
   mesh.position.sub(center);
   scene.add(mesh);
