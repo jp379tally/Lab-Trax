@@ -227,7 +227,7 @@ function makeStyles(colors: ThemeColors) {
       backgroundColor: colors.tint,
     },
     errorButtonText: {
-      color: "#FFFFFF",
+      color: "#FFFFFF", // hex-allow: white text on tint-colored button
       fontWeight: "600",
       fontSize: 15,
     },

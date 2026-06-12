@@ -9,9 +9,10 @@ interface AuthedImageProps {
   style?: StyleProp<ImageStyle>;
   contentFit?: "cover" | "contain" | "fill" | "none" | "scale-down";
   resizeMode?: "cover" | "contain" | "fill" | "none" | "scale-down";
+  testID?: string;
 }
 
-export function AuthedImage({ url, style, contentFit, resizeMode }: AuthedImageProps) {
+export function AuthedImage({ url, style, contentFit, resizeMode, testID }: AuthedImageProps) {
   const [localUri, setLocalUri] = useState<string | null>(null);
 
   useEffect(() => {
@@ -28,6 +29,7 @@ export function AuthedImage({ url, style, contentFit, resizeMode }: AuthedImageP
       source={localUri ? { uri: localUri } : undefined}
       style={style}
       contentFit={contentFit ?? resizeMode ?? "cover"}
+      testID={testID}
     />
   );
 }

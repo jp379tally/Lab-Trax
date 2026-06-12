@@ -7,7 +7,7 @@ export function ReconnectingBanner() {
   if (!isReconnecting) return null;
   return (
     <View style={styles.pill} pointerEvents="none">
-      <ActivityIndicator size="small" color="#fff" />
+      <ActivityIndicator size="small" color="#fff" /* hex-allow: white spinner on fixed-dark reconnecting pill */ />
       <Text style={styles.label}>Reconnecting…</Text>
     </View>
   );
@@ -28,7 +28,7 @@ const styles = StyleSheet.create({
     zIndex: 9999,
   },
   label: {
-    color: "#fff",
+    color: "#fff", // hex-allow: white label on fixed-dark reconnecting pill
     fontSize: 13,
     fontFamily: "Inter_500Medium",
   },

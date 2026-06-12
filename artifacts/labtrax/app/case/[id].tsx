@@ -870,10 +870,15 @@ export default function CaseDetailScreen() {
       <Modal visible={!!lightboxUrl} transparent animationType="fade" onRequestClose={() => setLightboxUrl(null)}>
         <Pressable style={styles.lightbox} onPress={() => setLightboxUrl(null)}>
           {lightboxUrl ? (
-            <AuthedImage url={lightboxUrl} style={styles.lightboxImage} contentFit="contain" />
+            <AuthedImage
+              url={lightboxUrl}
+              style={styles.lightboxImage}
+              contentFit="contain"
+              testID="lightbox-image"
+            />
           ) : null}
           <View style={[styles.lightboxClose, { top: insets.top + Spacing.md }]}>
-            <Ionicons name="close" size={26} color="#FFFFFF" />
+            <Ionicons name="close" size={26} color="#FFFFFF" /* hex-allow: fixed-dark lightbox close icon */ />
           </View>
         </Pressable>
       </Modal>
@@ -1415,7 +1420,12 @@ function FilesSection({
             const url = `/api/cases/${caseId}/attachments/${a.id}/file`;
             const isDeleting = deletingId === a.id;
             return (
-              <Pressable key={a.id} style={styles.thumb} onPress={() => onOpenImage(url)}>
+              <Pressable
+                key={a.id}
+                style={styles.thumb}
+                onPress={() => onOpenImage(url)}
+                testID={`img-open-${a.id}`}
+              >
                 <AuthedImage url={url} style={styles.thumbImage} contentFit="cover" />
                 {canEdit ? (
                   <Pressable
@@ -1425,9 +1435,9 @@ function FilesSection({
                     testID={`img-delete-${a.id}`}
                   >
                     {isDeleting ? (
-                      <ActivityIndicator color="#fff" size="small" />
+                      <ActivityIndicator color="#fff" /* hex-allow: white spinner on photo thumbnail overlay */ size="small" />
                     ) : (
-                      <Ionicons name="trash-outline" size={14} color="#fff" />
+                      <Ionicons name="trash-outline" size={14} color="#fff" /* hex-allow: white icon on photo thumbnail overlay */ />
                     )}
                   </Pressable>
                 ) : null}

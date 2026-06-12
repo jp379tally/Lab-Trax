@@ -94,6 +94,7 @@ export function resetMockAppState(): void {
 // would be unobservable). `mock`-prefixed so Vitest allows them in the factory.
 export const mockUpdateCaseMutateAsync = vi.fn(async () => ({ ok: true, data: null }));
 export const mockAddCaseNoteMutateAsync = vi.fn(async () => ({ ok: true, data: null }));
+export const mockDeleteAttachmentMutateAsync = vi.fn(async () => ({ ok: true, data: null }));
 
 // Mutable handler for the mocked `resilientFetch`. The default returns
 // `{ data: null }` (preserves the previous behaviour). Tests that need
@@ -208,8 +209,8 @@ vi.mock("@expo/vector-icons", () => {
 });
 
 vi.mock("expo-image", () => ({
-  Image: ({ source }: { source?: unknown }) =>
-    React.createElement("Image", { source }),
+  Image: ({ source, testID }: { source?: unknown; testID?: string }) =>
+    React.createElement("Image", { source, testID }),
 }));
 
 // MockCameraView captures onBarcodeScanned callbacks so tests can trigger
@@ -447,12 +448,21 @@ vi.mock("react-native-qrcode-svg", () => ({
 }));
 
 // ── @tanstack/react-query: stub useQuery so CaseDetailScreen's auth/me call
-// doesn't require a real QueryClientProvider. Returns empty data (canEdit=false).
+// doesn't require a real QueryClientProvider. Defaults to empty data
+// (canEdit=false); tests that need edit permission seed memberships via
+// `setMockAppState({ meMemberships: [{ organizationId, role, status }] })`.
 vi.mock("@tanstack/react-query", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-query")>();
   return {
     ...actual,
-    useQuery: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
+    useQuery: vi.fn(() => ({
+      data:
+        mockAppOverrides.current.meMemberships !== undefined
+          ? { memberships: mockAppOverrides.current.meMemberships }
+          : undefined,
+      isLoading: false,
+      isError: false,
+    })),
   };
 });
 
@@ -562,7 +572,7 @@ vi.mock("@workspace/api-client-react", () => ({
     refetch: vi.fn(async () => undefined),
   }),
   useDeleteCaseAttachment: () => ({
-    mutateAsync: vi.fn(async () => ({ ok: true, data: null })),
+    mutateAsync: mockDeleteAttachmentMutateAsync,
     mutate: vi.fn(),
     isPending: false,
   }),

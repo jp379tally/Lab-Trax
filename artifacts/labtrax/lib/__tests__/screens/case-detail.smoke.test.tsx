@@ -8,8 +8,10 @@ import {
   setMockSearchParams,
   mockUpdateCaseMutateAsync,
   mockAddCaseNoteMutateAsync,
+  mockDeleteAttachmentMutateAsync,
 } from "../../../vitest.setup";
 
+import { Alert } from "react-native";
 import * as Sharing from "expo-sharing";
 import { router } from "expo-router";
 
@@ -178,9 +180,46 @@ describe("CaseDetailScreen (read-only viewer)", () => {
       uploaderName: "Lab Tech",
       createdAt: "2026-06-10T12:00:00.000Z",
     };
+    const imageAttachment = {
+      id: "att-img-1",
+      fileName: "occlusal.jpg",
+      fileType: "image/jpeg",
+      uploaderName: "Lab Tech",
+      createdAt: "2026-06-10T12:00:00.000Z",
+    };
 
     beforeEach(() => {
       setMockSearchParams({ id: inProgressCase.id });
+    });
+
+    it("renders a tappable thumbnail for an image attachment", () => {
+      setMockAppState({
+        cases: [inProgressCase],
+        invoices: [],
+        attachments: [imageAttachment],
+      });
+      const { getByTestId } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-files"));
+      expect(getByTestId(`img-open-${imageAttachment.id}`)).toBeTruthy();
+    });
+
+    it("opens a tapped image thumbnail in the full-screen lightbox preview", async () => {
+      setMockAppState({
+        cases: [inProgressCase],
+        invoices: [],
+        attachments: [imageAttachment],
+      });
+      const { getByTestId, queryByTestId } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-files"));
+
+      // Lightbox is closed until the thumbnail is tapped.
+      expect(queryByTestId("lightbox-image")).toBeNull();
+
+      fireEvent.press(getByTestId(`img-open-${imageAttachment.id}`));
+
+      await waitFor(() => expect(getByTestId("lightbox-image")).toBeTruthy());
+      // Opening an image preview must not invoke the OS share sheet.
+      expect(vi.mocked(Sharing.shareAsync)).not.toHaveBeenCalled();
     });
 
     it("renders a tappable card for a PDF attachment", () => {
@@ -234,6 +273,61 @@ describe("CaseDetailScreen (read-only viewer)", () => {
         expect(vi.mocked(Sharing.shareAsync)).toHaveBeenCalled();
       });
       expect(vi.mocked(router.push)).not.toHaveBeenCalled();
+    });
+
+    it("hides the delete affordance when the user cannot edit", () => {
+      // Default useQuery stub returns no memberships → canEdit === false.
+      setMockAppState({
+        cases: [inProgressCase],
+        invoices: [],
+        attachments: [imageAttachment],
+      });
+      const { getByTestId, queryByTestId } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-files"));
+
+      // The thumbnail is still viewable, but the trash button must be absent.
+      expect(getByTestId(`img-open-${imageAttachment.id}`)).toBeTruthy();
+      expect(queryByTestId(`img-delete-${imageAttachment.id}`)).toBeNull();
+    });
+
+    it("deletes an attachment after confirmation when the user can edit", async () => {
+      const editableCase = { ...inProgressCase, organizationId: "org-1" };
+      setMockSearchParams({ id: editableCase.id });
+      setMockAppState({
+        cases: [editableCase],
+        invoices: [],
+        attachments: [imageAttachment],
+        // Active billing-role membership on the case's org → canEdit === true.
+        meMemberships: [
+          { organizationId: "org-1", role: "owner", status: "active" },
+        ],
+      });
+
+      const alertSpy = vi.spyOn(Alert, "alert").mockImplementation(() => {});
+      try {
+        const { getByTestId } = render(<CaseDetailScreen />);
+        fireEvent.press(getByTestId("section-tab-files"));
+
+        // Editors see the trash affordance; pressing it asks for confirmation.
+        fireEvent.press(getByTestId(`img-delete-${imageAttachment.id}`));
+        expect(alertSpy).toHaveBeenCalled();
+        expect(mockDeleteAttachmentMutateAsync).not.toHaveBeenCalled();
+
+        // Invoke the destructive "Delete" action from the confirm dialog.
+        const buttons = alertSpy.mock.calls[0][2];
+        const deleteButton = buttons?.find((b) => b.style === "destructive");
+        expect(deleteButton).toBeTruthy();
+        await deleteButton?.onPress?.();
+
+        await waitFor(() =>
+          expect(mockDeleteAttachmentMutateAsync).toHaveBeenCalledWith({
+            caseId: editableCase.id,
+            attachmentId: imageAttachment.id,
+          }),
+        );
+      } finally {
+        alertSpy.mockRestore();
+      }
     });
   });
 });
