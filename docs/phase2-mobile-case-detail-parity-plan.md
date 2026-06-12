@@ -181,3 +181,19 @@ Dependencies are explicit; within a milestone, work is parallelizable.
 3. **UI primitives deferred to M1.** M0 has zero consumers of the new hooks, so no component or vitest-mock work was needed (keeps the zero-regression gate trivially green).
 
 **Carried into M3 (advisory):** extend `CanonicalRestoration` with typed `unitPrice` / `lineTotal` / `priceSource` (today only covered by `additionalProperties: true`) so the tooth chart gets typed price access instead of casts.
+
+### M1 Outcome (complete) — Interactive Case Detail (Features 2 + 4)
+
+**Status:** ✅ Complete (code/dev only — **no EAS build**; gated on T005 user approval per D3). Scope delivered: Overview editing (Feature 2), Notes view+add (Feature 4), History read-only. Gates: `pnpm run typecheck` clean; regression green — api-server **537 passed / 6 skipped**, labtrax **88 passed**. Architect `evaluate_task`: **PASS** after fixing the two findings below.
+
+**Implementation:** `artifacts/labtrax/app/case/[id].tsx` — `OverviewSection` gained an Edit toggle → inline form. Text fields (patient first/last, doctor) use plain inputs; status uses a JS-only `OptionPickerModal`; priority uses a `SegmentedRow` (normal|rush); dueDate + expectedDeliveryDate use a dependency-free JS calendar `DatePickerModal`. Save → `useUpdateCase.mutateAsync({caseId, data})` where `buildOverviewPayload` sends **only changed fields**; `onSaved = caseQuery.refetch()`. `NotesSection` gained a composer (`useAddCaseNote`) with a visibility toggle; History stays read-only.
+
+**Contract fix (T001):** `UpdateCaseInput.status` enum expanded from 10 → **15** server-accepted values (adds scan, post_mill, sintering_furnace, model_room, complete, etc.); codegen re-run.
+
+**Deviations / decisions (validated by the architect):**
+1. **JS-only controls, no new native deps.** Status uses a `Modal` option picker and dates use a hand-rolled calendar rather than a native date/picker library — keeps M1 inside the existing dev client (no extra TestFlight rebuild churn). Pure-UI choice; no contract impact.
+2. **Note visibility default = `internal_lab_only`** (matches desktop `shareWithProvider: false`). An earlier draft defaulted to `shared_with_provider`; the architect flagged this as a strict-1:1 violation + privacy footgun (would expose internal lab notes to providers by default). Corrected to desktop-canonical default before sign-off.
+3. **Due-date is not clearable; expected-delivery is.** Server contract: `dueDate` is `z.string().optional()` (non-nullable) while `expectedDeliveryDate` is nullable. The dueDate picker therefore has no Clear control (it would be a silent no-op); only expectedDeliveryDate can be cleared to `null`. Mirrors desktop.
+4. **Status edited via the same canonical `PATCH /cases/:id`** desktop uses — no separate mobile status endpoint, preserving 1:1 parity.
+
+**TestFlight:** M1 is user-visible, so per D3 it is eligible for a build — but only on **explicit per-build user approval** (T005). EAS auto-start stays disabled; not triggered here.

@@ -1,0 +1,88 @@
+Clarification: Phase 2 is not AI Reader yet.
+
+Phase 2 must address the missing desktop case-detail functionality I found in Build 239.
+
+Build 239 proved the shell works, but it is still too limited:
+
+* I can see the invoice, but cannot interact with or edit it.
+* I can see case history, but cannot interact with it.
+* I cannot edit the overview.
+* I cannot edit or print the lab slip.
+* I cannot interact with the tooth chart.
+* I cannot open file/photo/document thumbnails.
+
+All desktop/web case-detail functionality needs to translate to mobile before we move on to AI Reader/intake.
+
+Therefore Phase 2 should be:
+
+“Mobile Case Detail Desktop Parity”
+
+Phase 2 scope:
+
+1. Interactive invoice section:
+
+   * view invoice
+   * edit invoice line items where desktop allows
+   * generate invoice if missing
+   * no duplicate invoices
+   * all changes visible on desktop/web
+
+2. Case history:
+
+   * show the same history/timeline as desktop
+   * allow the same interactions desktop allows
+   * no mobile-only history reconstruction
+
+3. Overview:
+
+   * edit the same overview fields desktop allows
+   * save through canonical API
+   * changes appear on desktop/web
+
+4. Lab slip:
+
+   * view lab slip
+   * edit fields only through canonical case data
+   * print lab slip using the same desktop format/data
+
+5. Case label:
+
+   * view/print label using desktop format/data
+
+6. Tooth chart/restorations:
+
+   * tap/interact with teeth
+   * view restoration details
+   * edit restorations where desktop allows
+   * changes appear on desktop/web
+
+7. Files/photos/documents:
+
+   * tap thumbnails
+   * open images/PDFs/documents
+   * full-screen preview
+   * no local-only files
+   * no mobile-only attachment logic
+
+8. Notes:
+
+   * view notes
+   * add/edit/delete notes only where desktop allows
+   * changes appear on desktop/web
+
+Phase 2 acceptance:
+
+* Open Erik Steffen on mobile.
+* Interact with invoice.
+* Interact with history.
+* Edit overview.
+* Open files/photos/documents.
+* Interact with tooth chart.
+* Edit restorations.
+* View/print lab slip.
+* View/print case label.
+* Confirm every change appears on desktop/web.
+
+Do not start AI Reader / intake until Phase 2 case-detail desktop parity is complete and approved.
+
+AI Reader becomes a later phase after the case-detail workspace is functional.

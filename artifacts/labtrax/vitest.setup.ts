@@ -90,6 +90,11 @@ export function resetMockAppState(): void {
   mockAppOverrides.current = {};
 }
 
+// Stable mutation spies so tests can assert calls (a fresh vi.fn() per render
+// would be unobservable). `mock`-prefixed so Vitest allows them in the factory.
+export const mockUpdateCaseMutateAsync = vi.fn(async () => ({ ok: true, data: null }));
+export const mockAddCaseNoteMutateAsync = vi.fn(async () => ({ ok: true, data: null }));
+
 // Mutable handler for the mocked `resilientFetch`. The default returns
 // `{ data: null }` (preserves the previous behaviour). Tests that need
 // `/api/legacy/cases/:id` to return a hydrated case override this.
@@ -490,12 +495,20 @@ vi.mock("@workspace/api-client-react", () => ({
     isError: false,
   }),
   useUpdateCase: () => ({
-    mutateAsync: vi.fn(async () => ({ ok: true, data: null })),
+    mutateAsync: mockUpdateCaseMutateAsync,
+    mutate: vi.fn(),
+    isPending: false,
+    isError: false,
+  }),
+  useAddCaseNote: () => ({
+    mutateAsync: mockAddCaseNoteMutateAsync,
     mutate: vi.fn(),
     isPending: false,
     isError: false,
   }),
   UpdateCaseInputStatus: {},
+  UpdateCaseInputPriority: {},
+  AddCaseNoteInputVisibility: {},
   useInvoices: () => ({
     data: (mockAppOverrides.current.invoices as unknown[]) ?? [],
     isLoading: false,

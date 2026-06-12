@@ -1,0 +1,339 @@
+#1477 - Mobile Reset — Phase 2 Reprioritized: Lab Floor Functionality First
+
+## What & Why
+
+Phase 1 proved the reset architecture works.
+
+Build 239 successfully demonstrates:
+
+* Login/logout works.
+* Cases load from the canonical database.
+* Cases created on desktop/web appear on mobile.
+* Case detail loads from canonical APIs.
+* History and invoice visibility work.
+* No local-only case storage exists.
+* Mobile is functioning as a desktop-derived viewer.
+
+The next priority is not AI Reader.
+
+The next priority is making the mobile app useful on the lab floor.
+
+Technicians primarily need to:
+
+1. Open a case.
+2. View and interact with files/photos/documents.
+3. View and interact with restorations and tooth-chart data.
+4. Read and update notes.
+5. Edit case overview information.
+6. Print case paperwork.
+7. Then later perform intake.
+
+Phase 2 is therefore being reprioritized around case-detail functionality and desktop parity before intake workflows.
+
+---
+
+## Guiding Rule
+
+Mobile is no longer a separate product.
+
+Desktop/Web remains the source of truth.
+
+Every workflow added to mobile must originate from the same:
+
+* database
+* APIs
+* business rules
+* invoice logic
+* restoration logic
+* provider logic
+* print logic
+
+used by desktop/web.
+
+Mobile-specific functionality exists only as hardware adapters:
+
+* camera
+* barcode scanner
+* share sheet
+* biometric lock
+* printing
+
+No mobile-only data workflows are permitted.
+
+---
+
+## Milestone M1 — Interactive Case Detail
+
+### Goal
+
+Turn the read-only case detail screen into a functional case workspace.
+
+### Deliverables
+
+#### Overview Editing
+
+User can edit:
+
+* patient name
+* doctor name
+* due date
+* priority
+* status
+* expected delivery date
+* bridge connectors
+
+using canonical mutations.
+
+All changes must immediately appear on desktop/web.
+
+#### Notes
+
+User can:
+
+* view notes
+* add notes
+* delete notes
+
+using canonical note APIs.
+
+No local note storage.
+
+#### History
+
+History remains read-only.
+
+Must continue matching desktop/web.
+
+### Acceptance
+
+Change a field on mobile.
+
+Refresh desktop.
+
+Changes must match exactly.
+
+---
+
+## Milestone M2 — Files, Photos & Documents
+
+### Goal
+
+Technicians must be able to interact with case files.
+
+### Deliverables
+
+#### Attachments
+
+User can:
+
+* open images
+* zoom images
+* open PDFs
+* browse attachment gallery
+* preview documents
+
+using canonical attachment endpoints.
+
+#### Media Viewer
+
+Support:
+
+* photos
+* scans
+* PDFs
+* prescriptions
+* STL previews if already supported by desktop
+
+Reuse desktop attachment behavior whenever possible.
+
+#### Authentication
+
+Attachment access must use the same authenticated media flow already established in Phase 1.
+
+No direct unauthenticated URLs.
+
+### Acceptance
+
+Attach a file to a case from desktop.
+
+Open same case on mobile.
+
+File opens successfully.
+
+---
+
+## Milestone M3 — Restorations & Tooth Chart
+
+### Goal
+
+Bring desktop restoration functionality to mobile.
+
+### Deliverables
+
+#### Tooth Chart
+
+Interactive tooth chart.
+
+User can:
+
+* tap teeth
+* inspect restorations
+* view restoration details
+
+#### Restoration Editing
+
+User can:
+
+* add restorations
+* edit restorations
+* remove restorations
+
+using canonical restoration APIs.
+
+#### Pricing
+
+Restoration pricing must come from the same pricing logic as desktop.
+
+No mobile-side calculations.
+
+### Acceptance
+
+Modify restorations on mobile.
+
+Refresh desktop.
+
+Restorations match exactly.
+
+---
+
+## Milestone M4 — Invoice & Lab Paperwork
+
+### Goal
+
+Achieve practical invoice and paperwork parity.
+
+### Deliverables
+
+#### Invoice Interaction
+
+User can:
+
+* view invoice
+* edit invoice items
+* update quantities
+* update prices (subject to desktop permissions)
+* view balances
+
+using canonical invoice APIs.
+
+#### Lab Slip
+
+Generate the same lab slip format used by desktop.
+
+#### Case Label
+
+Generate the same case label format used by desktop.
+
+#### Printing
+
+Use Expo Print as a rendering adapter only.
+
+Document content must come from canonical case data.
+
+### Acceptance
+
+Print a lab slip and label from mobile.
+
+Output matches desktop.
+
+---
+
+## Milestone M5 — Intake & AI Reader
+
+### Goal
+
+Only after case-detail parity exists.
+
+### Deliverables
+
+#### AI Reader
+
+* automatic prescription detection
+* auto-shutter toggle
+* manual capture fallback
+
+#### Provider Workflow
+
+Unknown provider flow must match desktop exactly:
+
+* search existing provider
+* suggest matches
+* create provider organization
+* create alias
+* create case
+
+#### Case Creation
+
+Create case using the same workflow as desktop.
+
+#### Invoice Creation
+
+Generate invoice using the same workflow as desktop.
+
+#### Barcode Assignment
+
+Assign physical case pan barcode.
+
+#### Locate Workflow
+
+* barcode locate
+* long-press locate
+
+#### Label Prompt
+
+After barcode assignment:
+
+"Print Case Label?"
+
+using desktop label format.
+
+### Acceptance
+
+Scan prescription.
+
+Create case.
+
+Generate invoice.
+
+Assign pan barcode.
+
+Print label.
+
+Verify all data appears on desktop/web.
+
+---
+
+## TestFlight Approval Gates
+
+No milestone proceeds automatically.
+
+Each milestone requires:
+
+1. Local verification
+2. Typecheck
+3. Regression tests
+4. Manual TestFlight build
+5. Real-device validation
+6. Explicit approval before the next milestone begins
+
+No milestone may skip this approval gate.
+
+---
+
+## Current Approved Next Step
+
+Proceed with:
+
+### M1 — Interactive Case Detail
+
+Do not start M2–M5 until M1 is complete and approved.

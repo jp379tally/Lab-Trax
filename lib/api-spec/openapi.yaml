@@ -2743,7 +2743,7 @@ components:
       properties:
         status:
           type: string
-          enum: [received, in_design, in_milling, in_porcelain, qc, shipped, delivered, on_hold, remake, cancelled]
+          enum: [received, in_design, scan, in_milling, post_mill, sintering_furnace, model_room, in_porcelain, qc, complete, shipped, delivered, on_hold, remake, cancelled]
         priority:
           type: string
           enum: [normal, rush]

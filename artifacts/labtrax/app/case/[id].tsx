@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -8,11 +8,24 @@ import {
   ActivityIndicator,
   Modal,
   RefreshControl,
+  TextInput,
+  Alert,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { useCase, useInvoices, useInvoice, useCaseAttachments } from "@workspace/api-client-react";
+import {
+  useCase,
+  useInvoices,
+  useInvoice,
+  useCaseAttachments,
+  useUpdateCase,
+  useAddCaseNote,
+  type UpdateCaseInput,
+  type UpdateCaseInputStatus,
+  type UpdateCaseInputPriority,
+  type AddCaseNoteInputVisibility,
+} from "@workspace/api-client-react";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
@@ -69,6 +82,8 @@ interface DetailedCase {
   status?: string | null;
   priority?: string | null;
   dueDate?: string | null;
+  expectedDeliveryDate?: string | null;
+  bridgeConnectors?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
   shade?: string | null;
@@ -184,6 +199,420 @@ function eventDescription(ev: DetailEvent): string | null {
   if (typeof meta.note === "string" && meta.note) return meta.note;
   if (typeof meta.message === "string" && meta.message) return meta.message;
   return null;
+}
+
+// ─── Edit constants (mirror desktop STATUS_FILTERS / priority exactly) ────────
+const STATUS_OPTIONS: { value: string; label: string }[] = [
+  { value: "received", label: "Received" },
+  { value: "in_design", label: "In Design" },
+  { value: "scan", label: "Scan" },
+  { value: "in_milling", label: "In Milling" },
+  { value: "post_mill", label: "Post Mill" },
+  { value: "sintering_furnace", label: "Sintering Furnace" },
+  { value: "model_room", label: "Model Room" },
+  { value: "in_porcelain", label: "Porcelain" },
+  { value: "qc", label: "Quality Check" },
+  { value: "complete", label: "Complete" },
+  { value: "shipped", label: "Shipping" },
+  { value: "on_hold", label: "On Hold" },
+  { value: "delivered", label: "Delivered" },
+  { value: "remake", label: "Remake" },
+];
+
+const PRIORITY_OPTIONS: { value: string; label: string }[] = [
+  { value: "normal", label: "Normal" },
+  { value: "rush", label: "Rush" },
+];
+
+const VISIBILITY_OPTIONS: { value: AddCaseNoteInputVisibility; label: string }[] = [
+  { value: "internal_lab_only", label: "Internal" },
+  { value: "shared_with_provider", label: "Shared" },
+];
+
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+const WEEKDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+
+// ─── Edit helpers ─────────────────────────────────────────────────────────────
+function labelFor(options: { value: string; label: string }[], value: string | null | undefined): string {
+  if (!value) return "—";
+  return options.find((o) => o.value === value)?.label ?? titleCase(value);
+}
+
+function errorMessage(e: unknown): string {
+  if (e instanceof Error && e.message) return e.message;
+  return "Please try again.";
+}
+
+// Date-only string ("YYYY-MM-DD") helpers kept in plain calendar space to avoid
+// timezone drift. The case payload stores dates as UTC-midnight timestamps, so
+// we read their UTC components; the calendar then works purely on integers.
+function toDateInput(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function parseYMD(v: string | null | undefined): { y: number; m: number; d: number } | null {
+  if (!v) return null;
+  const [y, m, d] = v.split("-").map((n) => Number(n));
+  if (!y || !m || !d) return null;
+  return { y, m, d };
+}
+
+function formatDateInput(value: string | null | undefined): string {
+  const p = parseYMD(value);
+  if (!p) return "—";
+  // Build a local Date from explicit components so there is no tz shift.
+  const d = new Date(p.y, p.m - 1, p.d);
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+function todayYMD(): { y: number; m: number; d: number } {
+  const n = new Date();
+  return { y: n.getFullYear(), m: n.getMonth() + 1, d: n.getDate() };
+}
+
+function ymd(y: number, m: number, d: number): string {
+  return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
+function shiftMonth(view: { y: number; m: number }, delta: number): { y: number; m: number } {
+  let m = view.m + delta;
+  let y = view.y;
+  while (m < 1) {
+    m += 12;
+    y -= 1;
+  }
+  while (m > 12) {
+    m -= 12;
+    y += 1;
+  }
+  return { y, m };
+}
+
+interface OverviewForm {
+  patientFirstName: string;
+  patientLastName: string;
+  doctorName: string;
+  status: string;
+  priority: string;
+  dueDate: string | null;
+  expectedDeliveryDate: string | null;
+}
+
+function formFromCase(c: DetailedCase): OverviewForm {
+  return {
+    patientFirstName: c.patientFirstName ?? "",
+    patientLastName: c.patientLastName ?? "",
+    doctorName: c.doctorName ?? "",
+    status: (c.status ?? "").toLowerCase(),
+    priority: (c.priority ?? "normal").toLowerCase(),
+    dueDate: toDateInput(c.dueDate),
+    expectedDeliveryDate: toDateInput(c.expectedDeliveryDate),
+  };
+}
+
+// Build a minimal PATCH payload containing only changed editable fields. This
+// mirrors the desktop drawer (no mobile-only writes) and avoids clobbering
+// fields the user did not touch.
+function buildOverviewPayload(c: DetailedCase, form: OverviewForm): UpdateCaseInput {
+  const payload: UpdateCaseInput = {};
+  if (form.patientFirstName !== (c.patientFirstName ?? "")) {
+    payload.patientFirstName = form.patientFirstName;
+  }
+  if (form.patientLastName !== (c.patientLastName ?? "")) {
+    payload.patientLastName = form.patientLastName;
+  }
+  if (form.doctorName !== (c.doctorName ?? "")) {
+    payload.doctorName = form.doctorName;
+  }
+  if (form.status && form.status !== (c.status ?? "").toLowerCase()) {
+    payload.status = form.status as UpdateCaseInputStatus;
+  }
+  if (form.priority && form.priority !== (c.priority ?? "normal").toLowerCase()) {
+    payload.priority = form.priority as UpdateCaseInputPriority;
+  }
+  const origDue = toDateInput(c.dueDate);
+  if (form.dueDate && form.dueDate !== origDue) {
+    payload.dueDate = form.dueDate;
+  }
+  const origExp = toDateInput(c.expectedDeliveryDate);
+  if (form.expectedDeliveryDate !== origExp) {
+    payload.expectedDeliveryDate = form.expectedDeliveryDate;
+  }
+  return payload;
+}
+
+// ─── Reusable edit controls (JS-only; no native picker/date deps) ────────────
+function EditTextRow({
+  label,
+  value,
+  onChangeText,
+  placeholder,
+  autoCapitalize,
+  styles,
+  colors,
+}: {
+  label: string;
+  value: string;
+  onChangeText: (t: string) => void;
+  placeholder?: string;
+  autoCapitalize?: "none" | "words" | "sentences" | "characters";
+  styles: Styles;
+  colors: ThemeColors;
+}) {
+  return (
+    <View style={styles.editRow}>
+      <Text style={styles.editLabel}>{label}</Text>
+      <TextInput
+        style={styles.input}
+        value={value}
+        onChangeText={onChangeText}
+        placeholder={placeholder}
+        placeholderTextColor={colors.textTertiary}
+        autoCapitalize={autoCapitalize ?? "words"}
+      />
+    </View>
+  );
+}
+
+function SelectRow({
+  label,
+  valueLabel,
+  icon,
+  onPress,
+  styles,
+  colors,
+  testID,
+}: {
+  label: string;
+  valueLabel: string;
+  icon?: keyof typeof Ionicons.glyphMap;
+  onPress: () => void;
+  styles: Styles;
+  colors: ThemeColors;
+  testID?: string;
+}) {
+  return (
+    <View style={styles.editRow}>
+      <Text style={styles.editLabel}>{label}</Text>
+      <Pressable style={styles.selectValue} onPress={onPress} testID={testID}>
+        <Text style={styles.selectValueText}>{valueLabel}</Text>
+        <Ionicons name={icon ?? "chevron-down"} size={16} color={colors.textSecondary} />
+      </Pressable>
+    </View>
+  );
+}
+
+function SegmentedRow({
+  label,
+  options,
+  value,
+  onChange,
+  styles,
+  testID,
+}: {
+  label: string;
+  options: { value: string; label: string }[];
+  value: string;
+  onChange: (v: string) => void;
+  styles: Styles;
+  testID?: string;
+}) {
+  return (
+    <View style={styles.editRow}>
+      <Text style={styles.editLabel}>{label}</Text>
+      <View style={styles.segment}>
+        {options.map((o) => {
+          const on = o.value === value;
+          return (
+            <Pressable
+              key={o.value}
+              style={[styles.segmentBtn, on && styles.segmentBtnActive]}
+              onPress={() => onChange(o.value)}
+              testID={`${testID ?? "segment"}-${o.value}`}
+            >
+              <Text style={[styles.segmentText, on && styles.segmentTextActive]}>{o.label}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+function OptionPickerModal({
+  visible,
+  title,
+  options,
+  selected,
+  onSelect,
+  onClose,
+  styles,
+  colors,
+}: {
+  visible: boolean;
+  title: string;
+  options: { value: string; label: string }[];
+  selected: string | null;
+  onSelect: (v: string) => void;
+  onClose: () => void;
+  styles: Styles;
+  colors: ThemeColors;
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable style={styles.sheetBackdrop} onPress={onClose}>
+        <Pressable style={styles.sheet} onPress={() => undefined}>
+          <Text style={styles.sheetTitle}>{title}</Text>
+          <ScrollView style={styles.optionScroll} keyboardShouldPersistTaps="handled">
+            {options.map((o) => {
+              const on = o.value === selected;
+              return (
+                <Pressable
+                  key={o.value}
+                  style={styles.optionRow}
+                  onPress={() => onSelect(o.value)}
+                  testID={`option-${o.value}`}
+                >
+                  <Text style={[styles.optionText, on && styles.optionTextActive]}>{o.label}</Text>
+                  {on ? <Ionicons name="checkmark" size={18} color={colors.tint} /> : null}
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+          <Pressable style={styles.sheetCancel} onPress={onClose}>
+            <Text style={styles.sheetCancelText}>Cancel</Text>
+          </Pressable>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+function DatePickerModal({
+  visible,
+  title,
+  value,
+  onSelect,
+  onClear,
+  onClose,
+  styles,
+  colors,
+}: {
+  visible: boolean;
+  title: string;
+  value: string | null;
+  onSelect: (v: string) => void;
+  onClear?: () => void;
+  onClose: () => void;
+  styles: Styles;
+  colors: ThemeColors;
+}) {
+  const [view, setView] = useState<{ y: number; m: number }>(() => {
+    const p = parseYMD(value) ?? todayYMD();
+    return { y: p.y, m: p.m };
+  });
+
+  useEffect(() => {
+    if (visible) {
+      const p = parseYMD(value) ?? todayYMD();
+      setView({ y: p.y, m: p.m });
+    }
+  }, [visible, value]);
+
+  const selected = parseYMD(value);
+  const today = todayYMD();
+  const daysInMonth = new Date(view.y, view.m, 0).getDate();
+  const firstWeekday = new Date(view.y, view.m - 1, 1).getDay();
+  const cells: (number | null)[] = [];
+  for (let i = 0; i < firstWeekday; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable style={styles.sheetBackdrop} onPress={onClose}>
+        <Pressable style={styles.sheet} onPress={() => undefined}>
+          <Text style={styles.sheetTitle}>{title}</Text>
+          <View style={styles.calHeader}>
+            <Pressable
+              style={styles.calNav}
+              onPress={() => setView((v) => shiftMonth(v, -1))}
+              hitSlop={8}
+              testID="cal-prev"
+            >
+              <Ionicons name="chevron-back" size={20} color={colors.text} />
+            </Pressable>
+            <Text style={styles.calMonth}>
+              {MONTH_NAMES[view.m - 1]} {view.y}
+            </Text>
+            <Pressable
+              style={styles.calNav}
+              onPress={() => setView((v) => shiftMonth(v, 1))}
+              hitSlop={8}
+              testID="cal-next"
+            >
+              <Ionicons name="chevron-forward" size={20} color={colors.text} />
+            </Pressable>
+          </View>
+          <View style={styles.calWeekRow}>
+            {WEEKDAYS.map((w) => (
+              <Text key={w} style={styles.calWeekday}>
+                {w}
+              </Text>
+            ))}
+          </View>
+          <View style={styles.calGrid}>
+            {cells.map((d, i) => {
+              if (d === null) {
+                return <View key={`blank-${i}`} style={styles.calCell} />;
+              }
+              const isSel =
+                !!selected && selected.y === view.y && selected.m === view.m && selected.d === d;
+              const isToday = today.y === view.y && today.m === view.m && today.d === d;
+              return (
+                <Pressable
+                  key={`d-${d}`}
+                  style={[styles.calCell, isSel && styles.calCellSelected]}
+                  onPress={() => onSelect(ymd(view.y, view.m, d))}
+                  testID={`cal-day-${d}`}
+                >
+                  <Text
+                    style={[
+                      styles.calCellText,
+                      isToday && styles.calCellTextToday,
+                      isSel && styles.calCellTextSelected,
+                    ]}
+                  >
+                    {d}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          <View style={styles.calFooter}>
+            {onClear ? (
+              <Pressable style={styles.sheetCancel} onPress={onClear} testID="cal-clear">
+                <Text style={styles.sheetCancelText}>Clear</Text>
+              </Pressable>
+            ) : (
+              <View />
+            )}
+            <Pressable style={styles.sheetCancel} onPress={onClose}>
+              <Text style={styles.sheetCancelText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
 }
 
 export default function CaseDetailScreen() {
@@ -327,7 +756,15 @@ export default function CaseDetailScreen() {
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.tint} />
         }
       >
-        {active === "overview" && <OverviewSection c={c} styles={styles} />}
+        {active === "overview" && (
+          <OverviewSection
+            c={c}
+            caseId={c.id}
+            onSaved={() => caseQuery.refetch()}
+            styles={styles}
+            colors={colors}
+          />
+        )}
 
         {active === "restorations" && (
           <RestorationsSection
@@ -340,7 +777,14 @@ export default function CaseDetailScreen() {
         )}
 
         {active === "notes" && (
-          <NotesSection caseNotes={c.caseNotes} notes={c.notes ?? []} styles={styles} colors={colors} />
+          <NotesSection
+            caseNotes={c.caseNotes}
+            notes={c.notes ?? []}
+            caseId={c.id}
+            onSaved={() => caseQuery.refetch()}
+            styles={styles}
+            colors={colors}
+          />
         )}
 
         {active === "files" && (
@@ -427,17 +871,159 @@ function FieldRow({ label, value, styles }: { label: string; value: string; styl
   );
 }
 
-function OverviewSection({ c, styles }: { c: DetailedCase; styles: Styles }) {
+function OverviewSection({
+  c,
+  caseId,
+  onSaved,
+  styles,
+  colors,
+}: {
+  c: DetailedCase;
+  caseId: string;
+  onSaved: () => void | Promise<unknown>;
+  styles: Styles;
+  colors: ThemeColors;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState<OverviewForm>(() => formFromCase(c));
+  const [picker, setPicker] = useState<"status" | "dueDate" | "expectedDeliveryDate" | null>(null);
+  const update = useUpdateCase();
+
+  function startEdit() {
+    setForm(formFromCase(c));
+    setEditing(true);
+  }
+
+  function cancelEdit() {
+    setPicker(null);
+    setEditing(false);
+  }
+
+  async function save() {
+    const payload = buildOverviewPayload(c, form);
+    if (Object.keys(payload).length === 0) {
+      cancelEdit();
+      return;
+    }
+    try {
+      await update.mutateAsync({ caseId, data: payload });
+      await onSaved();
+      setPicker(null);
+      setEditing(false);
+    } catch (e) {
+      Alert.alert("Couldn't save changes", errorMessage(e));
+    }
+  }
+
   return (
     <View style={styles.sectionGap}>
       <Card>
-        <FieldRow label="Patient" value={patientName(c)} styles={styles} />
-        <FieldRow label="Doctor" value={c.doctorName || "—"} styles={styles} />
-        <FieldRow label="Case #" value={c.caseNumber || "—"} styles={styles} />
-        <FieldRow label="Status" value={titleCase(c.status ?? "—")} styles={styles} />
-        <FieldRow label="Priority" value={c.priority ? titleCase(c.priority) : "Standard"} styles={styles} />
-        <FieldRow label="Due" value={formatDate(c.dueDate)} styles={styles} />
-        <FieldRow label="Created" value={formatDate(c.createdAt)} styles={styles} />
+        <View style={styles.cardHeaderRow}>
+          <Text style={[styles.cardHeading, styles.cardHeadingFlush]}>Details</Text>
+          {!editing ? (
+            <Pressable style={styles.editBtn} onPress={startEdit} hitSlop={8} testID="overview-edit">
+              <Ionicons name="create-outline" size={16} color={colors.tint} />
+              <Text style={styles.editBtnText}>Edit</Text>
+            </Pressable>
+          ) : null}
+        </View>
+
+        {editing ? (
+          <View>
+            <EditTextRow
+              label="Patient first name"
+              value={form.patientFirstName}
+              onChangeText={(t) => setForm((f) => ({ ...f, patientFirstName: t }))}
+              styles={styles}
+              colors={colors}
+            />
+            <EditTextRow
+              label="Patient last name"
+              value={form.patientLastName}
+              onChangeText={(t) => setForm((f) => ({ ...f, patientLastName: t }))}
+              styles={styles}
+              colors={colors}
+            />
+            <EditTextRow
+              label="Doctor"
+              value={form.doctorName}
+              onChangeText={(t) => setForm((f) => ({ ...f, doctorName: t }))}
+              styles={styles}
+              colors={colors}
+            />
+            <SelectRow
+              label="Status"
+              valueLabel={labelFor(STATUS_OPTIONS, form.status)}
+              onPress={() => setPicker("status")}
+              styles={styles}
+              colors={colors}
+              testID="select-status"
+            />
+            <SegmentedRow
+              label="Priority"
+              options={PRIORITY_OPTIONS}
+              value={form.priority}
+              onChange={(v) => setForm((f) => ({ ...f, priority: v }))}
+              styles={styles}
+              testID="priority"
+            />
+            <SelectRow
+              label="Due date"
+              valueLabel={formatDateInput(form.dueDate)}
+              icon="calendar-outline"
+              onPress={() => setPicker("dueDate")}
+              styles={styles}
+              colors={colors}
+              testID="select-due"
+            />
+            <SelectRow
+              label="Expected delivery"
+              valueLabel={formatDateInput(form.expectedDeliveryDate)}
+              icon="calendar-outline"
+              onPress={() => setPicker("expectedDeliveryDate")}
+              styles={styles}
+              colors={colors}
+              testID="select-expected"
+            />
+
+            <View style={styles.editActions}>
+              <Pressable
+                style={styles.btnSecondary}
+                onPress={cancelEdit}
+                disabled={update.isPending}
+                testID="overview-cancel"
+              >
+                <Text style={styles.btnSecondaryText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.btnPrimary, update.isPending && styles.btnDisabled]}
+                onPress={save}
+                disabled={update.isPending}
+                testID="overview-save"
+              >
+                {update.isPending ? (
+                  <ActivityIndicator color={colors.textInverse} size="small" />
+                ) : (
+                  <Text style={styles.btnPrimaryText}>Save</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        ) : (
+          <View>
+            <FieldRow label="Patient" value={patientName(c)} styles={styles} />
+            <FieldRow label="Doctor" value={c.doctorName || "—"} styles={styles} />
+            <FieldRow label="Case #" value={c.caseNumber || "—"} styles={styles} />
+            <FieldRow label="Status" value={titleCase(c.status ?? "—")} styles={styles} />
+            <FieldRow label="Priority" value={c.priority ? titleCase(c.priority) : "Standard"} styles={styles} />
+            <FieldRow label="Due" value={formatDate(c.dueDate)} styles={styles} />
+            <FieldRow label="Expected delivery" value={formatDate(c.expectedDeliveryDate)} styles={styles} />
+            {c.bridgeConnectors && c.bridgeConnectors.trim() ? (
+              <FieldRow label="Bridge connectors" value={c.bridgeConnectors} styles={styles} />
+            ) : null}
+            <FieldRow label="Created" value={formatDate(c.createdAt)} styles={styles} />
+          </View>
+        )}
       </Card>
 
       {c.remakeOriginal || (c.remakeChildren && c.remakeChildren.length > 0) ? (
@@ -463,6 +1049,48 @@ function OverviewSection({ c, styles }: { c: DetailedCase; styles: Styles }) {
           <Text style={styles.bodyText}>{c.caseNotes.trim()}</Text>
         </Card>
       ) : null}
+
+      <OptionPickerModal
+        visible={picker === "status"}
+        title="Status"
+        options={STATUS_OPTIONS}
+        selected={form.status}
+        onSelect={(v) => {
+          setForm((f) => ({ ...f, status: v }));
+          setPicker(null);
+        }}
+        onClose={() => setPicker(null)}
+        styles={styles}
+        colors={colors}
+      />
+      <DatePickerModal
+        visible={picker === "dueDate"}
+        title="Due date"
+        value={form.dueDate}
+        onSelect={(v) => {
+          setForm((f) => ({ ...f, dueDate: v }));
+          setPicker(null);
+        }}
+        onClose={() => setPicker(null)}
+        styles={styles}
+        colors={colors}
+      />
+      <DatePickerModal
+        visible={picker === "expectedDeliveryDate"}
+        title="Expected delivery"
+        value={form.expectedDeliveryDate}
+        onSelect={(v) => {
+          setForm((f) => ({ ...f, expectedDeliveryDate: v }));
+          setPicker(null);
+        }}
+        onClear={() => {
+          setForm((f) => ({ ...f, expectedDeliveryDate: null }));
+          setPicker(null);
+        }}
+        onClose={() => setPicker(null)}
+        styles={styles}
+        colors={colors}
+      />
     </View>
   );
 }
@@ -525,20 +1153,71 @@ function RestorationsSection({
 function NotesSection({
   caseNotes,
   notes,
+  caseId,
+  onSaved,
   styles,
   colors,
 }: {
   caseNotes?: string | null;
   notes: DetailNote[];
+  caseId: string;
+  onSaved: () => void | Promise<unknown>;
   styles: Styles;
   colors: ThemeColors;
 }) {
+  const [text, setText] = useState("");
+  const [visibility, setVisibility] = useState<AddCaseNoteInputVisibility>("internal_lab_only");
+  const add = useAddCaseNote();
   const hasRx = !!(caseNotes && caseNotes.trim());
-  if (!hasRx && notes.length === 0) {
-    return <EmptyState icon="chatbox-ellipses-outline" text="No notes on this case." styles={styles} colors={colors} />;
+  const trimmed = text.trim();
+
+  async function submit() {
+    if (!trimmed) return;
+    try {
+      await add.mutateAsync({ caseId, data: { noteText: trimmed, visibility } });
+      setText("");
+      await onSaved();
+    } catch (e) {
+      Alert.alert("Couldn't add note", errorMessage(e));
+    }
   }
+
   return (
     <View style={styles.sectionGap}>
+      <Card>
+        <Text style={styles.cardHeading}>Add a note</Text>
+        <TextInput
+          style={styles.noteInput}
+          value={text}
+          onChangeText={setText}
+          placeholder="Write a note…"
+          placeholderTextColor={colors.textTertiary}
+          multiline
+          textAlignVertical="top"
+          testID="note-input"
+        />
+        <SegmentedRow
+          label="Visibility"
+          options={VISIBILITY_OPTIONS}
+          value={visibility}
+          onChange={(v) => setVisibility(v as AddCaseNoteInputVisibility)}
+          styles={styles}
+          testID="visibility"
+        />
+        <Pressable
+          style={[styles.btnPrimary, styles.noteSubmit, (add.isPending || !trimmed) && styles.btnDisabled]}
+          onPress={submit}
+          disabled={add.isPending || !trimmed}
+          testID="note-submit"
+        >
+          {add.isPending ? (
+            <ActivityIndicator color={colors.textInverse} size="small" />
+          ) : (
+            <Text style={styles.btnPrimaryText}>Add note</Text>
+          )}
+        </Pressable>
+      </Card>
+
       {hasRx ? (
         <Card>
           <Text style={styles.cardHeading}>Rx instructions</Text>
@@ -557,6 +1236,10 @@ function NotesSection({
           ) : null}
         </Card>
       ))}
+
+      {!hasRx && notes.length === 0 ? (
+        <Text style={styles.noteEmptyHint}>No notes yet. Add the first one above.</Text>
+      ) : null}
     </View>
   );
 }
@@ -862,6 +1545,139 @@ function makeStyles(c: ThemeColors) {
       backgroundColor: c.tint,
     },
     retryText: { ...Typography.bodySemibold, color: c.textInverse },
+    cardHeaderRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      marginBottom: Spacing.sm,
+    },
+    cardHeadingFlush: { marginBottom: 0 },
+    editBtn: { flexDirection: "row", alignItems: "center", gap: 3, padding: Spacing.xs },
+    editBtnText: { ...Typography.captionSemibold, color: c.tint },
+    editRow: { paddingVertical: Spacing.xs + 2, gap: Spacing.xs },
+    editLabel: { ...Typography.caption, color: c.textSecondary },
+    input: {
+      ...Typography.body,
+      color: c.text,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: c.border,
+      borderRadius: Radius.sm,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Spacing.sm,
+      backgroundColor: c.surfaceAlt,
+    },
+    selectValue: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: c.border,
+      borderRadius: Radius.sm,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Spacing.sm,
+      backgroundColor: c.surfaceAlt,
+    },
+    selectValueText: { ...Typography.body, color: c.text },
+    segment: {
+      flexDirection: "row",
+      backgroundColor: c.surfaceAlt,
+      borderRadius: Radius.sm,
+      padding: 3,
+      gap: 3,
+    },
+    segmentBtn: { flex: 1, alignItems: "center", paddingVertical: Spacing.sm, borderRadius: Radius.xs },
+    segmentBtnActive: { backgroundColor: c.tint },
+    segmentText: { ...Typography.captionMedium, color: c.textSecondary },
+    segmentTextActive: { color: c.textInverse },
+    editActions: { flexDirection: "row", gap: Spacing.sm, marginTop: Spacing.md },
+    btnPrimary: {
+      flex: 1,
+      alignItems: "center",
+      justifyContent: "center",
+      paddingVertical: Spacing.sm + 2,
+      borderRadius: Radius.full,
+      backgroundColor: c.tint,
+      minHeight: 44,
+    },
+    btnPrimaryText: { ...Typography.bodySemibold, color: c.textInverse },
+    btnSecondary: {
+      flex: 1,
+      alignItems: "center",
+      justifyContent: "center",
+      paddingVertical: Spacing.sm + 2,
+      borderRadius: Radius.full,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: c.border,
+      minHeight: 44,
+    },
+    btnSecondaryText: { ...Typography.bodySemibold, color: c.text },
+    btnDisabled: { opacity: 0.5 },
+    noteInput: {
+      ...Typography.body,
+      color: c.text,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: c.border,
+      borderRadius: Radius.sm,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Spacing.sm,
+      backgroundColor: c.surfaceAlt,
+      minHeight: 88,
+      marginBottom: Spacing.sm,
+    },
+    noteSubmit: { marginTop: Spacing.md },
+    noteEmptyHint: {
+      ...Typography.body,
+      color: c.textTertiary,
+      textAlign: "center",
+      paddingVertical: Spacing.lg,
+    },
+    sheetBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.45)", justifyContent: "flex-end" },
+    sheet: {
+      backgroundColor: c.backgroundSolid,
+      borderTopLeftRadius: Radius.lg,
+      borderTopRightRadius: Radius.lg,
+      padding: Spacing.lg,
+      paddingBottom: Spacing.xl,
+      gap: Spacing.sm,
+    },
+    sheetTitle: { ...Typography.h3, color: c.text, marginBottom: Spacing.xs },
+    optionScroll: { maxHeight: 360 },
+    optionRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingVertical: Spacing.md,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: c.border,
+    },
+    optionText: { ...Typography.body, color: c.text },
+    optionTextActive: { ...Typography.bodySemibold, color: c.tint },
+    sheetCancel: {
+      alignItems: "center",
+      justifyContent: "center",
+      paddingVertical: Spacing.md,
+      paddingHorizontal: Spacing.xl,
+      borderRadius: Radius.full,
+      backgroundColor: c.surfaceAlt,
+    },
+    sheetCancelText: { ...Typography.bodySemibold, color: c.text },
+    calHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingVertical: Spacing.sm,
+    },
+    calNav: { padding: Spacing.xs },
+    calMonth: { ...Typography.bodySemibold, color: c.text },
+    calWeekRow: { flexDirection: "row" },
+    calWeekday: { ...Typography.caption, color: c.textTertiary, width: `${100 / 7}%`, textAlign: "center" },
+    calGrid: { flexDirection: "row", flexWrap: "wrap" },
+    calCell: { width: `${100 / 7}%`, height: 42, alignItems: "center", justifyContent: "center" },
+    calCellSelected: { backgroundColor: c.tint, borderRadius: Radius.full },
+    calCellText: { ...Typography.body, color: c.text },
+    calCellTextToday: { color: c.tint, fontFamily: "Inter_700Bold" },
+    calCellTextSelected: { color: c.textInverse, fontFamily: "Inter_700Bold" },
+    calFooter: { flexDirection: "row", justifyContent: "space-between", marginTop: Spacing.sm },
     lightbox: { flex: 1, backgroundColor: "rgba(0,0,0,0.92)", alignItems: "center", justifyContent: "center" },
     lightboxImage: { width: "100%", height: "80%" },
     lightboxClose: { position: "absolute", right: Spacing.lg },

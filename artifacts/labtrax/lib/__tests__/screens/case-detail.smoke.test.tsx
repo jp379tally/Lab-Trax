@@ -1,11 +1,13 @@
 import React from "react";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { cleanup, fireEvent, render } from "@testing-library/react-native";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react-native";
 import {
   resetMockAppState,
   resetMockFetchHandler,
   setMockAppState,
   setMockSearchParams,
+  mockUpdateCaseMutateAsync,
+  mockAddCaseNoteMutateAsync,
 } from "../../../vitest.setup";
 
 import CaseDetailScreen from "@/app/case/[id]";
@@ -77,6 +79,59 @@ describe("CaseDetailScreen (read-only viewer)", () => {
       const { getByTestId, getAllByText } = render(<CaseDetailScreen />);
       fireEvent.press(getByTestId("section-tab-history"));
       expect(getAllByText(/Status Change/).length).toBeGreaterThan(0);
+    });
+  });
+
+  describe("overview editing (desktop parity)", () => {
+    beforeEach(() => {
+      setMockSearchParams({ id: inProgressCase.id });
+      setMockAppState({ cases: [inProgressCase], invoices: [] });
+    });
+
+    it("enters edit mode and saves only the changed field via useUpdateCase", async () => {
+      const { getByTestId, getByDisplayValue, queryByTestId } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("overview-edit"));
+
+      fireEvent.changeText(getByDisplayValue("Dr. Smith"), "Dr. Smithson");
+      fireEvent.press(getByTestId("overview-save"));
+
+      await waitFor(() => {
+        expect(mockUpdateCaseMutateAsync).toHaveBeenCalledWith({
+          caseId: inProgressCase.id,
+          data: { doctorName: "Dr. Smithson" },
+        });
+      });
+      // Returns to read mode after a successful save.
+      await waitFor(() => expect(queryByTestId("overview-edit")).toBeTruthy());
+    });
+
+    it("changes status through the JS option picker", async () => {
+      const { getByTestId } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("overview-edit"));
+      fireEvent.press(getByTestId("select-status"));
+      fireEvent.press(getByTestId("option-complete"));
+      fireEvent.press(getByTestId("overview-save"));
+
+      await waitFor(() => {
+        expect(mockUpdateCaseMutateAsync).toHaveBeenCalledWith({
+          caseId: inProgressCase.id,
+          data: { status: "complete" },
+        });
+      });
+    });
+
+    it("adds a note via useAddCaseNote with the default internal visibility", async () => {
+      const { getByTestId } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-notes"));
+      fireEvent.changeText(getByTestId("note-input"), "Follow-up scheduled");
+      fireEvent.press(getByTestId("note-submit"));
+
+      await waitFor(() => {
+        expect(mockAddCaseNoteMutateAsync).toHaveBeenCalledWith({
+          caseId: inProgressCase.id,
+          data: { noteText: "Follow-up scheduled", visibility: "internal_lab_only" },
+        });
+      });
     });
   });
 
