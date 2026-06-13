@@ -7,6 +7,7 @@ import {
   StyleSheet,
   Alert,
   Switch,
+  Image,
 } from "react-native";
 import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -28,7 +29,7 @@ export default function AccountScreen() {
   const insets = useSafeAreaInsets();
   const { colors, isDark, setMode } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
-  const { currentUser, userType, logout } = useAuth();
+  const { currentUser, userType, logout, profilePicUri } = useAuth();
   const me = useMe();
 
   const user = me.data?.user as any;
@@ -74,9 +75,13 @@ export default function AccountScreen() {
           style={[styles.profileCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
           onPress={() => push("/settings/profile")}
         >
-          <View style={[styles.avatar, { backgroundColor: colors.tint + "20" }]}>
-            <Text style={[styles.avatarText, { color: colors.tint }]}>{avatarLetter}</Text>
-          </View>
+          {profilePicUri ? (
+            <Image source={{ uri: profilePicUri }} style={styles.avatar} />
+          ) : (
+            <View style={[styles.avatar, { backgroundColor: colors.tint + "20" }]}>
+              <Text style={[styles.avatarText, { color: colors.tint }]}>{avatarLetter}</Text>
+            </View>
+          )}
           <View style={styles.profileInfo}>
             <Text style={[styles.profileName, { color: colors.text }]} numberOfLines={1}>
               {displayName}
