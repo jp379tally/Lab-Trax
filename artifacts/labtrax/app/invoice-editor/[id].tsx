@@ -400,7 +400,10 @@ export default function InvoiceEditorScreen() {
           </Pressable>
         </View>
       ) : (
-        <>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={{ flex: 1 }}
+        >
           <ScrollView
             style={styles.body}
             contentContainerStyle={styles.bodyContent}
@@ -584,7 +587,7 @@ export default function InvoiceEditorScreen() {
             }}
             onClose={() => setPickerVisible(false)}
           />
-        </>
+        </KeyboardAvoidingView>
       )}
     </SafeAreaView>
   );
