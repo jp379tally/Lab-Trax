@@ -18,7 +18,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { ScreenShell, SettingsSection } from "@/components/settings/SettingsRow";
-import { resilientFetch, getApiUrl } from "@/lib/query-client";
+import { resilientFetch, getApiUrl, getAccessToken } from "@/lib/query-client";
 import { ME_QUERY_KEY } from "@/lib/auth-me";
 
 interface MeUser {
@@ -154,6 +154,8 @@ export default function ProfileScreen() {
         xhr.open("POST", url);
         xhr.onload = () => (xhr.status < 300 ? resolve() : reject(new Error(`Upload failed (${xhr.status})`)));
         xhr.onerror = () => reject(new Error("Network error"));
+        const token = getAccessToken();
+        if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
         const fd = new FormData();
         fd.append("photo", { uri, name: filename, type: mime } as unknown as Blob);
         xhr.send(fd);
@@ -248,6 +250,8 @@ export default function ProfileScreen() {
       setLogoUploading(false);
       Alert.alert("Logo upload failed", "Network error.");
     };
+    const logoToken = getAccessToken();
+    if (logoToken) xhr.setRequestHeader("Authorization", `Bearer ${logoToken}`);
     const fd = new FormData();
     fd.append("file", { uri, name: filename, type: mime } as unknown as Blob);
     xhr.send(fd);
