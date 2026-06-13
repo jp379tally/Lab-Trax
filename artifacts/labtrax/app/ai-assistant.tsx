@@ -84,6 +84,7 @@ interface ConfirmCardProps {
   colors: ThemeColors;
   onConfirm: (actionId: string) => void;
   onReject: (actionId: string) => void;
+  sending?: boolean;
 }
 
 const PENDING_TTL_MS = 5 * 60 * 1000;
@@ -95,7 +96,7 @@ function formatCountdown(ms: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-function ConfirmCard({ action, colors, onConfirm, onReject }: ConfirmCardProps) {
+function ConfirmCard({ action, colors, onConfirm, onReject, sending }: ConfirmCardProps) {
   const [msLeft, setMsLeft] = useState<number>(() => {
     if (!action.expiresAt) return PENDING_TTL_MS;
     return Math.max(0, action.expiresAt - Date.now());
@@ -239,8 +240,9 @@ function ConfirmCard({ action, colors, onConfirm, onReject }: ConfirmCardProps) 
       </Text>
       <View style={confirmStyles.buttonRow}>
         <Pressable
-          style={[confirmStyles.confirmBtn, { backgroundColor: colors.tint }]}
+          style={[confirmStyles.confirmBtn, { backgroundColor: colors.tint, opacity: sending ? 0.45 : 1 }]}
           onPress={() => onConfirm(action.actionId)}
+          disabled={sending}
           accessibilityLabel="Confirm action"
         >
           <Ionicons name="checkmark" size={13} color="#fff" />
@@ -249,9 +251,10 @@ function ConfirmCard({ action, colors, onConfirm, onReject }: ConfirmCardProps) 
         <Pressable
           style={[
             confirmStyles.cancelBtn,
-            { borderColor: colors.border, backgroundColor: colors.surface },
+            { borderColor: colors.border, backgroundColor: colors.surface, opacity: sending ? 0.45 : 1 },
           ]}
           onPress={() => onReject(action.actionId)}
+          disabled={sending}
           accessibilityLabel="Cancel action"
         >
           <Ionicons name="close" size={13} color={colors.text} />
@@ -330,9 +333,10 @@ interface BubbleProps {
   colors: ThemeColors;
   onConfirm: (actionId: string) => void;
   onReject: (actionId: string) => void;
+  sending?: boolean;
 }
 
-function MessageBubble({ msg, colors, onConfirm, onReject }: BubbleProps) {
+function MessageBubble({ msg, colors, onConfirm, onReject, sending }: BubbleProps) {
   const isUser = msg.role === "user";
   const draftTool = msg.toolOutputs?.find((t) => t.name === "draft_message")?.result as
     | { draft?: string }
@@ -360,6 +364,7 @@ function MessageBubble({ msg, colors, onConfirm, onReject }: BubbleProps) {
           colors={colors}
           onConfirm={onConfirm}
           onReject={onReject}
+          sending={sending}
         />
       </View>
     );
@@ -620,9 +625,10 @@ export default function AiAssistantScreen() {
         colors={colors}
         onConfirm={confirmAction}
         onReject={rejectAction}
+        sending={sending}
       />
     ),
-    [colors, confirmAction, rejectAction],
+    [colors, confirmAction, rejectAction, sending],
   );
 
   const keyExtractor = useCallback((item: ChatMessage) => item.id, []);

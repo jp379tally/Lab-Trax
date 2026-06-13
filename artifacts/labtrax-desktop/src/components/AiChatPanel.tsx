@@ -319,9 +319,10 @@ interface ConfirmCardProps {
   expiresAt?: number;
   onConfirm: (actionId: string) => void;
   onReject: (actionId: string) => void;
+  sending?: boolean;
 }
 
-function ConfirmCard({ actionId, summary, state, resultText, error, expiresAt, onConfirm, onReject }: ConfirmCardProps) {
+function ConfirmCard({ actionId, summary, state, resultText, error, expiresAt, onConfirm, onReject, sending }: ConfirmCardProps) {
   const [msLeft, setMsLeft] = useState<number>(() => {
     if (!expiresAt) return PENDING_TTL_MS;
     return Math.max(0, expiresAt - Date.now());
@@ -416,7 +417,8 @@ function ConfirmCard({ actionId, summary, state, resultText, error, expiresAt, o
           <button
             type="button"
             onClick={() => onConfirm(actionId)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors"
+            disabled={sending}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors disabled:opacity-45 disabled:cursor-not-allowed"
           >
             <Check size={12} />
             Confirm
@@ -424,7 +426,8 @@ function ConfirmCard({ actionId, summary, state, resultText, error, expiresAt, o
           <button
             type="button"
             onClick={() => onReject(actionId)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-secondary border border-border text-xs text-foreground hover:bg-secondary/80 transition-colors"
+            disabled={sending}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-secondary border border-border text-xs text-foreground hover:bg-secondary/80 transition-colors disabled:opacity-45 disabled:cursor-not-allowed"
           >
             <X size={12} />
             Cancel
@@ -1128,6 +1131,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
                   expiresAt={msg.proposedAction.expiresAt}
                   onConfirm={confirmAction}
                   onReject={rejectAction}
+                  sending={sending}
                 />
               </div>
             );
