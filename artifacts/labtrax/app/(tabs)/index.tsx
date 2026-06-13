@@ -38,6 +38,7 @@ import {
 import { StatusBadge, type BadgeVariant } from "@/components/ui/StatusBadge";
 import { CASE_STATIONS } from "@/lib/case-stations";
 import { resilientFetch } from "@/lib/query-client";
+import { useMe, primaryLabOrgId } from "@/lib/auth-me";
 
 type DueFilter = "all" | "today" | "tomorrow" | "custom";
 
@@ -120,6 +121,9 @@ export default function CasesListScreen() {
   // ── Search
   const [query, setQuery] = useState("");
 
+  // ── Auth / membership — used to resolve lab org ID for barcode scan
+  const meQuery = useMe();
+
   // ── Barcode scan modal
   const [showScanModal, setShowScanModal] = useState(false);
   const [scanStep, setScanStep] = useState<"scan" | "manual">("scan");
@@ -148,11 +152,28 @@ export default function CasesListScreen() {
     const trimmed = code.trim();
     if (!trimmed) return;
 
-    const labOrganizationId =
-      (casesQuery.data ?? [])[0]?.labOrganizationId ?? "";
+    // Resolve lab org ID from the authenticated session (primary source) so
+    // the scan works regardless of whether the cases list has loaded any rows.
+    // Fall back to the first loaded case's org as a safety net (e.g. multi-lab
+    // users whose primary lab differs from the case they're browsing).
+    let labOrganizationId =
+      primaryLabOrgId(meQuery.data) ??
+      (casesQuery.data ?? [])[0]?.labOrganizationId ??
+      "";
+
+    // If auth/me hasn't resolved yet (cold open, fast scan), fetch it on
+    // demand rather than immediately surfacing "Lab not found."
+    if (!labOrganizationId && (meQuery.isLoading || meQuery.isPending)) {
+      try {
+        const freshMe = await meQuery.refetch();
+        labOrganizationId = primaryLabOrgId(freshMe.data) ?? "";
+      } catch {
+        // ignore — will fall through to the error below
+      }
+    }
 
     if (!labOrganizationId) {
-      setScanError("Lab not found. Please refresh and try again.");
+      setScanError("Lab not found. Please sign out and sign back in, then try again.");
       setScanSearching(false);
       setScanScanned(false);
       return;
