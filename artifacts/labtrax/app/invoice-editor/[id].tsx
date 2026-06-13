@@ -8,8 +8,11 @@ import {
   ScrollView,
   TextInput,
   Alert,
+  Modal,
+  KeyboardAvoidingView,
+  Platform,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import {
@@ -18,7 +21,7 @@ import {
   type UpdateInvoiceInput,
   type UpdateInvoiceInputItemsItem,
 } from "@workspace/api-client-react";
-import { queryClient } from "@/lib/query-client";
+import { queryClient, resilientFetch } from "@/lib/query-client";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 
 // useLocalSearchParams values are `string | string[]` — coerce to a single value.
@@ -73,10 +76,18 @@ interface DraftLine {
   metaSubLabels: string[];
 }
 
+// A billable item configured by the lab (vendorType=item vendors).
+interface BillableItem {
+  id: string;
+  name: string;
+  unitPrice: string | null;
+}
+
 type InvoiceRecord = {
   id?: string;
   invoiceNumber?: string | null;
   status?: string | null;
+  labOrganizationId?: string | null;
   items?: RawLineItem[] | null;
   lineItems?: RawLineItem[] | null;
   displayMetadata?: Record<string, unknown> | null;
@@ -119,6 +130,10 @@ export default function InvoiceEditorScreen() {
   const [lines, setLines] = useState<DraftLine[]>([]);
   const [saving, setSaving] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+
+  // Billable items fetched from the lab's items list (vendorType=item).
+  const [billableItems, setBillableItems] = useState<BillableItem[]>([]);
+  const [pickerVisible, setPickerVisible] = useState(false);
 
   // Prefill the form once the invoice loads.
   useEffect(() => {
@@ -163,24 +178,65 @@ export default function InvoiceEditorScreen() {
     setHydrated(true);
   }, [invoice, hydrated]);
 
+  // Fetch billable items once labOrganizationId is known.
+  useEffect(() => {
+    const labOrgId = invoice?.labOrganizationId;
+    if (!labOrgId) return;
+    let cancelled = false;
+    resilientFetch(
+      `/api/finance/vendors?organizationId=${encodeURIComponent(labOrgId)}&vendorType=item`,
+    )
+      .then((res) => res.json())
+      .then((data: unknown) => {
+        if (cancelled) return;
+        if (Array.isArray(data)) {
+          setBillableItems(data as BillableItem[]);
+        } else if (
+          data !== null &&
+          typeof data === "object" &&
+          Array.isArray((data as Record<string, unknown>).data)
+        ) {
+          setBillableItems((data as { data: BillableItem[] }).data);
+        }
+      })
+      .catch(() => {
+        // Fire-and-forget — fall back to blank custom line on error.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [invoice?.labOrganizationId]);
+
   function updateLine(idx: number, patch: Partial<DraftLine>) {
     setLines((prev) => prev.map((l, i) => (i === idx ? { ...l, ...patch } : l)));
   }
 
-  function addLine() {
+  function addLine(item?: BillableItem) {
     setLines((prev) => [
       ...prev,
       {
         id: null,
-        description: "",
+        description: item?.name ?? "",
         quantity: "1",
-        unitPrice: "",
+        unitPrice:
+          item?.unitPrice != null
+            ? String(parseFloat(item.unitPrice) || "")
+            : "",
         tooth: "",
         subItems: [],
         metaLabel: "",
         metaSubLabels: [],
       },
     ]);
+  }
+
+  // Opens the picker when items exist; otherwise adds a blank line immediately.
+  function handleAddLine() {
+    if (billableItems.length > 0) {
+      setPickerVisible(true);
+    } else {
+      addLine();
+    }
   }
 
   function removeLine(idx: number) {
@@ -342,176 +398,307 @@ export default function InvoiceEditorScreen() {
           </Pressable>
         </View>
       ) : (
-        <ScrollView
-          style={styles.body}
-          contentContainerStyle={styles.bodyContent}
-          keyboardShouldPersistTaps="handled"
-        >
-          {/* ── Details ── */}
-          <View style={styles.card}>
-            <Text style={styles.cardHeading}>Details</Text>
-            <Field label="Invoice number">
-              <TextInput
-                value={invoiceNumber}
-                onChangeText={setInvoiceNumber}
-                style={styles.input}
-                placeholder="INV-0001"
-                placeholderTextColor={colors.textTertiary}
-                autoCapitalize="characters"
-                testID="invoice-editor-number"
-              />
-            </Field>
-            <Field label="Status">
-              <View style={styles.statusRow}>
-                {STATUS_OPTIONS.map((opt) => {
-                  const active = opt.value === status;
-                  return (
-                    <Pressable
-                      key={opt.value}
-                      onPress={() => setStatus(opt.value)}
-                      style={[styles.statusChip, active && styles.statusChipActive]}
-                      testID={`invoice-editor-status-${opt.value}`}
-                    >
-                      <Text
-                        style={[
-                          styles.statusChipText,
-                          active && styles.statusChipTextActive,
-                        ]}
+        <>
+          <ScrollView
+            style={styles.body}
+            contentContainerStyle={styles.bodyContent}
+            keyboardShouldPersistTaps="handled"
+          >
+            {/* ── Details ── */}
+            <View style={styles.card}>
+              <Text style={styles.cardHeading}>Details</Text>
+              <Field label="Invoice number">
+                <TextInput
+                  value={invoiceNumber}
+                  onChangeText={setInvoiceNumber}
+                  style={styles.input}
+                  placeholder="INV-0001"
+                  placeholderTextColor={colors.textTertiary}
+                  autoCapitalize="characters"
+                  testID="invoice-editor-number"
+                />
+              </Field>
+              <Field label="Status">
+                <View style={styles.statusRow}>
+                  {STATUS_OPTIONS.map((opt) => {
+                    const active = opt.value === status;
+                    return (
+                      <Pressable
+                        key={opt.value}
+                        onPress={() => setStatus(opt.value)}
+                        style={[styles.statusChip, active && styles.statusChipActive]}
+                        testID={`invoice-editor-status-${opt.value}`}
                       >
-                        {opt.label}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            </Field>
-            <Field label="Teeth">
-              <TextInput
-                value={teeth}
-                onChangeText={setTeeth}
-                style={styles.input}
-                placeholder="e.g. 8-10"
-                placeholderTextColor={colors.textTertiary}
-                autoCapitalize="none"
-                testID="invoice-editor-teeth"
-              />
-            </Field>
-            <Field label="Shade">
-              <TextInput
-                value={shade}
-                onChangeText={setShade}
-                style={styles.input}
-                placeholder="e.g. A2"
-                placeholderTextColor={colors.textTertiary}
-                autoCapitalize="characters"
-                testID="invoice-editor-shade"
-              />
-            </Field>
-          </View>
-
-          {/* ── Line items ── */}
-          <View style={styles.card}>
-            <View style={styles.cardHeaderRow}>
-              <Text style={styles.cardHeading}>Line items</Text>
-              <Pressable
-                onPress={addLine}
-                style={styles.addBtn}
-                hitSlop={8}
-                testID="invoice-editor-add-line"
-              >
-                <Ionicons name="add" size={18} color={colors.tint} />
-                <Text style={styles.addBtnText}>Add</Text>
-              </Pressable>
-            </View>
-
-            {lines.length === 0 ? (
-              <Text style={styles.emptyHint}>No line items yet.</Text>
-            ) : (
-              lines.map((line, idx) => (
-                <View key={line.id ?? `new-${idx}`} style={styles.lineCard} testID={`invoice-editor-line-${idx}`}>
-                  <View style={styles.lineHeaderRow}>
-                    <Text style={styles.lineIndex}>Item {idx + 1}</Text>
-                    <Pressable
-                      onPress={() => removeLine(idx)}
-                      hitSlop={8}
-                      testID={`invoice-editor-remove-line-${idx}`}
-                    >
-                      <Ionicons name="trash-outline" size={18} color={colors.error} />
-                    </Pressable>
-                  </View>
-                  <TextInput
-                    value={line.description}
-                    onChangeText={(t) => updateLine(idx, { description: t })}
-                    style={styles.input}
-                    placeholder="Description"
-                    placeholderTextColor={colors.textTertiary}
-                    autoCapitalize="sentences"
-                    testID={`invoice-editor-line-desc-${idx}`}
-                  />
-                  <View style={styles.lineFieldsRow}>
-                    <View style={styles.lineFieldThird}>
-                      <Text style={styles.miniLabel}>Tooth</Text>
-                      <TextInput
-                        value={line.tooth}
-                        onChangeText={(t) => updateLine(idx, { tooth: t })}
-                        style={styles.input}
-                        placeholder="—"
-                        placeholderTextColor={colors.textTertiary}
-                        autoCapitalize="none"
-                        testID={`invoice-editor-line-tooth-${idx}`}
-                      />
-                    </View>
-                    <View style={styles.lineFieldThird}>
-                      <Text style={styles.miniLabel}>Qty</Text>
-                      <TextInput
-                        value={line.quantity}
-                        onChangeText={(t) => updateLine(idx, { quantity: t })}
-                        style={styles.input}
-                        keyboardType="number-pad"
-                        placeholder="1"
-                        placeholderTextColor={colors.textTertiary}
-                        testID={`invoice-editor-line-qty-${idx}`}
-                      />
-                    </View>
-                    <View style={styles.lineFieldThird}>
-                      <Text style={styles.miniLabel}>Unit price</Text>
-                      <TextInput
-                        value={line.unitPrice}
-                        onChangeText={(t) => updateLine(idx, { unitPrice: t })}
-                        style={styles.input}
-                        keyboardType="decimal-pad"
-                        placeholder="0.00"
-                        placeholderTextColor={colors.textTertiary}
-                        testID={`invoice-editor-line-price-${idx}`}
-                      />
-                    </View>
-                  </View>
-                  {line.subItems.length > 0 ? (
-                    <Text style={styles.subItemsNote}>
-                      {line.subItems.length} sub-item
-                      {line.subItems.length === 1 ? "" : "s"} (edit on desktop)
-                    </Text>
-                  ) : null}
+                        <Text
+                          style={[
+                            styles.statusChipText,
+                            active && styles.statusChipTextActive,
+                          ]}
+                        >
+                          {opt.label}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
                 </View>
-              ))
-            )}
-
-            <View style={styles.subtotalRow}>
-              <Text style={styles.subtotalLabel}>Subtotal</Text>
-              <Text style={styles.subtotalValue}>
-                $
-                {subtotal.toLocaleString(undefined, {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
-                })}
-              </Text>
+              </Field>
+              <Field label="Teeth">
+                <TextInput
+                  value={teeth}
+                  onChangeText={setTeeth}
+                  style={styles.input}
+                  placeholder="e.g. 8-10"
+                  placeholderTextColor={colors.textTertiary}
+                  autoCapitalize="none"
+                  testID="invoice-editor-teeth"
+                />
+              </Field>
+              <Field label="Shade">
+                <TextInput
+                  value={shade}
+                  onChangeText={setShade}
+                  style={styles.input}
+                  placeholder="e.g. A2"
+                  placeholderTextColor={colors.textTertiary}
+                  autoCapitalize="characters"
+                  testID="invoice-editor-shade"
+                />
+              </Field>
             </View>
-          </View>
-        </ScrollView>
+
+            {/* ── Line items ── */}
+            <View style={styles.card}>
+              <View style={styles.cardHeaderRow}>
+                <Text style={styles.cardHeading}>Line items</Text>
+                <Pressable
+                  onPress={handleAddLine}
+                  style={styles.addBtn}
+                  hitSlop={8}
+                  testID="invoice-editor-add-line"
+                >
+                  <Ionicons name="add" size={18} color={colors.tint} />
+                  <Text style={styles.addBtnText}>Add</Text>
+                </Pressable>
+              </View>
+
+              {lines.length === 0 ? (
+                <Text style={styles.emptyHint}>No line items yet.</Text>
+              ) : (
+                lines.map((line, idx) => (
+                  <View key={line.id ?? `new-${idx}`} style={styles.lineCard} testID={`invoice-editor-line-${idx}`}>
+                    <View style={styles.lineHeaderRow}>
+                      <Text style={styles.lineIndex}>Item {idx + 1}</Text>
+                      <Pressable
+                        onPress={() => removeLine(idx)}
+                        hitSlop={8}
+                        testID={`invoice-editor-remove-line-${idx}`}
+                      >
+                        <Ionicons name="trash-outline" size={18} color={colors.error} />
+                      </Pressable>
+                    </View>
+                    <TextInput
+                      value={line.description}
+                      onChangeText={(t) => updateLine(idx, { description: t })}
+                      style={styles.input}
+                      placeholder="Description"
+                      placeholderTextColor={colors.textTertiary}
+                      autoCapitalize="sentences"
+                      testID={`invoice-editor-line-desc-${idx}`}
+                    />
+                    <View style={styles.lineFieldsRow}>
+                      <View style={styles.lineFieldThird}>
+                        <Text style={styles.miniLabel}>Tooth</Text>
+                        <TextInput
+                          value={line.tooth}
+                          onChangeText={(t) => updateLine(idx, { tooth: t })}
+                          style={styles.input}
+                          placeholder="—"
+                          placeholderTextColor={colors.textTertiary}
+                          autoCapitalize="none"
+                          testID={`invoice-editor-line-tooth-${idx}`}
+                        />
+                      </View>
+                      <View style={styles.lineFieldThird}>
+                        <Text style={styles.miniLabel}>Qty</Text>
+                        <TextInput
+                          value={line.quantity}
+                          onChangeText={(t) => updateLine(idx, { quantity: t })}
+                          style={styles.input}
+                          keyboardType="number-pad"
+                          placeholder="1"
+                          placeholderTextColor={colors.textTertiary}
+                          testID={`invoice-editor-line-qty-${idx}`}
+                        />
+                      </View>
+                      <View style={styles.lineFieldThird}>
+                        <Text style={styles.miniLabel}>Unit price</Text>
+                        <View style={[styles.input, styles.priceInputWrap]}>
+                          <Text style={styles.priceDollar}>$</Text>
+                          <TextInput
+                            value={line.unitPrice}
+                            onChangeText={(t) => updateLine(idx, { unitPrice: t })}
+                            style={styles.priceInput}
+                            keyboardType="decimal-pad"
+                            placeholder="0.00"
+                            placeholderTextColor={colors.textTertiary}
+                            testID={`invoice-editor-line-price-${idx}`}
+                          />
+                        </View>
+                      </View>
+                    </View>
+                    {line.subItems.length > 0 ? (
+                      <Text style={styles.subItemsNote}>
+                        {line.subItems.length} sub-item
+                        {line.subItems.length === 1 ? "" : "s"} (edit on desktop)
+                      </Text>
+                    ) : null}
+                  </View>
+                ))
+              )}
+
+              <View style={styles.subtotalRow}>
+                <Text style={styles.subtotalLabel}>Subtotal</Text>
+                <Text style={styles.subtotalValue}>
+                  $
+                  {subtotal.toLocaleString(undefined, {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}
+                </Text>
+              </View>
+            </View>
+          </ScrollView>
+
+          <ItemPickerSheet
+            visible={pickerVisible}
+            items={billableItems}
+            onSelect={(item) => {
+              setPickerVisible(false);
+              if (item) {
+                addLine(item);
+              } else {
+                addLine();
+              }
+            }}
+            onClose={() => setPickerVisible(false)}
+          />
+        </>
       )}
     </SafeAreaView>
   );
 }
+
+// ── Item picker sheet ─────────────────────────────────────────────────────────
+
+interface ItemPickerSheetProps {
+  visible: boolean;
+  items: BillableItem[];
+  onSelect: (item: BillableItem | null) => void;
+  onClose: () => void;
+}
+
+function ItemPickerSheet({ visible, items, onSelect, onClose }: ItemPickerSheetProps) {
+  const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
+  const [search, setSearch] = useState("");
+  const styles = useMemo(() => makePickerStyles(colors), [colors]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return items;
+    return items.filter((it) => it.name.toLowerCase().includes(q));
+  }, [items, search]);
+
+  // Reset search when sheet opens.
+  useEffect(() => {
+    if (visible) setSearch("");
+  }, [visible]);
+
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
+        <Pressable style={styles.backdrop} onPress={onClose}>
+          <Pressable
+            style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]}
+            onPress={() => undefined}
+          >
+            <View style={styles.grabber} />
+            <Text style={styles.title}>Select item</Text>
+
+            {items.length >= 5 && (
+              <TextInput
+                value={search}
+                onChangeText={setSearch}
+                style={styles.searchInput}
+                placeholder="Search items…"
+                placeholderTextColor={colors.textTertiary}
+                autoCorrect={false}
+                clearButtonMode="while-editing"
+                testID="item-picker-search"
+              />
+            )}
+
+            <ScrollView
+              style={styles.list}
+              contentContainerStyle={styles.listContent}
+              keyboardShouldPersistTaps="handled"
+            >
+              {/* Custom item always appears first */}
+              <Pressable
+                style={styles.row}
+                onPress={() => onSelect(null)}
+                testID="item-picker-custom"
+              >
+                <View style={styles.rowIconWrap}>
+                  <Ionicons name="pencil-outline" size={18} color={colors.tint} />
+                </View>
+                <View style={styles.rowBody}>
+                  <Text style={[styles.rowName, { color: colors.tint }]}>Custom item</Text>
+                  <Text style={styles.rowPrice}>Enter a custom description</Text>
+                </View>
+              </Pressable>
+
+              {items.length > 0 && <View style={styles.divider} />}
+
+              {filtered.map((item) => {
+                const price =
+                  item.unitPrice != null
+                    ? `$${parseFloat(item.unitPrice).toLocaleString(undefined, {
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2,
+                      })}`
+                    : null;
+                return (
+                  <Pressable
+                    key={item.id}
+                    style={styles.row}
+                    onPress={() => onSelect(item)}
+                    testID={`item-picker-${item.id}`}
+                  >
+                    <View style={styles.rowBody}>
+                      <Text style={styles.rowName}>{item.name}</Text>
+                      {price != null && <Text style={styles.rowPrice}>{price}</Text>}
+                    </View>
+                    <Ionicons name="chevron-forward" size={16} color={colors.textTertiary} />
+                  </Pressable>
+                );
+              })}
+
+              {search.trim().length > 0 && filtered.length === 0 && (
+                <Text style={styles.emptyText}>No matching items</Text>
+              )}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
+// ── Shared sub-components ─────────────────────────────────────────────────────
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   const { colors } = useTheme();
@@ -523,6 +710,8 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     </View>
   );
 }
+
+// ── Styles ────────────────────────────────────────────────────────────────────
 
 function makeStyles(colors: ThemeColors) {
   return StyleSheet.create({
@@ -576,10 +765,28 @@ function makeStyles(colors: ThemeColors) {
       borderColor: colors.border,
       borderRadius: 10,
       paddingHorizontal: 12,
-      paddingVertical: 10,
+      paddingVertical: 9,
       fontSize: 15,
       color: colors.text,
       backgroundColor: colors.backgroundSolid,
+    },
+    // Unit price field: inline "$" prefix sharing the same input border.
+    priceInputWrap: {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingVertical: 0,
+      paddingHorizontal: 10,
+    },
+    priceDollar: {
+      fontSize: 15,
+      color: colors.textSecondary,
+      marginRight: 2,
+    },
+    priceInput: {
+      flex: 1,
+      fontSize: 15,
+      color: colors.text,
+      paddingVertical: 9,
     },
     statusRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
     statusChip: {
@@ -600,8 +807,8 @@ function makeStyles(colors: ThemeColors) {
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.border,
       borderRadius: 12,
-      padding: 12,
-      gap: 10,
+      padding: 10,
+      gap: 8,
       backgroundColor: colors.backgroundSolid,
     },
     lineHeaderRow: {
@@ -610,7 +817,7 @@ function makeStyles(colors: ThemeColors) {
       justifyContent: "space-between",
     },
     lineIndex: { fontSize: 13, fontWeight: "700", color: colors.textSecondary },
-    lineFieldsRow: { flexDirection: "row", gap: 8 },
+    lineFieldsRow: { flexDirection: "row", gap: 6 },
     lineFieldThird: { flex: 1 },
     subItemsNote: { fontSize: 12, color: colors.textTertiary, fontStyle: "italic" },
     subtotalRow: {
@@ -634,5 +841,78 @@ function makeStyles(colors: ThemeColors) {
       backgroundColor: colors.tint,
     },
     errorButtonText: { color: colors.textInverse, fontWeight: "600", fontSize: 15 },
+  });
+}
+
+function makePickerStyles(colors: ThemeColors) {
+  return StyleSheet.create({
+    backdrop: {
+      flex: 1,
+      backgroundColor: "rgba(0,0,0,0.45)",
+      justifyContent: "flex-end",
+    },
+    sheet: {
+      backgroundColor: colors.backgroundSolid,
+      borderTopLeftRadius: 20,
+      borderTopRightRadius: 20,
+      paddingTop: 8,
+      paddingHorizontal: 0,
+      maxHeight: "80%",
+    },
+    grabber: {
+      alignSelf: "center",
+      width: 40,
+      height: 4,
+      borderRadius: 999,
+      backgroundColor: colors.border,
+      marginBottom: 8,
+    },
+    title: {
+      fontSize: 17,
+      fontWeight: "700",
+      color: colors.text,
+      paddingHorizontal: 20,
+      marginBottom: 12,
+    },
+    searchInput: {
+      marginHorizontal: 16,
+      marginBottom: 8,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+      borderRadius: 10,
+      paddingHorizontal: 12,
+      paddingVertical: 9,
+      fontSize: 15,
+      color: colors.text,
+      backgroundColor: colors.surface,
+    },
+    list: { flexGrow: 0 },
+    listContent: { paddingBottom: 8 },
+    divider: {
+      height: StyleSheet.hairlineWidth,
+      backgroundColor: colors.border,
+      marginVertical: 4,
+      marginHorizontal: 16,
+    },
+    row: {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingVertical: 13,
+      paddingHorizontal: 20,
+      gap: 12,
+    },
+    rowIconWrap: {
+      width: 28,
+      alignItems: "center",
+    },
+    rowBody: { flex: 1 },
+    rowName: { fontSize: 15, fontWeight: "600", color: colors.text },
+    rowPrice: { fontSize: 13, color: colors.textSecondary, marginTop: 2 },
+    emptyText: {
+      fontSize: 14,
+      color: colors.textTertiary,
+      textAlign: "center",
+      paddingVertical: 24,
+    },
   });
 }
