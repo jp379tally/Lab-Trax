@@ -160,6 +160,14 @@ function titleCase(s: string): string {
     .trim();
 }
 
+function uniqueJoin(items: (string | null | undefined)[]): string {
+  const seen = new Set<string>();
+  for (const v of items) {
+    if (v && v.trim()) seen.add(titleCase(v.trim()));
+  }
+  return seen.size > 0 ? [...seen].join(", ") : "—";
+}
+
 function formatDate(iso: string | null | undefined): string {
   if (!iso) return "—";
   const d = new Date(iso);
@@ -1402,8 +1410,11 @@ function OverviewSection({
             <FieldRow label="Patient" value={patientName(c)} styles={styles} />
             <FieldRow label="Doctor" value={c.doctorName || "—"} styles={styles} />
             <FieldRow label="Case #" value={c.caseNumber || "—"} styles={styles} />
-            <FieldRow label="Status" value={titleCase(c.status ?? "—")} styles={styles} />
             <FieldRow label="Priority" value={c.priority ? titleCase(c.priority) : "Standard"} styles={styles} />
+            <FieldRow label="Case type" value={uniqueJoin((c.restorations ?? []).map((r) => r.restorationType))} styles={styles} />
+            <FieldRow label="Tooth number" value={uniqueJoin((c.restorations ?? []).map((r) => r.toothNumber))} styles={styles} />
+            <FieldRow label="Shade" value={uniqueJoin((c.restorations ?? []).map((r) => r.shade))} styles={styles} />
+            <FieldRow label="Material" value={uniqueJoin((c.restorations ?? []).map((r) => r.material))} styles={styles} />
             <FieldRow label="Case created" value={formatDate(c.createdAt)} styles={styles} />
             <FieldRow label="Expected delivery" value={formatDate(c.expectedDeliveryDate)} styles={styles} />
             {c.bridgeConnectors && c.bridgeConnectors.trim() ? (
