@@ -59,6 +59,13 @@ function titleCase(s: string): string {
     .trim();
 }
 
+function getGreeting(firstName?: string): string {
+  const hour = new Date().getHours();
+  const period = hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening";
+  const name = firstName?.trim();
+  return name ? `Good ${period}, ${name}` : "Welcome";
+}
+
 function isClosedCase(status: string | null | undefined): boolean {
   const s = (status ?? "").toLowerCase();
   return (
@@ -409,7 +416,7 @@ export default function DashboardScreen() {
 
       <View style={styles.header}>
         <View style={styles.headerText}>
-          <Text style={styles.title}>Dashboard</Text>
+          <Text style={styles.title}>{getGreeting(meUser?.firstName)}</Text>
           <Text style={styles.subtitle}>Your lab at a glance</Text>
         </View>
         <View style={styles.headerActions}>
