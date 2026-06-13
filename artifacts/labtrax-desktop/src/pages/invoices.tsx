@@ -2245,12 +2245,14 @@ export function InvoiceEditor({
                           }
                           // A row is "in custom mode" when its item text
                           // exists but isn't one of the priced catalog
-                          // labels — either because the user picked
-                          // "Custom…" or because the item was typed in a
-                          // prior session before the dropdown existed.
+                          // labels or a custom billable item name —
+                          // either because the user picked "Custom…" or
+                          // because the item was typed in a prior session
+                          // before the dropdown existed.
                           const isCustom =
                             !!it.item &&
-                            !pricedItems.some((p) => p.label === it.item);
+                            !pricedItems.some((p) => p.label === it.item) &&
+                            !billableItems.some((b) => b.name === it.item);
                           if (isCustom) {
                             return (
                               <div className="flex items-start gap-1">
@@ -2317,15 +2319,29 @@ export function InvoiceEditor({
                                   });
                                   return;
                                 }
-                                const picked = pricedItems.find(
+                                const pickedPriced = pricedItems.find(
                                   (p) => p.label === v,
                                 );
-                                if (!picked) return;
-                                updateItem(idx, {
-                                  item: picked.label,
-                                  description: picked.label,
-                                  unitPrice: picked.unitPrice,
-                                });
+                                if (pickedPriced) {
+                                  updateItem(idx, {
+                                    item: pickedPriced.label,
+                                    description: pickedPriced.label,
+                                    unitPrice: pickedPriced.unitPrice,
+                                  });
+                                  return;
+                                }
+                                const pickedBillable = billableItems.find(
+                                  (b) => b.name === v,
+                                );
+                                if (pickedBillable) {
+                                  updateItem(idx, {
+                                    item: pickedBillable.name,
+                                    description: pickedBillable.name,
+                                    unitPrice: pickedBillable.unitPrice
+                                      ? Number(pickedBillable.unitPrice)
+                                      : 0,
+                                  });
+                                }
                               }}
                               className="w-full h-8 px-2 rounded bg-background border border-input text-sm"
                             >
@@ -2335,6 +2351,17 @@ export function InvoiceEditor({
                                   {p.label}
                                 </option>
                               ))}
+                              {billableItems.length > 0 && (
+                                <optgroup label="Custom Items">
+                                  {billableItems.map((b) => (
+                                    <option key={b.id} value={b.name}>
+                                      {b.unitPrice != null
+                                        ? `${b.name} — $${Number(b.unitPrice).toFixed(2)}`
+                                        : b.name}
+                                    </option>
+                                  ))}
+                                </optgroup>
+                              )}
                               <option value="__custom__">Custom…</option>
                             </select>
                           );
