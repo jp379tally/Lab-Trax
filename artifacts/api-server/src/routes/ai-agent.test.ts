@@ -306,9 +306,18 @@ describe("tool permission boundaries (unit)", () => {
     }
   });
 
-  it("readonly tools are exactly lookup_invoice and lookup_case", () => {
+  it("readonly tools are exactly the known read-only set", () => {
     const readonly = AGENT_TOOLS.filter((t) => t.kind === "readonly");
     const names = readonly.map((t) => t.name).sort();
-    expect(names).toEqual(["lookup_case", "lookup_invoice"]);
+    expect(names).toEqual([
+      "draft_message",
+      "financial_summary",
+      "get_case_history",
+      "get_cases_due_soon",
+      "lookup_case",
+      "lookup_invoice",
+      "monthly_sales_snapshot",
+      "remake_rate",
+    ]);
   });
 });
