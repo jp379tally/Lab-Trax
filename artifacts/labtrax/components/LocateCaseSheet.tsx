@@ -193,7 +193,7 @@ export function LocateCaseSheet({ locatingCase, onDismiss, onLocated }: Props) {
               ]}
               onPress={confirmLocate}
               disabled={!locateTarget || locating}
-              testID="locate-confirm"
+              testID="locate-sheet-confirm"
             >
               {locating ? (
                 <ActivityIndicator size="small" color={colors.textInverse} />
