@@ -25,12 +25,23 @@ interface ToolOutput {
   result: unknown;
 }
 
+interface ProposedActionState {
+  actionId: string;
+  toolName: string;
+  summary: string;
+  /** pending → awaiting user; confirmed → executing; done → result shown; rejected */
+  state: "pending" | "confirmed" | "done" | "rejected";
+  resultText?: string;
+  error?: string;
+}
+
 interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
   toolOutputs?: ToolOutput[];
   isError?: boolean;
+  proposedAction?: ProposedActionState;
 }
 
 interface ApiReply {
@@ -38,6 +49,7 @@ interface ApiReply {
   content?: string;
   summary?: string;
   toolName?: string;
+  actionId?: string;
   toolOutputs?: ToolOutput[];
 }
 
@@ -63,14 +75,203 @@ const SUGGESTED_PROMPTS = [
   "Draft a delay message for Dr. Smith",
 ];
 
+// ─── Confirm card ─────────────────────────────────────────────────────────────
+
+interface ConfirmCardProps {
+  action: ProposedActionState;
+  colors: ThemeColors;
+  onConfirm: (actionId: string) => void;
+  onReject: (actionId: string) => void;
+}
+
+function ConfirmCard({ action, colors, onConfirm, onReject }: ConfirmCardProps) {
+  if (action.state === "rejected") {
+    return (
+      <View
+        style={[
+          confirmStyles.card,
+          {
+            backgroundColor: colors.surfaceSecondary,
+            borderColor: colors.border,
+          },
+        ]}
+      >
+        <View style={confirmStyles.row}>
+          <Ionicons name="close-circle-outline" size={14} color={colors.textSecondary} />
+          <Text style={[confirmStyles.statusText, { color: colors.textSecondary }]}>
+            Action cancelled
+          </Text>
+        </View>
+      </View>
+    );
+  }
+
+  if (action.state === "done" && action.error) {
+    return (
+      <View
+        style={[
+          confirmStyles.card,
+          { backgroundColor: "#fff5f5", borderColor: "#fed7d7" },
+        ]}
+      >
+        <View style={[confirmStyles.row, { marginBottom: 4 }]}>
+          <Ionicons name="alert-circle-outline" size={14} color="#c53030" />
+          <Text style={[confirmStyles.label, { color: "#c53030" }]}>Action failed</Text>
+        </View>
+        <Text style={[confirmStyles.summaryText, { color: "#742a2a" }]}>{action.error}</Text>
+      </View>
+    );
+  }
+
+  if (action.state === "done") {
+    return (
+      <View
+        style={[
+          confirmStyles.card,
+          { backgroundColor: "#f0fff4", borderColor: "#9ae6b4" },
+        ]}
+      >
+        <View style={[confirmStyles.row, { marginBottom: 4 }]}>
+          <Ionicons name="checkmark-circle-outline" size={14} color="#276749" />
+          <Text style={[confirmStyles.label, { color: "#276749" }]}>Done</Text>
+        </View>
+        <Text style={[confirmStyles.summaryText, { color: "#22543d" }]}>
+          {action.resultText ?? action.summary}
+        </Text>
+      </View>
+    );
+  }
+
+  if (action.state === "confirmed") {
+    return (
+      <View
+        style={[
+          confirmStyles.card,
+          { backgroundColor: "#fffbeb", borderColor: "#f6e05e" },
+        ]}
+      >
+        <View style={[confirmStyles.row, { marginBottom: 4 }]}>
+          <Ionicons name="flash-outline" size={14} color="#b7791f" />
+          <Text style={[confirmStyles.label, { color: "#b7791f" }]}>Proposed action</Text>
+        </View>
+        <Text style={[confirmStyles.summaryText, { color: "#744210" }]}>{action.summary}</Text>
+        <View style={[confirmStyles.row, { marginTop: 8 }]}>
+          <ActivityIndicator size="small" color="#b7791f" />
+          <Text style={[confirmStyles.statusText, { color: "#b7791f", marginLeft: 6 }]}>
+            Executing…
+          </Text>
+        </View>
+      </View>
+    );
+  }
+
+  // pending
+  return (
+    <View
+      style={[
+        confirmStyles.card,
+        { backgroundColor: "#fffbeb", borderColor: "#f6e05e" },
+      ]}
+    >
+      <View style={[confirmStyles.row, { marginBottom: 4 }]}>
+        <Ionicons name="flash-outline" size={14} color="#b7791f" />
+        <Text style={[confirmStyles.label, { color: "#b7791f" }]}>Proposed action</Text>
+      </View>
+      <Text style={[confirmStyles.summaryText, { color: "#744210", marginBottom: 12 }]}>
+        {action.summary}
+      </Text>
+      <View style={confirmStyles.buttonRow}>
+        <Pressable
+          style={[confirmStyles.confirmBtn, { backgroundColor: colors.tint }]}
+          onPress={() => onConfirm(action.actionId)}
+          accessibilityLabel="Confirm action"
+        >
+          <Ionicons name="checkmark" size={13} color="#fff" />
+          <Text style={confirmStyles.confirmBtnText}>Confirm</Text>
+        </Pressable>
+        <Pressable
+          style={[
+            confirmStyles.cancelBtn,
+            { borderColor: colors.border, backgroundColor: colors.surface },
+          ]}
+          onPress={() => onReject(action.actionId)}
+          accessibilityLabel="Cancel action"
+        >
+          <Ionicons name="close" size={13} color={colors.text} />
+          <Text style={[confirmStyles.cancelBtnText, { color: colors.text }]}>Cancel</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+const confirmStyles = StyleSheet.create({
+  card: {
+    borderWidth: 1,
+    borderRadius: Radius.lg,
+    padding: 12,
+    maxWidth: "85%",
+  },
+  row: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  label: {
+    fontSize: 11,
+    fontWeight: "600",
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+  },
+  summaryText: {
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  statusText: {
+    fontSize: 12,
+  },
+  buttonRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  confirmBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: Radius.md,
+  },
+  confirmBtnText: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  cancelBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+  },
+  cancelBtnText: {
+    fontSize: 13,
+    fontWeight: "500",
+  },
+});
+
 // ─── Message bubble ───────────────────────────────────────────────────────────
 
 interface BubbleProps {
   msg: ChatMessage;
   colors: ThemeColors;
+  onConfirm: (actionId: string) => void;
+  onReject: (actionId: string) => void;
 }
 
-function MessageBubble({ msg, colors }: BubbleProps) {
+function MessageBubble({ msg, colors, onConfirm, onReject }: BubbleProps) {
   const isUser = msg.role === "user";
   const draftTool = msg.toolOutputs?.find((t) => t.name === "draft_message")?.result as
     | { draft?: string }
@@ -86,6 +287,22 @@ function MessageBubble({ msg, colors }: BubbleProps) {
       // clipboard unavailable — silently ignore, no state change
     }
   }, []);
+
+  if (msg.proposedAction) {
+    return (
+      <View style={[styles.bubbleRow, styles.bubbleRowAssistant]}>
+        <View style={[styles.avatar, { backgroundColor: colors.tint + "1A" }]}>
+          <Ionicons name="sparkles" size={12} color={colors.tint} />
+        </View>
+        <ConfirmCard
+          action={msg.proposedAction}
+          colors={colors}
+          onConfirm={onConfirm}
+          onReject={onReject}
+        />
+      </View>
+    );
+  }
 
   return (
     <View
@@ -167,6 +384,83 @@ export default function AiAssistantScreen() {
     }, 80);
   }, []);
 
+  const confirmAction = useCallback(async (actionId: string) => {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.proposedAction?.actionId === actionId
+          ? { ...m, proposedAction: { ...m.proposedAction!, state: "confirmed" as const } }
+          : m,
+      ),
+    );
+
+    try {
+      const res = await resilientFetch("/api/ai-agent/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ actionId }),
+      });
+
+      const data = (await res.json()) as {
+        type: string;
+        success: boolean;
+        summary: string;
+        error?: string;
+      };
+
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.proposedAction?.actionId === actionId
+            ? {
+                ...m,
+                proposedAction: {
+                  ...m.proposedAction!,
+                  state: "done" as const,
+                  resultText: data.success
+                    ? `✓ ${data.summary ?? "Action completed successfully."}`
+                    : undefined,
+                  error: data.success ? undefined : data.error ?? "Action failed.",
+                },
+              }
+            : m,
+        ),
+      );
+    } catch {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.proposedAction?.actionId === actionId
+            ? {
+                ...m,
+                proposedAction: {
+                  ...m.proposedAction!,
+                  state: "done" as const,
+                  error: "Action failed. Please try again.",
+                },
+              }
+            : m,
+        ),
+      );
+    }
+  }, []);
+
+  const rejectAction = useCallback(async (actionId: string) => {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.proposedAction?.actionId === actionId
+          ? { ...m, proposedAction: { ...m.proposedAction!, state: "rejected" as const } }
+          : m,
+      ),
+    );
+    try {
+      await resilientFetch("/api/ai-agent/reject", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ actionId }),
+      });
+    } catch {
+      // best-effort
+    }
+  }, []);
+
   const sendMessage = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
@@ -210,11 +504,17 @@ export default function AiAssistantScreen() {
         const data = (await res.json()) as ApiReply;
 
         let assistantMsg: ChatMessage;
-        if (data.type === "proposed_action" && data.summary) {
+        if (data.type === "proposed_action" && data.summary && data.actionId) {
           assistantMsg = {
             id: genId(),
             role: "assistant",
-            content: `I'd like to: ${data.summary}\n\nThis action requires confirmation and can only be approved in the desktop app. Please open the AI assistant on desktop to proceed.`,
+            content: "",
+            proposedAction: {
+              actionId: data.actionId,
+              toolName: data.toolName ?? "",
+              summary: data.summary,
+              state: "pending",
+            },
           };
         } else {
           assistantMsg = {
@@ -252,8 +552,15 @@ export default function AiAssistantScreen() {
   }, [input, sendMessage]);
 
   const renderItem = useCallback(
-    ({ item }: { item: ChatMessage }) => <MessageBubble msg={item} colors={colors} />,
-    [colors],
+    ({ item }: { item: ChatMessage }) => (
+      <MessageBubble
+        msg={item}
+        colors={colors}
+        onConfirm={confirmAction}
+        onReject={rejectAction}
+      />
+    ),
+    [colors, confirmAction, rejectAction],
   );
 
   const keyExtractor = useCallback((item: ChatMessage) => item.id, []);
