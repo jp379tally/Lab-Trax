@@ -19,6 +19,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { CameraView, useCameraPermissions } from "expo-camera";
 import {
   useCases,
   useUpdateCase,
@@ -36,6 +37,7 @@ import {
 } from "@/lib/shared-file-inbox";
 import { StatusBadge, type BadgeVariant } from "@/components/ui/StatusBadge";
 import { CASE_STATIONS } from "@/lib/case-stations";
+import { resilientFetch } from "@/lib/query-client";
 
 type DueFilter = "all" | "today" | "tomorrow" | "custom";
 
@@ -117,6 +119,103 @@ export default function CasesListScreen() {
 
   // ── Search
   const [query, setQuery] = useState("");
+
+  // ── Barcode scan modal
+  const [showScanModal, setShowScanModal] = useState(false);
+  const [scanStep, setScanStep] = useState<"scan" | "manual">("scan");
+  const [manualBarcode, setManualBarcode] = useState("");
+  const [scanSearching, setScanSearching] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [scanScanned, setScanScanned] = useState(false);
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+
+  function openScanModal() {
+    setScanStep("scan");
+    setManualBarcode("");
+    setScanError(null);
+    setScanScanned(false);
+    setShowScanModal(true);
+  }
+
+  function closeScanModal() {
+    setShowScanModal(false);
+    setScanError(null);
+    setScanScanned(false);
+    setManualBarcode("");
+  }
+
+  async function lookupBarcode(code: string) {
+    const trimmed = code.trim();
+    if (!trimmed) return;
+
+    const labOrganizationId =
+      (casesQuery.data ?? [])[0]?.labOrganizationId ?? "";
+
+    if (!labOrganizationId) {
+      setScanError("Lab not found. Please refresh and try again.");
+      setScanSearching(false);
+      setScanScanned(false);
+      return;
+    }
+
+    setScanSearching(true);
+    setScanError(null);
+
+    try {
+      const qs = new URLSearchParams({
+        labOrganizationId,
+      });
+      const res = await resilientFetch(
+        `/api/cases/barcode/${encodeURIComponent(trimmed)}?${qs.toString()}`,
+      );
+
+      if (res.status === 404) {
+        setScanError("No case found for that pan.");
+        setScanScanned(false);
+        return;
+      }
+
+      if (!res.ok) {
+        setScanError("Something went wrong. Please try again.");
+        setScanScanned(false);
+        return;
+      }
+
+      const body = (await res.json()) as { case?: { id?: string } };
+      const caseId = body?.case?.id;
+      if (!caseId) {
+        setScanError("No case found for that pan.");
+        setScanScanned(false);
+        return;
+      }
+
+      closeScanModal();
+      router.push(`/case/${caseId}` as never);
+    } catch {
+      setScanError("Network error. Please try again.");
+      setScanScanned(false);
+    } finally {
+      setScanSearching(false);
+    }
+  }
+
+  const handleCameraBarcode = useCallback(
+    ({ data }: { data: string }) => {
+      if (scanScanned || scanSearching || !data?.trim()) return;
+      setScanScanned(true);
+      lookupBarcode(data.trim());
+    },
+    [scanScanned, scanSearching],
+  );
+
+  async function handleManualBarcode() {
+    const code = manualBarcode.trim();
+    if (!code) {
+      setScanError("Enter a barcode value first.");
+      return;
+    }
+    await lookupBarcode(code);
+  }
 
   // ── Due-date filter
   const [dueFilter, setDueFilter] = useState<DueFilter>("all");
@@ -345,25 +444,35 @@ export default function CasesListScreen() {
         </Pressable>
       ) : null}
 
-      {/* Search bar */}
-      <View style={styles.searchWrap}>
-        <Ionicons name="search" size={18} color={colors.textTertiary} />
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search patient, doctor, or case #"
-          placeholderTextColor={colors.textTertiary}
-          value={query}
-          onChangeText={setQuery}
-          autoCapitalize="none"
-          autoCorrect={false}
-          returnKeyType="search"
-          testID="cases-search"
-        />
-        {query.length > 0 ? (
-          <Pressable onPress={() => setQuery("")} hitSlop={8}>
-            <Ionicons name="close-circle" size={18} color={colors.textTertiary} />
-          </Pressable>
-        ) : null}
+      {/* Search + barcode scan row */}
+      <View style={styles.searchRow}>
+        <View style={styles.searchWrap}>
+          <Ionicons name="search" size={18} color={colors.textTertiary} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search patient, doctor, or case #"
+            placeholderTextColor={colors.textTertiary}
+            value={query}
+            onChangeText={setQuery}
+            autoCapitalize="none"
+            autoCorrect={false}
+            returnKeyType="search"
+            testID="cases-search"
+          />
+          {query.length > 0 ? (
+            <Pressable onPress={() => setQuery("")} hitSlop={8}>
+              <Ionicons name="close-circle" size={18} color={colors.textTertiary} />
+            </Pressable>
+          ) : null}
+        </View>
+        <Pressable
+          style={styles.scanBtn}
+          onPress={openScanModal}
+          hitSlop={4}
+          testID="cases-scan-barcode"
+        >
+          <Ionicons name="barcode-outline" size={22} color={colors.tint} />
+        </Pressable>
       </View>
 
       {/* ── Filter row ── */}
@@ -749,6 +858,151 @@ export default function CasesListScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* ══ Barcode Scan Modal ═══════════════════════════════════════════════ */}
+      <Modal
+        visible={showScanModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={closeScanModal}
+      >
+        <View style={[styles.scanScreen, { paddingTop: insets.top }]}>
+          {/* Header */}
+          <View style={styles.scanHeader}>
+            <View>
+              <Text style={styles.scanTitle}>Scan Barcode</Text>
+              <Text style={styles.scanSubtitle}>Find a case by pan barcode</Text>
+            </View>
+            <Pressable style={styles.scanCloseBtn} onPress={closeScanModal} hitSlop={8} testID="scan-modal-close">
+              <Ionicons name="close" size={22} color={colors.text} />
+            </Pressable>
+          </View>
+
+          {/* Mode toggle */}
+          <View style={styles.scanModeRow}>
+            <Pressable
+              style={[styles.scanModeTab, scanStep === "scan" && styles.scanModeTabActive]}
+              onPress={() => { setScanStep("scan"); setScanError(null); setScanScanned(false); }}
+            >
+              <Ionicons
+                name="barcode-outline"
+                size={17}
+                color={scanStep === "scan" ? "#fff" : colors.textSecondary}
+              />
+              <Text style={[styles.scanModeTabText, scanStep === "scan" && styles.scanModeTabTextActive]}>
+                Camera
+              </Text>
+            </Pressable>
+            <Pressable
+              style={[styles.scanModeTab, scanStep === "manual" && styles.scanModeTabActive]}
+              onPress={() => { setScanStep("manual"); setScanError(null); setScanScanned(false); }}
+            >
+              <Ionicons
+                name="keypad-outline"
+                size={17}
+                color={scanStep === "manual" ? "#fff" : colors.textSecondary}
+              />
+              <Text style={[styles.scanModeTabText, scanStep === "manual" && styles.scanModeTabTextActive]}>
+                Manual
+              </Text>
+            </Pressable>
+          </View>
+
+          {scanStep === "scan" ? (
+            !cameraPermission?.granted ? (
+              <View style={styles.scanPermView}>
+                <Ionicons name="camera-outline" size={52} color={colors.textTertiary} />
+                <Text style={styles.scanPermTitle}>Camera access needed</Text>
+                <Text style={styles.scanPermBody}>
+                  Allow camera access to scan a pan barcode, or switch to Manual entry.
+                </Text>
+                <Pressable style={[styles.scanActionBtn, { backgroundColor: colors.tint }]} onPress={requestCameraPermission}>
+                  <Text style={[styles.scanActionBtnText, { color: "#fff" }]}>Allow Camera</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <View style={styles.scanCameraWrap}>
+                {!scanScanned && (
+                  <CameraView
+                    style={StyleSheet.absoluteFill}
+                    facing="back"
+                    onBarcodeScanned={scanSearching ? undefined : handleCameraBarcode}
+                    barcodeScannerSettings={{
+                      barcodeTypes: ["code128", "code39", "qr", "ean13", "ean8", "pdf417", "code93"],
+                    }}
+                  />
+                )}
+                {/* Reticle corners */}
+                <View style={styles.scanReticle} pointerEvents="none">
+                  <View style={styles.scanCornerTL} />
+                  <View style={styles.scanCornerTR} />
+                  <View style={styles.scanCornerBL} />
+                  <View style={styles.scanCornerBR} />
+                </View>
+                {/* Searching overlay */}
+                {scanSearching && (
+                  <View style={styles.scanSearchingOverlay}>
+                    <ActivityIndicator color="#fff" size="large" />
+                    <Text style={styles.scanSearchingText}>Looking up case…</Text>
+                  </View>
+                )}
+                {/* Hint */}
+                <View style={styles.scanHintWrap} pointerEvents="none">
+                  <Text style={styles.scanHintText}>Point at a pan barcode</Text>
+                </View>
+                {/* Error banner on top of camera */}
+                {scanError ? (
+                  <View style={styles.scanErrorBanner}>
+                    <Ionicons name="alert-circle-outline" size={16} color="#fff" />
+                    <Text style={styles.scanErrorBannerText}>{scanError}</Text>
+                    <Pressable hitSlop={8} onPress={() => { setScanError(null); setScanScanned(false); }}>
+                      <Ionicons name="close" size={16} color="#fff" />
+                    </Pressable>
+                  </View>
+                ) : null}
+              </View>
+            )
+          ) : (
+            /* Manual entry */
+            <KeyboardAvoidingView
+              behavior={Platform.OS === "ios" ? "padding" : "height"}
+              style={styles.scanManualWrap}
+            >
+              <Text style={styles.scanManualLabel}>Enter barcode value</Text>
+              <TextInput
+                style={[styles.scanManualInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surfaceAlt }]}
+                value={manualBarcode}
+                onChangeText={(t) => { setManualBarcode(t); setScanError(null); }}
+                placeholder="Type or paste barcode…"
+                placeholderTextColor={colors.textTertiary}
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoFocus
+                returnKeyType="search"
+                onSubmitEditing={handleManualBarcode}
+              />
+              {scanError ? (
+                <View style={styles.scanInlineError}>
+                  <Ionicons name="alert-circle-outline" size={15} color={colors.error} />
+                  <Text style={[styles.scanInlineErrorText, { color: colors.error }]}>{scanError}</Text>
+                </View>
+              ) : null}
+              <Pressable
+                style={[styles.scanActionBtn, { backgroundColor: scanSearching ? colors.border : colors.tint }]}
+                onPress={handleManualBarcode}
+                disabled={scanSearching}
+                testID="scan-manual-submit"
+              >
+                {scanSearching ? (
+                  <ActivityIndicator color={colors.textInverse} size="small" />
+                ) : (
+                  <Text style={[styles.scanActionBtnText, { color: "#fff" }]}>Find Case</Text>
+                )}
+              </Pressable>
+            </KeyboardAvoidingView>
+          )}
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -793,19 +1047,33 @@ function makeStyles(c: ThemeColors) {
       borderColor: c.border,
     },
     shareBannerText: { flex: 1, ...Typography.caption, color: c.textSecondary },
-    searchWrap: {
+    searchRow: {
       flexDirection: "row",
       alignItems: "center",
       gap: Spacing.sm,
       marginHorizontal: Spacing.lg,
       marginTop: Spacing.sm,
       marginBottom: Spacing.xs,
+    },
+    searchWrap: {
+      flex: 1,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.sm,
       paddingHorizontal: Spacing.md,
       paddingVertical: Spacing.sm,
       borderRadius: Radius.md,
       backgroundColor: c.surfaceAlt,
     },
     searchInput: { flex: 1, ...Typography.body, color: c.text, paddingVertical: 0 },
+    scanBtn: {
+      width: 42,
+      height: 42,
+      borderRadius: Radius.md,
+      backgroundColor: c.surfaceAlt,
+      alignItems: "center",
+      justifyContent: "center",
+    },
 
     // Filter row
     filterRow: { marginBottom: Spacing.xs },
@@ -954,5 +1222,146 @@ function makeStyles(c: ThemeColors) {
 
     // Locate modal subtitle
     locateSubtitle: { ...Typography.caption, color: c.textSecondary, marginTop: 2 },
+
+    // ── Barcode scan modal ────────────────────────────────────────────────────
+    scanScreen: { flex: 1, backgroundColor: c.backgroundSolid },
+    scanHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingHorizontal: Spacing.lg,
+      paddingVertical: Spacing.sm,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: c.border,
+    },
+    scanTitle: { ...Typography.h3, color: c.text },
+    scanSubtitle: { ...Typography.caption, color: c.textSecondary, marginTop: 2 },
+    scanCloseBtn: {
+      padding: Spacing.xs,
+    },
+    scanModeRow: {
+      flexDirection: "row",
+      margin: Spacing.lg,
+      borderRadius: Radius.md,
+      borderWidth: 1,
+      borderColor: c.border,
+      overflow: "hidden",
+    },
+    scanModeTab: {
+      flex: 1,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: Spacing.xs,
+      paddingVertical: Spacing.sm,
+    },
+    scanModeTabActive: { backgroundColor: c.tint },
+    scanModeTabText: { ...Typography.bodySemibold, color: c.textSecondary },
+    scanModeTabTextActive: { color: "#fff" },
+
+    scanPermView: {
+      flex: 1,
+      alignItems: "center",
+      justifyContent: "center",
+      padding: Spacing.xl,
+      gap: Spacing.lg,
+    },
+    scanPermTitle: { ...Typography.h3, color: c.text, textAlign: "center" },
+    scanPermBody: { ...Typography.body, color: c.textSecondary, textAlign: "center" },
+
+    scanCameraWrap: { flex: 1, position: "relative", backgroundColor: "#000" },
+    scanReticle: {
+      position: "absolute",
+      top: "28%",
+      left: "12%",
+      right: "12%",
+      height: "44%",
+    },
+    scanCornerTL: {
+      position: "absolute", top: 0, left: 0,
+      width: 28, height: 28,
+      borderTopWidth: 3, borderLeftWidth: 3,
+      borderColor: "#fff", borderRadius: 4,
+    },
+    scanCornerTR: {
+      position: "absolute", top: 0, right: 0,
+      width: 28, height: 28,
+      borderTopWidth: 3, borderRightWidth: 3,
+      borderColor: "#fff", borderRadius: 4,
+    },
+    scanCornerBL: {
+      position: "absolute", bottom: 0, left: 0,
+      width: 28, height: 28,
+      borderBottomWidth: 3, borderLeftWidth: 3,
+      borderColor: "#fff", borderRadius: 4,
+    },
+    scanCornerBR: {
+      position: "absolute", bottom: 0, right: 0,
+      width: 28, height: 28,
+      borderBottomWidth: 3, borderRightWidth: 3,
+      borderColor: "#fff", borderRadius: 4,
+    },
+    scanSearchingOverlay: {
+      ...StyleSheet.absoluteFillObject,
+      backgroundColor: "rgba(0,0,0,0.65)",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: Spacing.md,
+    },
+    scanSearchingText: { ...Typography.bodySemibold, color: "#fff" },
+    scanHintWrap: {
+      position: "absolute",
+      bottom: Spacing.xl,
+      left: 0, right: 0,
+      alignItems: "center",
+    },
+    scanHintText: {
+      ...Typography.captionMedium,
+      color: "#fff",
+      textShadowColor: "#000",
+      textShadowOffset: { width: 0, height: 1 },
+      textShadowRadius: 4,
+    },
+    scanErrorBanner: {
+      position: "absolute",
+      top: Spacing.md,
+      left: Spacing.lg,
+      right: Spacing.lg,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.sm,
+      backgroundColor: "rgba(180,30,30,0.88)",
+      borderRadius: Radius.md,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Spacing.sm,
+    },
+    scanErrorBannerText: { flex: 1, ...Typography.captionSemibold, color: "#fff" },
+
+    scanManualWrap: { flex: 1, padding: Spacing.xl, gap: Spacing.lg },
+    scanManualLabel: { ...Typography.bodySemibold, color: c.text },
+    scanManualInput: {
+      ...Typography.body,
+      borderWidth: 1,
+      borderRadius: Radius.md,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Platform.OS === "ios" ? Spacing.sm : Spacing.xs,
+      fontSize: 18,
+      letterSpacing: 1.5,
+    },
+    scanInlineError: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.xs,
+      marginTop: -Spacing.sm,
+    },
+    scanInlineErrorText: { ...Typography.caption },
+
+    scanActionBtn: {
+      borderRadius: Radius.md,
+      paddingVertical: Spacing.md,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    scanActionBtnText: { ...Typography.bodySemibold },
   });
 }
