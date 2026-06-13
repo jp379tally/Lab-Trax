@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Building2, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, FileDown, Github, History, KeyRound, LayoutList, Loader2, LogOut, Monitor, Package, Pencil, Play, RotateCcw, RefreshCcw, Search, ShieldCheck, Smartphone, Sparkles, Trash2, Upload, User as UserIcon, UserMinus, Wrench, X } from "lucide-react";
+import { AlertTriangle, Building2, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, FileDown, Github, History, KeyRound, LayoutList, Loader2, LogOut, Monitor, Package, Pencil, Play, RotateCcw, RefreshCcw, Search, ShieldCheck, Smartphone, Sparkles, Trash2, Upload, User as UserIcon, UserMinus, UserPlus, Wrench, X } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -19,6 +19,7 @@ import {
   SheetDescription,
 } from "@/components/ui/sheet";
 import { apiFetch, apiFetchArrayBuffer, apiUploadWithProgress, ApiError, notifySessionCleared, getApiOrigin } from "@/lib/api";
+import { toast } from "@/hooks/use-toast";
 import { AuthedImage } from "@/components/AuthedMedia";
 import {
   DEFAULT_DUP_SIMILARITY_THRESHOLD,
@@ -224,9 +225,19 @@ interface LabTeamMember {
   email?: string | null;
   phone?: string | null;
   role?: string | null;
+  membershipId?: string | null;
+  isOwner?: boolean;
   workStatus: string;
   labNames: string[];
   isSelf: boolean;
+}
+
+interface PendingInvite {
+  id: string;
+  email: string | null;
+  roleToAssign: string | null;
+  createdAt: string | Date | null;
+  expiresAt: string | Date | null;
 }
 
 const LOGO_PLACEMENT_OPTIONS = [
@@ -306,11 +317,74 @@ function ProfilePanel() {
     },
   });
 
-  const teamQuery = useQuery<{ team: LabTeamMember[] }>({
+  const teamQuery = useQuery<{ team: LabTeamMember[]; callerRole: string | null; pendingInvites: PendingInvite[] }>({
     queryKey: ["lab-team"],
     queryFn: () => apiFetch("/auth/lab-team"),
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
+  });
+
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState<"user" | "billing" | "admin">("user");
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [inviteSuccess, setInviteSuccess] = useState(false);
+  const [confirmRemoveMemberId, setConfirmRemoveMemberId] = useState<string | null>(null);
+  const [confirmRemoveName, setConfirmRemoveName] = useState<string>("");
+
+  const isTeamAdmin =
+    teamQuery.data?.callerRole === "admin" ||
+    teamQuery.data?.callerRole === "owner";
+
+  const inviteMutation = useMutation({
+    mutationFn: async () => {
+      if (!user?.practiceOrganizationId) throw new Error("No lab linked.");
+      return apiFetch(`/organizations/${user.practiceOrganizationId}/invites`, {
+        method: "POST",
+        body: JSON.stringify({ email: inviteEmail, roleToAssign: inviteRole }),
+      });
+    },
+    onSuccess: () => {
+      setInviteSuccess(true);
+      setInviteError(null);
+      setInviteEmail("");
+      setInviteRole("user");
+      void queryClient.invalidateQueries({ queryKey: ["lab-team"] });
+      toast({ title: "Invite sent", description: `An invite was sent to ${inviteEmail}.`, duration: 4000 });
+      setTimeout(() => {
+        setInviteSuccess(false);
+        setShowInviteModal(false);
+      }, 1800);
+    },
+    onError: (err: Error) => {
+      setInviteError(err.message || "Could not send invite.");
+    },
+  });
+
+  const removeMemberMutation = useMutation({
+    mutationFn: async (membershipId: string) => {
+      return apiFetch(`/organizations/memberships/${membershipId}`, {
+        method: "DELETE",
+      });
+    },
+    onSuccess: () => {
+      const name = confirmRemoveName;
+      setConfirmRemoveMemberId(null);
+      void queryClient.invalidateQueries({ queryKey: ["lab-team"] });
+      toast({ title: "Member removed", description: name ? `${name} has been removed from the lab.` : "Member removed from the lab.", duration: 4000 });
+    },
+  });
+
+  const revokeInviteMutation = useMutation({
+    mutationFn: async (inviteId: string) => {
+      return apiFetch(`/organizations/invites/${inviteId}/cancel`, {
+        method: "POST",
+      });
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["lab-team"] });
+      toast({ title: "Invite revoked", duration: 3000 });
+    },
   });
 
   const placementsMutation = useMutation({
@@ -584,9 +658,27 @@ function ProfilePanel() {
       <div className="rounded-lg border border-border mt-4">
         <div className="px-4 py-2.5 border-b border-border flex items-center justify-between">
           <div className="text-sm font-semibold">Lab team status</div>
-          <div className="text-xs text-muted-foreground">
-            {teamQuery.data?.team.length ?? 0} member
-            {(teamQuery.data?.team.length ?? 0) === 1 ? "" : "s"}
+          <div className="flex items-center gap-3">
+            <div className="text-xs text-muted-foreground">
+              {teamQuery.data?.team.length ?? 0} member
+              {(teamQuery.data?.team.length ?? 0) === 1 ? "" : "s"}
+            </div>
+            {isTeamAdmin && (
+              <button
+                type="button"
+                onClick={() => {
+                  setInviteEmail("");
+                  setInviteRole("user");
+                  setInviteError(null);
+                  setInviteSuccess(false);
+                  setShowInviteModal(true);
+                }}
+                className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
+              >
+                <UserPlus className="w-3.5 h-3.5" />
+                Invite member
+              </button>
+            )}
           </div>
         </div>
         <ul className="divide-y divide-border">
@@ -597,6 +689,8 @@ function ProfilePanel() {
             const meta = workStatusMeta(m.workStatus);
             const name =
               [m.firstName, m.lastName].filter(Boolean).join(" ") || m.username;
+            const canRemove =
+              isTeamAdmin && !m.isSelf && !m.isOwner && m.membershipId;
             return (
               <li
                 key={m.id}
@@ -616,21 +710,159 @@ function ProfilePanel() {
                     {m.email ? ` · ${m.email}` : ""}
                   </div>
                 </div>
-                <div className="inline-flex items-center gap-1.5 text-xs text-muted-foreground shrink-0">
-                  <span className={`w-2 h-2 rounded-full ${meta.dot}`} />
-                  {meta.label}
+                <div className="inline-flex items-center gap-3 shrink-0">
+                  <div className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <span className={`w-2 h-2 rounded-full ${meta.dot}`} />
+                    {meta.label}
+                  </div>
+                  {canRemove && (
+                    confirmRemoveMemberId === m.membershipId ? (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs text-muted-foreground">Remove?</span>
+                        <button
+                          type="button"
+                          onClick={() => removeMemberMutation.mutate(m.membershipId!)}
+                          disabled={removeMemberMutation.isPending}
+                          className="text-xs font-medium text-destructive hover:text-destructive/80 disabled:opacity-50"
+                        >
+                          Yes
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmRemoveMemberId(null)}
+                          className="text-xs text-muted-foreground hover:text-foreground"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setConfirmRemoveMemberId(m.membershipId!);
+                          setConfirmRemoveName(name);
+                        }}
+                        title={`Remove ${name} from the lab`}
+                        className="text-muted-foreground hover:text-destructive transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )
+                  )}
                 </div>
               </li>
             );
           })}
+          {/* Pending invites */}
+          {isTeamAdmin && (teamQuery.data?.pendingInvites ?? []).map((inv) => (
+            <li
+              key={inv.id}
+              className="px-4 py-2.5 flex items-center justify-between text-sm"
+            >
+              <div className="min-w-0">
+                <div className="font-medium truncate text-muted-foreground">
+                  {inv.email ?? "—"}
+                </div>
+                <div className="text-xs text-muted-foreground truncate">
+                  {inv.roleToAssign || "user"} · <span className="text-amber-500 font-medium">Pending invite</span>
+                </div>
+              </div>
+              <div className="inline-flex items-center gap-3 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => revokeInviteMutation.mutate(inv.id)}
+                  disabled={revokeInviteMutation.isPending}
+                  title="Revoke invite"
+                  className="text-xs text-muted-foreground hover:text-destructive transition-colors disabled:opacity-50"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </li>
+          ))}
           {!teamQuery.isLoading &&
-            (teamQuery.data?.team.length ?? 0) === 0 && (
+            (teamQuery.data?.team.length ?? 0) === 0 &&
+            (teamQuery.data?.pendingInvites?.length ?? 0) === 0 && (
               <li className="px-4 py-3 text-xs text-muted-foreground">
                 No teammates found.
               </li>
             )}
         </ul>
       </div>
+
+      {/* Invite member modal */}
+      {showInviteModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+          onClick={() => setShowInviteModal(false)}
+        >
+          <div
+            className="bg-card border border-border rounded-xl shadow-2xl w-full max-w-sm mx-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-5 border-b border-border flex items-center justify-between">
+              <div className="font-semibold text-sm">Invite team member</div>
+              <button
+                type="button"
+                onClick={() => setShowInviteModal(false)}
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              {inviteSuccess ? (
+                <div className="flex items-center gap-2 text-sm text-emerald-600">
+                  <Check className="w-4 h-4" />
+                  Invite sent!
+                </div>
+              ) : (
+                <>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-muted-foreground">
+                      Email address
+                    </label>
+                    <input
+                      type="email"
+                      value={inviteEmail}
+                      onChange={(e) => setInviteEmail(e.target.value)}
+                      placeholder="colleague@example.com"
+                      className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-muted-foreground">
+                      Role
+                    </label>
+                    <select
+                      value={inviteRole}
+                      onChange={(e) => setInviteRole(e.target.value as "user" | "billing" | "admin")}
+                      className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    >
+                      <option value="user">User</option>
+                      <option value="billing">Billing</option>
+                      <option value="admin">Admin</option>
+                    </select>
+                  </div>
+                  {inviteError && (
+                    <p className="text-xs text-destructive">{inviteError}</p>
+                  )}
+                  <div className="flex justify-end pt-1">
+                    <button
+                      type="button"
+                      onClick={() => inviteMutation.mutate()}
+                      disabled={!inviteEmail.trim() || inviteMutation.isPending}
+                      className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
+                    >
+                      {inviteMutation.isPending ? "Sending…" : "Send invite"}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </PanelShell>
     {showPlacementsModal && (
       <div

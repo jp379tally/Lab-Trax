@@ -9,6 +9,7 @@ import { and, asc, eq, gt, inArray, isNull, ne } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import {
+  organizationInvites,
   organizationJoinRequests,
   organizationMemberships,
   organizations,
@@ -1246,8 +1247,22 @@ router.get(
       );
     const labIds = [...new Set(callerMemberships.map((m) => m.labId))];
     if (labIds.length === 0) {
-      return res.json({ team: [] });
+      return res.json({ team: [], callerRole: null, pendingInvites: [] });
     }
+    // Build per-lab admin sets so access checks are always lab-scoped.
+    const callerAdminLabIds = new Set(
+      callerMemberships
+        .filter((m) => m.role === "admin" || m.role === "owner")
+        .map((m) => m.labId)
+    );
+    // callerRole: prefer the caller's role in any admin lab they belong to,
+    // falling back to their role in the first lab.
+    const primaryLabId = labIds[0];
+    const callerPrimaryMembership =
+      callerMemberships.find((m) => callerAdminLabIds.has(m.labId)) ??
+      callerMemberships.find((m) => m.labId === primaryLabId);
+    const callerRole = callerPrimaryMembership?.role ?? null;
+
     const teamMemberships = await db
       .select()
       .from(organizationMemberships)
@@ -1259,20 +1274,26 @@ router.get(
       );
     const teamUserIds = [...new Set(teamMemberships.map((m) => m.userId))];
     if (teamUserIds.length === 0) {
-      return res.json({ team: [] });
+      return res.json({ team: [], callerRole, pendingInvites: [] });
     }
-    const teammateRows = await db
-      .select()
-      .from(users)
-      .where(inArray(users.id, teamUserIds));
-    const labsById = new Map(
-      (
-        await db
-          .select()
-          .from(organizations)
-          .where(inArray(organizations.id, labIds))
-      ).map((o) => [o.id, o])
-    );
+    // Fetch pending invites only for the labs where the caller is actually admin/owner.
+    const adminLabIdList = [...callerAdminLabIds];
+    const [teammateRows, labRows, pendingInviteRows] = await Promise.all([
+      db.select().from(users).where(inArray(users.id, teamUserIds)),
+      db.select().from(organizations).where(inArray(organizations.id, labIds)),
+      adminLabIdList.length > 0
+        ? db
+            .select()
+            .from(organizationInvites)
+            .where(
+              and(
+                inArray(organizationInvites.labId, adminLabIdList),
+                eq(organizationInvites.status, "pending")
+              )
+            )
+        : Promise.resolve([]),
+    ]);
+    const labsById = new Map(labRows.map((o) => [o.id, o]));
     const membershipByUser = new Map<string, typeof teamMemberships>();
     for (const m of teamMemberships) {
       const arr = membershipByUser.get(m.userId) ?? [];
@@ -1286,6 +1307,12 @@ router.get(
         const labNames = memberships
           .map((m) => labsById.get(m.labId)?.displayName || labsById.get(m.labId)?.name)
           .filter(Boolean);
+        // Prefer the membership in a lab where the caller has admin rights so
+        // that remove operations always target the correct lab membership.
+        const adminScopedMembership =
+          memberships.find((m) => callerAdminLabIds.has(m.labId)) ??
+          memberships[0];
+        const role = adminScopedMembership?.role ?? u.role;
         return {
           id: u.id,
           username: u.username,
@@ -1294,7 +1321,9 @@ router.get(
           initials: u.initials,
           email: u.email,
           phone: u.phone,
-          role: memberships[0]?.role ?? u.role,
+          role,
+          membershipId: adminScopedMembership?.id ?? null,
+          isOwner: role === "owner",
           workStatus: u.workStatus ?? "available",
           labNames,
           isSelf: u.id === userId,
@@ -1306,7 +1335,14 @@ router.get(
           b.firstName || b.username
         );
       });
-    return res.json({ team });
+    const pendingInvites = pendingInviteRows.map((inv) => ({
+      id: inv.id,
+      email: inv.email,
+      roleToAssign: inv.roleToAssign,
+      createdAt: inv.createdAt,
+      expiresAt: inv.expiresAt,
+    }));
+    return res.json({ team, callerRole, pendingInvites });
   })
 );
 
