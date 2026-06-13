@@ -51,7 +51,7 @@ import type {
   PricingTier,
   RestorationPriceSource,
 } from "@/lib/types";
-import { formatDate, formatDateTime, formatMoney, formatPhone, relativeTime, statusLabel } from "@/lib/format";
+import { formatDate, formatDateTime, formatMoney, formatPhone, formatShortDate, relativeTime, statusLabel } from "@/lib/format";
 import {
   printCaseCard,
   printCaseCardAdvanced,
@@ -1825,7 +1825,7 @@ export default function CasesPage() {
                       className="rounded border-border"
                     />
                   </td>
-                  <td className="px-5 py-3 text-muted-foreground">{relativeTime(c.createdAt)}</td>
+                  <td className="px-5 py-3 text-muted-foreground">{formatShortDate(c.createdAt)}</td>
                   <td className="px-5 py-3 font-mono text-xs">
                     <div className="flex items-center gap-1.5">
                       {c.needsAiReview && (
