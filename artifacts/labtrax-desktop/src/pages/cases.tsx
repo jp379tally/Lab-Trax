@@ -1163,6 +1163,7 @@ export default function CasesPage() {
   const [barcodeLookupError, setBarcodeLookupError] = useState<string | null>(null);
   const [barcodeLookupLoading, setBarcodeLookupLoading] = useState(false);
   const [scanMode, setScanMode] = useState(false);
+  const [scanHistory, setScanHistory] = useState<LabCase[]>([]);
   const scanInputRef = useRef<HTMLInputElement>(null);
 
   function activateScanMode() {
@@ -1178,6 +1179,13 @@ export default function CasesPage() {
     setBarcodeLookupError(null);
   }
 
+  function addToScanHistory(c: LabCase) {
+    setScanHistory((prev) => {
+      const deduped = prev.filter((h) => h.id !== c.id);
+      return [c, ...deduped].slice(0, 5);
+    });
+  }
+
   async function handleBarcodeLookup(code: string) {
     const trimmed = code.trim();
     if (!trimmed) return;
@@ -1188,7 +1196,8 @@ export default function CasesPage() {
     if (local) {
       setSelected(local);
       setBarcodeInput("");
-      setScanMode(false);
+      addToScanHistory(local);
+      setTimeout(() => scanInputRef.current?.focus(), 50);
       return;
     }
 
@@ -1208,8 +1217,9 @@ export default function CasesPage() {
           if (result.case) {
             setSelected(result.case);
             setBarcodeInput("");
-            setScanMode(false);
+            addToScanHistory(result.case);
             qc.invalidateQueries({ queryKey: ["cases"] });
+            setTimeout(() => scanInputRef.current?.focus(), 50);
             return;
           }
         } catch (e: any) {
@@ -1567,7 +1577,7 @@ export default function CasesPage() {
                       if (e.key === "Escape") deactivateScanMode();
                     }}
                     onBlur={() => {
-                      if (!barcodeInput.trim() && !barcodeLookupLoading) deactivateScanMode();
+                      if (!barcodeInput.trim() && !barcodeLookupLoading && scanHistory.length === 0) deactivateScanMode();
                     }}
                     placeholder="Scan or type barcode…"
                     autoComplete="off"
@@ -1609,6 +1619,32 @@ export default function CasesPage() {
             )}
           </div>
         </div>
+        {scanMode && scanHistory.length > 0 && (
+          <div className="px-4 py-2 border-b border-border bg-primary/5 flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-medium text-muted-foreground shrink-0 flex items-center gap-1">
+              <Barcode size={12} />
+              Recently scanned:
+            </span>
+            {scanHistory.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => setSelected(c)}
+                className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-border bg-background hover:bg-muted/60 transition-colors text-xs"
+              >
+                <span className="font-mono font-medium text-foreground">{c.caseNumber}</span>
+                <span className="text-muted-foreground">·</span>
+                <span className="text-foreground">
+                  {c.patientFirstName || c.patientInitials
+                    ? `${c.patientFirstName} ${c.patientLastName}`.trim() || c.patientInitials
+                    : "—"}
+                </span>
+                <span className="text-muted-foreground">·</span>
+                <StatusBadge status={c.status} size="sm" />
+              </button>
+            ))}
+          </div>
+        )}
         {selectedIds.size > 0 && (
           <div className="sticky top-0 z-10 px-4 py-2.5 border-b border-border bg-card/95 backdrop-blur-sm flex items-center gap-3 shadow-sm">
             <span className="text-sm font-medium">
