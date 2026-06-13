@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   Platform,
   UIManager,
 } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -24,6 +25,22 @@ import { LocateCaseSheet } from "@/components/LocateCaseSheet";
 if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
+
+const PREFS_KEY = "labtrax_dashboard_prefs_v1";
+type SectionId = "due-soon" | "recent";
+type SectionOrder = [SectionId, SectionId];
+
+interface DashboardPrefs {
+  dueSoonOpen: boolean;
+  recentOpen: boolean;
+  sectionOrder: SectionOrder;
+}
+
+const DEFAULT_PREFS: DashboardPrefs = {
+  dueSoonOpen: true,
+  recentOpen: true,
+  sectionOrder: ["due-soon", "recent"],
+};
 
 type IconName = React.ComponentProps<typeof Ionicons>["name"];
 
@@ -80,12 +97,72 @@ export default function DashboardScreen() {
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
 
-  function openAiReader() {
-    router.push("/ai-reader/capture?new=1" as never);
+  // ── Prefs (persisted) ────────────────────────────────────────────────────
+  const prefsLoadedRef = useRef(false);
+  const [dueSoonOpen, setDueSoonOpen] = useState(DEFAULT_PREFS.dueSoonOpen);
+  const [recentOpen, setRecentOpen] = useState(DEFAULT_PREFS.recentOpen);
+  const [sectionOrder, setSectionOrder] = useState<SectionOrder>(DEFAULT_PREFS.sectionOrder);
+
+  useEffect(() => {
+    AsyncStorage.getItem(PREFS_KEY)
+      .then((raw) => {
+        if (raw) {
+          try {
+            const saved: Partial<DashboardPrefs> = JSON.parse(raw);
+            if (typeof saved.dueSoonOpen === "boolean") setDueSoonOpen(saved.dueSoonOpen);
+            if (typeof saved.recentOpen === "boolean") setRecentOpen(saved.recentOpen);
+            if (Array.isArray(saved.sectionOrder) && saved.sectionOrder.length === 2) {
+              setSectionOrder(saved.sectionOrder as SectionOrder);
+            }
+          } catch {}
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        prefsLoadedRef.current = true;
+      });
+  }, []);
+
+  function savePrefs(updates: Partial<DashboardPrefs>) {
+    if (!prefsLoadedRef.current) return;
+    const next: DashboardPrefs = {
+      dueSoonOpen,
+      recentOpen,
+      sectionOrder,
+      ...updates,
+    };
+    AsyncStorage.setItem(PREFS_KEY, JSON.stringify(next)).catch(() => {});
   }
 
-  const [dueSoonOpen, setDueSoonOpen] = useState(true);
+  function toggleDueSoon() {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setDueSoonOpen((v) => {
+      savePrefs({ dueSoonOpen: !v });
+      return !v;
+    });
+  }
 
+  function toggleRecent() {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setRecentOpen((v) => {
+      savePrefs({ recentOpen: !v });
+      return !v;
+    });
+  }
+
+  function swapSections() {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setSectionOrder((current) => {
+      const next: SectionOrder =
+        current[0] === "due-soon"
+          ? ["recent", "due-soon"]
+          : ["due-soon", "recent"];
+      savePrefs({ sectionOrder: next });
+      return next;
+    });
+  }
+
+  // ── Cases data ───────────────────────────────────────────────────────────
   const casesQuery = useCases();
   const cases = casesQuery.data ?? [];
 
@@ -103,10 +180,15 @@ export default function DashboardScreen() {
       });
   }, [cases]);
 
-  function toggleDueSoon() {
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    setDueSoonOpen((v) => !v);
-  }
+  const recentCases = useMemo(() => {
+    return [...cases]
+      .sort((a, b) => {
+        const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return tb - ta;
+      })
+      .slice(0, 6);
+  }, [cases]);
 
   // ── Long-press locate ────────────────────────────────────────────────────
   const longPressActiveRef = useRef(false);
@@ -128,6 +210,153 @@ export default function DashboardScreen() {
     setTimeout(() => setLocateSuccessId(null), 2500);
   }
 
+  // ── Case row renderer ────────────────────────────────────────────────────
+  function renderCaseRow(c: CanonicalCase, showDue = false) {
+    const d = daysUntil(c.dueDate);
+    const overdue = d != null && d < 0;
+    const locatedSuccess = locateSuccessId === c.id;
+    return (
+      <Card
+        key={c.id}
+        style={styles.row}
+        onPress={() => {
+          if (longPressActiveRef.current) {
+            longPressActiveRef.current = false;
+            return;
+          }
+          router.push(`/case/${c.id}` as never);
+        }}
+        onLongPress={() => handleLongPress(c)}
+        delayLongPress={400}
+      >
+        <View style={styles.rowMain}>
+          <Text style={styles.rowName} numberOfLines={1}>
+            {patientName(c)}
+          </Text>
+          <Text style={styles.rowMeta} numberOfLines={1}>
+            {c.caseNumber ? `#${c.caseNumber}` : "No case #"}
+            {c.doctorName ? `  ·  ${c.doctorName}` : ""}
+          </Text>
+          {showDue && c.dueDate ? (
+            <Text style={[styles.rowDue, overdue && { color: colors.error }]}>
+              Due {formatDate(c.dueDate)}
+              {d != null
+                ? `  ·  ${overdue ? `${Math.abs(d)}d overdue` : d === 0 ? "today" : `in ${d}d`}`
+                : ""}
+            </Text>
+          ) : (
+            <Text style={styles.rowDue}>
+              {c.createdAt ? `Added ${formatDate(c.createdAt)}` : ""}
+            </Text>
+          )}
+        </View>
+        <View style={styles.rowRight}>
+          <StatusBadge
+            label={titleCase(c.status ?? "—")}
+            variant={caseStatusVariant(c.status)}
+            size="sm"
+          />
+          {locatedSuccess ? (
+            <View style={styles.locatedBadge}>
+              <Ionicons name="checkmark-circle" size={14} color={colors.tint} />
+              <Text style={[styles.locatedBadgeText, { color: colors.tint }]}>Located</Text>
+            </View>
+          ) : null}
+        </View>
+      </Card>
+    );
+  }
+
+  // ── Section renderers ────────────────────────────────────────────────────
+  function renderDueSoon() {
+    return (
+      <View key="due-soon" style={styles.section}>
+        <Pressable style={styles.sectionHeader} onPress={toggleDueSoon} hitSlop={8}>
+          <View style={styles.sectionTitleRow}>
+            <Text style={styles.sectionTitle}>Due soon</Text>
+            {dueSoon.length > 0 && (
+              <View style={[styles.countBadge, { backgroundColor: colors.warningStrong + "1A" }]}>
+                <Text style={[styles.countBadgeText, { color: colors.warningStrong }]}>
+                  {dueSoon.length}
+                </Text>
+              </View>
+            )}
+          </View>
+          <View style={styles.sectionActions}>
+            <Pressable onPress={() => router.push("/(tabs)" as never)} hitSlop={8}>
+              <Text style={styles.sectionLink}>All cases</Text>
+            </Pressable>
+            <Ionicons
+              name={dueSoonOpen ? "chevron-up" : "chevron-down"}
+              size={16}
+              color={colors.textTertiary}
+            />
+          </View>
+        </Pressable>
+
+        {dueSoonOpen && (
+          dueSoon.length === 0 ? (
+            <Card style={styles.emptyCard}>
+              <Ionicons name="checkmark-circle-outline" size={28} color={colors.success} />
+              <Text style={styles.emptyText}>Nothing due in the next 7 days.</Text>
+            </Card>
+          ) : (
+            <View style={styles.list}>
+              {dueSoon.slice(0, 6).map((c) => renderCaseRow(c, true))}
+            </View>
+          )
+        )}
+      </View>
+    );
+  }
+
+  function renderRecentCases() {
+    return (
+      <View key="recent" style={styles.section}>
+        <Pressable style={styles.sectionHeader} onPress={toggleRecent} hitSlop={8}>
+          <View style={styles.sectionTitleRow}>
+            <Text style={styles.sectionTitle}>Recent cases</Text>
+            {recentCases.length > 0 && (
+              <View style={[styles.countBadge, { backgroundColor: colors.tint + "1A" }]}>
+                <Text style={[styles.countBadgeText, { color: colors.tint }]}>
+                  {recentCases.length}
+                </Text>
+              </View>
+            )}
+          </View>
+          <View style={styles.sectionActions}>
+            <Pressable onPress={() => router.push("/(tabs)" as never)} hitSlop={8}>
+              <Text style={styles.sectionLink}>All cases</Text>
+            </Pressable>
+            <Ionicons
+              name={recentOpen ? "chevron-up" : "chevron-down"}
+              size={16}
+              color={colors.textTertiary}
+            />
+          </View>
+        </Pressable>
+
+        {recentOpen && (
+          recentCases.length === 0 ? (
+            <Card style={styles.emptyCard}>
+              <Ionicons name="folder-open-outline" size={28} color={colors.textTertiary} />
+              <Text style={styles.emptyText}>No cases yet.</Text>
+            </Card>
+          ) : (
+            <View style={styles.list}>
+              {recentCases.map((c) => renderCaseRow(c, false))}
+            </View>
+          )
+        )}
+      </View>
+    );
+  }
+
+  const sectionRenderers: Record<SectionId, () => React.ReactNode> = {
+    "due-soon": renderDueSoon,
+    "recent": renderRecentCases,
+  };
+
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
       <View style={styles.header}>
@@ -135,10 +364,19 @@ export default function DashboardScreen() {
           <Text style={styles.title}>Dashboard</Text>
           <Text style={styles.subtitle}>Your lab at a glance</Text>
         </View>
-        <Pressable style={styles.aiReaderBtn} onPress={openAiReader} testID="dashboard-ai-reader-btn">
-          <Ionicons name="sparkles" size={16} color="#fff" />
-          <Text style={styles.aiReaderBtnText}>Scan Rx</Text>
-        </Pressable>
+        <View style={styles.headerActions}>
+          <Pressable style={styles.arrangeBtn} onPress={swapSections} hitSlop={8}>
+            <Ionicons name="swap-vertical-outline" size={18} color={colors.textSecondary} />
+          </Pressable>
+          <Pressable
+            style={styles.aiReaderBtn}
+            onPress={() => router.push("/ai-reader/capture?new=1" as never)}
+            testID="dashboard-ai-reader-btn"
+          >
+            <Ionicons name="sparkles" size={16} color="#fff" />
+            <Text style={styles.aiReaderBtnText}>Scan Rx</Text>
+          </Pressable>
+        </View>
       </View>
 
       {casesQuery.isLoading ? (
@@ -156,91 +394,7 @@ export default function DashboardScreen() {
             />
           }
         >
-          <Pressable style={styles.sectionHeader} onPress={toggleDueSoon} hitSlop={8}>
-            <View style={styles.sectionTitleRow}>
-              <Text style={styles.sectionTitle}>Due soon</Text>
-              {dueSoon.length > 0 && (
-                <View style={[styles.countBadge, { backgroundColor: colors.warningStrong + "1A" }]}>
-                  <Text style={[styles.countBadgeText, { color: colors.warningStrong }]}>
-                    {dueSoon.length}
-                  </Text>
-                </View>
-              )}
-            </View>
-            <View style={styles.sectionActions}>
-              <Pressable onPress={() => router.push("/(tabs)" as never)} hitSlop={8}>
-                <Text style={styles.sectionLink}>All cases</Text>
-              </Pressable>
-              <Ionicons
-                name={dueSoonOpen ? "chevron-up" : "chevron-down"}
-                size={16}
-                color={colors.textTertiary}
-              />
-            </View>
-          </Pressable>
-
-          {dueSoonOpen && (
-            dueSoon.length === 0 ? (
-              <Card style={styles.emptyCard}>
-                <Ionicons name="checkmark-circle-outline" size={28} color={colors.success} />
-                <Text style={styles.emptyText}>Nothing due in the next 7 days.</Text>
-              </Card>
-            ) : (
-              <View style={styles.list}>
-                {dueSoon.slice(0, 6).map((c) => {
-                  const d = daysUntil(c.dueDate);
-                  const overdue = d != null && d < 0;
-                  const locatedSuccess = locateSuccessId === c.id;
-                  return (
-                    <Card
-                      key={c.id}
-                      style={styles.row}
-                      onPress={() => {
-                        if (longPressActiveRef.current) {
-                          longPressActiveRef.current = false;
-                          return;
-                        }
-                        router.push(`/case/${c.id}` as never);
-                      }}
-                      onLongPress={() => handleLongPress(c)}
-                      delayLongPress={400}
-                    >
-                      <View style={styles.rowMain}>
-                        <Text style={styles.rowName} numberOfLines={1}>
-                          {patientName(c)}
-                        </Text>
-                        <Text style={styles.rowMeta} numberOfLines={1}>
-                          {c.caseNumber ? `#${c.caseNumber}` : "No case #"}
-                          {c.doctorName ? `  ·  ${c.doctorName}` : ""}
-                        </Text>
-                        <Text style={[styles.rowDue, overdue && { color: colors.error }]}>
-                          Due {formatDate(c.dueDate)}
-                          {d != null
-                            ? `  ·  ${overdue ? `${Math.abs(d)}d overdue` : d === 0 ? "today" : `in ${d}d`}`
-                            : ""}
-                        </Text>
-                      </View>
-                      <View style={styles.rowRight}>
-                        <StatusBadge
-                          label={titleCase(c.status ?? "—")}
-                          variant={caseStatusVariant(c.status)}
-                          size="sm"
-                        />
-                        {locatedSuccess ? (
-                          <View style={styles.locatedBadge}>
-                            <Ionicons name="checkmark-circle" size={14} color={colors.tint} />
-                            <Text style={[styles.locatedBadgeText, { color: colors.tint }]}>
-                              Located
-                            </Text>
-                          </View>
-                        ) : null}
-                      </View>
-                    </Card>
-                  );
-                })}
-              </View>
-            )
-          )}
+          {sectionOrder.map((id) => sectionRenderers[id]())}
         </ScrollView>
       )}
 
@@ -265,8 +419,21 @@ function makeStyles(c: ThemeColors) {
       paddingBottom: Spacing.xs,
     },
     headerText: { flex: 1 },
+    headerActions: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.sm,
+    },
     title: { ...Typography.h1, color: c.text },
     subtitle: { ...Typography.caption, color: c.textSecondary, marginTop: 2 },
+    arrangeBtn: {
+      width: 36,
+      height: 36,
+      borderRadius: Radius.md,
+      backgroundColor: c.surface,
+      alignItems: "center",
+      justifyContent: "center",
+    },
     aiReaderBtn: {
       flexDirection: "row",
       alignItems: "center",
@@ -278,7 +445,8 @@ function makeStyles(c: ThemeColors) {
     },
     aiReaderBtnText: { ...Typography.captionSemibold, color: "#fff" },
     center: { flex: 1, alignItems: "center", justifyContent: "center", padding: Spacing.xl, minHeight: 280 },
-    content: { padding: Spacing.lg, paddingTop: Spacing.sm, gap: Spacing.md },
+    content: { padding: Spacing.lg, paddingTop: Spacing.sm, gap: Spacing.lg },
+    section: { gap: Spacing.md },
     sectionHeader: {
       flexDirection: "row",
       alignItems: "center",
