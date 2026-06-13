@@ -458,6 +458,9 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
   const [sending, setSending] = useState(false);
   const [promptsDismissed, setPromptsDismissed] = useState(false);
 
+  const messagesRef = useRef<ChatMsg[]>([buildWelcome(initialCases)]);
+  const pinnedCasesRef = useRef<AiCaseContext[]>(initialCases);
+
   const [showCasePicker, setShowCasePicker] = useState(false);
   const [caseSearchQuery, setCaseSearchQuery] = useState("");
   const [caseSearchResults, setCaseSearchResults] = useState<CaseSearchResult[]>([]);
@@ -535,6 +538,14 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
+    pinnedCasesRef.current = pinnedCases;
+  }, [pinnedCases]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -647,6 +658,95 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
     }
   }
 
+  /** Serialise message list to history array for the AI API.
+   *  Completed proposed-actions become assistant text entries so the AI knows
+   *  what already happened and can propose the next action in a sequence. */
+  function buildHistory(msgs: ChatMsg[]): Array<{ role: "user" | "assistant"; content: string }> {
+    return msgs
+      .filter((m) => m.id !== "welcome")
+      .flatMap((m): Array<{ role: "user" | "assistant"; content: string }> => {
+        if (m.proposedAction) {
+          const pa = m.proposedAction;
+          if (pa.state === "done" && !pa.error) {
+            return [{ role: "assistant", content: pa.resultText ?? `Action completed: ${pa.summary}` }];
+          }
+          if (pa.state === "rejected") {
+            return [{ role: "assistant", content: `Action cancelled by user: ${pa.summary}` }];
+          }
+          return [];
+        }
+        if (!m.content) return [];
+        return [{ role: m.role, content: m.content }];
+      });
+  }
+
+  /** Call the AI endpoint with a given message list and append the response.
+   *  Used both by sendMessage and by auto-continuation after a confirmed action. */
+  async function dispatchAiContinuation(
+    currentMessages: ChatMsg[],
+    sessionId: string,
+    snapshotPinnedCases: AiCaseContext[],
+  ) {
+    setSending(true);
+    try {
+      const body: Record<string, unknown> = { messages: buildHistory(currentMessages) };
+      if (snapshotPinnedCases.length === 1) {
+        body.caseId = snapshotPinnedCases[0]!.caseId;
+      } else if (snapshotPinnedCases.length > 1) {
+        body.caseIds = snapshotPinnedCases.map((c) => c.caseId);
+      }
+
+      const data = await apiFetch<{
+        type: "reply" | "proposed_action";
+        content?: string;
+        actionId?: string;
+        toolName?: string;
+        summary?: string;
+        error?: string;
+        toolOutputs?: Array<{ name: string; result: unknown }>;
+      }>("/ai-agent", { method: "POST", body: JSON.stringify(body) });
+
+      let assistantMsg: ChatMsg;
+      if (data.type === "proposed_action" && data.actionId && data.summary) {
+        assistantMsg = {
+          id: generateId(),
+          role: "assistant",
+          proposedAction: {
+            actionId: data.actionId,
+            toolName: data.toolName ?? "",
+            summary: data.summary,
+            state: "pending",
+            expiresAt: Date.now() + PENDING_TTL_MS,
+          },
+        };
+      } else {
+        assistantMsg = {
+          id: generateId(),
+          role: "assistant",
+          content: data.content || "I couldn't generate a response. Please try again.",
+          ...(data.toolOutputs && data.toolOutputs.length > 0 ? { toolOutputs: data.toolOutputs } : {}),
+        };
+      }
+
+      const finalMessages = [...currentMessages, assistantMsg];
+      setMessages(finalMessages);
+      persistSession(finalMessages, sessionId, snapshotPinnedCases);
+    } catch (err: any) {
+      const msg =
+        err?.status === 429
+          ? "Please slow down — try again in a moment."
+          : err?.status === 503
+          ? "AI assistant is not configured on this server. Please contact your administrator."
+          : "Sorry, I'm having trouble connecting right now. Please try again.";
+      const errMsg: ChatMsg = { id: generateId(), role: "assistant", content: msg };
+      const finalMessages = [...currentMessages, errMsg];
+      setMessages(finalMessages);
+      persistSession(finalMessages, sessionId, snapshotPinnedCases);
+    } finally {
+      setSending(false);
+    }
+  }
+
   async function confirmAction(actionId: string) {
     setMessages((prev) =>
       prev.map((m) =>
@@ -664,23 +764,34 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
         error?: string;
       }>("/ai-agent/confirm", { method: "POST", body: JSON.stringify({ actionId }) });
 
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.proposedAction?.actionId === actionId
-            ? {
-                ...m,
-                proposedAction: {
-                  ...m.proposedAction!,
-                  state: "done" as const,
-                  resultText: result.success
-                    ? `✓ ${result.summary ?? "Action completed successfully."}`
-                    : undefined,
-                  error: result.success ? undefined : result.error ?? "Action failed.",
-                },
-              }
-            : m,
-        ),
+      const resultText = result.success
+        ? `✓ ${result.summary ?? "Action completed successfully."}`
+        : undefined;
+      const errorText = result.success ? undefined : result.error ?? "Action failed.";
+
+      const updatedMessages = messagesRef.current.map((m) =>
+        m.proposedAction?.actionId === actionId
+          ? {
+              ...m,
+              proposedAction: {
+                ...m.proposedAction!,
+                state: "done" as const,
+                resultText,
+                error: errorText,
+              },
+            }
+          : m,
       );
+      setMessages(updatedMessages);
+
+      if (result.success) {
+        const sessionId = currentSessionIdRef.current ?? generateId();
+        if (!currentSessionIdRef.current) {
+          setCurrentSessionId(sessionId);
+          currentSessionIdRef.current = sessionId;
+        }
+        await dispatchAiContinuation(updatedMessages, sessionId, pinnedCasesRef.current);
+      }
     } catch (err: any) {
       const errMsg = err?.data?.error ?? err?.message ?? "Action failed. Please try again.";
       setMessages((prev) =>
@@ -741,89 +852,9 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
     const nextMessages = [...messages, userMsg];
     setMessages(nextMessages);
     setInput("");
-    setSending(true);
 
     const snapshotPinnedCases = pinnedCases;
-
-    try {
-      const apiMessages = nextMessages
-        .filter((m) => m.id !== "welcome" && m.role === "user" && m.content)
-        .concat(
-          nextMessages.filter(
-            (m) => m.id !== "welcome" && m.role === "assistant" && m.content,
-          ),
-        )
-        .sort(() => 0) // preserve original order by rebuilding correctly
-        .reduce<Array<{ role: "user" | "assistant"; content: string }>>(
-          (acc, m) => {
-            if (m.content) acc.push({ role: m.role, content: m.content });
-            return acc;
-          },
-          [],
-        );
-
-      // Rebuild in chronological order
-      const orderedApiMessages = nextMessages
-        .filter((m) => m.id !== "welcome" && m.content)
-        .map((m) => ({ role: m.role, content: m.content! }));
-
-      const body: Record<string, unknown> = { messages: orderedApiMessages };
-      if (snapshotPinnedCases.length === 1) {
-        body.caseId = snapshotPinnedCases[0]!.caseId;
-      } else if (snapshotPinnedCases.length > 1) {
-        body.caseIds = snapshotPinnedCases.map((c) => c.caseId);
-      }
-
-      const data = await apiFetch<{
-        type: "reply" | "proposed_action";
-        content?: string;
-        actionId?: string;
-        toolName?: string;
-        summary?: string;
-        error?: string;
-        toolOutputs?: Array<{ name: string; result: unknown }>;
-      }>("/ai-agent", { method: "POST", body: JSON.stringify(body) });
-
-      let assistantMsg: ChatMsg;
-
-      if (data.type === "proposed_action" && data.actionId && data.summary) {
-        assistantMsg = {
-          id: generateId(),
-          role: "assistant",
-          proposedAction: {
-            actionId: data.actionId,
-            toolName: data.toolName ?? "",
-            summary: data.summary,
-            state: "pending",
-            expiresAt: Date.now() + PENDING_TTL_MS,
-          },
-        };
-      } else {
-        assistantMsg = {
-          id: generateId(),
-          role: "assistant",
-          content: data.content || "I couldn't generate a response. Please try again.",
-          ...(data.toolOutputs && data.toolOutputs.length > 0 ? { toolOutputs: data.toolOutputs } : {}),
-        };
-      }
-
-      const finalMessages = [...nextMessages, assistantMsg];
-      setMessages(finalMessages);
-      persistSession(finalMessages, sessionId, snapshotPinnedCases);
-    } catch (err: any) {
-      const msg =
-        err?.status === 429
-          ? "Please slow down — try again in a moment."
-          : err?.status === 503
-          ? "AI assistant is not configured on this server. Please contact your administrator."
-          : "Sorry, I'm having trouble connecting right now. Please try again.";
-      const errMsg: ChatMsg = { id: generateId(), role: "assistant", content: msg };
-      const finalMessages = [...nextMessages, errMsg];
-      setMessages(finalMessages);
-      persistSession(finalMessages, sessionId, snapshotPinnedCases);
-    } finally {
-      setSending(false);
-    }
+    await dispatchAiContinuation(nextMessages, sessionId, snapshotPinnedCases);
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {

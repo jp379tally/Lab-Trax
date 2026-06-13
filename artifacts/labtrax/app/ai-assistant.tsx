@@ -441,8 +441,13 @@ export default function AiAssistantScreen() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const listRef = useRef<FlatList<ChatMessage>>(null);
+  const messagesRef = useRef<ChatMessage[]>([WELCOME_MSG]);
 
   const showPrompts = messages.length === 1;
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   const scrollToBottom = useCallback(() => {
     setTimeout(() => {
@@ -450,105 +455,40 @@ export default function AiAssistantScreen() {
     }, 80);
   }, []);
 
-  const confirmAction = useCallback(async (actionId: string) => {
-    setMessages((prev) =>
-      prev.map((m) =>
-        m.proposedAction?.actionId === actionId
-          ? { ...m, proposedAction: { ...m.proposedAction!, state: "confirmed" as const } }
-          : m,
-      ),
-    );
+  /** Serialise message list to history array for the AI API.
+   *  Completed proposed-actions become assistant text entries so the AI knows
+   *  what already happened and can propose the next action in a sequence. */
+  const buildHistory = useCallback(
+    (msgs: ChatMessage[]): Array<{ role: "user" | "assistant"; content: string }> =>
+      msgs
+        .filter((m) => m.id !== "welcome")
+        .flatMap((m): Array<{ role: "user" | "assistant"; content: string }> => {
+          if (m.proposedAction) {
+            const pa = m.proposedAction;
+            if (pa.state === "done" && !pa.error) {
+              return [{ role: "assistant", content: pa.resultText ?? `Action completed: ${pa.summary}` }];
+            }
+            if (pa.state === "rejected") {
+              return [{ role: "assistant", content: `Action cancelled by user: ${pa.summary}` }];
+            }
+            return [];
+          }
+          if (!m.content) return [];
+          return [{ role: m.role, content: m.content }];
+        }),
+    [],
+  );
 
-    try {
-      const res = await resilientFetch("/api/ai-agent/confirm", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ actionId }),
-      });
-
-      const data = (await res.json()) as {
-        type: string;
-        success: boolean;
-        summary: string;
-        error?: string;
-      };
-
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.proposedAction?.actionId === actionId
-            ? {
-                ...m,
-                proposedAction: {
-                  ...m.proposedAction!,
-                  state: "done" as const,
-                  resultText: data.success
-                    ? `✓ ${data.summary ?? "Action completed successfully."}`
-                    : undefined,
-                  error: data.success ? undefined : data.error ?? "Action failed.",
-                },
-              }
-            : m,
-        ),
-      );
-    } catch {
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.proposedAction?.actionId === actionId
-            ? {
-                ...m,
-                proposedAction: {
-                  ...m.proposedAction!,
-                  state: "done" as const,
-                  error: "Action failed. Please try again.",
-                },
-              }
-            : m,
-        ),
-      );
-    }
-  }, []);
-
-  const rejectAction = useCallback(async (actionId: string) => {
-    setMessages((prev) =>
-      prev.map((m) =>
-        m.proposedAction?.actionId === actionId
-          ? { ...m, proposedAction: { ...m.proposedAction!, state: "rejected" as const } }
-          : m,
-      ),
-    );
-    try {
-      await resilientFetch("/api/ai-agent/reject", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ actionId }),
-      });
-    } catch {
-      // best-effort
-    }
-  }, []);
-
-  const sendMessage = useCallback(
-    async (text: string) => {
-      const trimmed = text.trim();
-      if (!trimmed || sending) return;
-
-      const userMsg: ChatMessage = { id: genId(), role: "user", content: trimmed };
-      const nextMessages = [...messages, userMsg];
-      setMessages(nextMessages);
-      setInput("");
+  /** Call the AI endpoint with a given message list and append the response. */
+  const dispatchAiRequest = useCallback(
+    async (currentMessages: ChatMessage[]) => {
       setSending(true);
       scrollToBottom();
-
       try {
-        // Build conversation history (skip welcome)
-        const history = nextMessages
-          .filter((m) => m.id !== "welcome")
-          .map((m) => ({ role: m.role, content: m.content }));
-
         const res = await resilientFetch("/api/ai-agent", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ messages: history }),
+          body: JSON.stringify({ messages: buildHistory(currentMessages) }),
         });
 
         if (!res.ok) {
@@ -611,7 +551,105 @@ export default function AiAssistantScreen() {
         setSending(false);
       }
     },
-    [messages, sending, scrollToBottom],
+    [buildHistory, scrollToBottom],
+  );
+
+  const confirmAction = useCallback(async (actionId: string) => {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.proposedAction?.actionId === actionId
+          ? { ...m, proposedAction: { ...m.proposedAction!, state: "confirmed" as const } }
+          : m,
+      ),
+    );
+
+    try {
+      const res = await resilientFetch("/api/ai-agent/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ actionId }),
+      });
+
+      const data = (await res.json()) as {
+        type: string;
+        success: boolean;
+        summary: string;
+        error?: string;
+      };
+
+      const resultText = data.success
+        ? `✓ ${data.summary ?? "Action completed successfully."}`
+        : undefined;
+      const errorText = data.success ? undefined : data.error ?? "Action failed.";
+
+      const updatedMessages = messagesRef.current.map((m) =>
+        m.proposedAction?.actionId === actionId
+          ? {
+              ...m,
+              proposedAction: {
+                ...m.proposedAction!,
+                state: "done" as const,
+                resultText,
+                error: errorText,
+              },
+            }
+          : m,
+      );
+      setMessages(updatedMessages);
+
+      if (data.success) {
+        await dispatchAiRequest(updatedMessages);
+      }
+    } catch {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.proposedAction?.actionId === actionId
+            ? {
+                ...m,
+                proposedAction: {
+                  ...m.proposedAction!,
+                  state: "done" as const,
+                  error: "Action failed. Please try again.",
+                },
+              }
+            : m,
+        ),
+      );
+    }
+  }, [dispatchAiRequest]);
+
+  const rejectAction = useCallback(async (actionId: string) => {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.proposedAction?.actionId === actionId
+          ? { ...m, proposedAction: { ...m.proposedAction!, state: "rejected" as const } }
+          : m,
+      ),
+    );
+    try {
+      await resilientFetch("/api/ai-agent/reject", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ actionId }),
+      });
+    } catch {
+      // best-effort
+    }
+  }, []);
+
+  const sendMessage = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed || sending) return;
+
+      const userMsg: ChatMessage = { id: genId(), role: "user", content: trimmed };
+      const nextMessages = [...messages, userMsg];
+      setMessages(nextMessages);
+      setInput("");
+      scrollToBottom();
+      await dispatchAiRequest(nextMessages);
+    },
+    [messages, sending, dispatchAiRequest, scrollToBottom],
   );
 
   const handleSend = useCallback(() => {
