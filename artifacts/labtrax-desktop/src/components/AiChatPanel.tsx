@@ -164,15 +164,6 @@ interface StoredSession {
 
 // ─── Local storage helpers ──────────────────────────────────────────────────
 
-/**
- * Pending proposed actions are never written to localStorage (see persistSession),
- * so restored sessions should never contain them. This function is kept as a
- * no-op passthrough for safety and to preserve call sites.
- */
-function sanitizeRestoredMessages(messages: ChatMsg[]): ChatMsg[] {
-  return messages;
-}
-
 const STORAGE_KEY = "labtrax_chat_sessions_v1";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_SESSIONS_PER_KEY = 10;
@@ -533,9 +524,8 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
       currentSessionIdRef.current = latest.id;
       const cases = latest.pinnedCases.length > 0 ? latest.pinnedCases : initialCases;
       setPinnedCases(cases);
-      const sanitized = sanitizeRestoredMessages(latest.messages);
-      setMessages([buildWelcome(cases), ...sanitized]);
-      setPromptsDismissed(sanitized.some((m) => m.role === "user"));
+      setMessages([buildWelcome(cases), ...latest.messages]);
+      setPromptsDismissed(latest.messages.some((m) => m.role === "user"));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -639,9 +629,8 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
     currentSessionIdRef.current = session.id;
     const cases = session.pinnedCases.length > 0 ? session.pinnedCases : initialCases;
     setPinnedCases(cases);
-    const sanitized = sanitizeRestoredMessages(session.messages);
-    setMessages([buildWelcome(cases), ...sanitized]);
-    setPromptsDismissed(sanitized.some((m) => m.role === "user"));
+    setMessages([buildWelcome(cases), ...session.messages]);
+    setPromptsDismissed(session.messages.some((m) => m.role === "user"));
     setShowSessionsList(false);
     setTimeout(() => inputRef.current?.focus(), 50);
   }
