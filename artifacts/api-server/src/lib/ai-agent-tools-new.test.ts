@@ -14,7 +14,7 @@
  *  - remake_rate: calculation, zero denominator, custom date range, role guard
  *  - Registry: all 6 are registered, all are readonly, summarize returns strings
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { ToolContext } from "./ai-agent-tools";
 
 // ── Hoisted mock handles ──────────────────────────────────────────────────────

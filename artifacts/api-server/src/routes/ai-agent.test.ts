@@ -317,6 +317,7 @@ describe("tool permission boundaries (unit)", () => {
     const readonly = AGENT_TOOLS.filter((t) => t.kind === "readonly");
     const names = readonly.map((t) => t.name).sort();
     expect(names).toEqual([
+      "count_cases_by_status",
       "draft_message",
       "financial_summary",
       "get_case_history",

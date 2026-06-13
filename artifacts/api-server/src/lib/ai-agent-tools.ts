@@ -1626,11 +1626,88 @@ const remakeRateTool: AgentTool = {
   },
 };
 
+// ─── Tool: count_cases_by_status ─────────────────────────────────────────────
+
+const countCasesByStatusTool: AgentTool = {
+  name: "count_cases_by_status",
+  kind: "readonly",
+  description:
+    "Count cases grouped by their current status. Returns a breakdown of how many cases are in each status (e.g. on_hold, active, shipped, completed). Optionally filter to a single status. Use this to answer questions like 'how many cases are on hold', 'how many active cases do we have', or 'give me a case status summary'.",
+  parameters: {
+    type: "object",
+    properties: {
+      status: {
+        type: "string",
+        description:
+          "Optional: filter to a specific status. Valid values: received, in_design, in_milling, in_porcelain, qc, on_hold, remake, shipped, cancelled. Omit to get a full breakdown of all statuses.",
+      },
+    },
+    required: [],
+  },
+  summarize: async (args) =>
+    args.status
+      ? `Count cases with status "${args.status}"`
+      : "Count cases by status",
+  execute: async (args, ctx) => {
+    const labId = await requireLabId(ctx);
+    await requireAnyRole(ctx.userId, labId, BILLING_ROLES);
+
+    const statusFilter = args.status ? String(args.status).trim().toLowerCase() : null;
+
+    const where = statusFilter
+      ? and(eq(cases.labOrganizationId, labId), isNull(cases.deletedAt), sql`lower(${cases.status}) = ${statusFilter}`)
+      : and(eq(cases.labOrganizationId, labId), isNull(cases.deletedAt));
+
+    const rows = await db
+      .select({
+        status: cases.status,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(cases)
+      .where(where)
+      .groupBy(cases.status)
+      .orderBy(cases.status);
+
+    const STATUS_LABELS: Record<string, string> = {
+      received: "Received",
+      in_design: "In Design",
+      in_milling: "In Milling",
+      in_porcelain: "In Porcelain",
+      qc: "QC",
+      on_hold: "On Hold",
+      remake: "Remake",
+      shipped: "Shipped",
+      cancelled: "Cancelled",
+    };
+
+    const breakdown = rows.map((r) => ({
+      status: r.status,
+      label: STATUS_LABELS[r.status] ?? r.status,
+      count: Number(r.count),
+    }));
+
+    const total = breakdown.reduce((s, r) => s + r.count, 0);
+
+    if (statusFilter) {
+      const match = breakdown[0];
+      return {
+        status: statusFilter,
+        label: STATUS_LABELS[statusFilter] ?? statusFilter,
+        count: match?.count ?? 0,
+        totalCases: total,
+      };
+    }
+
+    return { breakdown, totalCases: total };
+  },
+};
+
 // ─── Registry ────────────────────────────────────────────────────────────────
 
 export const AGENT_TOOLS: AgentTool[] = [
   lookupInvoiceTool,
   lookupCaseTool,
+  countCasesByStatusTool,
   getCaseHistoryTool,
   getCasesDueSoonTool,
   draftMessageTool,
