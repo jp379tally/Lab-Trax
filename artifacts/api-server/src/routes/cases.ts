@@ -58,7 +58,10 @@ import {
 import { ADMIN_ROLES, BILLING_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
-import { getProviderOrgIdsForUserAndLinks } from "../lib/cross-lab-doctor";
+import {
+  getProviderOrgIdsForUserAndLinks,
+  getLinkedProviderOrgsForProviderOrg,
+} from "../lib/cross-lab-doctor";
 
 // ---------------------------------------------------------------------------
 // Bigram similarity helpers — used for AI-extracted doctor name suggestions.
@@ -1406,6 +1409,7 @@ const createCaseSchema = z.object({
 export interface PatientSimilarityHit {
   id: string;
   source: "canonical" | "legacy";
+  labOrganizationId: string;
   caseNumber: string;
   patientFirstName: string;
   patientLastName: string;
@@ -1532,6 +1536,7 @@ router.get(
       hits.push({
         id: row.id,
         source: "canonical",
+        labOrganizationId: params.labOrganizationId,
         caseNumber: row.caseNumber,
         patientFirstName: row.patientFirstName,
         patientLastName: row.patientLastName,
@@ -1602,6 +1607,7 @@ router.get(
         hits.push({
           id: lr.id,
           source: "legacy",
+          labOrganizationId: params.labOrganizationId,
           caseNumber: String(parsed.caseNumber ?? ""),
           patientFirstName: split.first,
           patientLastName: split.last,
@@ -1621,6 +1627,195 @@ router.get(
       }
     }
 
+    // ── Cross-lab expansion ─────────────────────────────────────────────────
+    // When the caller identifies a provider org (or a doctorName that resolves
+    // to one), look up linked doctor accounts at other labs and include their
+    // patient history in the result.
+    //
+    // Authorization model:
+    //  1. `requireMembership` already verified the caller can read
+    //     `labOrganizationId`.
+    //  2. Before expanding, we verify each provider org belongs to the caller's
+    //     lab (`parentLabOrganizationId` match). This prevents a caller from
+    //     supplying a foreign `providerOrganizationId` to pivot into unrelated
+    //     tenants.
+    //  3. Cross-lab results are scoped to the specific linked doctor's provider
+    //     org, further narrowed by patient-name similarity — no full lab read.
+
+    // Collect candidate provider org IDs to expand from.
+    //   Desktop path: the explicit providerOrganizationId.
+    //   Mobile / doctorName-only path: resolve from canonical cases in this lab.
+    const providerOrgIdsToExpand: string[] = [];
+    if (params.providerOrganizationId) {
+      providerOrgIdsToExpand.push(params.providerOrganizationId);
+    } else if (params.doctorName) {
+      const doctorResolved = await db
+        .selectDistinct({ providerOrgId: cases.providerOrganizationId })
+        .from(cases)
+        .where(
+          and(
+            eq(cases.labOrganizationId, params.labOrganizationId),
+            sql`lower(${cases.doctorName}) = ${params.doctorName.trim().toLowerCase()}`,
+            notDeleted(cases),
+          ),
+        );
+      for (const r of doctorResolved as any[]) {
+        if (r.providerOrgId) providerOrgIdsToExpand.push(r.providerOrgId as string);
+      }
+    }
+
+    for (const provOrgId of providerOrgIdsToExpand) {
+      // Authorization gate: the provider org must be owned by the caller's lab.
+      const provOrgRow = await db.query.organizations.findFirst({
+        where: eq(organizations.id, provOrgId),
+      });
+      if (
+        !provOrgRow ||
+        (provOrgRow as any).parentLabOrganizationId !== params.labOrganizationId
+      ) {
+        continue;
+      }
+
+      const linkedProviderOrgs = await getLinkedProviderOrgsForProviderOrg(
+        provOrgId,
+        params.labOrganizationId,
+      );
+
+      for (const { providerOrgId: linkedProvOrgId, labOrgId: linkedLabId } of linkedProviderOrgs) {
+        // Authorization: the caller must have an active membership in the linked lab.
+        // This mirrors the primary-lab requireMembership check — only labs the caller
+        // can directly read are searched. Without this, any lab admin could pivot to
+        // cross-tenant patient data via doctor links without a read grant on those labs.
+        const linkedLabMembership = await db.query.organizationMemberships.findFirst({
+          where: and(
+            eq(organizationMemberships.userId, userId),
+            eq(organizationMemberships.labId, linkedLabId),
+            eq(organizationMemberships.status, "active"),
+          ),
+        });
+        if (!linkedLabMembership) continue;
+
+        // Query canonical cases from the linked lab, scoped to the linked
+        // provider org and the same last-name prefix.
+        const crossLabCanonical = await db.query.cases.findMany({
+          where: and(
+            eq(cases.labOrganizationId, linkedLabId),
+            eq(cases.providerOrganizationId, linkedProvOrgId),
+            notDeleted(cases),
+            sql`lower(${cases.patientLastName}) like ${`${lastNamePrefix.toLowerCase()}%`}`,
+          ),
+          orderBy: [desc(cases.createdAt)],
+        });
+
+        const crossIds = crossLabCanonical.map((r: any) => r.id);
+        const crossRestorations = crossIds.length
+          ? await db.query.caseRestorations.findMany({
+              where: inArray(caseRestorations.caseId, crossIds),
+            })
+          : [];
+        const crossInvoiceRows = crossIds.length
+          ? await db
+              .select({ caseId: invoices.caseId })
+              .from(invoices)
+              .where(inArray(invoices.caseId, crossIds))
+          : [];
+        const crossInvoicedSet = new Set(
+          crossInvoiceRows.map((r: any) => r.caseId).filter(Boolean) as string[],
+        );
+        const crossRestByCase = new Map<string, typeof crossRestorations>();
+        for (const r of crossRestorations) {
+          const list = crossRestByCase.get(r.caseId) ?? [];
+          list.push(r);
+          crossRestByCase.set(r.caseId, list);
+        }
+
+        for (const row of crossLabCanonical as any[]) {
+          const kind = classifyMatch(
+            params.patientFirstName,
+            params.patientLastName,
+            { firstName: row.patientFirstName, lastName: row.patientLastName },
+          );
+          if (!kind) continue;
+          const items = crossRestByCase.get(row.id) ?? [];
+          hits.push({
+            id: row.id,
+            source: "canonical",
+            labOrganizationId: linkedLabId,
+            caseNumber: row.caseNumber,
+            patientFirstName: row.patientFirstName,
+            patientLastName: row.patientLastName,
+            doctorName: row.doctorName,
+            status: row.status,
+            matchKind: kind,
+            createdAt: row.createdAt ? new Date(row.createdAt).toISOString() : null,
+            dueDate: row.dueDate ? new Date(row.dueDate).toISOString() : null,
+            toothNumbers: items
+              .map((i: any) => i.toothNumber)
+              .filter(Boolean)
+              .join(", "),
+            restorationTypes: Array.from(
+              new Set(items.map((i: any) => i.restorationType).filter(Boolean)),
+            ).join(", "),
+            hasInvoice: crossInvoicedSet.has(row.id),
+          });
+        }
+
+        // Also include legacy cases from the linked lab, scoped to the same
+        // doctor-name set derived from the linked provider org.
+        const crossLabLegacy = await db
+          .select()
+          .from(labCases)
+          .where(
+            and(
+              eq(labCases.organizationId, linkedLabId),
+              isNull(labCases.deletedAt),
+            ),
+          );
+
+        const crossLinkedDoctorSet = await getDoctorNameSetForProviderOrg(
+          linkedLabId,
+          linkedProvOrgId,
+        );
+
+        for (const lr of crossLabLegacy as any[]) {
+          try {
+            const parsed =
+              typeof lr.caseData === "string" ? JSON.parse(lr.caseData) : lr.caseData;
+            if (!parsed || typeof parsed !== "object") continue;
+            const split = splitDisplayName(parsed.patientName);
+            const kind = classifyMatch(
+              params.patientFirstName,
+              params.patientLastName,
+              { firstName: split.first, lastName: split.last },
+            );
+            if (!kind) continue;
+            const candidateDoctor = String(parsed.doctorName ?? "").trim().toLowerCase();
+            if (!candidateDoctor || !crossLinkedDoctorSet.has(candidateDoctor)) continue;
+            hits.push({
+              id: lr.id,
+              source: "legacy",
+              labOrganizationId: linkedLabId,
+              caseNumber: String(parsed.caseNumber ?? ""),
+              patientFirstName: split.first,
+              patientLastName: split.last,
+              doctorName: String(parsed.doctorName ?? ""),
+              status: String(parsed.status ?? ""),
+              matchKind: kind,
+              createdAt: parsed.createdAt
+                ? new Date(parsed.createdAt).toISOString()
+                : null,
+              dueDate: parsed.dueDate ? String(parsed.dueDate) : null,
+              toothNumbers: String(parsed.toothIndices ?? ""),
+              restorationTypes: String(parsed.caseType ?? parsed.material ?? ""),
+              hasInvoice: !!parsed.invoiceId,
+            });
+          } catch {
+            // ignore malformed legacy payloads
+          }
+        }
+      }
+    }
+
     // Sort: exact > nickname > fuzzy, then most-recent first.
     const rank: Record<SimilarityMatchKind, number> = {
       exact: 0,
@@ -1636,22 +1831,23 @@ router.get(
       return tb - ta;
     });
 
-    // Deduplicate: when a canonical and legacy hit share the same normalized
-    // patient name + doctor, keep only the canonical row. A migrated legacy
-    // case can appear in both sources; the canonical version is authoritative.
+    // Deduplicate: when a canonical and legacy hit share the same lab + normalized
+    // patient name + doctor, keep only the canonical row. Include labOrganizationId
+    // in the key so cross-lab canonical hits are never incorrectly suppressed
+    // against legacy hits from a different lab.
     const canonicalKeys = new Set(
       hits
         .filter((h) => h.source === "canonical")
         .map(
           (h) =>
-            `${h.patientFirstName.trim().toLowerCase()}|${h.patientLastName.trim().toLowerCase()}|${h.doctorName.trim().toLowerCase()}`,
+            `${h.labOrganizationId}|${h.patientFirstName.trim().toLowerCase()}|${h.patientLastName.trim().toLowerCase()}|${h.doctorName.trim().toLowerCase()}`,
         ),
     );
     const dedupedHits = hits.filter(
       (h) =>
         h.source === "canonical" ||
         !canonicalKeys.has(
-          `${h.patientFirstName.trim().toLowerCase()}|${h.patientLastName.trim().toLowerCase()}|${h.doctorName.trim().toLowerCase()}`,
+          `${h.labOrganizationId}|${h.patientFirstName.trim().toLowerCase()}|${h.patientLastName.trim().toLowerCase()}|${h.doctorName.trim().toLowerCase()}`,
         ),
     );
 

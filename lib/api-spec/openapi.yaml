@@ -3777,12 +3777,15 @@ components:
         error: { type: string, nullable: true }
     PatientSimilarityHit:
       type: object
-      required: [id, source, matchKind]
+      required: [id, source, matchKind, labOrganizationId]
       properties:
         id: { type: string }
         source:
           type: string
           enum: [canonical, legacy]
+        labOrganizationId:
+          type: string
+          description: The lab that owns this case. Matches the requested labOrganizationId for primary-lab hits; differs for cross-lab linked-doctor hits.
         caseNumber: { type: string, nullable: true }
         patientFirstName: { type: string, nullable: true }
         patientLastName: { type: string, nullable: true }

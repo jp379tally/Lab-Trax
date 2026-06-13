@@ -11,6 +11,8 @@ import type { PatientSimilarityHitSource } from "./patientSimilarityHitSource";
 export interface PatientSimilarityHit {
   id: string;
   source: PatientSimilarityHitSource;
+  /** The lab that owns this case. Matches the requested labOrganizationId for primary-lab hits; differs for cross-lab linked-doctor hits. */
+  labOrganizationId: string;
   caseNumber?: string | null;
   patientFirstName?: string | null;
   patientLastName?: string | null;

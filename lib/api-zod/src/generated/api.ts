@@ -1137,6 +1137,11 @@ export const GetPatientSimilarityResponse = zod.object({
         zod.object({
           id: zod.string(),
           source: zod.enum(["canonical", "legacy"]),
+          labOrganizationId: zod
+            .string()
+            .describe(
+              "The lab that owns this case. Matches the requested labOrganizationId for primary-lab hits; differs for cross-lab linked-doctor hits.",
+            ),
           caseNumber: zod.string().nullish(),
           patientFirstName: zod.string().nullish(),
           patientLastName: zod.string().nullish(),

@@ -24,7 +24,7 @@
  *  - GET /api/cases/patient-similarity — results are ranked exact > nickname > fuzzy
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import request from "supertest";
 import * as path from "node:path";
@@ -598,5 +598,512 @@ maybe("GET /api/cases/patient-similarity (db integration)", () => {
     expect(r.status).toBe(200);
     expect(Array.isArray(r.body.data.matches)).toBe(true);
     expect(r.body.data.matches).toHaveLength(0);
+  });
+
+  // ── Cross-lab linked-doctor expansion ─────────────────────────────────────
+
+  it("includes canonical cases from a linked doctor at a different lab", async () => {
+    if (!SHOULD_RUN) return;
+    const { db, organizations, users, organizationMemberships, cases, doctorAccountLinks } =
+      dbMod as any;
+
+    // Stand up a second lab and a provider org inside it, plus a doctor user.
+    const linkedLabId = rid("xlab");
+    const linkedProvOrgId = rid("xprov");
+    const doctorInLabAId = rid("udocA");   // member of providerAOrgId
+    const doctorInLabBId = rid("udocB");   // member of linkedProvOrgId
+
+    await db.insert(users).values([
+      { id: doctorInLabAId, username: `docA_${doctorInLabAId}`, password: "x" },
+      { id: doctorInLabBId, username: `docB_${doctorInLabBId}`, password: "x" },
+    ]);
+
+    await db.insert(organizations).values([
+      { id: linkedLabId, type: "lab", name: "Linked Lab" },
+      {
+        id: linkedProvOrgId,
+        type: "provider",
+        name: "Dr Cross Practice",
+        parentLabOrganizationId: linkedLabId,
+      },
+    ]);
+
+    // Give each doctor user a membership in their respective provider orgs.
+    await db.insert(organizationMemberships).values([
+      {
+        id: rid("m"),
+        labId: providerAOrgId,
+        userId: doctorInLabAId,
+        role: "admin",
+        status: "active",
+      },
+      {
+        id: rid("m"),
+        labId: linkedProvOrgId,
+        userId: doctorInLabBId,
+        role: "admin",
+        status: "active",
+      },
+    ]);
+
+    // Link the two doctor identities — canonical pair ordering (low < high).
+    const [lowId, highId] =
+      doctorInLabAId < doctorInLabBId
+        ? [doctorInLabAId, doctorInLabBId]
+        : [doctorInLabBId, doctorInLabAId];
+    const linkId = rid("lnk");
+    await db.insert(doctorAccountLinks).values({
+      id: linkId,
+      userIdLow: lowId,
+      userIdHigh: highId,
+      linkedVia: "manual",
+    });
+
+    // Insert a patient case in the linked lab under the linked provider org.
+    const crossLabCaseId = rid("xc");
+    await db.insert(cases).values({
+      id: crossLabCaseId,
+      caseNumber: rid("XCN"),
+      labOrganizationId: linkedLabId,
+      providerOrganizationId: linkedProvOrgId,
+      patientFirstName: "CrossLab",
+      patientLastName: "Patient",
+      doctorName: "Dr. Cross",
+      status: "received",
+      createdByUserId: adminUserId,
+    });
+
+    // Grant the caller (adminUserId) read access to the linked lab.
+    // Cross-lab expansion only surfaces labs the caller can directly read.
+    const adminLinkedMembershipId = rid("m");
+    await db.insert(organizationMemberships).values({
+      id: adminLinkedMembershipId,
+      labId: linkedLabId,
+      userId: adminUserId,
+      role: "admin",
+      status: "active",
+    });
+
+    try {
+      const r = await request(appMod.default)
+        .get("/api/cases/patient-similarity")
+        .set("Authorization", `Bearer ${tokens.admin}`)
+        .query({
+          patientFirstName: "CrossLab",
+          patientLastName: "Patient",
+          labOrganizationId: labOrgId,
+          providerOrganizationId: providerAOrgId,
+        });
+
+      expect(r.status).toBe(200);
+      const matches: Array<{ id: string; labOrganizationId: string }> = r.body.data.matches;
+      const hit = matches.find((m) => m.id === crossLabCaseId);
+      expect(hit, "cross-lab case must appear when doctor is linked AND caller has linked-lab membership").toBeDefined();
+      expect(hit?.labOrganizationId).toBe(linkedLabId);
+    } finally {
+      await db.delete(cases).where(eq(cases.id, crossLabCaseId));
+      await db.delete(doctorAccountLinks).where(eq(doctorAccountLinks.id, linkId));
+      await db.delete(organizationMemberships).where(
+        inArray(organizationMemberships.userId, [doctorInLabAId, doctorInLabBId]),
+      );
+      await db.delete(organizationMemberships).where(
+        eq(organizationMemberships.id, adminLinkedMembershipId),
+      );
+      await db.delete(organizations).where(
+        inArray(organizations.id, [linkedLabId, linkedProvOrgId]),
+      );
+      await db.delete(users).where(
+        inArray(users.id, [doctorInLabAId, doctorInLabBId]),
+      );
+    }
+  });
+
+  it("does NOT include cross-lab cases when there is no doctor link", async () => {
+    if (!SHOULD_RUN) return;
+    const { db, organizations, cases } = dbMod as any;
+
+    // A totally separate lab+provider with no link to any doctor in labOrgId.
+    const unlinkedLabId = rid("ulab");
+    const unlinkedProvOrgId = rid("uprov");
+
+    await db.insert(organizations).values([
+      { id: unlinkedLabId, type: "lab", name: "Unlinked Lab" },
+      {
+        id: unlinkedProvOrgId,
+        type: "provider",
+        name: "Unlinked Practice",
+        parentLabOrganizationId: unlinkedLabId,
+      },
+    ]);
+
+    const unlinkedCaseId = rid("uc");
+    await db.insert(cases).values({
+      id: unlinkedCaseId,
+      caseNumber: rid("UCN"),
+      labOrganizationId: unlinkedLabId,
+      providerOrganizationId: unlinkedProvOrgId,
+      patientFirstName: "CrossLab",
+      patientLastName: "Patient",
+      doctorName: "Dr. Unlinked",
+      status: "received",
+      createdByUserId: adminUserId,
+    });
+
+    try {
+      const r = await request(appMod.default)
+        .get("/api/cases/patient-similarity")
+        .set("Authorization", `Bearer ${tokens.admin}`)
+        .query({
+          patientFirstName: "CrossLab",
+          patientLastName: "Patient",
+          labOrganizationId: labOrgId,
+          providerOrganizationId: providerAOrgId,
+        });
+
+      expect(r.status).toBe(200);
+      const ids = r.body.data.matches.map((m: any) => m.id);
+      expect(ids, "unlinked cross-lab case must NOT appear").not.toContain(unlinkedCaseId);
+    } finally {
+      await db.delete(cases).where(eq(cases.id, unlinkedCaseId));
+      await db.delete(organizations).where(
+        inArray(organizations.id, [unlinkedLabId, unlinkedProvOrgId]),
+      );
+    }
+  });
+
+  it("does NOT include cross-lab cases when providerOrganizationId belongs to a foreign lab (auth gate)", async () => {
+    if (!SHOULD_RUN) return;
+    const { db, organizations, users, organizationMemberships, cases, doctorAccountLinks } =
+      dbMod as any;
+
+    // Set up a foreign lab with a provider org (parent = otherLabOrgId, not labOrgId).
+    const foreignProvOrgId = rid("fprov");
+    const linkedLabId2 = rid("xlab2");
+    const linkedProvOrgId2 = rid("xprov2");
+    const doctorForeignId = rid("udocF");
+    const doctorLinked2Id = rid("udocL2");
+
+    await db.insert(users).values([
+      { id: doctorForeignId, username: `docF_${doctorForeignId}`, password: "x" },
+      { id: doctorLinked2Id, username: `docL2_${doctorLinked2Id}`, password: "x" },
+    ]);
+
+    await db.insert(organizations).values([
+      // foreignProvOrg belongs to otherLabOrgId, not labOrgId
+      { id: foreignProvOrgId, type: "provider", name: "Foreign Prov", parentLabOrganizationId: otherLabOrgId },
+      { id: linkedLabId2, type: "lab", name: "Linked Lab 2" },
+      { id: linkedProvOrgId2, type: "provider", name: "Linked Prov 2", parentLabOrganizationId: linkedLabId2 },
+    ]);
+
+    await db.insert(organizationMemberships).values([
+      { id: rid("m"), labId: foreignProvOrgId, userId: doctorForeignId, role: "admin", status: "active" },
+      { id: rid("m"), labId: linkedProvOrgId2, userId: doctorLinked2Id, role: "admin", status: "active" },
+    ]);
+
+    const [lowId, highId] =
+      doctorForeignId < doctorLinked2Id
+        ? [doctorForeignId, doctorLinked2Id]
+        : [doctorLinked2Id, doctorForeignId];
+    const linkId2 = rid("lnk2");
+    await db.insert(doctorAccountLinks).values({
+      id: linkId2,
+      userIdLow: lowId,
+      userIdHigh: highId,
+      linkedVia: "manual",
+    });
+
+    // A case in linkedLabId2 under linkedProvOrgId2 — should NOT surface
+    // because foreignProvOrgId is not owned by labOrgId.
+    const foreignCrossId = rid("fc");
+    await db.insert(cases).values({
+      id: foreignCrossId,
+      caseNumber: rid("FCN"),
+      labOrganizationId: linkedLabId2,
+      providerOrganizationId: linkedProvOrgId2,
+      patientFirstName: "CrossLab",
+      patientLastName: "Patient",
+      doctorName: "Dr. Foreign",
+      status: "received",
+      createdByUserId: adminUserId,
+    });
+
+    try {
+      // Supply foreignProvOrgId — it has parentLabOrganizationId=otherLabOrgId,
+      // so the auth gate must reject it even though doctor links exist.
+      const r = await request(appMod.default)
+        .get("/api/cases/patient-similarity")
+        .set("Authorization", `Bearer ${tokens.admin}`)
+        .query({
+          patientFirstName: "CrossLab",
+          patientLastName: "Patient",
+          labOrganizationId: labOrgId,
+          providerOrganizationId: foreignProvOrgId,
+        });
+
+      expect(r.status).toBe(200);
+      const ids = r.body.data.matches.map((m: any) => m.id);
+      expect(ids, "cross-lab case via foreign providerOrganizationId must NOT appear").not.toContain(foreignCrossId);
+    } finally {
+      await db.delete(cases).where(eq(cases.id, foreignCrossId));
+      await db.delete(doctorAccountLinks).where(eq(doctorAccountLinks.id, linkId2));
+      await db.delete(organizationMemberships).where(
+        inArray(organizationMemberships.userId, [doctorForeignId, doctorLinked2Id]),
+      );
+      await db.delete(organizations).where(
+        inArray(organizations.id, [foreignProvOrgId, linkedLabId2, linkedProvOrgId2]),
+      );
+      await db.delete(users).where(
+        inArray(users.id, [doctorForeignId, doctorLinked2Id]),
+      );
+    }
+  });
+
+  it("includes cross-lab cases when only doctorName is supplied (mobile path)", async () => {
+    if (!SHOULD_RUN) return;
+    const { db, organizations, users, organizationMemberships, cases, doctorAccountLinks } =
+      dbMod as any;
+
+    const dnLabId = rid("dnlab");
+    const dnProvOrgId = rid("dnprov");
+    const dnDoctorAId = rid("udnA");
+    const dnDoctorBId = rid("udnB");
+    const dnDoctorName = `Dr. DoctorName_${randomBytes(4).toString("hex")}`;
+
+    await db.insert(users).values([
+      { id: dnDoctorAId, username: `dnA_${dnDoctorAId}`, password: "x" },
+      { id: dnDoctorBId, username: `dnB_${dnDoctorBId}`, password: "x" },
+    ]);
+
+    await db.insert(organizations).values([
+      { id: dnLabId, type: "lab", name: "DoctorName Linked Lab" },
+      {
+        id: dnProvOrgId,
+        type: "provider",
+        name: "DoctorName Linked Prov",
+        parentLabOrganizationId: dnLabId,
+      },
+    ]);
+
+    // dnDoctorAId is a member of providerAOrgId (primary lab's provider).
+    // dnDoctorBId is a member of dnProvOrgId (linked lab's provider).
+    await db.insert(organizationMemberships).values([
+      { id: rid("m"), labId: providerAOrgId, userId: dnDoctorAId, role: "admin", status: "active" },
+      { id: rid("m"), labId: dnProvOrgId, userId: dnDoctorBId, role: "admin", status: "active" },
+    ]);
+
+    const [lowId, highId] =
+      dnDoctorAId < dnDoctorBId
+        ? [dnDoctorAId, dnDoctorBId]
+        : [dnDoctorBId, dnDoctorAId];
+    const dnLinkId = rid("dnlnk");
+    await db.insert(doctorAccountLinks).values({
+      id: dnLinkId,
+      userIdLow: lowId,
+      userIdHigh: highId,
+      linkedVia: "manual",
+    });
+
+    // Seed a canonical case in labOrgId under providerAOrgId for this doctor so
+    // the doctorName path can resolve the provider org.
+    const seedCaseId = rid("dnSeed");
+    await db.insert(cases).values({
+      id: seedCaseId,
+      caseNumber: rid("DNSEED"),
+      labOrganizationId: labOrgId,
+      providerOrganizationId: providerAOrgId,
+      patientFirstName: "SomePrior",
+      patientLastName: "SomePrior",
+      doctorName: dnDoctorName,
+      status: "received",
+      createdByUserId: adminUserId,
+    });
+
+    // Cross-lab case in dnLabId under dnProvOrgId for the same patient.
+    const dnCrossId = rid("dnc");
+    await db.insert(cases).values({
+      id: dnCrossId,
+      caseNumber: rid("DNCN"),
+      labOrganizationId: dnLabId,
+      providerOrganizationId: dnProvOrgId,
+      patientFirstName: "DoctorNameCross",
+      patientLastName: "Patient",
+      doctorName: "Dr. Whatever",
+      status: "received",
+      createdByUserId: adminUserId,
+    });
+
+    // Grant the caller (adminUserId) read access to the linked lab.
+    // Cross-lab expansion only surfaces labs the caller can directly read.
+    const adminDnMembershipId = rid("m");
+    await db.insert(organizationMemberships).values({
+      id: adminDnMembershipId,
+      labId: dnLabId,
+      userId: adminUserId,
+      role: "admin",
+      status: "active",
+    });
+
+    try {
+      const r = await request(appMod.default)
+        .get("/api/cases/patient-similarity")
+        .set("Authorization", `Bearer ${tokens.admin}`)
+        .query({
+          patientFirstName: "DoctorNameCross",
+          patientLastName: "Patient",
+          labOrganizationId: labOrgId,
+          doctorName: dnDoctorName,
+        });
+
+      expect(r.status).toBe(200);
+      const matches: Array<{ id: string; labOrganizationId: string }> = r.body.data.matches;
+      const hit = matches.find((m) => m.id === dnCrossId);
+      expect(hit, "cross-lab case must appear via doctorName-only path when caller has linked-lab membership").toBeDefined();
+      expect(hit?.labOrganizationId).toBe(dnLabId);
+    } finally {
+      await db.delete(cases).where(inArray(cases.id, [dnCrossId, seedCaseId]));
+      await db.delete(doctorAccountLinks).where(eq(doctorAccountLinks.id, dnLinkId));
+      await db.delete(organizationMemberships).where(
+        inArray(organizationMemberships.userId, [dnDoctorAId, dnDoctorBId]),
+      );
+      await db.delete(organizationMemberships).where(
+        eq(organizationMemberships.id, adminDnMembershipId),
+      );
+      await db.delete(organizations).where(
+        inArray(organizations.id, [dnLabId, dnProvOrgId]),
+      );
+      await db.delete(users).where(
+        inArray(users.id, [dnDoctorAId, dnDoctorBId]),
+      );
+    }
+  });
+
+  it("does NOT expand cross-lab when caller has no membership in the linked lab", async () => {
+    if (!SHOULD_RUN) return;
+    const {
+      db,
+      organizations,
+      users,
+      organizationMemberships,
+      userSessions,
+      cases,
+      doctorAccountLinks,
+    } = dbMod as any;
+
+    // Create a lab member with role "user" (not admin/owner).
+    const regularUserId = rid("ureg");
+    await db.insert(users).values({ id: regularUserId, username: `reg_${regularUserId}`, password: "x" });
+    await db.insert(organizationMemberships).values({
+      id: rid("m"),
+      labId: labOrgId,
+      userId: regularUserId,
+      role: "user",
+      status: "active",
+    });
+    const regularToken = await makeSession(regularUserId);
+
+    // Set up a doctor link: providerAOrgId → linked lab.
+    const naLabId = rid("nalab");
+    const naProvOrgId = rid("naprov");
+    const naDoctorAId = rid("naDa");
+    const naDoctorBId = rid("naDb");
+
+    await db.insert(users).values([
+      { id: naDoctorAId, username: `naA_${naDoctorAId}`, password: "x" },
+      { id: naDoctorBId, username: `naB_${naDoctorBId}`, password: "x" },
+    ]);
+    await db.insert(organizations).values([
+      { id: naLabId, type: "lab", name: "Non-Admin Linked Lab" },
+      { id: naProvOrgId, type: "provider", name: "Non-Admin Linked Prov", parentLabOrganizationId: naLabId },
+    ]);
+    await db.insert(organizationMemberships).values([
+      { id: rid("m"), labId: providerAOrgId, userId: naDoctorAId, role: "admin", status: "active" },
+      { id: rid("m"), labId: naProvOrgId, userId: naDoctorBId, role: "admin", status: "active" },
+    ]);
+
+    const [lowId, highId] =
+      naDoctorAId < naDoctorBId
+        ? [naDoctorAId, naDoctorBId]
+        : [naDoctorBId, naDoctorAId];
+    const naLinkId = rid("nalnk");
+    await db.insert(doctorAccountLinks).values({
+      id: naLinkId,
+      userIdLow: lowId,
+      userIdHigh: highId,
+      linkedVia: "manual",
+    });
+
+    // Cross-lab case that should NOT appear for the non-admin caller.
+    const naCrossId = rid("nac");
+    await db.insert(cases).values({
+      id: naCrossId,
+      caseNumber: rid("NACN"),
+      labOrganizationId: naLabId,
+      providerOrganizationId: naProvOrgId,
+      patientFirstName: "NonAdmin",
+      patientLastName: "CrossPatient",
+      doctorName: "Dr. NonAdmin",
+      status: "received",
+      createdByUserId: adminUserId,
+    });
+
+    try {
+      const r = await request(appMod.default)
+        .get("/api/cases/patient-similarity")
+        .set("Authorization", `Bearer ${regularToken}`)
+        .query({
+          patientFirstName: "NonAdmin",
+          patientLastName: "CrossPatient",
+          labOrganizationId: labOrgId,
+          providerOrganizationId: providerAOrgId,
+        });
+
+      expect(r.status).toBe(200);
+      const ids = r.body.data.matches.map((m: any) => m.id);
+      expect(ids, "cross-lab case must NOT appear when caller has no membership in the linked lab").not.toContain(naCrossId);
+    } finally {
+      await db.delete(cases).where(eq(cases.id, naCrossId));
+      await db.delete(doctorAccountLinks).where(eq(doctorAccountLinks.id, naLinkId));
+      await db.delete(organizationMemberships).where(
+        inArray(organizationMemberships.userId, [naDoctorAId, naDoctorBId, regularUserId]),
+      );
+      const sessRows = await db
+        .select({ id: userSessions.id })
+        .from(userSessions)
+        .where(eq(userSessions.userId, regularUserId));
+      if (sessRows.length > 0) {
+        await db.delete(userSessions).where(
+          inArray(userSessions.id, sessRows.map((s: any) => s.id)),
+        );
+      }
+      await db.delete(organizations).where(
+        inArray(organizations.id, [naLabId, naProvOrgId]),
+      );
+      await db.delete(users).where(
+        inArray(users.id, [naDoctorAId, naDoctorBId, regularUserId]),
+      );
+    }
+  });
+
+  // ── labOrganizationId field on primary hits ───────────────────────────────
+
+  it("includes labOrganizationId on every returned hit", async () => {
+    const caseId = await trackInsert({
+      patientFirst: "LabOrgId",
+      patientLast: "Check",
+    });
+
+    const r = await request(appMod.default)
+      .get("/api/cases/patient-similarity")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({
+        patientFirstName: "LabOrgId",
+        patientLastName: "Check",
+        labOrganizationId: labOrgId,
+      });
+
+    expect(r.status).toBe(200);
+    const hit = r.body.data.matches.find((m: any) => m.id === caseId);
+    expect(hit, "inserted case must appear in matches").toBeDefined();
+    expect(hit.labOrganizationId).toBe(labOrgId);
   });
 });

@@ -92,6 +92,76 @@ export async function getProviderOrgIdsForUserAndLinks(
 }
 
 /**
+ * Given a provider organization (e.g. "Doctor Smith's practice at Lab A"),
+ * return all linked provider orgs that belong to DIFFERENT labs.
+ *
+ * Used by the patient-similarity endpoint to widen searches across linked-lab
+ * doctor identities without opening the full cross-lab read gate. Authorization
+ * is implicit: only the specific linked doctor's cases are exposed, further
+ * narrowed by the caller's patient-name search.
+ *
+ * Returns an empty array when the provider org has no members or none of their
+ * linked accounts belong to a different lab's provider org.
+ */
+export async function getLinkedProviderOrgsForProviderOrg(
+  providerOrgId: string,
+  currentLabId: string,
+): Promise<Array<{ providerOrgId: string; labOrgId: string }>> {
+  // Step 1: find active members of this provider org.
+  const memberships = await db.query.organizationMemberships.findMany({
+    where: and(
+      eq(organizationMemberships.labId, providerOrgId),
+      eq(organizationMemberships.status, "active")
+    ),
+  });
+  if (memberships.length === 0) return [];
+
+  // Step 2: collect the transitive linked-user set for all provider members.
+  const allLinkedUserIds = new Set<string>();
+  for (const m of memberships) {
+    const linked = await getLinkedDoctorUserIds(m.userId as string);
+    for (const id of linked) allLinkedUserIds.add(id);
+  }
+
+  // Step 3: find active org memberships for all linked users.
+  const linkedMemberships = await db.query.organizationMemberships.findMany({
+    where: and(
+      inArray(organizationMemberships.userId, Array.from(allLinkedUserIds)),
+      eq(organizationMemberships.status, "active")
+    ),
+  });
+
+  // Collect unique org IDs, excluding the original provider org.
+  const orgIds = Array.from(
+    new Set(linkedMemberships.map((m: any) => m.labId as string))
+  ).filter((id) => id !== providerOrgId);
+
+  if (orgIds.length === 0) return [];
+
+  // Step 4: resolve org rows — keep only provider-type orgs whose parent lab
+  // differs from the caller's lab.
+  const orgRows = await db
+    .select()
+    .from(organizations)
+    .where(inArray(organizations.id, orgIds));
+
+  const result: Array<{ providerOrgId: string; labOrgId: string }> = [];
+  for (const org of orgRows as any[]) {
+    if (
+      org.type === "provider" &&
+      org.parentLabOrganizationId &&
+      org.parentLabOrganizationId !== currentLabId
+    ) {
+      result.push({
+        providerOrgId: org.id,
+        labOrgId: org.parentLabOrganizationId,
+      });
+    }
+  }
+  return result;
+}
+
+/**
  * Order a user-id pair canonically (low, high) so the unique index on
  * `doctor_account_links` covers the unordered pair.
  */
