@@ -2389,6 +2389,7 @@ export function CaseDrawer({
     casePanBarcode: labCase.casePanBarcode || "",
   });
   const [editError, setEditError] = useState<string | null>(null);
+  const [editNoteText, setEditNoteText] = useState("");
 
   const [routeStatus, setRouteStatus] = useState("");
   const [routeError, setRouteError] = useState<string | null>(null);
@@ -4188,11 +4189,23 @@ export function CaseDrawer({
                         />
                       </div>
                     </div>
+                    <div>
+                      <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                        Add note
+                      </label>
+                      <textarea
+                        value={editNoteText}
+                        onChange={(e) => setEditNoteText(e.target.value)}
+                        placeholder="Type a note… (saved immediately as an internal lab note)"
+                        rows={3}
+                        className="mt-1 w-full px-2.5 py-2 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary resize-none"
+                      />
+                    </div>
                     {editError && <p className="text-xs text-destructive">{editError}</p>}
                     <div className="flex gap-2 pt-1">
                       <button
                         type="button"
-                        onClick={() => { setEditMode(false); setEditError(null); }}
+                        onClick={() => { setEditMode(false); setEditError(null); setEditNoteText(""); }}
                         className="flex-1 h-9 rounded-md bg-secondary text-sm font-medium text-muted-foreground hover:text-foreground"
                       >
                         Cancel
@@ -4201,6 +4214,10 @@ export function CaseDrawer({
                         type="button"
                         onClick={() => {
                           setPendingCaseEdit({ ...editForm });
+                          if (editNoteText.trim()) {
+                            addNoteMutation.mutate({ text: editNoteText.trim(), shared: false });
+                            setEditNoteText("");
+                          }
                           setEditMode(false);
                           setEditError(null);
                         }}
