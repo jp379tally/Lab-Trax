@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -17,6 +17,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
 import {
   useCase,
+  useCases,
   useInvoices,
   useInvoice,
   useCaseAttachments,
@@ -25,6 +26,7 @@ import {
   useDeleteCaseAttachment,
   useGenerateInvoiceForCase,
   useEmailInvoice,
+  type CanonicalCase,
   type UpdateCaseInput,
   type UpdateCaseInputStatus,
   type UpdateCaseInputPriority,
@@ -58,6 +60,7 @@ import {
 import { buildCaseCardHtml, buildInvoiceHtml, generatePdf, sharePdf } from "@/lib/case-pdf";
 import { printCaseHistory } from "@/lib/printCaseHistory";
 import { setAiReaderSession, clearAiReaderSession } from "@/lib/ai-reader-store";
+import { LocateCaseSheet } from "@/components/LocateCaseSheet";
 
 // ─── Viewer-local detail shape ────────────────────────────────────────────────
 // GET /api/cases/:id returns the full desktop DetailedCase payload. The
@@ -1128,6 +1131,47 @@ function OverviewSection({
   const [locating, setLocating] = useState(false);
   const [locateMsg, setLocateMsg] = useState<string | null>(null);
 
+  // ── Related cases (same patient or same doctor) with long-press locate ──────
+  const relatedCasesQuery = useCases();
+  const allCases = relatedCasesQuery.data ?? [];
+
+  const relatedCases = useMemo(() => {
+    const pFirst = (c.patientFirstName ?? "").trim().toLowerCase();
+    const pLast = (c.patientLastName ?? "").trim().toLowerCase();
+    const doc = (c.doctorName ?? "").trim().toLowerCase();
+    const hasPatient = !!(pFirst || pLast);
+    const hasDoctor = !!doc;
+    if (!hasPatient && !hasDoctor) return [];
+    return allCases.filter((other) => {
+      if (other.id === caseId) return false;
+      const oFirst = (other.patientFirstName ?? "").trim().toLowerCase();
+      const oLast = (other.patientLastName ?? "").trim().toLowerCase();
+      const oDoc = (other.doctorName ?? "").trim().toLowerCase();
+      const samePatient = hasPatient && oFirst === pFirst && oLast === pLast;
+      const sameDoctor = hasDoctor && !!oDoc && oDoc === doc;
+      return samePatient || sameDoctor;
+    });
+  }, [allCases, caseId, c.patientFirstName, c.patientLastName, c.doctorName]);
+
+  const relatedLongPressRef = useRef(false);
+  const [relatedLocatingCase, setRelatedLocatingCase] = useState<CanonicalCase | null>(null);
+  const [relatedLocateSuccessId, setRelatedLocateSuccessId] = useState<string | null>(null);
+
+  function handleRelatedLongPress(relCase: CanonicalCase) {
+    relatedLongPressRef.current = true;
+    setRelatedLocatingCase(relCase);
+  }
+
+  function dismissRelatedLocate() {
+    relatedLongPressRef.current = false;
+    setRelatedLocatingCase(null);
+  }
+
+  const handleRelatedLocated = useCallback((locatedId: string) => {
+    setRelatedLocateSuccessId(locatedId);
+    setTimeout(() => setRelatedLocateSuccessId(null), 2500);
+  }, []);
+
   async function locate() {
     if (!locateTarget) return;
     setLocating(true);
@@ -1463,6 +1507,71 @@ function OverviewSection({
           <Text style={styles.bodyText}>{c.caseNotes.trim()}</Text>
         </Card>
       ) : null}
+
+      {relatedCases.length > 0 ? (
+        <Card padding="none">
+          <View style={styles.relatedHeader}>
+            <Text style={[styles.cardHeading, styles.cardHeadingFlush]}>Related Cases</Text>
+            <Text style={styles.relatedHint}>Long-press to locate</Text>
+          </View>
+          {relatedCases.map((rc, idx) => {
+            const located = relatedLocateSuccessId === rc.id;
+            return (
+              <React.Fragment key={rc.id}>
+                {idx > 0 ? (
+                  <View style={[styles.relatedDivider, { backgroundColor: colors.border }]} />
+                ) : null}
+                <Pressable
+                  onPress={() => {
+                    if (relatedLongPressRef.current) {
+                      relatedLongPressRef.current = false;
+                      return;
+                    }
+                    router.push(`/case/${rc.id}` as never);
+                  }}
+                  onLongPress={() => handleRelatedLongPress(rc)}
+                  delayLongPress={400}
+                  style={({ pressed }) =>
+                    pressed ? [styles.relatedRow, { backgroundColor: colors.surfaceAlt }] : styles.relatedRow
+                  }
+                  testID={`related-case-row-${rc.id}`}
+                >
+                  <View style={styles.relatedRowMain}>
+                    <Text style={styles.relatedRowName} numberOfLines={1}>
+                      {`${rc.patientFirstName ?? ""} ${rc.patientLastName ?? ""}`.trim() || "Unnamed patient"}
+                    </Text>
+                    <Text style={styles.relatedRowMeta} numberOfLines={1}>
+                      {rc.caseNumber ? `#${rc.caseNumber}` : "No case #"}
+                      {rc.doctorName ? `  ·  ${rc.doctorName}` : ""}
+                    </Text>
+                  </View>
+                  <View style={styles.relatedRowRight}>
+                    <StatusBadge
+                      label={titleCase(rc.status ?? "—")}
+                      variant={statusVariant(rc.status)}
+                      size="sm"
+                    />
+                    {located ? (
+                      <View style={styles.relatedLocatedBadge}>
+                        <Ionicons name="checkmark-circle" size={13} color={colors.tint} />
+                        <Text style={[styles.relatedLocatedText, { color: colors.tint }]}>Located</Text>
+                      </View>
+                    ) : (
+                      <Ionicons name="chevron-forward" size={16} color={colors.textTertiary} />
+                    )}
+                  </View>
+                </Pressable>
+              </React.Fragment>
+            );
+          })}
+        </Card>
+      ) : null}
+
+      <LocateCaseSheet
+        locatingCase={relatedLocatingCase}
+        onDismiss={dismissRelatedLocate}
+        onLocated={handleRelatedLocated}
+      />
 
       <OptionPickerModal
         visible={picker === "locate"}
@@ -2947,5 +3056,28 @@ function makeStyles(c: ThemeColors) {
     labelPrintBtnText: { ...Typography.bodySemibold, color: "#fff" },
     labelPrintSkipBtn: { paddingVertical: Spacing.sm, alignItems: "center" },
     labelPrintSkipText: { ...Typography.body, color: c.textTertiary },
+    relatedHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingHorizontal: Spacing.lg,
+      paddingTop: Spacing.lg,
+      paddingBottom: Spacing.sm,
+    },
+    relatedHint: { ...Typography.caption, color: c.textTertiary },
+    relatedRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingHorizontal: Spacing.lg,
+      paddingVertical: Spacing.md,
+      gap: Spacing.sm,
+    },
+    relatedRowMain: { flex: 1 },
+    relatedRowName: { ...Typography.bodyMedium, color: c.text },
+    relatedRowMeta: { ...Typography.caption, color: c.textSecondary, marginTop: 2 },
+    relatedRowRight: { alignItems: "flex-end", gap: 4 },
+    relatedDivider: { height: StyleSheet.hairlineWidth, marginHorizontal: Spacing.lg },
+    relatedLocatedBadge: { flexDirection: "row", alignItems: "center", gap: 3 },
+    relatedLocatedText: { ...Typography.captionSemibold },
   });
 }
