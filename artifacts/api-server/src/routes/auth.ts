@@ -369,26 +369,24 @@ router.post(
 
     const hashed = await hashPassword(input.password);
 
-    // Allocate platform-wide account number for provider users (Task #320).
+    // Allocate platform-wide account number for every new user (Task #320).
     // Allocation is best-effort here; a failure does not block registration.
     let userPlatformAccountNumber: string | null = null;
-    if ((input.userType || "lab") === "provider") {
-      try {
-        userPlatformAccountNumber = await allocatePlatformAccountNumber(
-          "user",
-          deriveAccountNameParts({
-            firstName: input.firstName,
-            lastName: input.lastName,
-            doctorName: input.doctorName,
-            practiceName: input.practiceName,
-          })
-        );
-      } catch (err: any) {
-        req.log?.warn?.(
-          { err: err?.message ?? String(err) },
-          "Failed to allocate platform account number for user (non-fatal)"
-        );
-      }
+    try {
+      userPlatformAccountNumber = await allocatePlatformAccountNumber(
+        "user",
+        deriveAccountNameParts({
+          firstName: input.firstName,
+          lastName: input.lastName,
+          doctorName: input.doctorName,
+          practiceName: input.practiceName,
+        })
+      );
+    } catch (err: any) {
+      req.log?.warn?.(
+        { err: err?.message ?? String(err) },
+        "Failed to allocate platform account number for user (non-fatal)"
+      );
     }
 
     const [user] = await db
@@ -457,26 +455,24 @@ router.post(
       responseMessage = `Your request to join ${targetName} has been sent to the lab admin.`;
     } else if (shouldCreateOrganization) {
       const orgType = input.userType === "provider" ? "provider" : "lab";
-      // Allocate platform-wide account number for provider organizations
-      // (Task #320). Lab organizations don't get one.
+      // Allocate platform-wide account number for every new organization
+      // (Task #320). Best-effort; never blocks registration.
       let orgPlatformAccountNumber: string | null = null;
-      if (orgType === "provider") {
-        try {
-          orgPlatformAccountNumber = await allocatePlatformAccountNumber(
-            "org",
-            deriveAccountNameParts({
-              practiceName: input.practiceName,
-              doctorName: input.doctorName,
-              firstName: input.firstName,
-              lastName: input.lastName,
-            })
-          );
-        } catch (err: any) {
-          req.log?.warn?.(
-            { err: err?.message ?? String(err) },
-            "Failed to allocate platform account number for org (non-fatal)"
-          );
-        }
+      try {
+        orgPlatformAccountNumber = await allocatePlatformAccountNumber(
+          "org",
+          deriveAccountNameParts({
+            practiceName: input.practiceName,
+            doctorName: input.doctorName,
+            firstName: input.firstName,
+            lastName: input.lastName,
+          })
+        );
+      } catch (err: any) {
+        req.log?.warn?.(
+          { err: err?.message ?? String(err) },
+          "Failed to allocate platform account number for org (non-fatal)"
+        );
       }
       const [org] = await db
         .insert(organizations)

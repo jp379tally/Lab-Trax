@@ -16,7 +16,7 @@
  *
  * Re-runs are safe — already-allocated rows are skipped.
  */
-import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { asc, eq, isNull, sql } from "drizzle-orm";
 import {
   db,
   organizations,
@@ -102,12 +102,11 @@ async function allocate(
 }
 
 async function backfillUsers(): Promise<number> {
+  // Backfill all users (lab and provider) that lack a platform account number.
   const candidates = await db
     .select()
     .from(users)
-    .where(
-      and(eq(users.userType, "provider"), isNull(users.platformAccountNumber))
-    )
+    .where(isNull(users.platformAccountNumber))
     .orderBy(asc(users.createdAt), asc(users.id));
   let count = 0;
   for (const u of candidates) {
@@ -130,21 +129,17 @@ async function backfillUsers(): Promise<number> {
       .set({ platformAccountNumber: acct })
       .where(eq(users.id, (u as any).id));
     count++;
-    process.stdout.write(`user ${(u as any).id} -> ${acct}\n`);
+    process.stdout.write(`user ${(u as any).id} (${(u as any).userType ?? "lab"}) -> ${acct}\n`);
   }
   return count;
 }
 
 async function backfillOrgs(): Promise<number> {
+  // Backfill all organizations (lab and provider) that lack a platform account number.
   const candidates = await db
     .select()
     .from(organizations)
-    .where(
-      and(
-        eq(organizations.type, "provider"),
-        isNull(organizations.platformAccountNumber)
-      )
-    )
+    .where(isNull(organizations.platformAccountNumber))
     .orderBy(asc(organizations.createdAt), asc(organizations.id));
   let count = 0;
   for (const o of candidates) {
@@ -164,7 +159,7 @@ async function backfillOrgs(): Promise<number> {
       .set({ platformAccountNumber: acct })
       .where(eq(organizations.id, (o as any).id));
     count++;
-    process.stdout.write(`org ${(o as any).id} -> ${acct}\n`);
+    process.stdout.write(`org ${(o as any).id} (${(o as any).type}) -> ${acct}\n`);
   }
   return count;
 }
