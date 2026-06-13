@@ -245,9 +245,11 @@ export default function CasesListScreen() {
   const [draftTo, setDraftTo] = useState("");
   const [customError, setCustomError] = useState("");
 
-  // ── Location filter
-  const [locationFilter, setLocationFilter] = useState<string>("all");
+  // ── Location filter (empty array = all locations)
+  const [locationFilter, setLocationFilter] = useState<string[]>([]);
   const [showLocationModal, setShowLocationModal] = useState(false);
+  // Draft selections while the modal is open
+  const [locationDraft, setLocationDraft] = useState<string[]>([]);
 
   // ── Long-press locate
   // Guard: after a long-press fires, the subsequent pressOut→onPress must not navigate.
@@ -337,9 +339,9 @@ export default function CasesListScreen() {
     }
 
     // Location filter
-    if (locationFilter !== "all") {
+    if (locationFilter.length > 0) {
       result = result.filter(
-        (c) => (c.status ?? "").toLowerCase() === locationFilter,
+        (c) => locationFilter.includes((c.status ?? "").toLowerCase()),
       );
     }
 
@@ -398,13 +400,16 @@ export default function CasesListScreen() {
   }
 
   // ── Location chip label ──────────────────────────────────────────────────
-  const locationLabel =
-    locationFilter === "all"
-      ? "Location"
-      : (CASE_STATIONS.find((s) => s.value === locationFilter)?.label ?? titleCase(locationFilter));
+  const locationLabel = useMemo(() => {
+    if (locationFilter.length === 0) return "Location";
+    if (locationFilter.length === 1) {
+      return CASE_STATIONS.find((s) => s.value === locationFilter[0])?.label ?? titleCase(locationFilter[0]);
+    }
+    return `${locationFilter.length} stations`;
+  }, [locationFilter]);
 
   const activeFilters =
-    dueFilter !== "all" || locationFilter !== "all";
+    dueFilter !== "all" || locationFilter.length > 0;
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -530,20 +535,23 @@ export default function CasesListScreen() {
           <Pressable
             style={[
               styles.chip,
-              locationFilter !== "all" && { backgroundColor: colors.violet + "22", borderColor: colors.violet },
+              locationFilter.length > 0 && { backgroundColor: colors.violet + "22", borderColor: colors.violet },
             ]}
-            onPress={() => setShowLocationModal(true)}
+            onPress={() => {
+              setLocationDraft(locationFilter);
+              setShowLocationModal(true);
+            }}
           >
             <Ionicons
               name="location-outline"
               size={13}
-              color={locationFilter !== "all" ? colors.violet : colors.textSecondary}
+              color={locationFilter.length > 0 ? colors.violet : colors.textSecondary}
               style={{ marginRight: 4 }}
             />
             <Text
               style={[
                 styles.chipText,
-                locationFilter !== "all" && { color: colors.violet },
+                locationFilter.length > 0 && { color: colors.violet },
               ]}
             >
               {locationLabel}
@@ -551,13 +559,13 @@ export default function CasesListScreen() {
             <Ionicons
               name="chevron-down"
               size={12}
-              color={locationFilter !== "all" ? colors.violet : colors.textTertiary}
+              color={locationFilter.length > 0 ? colors.violet : colors.textTertiary}
               style={{ marginLeft: 2 }}
             />
-            {locationFilter !== "all" && (
+            {locationFilter.length > 0 && (
               <Pressable
                 hitSlop={8}
-                onPress={(e) => { e.stopPropagation(); setLocationFilter("all"); }}
+                onPress={(e) => { e.stopPropagation(); setLocationFilter([]); }}
                 style={{ marginLeft: 4 }}
               >
                 <Ionicons name="close-circle" size={14} color={colors.violet} />
@@ -741,42 +749,60 @@ export default function CasesListScreen() {
             <Text style={styles.sheetTitle}>Filter by location</Text>
 
             <ScrollView style={styles.locationList} bounces={false}>
-              {/* All locations */}
-              <Pressable
-                style={styles.locationRow}
-                onPress={() => { setLocationFilter("all"); setShowLocationModal(false); }}
-              >
-                <Text
-                  style={[
-                    styles.locationLabel,
-                    { color: locationFilter === "all" ? colors.tint : colors.text },
-                  ]}
-                >
-                  All locations
-                </Text>
-                {locationFilter === "all" && (
-                  <Ionicons name="checkmark" size={18} color={colors.tint} />
-                )}
-              </Pressable>
-
-              <View style={[styles.locationDivider, { backgroundColor: colors.border }]} />
-
               {CASE_STATIONS.map((station) => {
-                const active = locationFilter === station.value;
+                const checked = locationDraft.includes(station.value);
                 return (
                   <Pressable
                     key={station.value}
                     style={styles.locationRow}
-                    onPress={() => { setLocationFilter(station.value); setShowLocationModal(false); }}
+                    onPress={() => {
+                      setLocationDraft((prev) =>
+                        prev.includes(station.value)
+                          ? prev.filter((v) => v !== station.value)
+                          : [...prev, station.value],
+                      );
+                    }}
                   >
-                    <Text style={[styles.locationLabel, { color: active ? colors.tint : colors.text }]}>
+                    <View style={[
+                      styles.locationCheckbox,
+                      checked && { backgroundColor: colors.violet, borderColor: colors.violet },
+                      !checked && { borderColor: colors.border },
+                    ]}>
+                      {checked && <Ionicons name="checkmark" size={13} color="#fff" />}
+                    </View>
+                    <Text style={[styles.locationLabel, { color: checked ? colors.violet : colors.text }]}>
                       {station.label}
                     </Text>
-                    {active && <Ionicons name="checkmark" size={18} color={colors.tint} />}
                   </Pressable>
                 );
               })}
             </ScrollView>
+
+            <View style={styles.sheetActions}>
+              <Pressable
+                style={styles.clearBtn}
+                onPress={() => {
+                  setLocationDraft([]);
+                  setLocationFilter([]);
+                  setShowLocationModal(false);
+                }}
+              >
+                <Text style={[styles.clearBtnText, { color: colors.textSecondary }]}>Clear</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.applyBtn, { backgroundColor: colors.violet }]}
+                onPress={() => {
+                  setLocationFilter(locationDraft);
+                  setShowLocationModal(false);
+                }}
+              >
+                <Text style={[styles.applyBtnText, { color: "#fff" }]}>
+                  {locationDraft.length === 0
+                    ? "Show all"
+                    : `Show ${locationDraft.length} station${locationDraft.length === 1 ? "" : "s"}`}
+                </Text>
+              </Pressable>
+            </View>
           </View>
         </View>
       </Modal>
@@ -1128,14 +1154,22 @@ function makeStyles(c: ThemeColors) {
     applyBtnText: { ...Typography.bodySemibold },
 
     // Location modal
-    locationList: { maxHeight: 380 },
+    locationList: { maxHeight: 360 },
     locationRow: {
       flexDirection: "row",
       alignItems: "center",
-      justifyContent: "space-between",
-      paddingVertical: Spacing.md,
+      gap: Spacing.md,
+      paddingVertical: Spacing.sm + 2,
     },
-    locationLabel: { ...Typography.body },
+    locationCheckbox: {
+      width: 22,
+      height: 22,
+      borderRadius: 6,
+      borderWidth: 2,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    locationLabel: { ...Typography.body, flex: 1 },
     locationDivider: { height: 1, marginBottom: Spacing.xs },
 
     // Long-press row feedback
