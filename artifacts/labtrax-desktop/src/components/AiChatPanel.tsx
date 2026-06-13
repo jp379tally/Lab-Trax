@@ -9,6 +9,7 @@ import {
   PenSquare,
   Plus,
   Printer,
+  RotateCcw,
   Send,
   Sparkles,
   Trash2,
@@ -300,9 +301,10 @@ interface ConfirmCardProps {
   onConfirm: (actionId: string) => void;
   onReject: (actionId: string) => void;
   sending?: boolean;
+  onTryAgain?: () => void;
 }
 
-function ConfirmCard({ actionId, summary, state, resultText, error, expiresAt, onConfirm, onReject, sending }: ConfirmCardProps) {
+function ConfirmCard({ actionId, summary, state, resultText, error, expiresAt, onConfirm, onReject, sending, onTryAgain }: ConfirmCardProps) {
   const [msLeft, setMsLeft] = useState<number>(() => {
     if (!expiresAt) return PENDING_TTL_MS;
     return Math.max(0, expiresAt - Date.now());
@@ -365,9 +367,19 @@ function ConfirmCard({ actionId, summary, state, resultText, error, expiresAt, o
           <Clock size={13} />
           <span className="text-xs font-semibold">Expired</span>
         </div>
-        <p className="text-xs text-muted-foreground leading-snug">
-          This action expired — send your request again.
+        <p className="text-xs text-muted-foreground leading-snug mb-2.5">
+          This action expired before you responded.
         </p>
+        {onTryAgain && (
+          <button
+            type="button"
+            onClick={onTryAgain}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-secondary border border-border text-xs text-foreground hover:bg-accent transition-colors"
+          >
+            <RotateCcw size={11} />
+            Try again
+          </button>
+        )}
       </div>
     );
   }
@@ -1137,6 +1149,12 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
 
           // Proposed action card (no avatar, full-width on assistant side)
           if (msg.proposedAction) {
+            const msgIndex = messages.indexOf(msg);
+            const precedingUserMsg = messages
+              .slice(0, msgIndex)
+              .reverse()
+              .find((m) => m.role === "user" && m.content);
+            const tryAgainText = precedingUserMsg?.content;
             return (
               <div key={msg.id} className="flex gap-2 items-end justify-start">
                 <div className="h-6 w-6 rounded-full bg-primary/10 flex items-center justify-center shrink-0 mb-0.5">
@@ -1152,6 +1170,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
                   onConfirm={confirmAction}
                   onReject={rejectAction}
                   sending={sending}
+                  onTryAgain={tryAgainText ? () => sendMessage(tryAgainText) : undefined}
                 />
               </div>
             );
