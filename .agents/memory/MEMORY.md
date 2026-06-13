@@ -45,3 +45,4 @@
 - [EAS build provenance](eas-build-provenance.md) — log filename timestamp ≠ build time; verify which task a build belongs to via the build-number bump commit + submit "Build Date" vs file mtimes.
 - [Background commands die on return](background-commands-die-on-return.md) — nohup/backgrounded bash is SIGKILLed on tool-call return; run long jobs (api-server vitest ~2min) via a workflow, not `&`.
 - [LabTrax mobile manage-screen gating](labtrax-manage-screen-gating.md) — Pricing/Reports admin-only, Lists billing (item-label edit admin); gate on server RBAC not desktop isAdmin; non-eligible roles blocked not read-only.
+- [expo-sensors lazy import](expo-sensors-lazy-import.md) — requireNativeModule runs at module load time; static import crashes on navigation; must dynamic-import inside the function that needs it.

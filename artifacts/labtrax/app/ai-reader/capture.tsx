@@ -14,7 +14,6 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { CameraView, useCameraPermissions, type FlashMode } from "expo-camera";
-import { Accelerometer, type AccelerometerMeasurement } from "expo-sensors";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import {
@@ -66,7 +65,7 @@ export default function AiReaderCaptureScreen() {
   const [autoShutter, setAutoShutter] = useState(false);
   // steadyCount tracks consecutive steady readings
   const steadyCountRef = useRef(0);
-  const accelSubRef = useRef<ReturnType<typeof Accelerometer.addListener> | null>(null);
+  const accelSubRef = useRef<{ remove: () => void } | null>(null);
   // Prevent double-fire while one capture is in flight
   const autoFiringRef = useRef(false);
 
@@ -90,26 +89,32 @@ export default function AiReaderCaptureScreen() {
     return stopAccelerometer;
   }, [autoShutter, isRetakeMode, pages.length, capturing]);
 
-  function startAccelerometer() {
-    steadyCountRef.current = 0;
-    autoFiringRef.current = false;
-    Accelerometer.setUpdateInterval(ACCEL_INTERVAL_MS);
-    accelSubRef.current = Accelerometer.addListener(({ x, y, z }: AccelerometerMeasurement) => {
-      if (autoFiringRef.current) return;
-      // Magnitude of total acceleration; subtract 1g (gravity) to get net motion
-      const mag = Math.abs(Math.sqrt(x * x + y * y + z * z) - 1);
-      if (mag < STEADY_THRESHOLD) {
-        steadyCountRef.current += 1;
-        if (steadyCountRef.current >= STEADY_SAMPLES) {
-          // Device has been steady long enough — fire the shutter
-          autoFiringRef.current = true;
-          capture();
+  async function startAccelerometer() {
+    try {
+      const { Accelerometer } = await import("expo-sensors");
+      steadyCountRef.current = 0;
+      autoFiringRef.current = false;
+      Accelerometer.setUpdateInterval(ACCEL_INTERVAL_MS);
+      accelSubRef.current = Accelerometer.addListener(({ x, y, z }: { x: number; y: number; z: number }) => {
+        if (autoFiringRef.current) return;
+        // Magnitude of total acceleration; subtract 1g (gravity) to get net motion
+        const mag = Math.abs(Math.sqrt(x * x + y * y + z * z) - 1);
+        if (mag < STEADY_THRESHOLD) {
+          steadyCountRef.current += 1;
+          if (steadyCountRef.current >= STEADY_SAMPLES) {
+            // Device has been steady long enough — fire the shutter
+            autoFiringRef.current = true;
+            capture();
+          }
+        } else {
+          // Motion detected — reset steady counter
+          steadyCountRef.current = 0;
         }
-      } else {
-        // Motion detected — reset steady counter
-        steadyCountRef.current = 0;
-      }
-    });
+      });
+    } catch {
+      // expo-sensors unavailable on this device — silently disable auto-shutter
+      setAutoShutter(false);
+    }
   }
 
   function stopAccelerometer() {
