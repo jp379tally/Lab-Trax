@@ -713,13 +713,12 @@ function MediaCleanupCard() {
                 ? `last successful backup was ${Math.floor((Date.now() - new Date(backupScheduleQuery.data.lastSuccessfulBackupAt).getTime()) / (24 * 60 * 60 * 1000))} day(s) ago.`
                 : "no successful backup has been recorded."}
               {" "}
-              <a
-                href="#settings-backup"
-                onClick={(e) => { e.preventDefault(); window.location.hash = ""; window.location.assign("/settings?tab=backup"); }}
+              <Link
+                to="/settings?tab=backup"
                 className="underline underline-offset-2 hover:opacity-80"
               >
                 Go to Backup settings
-              </a>
+              </Link>
             </div>
           </div>
         )}
