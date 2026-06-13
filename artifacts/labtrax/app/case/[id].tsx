@@ -361,6 +361,7 @@ interface OverviewForm {
   priority: string;
   dueDate: string | null;
   expectedDeliveryDate: string | null;
+  casePanBarcode: string;
 }
 
 function formFromCase(c: DetailedCase): OverviewForm {
@@ -371,6 +372,7 @@ function formFromCase(c: DetailedCase): OverviewForm {
     priority: (c.priority ?? "normal").toLowerCase(),
     dueDate: toDateInput(c.dueDate),
     expectedDeliveryDate: toDateInput(c.expectedDeliveryDate),
+    casePanBarcode: c.casePanBarcode ?? "",
   };
 }
 
@@ -398,6 +400,10 @@ function buildOverviewPayload(c: DetailedCase, form: OverviewForm): UpdateCaseIn
   const origExp = toDateInput(c.expectedDeliveryDate);
   if (form.expectedDeliveryDate !== origExp) {
     payload.expectedDeliveryDate = form.expectedDeliveryDate;
+  }
+  const origBarcode = c.casePanBarcode ?? "";
+  if (form.casePanBarcode !== origBarcode) {
+    payload.casePanBarcode = form.casePanBarcode;
   }
   return payload;
 }
@@ -1217,6 +1223,42 @@ function OverviewSection({
               colors={colors}
               testID="select-expected"
             />
+            <View style={styles.editRow}>
+              <Text style={styles.editLabel}>Pan Barcode</Text>
+              <View style={{ flexDirection: "row", alignItems: "center", flex: 1, gap: Spacing.xs }}>
+                <TextInput
+                  style={[styles.input, { flex: 1, fontVariant: ["tabular-nums"] }]}
+                  value={form.casePanBarcode}
+                  onChangeText={(t) => setForm((f) => ({ ...f, casePanBarcode: t }))}
+                  placeholder="Scan or type… (blank to clear)"
+                  placeholderTextColor={colors.textTertiary}
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                  testID="barcode-input"
+                />
+                <Pressable
+                  hitSlop={8}
+                  testID="scan-barcode-edit-btn"
+                  onPress={() => {
+                    clearAiReaderSession();
+                    setAiReaderSession({
+                      caseId,
+                      caseNumber: c.caseNumber ?? null,
+                      patientName: [c.patientFirstName, c.patientLastName]
+                        .filter(Boolean)
+                        .join(" ") || null,
+                      doctorName: c.doctorName ?? null,
+                      dueDate: c.dueDate ?? null,
+                      labOrgId: c.labOrganizationId ?? c.organizationId ?? null,
+                      labName: labName ?? null,
+                    });
+                    router.push("/ai-reader/barcode" as never);
+                  }}
+                >
+                  <Ionicons name="barcode-outline" size={22} color={colors.tint} />
+                </Pressable>
+              </View>
+            </View>
 
             <View style={styles.editActions}>
               <Pressable

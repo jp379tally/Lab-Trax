@@ -2272,6 +2272,7 @@ export function CaseDrawer({
       ? new Date(labCase.dueDate).toISOString().split("T")[0]
       : "",
     priority: (labCase.priority || "normal") as "normal" | "rush",
+    casePanBarcode: labCase.casePanBarcode || "",
   });
   const [editError, setEditError] = useState<string | null>(null);
 
@@ -2368,6 +2369,7 @@ export function CaseDrawer({
     doctorName: string;
     dueDate: string;
     priority: "normal" | "rush";
+    casePanBarcode: string;
   };
 
   const [pendingCreates, setPendingCreates] = useState<PendingCreate[]>([]);
@@ -2577,6 +2579,7 @@ export function CaseDrawer({
           doctorName: updates.doctorName,
           priority: updates.priority,
           ...(updates.dueDate ? { dueDate: updates.dueDate } : {}),
+          casePanBarcode: updates.casePanBarcode || null,
         }),
       }),
     onSuccess: () => {
@@ -2996,6 +2999,7 @@ export function CaseDrawer({
             doctorName: snapshotCaseEdit.doctorName,
             priority: snapshotCaseEdit.priority,
             ...(snapshotCaseEdit.dueDate ? { dueDate: snapshotCaseEdit.dueDate } : {}),
+            casePanBarcode: snapshotCaseEdit.casePanBarcode || null,
           }),
         });
         setPendingCaseEdit(null);
@@ -3247,6 +3251,7 @@ export function CaseDrawer({
         ? new Date(src.dueDate).toISOString().split("T")[0]
         : "",
       priority: (src.priority || "normal") as "normal" | "rush",
+      casePanBarcode: src.casePanBarcode || "",
     });
     setEditError(null);
     setEditMode(true);
@@ -3945,14 +3950,12 @@ export function CaseDrawer({
                     <div className="col-span-2">
                       <Field label="Notes" value={notesPreview} />
                     </div>
-                    {(data?.casePanBarcode ?? labCase.casePanBarcode) && (
-                      <div className="col-span-2">
-                        <Field
-                          label="Case pan barcode"
-                          value={data?.casePanBarcode ?? labCase.casePanBarcode ?? ""}
-                        />
-                      </div>
-                    )}
+                    <div className="col-span-2">
+                      <Field
+                        label="Case pan barcode"
+                        value={data?.casePanBarcode ?? labCase.casePanBarcode ?? "—"}
+                      />
+                    </div>
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -4041,6 +4044,20 @@ export function CaseDrawer({
                         <option value="normal">Normal</option>
                         <option value="rush">Rush</option>
                       </select>
+                    </div>
+                    <div className="col-span-2">
+                      <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                        Case Pan Barcode
+                      </label>
+                      <input
+                        value={editForm.casePanBarcode}
+                        onChange={(e) => {
+                          setEditForm((f) => ({ ...f, casePanBarcode: e.target.value }));
+                          setEditError(null);
+                        }}
+                        placeholder="Scan or type a barcode… (leave blank to clear)"
+                        className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm font-mono border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                      />
                     </div>
                     {editError && <p className="text-xs text-destructive">{editError}</p>}
                     <div className="flex gap-2 pt-1">
