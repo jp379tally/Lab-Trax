@@ -10,6 +10,7 @@ import {
   LayoutAnimation,
   Platform,
   UIManager,
+  Image,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -21,6 +22,8 @@ import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
 import { StatusBadge, type BadgeVariant } from "@/components/ui/StatusBadge";
 import { LocateCaseSheet } from "@/components/LocateCaseSheet";
+import { useAuth } from "@/lib/auth-context";
+import { useMe } from "@/lib/auth-me";
 
 if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -96,6 +99,21 @@ export default function DashboardScreen() {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
+
+  // ── Profile data ─────────────────────────────────────────────────────────
+  const { profilePicUri } = useAuth();
+  const me = useMe();
+  const meUser = me.data?.user as any;
+  const memberships = me.data?.memberships ?? [];
+
+  const fullName = [meUser?.firstName, meUser?.lastName].filter(Boolean).join(" ");
+  const displayName = fullName || meUser?.username || "";
+  const avatarLetter = (displayName || "?").charAt(0).toUpperCase();
+  const displayRole = meUser?.role ?? "";
+  const labMembership = memberships.find(
+    (m: any) => m.status === "active" && (m.organization?.type ?? "").toLowerCase() === "lab",
+  );
+  const labName: string = labMembership?.organization?.name ?? meUser?.practiceName ?? "";
 
   // ── Prefs (persisted) ────────────────────────────────────────────────────
   const prefsLoadedRef = useRef(false);
@@ -359,6 +377,36 @@ export default function DashboardScreen() {
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
+      {/* ── Profile header ─────────────────────────────────────────────── */}
+      <Pressable
+        style={styles.profileHeader}
+        onPress={() => router.push("/settings/profile" as never)}
+        testID="dashboard-profile-header"
+      >
+        {profilePicUri ? (
+          <Image source={{ uri: profilePicUri }} style={styles.profileAvatar} />
+        ) : (
+          <View style={[styles.profileAvatarFallback, { backgroundColor: colors.tint + "20" }]}>
+            <Text style={[styles.profileAvatarLetter, { color: colors.tint }]}>{avatarLetter}</Text>
+          </View>
+        )}
+        {displayName ? (
+          <Text style={[styles.profileName, { color: colors.text }]} numberOfLines={1}>
+            {displayName}
+          </Text>
+        ) : null}
+        {labName ? (
+          <Text style={[styles.profileLab, { color: colors.textSecondary }]} numberOfLines={1}>
+            {labName}
+          </Text>
+        ) : null}
+        {displayRole ? (
+          <Text style={[styles.profileRole, { color: colors.textTertiary }]} numberOfLines={1}>
+            <Text style={{ textTransform: "capitalize" }}>{displayRole}</Text>
+          </Text>
+        ) : null}
+      </Pressable>
+
       <View style={styles.header}>
         <View style={styles.headerText}>
           <Text style={styles.title}>Dashboard</Text>
@@ -410,12 +458,37 @@ export default function DashboardScreen() {
 function makeStyles(c: ThemeColors) {
   return StyleSheet.create({
     screen: { flex: 1, backgroundColor: c.backgroundSolid },
+    profileHeader: {
+      alignItems: "center",
+      paddingHorizontal: Spacing.lg,
+      paddingTop: Spacing.md,
+      paddingBottom: Spacing.sm,
+      gap: 4,
+    },
+    profileAvatar: {
+      width: 60,
+      height: 60,
+      borderRadius: 30,
+      marginBottom: Spacing.xs,
+    },
+    profileAvatarFallback: {
+      width: 60,
+      height: 60,
+      borderRadius: 30,
+      alignItems: "center",
+      justifyContent: "center",
+      marginBottom: Spacing.xs,
+    },
+    profileAvatarLetter: { ...Typography.h2 },
+    profileName: { ...Typography.h3, textAlign: "center" },
+    profileLab: { ...Typography.body, textAlign: "center" },
+    profileRole: { ...Typography.caption, textAlign: "center" },
     header: {
       flexDirection: "row",
       alignItems: "center",
       justifyContent: "space-between",
       paddingHorizontal: Spacing.lg,
-      paddingTop: Spacing.sm,
+      paddingTop: Spacing.xs,
       paddingBottom: Spacing.xs,
     },
     headerText: { flex: 1 },
