@@ -2814,7 +2814,8 @@ router.get(
         const ln = String(c.patientLastName ?? "").toLowerCase();
         const dr = String(c.doctorName ?? "").toLowerCase();
         const cn = String(c.caseNumber ?? "").toLowerCase();
-        return fn.includes(rawSearch) || ln.includes(rawSearch) || dr.includes(rawSearch) || cn.includes(rawSearch);
+        const pb = String(c.casePanBarcode ?? "").toLowerCase();
+        return fn.includes(rawSearch) || ln.includes(rawSearch) || dr.includes(rawSearch) || cn.includes(rawSearch) || pb.includes(rawSearch);
       });
     }
     if (rawStatus) {

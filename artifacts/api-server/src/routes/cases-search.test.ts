@@ -244,6 +244,37 @@ maybe("Cases search and tenant isolation (db integration)", () => {
     await db.delete(cases).where(inArray(cases.id, [activeCase, receivedCase]));
   });
 
+  it("GET /api/cases?search=<barcode>: returns only cases whose pan barcode contains the search term", async () => {
+    const uniqueBarcode = `PB${randomBytes(5).toString("hex").toUpperCase()}`;
+    // Search with a partial (middle) substring of the barcode to verify
+    // contains / LIKE semantics rather than exact-match behaviour.
+    const partialSearch = uniqueBarcode.slice(2, 8).toLowerCase();
+    const barcodeCase = await insertCase({
+      caseNumber: rid("PBS"),
+      patientFirst: "Pat",
+      patientLast: "Smith",
+      panBarcode: uniqueBarcode,
+    });
+    const decoyCase = await insertCase({
+      caseNumber: rid("PBS"),
+      patientFirst: "Other",
+      patientLast: "Person",
+    });
+
+    const r = await request(appMod.default)
+      .get("/api/cases")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({ organizationId: labOrgId, search: partialSearch });
+
+    expect(r.status).toBe(200);
+    const ids = r.body.data.map((c: any) => c.id);
+    expect(ids).toContain(barcodeCase);
+    expect(ids).not.toContain(decoyCase);
+
+    const { db, cases } = dbMod as any;
+    await db.delete(cases).where(inArray(cases.id, [barcodeCase, decoyCase]));
+  });
+
   it("GET /api/cases?barcode=<code>: returns only the case with that pan barcode (gap: filter not implemented)", async () => {
     const barcode = `BAR${randomBytes(4).toString("hex").toUpperCase()}`;
     const barcodeCase = await insertCase({
