@@ -163,6 +163,35 @@ interface StoredSession {
 
 // ─── Local storage helpers ──────────────────────────────────────────────────
 
+/**
+ * When restoring messages from localStorage, any pending proposed action whose
+ * server-side TTL has already elapsed must be shown as "Expired" immediately —
+ * never as a live countdown starting from scratch.
+ *
+ * Rules:
+ *  - If `expiresAt` is missing → force it to a past timestamp so ConfirmCard
+ *    opens in the expired state (msLeft = 0) instead of falling back to the
+ *    full PENDING_TTL_MS default.
+ *  - If `expiresAt` is already in the past → leave it as-is (ConfirmCard
+ *    already handles this correctly via `Math.max(0, expiresAt - Date.now())`).
+ *  - Non-pending states (confirmed, done, rejected) are unchanged.
+ */
+function sanitizeRestoredMessages(messages: ChatMsg[]): ChatMsg[] {
+  const now = Date.now();
+  return messages.map((msg) => {
+    const pa = msg.proposedAction;
+    if (!pa || pa.state !== "pending") return msg;
+    if (pa.expiresAt != null && pa.expiresAt > now) return msg;
+    return {
+      ...msg,
+      proposedAction: {
+        ...pa,
+        expiresAt: pa.expiresAt ?? (now - 1),
+      },
+    };
+  });
+}
+
 const STORAGE_KEY = "labtrax_chat_sessions_v1";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_SESSIONS_PER_KEY = 10;
@@ -497,8 +526,9 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
       currentSessionIdRef.current = latest.id;
       const cases = latest.pinnedCases.length > 0 ? latest.pinnedCases : initialCases;
       setPinnedCases(cases);
-      setMessages([buildWelcome(cases), ...latest.messages]);
-      setPromptsDismissed(latest.messages.some((m) => m.role === "user"));
+      const sanitized = sanitizeRestoredMessages(latest.messages);
+      setMessages([buildWelcome(cases), ...sanitized]);
+      setPromptsDismissed(sanitized.some((m) => m.role === "user"));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -594,8 +624,9 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
     currentSessionIdRef.current = session.id;
     const cases = session.pinnedCases.length > 0 ? session.pinnedCases : initialCases;
     setPinnedCases(cases);
-    setMessages([buildWelcome(cases), ...session.messages]);
-    setPromptsDismissed(session.messages.some((m) => m.role === "user"));
+    const sanitized = sanitizeRestoredMessages(session.messages);
+    setMessages([buildWelcome(cases), ...sanitized]);
+    setPromptsDismissed(sanitized.some((m) => m.role === "user"));
     setShowSessionsList(false);
     setTimeout(() => inputRef.current?.focus(), 50);
   }
