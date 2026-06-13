@@ -32,6 +32,7 @@ import {
 } from "@workspace/api-client-react";
 import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
+import * as Print from "expo-print";
 import { resilientFetch } from "@/lib/query-client";
 import { uploadCaseAttachment } from "@/lib/uploadCaseAttachment";
 import {
@@ -123,6 +124,13 @@ interface DetailedCase {
   remakeReason?: string | null;
   organizationId?: string | null;
   labOrganizationId?: string | null;
+}
+
+// Shape returned by GET /api/organizations/:id/case-print-template
+interface OrgPrintTemplate {
+  template: Record<string, unknown> | null;
+  isCustom: boolean;
+  defaultTemplate: Record<string, unknown>;
 }
 
 type SectionKey = "overview" | "restorations" | "notes" | "files" | "invoice" | "history";
@@ -1106,6 +1114,12 @@ function OverviewSection({
   const [picker, setPicker] = useState<"dueDate" | "expectedDeliveryDate" | "locate" | null>(null);
   const update = useUpdateCase();
 
+  // ── Print-label prompt (shown after a barcode is assigned via the edit form) ─
+  const [printModalVisible, setPrintModalVisible] = useState(false);
+  const [printLoading, setPrintLoading] = useState(false);
+  const [pendingPrintBarcode, setPendingPrintBarcode] = useState<string | null>(null);
+  const insets = useSafeAreaInsets();
+
   // ── Locate Case ─────────────────────────────────────────────────────────────
   // Mirrors the desktop "Locate Case" control: pick a destination station, then
   // press "Locate" to move the case there. Location IS the canonical case status
@@ -1156,8 +1170,64 @@ function OverviewSection({
       await onSaved();
       setPicker(null);
       setEditing(false);
+      // If a non-empty barcode was assigned (new or changed), prompt to print
+      const newBarcode = payload.casePanBarcode;
+      if (newBarcode && newBarcode.trim()) {
+        setPendingPrintBarcode(newBarcode.trim());
+        setPrintModalVisible(true);
+      }
     } catch (e) {
       Alert.alert("Couldn't save changes", errorMessage(e));
+    }
+  }
+
+  async function printLabel() {
+    if (!pendingPrintBarcode) return;
+    setPrintLoading(true);
+    try {
+      let orgTemplate: OrgPrintTemplate | null = null;
+      const labOrgId = c.labOrganizationId ?? c.organizationId ?? null;
+      if (labOrgId) {
+        try {
+          const tmplRes = await resilientFetch(
+            `/api/organizations/${encodeURIComponent(labOrgId)}/case-print-template`,
+          );
+          if (tmplRes.ok) {
+            const body = (await tmplRes.json()) as { data?: OrgPrintTemplate };
+            orgTemplate = body?.data ?? null;
+          }
+        } catch {
+          // Non-fatal — use default template
+        }
+      }
+      const restorations = (c.restorations ?? []).map((r) => ({
+        toothNumber: r.toothNumber,
+        restorationType: r.restorationType,
+        material: r.material,
+        shade: r.shade,
+      }));
+      const html = buildCaseCardHtml({
+        caseNumber: c.caseNumber ?? undefined,
+        patientName: [c.patientFirstName, c.patientLastName].filter(Boolean).join(" ") || undefined,
+        doctorName: c.doctorName ?? undefined,
+        dueDate: c.dueDate ?? undefined,
+        priority: undefined,
+        status: (c.status ?? "received") as string,
+        rxNotes: c.caseNotes ?? undefined,
+        restorations,
+        labName: orgTemplate?.template
+          ? ((orgTemplate.template as Record<string, unknown>)?.labName as string | undefined) ??
+            labName ?? undefined
+          : labName ?? undefined,
+        casePanBarcode: pendingPrintBarcode,
+      });
+      await Print.printAsync({ html });
+    } catch (e) {
+      Alert.alert("Print error", e instanceof Error ? e.message : "Could not open the print dialog.");
+    } finally {
+      setPrintLoading(false);
+      setPrintModalVisible(false);
+      setPendingPrintBarcode(null);
     }
   }
 
@@ -1435,6 +1505,52 @@ function OverviewSection({
         styles={styles}
         colors={colors}
       />
+
+      {/* Print-label prompt — shown after assigning a barcode via the edit form */}
+      <Modal visible={printModalVisible} transparent animationType="slide" onRequestClose={() => {
+        setPrintModalVisible(false);
+        setPendingPrintBarcode(null);
+      }}>
+        <View style={styles.labelPrintOverlay}>
+          <View style={[styles.labelPrintSheet, { paddingBottom: insets.bottom + Spacing.lg }]}>
+            <View style={styles.labelPrintHandle} />
+            <Ionicons
+              name="checkmark-circle"
+              size={40}
+              color={colors.success}
+              style={{ alignSelf: "center" }}
+            />
+            <Text style={styles.labelPrintTitle}>Barcode assigned!</Text>
+            <Text style={styles.labelPrintBody}>
+              Print a work-order label for case #{c.caseNumber}?{"\n"}
+              This uses your lab's print template and shows the system print dialog.
+            </Text>
+            <Pressable
+              style={[styles.labelPrintBtn, printLoading && { opacity: 0.6 }]}
+              onPress={printLabel}
+              disabled={printLoading}
+            >
+              {printLoading ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <>
+                  <Ionicons name="print-outline" size={18} color="#fff" />
+                  <Text style={styles.labelPrintBtnText}>Print label</Text>
+                </>
+              )}
+            </Pressable>
+            <Pressable
+              style={styles.labelPrintSkipBtn}
+              onPress={() => {
+                setPrintModalVisible(false);
+                setPendingPrintBarcode(null);
+              }}
+            >
+              <Text style={styles.labelPrintSkipText}>Skip</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -2797,5 +2913,39 @@ function makeStyles(c: ThemeColors) {
     invHeaderRight: { flexDirection: "row", alignItems: "center", gap: Spacing.sm },
     btnDanger: { borderColor: c.warning },
     btnDangerText: { color: c.warning },
+    labelPrintOverlay: {
+      flex: 1,
+      backgroundColor: "rgba(0,0,0,0.5)",
+      justifyContent: "flex-end",
+    },
+    labelPrintSheet: {
+      backgroundColor: c.surface,
+      borderTopLeftRadius: Radius.xl,
+      borderTopRightRadius: Radius.xl,
+      padding: Spacing.xl,
+      gap: Spacing.md,
+    },
+    labelPrintHandle: {
+      width: 40,
+      height: 4,
+      borderRadius: 2,
+      backgroundColor: c.border,
+      alignSelf: "center",
+      marginBottom: Spacing.sm,
+    },
+    labelPrintTitle: { ...Typography.h2, color: c.text, textAlign: "center" },
+    labelPrintBody: { ...Typography.body, color: c.textSecondary, textAlign: "center" },
+    labelPrintBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: Spacing.sm,
+      backgroundColor: c.tint,
+      borderRadius: Radius.md,
+      paddingVertical: Spacing.md,
+    },
+    labelPrintBtnText: { ...Typography.bodySemibold, color: "#fff" },
+    labelPrintSkipBtn: { paddingVertical: Spacing.sm, alignItems: "center" },
+    labelPrintSkipText: { ...Typography.body, color: c.textTertiary },
   });
 }
