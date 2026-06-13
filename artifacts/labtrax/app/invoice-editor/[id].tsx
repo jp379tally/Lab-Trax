@@ -212,16 +212,18 @@ export default function InvoiceEditorScreen() {
   }
 
   function addLine(item?: BillableItem) {
+    let prefillPrice = "";
+    if (item?.unitPrice != null) {
+      const n = parseFloat(item.unitPrice);
+      prefillPrice = Number.isFinite(n) ? String(n) : "";
+    }
     setLines((prev) => [
       ...prev,
       {
         id: null,
         description: item?.name ?? "",
         quantity: "1",
-        unitPrice:
-          item?.unitPrice != null
-            ? String(parseFloat(item.unitPrice) || "")
-            : "",
+        unitPrice: prefillPrice,
         tooth: "",
         subItems: [],
         metaLabel: "",
