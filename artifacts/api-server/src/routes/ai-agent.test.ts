@@ -28,6 +28,15 @@ import {
 } from "../lib/ai-agent-tools";
 import { registerAiAgentRoutes, _testInjectPendingAction } from "./ai-agent";
 
+// ─── Auth middleware stub (must be at module top level for Vitest hoisting) ──
+
+vi.mock("../middlewares/auth", () => ({
+  requireAuth: (req: any, res: any, next: any) => {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+    next();
+  },
+  optionalAuth: (_req: any, _res: any, next: any) => next(),
+}));
 
 // ─── Minimal Express app for tests ─────────────────────────────────────────
 
@@ -35,22 +44,13 @@ function makeApp(userId?: string) {
   const app = express();
   app.use(bodyParser.json());
 
-  // Stub auth middleware
+  // Stub auth middleware — sets req.user so requireAuth (mocked above) can gate routes
   app.use((req: any, _res, next) => {
     if (userId) {
       req.user = { id: userId, userType: "lab" };
     }
     next();
   });
-
-  // Stub requireAuth: if no user, 401
-  vi.mock("../middlewares/auth", () => ({
-    requireAuth: (req: any, res: any, next: any) => {
-      if (!req.user) return res.status(401).json({ error: "Unauthorized" });
-      next();
-    },
-    optionalAuth: (_req: any, _res: any, next: any) => next(),
-  }));
 
   const router = express.Router();
   registerAiAgentRoutes(router);
