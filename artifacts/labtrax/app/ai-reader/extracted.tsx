@@ -384,7 +384,7 @@ body { background: #fff; }
 .page:last-child { page-break-after: auto; }
 img { max-width: 100%; max-height: 100vh; object-fit: contain; }
 </style></head><body>
-${pages.map((p) => `<div class="page"><img src="${p.base64}" /></div>`).join("\n")}
+${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base64}" /></div>`).join("\n")}
 </body></html>`;
 
     let pdfUri: string;

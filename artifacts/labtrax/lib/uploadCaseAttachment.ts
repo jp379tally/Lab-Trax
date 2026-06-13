@@ -41,12 +41,22 @@ export async function uploadCaseAttachment(
 
   // Step 1 — binary upload. Reserve the final 5% of the bar for the register
   // call so a row never reads 100% before the case actually references it.
-  const uploadResult = await chunkedUploadCaseMedia(
-    fileUri,
-    fileName,
-    mimeType,
-    (fraction) => onProgress?.(Math.min(fraction * 0.95, 0.95)),
-  );
+  // chunkedUploadCaseMedia can throw (auth missing, network failure) in addition
+  // to returning { ok: false } — wrap so callers always get a clean result.
+  let uploadResult: Awaited<ReturnType<typeof chunkedUploadCaseMedia>>;
+  try {
+    uploadResult = await chunkedUploadCaseMedia(
+      fileUri,
+      fileName,
+      mimeType,
+      (fraction) => onProgress?.(Math.min(fraction * 0.95, 0.95)),
+    );
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "File upload failed.",
+    };
+  }
 
   if (!uploadResult.ok) {
     return { ok: false, error: uploadResult.error || "File upload failed." };
