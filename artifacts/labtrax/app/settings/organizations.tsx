@@ -36,6 +36,7 @@ interface OrgMembership {
     state?: string | null;
     billingEmail?: string | null;
     duplicateSuggestionThreshold?: number | null;
+    defaultCaseDueDays?: number | null;
     logoUrl?: string | null;
     logoplacements?: string[] | null;
     logoPdfSize?: string | null;
@@ -98,6 +99,11 @@ function OrgCard({ m, colors, styles }: { m: OrgMembership; colors: ThemeColors;
   );
   const [logoSize, setLogoSize] = useState(org?.logoPdfSize ?? "medium");
   const [logoSaved, setLogoSaved] = useState(false);
+
+  const [dueDays, setDueDays] = useState<string>(
+    org?.defaultCaseDueDays != null ? String(org.defaultCaseDueDays) : ""
+  );
+  const [dueDaysSaved, setDueDaysSaved] = useState(false);
   const [logoUploading, setLogoUploading] = useState(false);
   const logoXhrRef = useRef<XMLHttpRequest | null>(null);
 
@@ -177,6 +183,27 @@ function OrgCard({ m, colors, styles }: { m: OrgMembership; colors: ThemeColors;
       setTimeout(() => setLogoSaved(false), 2000);
     },
     onError: (err: Error) => Alert.alert("Could not save logo settings", err.message),
+  });
+
+  const dueDaysMutation = useMutation({
+    mutationFn: async (value: number | null) => {
+      if (!orgId) throw new Error("Unknown org ID.");
+      const res = await resilientFetch(`/api/organizations/${orgId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ defaultCaseDueDays: value }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error((e as any)?.error || `Failed (${res.status})`);
+      }
+    },
+    onSuccess: () => {
+      setDueDaysSaved(true);
+      qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
+      setTimeout(() => setDueDaysSaved(false), 2000);
+    },
+    onError: (err: Error) => Alert.alert("Could not save default due date", err.message),
   });
 
   async function pickLogo() {
@@ -455,6 +482,62 @@ function OrgCard({ m, colors, styles }: { m: OrgMembership; colors: ThemeColors;
                 </Text>
               )}
             </View>
+          </View>
+        </View>
+      )}
+
+      {/* Default case due date — admin/owner, lab orgs only */}
+      {isAdmin && orgId && org?.type === "lab" && (
+        <View style={[styles.dupSection, { borderTopColor: colors.border }]}>
+          <View style={styles.dupHeader}>
+            <Text style={[styles.dupTitle, { color: colors.text }]}>Default case due date</Text>
+            {dueDaysSaved && (
+              <View style={[styles.dupSaved, { backgroundColor: colors.success + "20" }]}>
+                <Ionicons name="checkmark" size={12} color={colors.success} />
+                <Text style={[styles.dupSavedText, { color: colors.success }]}>Saved</Text>
+              </View>
+            )}
+          </View>
+          <Text style={[styles.dupSub, { color: colors.textTertiary }]}>
+            Days after received date to set as due date on new cases. Leave blank for no default.
+          </Text>
+          <View style={styles.stepRow}>
+            <TextInput
+              style={{
+                height: 34,
+                width: 72,
+                borderRadius: 8,
+                borderWidth: 1,
+                paddingHorizontal: 10,
+                fontSize: 14,
+                borderColor: colors.border,
+                backgroundColor: colors.surfaceAlt,
+                color: colors.text,
+              }}
+              value={dueDays}
+              onChangeText={setDueDays}
+              keyboardType="number-pad"
+              placeholder="e.g. 7"
+              placeholderTextColor={colors.textTertiary}
+              maxLength={3}
+            />
+            <Text style={[styles.dupSub, { color: colors.textSecondary, marginLeft: 6 }]}>days</Text>
+            <View style={styles.dupStepFill} />
+            <Pressable
+              style={[styles.dupSaveBtn, { backgroundColor: colors.tint }, dueDaysMutation.isPending && { opacity: 0.6 }]}
+              onPress={() => {
+                const val = dueDays.trim();
+                const num = val === "" ? null : parseInt(val, 10);
+                if (num !== null && (isNaN(num) || num < 1 || num > 365)) {
+                  Alert.alert("Invalid value", "Enter a number between 1 and 365.");
+                  return;
+                }
+                dueDaysMutation.mutate(num);
+              }}
+              disabled={dueDaysMutation.isPending}
+            >
+              <Text style={styles.dupSaveBtnText}>{dueDaysMutation.isPending ? "Saving…" : "Save"}</Text>
+            </Pressable>
           </View>
         </View>
       )}

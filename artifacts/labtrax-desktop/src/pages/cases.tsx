@@ -559,6 +559,18 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
     setError(null);
   }
 
+  // Pre-fill due date from the lab's defaultCaseDueDays setting when the
+  // user picks a lab and hasn't typed a date yet.
+  useEffect(() => {
+    if (!form.labOrganizationId || form.dueDate) return;
+    const lab = labOrgs.find((o) => o.id === form.labOrganizationId);
+    if (!lab?.defaultCaseDueDays) return;
+    const d = new Date();
+    d.setDate(d.getDate() + lab.defaultCaseDueDays);
+    setForm((f) => ({ ...f, dueDate: d.toISOString().slice(0, 10) }));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.labOrganizationId]);
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!form.labOrganizationId)

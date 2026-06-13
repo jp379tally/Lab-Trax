@@ -259,6 +259,10 @@ export const organizations = pgTable(
     // TRUSTED_DEVICE_TTL_DAYS env var (default 30). Valid range: 1–365.
     // Only meaningful on type="lab" rows; ignored on provider organizations.
     trustedDeviceTtlDays: integer("trusted_device_ttl_days"),
+    // Default number of days after case received-date that the due date
+    // should be set. Null = no default (field left blank on new cases).
+    // Only meaningful on type="lab" rows.
+    defaultCaseDueDays: integer("default_case_due_days"),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     deletedByUserId: varchar("deleted_by_user_id"),
   },

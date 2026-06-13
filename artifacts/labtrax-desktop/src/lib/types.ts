@@ -379,6 +379,7 @@ export interface Organization {
   logoplacements?: string[] | null;
   duplicateSuggestionThreshold?: string | number | null;
   trustedDeviceTtlDays?: number | null;
+  defaultCaseDueDays?: number | null;
 }
 
 export interface BankAccount {

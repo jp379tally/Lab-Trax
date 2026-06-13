@@ -87,6 +87,9 @@ const createOrgSchema = z.object({
   isActive: z.boolean().optional(),
   // When true the automated statement-email engine skips this practice.
   statementEmailOptOut: z.boolean().optional(),
+  // Default days after received-date to set as the due date for new cases.
+  // Null clears the override (no default applied). Lab orgs only.
+  defaultCaseDueDays: z.number().int().min(1).max(365).nullable().optional(),
   // Doctor name is used (alongside the address) to derive the auto account
   // number when the lab admin doesn't supply one. It's optional and not
   // persisted on the org row directly — it just feeds the derivation.

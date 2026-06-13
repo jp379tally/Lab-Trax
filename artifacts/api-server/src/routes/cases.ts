@@ -2187,6 +2187,23 @@ router.post(
       );
     }
 
+    // If the caller didn't supply a due date, fall back to the lab's default
+    // window (defaultCaseDueDays days after today). The client-side pre-fill
+    // in the new-case form covers the normal path; this server-side fallback
+    // catches mobile creates and iTero auto-imports that never send dueDate.
+    let resolvedDueDate: Date | null = input.dueDate ? new Date(input.dueDate) : null;
+    if (!resolvedDueDate) {
+      const labOrg = await db.query.organizations.findFirst({
+        where: eq(organizations.id, input.labOrganizationId),
+        columns: { defaultCaseDueDays: true },
+      });
+      if (labOrg?.defaultCaseDueDays) {
+        const d = new Date();
+        d.setDate(d.getDate() + labOrg.defaultCaseDueDays);
+        resolvedDueDate = d;
+      }
+    }
+
     // For remake cases, compute the next letter suffix (B, C, D, …) inside
     // a transaction so the count + insert are atomic. The UNIQUE constraint
     // on cases.caseNumber is the ultimate guard against collisions even
@@ -2245,7 +2262,7 @@ router.post(
           doctorName: input.doctorName,
           status: input.status,
           priority: input.priority,
-          dueDate: input.dueDate ? new Date(input.dueDate) : null,
+          dueDate: resolvedDueDate,
           expectedDeliveryDate: (() => {
             const d = new Date();
             d.setDate(d.getDate() + 7);

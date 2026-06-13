@@ -1804,6 +1804,7 @@ function OrganizationsPanel() {
                   />
                   <DuplicateThresholdRow lab={selectedOrg} />
                   <TrustedDeviceTtlRow lab={selectedOrg} />
+                  <DefaultCaseDueDaysRow lab={selectedOrg} />
                 </div>
               )}
 
@@ -2423,6 +2424,114 @@ function TrustedDeviceTtlRow({ lab }: { lab: Organization }) {
         )}
       </div>
 
+      {saveError && (
+        <div className="mt-1">
+          <Alert tone="danger">{saveError}</Alert>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DefaultCaseDueDaysRow({ lab }: { lab: Organization }) {
+  const queryClient = useQueryClient();
+
+  const saved = lab.defaultCaseDueDays ?? null;
+  const [inputVal, setInputVal] = useState<string>(saved !== null ? String(saved) : "");
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [savedFlag, setSavedFlag] = useState(false);
+
+  useEffect(() => {
+    setInputVal(lab.defaultCaseDueDays !== null && lab.defaultCaseDueDays !== undefined
+      ? String(lab.defaultCaseDueDays)
+      : "");
+  }, [lab.defaultCaseDueDays]);
+
+  const parsed = inputVal.trim() === "" ? null : parseInt(inputVal, 10);
+  const parsedValid = parsed === null || (Number.isFinite(parsed) && parsed >= 1 && parsed <= 365);
+  const dirty = parsed !== saved;
+
+  const saveMutation = useMutation({
+    mutationFn: (value: number | null) =>
+      apiFetch(`/organizations/${lab.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ defaultCaseDueDays: value }),
+      }),
+    onSuccess: () => {
+      setSaveError(null);
+      setSavedFlag(true);
+      setTimeout(() => setSavedFlag(false), 2000);
+      queryClient.invalidateQueries({ queryKey: ["organizations"] });
+    },
+    onError: (err: Error) => setSaveError(err.message || "Failed to save."),
+  });
+
+  return (
+    <div className="rounded-md border border-border bg-background p-3 space-y-2.5">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <div className="text-xs font-semibold">Default case due date</div>
+          <div className="text-[11px] text-muted-foreground max-w-sm">
+            Days after received date to pre-fill as the due date on new cases. Leave blank to require an explicit date on each case.
+          </div>
+        </div>
+        {saved !== null ? (
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-secondary-foreground shrink-0">
+            {saved}d default
+          </span>
+        ) : (
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground shrink-0">
+            No default
+          </span>
+        )}
+      </div>
+
+      <div className="flex items-center gap-3">
+        <input
+          type="number"
+          min={1}
+          max={365}
+          placeholder="e.g. 7"
+          value={inputVal}
+          onChange={(e) => setInputVal(e.target.value)}
+          className="h-8 w-24 px-2 rounded-md border border-border bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+          aria-label="Default case due days"
+        />
+        <span className="text-xs text-muted-foreground">days</span>
+        <button
+          type="button"
+          onClick={() => saveMutation.mutate(parsed)}
+          disabled={!dirty || !parsedValid || saveMutation.isPending}
+          className="h-7 px-2.5 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-50 inline-flex items-center gap-1.5"
+        >
+          {saveMutation.isPending ? <Loader2 size={11} className="animate-spin" /> : null}
+          Save
+        </button>
+        {saved !== null && (
+          <button
+            type="button"
+            onClick={() => {
+              setInputVal("");
+              saveMutation.mutate(null);
+            }}
+            disabled={saveMutation.isPending}
+            className="h-7 px-2 rounded-md border border-border text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+            title="Remove default"
+          >
+            Clear
+          </button>
+        )}
+        {savedFlag && (
+          <span className="text-[11px] text-success inline-flex items-center gap-1">
+            <Check size={11} />
+            Saved
+          </span>
+        )}
+      </div>
+
+      {!parsedValid && inputVal.trim() !== "" && (
+        <p className="text-[11px] text-destructive">Enter a number between 1 and 365.</p>
+      )}
       {saveError && (
         <div className="mt-1">
           <Alert tone="danger">{saveError}</Alert>
