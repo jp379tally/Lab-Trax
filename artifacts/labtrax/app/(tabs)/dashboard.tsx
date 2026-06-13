@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -19,6 +19,7 @@ import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
 import { StatusBadge, type BadgeVariant } from "@/components/ui/StatusBadge";
+import { LocateCaseSheet } from "@/components/LocateCaseSheet";
 
 if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -107,6 +108,26 @@ export default function DashboardScreen() {
     setDueSoonOpen((v) => !v);
   }
 
+  // ── Long-press locate ────────────────────────────────────────────────────
+  const longPressActiveRef = useRef(false);
+  const [locatingCase, setLocatingCase] = useState<CanonicalCase | null>(null);
+  const [locateSuccessId, setLocateSuccessId] = useState<string | null>(null);
+
+  function handleLongPress(c: CanonicalCase) {
+    longPressActiveRef.current = true;
+    setLocatingCase(c);
+  }
+
+  function dismissLocate() {
+    longPressActiveRef.current = false;
+    setLocatingCase(null);
+  }
+
+  function handleLocated(caseId: string) {
+    setLocateSuccessId(caseId);
+    setTimeout(() => setLocateSuccessId(null), 2500);
+  }
+
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
       <View style={styles.header}>
@@ -169,11 +190,20 @@ export default function DashboardScreen() {
                 {dueSoon.slice(0, 6).map((c) => {
                   const d = daysUntil(c.dueDate);
                   const overdue = d != null && d < 0;
+                  const locatedSuccess = locateSuccessId === c.id;
                   return (
                     <Card
                       key={c.id}
                       style={styles.row}
-                      onPress={() => router.push(`/case/${c.id}` as never)}
+                      onPress={() => {
+                        if (longPressActiveRef.current) {
+                          longPressActiveRef.current = false;
+                          return;
+                        }
+                        router.push(`/case/${c.id}` as never);
+                      }}
+                      onLongPress={() => handleLongPress(c)}
+                      delayLongPress={400}
                     >
                       <View style={styles.rowMain}>
                         <Text style={styles.rowName} numberOfLines={1}>
@@ -190,11 +220,21 @@ export default function DashboardScreen() {
                             : ""}
                         </Text>
                       </View>
-                      <StatusBadge
-                        label={titleCase(c.status ?? "—")}
-                        variant={caseStatusVariant(c.status)}
-                        size="sm"
-                      />
+                      <View style={styles.rowRight}>
+                        <StatusBadge
+                          label={titleCase(c.status ?? "—")}
+                          variant={caseStatusVariant(c.status)}
+                          size="sm"
+                        />
+                        {locatedSuccess ? (
+                          <View style={styles.locatedBadge}>
+                            <Ionicons name="checkmark-circle" size={14} color={colors.tint} />
+                            <Text style={[styles.locatedBadgeText, { color: colors.tint }]}>
+                              Located
+                            </Text>
+                          </View>
+                        ) : null}
+                      </View>
                     </Card>
                   );
                 })}
@@ -203,6 +243,12 @@ export default function DashboardScreen() {
           )}
         </ScrollView>
       )}
+
+      <LocateCaseSheet
+        locatingCase={locatingCase}
+        onDismiss={dismissLocate}
+        onLocated={handleLocated}
+      />
     </View>
   );
 }
@@ -262,7 +308,14 @@ function makeStyles(c: ThemeColors) {
     rowName: { ...Typography.bodySemibold, color: c.text },
     rowMeta: { ...Typography.caption, color: c.textSecondary },
     rowDue: { ...Typography.caption, color: c.textTertiary, marginTop: 2 },
+    rowRight: { alignItems: "flex-end", gap: Spacing.xs },
     emptyCard: { flexDirection: "row", alignItems: "center", gap: Spacing.sm },
     emptyText: { ...Typography.body, color: c.textSecondary, flex: 1 },
+    locatedBadge: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 3,
+    },
+    locatedBadgeText: { ...Typography.captionSemibold },
   });
 }

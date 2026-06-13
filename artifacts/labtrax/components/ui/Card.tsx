@@ -12,6 +12,7 @@ interface CardProps {
   bordered?: boolean;
   onPress?: () => void;
   onLongPress?: () => void;
+  delayLongPress?: number;
   testID?: string;
   style?: StyleProp<ViewStyle>;
 }
@@ -27,6 +28,7 @@ export function Card({
   bordered = true,
   onPress,
   onLongPress,
+  delayLongPress,
   testID,
   style,
 }: CardProps) {
@@ -58,6 +60,7 @@ export function Card({
       <Pressable
         onPress={onPress}
         onLongPress={onLongPress}
+        delayLongPress={delayLongPress}
         testID={testID}
         style={({ pressed }) => [cardStyle, pressed && { opacity: 0.85 }]}
       >

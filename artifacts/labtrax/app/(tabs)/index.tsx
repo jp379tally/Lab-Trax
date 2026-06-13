@@ -14,7 +14,6 @@ import {
   Platform,
   TouchableWithoutFeedback,
   Keyboard,
-  Alert,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useFocusEffect } from "expo-router";
@@ -22,10 +21,9 @@ import { Ionicons } from "@expo/vector-icons";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import {
   useCases,
-  useUpdateCase,
   type CanonicalCase,
-  type UpdateCaseInputStatus,
 } from "@workspace/api-client-react";
+import { LocateCaseSheet } from "@/components/LocateCaseSheet";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
@@ -256,39 +254,16 @@ export default function CasesListScreen() {
   const longPressActiveRef = useRef(false);
 
   const [locatingCase, setLocatingCase] = useState<CanonicalCase | null>(null);
-  const [locateTarget, setLocateTarget] = useState<string | null>(null);
-  const [locating, setLocating] = useState(false);
   const [locateSuccessId, setLocateSuccessId] = useState<string | null>(null);
-  const updateCase = useUpdateCase();
-
-  async function confirmLocate() {
-    if (!locatingCase || !locateTarget) return;
-    setLocating(true);
-    try {
-      await updateCase.mutateAsync({
-        caseId: locatingCase.id,
-        data: { status: locateTarget as UpdateCaseInputStatus },
-      });
-      const successId = locatingCase.id;
-      setLocatingCase(null);
-      setLocateTarget(null);
-      setLocateSuccessId(successId);
-      await casesQuery.refetch();
-      setTimeout(() => setLocateSuccessId(null), 2500);
-    } catch (e) {
-      Alert.alert(
-        "Couldn't locate case",
-        e instanceof Error ? e.message : "Please try again.",
-      );
-    } finally {
-      setLocating(false);
-    }
-  }
 
   function dismissLocate() {
     longPressActiveRef.current = false;
     setLocatingCase(null);
-    setLocateTarget(null);
+  }
+
+  function handleLocated(caseId: string) {
+    setLocateSuccessId(caseId);
+    setTimeout(() => setLocateSuccessId(null), 2500);
   }
 
   // ── Share-intent inbox
@@ -621,7 +596,6 @@ export default function CasesListScreen() {
               onLongPress={() => {
                 longPressActiveRef.current = true;
                 setLocatingCase(item);
-                setLocateTarget(null);
               }}
               delayLongPress={400}
               testID={`case-row-${item.id}`}
@@ -807,78 +781,12 @@ export default function CasesListScreen() {
         </View>
       </Modal>
 
-      {/* ══ Long-press Locate Modal ══════════════════════════════════════════ */}
-      <Modal
-        visible={locatingCase !== null}
-        transparent
-        animationType="slide"
-        onRequestClose={dismissLocate}
-      >
-        <TouchableWithoutFeedback onPress={dismissLocate}>
-          <View style={styles.modalBackdrop} />
-        </TouchableWithoutFeedback>
-
-        <View style={[styles.modalSheet, styles.locationSheet]}>
-          <View style={[styles.sheetInner, { paddingBottom: Math.max(insets.bottom, Spacing.lg) }]}>
-            <View style={styles.sheetHandle} />
-
-            {/* Header */}
-            <View>
-              <Text style={styles.sheetTitle}>Locate Case</Text>
-              {locatingCase ? (
-                <Text style={styles.locateSubtitle} numberOfLines={1}>
-                  {patientName(locatingCase)}
-                  {locatingCase.caseNumber ? `  ·  #${locatingCase.caseNumber}` : ""}
-                </Text>
-              ) : null}
-            </View>
-
-            {/* Station list */}
-            <ScrollView style={styles.locationList} bounces={false}>
-              {CASE_STATIONS.filter(
-                (s) => s.value !== (locatingCase?.status ?? "").toLowerCase()
-              ).map((station) => {
-                const active = locateTarget === station.value;
-                return (
-                  <Pressable
-                    key={station.value}
-                    style={styles.locationRow}
-                    onPress={() => setLocateTarget(station.value)}
-                    testID={`locate-option-${station.value}`}
-                  >
-                    <Text style={[styles.locationLabel, { color: active ? colors.tint : colors.text }]}>
-                      {station.label}
-                    </Text>
-                    {active && <Ionicons name="checkmark" size={18} color={colors.tint} />}
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-
-            {/* Actions */}
-            <View style={styles.sheetActions}>
-              <Pressable style={styles.clearBtn} onPress={dismissLocate} disabled={locating}>
-                <Text style={[styles.clearBtnText, { color: colors.textSecondary }]}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                style={[
-                  styles.applyBtn,
-                  { backgroundColor: locateTarget && !locating ? colors.tint : colors.border },
-                ]}
-                onPress={confirmLocate}
-                disabled={!locateTarget || locating}
-                testID="locate-confirm"
-              >
-                {locating ? (
-                  <ActivityIndicator size="small" color={colors.textInverse} />
-                ) : (
-                  <Text style={[styles.applyBtnText, { color: colors.textInverse }]}>Locate</Text>
-                )}
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
+      {/* ══ Long-press Locate Sheet ══════════════════════════════════════════ */}
+      <LocateCaseSheet
+        locatingCase={locatingCase}
+        onDismiss={dismissLocate}
+        onLocated={handleLocated}
+      />
 
       {/* ══ Barcode Scan Modal ═══════════════════════════════════════════════ */}
       <Modal
