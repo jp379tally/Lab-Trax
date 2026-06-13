@@ -1484,6 +1484,12 @@ function OverviewSection({
         </Card>
       ) : null}
 
+      <StationHistoryCard
+        events={c.events ?? []}
+        styles={styles}
+        colors={colors}
+      />
+
       {c.remakeOriginal || (c.remakeChildren && c.remakeChildren.length > 0) ? (
         <Card>
           <Text style={styles.cardHeading}>Remake</Text>
@@ -1661,6 +1667,93 @@ function OverviewSection({
         </View>
       </Modal>
     </View>
+  );
+}
+
+// ─── Station History Card ──────────────────────────────────────────────────────
+// Collapsible card shown in the Overview section. Filters for status_changed
+// events and renders them as a compact station trail (newest first).
+function StationHistoryCard({
+  events,
+  styles,
+  colors,
+}: {
+  events: DetailEvent[];
+  styles: Styles;
+  colors: ThemeColors;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  const stationEvents = useMemo(() => {
+    return events
+      .filter((ev) => ev.eventType === "status_changed")
+      .slice()
+      .sort((a, b) => {
+        const ta = new Date(a.occurredAt ?? a.createdAt ?? 0).getTime();
+        const tb = new Date(b.occurredAt ?? b.createdAt ?? 0).getTime();
+        return tb - ta;
+      });
+  }, [events]);
+
+  if (stationEvents.length === 0) return null;
+
+  return (
+    <Card padding="none">
+      <Pressable
+        style={styles.stationHistHeader}
+        onPress={() => setExpanded((v) => !v)}
+        testID="station-history-toggle"
+        accessibilityRole="button"
+        accessibilityLabel={expanded ? "Collapse station history" : "Expand station history"}
+      >
+        <Ionicons name="location-outline" size={16} color={colors.tint} />
+        <Text style={styles.stationHistTitle}>Station history</Text>
+        <View style={styles.stationHistBadge}>
+          <Text style={styles.stationHistBadgeText}>{stationEvents.length}</Text>
+        </View>
+        <View style={{ flex: 1 }} />
+        <Ionicons
+          name={expanded ? "chevron-up" : "chevron-down"}
+          size={16}
+          color={colors.textTertiary}
+        />
+      </Pressable>
+
+      {expanded
+        ? stationEvents.map((ev, i) => {
+            const meta =
+              ev.metadataJson && typeof ev.metadataJson === "object"
+                ? (ev.metadataJson as Record<string, unknown>)
+                : null;
+            const toStatus =
+              typeof meta?.toStatus === "string"
+                ? meta.toStatus
+                : typeof meta?.newStatus === "string"
+                ? meta.newStatus
+                : typeof meta?.status === "string"
+                ? meta.status
+                : null;
+            const stationName = labelFor(STATUS_OPTIONS, toStatus);
+            const actor = ev.actorName || ev.actorInitials;
+            return (
+              <View
+                key={ev.id}
+                style={[styles.stationHistRow, i > 0 && styles.eventDivider]}
+                testID={`station-history-row-${i}`}
+              >
+                <View style={styles.stationHistDot} />
+                <View style={styles.eventBody}>
+                  <Text style={styles.eventTitle}>{stationName}</Text>
+                  <Text style={styles.eventMeta}>
+                    {actor ? `${actor} · ` : ""}
+                    {formatDateTime(ev.occurredAt ?? ev.createdAt)}
+                  </Text>
+                </View>
+              </View>
+            );
+          })
+        : null}
+    </Card>
   );
 }
 
@@ -2936,6 +3029,25 @@ function makeStyles(c: ThemeColors) {
     locateCurrentStrong: { ...Typography.bodySemibold, color: c.text },
     locateBtn: { flex: 0, alignSelf: "flex-start", paddingHorizontal: Spacing.xl, marginTop: Spacing.md },
     locateSuccess: { ...Typography.captionSemibold, color: c.success, marginTop: Spacing.sm },
+    stationHistHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.xs,
+      paddingHorizontal: Spacing.lg,
+      paddingVertical: Spacing.md,
+    },
+    stationHistTitle: { ...Typography.bodySemibold, color: c.text },
+    stationHistBadge: {
+      backgroundColor: c.tintLight,
+      borderRadius: Radius.full,
+      paddingHorizontal: Spacing.sm,
+      paddingVertical: 1,
+      minWidth: 20,
+      alignItems: "center",
+    },
+    stationHistBadgeText: { ...Typography.captionSemibold, color: c.tint },
+    stationHistRow: { flexDirection: "row", gap: Spacing.md, paddingHorizontal: Spacing.lg, paddingVertical: Spacing.md },
+    stationHistDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: c.tintLight, borderWidth: 2, borderColor: c.tint, marginTop: 5 },
     invoiceActions: { flexDirection: "row", gap: Spacing.sm, marginTop: Spacing.md },
     invoiceActionBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: Spacing.xs },
     noteInput: {
