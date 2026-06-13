@@ -1404,12 +1404,11 @@ function OverviewSection({
             <FieldRow label="Case #" value={c.caseNumber || "—"} styles={styles} />
             <FieldRow label="Status" value={titleCase(c.status ?? "—")} styles={styles} />
             <FieldRow label="Priority" value={c.priority ? titleCase(c.priority) : "Standard"} styles={styles} />
-            <FieldRow label="Due" value={formatDate(c.dueDate)} styles={styles} />
+            <FieldRow label="Case created" value={formatDate(c.createdAt)} styles={styles} />
             <FieldRow label="Expected delivery" value={formatDate(c.expectedDeliveryDate)} styles={styles} />
             {c.bridgeConnectors && c.bridgeConnectors.trim() ? (
               <FieldRow label="Bridge connectors" value={c.bridgeConnectors} styles={styles} />
             ) : null}
-            <FieldRow label="Created" value={formatDate(c.createdAt)} styles={styles} />
             <View style={styles.fieldRow}>
               <Text style={styles.fieldLabel}>Pan Barcode</Text>
               <View style={{ flexDirection: "row", alignItems: "center", gap: Spacing.xs, flexShrink: 1, justifyContent: "flex-end" }}>
