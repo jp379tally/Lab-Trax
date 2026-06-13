@@ -15,6 +15,7 @@ import {
   userSessions,
   users,
   trustedDevices,
+  systemSettings,
 } from "@workspace/db";
 import {
   signAccessToken,
@@ -932,6 +933,7 @@ router.put(
       firstName,
       lastName,
       profilePhotoUrl,
+      username: newUsername,
     } = req.body;
     const updates: Partial<typeof user> = {};
     if (practiceName !== undefined) updates.practiceName = practiceName;
@@ -942,11 +944,20 @@ router.put(
     if (firstName !== undefined) updates.firstName = firstName;
     if (lastName !== undefined) updates.lastName = lastName;
     if (profilePhotoUrl !== undefined) updates.profilePhotoUrl = profilePhotoUrl || null;
+    if (newUsername !== undefined && newUsername !== null) {
+      const trimmed = String(newUsername).trim().toLowerCase();
+      if (trimmed.length < 3) throw new HttpError(400, "Username must be at least 3 characters.");
+      if (trimmed !== user.username) {
+        const conflict = await db.query.users.findFirst({ where: eq(users.username, trimmed) });
+        if (conflict) throw new HttpError(409, "Username already taken.");
+        updates.username = trimmed;
+      }
+    }
     if (firstName !== undefined || lastName !== undefined) {
       updates.initials = deriveUserInitials({
         firstName: firstName !== undefined ? firstName : user.firstName,
         lastName: lastName !== undefined ? lastName : user.lastName,
-        username: user.username,
+        username: (updates.username as string | undefined) ?? user.username,
       });
     }
 
@@ -1119,19 +1130,36 @@ router.get(
           gt(userSessions.expiresAt, new Date())
         )
       );
+    const currentRow = rows.find((r) => r.id === currentSessionId);
+    const currentIp = currentRow?.ipAddress ?? null;
+    const now = Date.now();
+    const SUSPICIOUS_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
     const sessions = rows
-      .map((row) => ({
-        id: row.id,
-        deviceName: row.deviceName,
-        ipAddress: row.ipAddress,
-        userAgent: row.userAgent,
-        createdAt: row.createdAt ? row.createdAt.toISOString() : null,
-        expiresAt: row.expiresAt.toISOString(),
-        current: row.id === currentSessionId,
-      }))
+      .map((row) => {
+        const isCurrent = row.id === currentSessionId;
+        const ageMs = row.createdAt ? now - row.createdAt.getTime() : Infinity;
+        const isSuspicious =
+          !isCurrent &&
+          row.ipAddress !== null &&
+          currentIp !== null &&
+          row.ipAddress !== currentIp &&
+          ageMs < SUSPICIOUS_WINDOW_MS;
+        return {
+          id: row.id,
+          deviceName: row.deviceName,
+          ipAddress: row.ipAddress,
+          userAgent: row.userAgent,
+          createdAt: row.createdAt ? row.createdAt.toISOString() : null,
+          expiresAt: row.expiresAt.toISOString(),
+          current: isCurrent,
+          isSuspicious,
+        };
+      })
       .sort((a, b) => {
         if (a.current && !b.current) return -1;
         if (!a.current && b.current) return 1;
+        if (a.isSuspicious && !b.isSuspicious) return -1;
+        if (!a.isSuspicious && b.isSuspicious) return 1;
         return (b.createdAt || "").localeCompare(a.createdAt || "");
       });
     return res.json({ success: true, sessions });
@@ -1347,6 +1375,87 @@ router.post(
       .returning();
 
     res.json({ success: true, profilePhotoUrl: photoUrl, user: safeUser(updated) });
+  })
+);
+
+// ── Notification preferences ────────────────────────────────────────────────
+// Persisted per-user in system_settings with key `notif_prefs:{userId}`.
+// The schema is a flat object of boolean channel flags.
+
+const DEFAULT_NOTIF_PREFS = {
+  emailCaseAssigned: true,
+  emailCaseStatusChanged: true,
+  emailInvoiceDue: true,
+  emailInvoicePaid: true,
+  emailDailySummary: false,
+  emailWeeklySummary: true,
+  smsCaseAssigned: false,
+  smsCaseStatusChanged: false,
+  smsInvoiceDue: false,
+  pushCaseAssigned: true,
+  pushCaseStatusChanged: true,
+  pushInvoiceDue: true,
+  pushChatMessage: true,
+};
+
+const notifPrefsSchema = z.object({
+  emailCaseAssigned: z.boolean().optional(),
+  emailCaseStatusChanged: z.boolean().optional(),
+  emailInvoiceDue: z.boolean().optional(),
+  emailInvoicePaid: z.boolean().optional(),
+  emailDailySummary: z.boolean().optional(),
+  emailWeeklySummary: z.boolean().optional(),
+  smsCaseAssigned: z.boolean().optional(),
+  smsCaseStatusChanged: z.boolean().optional(),
+  smsInvoiceDue: z.boolean().optional(),
+  pushCaseAssigned: z.boolean().optional(),
+  pushCaseStatusChanged: z.boolean().optional(),
+  pushInvoiceDue: z.boolean().optional(),
+  pushChatMessage: z.boolean().optional(),
+});
+
+router.get(
+  "/notification-preferences",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId as string;
+    const key = `notif_prefs:${userId}`;
+    const row = await db
+      .select()
+      .from(systemSettings)
+      .where(eq(systemSettings.key, key))
+      .then((r) => r[0] ?? null);
+    const stored = row ? (() => { try { return JSON.parse(row.value ?? "{}"); } catch { return {}; } })() : {};
+    const preferences = { ...DEFAULT_NOTIF_PREFS, ...stored };
+    return res.json({ success: true, preferences });
+  })
+);
+
+router.patch(
+  "/notification-preferences",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId as string;
+    const parsed = notifPrefsSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      throw new HttpError(400, "Invalid notification preferences");
+    }
+    const key = `notif_prefs:${userId}`;
+    const existing = await db
+      .select()
+      .from(systemSettings)
+      .where(eq(systemSettings.key, key))
+      .then((r) => r[0] ?? null);
+    const current = existing ? (() => { try { return JSON.parse(existing.value ?? "{}"); } catch { return {}; } })() : {};
+    const updated = { ...DEFAULT_NOTIF_PREFS, ...current, ...parsed.data };
+    await db
+      .insert(systemSettings)
+      .values({ key, value: JSON.stringify(updated), updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: systemSettings.key,
+        set: { value: JSON.stringify(updated), updatedAt: new Date() },
+      });
+    return res.json({ success: true, preferences: updated });
   })
 );
 

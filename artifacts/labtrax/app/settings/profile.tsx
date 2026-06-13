@@ -1,0 +1,687 @@
+import React, { useState, useEffect, useMemo, useRef } from "react";
+import {
+  View,
+  Text,
+  TextInput,
+  ScrollView,
+  Pressable,
+  StyleSheet,
+  ActivityIndicator,
+  Alert,
+  Image,
+} from "react-native";
+import { router } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import * as ImagePicker from "expo-image-picker";
+import { Ionicons } from "@expo/vector-icons";
+import { useTheme, type ThemeColors } from "@/lib/theme-context";
+import { Spacing, Radius, Typography } from "@/constants/tokens";
+import { ScreenShell, SettingsSection } from "@/components/settings/SettingsRow";
+import { resilientFetch, getApiUrl } from "@/lib/query-client";
+import { ME_QUERY_KEY } from "@/lib/auth-me";
+
+interface MeUser {
+  id?: string;
+  username?: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  practiceName?: string | null;
+  role?: string | null;
+  workStatus?: string | null;
+  profilePhotoUrl?: string | null;
+  practiceOrganizationId?: string | null;
+  practiceLogoUrl?: string | null;
+  practiceLogoplacements?: string[] | null;
+  practiceLogoSize?: string | null;
+}
+
+const WORK_STATUS_OPTIONS = [
+  { value: "available", label: "At work", color: "#10B981" },
+  { value: "break", label: "On break", color: "#F59E0B" },
+  { value: "lunch", label: "On lunch", color: "#F97316" },
+  { value: "out_of_office", label: "Out of office", color: "#94A3B8" },
+] as const;
+
+const LOGO_PLACEMENTS = [
+  { key: "invoices", label: "Invoices" },
+  { key: "statements", label: "Statements" },
+  { key: "lab_reports", label: "Lab reports" },
+  { key: "welcome_emails", label: "Welcome emails" },
+] as const;
+
+const LOGO_SIZES = [
+  { value: "small", label: "Small" },
+  { value: "medium", label: "Medium" },
+  { value: "large", label: "Large" },
+] as const;
+
+export default function ProfileScreen() {
+  const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const qc = useQueryClient();
+
+  const meQuery = useQuery<{ user?: MeUser; memberships?: unknown[] }>({
+    queryKey: ME_QUERY_KEY,
+    queryFn: async () => {
+      const res = await resilientFetch("/api/auth/me");
+      if (!res.ok) throw new Error("Could not load profile");
+      return res.json();
+    },
+    staleTime: 60_000,
+  });
+
+  const user = meQuery.data?.user as MeUser | undefined;
+  const isAdmin = user?.role === "admin";
+
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [practiceName, setPracticeName] = useState("");
+  const [username, setUsername] = useState("");
+  const [saved, setSaved] = useState(false);
+
+  const [logoPlacements, setLogoPlacements] = useState<string[]>([]);
+  const [logoSize, setLogoSize] = useState<string>("medium");
+  const [logoSaved, setLogoSaved] = useState(false);
+  const [logoUploading, setLogoUploading] = useState(false);
+  const logoXhrRef = useRef<XMLHttpRequest | null>(null);
+
+  useEffect(() => {
+    if (user) {
+      setFirstName(user.firstName ?? "");
+      setLastName(user.lastName ?? "");
+      setEmail(user.email ?? "");
+      setPhone(user.phone ?? "");
+      setPracticeName(user.practiceName ?? "");
+      setUsername(user.username ?? "");
+      setLogoPlacements(user.practiceLogoplacements ?? ["invoices", "statements", "lab_reports"]);
+      setLogoSize(user.practiceLogoSize ?? "medium");
+    }
+  }, [user?.id]);
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      if (!user?.id) throw new Error("Not signed in.");
+      const res = await resilientFetch(`/api/auth/users/${user.id}/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ firstName, lastName, email, phone, practiceName, username }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error((e as any)?.error || `Save failed (${res.status})`);
+      }
+    },
+    onSuccess: () => {
+      setSaved(true);
+      qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
+      setTimeout(() => setSaved(false), 2500);
+    },
+    onError: (err: Error) => Alert.alert("Could not save profile", err.message),
+  });
+
+  const statusMutation = useMutation({
+    mutationFn: async (workStatus: string) => {
+      const res = await resilientFetch("/api/auth/me/status", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workStatus }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error((e as any)?.error || `Failed (${res.status})`);
+      }
+      return res.json();
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ME_QUERY_KEY }),
+  });
+
+  const photoMutation = useMutation({
+    mutationFn: async (uri: string) => {
+      if (!user?.id) throw new Error("Not signed in.");
+      return new Promise<void>((resolve, reject) => {
+        const filename = uri.split("/").pop() ?? "photo.jpg";
+        const ext = filename.split(".").pop()?.toLowerCase() ?? "jpeg";
+        const mime = ext === "png" ? "image/png" : "image/jpeg";
+        const base = getApiUrl().replace(/\/api\/?$/, "");
+        const url = `${base}/api/auth/users/${user.id}/profile-photo`;
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", url);
+        xhr.onload = () => (xhr.status < 300 ? resolve() : reject(new Error(`Upload failed (${xhr.status})`)));
+        xhr.onerror = () => reject(new Error("Network error"));
+        const fd = new FormData();
+        fd.append("photo", { uri, name: filename, type: mime } as unknown as Blob);
+        xhr.send(fd);
+      });
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ME_QUERY_KEY }),
+    onError: (err: Error) => Alert.alert("Photo upload failed", err.message),
+  });
+
+  const logoPlacementsMutation = useMutation({
+    mutationFn: async (opts: { placements: string[]; logoPdfSize: string }) => {
+      const orgId = user?.practiceOrganizationId;
+      if (!orgId) throw new Error("No lab organization found.");
+      const res = await resilientFetch(`/api/organizations/${orgId}/logo-placements`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ placements: opts.placements, logoPdfSize: opts.logoPdfSize }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error((e as any)?.error || `Failed (${res.status})`);
+      }
+    },
+    onSuccess: () => {
+      setLogoSaved(true);
+      qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
+      setTimeout(() => setLogoSaved(false), 2000);
+    },
+    onError: (err: Error) => Alert.alert("Could not save logo settings", err.message),
+  });
+
+  async function pickPhoto() {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert("Permission required", "Allow access to your photo library to upload a profile photo.");
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.8,
+    });
+    if (!result.canceled && result.assets[0]) {
+      photoMutation.mutate(result.assets[0].uri);
+    }
+  }
+
+  async function pickLogo() {
+    const orgId = user?.practiceOrganizationId;
+    if (!orgId) {
+      Alert.alert("No lab found", "You must be an admin of a lab to upload a logo.");
+      return;
+    }
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert("Permission required", "Allow access to your photo library to upload a logo.");
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      allowsEditing: true,
+      aspect: [3, 1],
+      quality: 0.9,
+    });
+    if (result.canceled || !result.assets[0]) return;
+    const uri = result.assets[0].uri;
+    const filename = uri.split("/").pop() ?? "logo.png";
+    const ext = filename.split(".").pop()?.toLowerCase() ?? "png";
+    const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "svg" ? "image/svg+xml" : ext === "webp" ? "image/webp" : "image/png";
+
+    setLogoUploading(true);
+    const base = getApiUrl().replace(/\/api\/?$/, "");
+    const url = `${base}/api/organizations/${orgId}/logo`;
+    const xhr = new XMLHttpRequest();
+    logoXhrRef.current = xhr;
+    xhr.open("POST", url);
+    xhr.onload = () => {
+      setLogoUploading(false);
+      if (xhr.status < 300) {
+        qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
+      } else {
+        try {
+          const e = JSON.parse(xhr.responseText);
+          Alert.alert("Logo upload failed", e?.error || `Status ${xhr.status}`);
+        } catch {
+          Alert.alert("Logo upload failed", `Status ${xhr.status}`);
+        }
+      }
+    };
+    xhr.onerror = () => {
+      setLogoUploading(false);
+      Alert.alert("Logo upload failed", "Network error.");
+    };
+    const fd = new FormData();
+    fd.append("file", { uri, name: filename, type: mime } as unknown as Blob);
+    xhr.send(fd);
+  }
+
+  function togglePlacement(key: string) {
+    setLogoPlacements((prev) =>
+      prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]
+    );
+  }
+
+  const currentStatus = WORK_STATUS_OPTIONS.find((s) => s.value === user?.workStatus) ?? WORK_STATUS_OPTIONS[0];
+  const fullName = [user?.firstName, user?.lastName].filter(Boolean).join(" ");
+  const avatarLetter = (fullName || user?.username || "A").charAt(0).toUpperCase();
+  const photoUrl = user?.profilePhotoUrl
+    ? `${getApiUrl().replace(/\/api\/?$/, "")}${user.profilePhotoUrl}`
+    : null;
+  const logoUrl = user?.practiceLogoUrl
+    ? `${getApiUrl().replace(/\/api\/?$/, "")}${user.practiceLogoUrl}`
+    : null;
+
+  return (
+    <ScreenShell title="Profile" subtitle="Your personal info" onBack={() => router.back()} insetTop={insets.top}>
+      <ScrollView contentContainerStyle={styles.body}>
+        {meQuery.isLoading ? (
+          <ActivityIndicator color={colors.tint} style={{ marginTop: Spacing.xxl }} />
+        ) : (
+          <>
+            {saved && (
+              <View style={[styles.banner, { backgroundColor: colors.success + "20", borderColor: colors.success + "40" }]}>
+                <Text style={[styles.bannerText, { color: colors.success }]}>Profile saved.</Text>
+              </View>
+            )}
+
+            {/* Avatar / photo section */}
+            <SettingsSection title="Profile photo">
+              <View style={styles.avatarSection}>
+                <Pressable onPress={pickPhoto} disabled={photoMutation.isPending} style={styles.avatarWrap}>
+                  {photoUrl ? (
+                    <Image source={{ uri: photoUrl }} style={styles.avatarImg} />
+                  ) : (
+                    <View style={[styles.avatarFallback, { backgroundColor: colors.tint + "20" }]}>
+                      <Text style={[styles.avatarLetter, { color: colors.tint }]}>{avatarLetter}</Text>
+                    </View>
+                  )}
+                  <View style={[styles.avatarBadge, { backgroundColor: colors.tint }]}>
+                    {photoMutation.isPending
+                      ? <ActivityIndicator size={10} color="#fff" />
+                      : <Ionicons name="camera" size={12} color="#fff" />}
+                  </View>
+                </Pressable>
+                <View style={styles.avatarInfo}>
+                  <Text style={[styles.avatarName, { color: colors.text }]}>{fullName || user?.username || "—"}</Text>
+                  <Text style={[styles.avatarSub, { color: colors.textSecondary }]}>{user?.email ?? ""}</Text>
+                  <Pressable onPress={pickPhoto} disabled={photoMutation.isPending}>
+                    <Text style={[styles.avatarLink, { color: colors.tint }]}>
+                      {photoMutation.isPending ? "Uploading…" : photoUrl ? "Change photo" : "Upload photo"}
+                    </Text>
+                  </Pressable>
+                </View>
+              </View>
+            </SettingsSection>
+
+            <SettingsSection title="Work status">
+              <View style={styles.statusRow}>
+                {WORK_STATUS_OPTIONS.map((opt) => {
+                  const active = currentStatus.value === opt.value;
+                  return (
+                    <Pressable
+                      key={opt.value}
+                      onPress={() => statusMutation.mutate(opt.value)}
+                      style={[
+                        styles.statusBtn,
+                        {
+                          backgroundColor: active ? opt.color : colors.surfaceAlt,
+                          borderColor: active ? opt.color : colors.border,
+                        },
+                      ]}
+                    >
+                      <View style={[styles.statusDot, { backgroundColor: active ? "#fff" : opt.color }]} />
+                      <Text style={[styles.statusLabel, { color: active ? "#fff" : colors.textSecondary }]}>
+                        {opt.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </SettingsSection>
+
+            <SettingsSection title="Personal info">
+              <View style={styles.fieldWrap}>
+                <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>First name</Text>
+                <TextInput
+                  value={firstName}
+                  onChangeText={setFirstName}
+                  style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]}
+                  placeholderTextColor={colors.textTertiary}
+                  placeholder="First name"
+                />
+              </View>
+              <View style={[styles.fieldWrap, styles.fieldDivider, { borderTopColor: colors.border }]}>
+                <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Last name</Text>
+                <TextInput
+                  value={lastName}
+                  onChangeText={setLastName}
+                  style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]}
+                  placeholderTextColor={colors.textTertiary}
+                  placeholder="Last name"
+                />
+              </View>
+              <View style={[styles.fieldWrap, styles.fieldDivider, { borderTopColor: colors.border }]}>
+                <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Email</Text>
+                <TextInput
+                  value={email}
+                  onChangeText={setEmail}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]}
+                  placeholderTextColor={colors.textTertiary}
+                  placeholder="you@example.com"
+                />
+              </View>
+              <View style={[styles.fieldWrap, styles.fieldDivider, { borderTopColor: colors.border }]}>
+                <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Phone</Text>
+                <TextInput
+                  value={phone}
+                  onChangeText={setPhone}
+                  keyboardType="phone-pad"
+                  style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]}
+                  placeholderTextColor={colors.textTertiary}
+                  placeholder="000-000-0000"
+                />
+              </View>
+              <View style={[styles.fieldWrap, styles.fieldDivider, { borderTopColor: colors.border }]}>
+                <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Practice / lab name</Text>
+                <TextInput
+                  value={practiceName}
+                  onChangeText={setPracticeName}
+                  style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]}
+                  placeholderTextColor={colors.textTertiary}
+                  placeholder="Lab name"
+                />
+              </View>
+            </SettingsSection>
+
+            <SettingsSection title="Account">
+              <View style={styles.fieldWrap}>
+                <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Username</Text>
+                <TextInput
+                  value={username}
+                  onChangeText={setUsername}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]}
+                  placeholderTextColor={colors.textTertiary}
+                  placeholder="username"
+                />
+                <Text style={[styles.fieldHint, { color: colors.textTertiary }]}>
+                  Minimum 3 characters · used to log in
+                </Text>
+              </View>
+              <View style={[styles.fieldWrap, styles.fieldDivider, { borderTopColor: colors.border }]}>
+                <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Role</Text>
+                <Text style={[styles.readOnly, { color: colors.textSecondary }]}>{user?.role ?? "—"}</Text>
+              </View>
+            </SettingsSection>
+
+            {/* Lab branding — admin only */}
+            {isAdmin && user?.practiceOrganizationId && (
+              <SettingsSection
+                title="Lab branding"
+                footer="Your lab logo appears on invoices, statements, lab reports, and welcome emails sent to providers."
+              >
+                {/* Logo preview + upload */}
+                <View style={styles.logoRow}>
+                  <View style={[styles.logoPreview, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
+                    {logoUrl ? (
+                      <Image source={{ uri: logoUrl }} style={styles.logoImg} resizeMode="contain" />
+                    ) : (
+                      <Ionicons name="image-outline" size={28} color={colors.textTertiary} />
+                    )}
+                  </View>
+                  <View style={styles.logoActions}>
+                    <Pressable
+                      style={[styles.logoUploadBtn, { borderColor: colors.tint, backgroundColor: colors.tint + "15" }]}
+                      onPress={pickLogo}
+                      disabled={logoUploading}
+                    >
+                      {logoUploading
+                        ? <ActivityIndicator size={14} color={colors.tint} />
+                        : <Ionicons name="cloud-upload-outline" size={14} color={colors.tint} />}
+                      <Text style={[styles.logoUploadText, { color: colors.tint }]}>
+                        {logoUploading ? "Uploading…" : logoUrl ? "Replace logo" : "Upload logo"}
+                      </Text>
+                    </Pressable>
+                    <Text style={[styles.logoHint, { color: colors.textTertiary }]}>
+                      PNG, JPG, SVG, WebP · max 5 MB · recommended 3:1 ratio
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Logo size */}
+                <View style={[styles.fieldWrap, styles.fieldDivider, { borderTopColor: colors.border }]}>
+                  <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Logo size on documents</Text>
+                  <View style={styles.sizeRow}>
+                    {LOGO_SIZES.map((s) => {
+                      const active = logoSize === s.value;
+                      return (
+                        <Pressable
+                          key={s.value}
+                          onPress={() => setLogoSize(s.value)}
+                          style={[
+                            styles.sizeBtn,
+                            {
+                              backgroundColor: active ? colors.tint : colors.surfaceAlt,
+                              borderColor: active ? colors.tint : colors.border,
+                            },
+                          ]}
+                        >
+                          <Text style={[styles.sizeBtnText, { color: active ? "#fff" : colors.textSecondary }]}>
+                            {s.label}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
+
+                {/* Logo placements */}
+                <View style={[styles.fieldWrap, styles.fieldDivider, { borderTopColor: colors.border }]}>
+                  <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Show logo on</Text>
+                  <View style={styles.placementsGrid}>
+                    {LOGO_PLACEMENTS.map((p) => {
+                      const active = logoPlacements.includes(p.key);
+                      return (
+                        <Pressable
+                          key={p.key}
+                          onPress={() => togglePlacement(p.key)}
+                          style={[
+                            styles.placementChip,
+                            {
+                              backgroundColor: active ? colors.tint + "18" : colors.surfaceAlt,
+                              borderColor: active ? colors.tint : colors.border,
+                            },
+                          ]}
+                        >
+                          <Ionicons
+                            name={active ? "checkmark-circle" : "ellipse-outline"}
+                            size={14}
+                            color={active ? colors.tint : colors.textTertiary}
+                          />
+                          <Text style={[styles.placementChipText, { color: active ? colors.tint : colors.textSecondary }]}>
+                            {p.label}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
+
+                <Pressable
+                  style={[styles.logoSaveBtn, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }, logoPlacementsMutation.isPending && { opacity: 0.6 }]}
+                  onPress={() => logoPlacementsMutation.mutate({ placements: logoPlacements, logoPdfSize: logoSize })}
+                  disabled={logoPlacementsMutation.isPending}
+                >
+                  {logoSaved
+                    ? <Ionicons name="checkmark-circle" size={16} color={colors.success} />
+                    : <Ionicons name="save-outline" size={16} color={colors.textSecondary} />}
+                  <Text style={[styles.logoSaveBtnText, { color: logoSaved ? colors.success : colors.textSecondary }]}>
+                    {logoPlacementsMutation.isPending ? "Saving…" : logoSaved ? "Saved!" : "Save branding"}
+                  </Text>
+                </Pressable>
+              </SettingsSection>
+            )}
+
+            <Pressable
+              style={[styles.saveBtn, { backgroundColor: colors.tint }, saveMutation.isPending && { opacity: 0.6 }]}
+              onPress={() => saveMutation.mutate()}
+              disabled={saveMutation.isPending}
+            >
+              <Text style={styles.saveBtnText}>
+                {saveMutation.isPending ? "Saving…" : "Save profile"}
+              </Text>
+            </Pressable>
+          </>
+        )}
+      </ScrollView>
+    </ScreenShell>
+  );
+}
+
+function makeStyles(c: ThemeColors) {
+  return StyleSheet.create({
+    body: { padding: Spacing.lg, gap: Spacing.lg, paddingBottom: Spacing.xxxl },
+    banner: {
+      borderRadius: Radius.md,
+      borderWidth: 1,
+      padding: Spacing.md,
+    },
+    bannerText: { ...Typography.bodyMedium, textAlign: "center" },
+
+    avatarSection: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.lg,
+      padding: Spacing.lg,
+    },
+    avatarWrap: { position: "relative" },
+    avatarImg: { width: 72, height: 72, borderRadius: Radius.full },
+    avatarFallback: {
+      width: 72,
+      height: 72,
+      borderRadius: Radius.full,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    avatarLetter: { ...Typography.display, fontSize: 28 },
+    avatarBadge: {
+      position: "absolute",
+      bottom: 0,
+      right: 0,
+      width: 24,
+      height: 24,
+      borderRadius: Radius.full,
+      alignItems: "center",
+      justifyContent: "center",
+      borderWidth: 2,
+      borderColor: c.backgroundSolid,
+    },
+    avatarInfo: { flex: 1, gap: 2 },
+    avatarName: { ...Typography.h3 },
+    avatarSub: { ...Typography.caption },
+    avatarLink: { ...Typography.captionMedium, marginTop: Spacing.xs },
+
+    statusRow: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: Spacing.sm,
+      padding: Spacing.lg,
+    },
+    statusBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Spacing.xs,
+      borderRadius: Radius.full,
+      borderWidth: 1,
+    },
+    statusDot: { width: 8, height: 8, borderRadius: 4 },
+    statusLabel: { ...Typography.captionMedium },
+    fieldWrap: { padding: Spacing.lg, gap: Spacing.xs },
+    fieldDivider: { borderTopWidth: StyleSheet.hairlineWidth },
+    fieldLabel: { ...Typography.captionSemibold },
+    fieldHint: { ...Typography.tiny, marginTop: 2 },
+    input: {
+      borderWidth: 1,
+      borderRadius: Radius.sm,
+      padding: Spacing.md,
+      ...Typography.body,
+    },
+    readOnly: { ...Typography.body, paddingTop: 2 },
+
+    logoRow: {
+      flexDirection: "row",
+      gap: Spacing.md,
+      padding: Spacing.lg,
+      alignItems: "flex-start",
+    },
+    logoPreview: {
+      width: 80,
+      height: 40,
+      borderRadius: Radius.sm,
+      borderWidth: StyleSheet.hairlineWidth,
+      alignItems: "center",
+      justifyContent: "center",
+      flexShrink: 0,
+    },
+    logoImg: { width: 76, height: 36, borderRadius: Radius.sm },
+    logoActions: { flex: 1, gap: Spacing.xs },
+    logoUploadBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      alignSelf: "flex-start",
+      borderWidth: 1,
+      borderRadius: Radius.sm,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Spacing.xs,
+    },
+    logoUploadText: { ...Typography.captionMedium },
+    logoHint: { ...Typography.tiny },
+    sizeRow: { flexDirection: "row", gap: Spacing.sm, marginTop: Spacing.xs },
+    sizeBtn: {
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Spacing.xs,
+      borderRadius: Radius.sm,
+      borderWidth: 1,
+    },
+    sizeBtnText: { ...Typography.captionMedium },
+    placementsGrid: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: Spacing.sm,
+      marginTop: Spacing.xs,
+    },
+    placementChip: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 5,
+      borderWidth: 1,
+      borderRadius: Radius.full,
+      paddingHorizontal: Spacing.sm,
+      paddingVertical: 4,
+    },
+    placementChipText: { ...Typography.tiny },
+    logoSaveBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 6,
+      margin: Spacing.lg,
+      marginTop: 0,
+      borderWidth: 1,
+      borderRadius: Radius.sm,
+      paddingVertical: Spacing.sm,
+    },
+    logoSaveBtnText: { ...Typography.captionMedium },
+
+    saveBtn: {
+      borderRadius: Radius.md,
+      padding: Spacing.md,
+      alignItems: "center",
+    },
+    saveBtnText: { ...Typography.bodySemibold, color: "#fff" },
+  });
+}

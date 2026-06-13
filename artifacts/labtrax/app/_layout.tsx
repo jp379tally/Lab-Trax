@@ -94,6 +94,7 @@ function RootLayoutNav() {
         <Stack.Screen name="manage/lists" options={{ headerShown: false, presentation: "card" }} />
         <Stack.Screen name="manage/reports" options={{ headerShown: false, presentation: "card" }} />
         <Stack.Screen name="two-factor" options={{ headerShown: false, presentation: "card" }} />
+        <Stack.Screen name="settings" options={{ headerShown: false, presentation: "card" }} />
         <Stack.Screen name="privacy-policy" options={{ headerShown: false, presentation: "modal" }} />
         <Stack.Screen name="terms-of-service" options={{ headerShown: false, presentation: "modal" }} />
       </Stack>

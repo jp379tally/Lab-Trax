@@ -34,6 +34,7 @@ import { HttpError } from "../lib/http";
 import { requireAuth, optionalAuth } from "../middlewares/auth";
 import { createRateLimit } from "../lib/rate-limit";
 import { parseOrganizationIdFromAffiliationKey } from "../lib/case-visibility";
+import { getUncachableStripeClient, isStripeConfigured } from "../lib/stripeClient";
 
 // ── Append-only union helpers for the legacy mobile case blob ──────────
 // The mobile app rebuilds its in-memory case list from the LIST endpoint
@@ -248,13 +249,13 @@ async function sendAdminPinResetSms(phone: string, code: string): Promise<void> 
 }
 
 function isPlatformAdmin(req: any): boolean {
+  // Path 1: platform-admin session resolved by platformAdminUserOrSecret middleware.
+  // The middleware validates X-Platform-Admin-Session against the DB and sets this flag.
+  // Re-check admin role here — role may have changed since the session was created.
+  if (req._platformAdminSessionVerified) return req.user?.role === "admin";
   const reqUser = req.user;
   if (!reqUser || reqUser.role !== "admin") return false;
-  // Two accepted credentials:
-  //   - X-Platform-Admin-Secret matches PLATFORM_ADMIN_SECRET — long random
-  //     string used by CI/automation (e.g. GitHub Actions installer publish).
-  //   - X-Platform-Admin-Pin    matches effective PIN (DB → env → "0000").
-  //     Safe because this check also requires reqUser.role === "admin".
+  // Path 2: credential headers — long secret (CI) or short PIN (human admin).
   const secret = process.env.PLATFORM_ADMIN_SECRET;
   if (secret && req.headers["x-platform-admin-secret"] === secret) return true;
   const effectivePin = getEffectiveAdminPin();
@@ -278,6 +279,7 @@ function isPlatformAdmin(req: any): boolean {
 function platformAdminUserOrSecret(req: any, res: any, next: any) {
   const secret = process.env.PLATFORM_ADMIN_SECRET;
   const header = req.headers["x-platform-admin-secret"];
+  // CI path: secret header without a user session → synthetic admin user.
   if (secret && header === secret && !req.user) {
     req.user = {
       id: null,
@@ -287,7 +289,37 @@ function platformAdminUserOrSecret(req: any, res: any, next: any) {
     };
     return next();
   }
-  return requireAuth(req, res, next);
+  // Human path: require JWT auth first, then optionally validate a platform-admin
+  // session stored in system_settings via X-Platform-Admin-Session header.
+  requireAuth(req, res, async (err?: unknown) => {
+    if (err) return next(err);
+    const sessionHeader = req.headers["x-platform-admin-session"] as string | undefined;
+    if (sessionHeader) {
+      const colonIdx = sessionHeader.indexOf(":");
+      if (colonIdx > 0) {
+        const hUserId = sessionHeader.slice(0, colonIdx);
+        const hSessionId = sessionHeader.slice(colonIdx + 1);
+        // Bind the session to the authenticated user — prevents session token reuse
+        // across accounts.
+        if (req.user?.id === hUserId && hSessionId) {
+          const key = `padmin_sess:${hUserId}:${hSessionId}`;
+          try {
+            const [row] = await db.select().from(systemSettings).where(eq(systemSettings.key, key));
+            if (row) {
+              const data = JSON.parse(row.value ?? "{}");
+              const exp = data?.expiresAt ? new Date(data.expiresAt) : null;
+              if (exp && exp > new Date()) {
+                req._platformAdminSessionVerified = true;
+              }
+            }
+          } catch {
+            // Session lookup failure — fall through to header-based checks below.
+          }
+        }
+      }
+    }
+    next();
+  });
 }
 
 function generateResetToken(): string {
@@ -5855,6 +5887,81 @@ Important rules:
     },
   );
 
+  // ── Admin: Users list + update ────────────────────────────────────────────
+  // List all platform users (non-deleted). Admin-secret gated.
+  router.get("/admin/users", platformAdminUserOrSecret, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    try {
+      const rows = await db
+        .select({
+          id: users.id,
+          username: users.username,
+          email: users.email,
+          firstName: users.firstName,
+          lastName: users.lastName,
+          role: users.role,
+          isActive: users.isActive,
+          practiceName: users.practiceName,
+          lastLoginAt: users.lastLoginAt,
+          createdAt: users.createdAt,
+        })
+        .from(users)
+        .where(isNull(users.deletedAt))
+        .orderBy(users.createdAt);
+      return res.json({ ok: true, users: rows });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to list users." });
+    }
+  });
+
+  // Update a user's role or active status. Admin-secret gated.
+  router.patch("/admin/users/:id", platformAdminUserOrSecret, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    try {
+      const userId = String(req.params.id);
+      const body = req.body as any;
+      const patch: Record<string, unknown> = {};
+      if (typeof body?.role === "string") {
+        const allowed = ["user", "admin", "billing", "owner"];
+        if (!allowed.includes(body.role)) {
+          return res.status(400).json({ error: `role must be one of: ${allowed.join(", ")}` });
+        }
+        patch.role = body.role;
+      }
+      if (typeof body?.isActive === "boolean") {
+        patch.isActive = body.isActive;
+      }
+      if (Object.keys(patch).length === 0) {
+        return res.status(400).json({ error: "No updatable fields provided." });
+      }
+      const [updated] = await db
+        .update(users)
+        .set(patch)
+        .where(and(eq(users.id, userId), isNull(users.deletedAt)))
+        .returning({
+          id: users.id,
+          username: users.username,
+          email: users.email,
+          firstName: users.firstName,
+          lastName: users.lastName,
+          role: users.role,
+          isActive: users.isActive,
+          practiceName: users.practiceName,
+          lastLoginAt: users.lastLoginAt,
+        });
+      if (!updated) {
+        return res.status(404).json({ error: "User not found." });
+      }
+      return res.json({ ok: true, data: updated });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to update user." });
+    }
+  });
+
   // ── Admin: Subscriptions list ─────────────────────────────────────────────
   // Returns a paginated list of all subscription rows with provider, status,
   // currentPeriodEnd, and masked IDs. Platform-admin-secret gated.
@@ -5960,6 +6067,7 @@ Important rules:
           subjectEmail: userInfo?.email ?? null,
           provider: r.provider,
           status: r.status,
+          trialEndsAt: r.trialEndAt?.toISOString() ?? null,
           currentPeriodEnd: r.currentPeriodEnd?.toISOString() ?? null,
           cancelAtPeriodEnd: r.cancelAtPeriodEnd,
           paymentMethodOnFile: r.paymentMethodOnFile,
@@ -5973,6 +6081,281 @@ Important rules:
       return res.json({ ok: true, items, total, limit, offset });
     } catch (e: any) {
       return res.status(500).json({ error: e?.message || "Failed to fetch subscriptions." });
+    }
+  });
+
+  // ── Admin Subscriptions: Stripe billing portal ────────────────────────────
+  router.post("/admin/subscriptions/:id/portal", platformAdminUserOrSecret, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    try {
+      const configured = await isStripeConfigured();
+      if (!configured) {
+        return res.status(503).json({ error: "Stripe is not configured." });
+      }
+      const id = String(req.params.id);
+      const [sub] = await db
+        .select({ stripeCustomerId: subscriptions.stripeCustomerId })
+        .from(subscriptions)
+        .where(eq(subscriptions.id, id));
+      if (!sub?.stripeCustomerId) {
+        return res.status(404).json({ error: "Subscription not found or not a Stripe subscription." });
+      }
+      const stripe = await getUncachableStripeClient();
+      if (!stripe) return res.status(503).json({ error: "Stripe unavailable." });
+      const domains = (process.env.REPLIT_DOMAINS ?? "").split(",").map((d) => d.trim()).filter(Boolean);
+      const origin = domains[0] ? `https://${domains[0]}` : `${req.protocol}://${req.get("host")}`;
+      const returnUrl = `${origin}/settings/subscriptions`;
+      const session = await stripe.billingPortal.sessions.create({
+        customer: sub.stripeCustomerId!,
+        return_url: returnUrl,
+      });
+      return res.json({ ok: true, url: session.url });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to create billing portal session." });
+    }
+  });
+
+  // ── Admin Platform-Admin Sessions ─────────────────────────────────────────
+  // The platform admin credential (secret or PIN) is always verified per-request
+  // via headers (see isPlatformAdmin). These three endpoints give mobile clients
+  // a way to (a) probe whether the credential is configured on the server,
+  // (b) validate and cache a credential for a session, and (c) explicitly end
+  // the session. The validated session is stored in system_settings so it
+  // survives server restarts; the client stores the session token in SecureStore.
+
+  router.get("/admin/platform-admin/status", requireAuth, async (req, res) => {
+    try {
+      const userId = (req as any).auth?.userId as string | undefined;
+      const sessionId = (req as any).auth?.sessionId as string | undefined;
+      const secretConfigured = !!(process.env.PLATFORM_ADMIN_SECRET);
+      const pinConfigured = !!(process.env.PLATFORM_ADMIN_PIN) || secretConfigured;
+      let sessionActive = false;
+      let sessionExpiresAt: string | null = null;
+      if (userId && sessionId) {
+        const key = `padmin_sess:${userId}:${sessionId}`;
+        const [row] = await db.select().from(systemSettings).where(eq(systemSettings.key, key));
+        if (row) {
+          try {
+            const data = JSON.parse(row.value ?? "{}");
+            const exp = data?.expiresAt ? new Date(data.expiresAt) : null;
+            if (exp && exp > new Date()) {
+              sessionActive = true;
+              sessionExpiresAt = exp.toISOString();
+            } else if (exp) {
+              await db.delete(systemSettings).where(eq(systemSettings.key, key));
+            }
+          } catch { /* ignore */ }
+        }
+      }
+      return res.json({ ok: true, secretConfigured, pinConfigured, sessionActive, sessionExpiresAt });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to get platform admin status." });
+    }
+  });
+
+  router.post("/admin/platform-admin/unlock", requireAuth, async (req, res) => {
+    try {
+      const userId = (req as any).auth?.userId as string | undefined;
+      const sessionId = (req as any).auth?.sessionId as string | undefined;
+      if (!userId || !sessionId) return res.status(401).json({ error: "Not authenticated." });
+      // Only admin-role users may create a platform-admin session.
+      const reqUser = (req as any).user;
+      if (!reqUser || reqUser.role !== "admin") {
+        return res.status(403).json({ error: "Admin role required." });
+      }
+
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const credential = typeof body.credential === "string" ? body.credential : null;
+      if (!credential) return res.status(400).json({ error: "credential is required." });
+
+      const secret = process.env.PLATFORM_ADMIN_SECRET;
+      const effectivePin = getEffectiveAdminPin();
+      const valid = (secret && credential === secret) || (credential === effectivePin);
+      if (!valid) {
+        return res.status(403).json({ error: "Invalid platform admin credential." });
+      }
+
+      const expiresAt = new Date(Date.now() + 2 * 60 * 60 * 1000);
+      const key = `padmin_sess:${userId}:${sessionId}`;
+      await db
+        .insert(systemSettings)
+        .values({ key, value: JSON.stringify({ expiresAt: expiresAt.toISOString(), userId }), updatedAt: new Date() })
+        .onConflictDoUpdate({
+          target: systemSettings.key,
+          set: { value: JSON.stringify({ expiresAt: expiresAt.toISOString(), userId }), updatedAt: new Date() },
+        });
+      return res.json({ ok: true, sessionActive: true, expiresAt: expiresAt.toISOString(), sessionToken: `${userId}:${sessionId}` });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to unlock platform admin session." });
+    }
+  });
+
+  router.post("/admin/platform-admin/lock", requireAuth, async (req, res) => {
+    try {
+      const userId = (req as any).auth?.userId as string | undefined;
+      const sessionId = (req as any).auth?.sessionId as string | undefined;
+      if (userId && sessionId) {
+        const key = `padmin_sess:${userId}:${sessionId}`;
+        await db.delete(systemSettings).where(eq(systemSettings.key, key));
+      }
+      return res.json({ ok: true, sessionActive: false });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to lock platform admin session." });
+    }
+  });
+
+  // ── Admin Templates ───────────────────────────────────────────────────────
+  // Simple editable fields for invoice, statement, and correspondence templates.
+  // Invoice settings overlay is stored per-org in system_settings.
+  // Statement and correspondence settings are stored in the organizations table.
+
+  async function getAdminLabOrg(userId: string): Promise<{ id: string } | null> {
+    const [membership] = await db
+      .select({ labId: organizationMemberships.labId })
+      .from(organizationMemberships)
+      .innerJoin(organizations, eq(organizations.id, organizationMemberships.labId))
+      .where(
+        and(
+          eq(organizationMemberships.userId, userId),
+          eq(organizationMemberships.role, "admin"),
+          isNull(organizationMemberships.deletedAt),
+          eq(organizations.type, "lab"),
+          isNull(organizations.deletedAt)
+        )
+      )
+      .limit(1);
+    return membership ? { id: membership.labId } : null;
+  }
+
+  const DEFAULT_INVOICE_TEMPLATE = {
+    showLogo: true,
+    showHeader: true,
+    showDueDate: true,
+    showCaseNumbers: true,
+    showRestorationDetails: true,
+    headerText: null as string | null,
+    footerText: null as string | null,
+    termsText: null as string | null,
+    notesText: null as string | null,
+  };
+
+  const DEFAULT_STATEMENT_TEMPLATE = {
+    showLogo: true,
+    showAccountNumber: true,
+    showAgingSummary: true,
+    showPaymentInstructions: true,
+    headerText: null as string | null,
+    footerText: null as string | null,
+    paymentInstructionsText: null as string | null,
+    messageText: null as string | null,
+  };
+
+  const DEFAULT_CORRESPONDENCE_TEMPLATE = {
+    showLogo: true,
+    showAddress: true,
+    showContactInfo: true,
+    salutation: null as string | null,
+    closingText: null as string | null,
+    signatureText: null as string | null,
+    headerText: null as string | null,
+    footerText: null as string | null,
+  };
+
+  router.get("/admin/templates/invoice", requireAuth, async (req, res) => {
+    try {
+      const userId = (req as any).auth?.userId as string;
+      const org = await getAdminLabOrg(userId);
+      if (!org) return res.status(403).json({ error: "Admin access required." });
+      const key = `tmpl_invoice_simple:${org.id}`;
+      const [row] = await db.select().from(systemSettings).where(eq(systemSettings.key, key));
+      const stored = row ? (() => { try { return JSON.parse(row.value ?? "{}"); } catch { return {}; } })() : {};
+      const template = { ...DEFAULT_INVOICE_TEMPLATE, ...stored };
+      return res.json({ ok: true, template, orgId: org.id });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to get invoice template." });
+    }
+  });
+
+  router.patch("/admin/templates/invoice", requireAuth, async (req, res) => {
+    try {
+      const userId = (req as any).auth?.userId as string;
+      const org = await getAdminLabOrg(userId);
+      if (!org) return res.status(403).json({ error: "Admin access required." });
+      const body = req.body ?? {};
+      const key = `tmpl_invoice_simple:${org.id}`;
+      const [existing] = await db.select().from(systemSettings).where(eq(systemSettings.key, key));
+      const current = existing ? (() => { try { return JSON.parse(existing.value ?? "{}"); } catch { return {}; } })() : {};
+      const updated = { ...DEFAULT_INVOICE_TEMPLATE, ...current, ...body };
+      await db
+        .insert(systemSettings)
+        .values({ key, value: JSON.stringify(updated), updatedAt: new Date() })
+        .onConflictDoUpdate({
+          target: systemSettings.key,
+          set: { value: JSON.stringify(updated), updatedAt: new Date() },
+        });
+      return res.json({ ok: true, template: updated });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to update invoice template." });
+    }
+  });
+
+  router.get("/admin/templates/statement", requireAuth, async (req, res) => {
+    try {
+      const userId = (req as any).auth?.userId as string;
+      const org = await getAdminLabOrg(userId);
+      if (!org) return res.status(403).json({ error: "Admin access required." });
+      const [orgRow] = await db.select({ statementTemplate: organizations.statementTemplate }).from(organizations).where(eq(organizations.id, org.id));
+      const stored = (orgRow?.statementTemplate as Record<string, unknown> | null) ?? {};
+      const template = { ...DEFAULT_STATEMENT_TEMPLATE, ...stored };
+      return res.json({ ok: true, template, orgId: org.id });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to get statement template." });
+    }
+  });
+
+  router.patch("/admin/templates/statement", requireAuth, async (req, res) => {
+    try {
+      const userId = (req as any).auth?.userId as string;
+      const org = await getAdminLabOrg(userId);
+      if (!org) return res.status(403).json({ error: "Admin access required." });
+      const [orgRow] = await db.select({ statementTemplate: organizations.statementTemplate }).from(organizations).where(eq(organizations.id, org.id));
+      const current = (orgRow?.statementTemplate as Record<string, unknown> | null) ?? {};
+      const updated = { ...DEFAULT_STATEMENT_TEMPLATE, ...current, ...(req.body ?? {}) };
+      await db.update(organizations).set({ statementTemplate: updated, updatedAt: new Date() }).where(eq(organizations.id, org.id));
+      return res.json({ ok: true, template: updated });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to update statement template." });
+    }
+  });
+
+  router.get("/admin/templates/correspondence", requireAuth, async (req, res) => {
+    try {
+      const userId = (req as any).auth?.userId as string;
+      const org = await getAdminLabOrg(userId);
+      if (!org) return res.status(403).json({ error: "Admin access required." });
+      const [orgRow] = await db.select({ correspondenceTemplate: organizations.correspondenceTemplate }).from(organizations).where(eq(organizations.id, org.id));
+      const stored = (orgRow?.correspondenceTemplate as Record<string, unknown> | null) ?? {};
+      const template = { ...DEFAULT_CORRESPONDENCE_TEMPLATE, ...stored };
+      return res.json({ ok: true, template, orgId: org.id });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to get correspondence template." });
+    }
+  });
+
+  router.patch("/admin/templates/correspondence", requireAuth, async (req, res) => {
+    try {
+      const userId = (req as any).auth?.userId as string;
+      const org = await getAdminLabOrg(userId);
+      if (!org) return res.status(403).json({ error: "Admin access required." });
+      const [orgRow] = await db.select({ correspondenceTemplate: organizations.correspondenceTemplate }).from(organizations).where(eq(organizations.id, org.id));
+      const current = (orgRow?.correspondenceTemplate as Record<string, unknown> | null) ?? {};
+      const updated = { ...DEFAULT_CORRESPONDENCE_TEMPLATE, ...current, ...(req.body ?? {}) };
+      await db.update(organizations).set({ correspondenceTemplate: updated, updatedAt: new Date() }).where(eq(organizations.id, org.id));
+      return res.json({ ok: true, template: updated });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to update correspondence template." });
     }
   });
 
@@ -6026,6 +6409,33 @@ Important rules:
       }
       req.log.error({ err: e }, "Backup stream aborted after headers were sent");
       if (!res.writableEnded) res.destroy();
+    }
+  });
+
+  // ── Admin Backup: overdue-status (requireAuth only, no platform-admin session) ──
+  // Used by the Account tab to compute the "backup overdue" badge without
+  // requiring the user to have unlocked a platform-admin session.
+  router.get("/admin/backup/overdue-status", requireAuth, async (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser || reqUser.role !== "admin" || reqUser.userType !== "lab") {
+      return res.status(403).json({ error: "Lab admin access required." });
+    }
+    try {
+      const [lastSuccessfulBackupAt, staleDaysRow] = await Promise.all([
+        getLastSuccessfulBackupAt(),
+        db.select().from(systemSettings).where(eq(systemSettings.key, SETTING_BACKUP_STALE_DAYS)).limit(1),
+      ]);
+      const staleDaysRaw = staleDaysRow[0]?.value ?? null;
+      const staleAfterDays =
+        staleDaysRaw !== null ? parseInt(staleDaysRaw, 10) : DEFAULT_BACKUP_STALE_DAYS;
+      return res.json({
+        ok: true,
+        lastSuccessfulBackupAt,
+        staleAfterDays: Number.isFinite(staleAfterDays) ? staleAfterDays : DEFAULT_BACKUP_STALE_DAYS,
+      });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Failed to fetch backup overdue status.";
+      return res.status(500).json({ error: msg });
     }
   });
 

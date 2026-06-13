@@ -334,7 +334,7 @@ export default function InvoiceEditorScreen() {
           <Ionicons name="receipt-outline" size={44} color={colors.textTertiary} />
           <Text style={styles.errorTitle}>
             {isLegacyMobileInvoice
-              ? "This invoice couldn't be loaded. Open the case to try generating an editable invoice."
+              ? "This invoice was created in an older version of the app. Open the case to try generating an editable invoice."
               : "This invoice couldn't be loaded."}
           </Text>
           <Pressable onPress={() => router.back()} style={styles.errorButton}>
