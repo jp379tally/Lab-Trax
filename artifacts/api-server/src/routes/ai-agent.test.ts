@@ -6,7 +6,13 @@
  * - POST /ai-agent requires authentication
  * - POST /ai-agent/confirm requires authentication
  * - POST /ai-agent/confirm rejects unknown action IDs
+ * - POST /ai-agent/confirm success path: 200 action_result with correct shape
+ * - POST /ai-agent/confirm expired action (past TTL): 404
+ * - POST /ai-agent/confirm wrong-user ownership check: 403
+ * - POST /ai-agent/confirm single-use enforcement: second confirm is 404
  * - POST /ai-agent/reject discards a pending action
+ * - POST /ai-agent/reject success path: 200 action_rejected and action removed
+ * - POST /ai-agent/reject silently ignores another user's action (no removal)
  * - Tool classification: readonly tools have kind "readonly", impactful tools have kind "impactful"
  * - Tool registry completeness
  */
@@ -21,6 +27,7 @@ import {
   type ToolContext,
 } from "../lib/ai-agent-tools";
 import { registerAiAgentRoutes, _testInjectPendingAction } from "./ai-agent";
+
 
 // ─── Minimal Express app for tests ─────────────────────────────────────────
 
@@ -319,5 +326,150 @@ describe("tool permission boundaries (unit)", () => {
       "monthly_sales_snapshot",
       "remake_rate",
     ]);
+  });
+});
+
+// ─── Confirm success path ─────────────────────────────────────────────────────
+
+describe("POST /api/ai-agent/confirm — success path", () => {
+  it("returns 200 action_result with correct shape when tool executes successfully", async () => {
+    const tool = TOOL_BY_NAME.get("mark_invoice_paid")!;
+    const executeSpy = vi
+      .spyOn(tool, "execute")
+      .mockResolvedValueOnce({ invoiceId: "inv-sp-001", status: "paid" });
+
+    _testInjectPendingAction({
+      actionId: "action-confirm-success",
+      userId: "user-cs",
+      toolName: "mark_invoice_paid",
+      args: { invoiceId: "inv-sp-001" },
+      summary: "Mark invoice #INV-001 as paid",
+      createdAt: Date.now(),
+    });
+
+    const app = makeApp("user-cs");
+    const res = await request(app)
+      .post("/api/ai-agent/confirm")
+      .send({ actionId: "action-confirm-success" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.type).toBe("action_result");
+    expect(res.body.success).toBe(true);
+    expect(res.body.toolName).toBe("mark_invoice_paid");
+    expect(res.body.summary).toBe("Mark invoice #INV-001 as paid");
+    expect(res.body.result).toBeDefined();
+
+    executeSpy.mockRestore();
+  });
+
+  it("returns 400 action_result with success:false when tool throws", async () => {
+    const tool = TOOL_BY_NAME.get("void_invoice")!;
+    const executeSpy = vi
+      .spyOn(tool, "execute")
+      .mockRejectedValueOnce(new Error("Invoice already voided"));
+
+    _testInjectPendingAction({
+      actionId: "action-confirm-fail",
+      userId: "user-cf",
+      toolName: "void_invoice",
+      args: { invoiceId: "inv-already-voided" },
+      summary: "Void invoice #INV-002",
+      createdAt: Date.now(),
+    });
+
+    const app = makeApp("user-cf");
+    const res = await request(app)
+      .post("/api/ai-agent/confirm")
+      .send({ actionId: "action-confirm-fail" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.type).toBe("action_result");
+    expect(res.body.success).toBe(false);
+    expect(res.body.toolName).toBe("void_invoice");
+    expect(res.body.error).toMatch(/already voided/i);
+
+    executeSpy.mockRestore();
+  });
+});
+
+// ─── Expired action (TTL) ─────────────────────────────────────────────────────
+
+describe("POST /api/ai-agent/confirm — expired action", () => {
+  it("returns 404 when the action was created past the 5-minute TTL", async () => {
+    // Inject an action whose createdAt is 6 minutes in the past — cleanExpiredActions()
+    // called inside the confirm handler removes it before the lookup.
+    const SIX_MINUTES_MS = 6 * 60 * 1000;
+    _testInjectPendingAction({
+      actionId: "action-expired-ttl",
+      userId: "user-exp",
+      toolName: "mark_invoice_paid",
+      args: { invoiceId: "inv-exp" },
+      summary: "Mark expired invoice paid",
+      createdAt: Date.now() - SIX_MINUTES_MS,
+    });
+
+    const app = makeApp("user-exp");
+    const res = await request(app)
+      .post("/api/ai-agent/confirm")
+      .send({ actionId: "action-expired-ttl" });
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/not found|expired/i);
+  });
+});
+
+// ─── Reject success path and ownership guard ──────────────────────────────────
+
+describe("POST /api/ai-agent/reject — success path and ownership", () => {
+  it("returns 200 action_rejected for the owning user and removes the action", async () => {
+    _testInjectPendingAction({
+      actionId: "action-reject-owned",
+      userId: "user-ro",
+      toolName: "mark_invoice_paid",
+      args: { invoiceId: "inv-rej" },
+      summary: "Mark invoice paid",
+      createdAt: Date.now(),
+    });
+
+    const app = makeApp("user-ro");
+    const res = await request(app)
+      .post("/api/ai-agent/reject")
+      .send({ actionId: "action-reject-owned" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.type).toBe("action_rejected");
+    expect(res.body.actionId).toBe("action-reject-owned");
+
+    // Action must be gone — confirm should now return 404
+    const confirmRes = await request(app)
+      .post("/api/ai-agent/confirm")
+      .send({ actionId: "action-reject-owned" });
+    expect(confirmRes.status).toBe(404);
+  });
+
+  it("silently ignores a reject from a different user (action survives for owner)", async () => {
+    _testInjectPendingAction({
+      actionId: "action-reject-foreign",
+      userId: "user-owner-rej",
+      toolName: "mark_invoice_paid",
+      args: { invoiceId: "inv-rej2" },
+      summary: "Mark invoice paid",
+      createdAt: Date.now(),
+    });
+
+    // A different user attempts to reject — the route silently ignores it
+    const attackerApp = makeApp("user-attacker-rej");
+    const rejectRes = await request(attackerApp)
+      .post("/api/ai-agent/reject")
+      .send({ actionId: "action-reject-foreign" });
+    expect(rejectRes.status).toBe(200);
+    expect(rejectRes.body.type).toBe("action_rejected");
+
+    // Owner's action is still present — attacker's reject had no effect
+    // (confirm by wrong user returns 403, proving the action is still there)
+    const confirmRes = await request(attackerApp)
+      .post("/api/ai-agent/confirm")
+      .send({ actionId: "action-reject-foreign" });
+    expect(confirmRes.status).toBe(403);
   });
 });
