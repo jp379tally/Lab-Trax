@@ -25,6 +25,8 @@ import {
 
 const MAX_PAGES = 6;
 
+console.log("[AiReader/capture] Module loaded — expo-camera import resolved");
+
 // Accelerometer steadiness thresholds for the auto-shutter heuristic.
 // When device acceleration magnitude stays below STEADY_THRESHOLD for
 // STEADY_SAMPLES consecutive readings, the document is considered stable
@@ -34,8 +36,10 @@ const STEADY_SAMPLES = 6;      // ~600 ms at 10 Hz
 const ACCEL_INTERVAL_MS = 100; // sample every 100 ms
 
 export default function AiReaderCaptureScreen() {
+  console.log("[AiReader/capture] Component function entered");
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
+  console.log("[AiReader/capture] useTheme OK");
   const styles = useMemo(() => makeStyles(colors), [colors]);
 
   // `new=1` is passed by the dashboard "Scan Rx" button to signal a brand-new
@@ -46,6 +50,7 @@ export default function AiReaderCaptureScreen() {
   const isRetakeMode = retakeIndex !== null && !isNaN(retakeIndex);
 
   const [permission, requestPermission] = useCameraPermissions();
+  console.log("[AiReader/capture] useCameraPermissions OK — granted:", permission?.granted);
   const cameraRef = useRef<CameraView>(null);
 
   const [pages, setPages] = useState<CapturedPage[]>(() => {
