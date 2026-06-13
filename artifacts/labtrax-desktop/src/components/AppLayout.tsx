@@ -1,4 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { MessengerDock } from "./messenger/MessengerDock";
 import { UpdateBanner } from "./UpdateBanner";
 import { Link, useLocation } from "wouter";
@@ -183,6 +190,7 @@ export function AppLayout({ children }: Props) {
   const [notifLoading, setNotifLoading] = useState(false);
   const [hasUnread, setHasUnread] = useState(false);
   const markReadInflight = useRef(false);
+  const [selectedNotif, setSelectedNotif] = useState<Notification | null>(null);
 
   const backupScheduleQuery = useQuery<BackupScheduleShape>({
     queryKey: ["admin", "backup-schedule-v2"],
@@ -299,10 +307,8 @@ export function AppLayout({ children }: Props) {
       apiFetch(`/notifications/${notif.id}/read`, { method: "PATCH" }).catch(() => {/* ignore */});
     }
 
-    const dest = getNotificationDestination(notif);
-    if (dest) {
-      setLocation(dest);
-    }
+    // Always open the detail dialog so the user can read the full message.
+    setSelectedNotif(notif);
   }
 
   function renderNavItem(item: NavItem, indent = false) {
@@ -718,6 +724,39 @@ export function AppLayout({ children }: Props) {
           }}
         />
       )}
+
+      {/* Notification detail dialog */}
+      <Dialog open={!!selectedNotif} onOpenChange={(open) => { if (!open) setSelectedNotif(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-base leading-snug pr-6">
+              {selectedNotif?.title}
+            </DialogTitle>
+            <p className="text-[11px] text-muted-foreground pt-0.5">
+              {selectedNotif ? relativeTime(selectedNotif.createdAt) : ""}
+            </p>
+          </DialogHeader>
+          <p className="text-sm text-foreground/80 leading-relaxed whitespace-pre-wrap">
+            {selectedNotif?.body}
+          </p>
+          {selectedNotif && getNotificationDestination(selectedNotif) && (
+            <DialogFooter>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+                onClick={() => {
+                  const dest = getNotificationDestination(selectedNotif);
+                  setSelectedNotif(null);
+                  if (dest) setLocation(dest);
+                }}
+              >
+                <ExternalLink size={14} />
+                View
+              </button>
+            </DialogFooter>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
     </AiPanelContext.Provider>
   );
