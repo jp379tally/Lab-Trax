@@ -2743,6 +2743,7 @@ router.get(
       );
       return {
         ...row,
+        caseNotes: (row as any).rxNotes ?? null,
         restorationCount: items.length,
         restorationTypes: types || null,
         restorationMaterials: materials || null,
@@ -3453,6 +3454,7 @@ router.get(
 
     return ok(res, {
       ...found,
+      caseNotes: (found as any).rxNotes ?? null,
       suggestedPracticeName,
       providerOrganizationContact,
       restorations,
@@ -5983,6 +5985,7 @@ router.post(
           needsAiReview: true,
           aiImportSource: "itero",
           externalPatientId: body.iteroOrderId,
+          rxNotes: extracted.notes?.trim() || null,
           suggestedDoctorName,
           // When the per-lab "auto-link suggested practice" setting fired,
           // the suggestion has been applied — null it out so the review
@@ -6902,6 +6905,7 @@ router.post(
           needsAiReview: true,
           aiImportSource: "itero",
           externalPatientId: iteroOrderId,
+          rxNotes: extracted.notes?.trim() || null,
           ...({ suggestedDoctorName, suggestedProviderOrgId } as any),
         })
         .returning();
@@ -7519,6 +7523,7 @@ async function processOneIteroZipFile(
       dueDate, expectedDeliveryDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       createdByUserId: userId, needsAiReview: true, aiImportSource: "itero",
       externalPatientId: iteroOrderId,
+      rxNotes: extracted.notes?.trim() || null,
       ...({
         suggestedDoctorName,
         // Clear the suggestion field once it's been auto-applied so the
