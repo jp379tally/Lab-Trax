@@ -865,6 +865,7 @@ export default function DashboardPage() {
 
   const [showNewCase, setShowNewCase] = useState(false);
   const [selectedCase, setSelectedCase] = useState<LabCase | null>(null);
+  const [dueTodayOpen, setDueTodayOpen] = useState(true);
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
 
@@ -892,6 +893,18 @@ export default function DashboardPage() {
           ),
         )
         .slice(0, 6),
+    [cases],
+  );
+
+  const dueTodayCases = useMemo(
+    () =>
+      [...cases]
+        .filter((c) => isToday(c.dueDate) && !COMPLETED_STATUSES.has(c.status))
+        .sort((a, b) =>
+          (a.updatedAt || a.createdAt || "").localeCompare(
+            b.updatedAt || b.createdAt || "",
+          ),
+        ),
     [cases],
   );
 
@@ -968,28 +981,73 @@ export default function DashboardPage() {
           </section>
         </div>
 
-        <section className="lg:col-span-2 bg-card border border-border rounded-xl self-start">
-          <header className="flex items-center justify-between px-5 py-3.5 border-b border-border">
-            <div>
-              <h2 className="text-sm font-semibold">Recent cases</h2>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Most recently active, excluding completed.
-              </p>
-            </div>
-            <Link
-              href="/cases"
-              className="text-xs font-medium text-primary inline-flex items-center gap-1 hover:underline"
+        <div className="lg:col-span-2 flex flex-col gap-6">
+          <section className="bg-card border border-border rounded-xl self-start">
+            <header className="flex items-center justify-between px-5 py-3.5 border-b border-border">
+              <div>
+                <h2 className="text-sm font-semibold">Recent cases</h2>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Most recently active, excluding completed.
+                </p>
+              </div>
+              <Link
+                href="/cases"
+                className="text-xs font-medium text-primary inline-flex items-center gap-1 hover:underline"
+              >
+                View all <ArrowRight size={12} />
+              </Link>
+            </header>
+            <CasesTable
+              cases={recentCases}
+              loading={loading}
+              emptyText="No active cases."
+              onSelect={setSelectedCase}
+            />
+          </section>
+
+          <section className="bg-card border border-border rounded-xl">
+            <header
+              className="flex items-center justify-between px-5 py-3.5 border-b border-border cursor-pointer select-none hover:bg-secondary/30 transition-colors rounded-t-xl"
+              onClick={() => setDueTodayOpen((v) => !v)}
             >
-              View all <ArrowRight size={12} />
-            </Link>
-          </header>
-          <CasesTable
-            cases={recentCases}
-            loading={loading}
-            emptyText="No active cases."
-            onSelect={setSelectedCase}
-          />
-        </section>
+              <div className="flex items-center gap-2.5">
+                <div>
+                  <h2 className="text-sm font-semibold flex items-center gap-2">
+                    Due today
+                    {!loading && dueTodayCases.length > 0 && (
+                      <span className="inline-flex items-center justify-center h-5 min-w-[20px] px-1.5 rounded-full text-[10px] font-semibold bg-primary text-primary-foreground tabular-nums">
+                        {dueTodayCases.length}
+                      </span>
+                    )}
+                  </h2>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {loading
+                      ? "Loading…"
+                      : dueTodayCases.length === 0
+                        ? "No active cases due today."
+                        : `${dueTodayCases.length} active case${dueTodayCases.length === 1 ? "" : "s"} due today.`}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                aria-label={dueTodayOpen ? "Collapse due today" : "Expand due today"}
+                className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                onClick={(e) => { e.stopPropagation(); setDueTodayOpen((v) => !v); }}
+              >
+                {dueTodayOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+              </button>
+            </header>
+            {dueTodayOpen && (
+              <CasesTable
+                cases={dueTodayCases}
+                loading={loading}
+                emptyText="No active cases due today."
+                onSelect={setSelectedCase}
+              />
+            )}
+          </section>
+        </div>
       </div>
 
       {showNewCase && <NewCaseModal onClose={() => setShowNewCase(false)} />}
