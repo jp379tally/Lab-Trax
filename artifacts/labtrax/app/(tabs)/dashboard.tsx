@@ -117,6 +117,14 @@ export default function DashboardScreen() {
   const displayName = fullName || meUser?.username || "";
   const avatarLetter = (displayName || "?").charAt(0).toUpperCase();
   const displayRole = meUser?.role ?? "";
+
+  const WORK_STATUS_COLORS: Record<string, string> = {
+    available: "#10B981",
+    break: "#F59E0B",
+    lunch: "#F97316",
+    out_of_office: "#94A3B8",
+  };
+  const workStatusColor = meUser?.workStatus ? (WORK_STATUS_COLORS[meUser.workStatus] ?? null) : null;
   const labMembership = memberships.find(
     (m: any) => m.status === "active" && (m.organization?.type ?? "").toLowerCase() === "lab",
   );
@@ -390,13 +398,18 @@ export default function DashboardScreen() {
         onPress={() => router.push("/settings/profile" as never)}
         testID="dashboard-profile-header"
       >
-        {profilePicUri ? (
-          <Image source={{ uri: profilePicUri }} style={styles.profileAvatar} />
-        ) : (
-          <View style={[styles.profileAvatarFallback, { backgroundColor: colors.tint + "20" }]}>
-            <Text style={[styles.profileAvatarLetter, { color: colors.tint }]}>{avatarLetter}</Text>
-          </View>
-        )}
+        <View style={styles.profileAvatarContainer}>
+          {profilePicUri ? (
+            <Image source={{ uri: profilePicUri }} style={styles.profileAvatar} />
+          ) : (
+            <View style={[styles.profileAvatarFallback, { backgroundColor: colors.tint + "20" }]}>
+              <Text style={[styles.profileAvatarLetter, { color: colors.tint }]}>{avatarLetter}</Text>
+            </View>
+          )}
+          {workStatusColor ? (
+            <View style={[styles.profileStatusDot, { backgroundColor: workStatusColor }]} />
+          ) : null}
+        </View>
         {displayName ? (
           <Text style={[styles.profileName, { color: colors.text }]} numberOfLines={1}>
             {displayName}
@@ -472,11 +485,16 @@ function makeStyles(c: ThemeColors) {
       paddingBottom: Spacing.sm,
       gap: 4,
     },
+    profileAvatarContainer: {
+      position: "relative",
+      width: 60,
+      height: 60,
+      marginBottom: Spacing.xs,
+    },
     profileAvatar: {
       width: 60,
       height: 60,
       borderRadius: 30,
-      marginBottom: Spacing.xs,
     },
     profileAvatarFallback: {
       width: 60,
@@ -484,7 +502,16 @@ function makeStyles(c: ThemeColors) {
       borderRadius: 30,
       alignItems: "center",
       justifyContent: "center",
-      marginBottom: Spacing.xs,
+    },
+    profileStatusDot: {
+      position: "absolute",
+      bottom: 1,
+      right: 1,
+      width: 14,
+      height: 14,
+      borderRadius: 7,
+      borderWidth: 2,
+      borderColor: c.backgroundSolid,
     },
     profileAvatarLetter: { ...Typography.h2 },
     profileName: { ...Typography.h3, textAlign: "center" },
