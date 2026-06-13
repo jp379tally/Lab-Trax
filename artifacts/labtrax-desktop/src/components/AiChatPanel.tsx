@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   Check,
   Clock,
+  Copy,
   Loader2,
   PenSquare,
   Plus,
@@ -382,6 +383,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [showSessionsList, setShowSessionsList] = useState(false);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
+  const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
 
   const currentSessionIdRef = useRef<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -611,6 +613,16 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
       );
     }
   }
+
+  const handleCopyDraft = useCallback(async (text: string, msgId: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedMsgId(msgId);
+      setTimeout(() => setCopiedMsgId((prev) => (prev === msgId ? null : prev)), 2000);
+    } catch {
+      // clipboard unavailable — silently ignore, no state change
+    }
+  }, []);
 
   async function rejectAction(actionId: string) {
     setMessages((prev) =>
@@ -1041,6 +1053,12 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
             ?.result as CaseHistoryData | undefined;
           const hasCaseHistory = !!caseHistoryOutput?.found;
 
+          // Find draft_message tool output if present
+          const draftOutput = msg.toolOutputs?.find((t) => t.name === "draft_message")
+            ?.result as { draft?: string } | undefined;
+          const draftText = draftOutput?.draft;
+          const isCopied = copiedMsgId === msg.id;
+
           return (
             <div
               key={msg.id}
@@ -1061,6 +1079,28 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
                 >
                   {msg.content}
                 </div>
+                {draftText && (
+                  <div className="w-full rounded-xl border border-primary/25 bg-primary/5 px-3 py-2.5 mt-0.5">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-[10px] font-semibold uppercase tracking-wide text-primary">
+                        Drafted message
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleCopyDraft(draftText, msg.id)}
+                        className={`flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded border transition-colors ${
+                          isCopied
+                            ? "border-primary/30 bg-primary/10 text-primary"
+                            : "border-primary/20 text-primary hover:bg-primary/10"
+                        }`}
+                      >
+                        {isCopied ? <Check size={11} /> : <Copy size={11} />}
+                        {isCopied ? "Copied!" : "Copy"}
+                      </button>
+                    </div>
+                    <p className="text-sm text-foreground leading-snug whitespace-pre-wrap">{draftText}</p>
+                  </div>
+                )}
                 {hasCaseHistory && caseHistoryOutput && (
                   <button
                     type="button"

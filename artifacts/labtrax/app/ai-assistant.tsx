@@ -13,6 +13,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import * as Clipboard from "expo-clipboard";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { resilientFetch } from "@/lib/query-client";
@@ -74,6 +75,17 @@ function MessageBubble({ msg, colors }: BubbleProps) {
   const draftTool = msg.toolOutputs?.find((t) => t.name === "draft_message")?.result as
     | { draft?: string }
     | undefined;
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(async (text: string) => {
+    try {
+      await Clipboard.setStringAsync(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // clipboard unavailable — silently ignore, no state change
+    }
+  }, []);
 
   return (
     <View
@@ -115,7 +127,18 @@ function MessageBubble({ msg, colors }: BubbleProps) {
         </View>
         {draftTool?.draft && (
           <View style={[styles.draftBox, { borderColor: colors.tint + "40", backgroundColor: colors.tint + "0D" }]}>
-            <Text style={[styles.draftLabel, { color: colors.tint }]}>Drafted message</Text>
+            <View style={styles.draftHeader}>
+              <Text style={[styles.draftLabel, { color: colors.tint }]}>Drafted message</Text>
+              <Pressable
+                onPress={() => handleCopy(draftTool.draft!)}
+                hitSlop={8}
+                style={[styles.copyBtn, { borderColor: colors.tint + "40", backgroundColor: copied ? colors.tint + "1A" : "transparent" }]}
+                accessibilityLabel="Copy drafted message"
+              >
+                <Ionicons name={copied ? "checkmark" : "copy-outline"} size={12} color={colors.tint} />
+                <Text style={[styles.copyBtnText, { color: colors.tint }]}>{copied ? "Copied!" : "Copy"}</Text>
+              </Pressable>
+            </View>
             <Text style={[styles.draftText, { color: colors.text }]}>{draftTool.draft}</Text>
           </View>
         )}
@@ -399,6 +422,11 @@ const styles = StyleSheet.create({
     padding: 10,
     gap: 4,
   },
+  draftHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
   draftLabel: {
     fontSize: 11,
     fontWeight: "600",
@@ -408,6 +436,19 @@ const styles = StyleSheet.create({
   draftText: {
     fontSize: 13,
     lineHeight: 19,
+  },
+  copyBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    borderWidth: 1,
+    borderRadius: Radius.sm,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
+  copyBtnText: {
+    fontSize: 11,
+    fontWeight: "500",
   },
 });
 
