@@ -7,6 +7,7 @@ import {
   Loader2,
   PenSquare,
   Plus,
+  Printer,
   Send,
   Sparkles,
   Trash2,
@@ -17,11 +18,43 @@ import type { AiCaseContext } from "@/lib/ai-panel-context";
 
 // ─── Message types ──────────────────────────────────────────────────────────
 
+interface ToolOutput {
+  name: string;
+  result: unknown;
+}
+
+interface CaseHistoryData {
+  found: boolean;
+  case?: {
+    id: string;
+    caseNumber: string;
+    patientName: string;
+    doctorName: string;
+    status: string;
+    priority: string;
+    dueDate: string | null;
+    receivedAt: string | null;
+    createdAt: string | null;
+    remakeOf: string | null;
+    remakeReason: string | null;
+    remakeCharged: boolean | null;
+  };
+  timeline?: Array<{
+    timestamp: string;
+    kind: "event" | "note";
+    eventType?: string;
+    actor: string;
+    summary: string;
+  }>;
+}
+
 interface ChatMsg {
   id: string;
   role: "user" | "assistant";
   /** Text content — set for reply and action_result messages */
   content?: string;
+  /** Raw tool outputs from the API (for rendering special UI like Print button) */
+  toolOutputs?: ToolOutput[];
   /** Proposed action payload */
   proposedAction?: {
     actionId: string;
@@ -32,6 +65,79 @@ interface ChatMsg {
     resultText?: string;
     error?: string;
   };
+}
+
+// ─── Case history print helper ───────────────────────────────────────────────
+
+function printCaseHistory(data: CaseHistoryData): void {
+  if (!data.found || !data.case) return;
+  const c = data.case;
+  const timeline = data.timeline ?? [];
+
+  const formatDate = (iso: string | null | undefined): string => {
+    if (!iso) return "—";
+    try { return new Date(iso).toLocaleString(); } catch { return iso; }
+  };
+
+  const rows = timeline
+    .map(
+      (t) => `
+      <tr>
+        <td>${formatDate(t.timestamp)}</td>
+        <td>${t.actor}</td>
+        <td>${t.kind === "note" ? "Note" : t.eventType?.replace(/_/g, " ") ?? "Event"}</td>
+        <td>${t.summary.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</td>
+      </tr>`,
+    )
+    .join("");
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Case History — ${c.caseNumber}</title>
+<style>
+  body { font-family: Arial, sans-serif; font-size: 12px; margin: 24px; color: #111; }
+  h1 { font-size: 18px; margin-bottom: 4px; }
+  .meta { font-size: 11px; color: #555; margin-bottom: 16px; }
+  .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 24px; margin-bottom: 20px; border: 1px solid #ddd; padding: 12px; border-radius: 4px; background: #fafafa; }
+  .info-item { display: flex; flex-direction: column; }
+  .info-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: #888; }
+  .info-value { font-size: 12px; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th { background: #f0f0f0; text-align: left; padding: 6px 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; border: 1px solid #ddd; }
+  td { padding: 5px 8px; border: 1px solid #ddd; vertical-align: top; font-size: 11px; }
+  tr:nth-child(even) td { background: #fafafa; }
+  .remake-banner { background: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; padding: 8px 12px; margin-bottom: 16px; font-size: 11px; }
+  @media print { body { margin: 8px; } }
+</style>
+</head>
+<body>
+<h1>Case History Report</h1>
+<div class="meta">Printed ${new Date().toLocaleString()}</div>
+${c.remakeOf ? `<div class="remake-banner">⚠ This case is a remake of case <strong>${c.remakeOf}</strong>${c.remakeReason ? ` — Reason: ${c.remakeReason}` : ""}${c.remakeCharged != null ? ` · Charged: ${c.remakeCharged ? "Yes" : "No"}` : ""}</div>` : ""}
+<div class="info-grid">
+  <div class="info-item"><span class="info-label">Case #</span><span class="info-value">${c.caseNumber}</span></div>
+  <div class="info-item"><span class="info-label">Status</span><span class="info-value">${c.status}</span></div>
+  <div class="info-item"><span class="info-label">Patient</span><span class="info-value">${c.patientName}</span></div>
+  <div class="info-item"><span class="info-label">Doctor</span><span class="info-value">${c.doctorName}</span></div>
+  <div class="info-item"><span class="info-label">Due Date</span><span class="info-value">${formatDate(c.dueDate)}</span></div>
+  <div class="info-item"><span class="info-label">Received</span><span class="info-value">${formatDate(c.receivedAt ?? c.createdAt)}</span></div>
+</div>
+<h2 style="font-size:14px; margin-bottom:6px;">Timeline (${timeline.length} entries)</h2>
+<table>
+  <thead><tr><th>Date/Time</th><th>Actor</th><th>Type</th><th>Details</th></tr></thead>
+  <tbody>${rows || "<tr><td colspan='4' style='text-align:center;color:#888'>No events recorded</td></tr>"}</tbody>
+</table>
+</body>
+</html>`;
+
+  const win = window.open("", "_blank", "width=900,height=700");
+  if (!win) return;
+  win.document.write(html);
+  win.document.close();
+  win.focus();
+  setTimeout(() => win.print(), 400);
 }
 
 interface CaseSearchResult {
@@ -577,6 +683,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
         toolName?: string;
         summary?: string;
         error?: string;
+        toolOutputs?: Array<{ name: string; result: unknown }>;
       }>("/ai-agent", { method: "POST", body: JSON.stringify(body) });
 
       let assistantMsg: ChatMsg;
@@ -597,6 +704,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
           id: generateId(),
           role: "assistant",
           content: data.content || "I couldn't generate a response. Please try again.",
+          ...(data.toolOutputs && data.toolOutputs.length > 0 ? { toolOutputs: data.toolOutputs } : {}),
         };
       }
 
@@ -928,6 +1036,11 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
             );
           }
 
+          // Find case history tool output if present
+          const caseHistoryOutput = msg.toolOutputs?.find((t) => t.name === "get_case_history")
+            ?.result as CaseHistoryData | undefined;
+          const hasCaseHistory = !!caseHistoryOutput?.found;
+
           return (
             <div
               key={msg.id}
@@ -938,14 +1051,26 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
                   <Sparkles size={11} className="text-primary" />
                 </div>
               )}
-              <div
-                className={`max-w-[80%] px-3 py-2 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap ${
-                  isUser
-                    ? "bg-primary text-primary-foreground rounded-br-sm"
-                    : "bg-secondary text-foreground rounded-bl-sm"
-                }`}
-              >
-                {msg.content}
+              <div className={`flex flex-col gap-1 ${isUser ? "items-end" : "items-start"} max-w-[80%]`}>
+                <div
+                  className={`px-3 py-2 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap ${
+                    isUser
+                      ? "bg-primary text-primary-foreground rounded-br-sm"
+                      : "bg-secondary text-foreground rounded-bl-sm"
+                  }`}
+                >
+                  {msg.content}
+                </div>
+                {hasCaseHistory && caseHistoryOutput && (
+                  <button
+                    type="button"
+                    onClick={() => printCaseHistory(caseHistoryOutput)}
+                    className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors px-1 py-0.5"
+                  >
+                    <Printer size={12} />
+                    Print case history
+                  </button>
+                )}
               </div>
             </div>
           );

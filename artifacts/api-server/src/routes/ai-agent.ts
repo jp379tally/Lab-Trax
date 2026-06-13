@@ -244,6 +244,9 @@ export function registerAiAgentRoutes(router: IRouter): void {
       ...safeMessages,
     ];
 
+    // Track readonly tool outputs to include in the final reply for client rendering
+    const accumulatedToolOutputs: Array<{ name: string; result: unknown }> = [];
+
     const MAX_ITERATIONS = 6;
     let iterations = 0;
 
@@ -266,11 +269,12 @@ export function registerAiAgentRoutes(router: IRouter): void {
         const msg = choice.message;
         loopMessages.push(msg as any);
 
-        // No tool calls → return the text reply
+        // No tool calls → return the text reply (with any accumulated tool outputs)
         if (!msg.tool_calls || msg.tool_calls.length === 0) {
           return res.json({
             type: "reply",
             content: msg.content ?? "I'm not sure how to help with that.",
+            ...(accumulatedToolOutputs.length > 0 ? { toolOutputs: accumulatedToolOutputs } : {}),
           });
         }
 
@@ -313,6 +317,7 @@ export function registerAiAgentRoutes(router: IRouter): void {
             // Execute inline
             try {
               const result = await tool.execute(args, toolCtx);
+              accumulatedToolOutputs.push({ name: toolName, result });
               toolResults.push({
                 role: "tool",
                 tool_call_id: toolCall.id,
@@ -373,7 +378,11 @@ export function registerAiAgentRoutes(router: IRouter): void {
       // Loop exhausted — return final message if present
       const last = loopMessages[loopMessages.length - 1] as any;
       const content = last?.content ?? "I completed the requested lookups. Is there anything else?";
-      return res.json({ type: "reply", content });
+      return res.json({
+        type: "reply",
+        content,
+        ...(accumulatedToolOutputs.length > 0 ? { toolOutputs: accumulatedToolOutputs } : {}),
+      });
     } catch (err: any) {
       req.log?.error({ err }, "[AI AGENT] OpenAI error");
       return res.status(500).json({ error: "AI request failed. Please try again." });

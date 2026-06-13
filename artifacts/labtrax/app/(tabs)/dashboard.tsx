@@ -437,6 +437,14 @@ export default function DashboardScreen() {
             <Ionicons name="swap-vertical-outline" size={18} color={colors.textSecondary} />
           </Pressable>
           <Pressable
+            style={styles.arrangeBtn}
+            onPress={() => router.push("/ai-assistant" as never)}
+            testID="dashboard-ai-assistant-btn"
+            hitSlop={8}
+          >
+            <Ionicons name="chatbubble-ellipses-outline" size={18} color={colors.tint} />
+          </Pressable>
+          <Pressable
             style={styles.aiReaderBtn}
             onPress={() => router.push("/ai-reader/capture?new=1" as never)}
             testID="dashboard-ai-reader-btn"

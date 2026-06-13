@@ -9,12 +9,14 @@
  * Permission enforcement: every tool executor receives the authenticated
  * userId and derives org context from the DB — never from client input.
  */
-import { and, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
+  bankAccounts,
   bankTransactionInvoices,
   bankTransactions,
   caseEvents,
+  caseNotes,
   cases,
   invoices,
   organizations,
@@ -24,12 +26,22 @@ import {
   pricingTiers,
   pricingOverrides,
 } from "@workspace/db";
+import OpenAI from "openai";
 import { writeAuditLog } from "./audit";
 import { ADMIN_ROLES, BILLING_ROLES, requireAnyRole } from "./rbac";
 import { notDeleted } from "./soft-delete";
 import { runBatchSendStatements } from "./statements";
 import { ensureInvoiceDeposit } from "./invoice-deposits";
 import type { Request } from "express";
+
+// ─── Lazy OpenAI client for draft_message tool ───────────────────────────────
+
+function getToolOpenAI(): OpenAI | null {
+  const apiKey = process.env.AI_INTEGRATIONS_OPENAI_API_KEY;
+  if (!apiKey) return null;
+  const baseURL = process.env.AI_INTEGRATIONS_OPENAI_BASE_URL;
+  return new OpenAI({ apiKey, ...(baseURL ? { baseURL } : {}) });
+}
 
 // ─── Tool classification ────────────────────────────────────────────────────
 
@@ -1030,11 +1042,601 @@ const resetInvoiceLayoutTool: AgentTool = {
   },
 };
 
+// ─── Tool: get_case_history ──────────────────────────────────────────────────
+
+const getCaseHistoryTool: AgentTool = {
+  name: "get_case_history",
+  kind: "readonly",
+  description:
+    "Get the full history and timeline for a case — status changes, notes, remakes, actor names, and timestamps. Accepts a case ID, case number, or partial patient name. Returns structured timeline data suitable for display or printing.",
+  parameters: {
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        description: "Case ID, case number (e.g. '26-042'), or partial patient name.",
+      },
+    },
+    required: ["query"],
+  },
+  summarize: async (args) => `Get full history for case "${args.query}"`,
+  execute: async (args, ctx) => {
+    const q = String(args.query ?? "").trim();
+    if (!q) throw new Error("A case ID, case number, or patient name is required.");
+
+    const labId = await requireLabId(ctx);
+    await requireAnyRole(ctx.userId, labId, BILLING_ROLES);
+
+    // Resolve the case: try exact ID first, then case number, then patient name
+    const nameFilter = or(
+      eq(cases.id, q),
+      ilike(cases.caseNumber, `%${q}%`),
+      ilike(cases.patientFirstName, `%${q}%`),
+      ilike(cases.patientLastName, `%${q}%`),
+      sql`concat(${cases.patientFirstName}, ' ', ${cases.patientLastName}) ilike ${"%" + q + "%"}`,
+    );
+    const caseRow = await db.query.cases.findFirst({
+      where: and(eq(cases.labOrganizationId, labId), isNull(cases.deletedAt), nameFilter),
+    });
+    if (!caseRow) return { found: false, message: `No case matching "${q}" found.` };
+
+    // Fetch events and notes in parallel
+    const [events, notes] = await Promise.all([
+      db.query.caseEvents.findMany({
+        where: eq(caseEvents.caseId, caseRow.id),
+        orderBy: [asc(caseEvents.occurredAt)],
+      }),
+      db.query.caseNotes.findMany({
+        where: eq(caseNotes.caseId, caseRow.id),
+        orderBy: [asc(caseNotes.createdAt)],
+      }),
+    ]);
+
+    // Merge into unified timeline sorted by timestamp
+    type TimelineEntry = {
+      timestamp: string;
+      kind: "event" | "note";
+      eventType?: string;
+      actor: string;
+      summary: string;
+      metadata?: Record<string, unknown>;
+    };
+
+    const timeline: TimelineEntry[] = [
+      ...events.map((e) => ({
+        timestamp: (e.occurredAt ?? e.createdAt)?.toISOString() ?? "",
+        kind: "event" as const,
+        eventType: e.eventType,
+        actor: e.actorInitials ?? "System",
+        summary: formatEventSummary(e.eventType, e.metadataJson as Record<string, unknown>),
+        metadata: e.metadataJson as Record<string, unknown>,
+      })),
+      ...notes.map((n) => ({
+        timestamp: n.createdAt?.toISOString() ?? "",
+        kind: "note" as const,
+        actor: "Note",
+        summary: n.noteText,
+        metadata: { visibility: n.visibility },
+      })),
+    ].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+
+    // Look up remake original if applicable
+    let remakeOf: { caseNumber: string } | null = null;
+    if (caseRow.remakeOfCaseId) {
+      const original = await db.query.cases.findFirst({
+        where: eq(cases.id, caseRow.remakeOfCaseId),
+        columns: { caseNumber: true },
+      });
+      remakeOf = original ? { caseNumber: original.caseNumber } : null;
+    }
+
+    return {
+      found: true,
+      case: {
+        id: caseRow.id,
+        caseNumber: caseRow.caseNumber,
+        patientName: `${caseRow.patientFirstName} ${caseRow.patientLastName}`.trim(),
+        doctorName: caseRow.doctorName,
+        status: caseRow.status,
+        priority: caseRow.priority,
+        dueDate: caseRow.dueDate?.toISOString() ?? null,
+        receivedAt: caseRow.receivedAt?.toISOString() ?? null,
+        createdAt: caseRow.createdAt?.toISOString() ?? null,
+        remakeOf: remakeOf ? remakeOf.caseNumber : null,
+        remakeReason: caseRow.remakeReason ?? null,
+        remakeCharged: caseRow.remakeCharged ?? null,
+      },
+      timeline,
+      eventCount: events.length,
+      noteCount: notes.length,
+    };
+  },
+};
+
+function formatEventSummary(eventType: string, meta: Record<string, unknown>): string {
+  switch (eventType) {
+    case "status_changed":
+      return `Status changed: ${meta.from ?? "?"} → ${meta.to ?? "?"}`;
+    case "case_created":
+      return "Case created";
+    case "note_added":
+      return "Note added";
+    case "invoice_voided":
+      return `Invoice ${meta.invoiceNumber ?? ""} voided`;
+    case "remade_by":
+      return `Remade by case ${meta.remakeCaseNumber ?? ""}`;
+    case "remake_of":
+      return `Remake of case ${meta.originalCaseNumber ?? ""}`;
+    case "case_imported_from_itero":
+      return "Imported from iTero";
+    default: {
+      // Convert snake_case to Title Case
+      const label = eventType.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+      return label;
+    }
+  }
+}
+
+// ─── Tool: get_cases_due_soon ────────────────────────────────────────────────
+
+const getCasesDueSoonTool: AgentTool = {
+  name: "get_cases_due_soon",
+  kind: "readonly",
+  description:
+    "Get cases whose due date falls today or tomorrow (relative to server time). Returns the count and a summary list with patient name, doctor, case type, and status. No role restriction.",
+  parameters: {
+    type: "object",
+    properties: {
+      includeTomorrow: {
+        type: "boolean",
+        description: "Include tomorrow's cases (default: true). Set false for today-only.",
+      },
+    },
+    required: [],
+  },
+  summarize: async () => "Get cases due today and tomorrow",
+  execute: async (args, ctx) => {
+    const labId = await requireLabId(ctx);
+    await requireAnyRole(ctx.userId, labId, BILLING_ROLES);
+
+    const includeTomorrow = args.includeTomorrow !== false;
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    const endTarget = new Date(startOfToday);
+    endTarget.setDate(endTarget.getDate() + (includeTomorrow ? 2 : 1));
+    endTarget.setMilliseconds(-1);
+
+    const rows = await db
+      .select({
+        id: cases.id,
+        caseNumber: cases.caseNumber,
+        patientFirstName: cases.patientFirstName,
+        patientLastName: cases.patientLastName,
+        doctorName: cases.doctorName,
+        status: cases.status,
+        priority: cases.priority,
+        dueDate: cases.dueDate,
+      })
+      .from(cases)
+      .where(
+        and(
+          eq(cases.labOrganizationId, labId),
+          isNull(cases.deletedAt),
+          gte(cases.dueDate, startOfToday),
+          lte(cases.dueDate, endTarget),
+        ),
+      )
+      .orderBy(asc(cases.dueDate));
+
+    const today = rows.filter((r) => {
+      const d = r.dueDate;
+      if (!d) return false;
+      const eot = new Date(startOfToday);
+      eot.setDate(eot.getDate() + 1);
+      eot.setMilliseconds(-1);
+      return d <= eot;
+    });
+
+    return {
+      count: rows.length,
+      todayCount: today.length,
+      tomorrowCount: rows.length - today.length,
+      cases: rows.map((r) => ({
+        id: r.id,
+        caseNumber: r.caseNumber,
+        patientName: `${r.patientFirstName} ${r.patientLastName}`.trim(),
+        doctorName: r.doctorName,
+        status: r.status,
+        priority: r.priority,
+        dueDate: r.dueDate?.toISOString() ?? null,
+      })),
+    };
+  },
+};
+
+// ─── Tool: draft_message ─────────────────────────────────────────────────────
+
+const draftMessageTool: AgentTool = {
+  name: "draft_message",
+  kind: "readonly",
+  description:
+    "Draft a professional SMS/text message to a doctor or lab member about a case or general topic. Returns draft text for the user to copy and send manually. Does NOT send the message.",
+  parameters: {
+    type: "object",
+    properties: {
+      targetType: {
+        type: "string",
+        enum: ["doctor", "lab_member"],
+        description: "Whether the message is for a doctor/practice or a lab team member.",
+      },
+      targetName: {
+        type: "string",
+        description: "The name of the recipient (e.g. 'Dr. Smith', 'Sarah').",
+      },
+      caseId: {
+        type: "string",
+        description: "Optional case ID to include context about a specific case.",
+      },
+      intent: {
+        type: "string",
+        description: "The message intent or what you want to communicate (e.g. 'case is ready for pickup', 'case will be delayed by 2 days').",
+      },
+    },
+    required: ["targetType", "targetName", "intent"],
+  },
+  summarize: async (args) => `Draft message to ${args.targetName}: "${args.intent}"`,
+  execute: async (args, ctx) => {
+    const labId = await requireLabId(ctx);
+    await requireAnyRole(ctx.userId, labId, BILLING_ROLES);
+
+    // Optionally enrich with case context
+    let caseContext = "";
+    if (args.caseId) {
+      const c = await db.query.cases.findFirst({
+        where: and(eq(cases.id, String(args.caseId)), isNull(cases.deletedAt)),
+        columns: {
+          caseNumber: true,
+          patientFirstName: true,
+          patientLastName: true,
+          doctorName: true,
+          status: true,
+          dueDate: true,
+        },
+      });
+      if (c) {
+        caseContext = ` Case #${c.caseNumber} for patient ${c.patientFirstName} ${c.patientLastName} (status: ${c.status}${c.dueDate ? `, due ${c.dueDate.toLocaleDateString()}` : ""}).`;
+      }
+    }
+
+    const labOrg = await db.query.organizations.findFirst({
+      where: eq(organizations.id, labId),
+      columns: { displayName: true, name: true },
+    });
+    const labName = labOrg?.displayName ?? labOrg?.name ?? "The lab";
+
+    const openai = getToolOpenAI();
+    if (!openai) {
+      return {
+        draft: `Hi ${args.targetName}, this is ${labName}. ${args.intent}.${caseContext} Please call us if you have any questions. Thank you!`,
+        note: "AI drafting not available; generated basic template.",
+      };
+    }
+
+    const prompt = `You are a professional dental lab assistant for "${labName}". Draft a concise, friendly SMS message to ${args.targetType === "doctor" ? `a doctor/dentist named ${args.targetName}` : `a lab team member named ${args.targetName}`}.
+
+Message intent: ${args.intent}
+${caseContext ? `Case context:${caseContext}` : ""}
+
+Requirements:
+- SMS length (under 160 characters if possible)
+- Professional but friendly tone
+- Include the lab name
+- End with thanks or a call-to-action
+- Return ONLY the message text, no quotes, no explanation`;
+
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: prompt }],
+      max_tokens: 200,
+      temperature: 0.4,
+    });
+
+    const draft = completion.choices[0]?.message?.content?.trim() ?? "";
+    return { draft, targetName: args.targetName, intent: args.intent };
+  },
+};
+
+// ─── Tool: monthly_sales_snapshot ────────────────────────────────────────────
+
+const monthlySalesSnapshotTool: AgentTool = {
+  name: "monthly_sales_snapshot",
+  kind: "readonly",
+  description:
+    "Get a sales snapshot for the current calendar month: total revenue from paid invoices, total invoice count, paid amount vs. outstanding amount. Admin or billing role required.",
+  parameters: {
+    type: "object",
+    properties: {
+      month: {
+        type: "string",
+        description: "Optional month in YYYY-MM format. Defaults to current month.",
+      },
+    },
+    required: [],
+  },
+  summarize: async () => "Get monthly sales snapshot",
+  execute: async (args, ctx) => {
+    const labId = await requireLabId(ctx);
+    await requireAnyRole(ctx.userId, labId, [...ADMIN_ROLES, "billing"]);
+
+    const now = new Date();
+    let year = now.getFullYear();
+    let month = now.getMonth(); // 0-indexed
+
+    if (args.month) {
+      const parts = String(args.month).split("-");
+      const y = parseInt(parts[0] ?? "", 10);
+      const m = parseInt(parts[1] ?? "", 10);
+      if (!Number.isNaN(y) && !Number.isNaN(m)) {
+        year = y;
+        month = m - 1;
+      }
+    }
+
+    const start = new Date(year, month, 1, 0, 0, 0, 0);
+    const end = new Date(year, month + 1, 0, 23, 59, 59, 999);
+
+    const rows = await db
+      .select({
+        status: invoices.status,
+        total: invoices.total,
+        balanceDue: invoices.balanceDue,
+      })
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.labOrganizationId, labId),
+          isNull(invoices.deletedAt),
+          gte(invoices.createdAt, start),
+          lte(invoices.createdAt, end),
+          or(
+            eq(invoices.status, "paid"),
+            eq(invoices.status, "open"),
+            eq(invoices.status, "draft"),
+          ),
+        ),
+      );
+
+    let totalRevenue = 0;
+    let paidRevenue = 0;
+    let outstanding = 0;
+    let paidCount = 0;
+    let openCount = 0;
+
+    for (const r of rows) {
+      const total = Number(r.total);
+      const balance = Number(r.balanceDue);
+      totalRevenue += total;
+      if (r.status === "paid") {
+        paidRevenue += total;
+        paidCount++;
+      } else {
+        outstanding += balance;
+        openCount++;
+      }
+    }
+
+    const monthLabel = start.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+
+    return {
+      month: monthLabel,
+      totalInvoiceCount: rows.length,
+      paidInvoiceCount: paidCount,
+      openInvoiceCount: openCount,
+      totalRevenue: totalRevenue.toFixed(2),
+      paidRevenue: paidRevenue.toFixed(2),
+      outstandingBalance: outstanding.toFixed(2),
+    };
+  },
+};
+
+// ─── Tool: financial_summary ─────────────────────────────────────────────────
+
+const financialSummaryTool: AgentTool = {
+  name: "financial_summary",
+  kind: "readonly",
+  description:
+    "Get the lab's financial summary: accounts receivable (AR) balance, accounts payable (AP) from outstanding vendor transactions, cash on hand across all bank accounts, and 30/60/90-day projected cash flow. Admin or billing role required.",
+  parameters: {
+    type: "object",
+    properties: {},
+    required: [],
+  },
+  summarize: async () => "Get financial summary (AR, AP, cash position)",
+  execute: async (_args, ctx) => {
+    const labId = await requireLabId(ctx);
+    await requireAnyRole(ctx.userId, labId, [...ADMIN_ROLES, "billing"]);
+
+    const now = new Date();
+
+    // AR = sum of balanceDue on open invoices
+    const arRows = await db
+      .select({ balanceDue: invoices.balanceDue })
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.labOrganizationId, labId),
+          isNull(invoices.deletedAt),
+          or(eq(invoices.status, "open"), eq(invoices.status, "draft")),
+        ),
+      );
+    const arBalance = arRows.reduce((sum, r) => sum + Number(r.balanceDue), 0);
+
+    // AP = sum of projected expense transactions (what the lab owes)
+    const apRows = await db
+      .select({ netAmount: bankTransactions.netAmount })
+      .from(bankTransactions)
+      .where(
+        and(
+          eq(bankTransactions.labOrganizationId, labId),
+          eq(bankTransactions.status, "projected"),
+          eq(bankTransactions.type, "expense"),
+        ),
+      );
+    const apBalance = Math.abs(apRows.reduce((sum, r) => sum + Number(r.netAmount), 0));
+
+    // Cash on hand = opening balance sum + all posted transactions net
+    const acctRows = await db.query.bankAccounts.findMany({
+      where: and(eq(bankAccounts.labOrganizationId, labId)),
+      columns: { id: true, openingBalance: true },
+    });
+
+    const acctIds = acctRows.map((a) => a.id);
+    let cashOnHand = acctRows.reduce((sum, a) => sum + Number(a.openingBalance ?? 0), 0);
+
+    if (acctIds.length > 0) {
+      const txnSums = await db
+        .select({ net: sql<string>`COALESCE(SUM(${bankTransactions.netAmount}), 0)::text` })
+        .from(bankTransactions)
+        .where(
+          and(
+            inArray(bankTransactions.bankAccountId, acctIds),
+            eq(bankTransactions.status, "posted"),
+          ),
+        );
+      cashOnHand += Number(txnSums[0]?.net ?? 0);
+    }
+
+    // 30/60/90-day projections: look at projected transactions in those windows
+    const d30 = new Date(now); d30.setDate(d30.getDate() + 30);
+    const d60 = new Date(now); d60.setDate(d60.getDate() + 60);
+    const d90 = new Date(now); d90.setDate(d90.getDate() + 90);
+
+    async function projectedNet(toDate: Date): Promise<number> {
+      if (!acctIds.length) return 0;
+      const rows = await db
+        .select({ net: sql<string>`COALESCE(SUM(${bankTransactions.netAmount}), 0)::text` })
+        .from(bankTransactions)
+        .where(
+          and(
+            inArray(bankTransactions.bankAccountId, acctIds),
+            eq(bankTransactions.status, "projected"),
+            gte(bankTransactions.txnDate, now),
+            lte(bankTransactions.txnDate, toDate),
+          ),
+        );
+      return Number(rows[0]?.net ?? 0);
+    }
+
+    const [proj30, proj60, proj90] = await Promise.all([
+      projectedNet(d30),
+      projectedNet(d60),
+      projectedNet(d90),
+    ]);
+
+    return {
+      accountsReceivable: arBalance.toFixed(2),
+      accountsPayable: apBalance.toFixed(2),
+      cashOnHand: cashOnHand.toFixed(2),
+      projections: {
+        next30Days: proj30.toFixed(2),
+        next60Days: proj60.toFixed(2),
+        next90Days: proj90.toFixed(2),
+      },
+      asOf: now.toLocaleDateString(),
+    };
+  },
+};
+
+// ─── Tool: remake_rate ───────────────────────────────────────────────────────
+
+const remakeRateTool: AgentTool = {
+  name: "remake_rate",
+  kind: "readonly",
+  description:
+    "Calculate the remake rate for a given period: number of remake cases vs. total cases, expressed as a percentage. Admin or billing role required.",
+  parameters: {
+    type: "object",
+    properties: {
+      dateFrom: {
+        type: "string",
+        description: "Start date in YYYY-MM-DD format. Defaults to start of current month.",
+      },
+      dateTo: {
+        type: "string",
+        description: "End date in YYYY-MM-DD format. Defaults to today.",
+      },
+    },
+    required: [],
+  },
+  summarize: async () => "Get remake rate",
+  execute: async (args, ctx) => {
+    const labId = await requireLabId(ctx);
+    await requireAnyRole(ctx.userId, labId, [...ADMIN_ROLES, "billing"]);
+
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+
+    const dateFrom = args.dateFrom
+      ? new Date(String(args.dateFrom) + "T00:00:00")
+      : startOfMonth;
+    const dateTo = args.dateTo
+      ? new Date(String(args.dateTo) + "T23:59:59")
+      : new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+
+    const [totalRows, remakeRows] = await Promise.all([
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(cases)
+        .where(
+          and(
+            eq(cases.labOrganizationId, labId),
+            isNull(cases.deletedAt),
+            gte(cases.createdAt, dateFrom),
+            lte(cases.createdAt, dateTo),
+          ),
+        ),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(cases)
+        .where(
+          and(
+            eq(cases.labOrganizationId, labId),
+            isNull(cases.deletedAt),
+            isNotNull(cases.remakeOfCaseId),
+            gte(cases.createdAt, dateFrom),
+            lte(cases.createdAt, dateTo),
+          ),
+        ),
+    ]);
+
+    const total = Number(totalRows[0]?.count ?? 0);
+    const remakes = Number(remakeRows[0]?.count ?? 0);
+    const rate = total > 0 ? ((remakes / total) * 100).toFixed(1) : "0.0";
+
+    return {
+      period: {
+        from: dateFrom.toLocaleDateString(),
+        to: dateTo.toLocaleDateString(),
+      },
+      totalCases: total,
+      remakeCases: remakes,
+      remakeRate: `${rate}%`,
+      remakeRateNumber: Number(rate),
+    };
+  },
+};
+
 // ─── Registry ────────────────────────────────────────────────────────────────
 
 export const AGENT_TOOLS: AgentTool[] = [
   lookupInvoiceTool,
   lookupCaseTool,
+  getCaseHistoryTool,
+  getCasesDueSoonTool,
+  draftMessageTool,
+  monthlySalesSnapshotTool,
+  financialSummaryTool,
+  remakeRateTool,
   markInvoicePaidTool,
   voidInvoiceTool,
   sendStatementsTool,

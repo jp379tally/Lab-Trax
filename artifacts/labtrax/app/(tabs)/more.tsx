@@ -23,6 +23,12 @@ interface MenuItem {
 
 const ITEMS: MenuItem[] = [
   {
+    title: "AI Assistant",
+    subtitle: "Ask questions and draft messages",
+    icon: "chatbubble-ellipses-outline",
+    route: "/ai-assistant",
+  },
+  {
     title: "Accounts",
     subtitle: "Bank and cash account balances",
     icon: "wallet-outline",
