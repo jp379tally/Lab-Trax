@@ -2982,7 +2982,7 @@ function BackupPanel() {
           <button
             type="button"
             onClick={() => backupNowMutation.mutate()}
-            disabled={backupNowMutation.isPending || (needsPath(nowDest) && !nowPath.trim())}
+            disabled={backupNowMutation.isPending || (needsPath(nowDest) && !nowPath.trim() && !!electron?.saveBackupToFolder)}
             className="shrink-0 inline-flex items-center gap-1.5 h-7 px-2.5 rounded text-xs font-semibold bg-amber-200 hover:bg-amber-300 text-amber-900 dark:bg-amber-800 dark:hover:bg-amber-700 dark:text-amber-100 disabled:opacity-60 transition-colors"
           >
             {backupNowMutation.isPending
@@ -3102,7 +3102,7 @@ function BackupPanel() {
           disabled={
             backupNowMutation.isPending ||
             gate.blocked ||
-            (needsPath(nowDest) && !nowPath.trim())
+            (needsPath(nowDest) && !nowPath.trim() && !!electron?.saveBackupToFolder)
           }
           className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-2"
         >
