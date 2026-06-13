@@ -65,6 +65,8 @@ interface ChatMsg {
     state: "pending" | "confirmed" | "done" | "rejected";
     resultText?: string;
     error?: string;
+    /** Unix ms timestamp when the server-side action expires (5-min TTL) */
+    expiresAt?: number;
   };
 }
 
@@ -270,17 +272,45 @@ function buildWelcome(cases: AiCaseContext[]): ChatMsg {
 
 // ─── Confirmation card ──────────────────────────────────────────────────────
 
+const PENDING_TTL_MS = 5 * 60 * 1000;
+
+function formatCountdown(ms: number): string {
+  const totalSec = Math.max(0, Math.ceil(ms / 1000));
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
 interface ConfirmCardProps {
   actionId: string;
   summary: string;
   state: "pending" | "confirmed" | "done" | "rejected";
   resultText?: string;
   error?: string;
+  expiresAt?: number;
   onConfirm: (actionId: string) => void;
   onReject: (actionId: string) => void;
 }
 
-function ConfirmCard({ actionId, summary, state, resultText, error, onConfirm, onReject }: ConfirmCardProps) {
+function ConfirmCard({ actionId, summary, state, resultText, error, expiresAt, onConfirm, onReject }: ConfirmCardProps) {
+  const [msLeft, setMsLeft] = useState<number>(() => {
+    if (!expiresAt) return PENDING_TTL_MS;
+    return Math.max(0, expiresAt - Date.now());
+  });
+
+  useEffect(() => {
+    if (state !== "pending") return;
+    const tick = () => {
+      const remaining = expiresAt ? Math.max(0, expiresAt - Date.now()) : 0;
+      setMsLeft(remaining);
+    };
+    tick();
+    const id = setInterval(tick, 500);
+    return () => clearInterval(id);
+  }, [state, expiresAt]);
+
+  const isExpired = state === "pending" && msLeft <= 0;
+
   if (state === "rejected") {
     return (
       <div className="rounded-xl border border-border bg-secondary/60 px-3.5 py-3 max-w-[85%]">
@@ -318,11 +348,33 @@ function ConfirmCard({ actionId, summary, state, resultText, error, onConfirm, o
     );
   }
 
+  if (isExpired) {
+    return (
+      <div className="rounded-xl border border-border bg-secondary/60 px-3.5 py-3 max-w-[85%]">
+        <div className="flex items-center gap-2 text-muted-foreground mb-1">
+          <Clock size={13} />
+          <span className="text-xs font-semibold">Expired</span>
+        </div>
+        <p className="text-xs text-muted-foreground leading-snug">
+          This action expired — send your request again.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/40 px-3.5 py-3.5 max-w-[85%]">
-      <div className="flex items-center gap-1.5 text-amber-700 dark:text-amber-400 mb-2">
-        <Zap size={13} />
-        <span className="text-xs font-semibold">Proposed action</span>
+      <div className="flex items-center justify-between gap-1.5 mb-2">
+        <div className="flex items-center gap-1.5 text-amber-700 dark:text-amber-400">
+          <Zap size={13} />
+          <span className="text-xs font-semibold">Proposed action</span>
+        </div>
+        {state === "pending" && (
+          <div className="flex items-center gap-1 text-amber-600 dark:text-amber-500">
+            <Clock size={11} />
+            <span className="text-xs tabular-nums">Expires in {formatCountdown(msLeft)}</span>
+          </div>
+        )}
       </div>
       <p className="text-sm text-amber-900 dark:text-amber-200 leading-snug mb-3">{summary}</p>
       {state === "confirmed" ? (
@@ -709,6 +761,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
             toolName: data.toolName ?? "",
             summary: data.summary,
             state: "pending",
+            expiresAt: Date.now() + PENDING_TTL_MS,
           },
         };
       } else {
@@ -1041,6 +1094,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
                   state={msg.proposedAction.state}
                   resultText={msg.proposedAction.resultText}
                   error={msg.proposedAction.error}
+                  expiresAt={msg.proposedAction.expiresAt}
                   onConfirm={confirmAction}
                   onReject={rejectAction}
                 />

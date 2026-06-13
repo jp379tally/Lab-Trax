@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -33,6 +33,8 @@ interface ProposedActionState {
   state: "pending" | "confirmed" | "done" | "rejected";
   resultText?: string;
   error?: string;
+  /** Unix ms timestamp when the server-side action expires (5-min TTL) */
+  expiresAt?: number;
 }
 
 interface ChatMessage {
@@ -84,7 +86,34 @@ interface ConfirmCardProps {
   onReject: (actionId: string) => void;
 }
 
+const PENDING_TTL_MS = 5 * 60 * 1000;
+
+function formatCountdown(ms: number): string {
+  const totalSec = Math.max(0, Math.ceil(ms / 1000));
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
 function ConfirmCard({ action, colors, onConfirm, onReject }: ConfirmCardProps) {
+  const [msLeft, setMsLeft] = useState<number>(() => {
+    if (!action.expiresAt) return PENDING_TTL_MS;
+    return Math.max(0, action.expiresAt - Date.now());
+  });
+
+  useEffect(() => {
+    if (action.state !== "pending") return;
+    const tick = () => {
+      const remaining = action.expiresAt ? Math.max(0, action.expiresAt - Date.now()) : 0;
+      setMsLeft(remaining);
+    };
+    tick();
+    const id = setInterval(tick, 500);
+    return () => clearInterval(id);
+  }, [action.state, action.expiresAt]);
+
+  const isExpired = action.state === "pending" && msLeft <= 0;
+
   if (action.state === "rejected") {
     return (
       <View
@@ -165,6 +194,26 @@ function ConfirmCard({ action, colors, onConfirm, onReject }: ConfirmCardProps) 
     );
   }
 
+  // expired
+  if (isExpired) {
+    return (
+      <View
+        style={[
+          confirmStyles.card,
+          { backgroundColor: colors.surfaceSecondary, borderColor: colors.border },
+        ]}
+      >
+        <View style={[confirmStyles.row, { marginBottom: 4 }]}>
+          <Ionicons name="time-outline" size={14} color={colors.textSecondary} />
+          <Text style={[confirmStyles.label, { color: colors.textSecondary }]}>Expired</Text>
+        </View>
+        <Text style={[confirmStyles.summaryText, { color: colors.textSecondary }]}>
+          This action expired — send your request again.
+        </Text>
+      </View>
+    );
+  }
+
   // pending
   return (
     <View
@@ -173,9 +222,17 @@ function ConfirmCard({ action, colors, onConfirm, onReject }: ConfirmCardProps) 
         { backgroundColor: "#fffbeb", borderColor: "#f6e05e" },
       ]}
     >
-      <View style={[confirmStyles.row, { marginBottom: 4 }]}>
-        <Ionicons name="flash-outline" size={14} color="#b7791f" />
-        <Text style={[confirmStyles.label, { color: "#b7791f" }]}>Proposed action</Text>
+      <View style={[confirmStyles.row, { marginBottom: 4, justifyContent: "space-between" }]}>
+        <View style={confirmStyles.row}>
+          <Ionicons name="flash-outline" size={14} color="#b7791f" />
+          <Text style={[confirmStyles.label, { color: "#b7791f" }]}>Proposed action</Text>
+        </View>
+        <View style={confirmStyles.row}>
+          <Ionicons name="time-outline" size={11} color="#b7791f" />
+          <Text style={[confirmStyles.countdownText, { color: "#b7791f" }]}>
+            Expires in {formatCountdown(msLeft)}
+          </Text>
+        </View>
       </View>
       <Text style={[confirmStyles.summaryText, { color: "#744210", marginBottom: 12 }]}>
         {action.summary}
@@ -259,6 +316,10 @@ const confirmStyles = StyleSheet.create({
   cancelBtnText: {
     fontSize: 13,
     fontWeight: "500",
+  },
+  countdownText: {
+    fontSize: 11,
+    fontVariant: ["tabular-nums"],
   },
 });
 
@@ -514,6 +575,7 @@ export default function AiAssistantScreen() {
               toolName: data.toolName ?? "",
               summary: data.summary,
               state: "pending",
+              expiresAt: Date.now() + PENDING_TTL_MS,
             },
           };
         } else {
