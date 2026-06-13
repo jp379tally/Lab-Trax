@@ -1325,7 +1325,8 @@ export default function CasesPage() {
         return (
           c.caseNumber.toLowerCase().includes(q) ||
           c.doctorName.toLowerCase().includes(q) ||
-          `${c.patientFirstName} ${c.patientLastName}`.toLowerCase().includes(q)
+          `${c.patientFirstName} ${c.patientLastName}`.toLowerCase().includes(q) ||
+          (c.casePanBarcode ?? "").toLowerCase().includes(q)
         );
       })
       .sort((a, b) => {

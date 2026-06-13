@@ -211,7 +211,7 @@ export default function CasesListScreen() {
     const q = query.trim().toLowerCase();
     if (q) {
       result = result.filter((c) => {
-        const haystack = [patientName(c), c.doctorName ?? "", c.caseNumber ?? ""]
+        const haystack = [patientName(c), c.doctorName ?? "", c.caseNumber ?? "", c.casePanBarcode ?? ""]
           .join(" ")
           .toLowerCase();
         return haystack.includes(q);
