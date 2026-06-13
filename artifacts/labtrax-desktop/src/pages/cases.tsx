@@ -2264,6 +2264,12 @@ export function CaseDrawer({
   const hasAdvancedTemplate = !!advancedTemplateQuery.data?.isCustom;
 
   const [editMode, setEditMode] = useState(false);
+  const barcodeScanInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!editMode) return;
+    const id = setTimeout(() => barcodeScanInputRef.current?.focus(), 50);
+    return () => clearTimeout(id);
+  }, [editMode]);
   const [editForm, setEditForm] = useState({
     patientFirstName: labCase.patientFirstName || "",
     patientLastName: labCase.patientLastName || "",
@@ -3958,7 +3964,15 @@ export function CaseDrawer({
                     </div>
                   </div>
                 ) : (
-                  <div className="space-y-3">
+                  <div
+                    className="space-y-3"
+                    onPointerDownCapture={(e) => {
+                      const tag = (e.target as HTMLElement).tagName;
+                      if (!["INPUT", "SELECT", "TEXTAREA", "BUTTON", "A"].includes(tag)) {
+                        setTimeout(() => barcodeScanInputRef.current?.focus(), 0);
+                      }
+                    }}
+                  >
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
@@ -4049,15 +4063,22 @@ export function CaseDrawer({
                       <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
                         Case Pan Barcode
                       </label>
-                      <input
-                        value={editForm.casePanBarcode}
-                        onChange={(e) => {
-                          setEditForm((f) => ({ ...f, casePanBarcode: e.target.value }));
-                          setEditError(null);
-                        }}
-                        placeholder="Scan or type a barcode… (leave blank to clear)"
-                        className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm font-mono border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
-                      />
+                      <div className="relative mt-1">
+                        <Barcode
+                          size={15}
+                          className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
+                        />
+                        <input
+                          ref={barcodeScanInputRef}
+                          value={editForm.casePanBarcode}
+                          onChange={(e) => {
+                            setEditForm((f) => ({ ...f, casePanBarcode: e.target.value }));
+                            setEditError(null);
+                          }}
+                          placeholder="Scan or type a barcode… (leave blank to clear)"
+                          className="w-full h-9 pl-8 pr-2.5 rounded-md bg-secondary text-sm font-mono border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                        />
+                      </div>
                     </div>
                     {editError && <p className="text-xs text-destructive">{editError}</p>}
                     <div className="flex gap-2 pt-1">
