@@ -1162,6 +1162,21 @@ export default function CasesPage() {
   const [barcodeInput, setBarcodeInput] = useState("");
   const [barcodeLookupError, setBarcodeLookupError] = useState<string | null>(null);
   const [barcodeLookupLoading, setBarcodeLookupLoading] = useState(false);
+  const [scanMode, setScanMode] = useState(false);
+  const scanInputRef = useRef<HTMLInputElement>(null);
+
+  function activateScanMode() {
+    setScanMode(true);
+    setBarcodeInput("");
+    setBarcodeLookupError(null);
+    setTimeout(() => scanInputRef.current?.focus(), 0);
+  }
+
+  function deactivateScanMode() {
+    setScanMode(false);
+    setBarcodeInput("");
+    setBarcodeLookupError(null);
+  }
 
   async function handleBarcodeLookup(code: string) {
     const trimmed = code.trim();
@@ -1173,13 +1188,14 @@ export default function CasesPage() {
     if (local) {
       setSelected(local);
       setBarcodeInput("");
+      setScanMode(false);
       return;
     }
 
     // Fall back to API lookup across all lab orgs the user belongs to.
     const labOrgs = (orgsQuery.data ?? []).filter((o) => o.type === "lab");
     if (!labOrgs.length) {
-      setBarcodeLookupError("No case found for that barcode.");
+      setBarcodeLookupError("No case found for that pan.");
       return;
     }
     setBarcodeLookupLoading(true);
@@ -1192,6 +1208,7 @@ export default function CasesPage() {
           if (result.case) {
             setSelected(result.case);
             setBarcodeInput("");
+            setScanMode(false);
             qc.invalidateQueries({ queryKey: ["cases"] });
             return;
           }
@@ -1200,7 +1217,7 @@ export default function CasesPage() {
           if (e?.status !== 404 && e?.message !== "No case found with that barcode.") throw e;
         }
       }
-      setBarcodeLookupError("No case found for that barcode.");
+      setBarcodeLookupError("No case found for that pan.");
     } catch {
       setBarcodeLookupError("Lookup failed. Please try again.");
     } finally {
@@ -1231,6 +1248,20 @@ export default function CasesPage() {
       setIteroActiveBatch(batch);
       try { sessionStorage.removeItem(CASES_ITERO_BATCH_KEY); } catch {}
     }
+  }, []);
+
+  // Keyboard shortcut: Ctrl+B activates barcode scan mode.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "b" && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+        const tag = (e.target as HTMLElement).tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+        e.preventDefault();
+        activateScanMode();
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
 
   useEffect(() => {
@@ -1510,42 +1541,71 @@ export default function CasesPage() {
           )}
 
           <div className="ml-auto flex items-center gap-1.5 shrink-0">
-            <div className="relative">
-              <Barcode
-                size={14}
-                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
-              />
-              <input
-                type="search"
-                value={barcodeInput}
-                onChange={(e) => {
-                  setBarcodeInput(e.target.value);
-                  setBarcodeLookupError(null);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleBarcodeLookup(barcodeInput);
-                }}
-                placeholder="Find by barcode…"
-                className="h-9 pl-8 pr-2.5 w-44 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
-                aria-label="Find case by barcode"
-              />
-            </div>
-            <button
-              type="button"
-              disabled={!barcodeInput.trim() || barcodeLookupLoading}
-              onClick={() => handleBarcodeLookup(barcodeInput)}
-              className="h-9 px-3 rounded-md bg-secondary text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-secondary/80 disabled:opacity-50 inline-flex items-center gap-1"
-            >
-              {barcodeLookupLoading ? (
-                <Loader2 size={12} className="animate-spin" />
-              ) : (
-                "Find"
-              )}
-            </button>
-            {barcodeLookupError && (
-              <span className="text-xs text-destructive whitespace-nowrap">
-                {barcodeLookupError}
-              </span>
+            {scanMode ? (
+              <>
+                <div className="relative flex items-center">
+                  <Barcode
+                    size={14}
+                    className="absolute left-2.5 top-1/2 -translate-y-1/2 text-primary pointer-events-none"
+                  />
+                  {barcodeLookupLoading && (
+                    <Loader2
+                      size={12}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 animate-spin text-muted-foreground pointer-events-none"
+                    />
+                  )}
+                  <input
+                    ref={scanInputRef}
+                    type="text"
+                    value={barcodeInput}
+                    onChange={(e) => {
+                      setBarcodeInput(e.target.value);
+                      setBarcodeLookupError(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void handleBarcodeLookup(barcodeInput);
+                      if (e.key === "Escape") deactivateScanMode();
+                    }}
+                    onBlur={() => {
+                      if (!barcodeInput.trim() && !barcodeLookupLoading) deactivateScanMode();
+                    }}
+                    placeholder="Scan or type barcode…"
+                    autoComplete="off"
+                    className="h-9 pl-8 pr-8 w-56 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-primary"
+                    aria-label="Scan barcode"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={deactivateScanMode}
+                  title="Cancel scan (Esc)"
+                  className="h-9 w-9 flex items-center justify-center rounded-md hover:bg-secondary/80 text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <X size={14} />
+                </button>
+                {barcodeLookupError && (
+                  <span className="text-xs text-destructive whitespace-nowrap">
+                    {barcodeLookupError}
+                  </span>
+                )}
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={activateScanMode}
+                  title="Scan barcode (Ctrl+B)"
+                  className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border border-border bg-background text-sm font-medium hover:bg-muted/50 transition-colors"
+                >
+                  <Barcode size={14} />
+                  Scan barcode
+                </button>
+                {barcodeLookupError && (
+                  <span className="text-xs text-destructive whitespace-nowrap">
+                    {barcodeLookupError}
+                  </span>
+                )}
+              </>
             )}
           </div>
         </div>
