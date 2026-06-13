@@ -164,32 +164,12 @@ interface StoredSession {
 // ─── Local storage helpers ──────────────────────────────────────────────────
 
 /**
- * When restoring messages from localStorage, any pending proposed action whose
- * server-side TTL has already elapsed must be shown as "Expired" immediately —
- * never as a live countdown starting from scratch.
- *
- * Rules:
- *  - If `expiresAt` is missing → force it to a past timestamp so ConfirmCard
- *    opens in the expired state (msLeft = 0) instead of falling back to the
- *    full PENDING_TTL_MS default.
- *  - If `expiresAt` is already in the past → leave it as-is (ConfirmCard
- *    already handles this correctly via `Math.max(0, expiresAt - Date.now())`).
- *  - Non-pending states (confirmed, done, rejected) are unchanged.
+ * Pending proposed actions are never written to localStorage (see persistSession),
+ * so restored sessions should never contain them. This function is kept as a
+ * no-op passthrough for safety and to preserve call sites.
  */
 function sanitizeRestoredMessages(messages: ChatMsg[]): ChatMsg[] {
-  const now = Date.now();
-  return messages.map((msg) => {
-    const pa = msg.proposedAction;
-    if (!pa || pa.state !== "pending") return msg;
-    if (pa.expiresAt != null && pa.expiresAt > now) return msg;
-    return {
-      ...msg,
-      proposedAction: {
-        ...pa,
-        expiresAt: pa.expiresAt ?? (now - 1),
-      },
-    };
-  });
+  return messages;
 }
 
 const STORAGE_KEY = "labtrax_chat_sessions_v1";
@@ -489,7 +469,16 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
 
   const persistSession = useCallback(
     (msgs: ChatMsg[], sessionId: string, currentPinnedCases: AiCaseContext[]) => {
-      const userMsgs = msgs.filter((m) => m.id !== "welcome");
+      const userMsgs = msgs
+        .filter((m) => m.id !== "welcome")
+        .map((m) => {
+          if (m.proposedAction?.state !== "pending") return m;
+          const now = Date.now();
+          return {
+            ...m,
+            proposedAction: { ...m.proposedAction, state: "rejected" as const, expiresAt: now - 1 },
+          };
+        });
       if (userMsgs.length === 0) return;
       const now = Date.now();
       setAllSessions((prev) => {
