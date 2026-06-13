@@ -1870,7 +1870,7 @@ export default function CasesPage() {
                         : c.casePanBarcode
                       : "—"}
                   </td>
-                  <td className="py-3 text-muted-foreground">{formatDate(c.dueDate)}</td>
+                  <td className="py-3 text-muted-foreground">{formatShortDate(c.dueDate)}</td>
                   <td className="py-3 text-right tabular-nums">
                     {Number(c.totalPrice ?? 0) > 0 ? formatMoney(c.totalPrice) : "—"}
                   </td>
