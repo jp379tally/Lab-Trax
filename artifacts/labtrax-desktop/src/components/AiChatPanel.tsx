@@ -17,13 +17,18 @@ import {
   Zap,
 } from "lucide-react";
 import type { AiCaseContext } from "@/lib/ai-panel-context";
+import {
+  type ChatMsg,
+  type StoredSession,
+  STORAGE_KEY,
+  SESSION_TTL_MS,
+  MAX_SESSIONS_PER_KEY,
+  readStoredSessions,
+  writeStoredSessions,
+  sanitizeMessagesForStorage,
+} from "@/lib/chat-session-storage";
 
-// ─── Message types ──────────────────────────────────────────────────────────
-
-interface ToolOutput {
-  name: string;
-  result: unknown;
-}
+// ─── Case history ────────────────────────────────────────────────────────────
 
 interface CaseHistoryData {
   found: boolean;
@@ -48,27 +53,6 @@ interface CaseHistoryData {
     actor: string;
     summary: string;
   }>;
-}
-
-interface ChatMsg {
-  id: string;
-  role: "user" | "assistant";
-  /** Text content — set for reply and action_result messages */
-  content?: string;
-  /** Raw tool outputs from the API (for rendering special UI like Print button) */
-  toolOutputs?: ToolOutput[];
-  /** Proposed action payload */
-  proposedAction?: {
-    actionId: string;
-    toolName: string;
-    summary: string;
-    /** "pending" → awaiting user; "confirmed" → executing; "done" → result; "rejected" */
-    state: "pending" | "confirmed" | "done" | "rejected";
-    resultText?: string;
-    error?: string;
-    /** Unix ms timestamp when the server-side action expires (5-min TTL) */
-    expiresAt?: number;
-  };
 }
 
 // ─── Case history print helper ───────────────────────────────────────────────
@@ -151,43 +135,6 @@ interface CaseSearchResult {
   patientLastName?: string | null;
   doctorName?: string | null;
   status?: string | null;
-}
-
-interface StoredSession {
-  id: string;
-  key: string;
-  pinnedCases: AiCaseContext[];
-  messages: ChatMsg[];
-  createdAt: number;
-  lastActive: number;
-}
-
-// ─── Local storage helpers ──────────────────────────────────────────────────
-
-const STORAGE_KEY = "labtrax_chat_sessions_v1";
-const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const MAX_SESSIONS_PER_KEY = 10;
-
-function readStoredSessions(): StoredSession[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    const now = Date.now();
-    return (parsed.sessions ?? []).filter(
-      (s: StoredSession) => now - s.lastActive < SESSION_TTL_MS,
-    );
-  } catch {
-    return [];
-  }
-}
-
-function writeStoredSessions(sessions: StoredSession[]): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ sessions }));
-  } catch {
-    // ignore
-  }
 }
 
 function formatRelativeTime(ms: number): string {
@@ -482,16 +429,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
 
   const persistSession = useCallback(
     (msgs: ChatMsg[], sessionId: string, currentPinnedCases: AiCaseContext[]) => {
-      const userMsgs = msgs
-        .filter((m) => m.id !== "welcome")
-        .map((m) => {
-          if (m.proposedAction?.state !== "pending") return m;
-          const now = Date.now();
-          return {
-            ...m,
-            proposedAction: { ...m.proposedAction, state: "rejected" as const, expiresAt: now - 1 },
-          };
-        });
+      const userMsgs = sanitizeMessagesForStorage(msgs);
       if (userMsgs.length === 0) return;
       const now = Date.now();
       setAllSessions((prev) => {
