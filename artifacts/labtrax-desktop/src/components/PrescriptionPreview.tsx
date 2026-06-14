@@ -9,7 +9,8 @@ import {
   ScrollText,
   X,
 } from "lucide-react";
-import { apiFetch, getApiOrigin, getAccessToken } from "@/lib/api";
+import { apiFetch, getApiOrigin, authedFetch, waitForTokenHydration } from "@/lib/api";
+import { toast } from "@/hooks/use-toast";
 import { AuthedImage, AuthedVideo, isSameApiOrigin } from "@/components/AuthedMedia";
 import { StatusBadge } from "@/components/StatusBadge";
 import { formatDateTime, statusLabel } from "@/lib/format";
@@ -60,21 +61,21 @@ async function openFileInNewTab(url: string) {
     return;
   }
   try {
-    const token = getAccessToken();
-    const sameOrigin = isSameApiOrigin(url);
-    const resp = await fetch(
-      url,
-      sameOrigin && token
-        ? { headers: { Authorization: `Bearer ${token}` } }
-        : undefined,
-    );
+    await waitForTokenHydration();
+    const resp = isSameApiOrigin(url)
+      ? await authedFetch(url)
+      : await fetch(url);
     if (!resp.ok) throw new Error(String(resp.status));
     const blob = await resp.blob();
     const objUrl = URL.createObjectURL(blob);
     window.open(objUrl, "_blank");
     setTimeout(() => URL.revokeObjectURL(objUrl), 60_000);
   } catch {
-    window.open(url, "_blank");
+    toast({
+      title: "Could not open file",
+      description: "The file could not be downloaded. Please try again.",
+      variant: "destructive",
+    });
   }
 }
 
