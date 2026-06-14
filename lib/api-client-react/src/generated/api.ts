@@ -80,6 +80,7 @@ import type {
   IteroImportResult,
   IteroZipBatchImportResult,
   IteroZipImportResult,
+  LabProviderList,
   ListCasesParams,
   ListCategoriesParams,
   ListInvoicesParams,
@@ -6662,6 +6663,101 @@ export const useReceiveInvoicePayments = <
 > => {
   return useMutation(getReceiveInvoicePaymentsMutationOptions(options));
 };
+
+/**
+ * Returns the provider practices (organizations of type "provider")
+that belong to the given lab via parentLabOrganizationId. Available
+to any active member of the lab, so the mobile Rx review screen can
+browse and pick an existing practice without the admin-only,
+cases-derived /doctors/search endpoint. Reads the organizations
+table directly, so practices created inline (with no cases yet)
+still appear. Soft-deleted practices are excluded.
+
+ * @summary List provider practices for a lab
+ */
+export const getListLabProvidersUrl = (labId: string) => {
+  return `/api/organizations/${labId}/providers`;
+};
+
+export const listLabProviders = async (
+  labId: string,
+  options?: RequestInit,
+): Promise<LabProviderList> => {
+  return customFetch<LabProviderList>(getListLabProvidersUrl(labId), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getListLabProvidersQueryKey = (labId: string) => {
+  return [`/api/organizations/${labId}/providers`] as const;
+};
+
+export const getListLabProvidersQueryOptions = <
+  TData = Awaited<ReturnType<typeof listLabProviders>>,
+  TError = ErrorType<void>,
+>(
+  labId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listLabProviders>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getListLabProvidersQueryKey(labId);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof listLabProviders>>
+  > = ({ signal }) => listLabProviders(labId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!labId,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof listLabProviders>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ListLabProvidersQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listLabProviders>>
+>;
+export type ListLabProvidersQueryError = ErrorType<void>;
+
+/**
+ * @summary List provider practices for a lab
+ */
+
+export function useListLabProviders<
+  TData = Awaited<ReturnType<typeof listLabProviders>>,
+  TError = ErrorType<void>,
+>(
+  labId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listLabProviders>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getListLabProvidersQueryOptions(labId, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
 
 /**
  * @summary Update logo placement preferences for an organization

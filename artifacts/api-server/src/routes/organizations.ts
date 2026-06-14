@@ -1088,6 +1088,57 @@ router.get(
   })
 );
 
+// List provider practices for a lab. Member-level (any active member of
+// the lab) so the mobile Rx review screen can show a browsable, tappable
+// practice picker — no admin gate and no minimum-character search. Scoped
+// to the caller's own lab via requireMembership, so it cannot disclose
+// another tenant's practices. Unlike the admin-only, cases-derived
+// /api/doctors/search, this reads the organizations table directly, so
+// practices created inline (with no cases yet) still appear. Soft-deleted
+// practices are excluded.
+router.get(
+  "/:labId/providers",
+  asyncHandler(async (req, res) => {
+    const labId = req.params.labId;
+    const userId = (req as any).auth.userId as string;
+
+    await requireMembership(userId, labId);
+
+    const lab = await db.query.organizations.findFirst({
+      where: eq(organizations.id, labId),
+    });
+    if (!lab || lab.deletedAt) throw new HttpError(404, "Lab not found.");
+
+    const rows = await db
+      .select({
+        id: organizations.id,
+        name: organizations.name,
+        displayName: organizations.displayName,
+        phone: organizations.phone,
+        addressLine1: organizations.addressLine1,
+        city: organizations.city,
+        state: organizations.state,
+        zip: organizations.zip,
+        accountNumber: organizations.accountNumber,
+        platformAccountNumber: organizations.platformAccountNumber,
+      })
+      .from(organizations)
+      .where(
+        and(
+          eq(organizations.parentLabOrganizationId, labId),
+          eq(organizations.type, "provider"),
+          notDeleted(organizations)
+        )
+      );
+
+    rows.sort((a, b) =>
+      (a.displayName || a.name).localeCompare(b.displayName || b.name)
+    );
+
+    return ok(res, { providers: rows });
+  })
+);
+
 router.get(
   "/:organizationId",
   asyncHandler(async (req, res) => {

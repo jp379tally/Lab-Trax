@@ -1926,6 +1926,35 @@ paths:
           description: Invalid input or per-invoice amount exceeds balance.
         "403":
           description: Caller lacks a billing role on the lab.
+  /organizations/{labId}/providers:
+    get:
+      operationId: listLabProviders
+      tags: [organizations]
+      summary: List provider practices for a lab
+      description: |
+        Returns the provider practices (organizations of type "provider")
+        that belong to the given lab via parentLabOrganizationId. Available
+        to any active member of the lab, so the mobile Rx review screen can
+        browse and pick an existing practice without the admin-only,
+        cases-derived /doctors/search endpoint. Reads the organizations
+        table directly, so practices created inline (with no cases yet)
+        still appear. Soft-deleted practices are excluded.
+      parameters:
+        - name: labId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Provider practices for the lab
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LabProviderList"
+        "403":
+          description: Caller is not an active member of this lab.
+        "404":
+          description: Lab not found.
   /organizations/{organizationId}/logo-placements:
     patch:
       operationId: updateOrganizationLogoPlacements
@@ -2870,6 +2899,47 @@ components:
             total: { type: integer }
             offset: { type: integer }
             limit: { type: integer }
+    LabProvider:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        displayName:
+          type: string
+          nullable: true
+        phone:
+          type: string
+          nullable: true
+        addressLine1:
+          type: string
+          nullable: true
+        city:
+          type: string
+          nullable: true
+        state:
+          type: string
+          nullable: true
+        zip:
+          type: string
+          nullable: true
+        accountNumber:
+          type: string
+          nullable: true
+        platformAccountNumber:
+          type: string
+          nullable: true
+    LabProviderList:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          properties:
+            providers:
+              type: array
+              items:
+                $ref: "#/components/schemas/LabProvider"
     UpdateCaseInput:
       type: object
       properties:

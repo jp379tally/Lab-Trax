@@ -2506,6 +2506,45 @@ export const ReceiveInvoicePaymentsBody = zod.object({
 });
 
 /**
+ * Returns the provider practices (organizations of type "provider")
+that belong to the given lab via parentLabOrganizationId. Available
+to any active member of the lab, so the mobile Rx review screen can
+browse and pick an existing practice without the admin-only,
+cases-derived /doctors/search endpoint. Reads the organizations
+table directly, so practices created inline (with no cases yet)
+still appear. Soft-deleted practices are excluded.
+
+ * @summary List provider practices for a lab
+ */
+export const ListLabProvidersParams = zod.object({
+  labId: zod.coerce.string(),
+});
+
+export const ListLabProvidersResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      providers: zod
+        .array(
+          zod.object({
+            id: zod.string(),
+            name: zod.string(),
+            displayName: zod.string().nullish(),
+            phone: zod.string().nullish(),
+            addressLine1: zod.string().nullish(),
+            city: zod.string().nullish(),
+            state: zod.string().nullish(),
+            zip: zod.string().nullish(),
+            accountNumber: zod.string().nullish(),
+            platformAccountNumber: zod.string().nullish(),
+          }),
+        )
+        .optional(),
+    })
+    .optional(),
+});
+
+/**
  * @summary Update logo placement preferences for an organization
  */
 export const UpdateOrganizationLogoPlacementsParams = zod.object({

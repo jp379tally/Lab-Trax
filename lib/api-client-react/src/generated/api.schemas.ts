@@ -587,6 +587,28 @@ export interface DoctorSearchResult {
   data?: DoctorSearchResultData;
 }
 
+export interface LabProvider {
+  id: string;
+  name: string;
+  displayName?: string | null;
+  phone?: string | null;
+  addressLine1?: string | null;
+  city?: string | null;
+  state?: string | null;
+  zip?: string | null;
+  accountNumber?: string | null;
+  platformAccountNumber?: string | null;
+}
+
+export type LabProviderListData = {
+  providers?: LabProvider[];
+};
+
+export interface LabProviderList {
+  ok?: boolean;
+  data?: LabProviderListData;
+}
+
 export type UpdateCaseInputStatus =
   (typeof UpdateCaseInputStatus)[keyof typeof UpdateCaseInputStatus];
 

@@ -19,11 +19,11 @@ import { Ionicons } from "@expo/vector-icons";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   useCreateCase,
-  useSearchDoctors,
-  getSearchDoctorsQueryKey,
+  useListLabProviders,
+  getListLabProvidersQueryKey,
   type CreateCaseInput,
   type CreateCaseInputRestorationsItem,
-  type DoctorSearchEntry,
+  type LabProvider,
 } from "@workspace/api-client-react";
 import { resilientFetch } from "@/lib/query-client";
 import { uploadCaseAttachment } from "@/lib/uploadCaseAttachment";
@@ -31,7 +31,6 @@ import { buildCaseCardHtml, generatePdf, type CaseCardRestoration } from "@/lib/
 import { useMe, editableLabMemberships } from "@/lib/auth-me";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
-import { Card } from "@/components/ui/Card";
 import { DateField } from "@/components/DateField";
 import {
   getAiReaderSession,
@@ -141,14 +140,18 @@ export default function AiReaderExtractedScreen() {
   const [toothIndices, setToothIndices] = useState(extracted?.toothIndices ?? "");
 
   // ── Provider / doctor ──
-  const [doctorInput, setDoctorInput] = useState(extracted?.doctorName ?? "");
-  const [debouncedDoctor, setDebouncedDoctor] = useState(extracted?.doctorName ?? "");
+  // Doctor name is free text per-Rx — provider orgs carry no doctor name.
   const [doctorName, setDoctorName] = useState(extracted?.doctorName ?? "");
   const [providerOrgId, setProviderOrgId] = useState<string | null>(null);
-  const [doctorFocused, setDoctorFocused] = useState(false);
+  // Display fallback for the linked practice before the list query resolves
+  // (e.g. right after inline create or alias auto-resolve).
+  const [pickedPracticeName, setPickedPracticeName] = useState<string | null>(null);
   const [aliasResolved, setAliasResolved] = useState(false);
   // True when user explicitly opted to proceed without linking a provider
   const [skipProvider, setSkipProvider] = useState(false);
+  // ── Practice picker modal ──
+  const [pickerVisible, setPickerVisible] = useState(false);
+  const [pickerFilter, setPickerFilter] = useState("");
 
   // ── Inline provider create ──
   const [createPracticeVisible, setCreatePracticeVisible] = useState(false);
@@ -177,12 +180,6 @@ export default function AiReaderExtractedScreen() {
   const [caseNumberEdited, setCaseNumberEdited] = useState(false);
 
   const createCase = useCreateCase();
-
-  // Debounce doctor input
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedDoctor(doctorInput.trim()), 300);
-    return () => clearTimeout(t);
-  }, [doctorInput]);
 
   // Auto-fetch case number
   const nextNumberQuery = useQuery({
@@ -221,35 +218,60 @@ export default function AiReaderExtractedScreen() {
       .finally(() => setAliasResolved(true));
   }, [selectedLabId, extracted?.practiceName, aliasResolved]);
 
-  // Doctor search
-  const doctorSearchParams = { labOrganizationId: selectedLabId ?? "", q: debouncedDoctor };
-  const doctorSearch = useSearchDoctors(doctorSearchParams, {
+  // Provider practices for the lab — member-level, browse-on-open (no
+  // search-character minimum, includes practices created inline with no
+  // cases yet).
+  const providersQuery = useListLabProviders(selectedLabId ?? "", {
     query: {
-      queryKey: getSearchDoctorsQueryKey(doctorSearchParams),
-      enabled: !!selectedLabId && debouncedDoctor.length >= 2 && !providerOrgId && !skipProvider,
+      queryKey: getListLabProvidersQueryKey(selectedLabId ?? ""),
+      enabled: !!selectedLabId,
     },
   });
-  const doctorResults: DoctorSearchEntry[] = useMemo(
-    () => (doctorSearch.data?.data?.entries ?? []).filter((e) => !!e.providerOrganizationId),
-    [doctorSearch.data],
+  const providers: LabProvider[] = useMemo(
+    () => providersQuery.data?.data?.providers ?? [],
+    [providersQuery.data],
   );
+  const selectedProvider = useMemo(
+    () => providers.find((p) => p.id === providerOrgId) ?? null,
+    [providers, providerOrgId],
+  );
+  const filteredProviders = useMemo(() => {
+    const q = pickerFilter.trim().toLowerCase();
+    if (!q) return providers;
+    return providers.filter((p) => {
+      const hay = [
+        p.displayName,
+        p.name,
+        p.city,
+        p.state,
+        p.accountNumber,
+        p.platformAccountNumber,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(q);
+    });
+  }, [providers, pickerFilter]);
 
-  function onChangeDoctor(text: string) {
-    setDoctorInput(text);
-    setDoctorName(text);
-    if (providerOrgId) {
-      setProviderOrgId(null);
-      setSkipProvider(false);
-    }
+  function openPicker() {
+    setPickerFilter("");
+    setCreatePracticeVisible(false);
+    setPickerVisible(true);
   }
 
-  function selectDoctor(entry: DoctorSearchEntry) {
-    setDoctorName(entry.doctorName ?? "");
-    setProviderOrgId(entry.providerOrganizationId ?? null);
-    setDoctorInput(entry.doctorName ?? "");
-    setDoctorFocused(false);
+  function selectProvider(p: LabProvider) {
+    setProviderOrgId(p.id);
+    setPickedPracticeName(p.displayName || p.name);
     setSkipProvider(false);
+    setPickerVisible(false);
+    setCreatePracticeVisible(false);
     Keyboard.dismiss();
+  }
+
+  function clearProvider() {
+    setProviderOrgId(null);
+    setPickedPracticeName(null);
   }
 
   // ── Inline practice creation ──
@@ -287,12 +309,19 @@ export default function AiReaderExtractedScreen() {
         Alert.alert("Could not create practice", "Practice was created but no ID was returned. Try again.");
         return;
       }
-      const name = newDoctorName.trim() || newPracticeName.trim();
       setProviderOrgId(orgId);
-      setDoctorName(name);
-      setDoctorInput(name);
+      setPickedPracticeName(newPracticeName.trim());
+      // Seed the per-Rx doctor name from the create form only when the
+      // field is still empty, so we never clobber an extracted/edited name.
+      if (newDoctorName.trim() && !doctorName.trim()) {
+        setDoctorName(newDoctorName.trim());
+      }
       setSkipProvider(false);
       setCreatePracticeVisible(false);
+      setPickerVisible(false);
+      setPickerFilter("");
+      // Refresh the practice list so the new practice shows up next open.
+      qc.invalidateQueries({ queryKey: getListLabProvidersQueryKey(selectedLabId) });
       // Clear inline form
       setNewPracticeName("");
       setNewDoctorName("");
@@ -307,15 +336,14 @@ export default function AiReaderExtractedScreen() {
 
   function confirmSkipProvider() {
     Alert.alert(
-      "Continue without linking a doctor?",
-      "The case will be created without a provider link. You can add the doctor from the case detail later.\n\nIf the practice is new, create it first in the Providers section.",
+      "Continue without linking a practice?",
+      "The case will be created without a practice link. You can link it from the case detail later.",
       [
         { text: "Cancel", style: "cancel" },
         {
           text: "Continue anyway",
           onPress: () => {
             setSkipProvider(true);
-            setDoctorFocused(false);
             Keyboard.dismiss();
           },
         },
@@ -427,28 +455,21 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
     // handleSubmit() — the state update hasn't committed yet in that same call.
     const effectiveSkipProvider = forceSkipProvider || skipProvider;
     if (!providerOrgId && !effectiveSkipProvider) {
-      if (doctorInput.trim()) {
-        // They typed something but didn't select — ask them to confirm unlinked
-        confirmSkipProvider();
-        return;
-      } else {
-        // No input at all
-        Alert.alert(
-          "Doctor not linked",
-          "No doctor has been selected. Continue without linking a provider, or cancel and search for the doctor?",
-          [
-            { text: "Search for doctor", style: "cancel" },
-            {
-              text: "Continue without doctor",
-              onPress: () => {
-                setSkipProvider(true);
-                handleSubmit(skipDupeCheck, true);
-              },
+      Alert.alert(
+        "No practice linked",
+        "This case isn't linked to a practice yet. Select a practice, or continue without linking.",
+        [
+          { text: "Select practice", style: "cancel", onPress: openPicker },
+          {
+            text: "Continue without linking",
+            onPress: () => {
+              setSkipProvider(true);
+              handleSubmit(skipDupeCheck, true);
             },
-          ],
-        );
-        return;
-      }
+          },
+        ],
+      );
+      return;
     }
 
     // Duplicate check (first pass only)
@@ -598,11 +619,11 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
     : "low";
   const firstPageUri = session.pages[0]?.uri ?? null;
   const providerResolved = !!providerOrgId;
-  const providerLabel = providerResolved
-    ? doctorName
-    : skipProvider
-      ? `${doctorName.trim() || "No doctor"} (unlinked)`
-      : null;
+  const practiceLabel =
+    selectedProvider?.displayName ||
+    selectedProvider?.name ||
+    pickedPracticeName ||
+    "Linked practice";
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
@@ -761,129 +782,49 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
 
         {/* Doctor / practice */}
         <Section label="Doctor / Practice" styles={styles} colors={colors}>
-          {(providerResolved || skipProvider) ? (
-            <View style={[styles.resolvedRow, skipProvider && styles.resolvedRowWarn]}>
-              <Ionicons
-                name={providerResolved ? "checkmark-circle" : "alert-circle-outline"}
-                size={18}
-                color={providerResolved ? colors.success : colors.warningStrong}
-              />
-              <Text style={styles.resolvedName} numberOfLines={1}>{providerLabel}</Text>
-              <Pressable onPress={() => { setProviderOrgId(null); setSkipProvider(false); }} hitSlop={8}>
+          {providerResolved ? (
+            <View style={styles.resolvedRow}>
+              <Ionicons name="business" size={18} color={colors.success} />
+              <Text style={styles.resolvedName} numberOfLines={1}>{practiceLabel}</Text>
+              <Pressable onPress={openPicker} hitSlop={8} accessibilityLabel="Change practice">
+                <Ionicons name="swap-horizontal" size={18} color={colors.tint} />
+              </Pressable>
+              <Pressable onPress={clearProvider} hitSlop={8} accessibilityLabel="Clear practice">
+                <Ionicons name="close-circle" size={18} color={colors.textTertiary} />
+              </Pressable>
+            </View>
+          ) : skipProvider ? (
+            <View style={[styles.resolvedRow, styles.resolvedRowWarn]}>
+              <Ionicons name="alert-circle-outline" size={18} color={colors.warningStrong} />
+              <Text style={styles.resolvedName} numberOfLines={1}>Not linked to a practice</Text>
+              <Pressable onPress={() => setSkipProvider(false)} hitSlop={8} accessibilityLabel="Undo skip">
                 <Ionicons name="close-circle" size={18} color={colors.textTertiary} />
               </Pressable>
             </View>
           ) : (
-            <>
-              <TextInput
-                style={styles.input}
-                value={doctorInput}
-                onChangeText={onChangeDoctor}
-                placeholder="Search doctor name…"
-                placeholderTextColor={colors.textTertiary}
-                autoCorrect={false}
-                onFocus={() => setDoctorFocused(true)}
-                onBlur={() => setTimeout(() => setDoctorFocused(false), 200)}
-              />
-              {doctorFocused && doctorResults.length > 0 && (
-                <Card style={styles.dropdown}>
-                  {doctorResults.slice(0, 6).map((e, i) => (
-                    <Pressable
-                      key={i}
-                      style={styles.dropdownRow}
-                      onPress={() => selectDoctor(e)}
-                    >
-                      <Text style={styles.dropdownName}>{e.doctorName}</Text>
-                      {e.practiceName ? (
-                        <Text style={styles.dropdownOrg} numberOfLines={1}>{e.practiceName}</Text>
-                      ) : null}
-                    </Pressable>
-                  ))}
-                </Card>
-              )}
-              {/* No results — offer inline create or skip */}
-              {debouncedDoctor.length >= 2 && doctorResults.length === 0 && !doctorSearch.isLoading && !createPracticeVisible && (
-                <View style={styles.noResults}>
-                  <Text style={styles.noResultsText}>No matching doctors found.</Text>
-                  <Pressable
-                    style={styles.createPracticeBtn}
-                    onPress={() => {
-                      setNewPracticeName(doctorInput.trim());
-                      setNewDoctorName(doctorInput.trim());
-                      setCreatePracticeVisible(true);
-                      Keyboard.dismiss();
-                    }}
-                  >
-                    <Ionicons name="add-circle-outline" size={15} color={colors.tint} />
-                    <Text style={styles.createPracticeBtnText}>Create new practice…</Text>
-                  </Pressable>
-                  <Pressable style={styles.skipProviderBtn} onPress={confirmSkipProvider}>
-                    <Ionicons name="arrow-forward-circle-outline" size={15} color={colors.textTertiary} />
-                    <Text style={styles.skipProviderBtnText}>Continue without linking a doctor</Text>
-                  </Pressable>
-                </View>
-              )}
+            <Pressable style={styles.pickerTrigger} onPress={openPicker} accessibilityRole="button">
+              <Ionicons name="business-outline" size={18} color={colors.textTertiary} />
+              <Text style={styles.pickerTriggerText}>Select a practice…</Text>
+              <Ionicons name="chevron-down" size={18} color={colors.textTertiary} />
+            </Pressable>
+          )}
 
-              {/* Inline new-practice form */}
-              {createPracticeVisible && (
-                <View style={styles.createPracticeForm}>
-                  <View style={styles.createPracticeHeader}>
-                    <Ionicons name="business-outline" size={16} color={colors.tint} />
-                    <Text style={styles.createPracticeTitle}>New practice</Text>
-                    <Pressable onPress={() => setCreatePracticeVisible(false)} hitSlop={8}>
-                      <Ionicons name="close" size={18} color={colors.textTertiary} />
-                    </Pressable>
-                  </View>
-                  <TextInput
-                    style={styles.input}
-                    value={newPracticeName}
-                    onChangeText={setNewPracticeName}
-                    placeholder="Practice / clinic name *"
-                    placeholderTextColor={colors.textTertiary}
-                    autoFocus
-                  />
-                  <TextInput
-                    style={styles.input}
-                    value={newDoctorName}
-                    onChangeText={setNewDoctorName}
-                    placeholder="Doctor name (optional)"
-                    placeholderTextColor={colors.textTertiary}
-                    autoCorrect={false}
-                  />
-                  <View style={styles.row2Col}>
-                    <TextInput
-                      style={[styles.input, styles.halfInput]}
-                      value={newPracticePhone}
-                      onChangeText={setNewPracticePhone}
-                      placeholder="Phone (optional)"
-                      placeholderTextColor={colors.textTertiary}
-                      keyboardType="phone-pad"
-                    />
-                    <TextInput
-                      style={[styles.input, styles.halfInput]}
-                      value={newPracticeAddress}
-                      onChangeText={setNewPracticeAddress}
-                      placeholder="Address (optional)"
-                      placeholderTextColor={colors.textTertiary}
-                    />
-                  </View>
-                  <Pressable
-                    style={[styles.createPracticeSubmitBtn, creatingPractice && { opacity: 0.55 }]}
-                    onPress={handleCreatePractice}
-                    disabled={creatingPractice}
-                  >
-                    {creatingPractice ? (
-                      <ActivityIndicator color="#fff" size="small" />
-                    ) : (
-                      <>
-                        <Ionicons name="checkmark-circle-outline" size={16} color="#fff" />
-                        <Text style={styles.createPracticeSubmitText}>Create &amp; link practice</Text>
-                      </>
-                    )}
-                  </Pressable>
-                </View>
-              )}
-            </>
+          {/* Editable per-Rx doctor name (independent of the linked practice) */}
+          <Text style={[styles.sectionLabel, styles.subLabel]}>Doctor name on this Rx</Text>
+          <TextInput
+            style={styles.input}
+            value={doctorName}
+            onChangeText={setDoctorName}
+            placeholder="e.g. Dr. Jane Smith"
+            placeholderTextColor={colors.textTertiary}
+            autoCorrect={false}
+          />
+
+          {!providerResolved && !skipProvider && (
+            <Pressable style={styles.skipProviderBtn} onPress={confirmSkipProvider}>
+              <Ionicons name="arrow-forward-circle-outline" size={15} color={colors.textTertiary} />
+              <Text style={styles.skipProviderBtnText}>Continue without linking a practice</Text>
+            </Pressable>
           )}
         </Section>
 
@@ -1103,6 +1044,178 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
           </View>
         </View>
       </Modal>
+
+      {/* Practice picker modal */}
+      <Modal
+        visible={pickerVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setPickerVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalSheet, styles.pickerSheet, { paddingBottom: insets.bottom + Spacing.lg }]}>
+            <View style={styles.modalHandle} />
+            <View style={styles.pickerHeaderRow}>
+              <Text style={styles.modalTitle}>
+                {createPracticeVisible ? "New practice" : "Select a practice"}
+              </Text>
+              <Pressable
+                onPress={() =>
+                  createPracticeVisible
+                    ? setCreatePracticeVisible(false)
+                    : setPickerVisible(false)
+                }
+                hitSlop={8}
+              >
+                <Ionicons name="close" size={22} color={colors.textTertiary} />
+              </Pressable>
+            </View>
+
+            {!createPracticeVisible ? (
+              <>
+                <View style={styles.searchRow}>
+                  <Ionicons name="search" size={16} color={colors.textTertiary} />
+                  <TextInput
+                    style={styles.searchInput}
+                    value={pickerFilter}
+                    onChangeText={setPickerFilter}
+                    placeholder="Filter practices…"
+                    placeholderTextColor={colors.textTertiary}
+                    autoCorrect={false}
+                    autoCapitalize="none"
+                  />
+                  {pickerFilter.length > 0 && (
+                    <Pressable onPress={() => setPickerFilter("")} hitSlop={8}>
+                      <Ionicons name="close-circle" size={16} color={colors.textTertiary} />
+                    </Pressable>
+                  )}
+                </View>
+
+                {providersQuery.isLoading ? (
+                  <View style={styles.pickerLoading}>
+                    <ActivityIndicator color={colors.tint} />
+                  </View>
+                ) : (
+                  <ScrollView style={styles.pickerList} keyboardShouldPersistTaps="handled">
+                    {filteredProviders.length === 0 ? (
+                      <Text style={styles.pickerEmpty}>
+                        {providers.length === 0
+                          ? "No practices yet. Add a new one below."
+                          : "No practices match your filter."}
+                      </Text>
+                    ) : (
+                      filteredProviders.map((p) => {
+                        const sel = p.id === providerOrgId;
+                        const sub = [p.city, p.state].filter(Boolean).join(", ");
+                        return (
+                          <Pressable
+                            key={p.id}
+                            style={[styles.pickerRow, sel && styles.pickerRowSelected]}
+                            onPress={() => selectProvider(p)}
+                          >
+                            <View style={styles.pickerRowMain}>
+                              <Text style={styles.pickerRowName} numberOfLines={1}>
+                                {p.displayName || p.name}
+                              </Text>
+                              {sub ? (
+                                <Text style={styles.pickerRowSub} numberOfLines={1}>{sub}</Text>
+                              ) : null}
+                            </View>
+                            {sel && (
+                              <Ionicons name="checkmark-circle" size={18} color={colors.success} />
+                            )}
+                          </Pressable>
+                        );
+                      })
+                    )}
+                  </ScrollView>
+                )}
+
+                <Pressable
+                  style={styles.addNewRow}
+                  onPress={() => {
+                    setNewPracticeName(pickerFilter.trim());
+                    setNewDoctorName("");
+                    setNewPracticePhone("");
+                    setNewPracticeAddress("");
+                    setCreatePracticeVisible(true);
+                  }}
+                >
+                  <Ionicons name="add-circle-outline" size={18} color={colors.tint} />
+                  <Text style={styles.addNewText}>Add new practice</Text>
+                </Pressable>
+
+                <Pressable
+                  style={styles.pickerSkipBtn}
+                  onPress={() => {
+                    setPickerVisible(false);
+                    confirmSkipProvider();
+                  }}
+                >
+                  <Text style={styles.pickerSkipText}>Continue without linking</Text>
+                </Pressable>
+              </>
+            ) : (
+              <ScrollView keyboardShouldPersistTaps="handled" style={styles.createScroll}>
+                <TextInput
+                  style={styles.input}
+                  value={newPracticeName}
+                  onChangeText={setNewPracticeName}
+                  placeholder="Practice / clinic name *"
+                  placeholderTextColor={colors.textTertiary}
+                  autoFocus
+                />
+                <TextInput
+                  style={[styles.input, styles.createFieldGap]}
+                  value={newDoctorName}
+                  onChangeText={setNewDoctorName}
+                  placeholder="Doctor name (optional)"
+                  placeholderTextColor={colors.textTertiary}
+                  autoCorrect={false}
+                />
+                <View style={[styles.row2Col, styles.createFieldGap]}>
+                  <TextInput
+                    style={[styles.input, styles.halfInput]}
+                    value={newPracticePhone}
+                    onChangeText={setNewPracticePhone}
+                    placeholder="Phone (optional)"
+                    placeholderTextColor={colors.textTertiary}
+                    keyboardType="phone-pad"
+                  />
+                  <TextInput
+                    style={[styles.input, styles.halfInput]}
+                    value={newPracticeAddress}
+                    onChangeText={setNewPracticeAddress}
+                    placeholder="Address (optional)"
+                    placeholderTextColor={colors.textTertiary}
+                  />
+                </View>
+                <Pressable
+                  style={[styles.createPracticeSubmitBtn, creatingPractice && { opacity: 0.55 }]}
+                  onPress={handleCreatePractice}
+                  disabled={creatingPractice}
+                >
+                  {creatingPractice ? (
+                    <ActivityIndicator color="#fff" size="small" />
+                  ) : (
+                    <>
+                      <Ionicons name="checkmark-circle-outline" size={16} color="#fff" />
+                      <Text style={styles.createPracticeSubmitText}>Create &amp; link practice</Text>
+                    </>
+                  )}
+                </Pressable>
+                <Pressable
+                  style={styles.createCancelBtn}
+                  onPress={() => setCreatePracticeVisible(false)}
+                  disabled={creatingPractice}
+                >
+                  <Text style={styles.createCancelText}>Back to list</Text>
+                </Pressable>
+              </ScrollView>
+            )}
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1213,32 +1326,21 @@ function makeStyles(c: ThemeColors) {
     },
     resolvedName: { ...Typography.bodyMedium, color: c.text, flex: 1 },
 
-    dropdown: {
-      borderRadius: Radius.md,
-      borderWidth: 1,
-      borderColor: c.border,
-      marginTop: Spacing.xs,
-      padding: 0,
-      overflow: "hidden",
-    },
-    dropdownRow: {
-      paddingHorizontal: Spacing.md,
-      paddingVertical: Spacing.sm,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: c.border,
-    },
-    dropdownName: { ...Typography.bodyMedium, color: c.text },
-    dropdownOrg: { ...Typography.caption, color: c.textSecondary, marginTop: 1 },
-
-    noResults: { paddingHorizontal: Spacing.xs, paddingTop: Spacing.xs, gap: Spacing.xs },
-    noResultsText: { ...Typography.caption, color: c.textTertiary },
-    createPracticeBtn: {
+    pickerTrigger: {
       flexDirection: "row",
       alignItems: "center",
-      gap: Spacing.xs,
-      paddingVertical: 4,
+      gap: Spacing.sm,
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: Radius.md,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Platform.OS === "ios" ? Spacing.sm : Spacing.xs,
+      backgroundColor: c.surface,
     },
-    createPracticeBtnText: { ...Typography.captionSemibold, color: c.tint },
+    pickerTriggerText: { ...Typography.body, color: c.textSecondary, flex: 1 },
+
+    subLabel: { marginTop: Spacing.sm },
+
     skipProviderBtn: {
       flexDirection: "row",
       alignItems: "center",
@@ -1274,6 +1376,63 @@ function makeStyles(c: ThemeColors) {
       marginTop: Spacing.xs,
     },
     createPracticeSubmitText: { ...Typography.bodySemibold, color: "#fff" },
+
+    // ── Practice picker modal ──
+    pickerSheet: { maxHeight: "85%" },
+    pickerHeaderRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: Spacing.sm,
+    },
+    searchRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.sm,
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: Radius.md,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Platform.OS === "ios" ? Spacing.sm : Spacing.xs,
+      backgroundColor: c.surface,
+    },
+    searchInput: { ...Typography.body, color: c.text, flex: 1, padding: 0 },
+    pickerList: { maxHeight: 320 },
+    pickerLoading: { paddingVertical: Spacing.xl, alignItems: "center" },
+    pickerEmpty: {
+      ...Typography.caption,
+      color: c.textTertiary,
+      textAlign: "center",
+      paddingVertical: Spacing.lg,
+    },
+    pickerRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.sm,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Spacing.sm,
+      borderRadius: Radius.md,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: c.border,
+      marginBottom: Spacing.sm,
+    },
+    pickerRowSelected: { borderColor: c.success, backgroundColor: c.success + "10" },
+    pickerRowMain: { flex: 1, gap: 2 },
+    pickerRowName: { ...Typography.bodyMedium, color: c.text },
+    pickerRowSub: { ...Typography.caption, color: c.textSecondary },
+    addNewRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.sm,
+      paddingVertical: Spacing.sm,
+    },
+    addNewText: { ...Typography.bodySemibold, color: c.tint },
+    pickerSkipBtn: { paddingVertical: Spacing.sm, alignItems: "center" },
+    pickerSkipText: { ...Typography.body, color: c.textTertiary },
+    createScroll: { gap: Spacing.sm },
+    createFieldGap: { marginTop: Spacing.sm },
+    createCancelBtn: { paddingVertical: Spacing.sm, alignItems: "center", marginTop: Spacing.xs },
+    createCancelText: { ...Typography.body, color: c.textTertiary },
 
     bottomBar: {
       padding: Spacing.lg,
