@@ -550,6 +550,7 @@ describe("CaseDetailScreen (read-only viewer)", () => {
         // NOT skip straight to Linking.openURL / WebBrowser with the raw URL.
         expect(vi.mocked(getAuthedMediaUri)).toHaveBeenCalledWith(
           `/api/cases/${inProgressCase.id}/attachments/${docAttachment.id}/file`,
+          expect.any(Function),
         );
         // The OS share sheet is reached only with a local file:// URI that was
         // produced by downloading (with auth) and then copying to a named path.

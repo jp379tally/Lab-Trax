@@ -22,6 +22,7 @@ import {
   type StoredSession,
   type ChatMsg,
 } from "@/lib/chat-session-storage";
+import { makeAuthWrapper } from "../../__tests__/test-utils";
 
 // ─── Module mocks ─────────────────────────────────────────────────────────────
 
@@ -78,11 +79,13 @@ afterEach(() => {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function renderPanel(props?: Partial<Parameters<typeof AiChatPanel>[0]>) {
+  const Wrapper = makeAuthWrapper();
   return render(
     <AiChatPanel
       onClose={() => {}}
       {...props}
     />,
+    { wrapper: Wrapper },
   );
 }
 
