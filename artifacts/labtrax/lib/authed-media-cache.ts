@@ -28,14 +28,32 @@ function resolveMediaUrl(url: string): string {
 // Download `absolute` to `cachePath` with the given bearer token.
 // Returns the local URI on success, or null if the server returns an error.
 // Does NOT handle 401 internally — callers should refresh and retry if needed.
+// `onProgress` receives values in [0, 1] as bytes arrive; it is only called when
+// the server provides a Content-Length header (totalBytesExpectedToWrite > 0).
 async function downloadWithToken(
   absolute: string,
   cachePath: string,
   token: string,
+  onProgress?: (progress: number) => void,
 ): Promise<{ uri: string } | { status: number } | null> {
   try {
     const result = await FileSystem.downloadAsync(absolute, cachePath, {
       headers: { Authorization: `Bearer ${token}` },
+      ...(onProgress
+        ? {
+            downloadProgressCallback: ({
+              totalBytesWritten,
+              totalBytesExpectedToWrite,
+            }: {
+              totalBytesWritten: number;
+              totalBytesExpectedToWrite: number;
+            }) => {
+              if (totalBytesExpectedToWrite > 0) {
+                onProgress(totalBytesWritten / totalBytesExpectedToWrite);
+              }
+            },
+          }
+        : undefined),
     });
     if (result.status >= 200 && result.status < 300) {
       return { uri: result.uri };
@@ -48,6 +66,7 @@ async function downloadWithToken(
 
 export async function getAuthedMediaUri(
   url: string | null | undefined,
+  onProgress?: (progress: number) => void,
 ): Promise<string | null> {
   if (!url) return null;
 
@@ -79,7 +98,7 @@ export async function getAuthedMediaUri(
     const info = await FileSystem.getInfoAsync(cachePath);
     if (info.exists) return cachePath;
 
-    const result = await downloadWithToken(absolute, cachePath, token);
+    const result = await downloadWithToken(absolute, cachePath, token, onProgress);
 
     if (result && "uri" in result) {
       return result.uri;
@@ -91,7 +110,7 @@ export async function getAuthedMediaUri(
     if (result && "status" in result && result.status === 401) {
       const newToken = await refreshAndGetAccessToken();
       if (newToken) {
-        const retryResult = await downloadWithToken(absolute, cachePath, newToken);
+        const retryResult = await downloadWithToken(absolute, cachePath, newToken, onProgress);
         if (retryResult && "uri" in retryResult) {
           return retryResult.uri;
         }

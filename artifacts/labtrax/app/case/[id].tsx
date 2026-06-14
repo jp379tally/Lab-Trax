@@ -1971,6 +1971,7 @@ function FilesSection({
   colors: ThemeColors;
 }) {
   const [openingId, setOpeningId] = useState<string | null>(null);
+  const [openProgress, setOpenProgress] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const deleteAttachment = useDeleteCaseAttachment();
 
@@ -2141,7 +2142,11 @@ function FilesSection({
       {
         onOpenImage,
         onError: (title, message) => Alert.alert(title, message),
-        setBusy: (busy) => setOpeningId(busy ? a.id : null),
+        setBusy: (busy) => {
+          setOpeningId(busy ? a.id : null);
+          if (!busy) setOpenProgress(null);
+        },
+        onProgress: (p) => setOpenProgress(p),
       },
     );
   }
@@ -2332,7 +2337,13 @@ function FilesSection({
               {isDeleting ? (
                 <ActivityIndicator color={colors.warning} />
               ) : opening ? (
-                <ActivityIndicator color={colors.tint} />
+                openProgress !== null && openProgress > 0 ? (
+                  <Text style={[styles.docProgressText, { color: colors.tint }]}>
+                    {`${Math.round(openProgress * 100)}%`}
+                  </Text>
+                ) : (
+                  <ActivityIndicator color={colors.tint} />
+                )
               ) : (
                 <View style={styles.docActions}>
                   <Ionicons name="open-outline" size={18} color={colors.textTertiary} />
@@ -2751,6 +2762,7 @@ function HistorySection({
   colors: ThemeColors;
 }) {
   const [openingId, setOpeningId] = useState<string | null>(null);
+  const [openProgress, setOpenProgress] = useState<number | null>(null);
 
   if (events.length === 0) {
     return <EmptyState icon="time-outline" text="No history yet." styles={styles} colors={colors} />;
@@ -2766,7 +2778,11 @@ function HistorySection({
       {
         onOpenImage,
         onError: (title, message) => Alert.alert(title, message),
-        setBusy: (busy) => setOpeningId(busy ? ev.id : null),
+        setBusy: (busy) => {
+          setOpeningId(busy ? ev.id : null);
+          if (!busy) setOpenProgress(null);
+        },
+        onProgress: (p) => setOpenProgress(p),
       },
     );
   }
@@ -2800,7 +2816,13 @@ function HistorySection({
                     testID={`history-attachment-${ev.id}`}
                   >
                     {opening ? (
-                      <ActivityIndicator color={colors.tint} size="small" />
+                      openProgress !== null && openProgress > 0 ? (
+                        <Text style={[styles.docProgressText, { color: colors.tint }]}>
+                          {`${Math.round(openProgress * 100)}%`}
+                        </Text>
+                      ) : (
+                        <ActivityIndicator color={colors.tint} size="small" />
+                      )
                     ) : (
                       <Ionicons name="attach-outline" size={16} color={colors.tint} />
                     )}
@@ -2935,6 +2957,7 @@ function makeStyles(c: ThemeColors) {
     docInfo: { flex: 1 },
     docName: { ...Typography.bodyMedium, color: c.text },
     docMeta: { ...Typography.caption, color: c.textTertiary, marginTop: 2 },
+    docProgressText: { ...Typography.bodyMedium, minWidth: 36, textAlign: "right" },
     lineItem: {
       flexDirection: "row",
       alignItems: "center",

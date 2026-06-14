@@ -81,8 +81,9 @@ export async function downloadAttachmentToLocalFile(opts: {
   url: string;
   fileName?: string | null;
   fileType?: string | null;
+  onProgress?: (progress: number) => void;
 }): Promise<string | null> {
-  const localUri = await getAuthedMediaUri(opts.url);
+  const localUri = await getAuthedMediaUri(opts.url, opts.onProgress);
   if (!localUri) return null;
   return copyToExtensioned(localUri, opts.fileName, true);
 }
@@ -122,8 +123,9 @@ export async function openAttachment(opts: {
   url: string;
   fileName?: string | null;
   fileType?: string | null;
+  onProgress?: (progress: number) => void;
 }): Promise<OpenAttachmentResult> {
-  const localUri = await getAuthedMediaUri(opts.url);
+  const localUri = await getAuthedMediaUri(opts.url, opts.onProgress);
   if (!localUri) return "error";
 
   let available = false;

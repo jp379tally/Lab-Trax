@@ -70,6 +70,9 @@ export interface OpenAttachmentPreviewOptions {
   onError?: (title: string, message: string) => void;
   // Toggle a per-attachment busy spinner around the async share/open path.
   setBusy?: (busy: boolean) => void;
+  // Report download progress [0, 1] while the file is being fetched.
+  // Only called when the server provides a Content-Length header.
+  onProgress?: (progress: number) => void;
 }
 
 export type AttachmentPreviewKind = "image" | "pdf-viewer" | "scan-viewer" | "shared";
@@ -121,6 +124,7 @@ export async function openAttachmentPreview(
       url: att.url,
       fileName: att.fileName,
       fileType: att.fileType,
+      onProgress: opts.onProgress,
     });
     if (result === "unavailable") {
       opts.onError?.("Can't open file", "Opening files isn't supported on this device.");
