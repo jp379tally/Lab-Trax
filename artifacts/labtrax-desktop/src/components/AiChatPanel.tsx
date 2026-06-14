@@ -347,6 +347,16 @@ function ConfirmCard({ actionId, summary, state, resultText, error, expiresAt, o
           <span className="text-xs font-semibold">Action failed</span>
         </div>
         <p className="text-xs text-destructive/80 leading-snug">{error}</p>
+        {onTryAgain && (
+          <button
+            type="button"
+            onClick={onTryAgain}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-secondary border border-border text-xs text-foreground hover:bg-accent transition-colors mt-2.5"
+          >
+            <RotateCcw size={11} />
+            Try again
+          </button>
+        )}
       </div>
     );
   }
