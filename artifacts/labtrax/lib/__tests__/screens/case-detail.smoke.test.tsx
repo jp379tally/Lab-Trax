@@ -322,7 +322,7 @@ describe("CaseDetailScreen (read-only viewer)", () => {
       expect(vi.mocked(Sharing.shareAsync)).not.toHaveBeenCalled();
     });
 
-    it("opens a tapped non-PDF document through the system viewer / share sheet", async () => {
+    it("opens a tapped 3D scan (STL/PLY/OBJ) in the in-app scan viewer (never the share sheet)", async () => {
       setMockAppState({
         cases: [inProgressCase],
         invoices: [],
@@ -333,9 +333,19 @@ describe("CaseDetailScreen (read-only viewer)", () => {
       fireEvent.press(getByTestId(`doc-open-${stlAttachment.id}`));
 
       await waitFor(() => {
-        expect(vi.mocked(Sharing.shareAsync)).toHaveBeenCalled();
+        expect(vi.mocked(router.push)).toHaveBeenCalledWith(
+          expect.objectContaining({
+            pathname: "/scan-viewer",
+            params: expect.objectContaining({
+              url: `/api/cases/${inProgressCase.id}/attachments/${stlAttachment.id}/file`,
+              fileName: stlAttachment.fileName,
+              fileType: stlAttachment.fileType,
+              format: "stl",
+            }),
+          }),
+        );
       });
-      expect(vi.mocked(router.push)).not.toHaveBeenCalled();
+      expect(vi.mocked(Sharing.shareAsync)).not.toHaveBeenCalled();
     });
 
     it("hides the delete affordance when the user cannot edit", () => {
