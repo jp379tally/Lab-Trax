@@ -22,6 +22,8 @@ export type ElectronMock = {
     on: (event: string, fn: (...args: unknown[]) => void) => void;
     quit: () => void;
     getVersion: () => string;
+    setName: (name: string) => void;
+    dock?: { setIcon: (icon: unknown) => void };
   };
   safeStorage: {
     isEncryptionAvailable: () => boolean;
@@ -57,6 +59,7 @@ export function installElectronMock(overrides: Partial<ElectronMock> = {}): Elec
       on: () => {},
       quit: () => {},
       getVersion: () => "0.0.0-test",
+      setName: () => {},
       ...(overrides.app ?? {}),
     },
     safeStorage: {
@@ -109,7 +112,21 @@ export function installElectronMock(overrides: Partial<ElectronMock> = {}): Elec
     dialog: {},
     Notification: function () {},
     session: { fromPartition: () => ({}) },
-    ...overrides,
+    // Spread any remaining overrides (e.g. BrowserWindow) WITHOUT clobbering
+    // the keys above that already deep-merge their own overrides. Spreading
+    // the full `overrides` here would replace the merged `app`/`safeStorage`/
+    // `ipcMain`/`protocol` objects with the raw overrides, dropping defaults
+    // such as `app.setName`.
+    ...(() => {
+      const {
+        app: _app,
+        safeStorage: _safeStorage,
+        ipcMain: _ipcMain,
+        protocol: _protocol,
+        ...rest
+      } = overrides;
+      return rest;
+    })(),
   } as ElectronMock;
 
   const electronPath = localRequire.resolve("electron");
