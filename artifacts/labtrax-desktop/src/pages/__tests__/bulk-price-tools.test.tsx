@@ -3,6 +3,7 @@ import React from "react";
 import { describe, it, expect, vi } from "vitest";
 import { render, fireEvent, screen } from "@testing-library/react";
 import { BulkPriceTools } from "@/pages/pricing";
+import { makeAuthWrapper } from "../../__tests__/test-utils";
 
 /**
  * Regression suite for the BulkPriceTools collapsible in the Pricing Tier
@@ -32,7 +33,9 @@ function openBulkPanel() {
 describe("BulkPriceTools — percent adjust", () => {
   it("shows before/after rows with two decimal places after applying a percent", () => {
     const onApply = vi.fn();
-    render(<BulkPriceTools keys={KEYS} prices={BASE_PRICES} onApply={onApply} />);
+    render(<BulkPriceTools keys={KEYS} prices={BASE_PRICES} onApply={onApply} />, {
+      wrapper: makeAuthWrapper(),
+    });
     openBulkPanel();
 
     fireEvent.change(screen.getByPlaceholderText(/e\.g\. 5 or -3/i), {
@@ -54,6 +57,7 @@ describe("BulkPriceTools — percent adjust", () => {
         prices={{ zirconia_crown: "99" }}
         onApply={onApply}
       />,
+      { wrapper: makeAuthWrapper() },
     );
     openBulkPanel();
 
@@ -68,7 +72,9 @@ describe("BulkPriceTools — percent adjust", () => {
 
   it("does not show preview when no percent is entered", () => {
     const onApply = vi.fn();
-    render(<BulkPriceTools keys={KEYS} prices={BASE_PRICES} onApply={onApply} />);
+    render(<BulkPriceTools keys={KEYS} prices={BASE_PRICES} onApply={onApply} />, {
+      wrapper: makeAuthWrapper(),
+    });
     openBulkPanel();
 
     fireEvent.click(screen.getByRole("button", { name: /^Apply$/ }));
@@ -86,6 +92,7 @@ describe("BulkPriceTools — percent adjust", () => {
         prices={{ implant: "0" }}
         onApply={onApply}
       />,
+      { wrapper: makeAuthWrapper() },
     );
     openBulkPanel();
 
@@ -106,6 +113,7 @@ describe("BulkPriceTools — percent adjust", () => {
         prices={{ zirconia_crown: "100" }}
         onApply={onApply}
       />,
+      { wrapper: makeAuthWrapper() },
     );
     openBulkPanel();
 
@@ -124,7 +132,9 @@ describe("BulkPriceTools — percent adjust", () => {
 describe("BulkPriceTools — paste", () => {
   it("shows before/after rows with two decimal places after applying pasted prices", () => {
     const onApply = vi.fn();
-    render(<BulkPriceTools keys={KEYS} prices={BASE_PRICES} onApply={onApply} />);
+    render(<BulkPriceTools keys={KEYS} prices={BASE_PRICES} onApply={onApply} />, {
+      wrapper: makeAuthWrapper(),
+    });
     openBulkPanel();
 
     fireEvent.change(screen.getByRole("textbox"), {
@@ -146,6 +156,7 @@ describe("BulkPriceTools — paste", () => {
         prices={{ zirconia_crown: "" }}
         onApply={onApply}
       />,
+      { wrapper: makeAuthWrapper() },
     );
     openBulkPanel();
 
@@ -159,7 +170,9 @@ describe("BulkPriceTools — paste", () => {
 
   it("does not show preview when paste is empty", () => {
     const onApply = vi.fn();
-    render(<BulkPriceTools keys={KEYS} prices={BASE_PRICES} onApply={onApply} />);
+    render(<BulkPriceTools keys={KEYS} prices={BASE_PRICES} onApply={onApply} />, {
+      wrapper: makeAuthWrapper(),
+    });
     openBulkPanel();
 
     fireEvent.click(screen.getByRole("button", { name: /Apply pasted prices/i }));
@@ -176,6 +189,7 @@ describe("BulkPriceTools — paste", () => {
         prices={{ zirconia_crown: "100" }}
         onApply={onApply}
       />,
+      { wrapper: makeAuthWrapper() },
     );
     openBulkPanel();
 
@@ -194,7 +208,9 @@ describe("BulkPriceTools — paste", () => {
 describe("BulkPriceTools — preview lifecycle", () => {
   it("clears the preview when the panel is collapsed and re-expanded", () => {
     const onApply = vi.fn();
-    render(<BulkPriceTools keys={KEYS} prices={BASE_PRICES} onApply={onApply} />);
+    render(<BulkPriceTools keys={KEYS} prices={BASE_PRICES} onApply={onApply} />, {
+      wrapper: makeAuthWrapper(),
+    });
     openBulkPanel();
 
     fireEvent.change(screen.getByPlaceholderText(/e\.g\. 5 or -3/i), {

@@ -20,30 +20,41 @@ import React from "react";
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { PriceField } from "@/pages/pricing";
+import { makeAuthWrapper } from "../../__tests__/test-utils";
 
 describe("PriceField — two-decimal display guard", () => {
   it("formats an integer value to two decimals when unfocused", () => {
-    render(<PriceField label="Zirconia Crown" value="119" onChange={vi.fn()} />);
+    render(<PriceField label="Zirconia Crown" value="119" onChange={vi.fn()} />, {
+      wrapper: makeAuthWrapper(),
+    });
     expect(screen.getByRole("textbox")).toHaveValue("119.00");
   });
 
   it("formats a single-decimal value to two decimals when unfocused", () => {
-    render(<PriceField label="PFM Crown" value="99.5" onChange={vi.fn()} />);
+    render(<PriceField label="PFM Crown" value="99.5" onChange={vi.fn()} />, {
+      wrapper: makeAuthWrapper(),
+    });
     expect(screen.getByRole("textbox")).toHaveValue("99.50");
   });
 
   it("passes through an already-formatted value unchanged when unfocused", () => {
-    render(<PriceField label="Implant" value="119.00" onChange={vi.fn()} />);
+    render(<PriceField label="Implant" value="119.00" onChange={vi.fn()} />, {
+      wrapper: makeAuthWrapper(),
+    });
     expect(screen.getByRole("textbox")).toHaveValue("119.00");
   });
 
   it("shows an empty string for a blank value (no spurious formatting)", () => {
-    render(<PriceField label="Crown" value="" onChange={vi.fn()} />);
+    render(<PriceField label="Crown" value="" onChange={vi.fn()} />, {
+      wrapper: makeAuthWrapper(),
+    });
     expect(screen.getByRole("textbox")).toHaveValue("");
   });
 
   it("shows the raw (unformatted) value while the field is focused", () => {
-    render(<PriceField label="Crown" value="119" onChange={vi.fn()} />);
+    render(<PriceField label="Crown" value="119" onChange={vi.fn()} />, {
+      wrapper: makeAuthWrapper(),
+    });
     const input = screen.getByRole("textbox");
 
     expect(input).toHaveValue("119.00"); // unfocused — formatted
@@ -53,7 +64,9 @@ describe("PriceField — two-decimal display guard", () => {
   });
 
   it("reverts to the formatted display after the field loses focus", () => {
-    render(<PriceField label="Crown" value="119" onChange={vi.fn()} />);
+    render(<PriceField label="Crown" value="119" onChange={vi.fn()} />, {
+      wrapper: makeAuthWrapper(),
+    });
     const input = screen.getByRole("textbox");
 
     fireEvent.focus(input);
@@ -65,7 +78,9 @@ describe("PriceField — two-decimal display guard", () => {
 
   it("fires onChange with the formatted value on blur", () => {
     const onChange = vi.fn();
-    render(<PriceField label="Crown" value="99.5" onChange={onChange} />);
+    render(<PriceField label="Crown" value="99.5" onChange={onChange} />, {
+      wrapper: makeAuthWrapper(),
+    });
     const input = screen.getByRole("textbox");
 
     fireEvent.focus(input);
@@ -77,7 +92,9 @@ describe("PriceField — two-decimal display guard", () => {
 
   it("fires onChange with the formatted value when Enter is pressed", () => {
     const onChange = vi.fn();
-    render(<PriceField label="Crown" value="99.5" onChange={onChange} />);
+    render(<PriceField label="Crown" value="99.5" onChange={onChange} />, {
+      wrapper: makeAuthWrapper(),
+    });
     const input = screen.getByRole("textbox");
 
     fireEvent.focus(input);
@@ -89,7 +106,9 @@ describe("PriceField — two-decimal display guard", () => {
 
   it("fires onChange with the raw value as the user types (no mid-type formatting)", () => {
     const onChange = vi.fn();
-    render(<PriceField label="Crown" value="" onChange={onChange} />);
+    render(<PriceField label="Crown" value="" onChange={onChange} />, {
+      wrapper: makeAuthWrapper(),
+    });
     const input = screen.getByRole("textbox");
 
     fireEvent.focus(input);
@@ -108,6 +127,7 @@ describe("PriceField — two-decimal display guard", () => {
   it("uses the custom placeholder when provided", () => {
     render(
       <PriceField label="Crown" value="" onChange={vi.fn()} placeholder="0.00" />,
+      { wrapper: makeAuthWrapper() },
     );
     expect(screen.getByRole("textbox")).toHaveAttribute("placeholder", "0.00");
   });
@@ -115,6 +135,7 @@ describe("PriceField — two-decimal display guard", () => {
   it("uses the tier price placeholder passed from OverrideEditor", () => {
     render(
       <PriceField label="Crown" value="" onChange={vi.fn()} placeholder="95.00" />,
+      { wrapper: makeAuthWrapper() },
     );
     expect(screen.getByRole("textbox")).toHaveAttribute("placeholder", "95.00");
   });
@@ -122,17 +143,23 @@ describe("PriceField — two-decimal display guard", () => {
 
 describe("PriceField — input attributes (type='text', inputMode='decimal')", () => {
   it("renders as type='text' (not type='number')", () => {
-    render(<PriceField label="Crown" value="100" onChange={vi.fn()} />);
+    render(<PriceField label="Crown" value="100" onChange={vi.fn()} />, {
+      wrapper: makeAuthWrapper(),
+    });
     expect(screen.getByRole("textbox")).toHaveAttribute("type", "text");
   });
 
   it("renders with inputMode='decimal' for mobile keyboard hint", () => {
-    render(<PriceField label="Crown" value="100" onChange={vi.fn()} />);
+    render(<PriceField label="Crown" value="100" onChange={vi.fn()} />, {
+      wrapper: makeAuthWrapper(),
+    });
     expect(screen.getByRole("textbox")).toHaveAttribute("inputmode", "decimal");
   });
 
   it("renders with a decimal pattern for browser validation hint", () => {
-    render(<PriceField label="Crown" value="100" onChange={vi.fn()} />);
+    render(<PriceField label="Crown" value="100" onChange={vi.fn()} />, {
+      wrapper: makeAuthWrapper(),
+    });
     expect(screen.getByRole("textbox")).toHaveAttribute(
       "pattern",
       "[0-9]*[.]?[0-9]*",

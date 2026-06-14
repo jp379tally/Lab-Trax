@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { AppVersionCard } from "@/pages/settings";
+import { makeAuthWrapper } from "../../__tests__/test-utils";
 
 /**
  * Renderer smoke test for the Settings → Desktop app card.
@@ -70,7 +71,7 @@ afterEach(() => {
 describe("AppVersionCard — admin-panel update card", () => {
   it("renders the Check-for-updates button when the Electron bridge is present", async () => {
     installElectronApi();
-    render(<AppVersionCard />);
+    render(<AppVersionCard />, { wrapper: makeAuthWrapper() });
     await waitFor(() => {
       expect(
         screen.getByRole("button", { name: /Check for updates/i }),
@@ -80,7 +81,7 @@ describe("AppVersionCard — admin-panel update card", () => {
 
   it("shows the installed version once getAppVersion resolves", async () => {
     installElectronApi();
-    render(<AppVersionCard />);
+    render(<AppVersionCard />, { wrapper: makeAuthWrapper() });
     await waitFor(() => {
       expect(screen.getByText(/Installed v1\.2\.3/i)).toBeInTheDocument();
     });
@@ -89,7 +90,7 @@ describe("AppVersionCard — admin-panel update card", () => {
   it("falls back to the Browser-preview placeholder when no bridge is present", () => {
     // No installElectronApi() — electronAPI stays {} from setup.ts, so
     // getDesktopUpdaterApi() returns null.
-    render(<AppVersionCard />);
+    render(<AppVersionCard />, { wrapper: makeAuthWrapper() });
     expect(screen.getByText(/Browser preview/i)).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /Check for updates/i }),
