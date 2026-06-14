@@ -14,6 +14,25 @@ function withAiPanel(children: React.ReactNode) {
   );
 }
 
+// CaseDrawer calls useAuth() to read the current user. Provide a minimal
+// stub so the test doesn't have to mount the real AuthProvider (which makes
+// network calls on mount).
+vi.mock("@/lib/auth-context", () => ({
+  useAuth: () => ({
+    user: null,
+    status: "anonymous" as const,
+    restoreStatus: "empty" as const,
+    restoreNoticeDismissed: false,
+    acknowledgeRestoreNotice: () => {},
+    login: async () => {},
+    completeTwoFactor: async () => {},
+    register: async () => ({ user: null, token: "" }),
+    logout: async () => {},
+    refresh: async () => {},
+  }),
+  AuthProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
 // jspdf and react-pdf pull in heavy/non-jsdom-friendly modules at import
 // time. The smoke render doesn't exercise PDF code paths, so stub them.
 vi.mock("jspdf", () => ({ default: class {} }));
