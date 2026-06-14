@@ -207,6 +207,133 @@ describe("AiChatPanel — session restore on mount", () => {
   });
 });
 
+describe("AiChatPanel — flush on unload (beforeunload / visibilitychange)", () => {
+  it("writes in-memory messages to localStorage when beforeunload fires", async () => {
+    // Seed a session so the component loads messages into memory on mount.
+    const session = makeSession({
+      messages: [
+        { id: "u1", role: "user", content: "What cases are overdue?" },
+        { id: "a1", role: "assistant", content: "Here are the overdue cases…" },
+      ],
+    });
+    writeStoredSessions([session]);
+
+    renderPanel();
+    await act(async () => { await new Promise((r) => setTimeout(r, 100)); });
+
+    // Simulate a mid-flight crash by clearing localStorage after the component
+    // has loaded but before a normal persistSession call would write again.
+    store = {};
+    expect(store[STORAGE_KEY]).toBeUndefined();
+
+    // Fire beforeunload — the flush handler must write the in-memory messages.
+    await act(async () => {
+      window.dispatchEvent(new Event("beforeunload"));
+    });
+
+    const raw = store[STORAGE_KEY];
+    expect(raw).toBeDefined();
+    const parsed = JSON.parse(raw!);
+    const sessions: StoredSession[] = parsed.sessions ?? [];
+    expect(sessions.length).toBeGreaterThan(0);
+    const msgs = sessions[0]!.messages;
+    const contents = msgs.map((m: ChatMsg) => m.content);
+    expect(contents).toContain("What cases are overdue?");
+    expect(contents).toContain("Here are the overdue cases…");
+  });
+
+  it("writes in-memory messages to localStorage when the tab is hidden (visibilitychange)", async () => {
+    const session = makeSession({
+      messages: [
+        { id: "u2", role: "user", content: "Show me rush cases" },
+        { id: "a2", role: "assistant", content: "Rush cases: C-100, C-200" },
+      ],
+    });
+    writeStoredSessions([session]);
+
+    renderPanel();
+    await act(async () => { await new Promise((r) => setTimeout(r, 100)); });
+
+    store = {};
+    expect(store[STORAGE_KEY]).toBeUndefined();
+
+    // Simulate the tab being hidden.
+    await act(async () => {
+      Object.defineProperty(document, "visibilityState", {
+        value: "hidden",
+        configurable: true,
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+
+    const raw = store[STORAGE_KEY];
+    expect(raw).toBeDefined();
+    const parsed = JSON.parse(raw!);
+    const sessions: StoredSession[] = parsed.sessions ?? [];
+    expect(sessions.length).toBeGreaterThan(0);
+    const contents = sessions[0]!.messages.map((m: ChatMsg) => m.content);
+    expect(contents).toContain("Show me rush cases");
+    expect(contents).toContain("Rush cases: C-100, C-200");
+  });
+
+  it("collapses a pending proposedAction to rejected when flushing on unload", async () => {
+    const { sanitizeMessagesForStorage } = await import("@/lib/chat-session-storage");
+
+    const session = makeSession({
+      messages: [
+        { id: "u3", role: "user", content: "Mark INV-555 as paid" },
+        {
+          id: "a3",
+          role: "assistant",
+          proposedAction: {
+            actionId: "act-flush",
+            toolName: "markInvoicePaid",
+            summary: "Mark invoice INV-555 as paid",
+            state: "pending",
+            expiresAt: Date.now() + 300_000,
+          },
+        },
+      ],
+    });
+    writeStoredSessions([session]);
+
+    renderPanel();
+    await act(async () => { await new Promise((r) => setTimeout(r, 100)); });
+
+    store = {};
+
+    await act(async () => {
+      window.dispatchEvent(new Event("beforeunload"));
+    });
+
+    const raw = store[STORAGE_KEY];
+    expect(raw).toBeDefined();
+    const parsed = JSON.parse(raw!);
+    const msgs: ChatMsg[] = parsed.sessions?.[0]?.messages ?? [];
+    const actionMsg = msgs.find((m) => m.proposedAction);
+    expect(actionMsg).toBeDefined();
+    expect(actionMsg!.proposedAction!.state).toBe("rejected");
+
+    // Confirm sanitizeMessagesForStorage is what drives this — belt-and-suspenders.
+    const sanitized = sanitizeMessagesForStorage(session.messages);
+    expect(sanitized.find((m) => m.proposedAction?.state === "pending")).toBeUndefined();
+  });
+
+  it("does not write to localStorage on unload when there are no user messages", async () => {
+    renderPanel();
+    await act(async () => { await new Promise((r) => setTimeout(r, 100)); });
+
+    store = {};
+
+    await act(async () => {
+      window.dispatchEvent(new Event("beforeunload"));
+    });
+
+    // Only the welcome message is in memory; nothing should be written.
+    expect(store[STORAGE_KEY]).toBeUndefined();
+  });
+});
+
 describe("AiChatPanel — persistSession writes to localStorage correctly", () => {
   it("never writes the welcome message id to localStorage", async () => {
     renderPanel();

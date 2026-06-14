@@ -413,6 +413,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
 
   const currentSessionIdRef = useRef<string | null>(null);
+  const allSessionsRef = useRef<StoredSession[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const caseSearchRef = useRef<HTMLInputElement>(null);
@@ -485,6 +486,53 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
   useEffect(() => {
     pinnedCasesRef.current = pinnedCases;
   }, [pinnedCases]);
+
+  useEffect(() => {
+    allSessionsRef.current = allSessions;
+  }, [allSessions]);
+
+  useEffect(() => {
+    function flushToStorage() {
+      const sessionId = currentSessionIdRef.current;
+      if (!sessionId) return;
+      const userMsgs = sanitizeMessagesForStorage(messagesRef.current);
+      if (userMsgs.length === 0) return;
+      const now = Date.now();
+      const prev = allSessionsRef.current;
+      const existing = prev.find((s) => s.id === sessionId);
+      let updated: StoredSession[];
+      if (existing) {
+        updated = prev.map((s) =>
+          s.id === sessionId ? { ...s, messages: userMsgs, lastActive: now } : s,
+        );
+      } else {
+        const newSession: StoredSession = {
+          id: sessionId,
+          key: sessionKey,
+          pinnedCases: pinnedCasesRef.current,
+          messages: userMsgs,
+          createdAt: now,
+          lastActive: now,
+        };
+        const keyed = prev.filter((s) => s.key === sessionKey);
+        const others = prev.filter((s) => s.key !== sessionKey);
+        const trimmed = [newSession, ...keyed].slice(0, MAX_SESSIONS_PER_KEY);
+        updated = [...others, ...trimmed];
+      }
+      writeStoredSessions(updated);
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === "hidden") flushToStorage();
+    }
+
+    window.addEventListener("beforeunload", flushToStorage);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.removeEventListener("beforeunload", flushToStorage);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [sessionKey]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
