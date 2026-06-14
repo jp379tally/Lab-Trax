@@ -35,6 +35,7 @@
 - [React Query on mobile needs auth refresh wiring](rq-mobile-auth-refresh.md) — customFetch needs setAuthRefresher for 401-retry; token getter needs SecureStore hydration; smoke tests need @workspace/api-client-react mocked in vitest.setup.
 - [Authed media cache same-origin guard](authed-media-cache-origin.md) — authed-media-cache must check isSameApiOrigin before attaching Bearer to downloadAsync; skipping this leaks JWTs to external URLs.
 - [LabTrax Lists page duplicate](labtrax-lists-page-duplicate.md) — edit lists.tsx (live /lists); finance/payees.tsx is a dead lookalike. vendors not protected, FKs SET NULL, items keyed by name.
+- [Finance-table cell dropdowns](labtrax-finance-table-dropdowns.md) — invoice line-item table overflow clips in-flow dropdowns; use portal+fixed (VendorCombobox/ItemCombobox); new billable item = POST /finance/vendors vendorType:"item", invalidate ["finance","vendors",orgId] prefix.
 - [Mobile shim removal](mobile-shim-removal.md) — offline-queue + case-reconciliation deleted; syncCaseToServer is dual-path (UUID→canonical PATCH, non-UUID→legacy POST); 410 only for UUID IDs via mobile/2 header.
 - [Mobile CaseStatus canonical](mobile-case-status-canonical.md) — mobile uses server lowercase statuses, but legacy endpoints still emit UPPERCASE; normalize on ingest, don't change server.
 - [Orval generated hook usage](orval-generated-query-hook-usage.md) — list hooks return the envelope not an array; query.select breaks typecheck; rebuild libs for "no exported member"; mirror hooks in vitest mock.

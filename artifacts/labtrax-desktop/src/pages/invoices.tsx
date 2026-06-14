@@ -31,6 +31,10 @@ import {
 } from "lucide-react";
 import QRCodeLib from "qrcode";
 import { apiFetch, ApiError, getApiOrigin, getAccessToken } from "@/lib/api";
+import {
+  ItemCombobox,
+  type ItemComboboxOption,
+} from "@/components/ItemCombobox";
 import type {
   CaseAttachment,
   CaseRestoration,
@@ -1077,6 +1081,36 @@ export function InvoiceEditor({
   });
   const billableItems = billableItemsQuery.data ?? [];
 
+  // Unified options for the ITEM typeahead: priced catalog items first, then
+  // the lab's custom billable items, de-duped by (case-insensitive) name.
+  const itemOptions = useMemo<ItemComboboxOption[]>(() => {
+    const seen = new Set<string>();
+    const opts: ItemComboboxOption[] = [];
+    for (const p of pricedItems) {
+      const key = p.label.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      opts.push({
+        key: `p:${p.key}`,
+        name: p.label,
+        unitPrice: p.unitPrice,
+        group: "catalog",
+      });
+    }
+    for (const b of billableItems) {
+      const key = b.name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      opts.push({
+        key: `b:${b.id}`,
+        name: b.name,
+        unitPrice: b.unitPrice != null ? Number(b.unitPrice) : null,
+        group: "custom",
+      });
+    }
+    return opts;
+  }, [pricedItems, billableItems]);
+
   const caseAttachmentsQuery = useQuery({
     queryKey: ["case-attachments-for-invoice", caseIdForPricing],
     queryFn: () =>
@@ -1305,6 +1339,40 @@ export function InvoiceEditor({
       ...prev,
       { item: "", description: "", quantity: 1, unitPrice: 0 },
     ]);
+  }
+
+  // Persist a brand-new billable item to the lab's Lists → Billable Items
+  // (vendors, vendorType "item") so it shows up there and in future
+  // typeaheads. Returns the created item (to select it) or null on failure.
+  async function createBillableItem(
+    name: string,
+    price: number,
+  ): Promise<{ name: string; unitPrice: number | null } | null> {
+    const trimmed = name.trim();
+    if (!trimmed || !invoice.labOrganizationId) return null;
+    const unitPrice = price > 0 ? price : null;
+    try {
+      await apiFetch(`/finance/vendors`, {
+        method: "POST",
+        body: JSON.stringify({
+          organizationId: invoice.labOrganizationId,
+          name: trimmed,
+          vendorType: "item",
+          unitPrice: unitPrice != null ? unitPrice.toFixed(2) : null,
+        }),
+      });
+      // Prefix-invalidate so both this editor's item list and the Lists page
+      // (["finance","vendors",orgId,"items"|"all"]) refetch.
+      await queryClient.invalidateQueries({
+        queryKey: ["finance", "vendors", invoice.labOrganizationId],
+      });
+      return { name: trimmed, unitPrice };
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Could not add billable item.",
+      );
+      return null;
+    }
   }
 
   function addSubItem(parentIdx: number) {
@@ -2139,230 +2207,31 @@ export function InvoiceEditor({
                     <Fragment key={idx}>
                     <tr className="border-t border-border">
                       <td className="px-3 py-1.5 align-top">
-                        {(() => {
-                          // No priced catalog (case-less invoice or no
-                          // tiers configured). If the lab has billable items
-                          // with stored prices, show those in a dropdown so
-                          // the unit price auto-fills. Otherwise fall back to
-                          // the original free-text input.
-                          if (pricedItems.length === 0) {
-                            if (billableItems.length > 0) {
-                              const isCustomBillable =
-                                !!it.item &&
-                                !billableItems.some(
-                                  (b) => b.name === it.item,
-                                );
-                              if (isCustomBillable) {
-                                return (
-                                  <div className="flex items-start gap-1">
-                                    <input
-                                      type="text"
-                                      value={it.item}
-                                      onChange={(e) =>
-                                        updateItem(idx, { item: e.target.value })
-                                      }
-                                      placeholder="Item"
-                                      className="flex-1 min-w-0 h-8 px-2 rounded bg-background border border-input text-sm"
-                                    />
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        updateItem(idx, {
-                                          item: "",
-                                          description: "",
-                                          unitPrice: 0,
-                                        })
-                                      }
-                                      title="Pick from list"
-                                      className="shrink-0 h-8 px-2 rounded border border-input bg-background text-xs text-muted-foreground hover:text-foreground hover:bg-secondary"
-                                    >
-                                      List
-                                    </button>
-                                  </div>
-                                );
-                              }
-                              return (
-                                <select
-                                  value={it.item}
-                                  onChange={(e) => {
-                                    const v = e.target.value;
-                                    if (v === "") {
-                                      updateItem(idx, {
-                                        item: "",
-                                        description: "",
-                                        unitPrice: 0,
-                                      });
-                                      return;
-                                    }
-                                    if (v === "__custom__") {
-                                      updateItem(idx, {
-                                        item: " ",
-                                        description: "",
-                                        unitPrice: 0,
-                                      });
-                                      return;
-                                    }
-                                    const picked = billableItems.find(
-                                      (b) => b.name === v,
-                                    );
-                                    if (!picked) return;
-                                    updateItem(idx, {
-                                      item: picked.name,
-                                      description: picked.name,
-                                      unitPrice: picked.unitPrice
-                                        ? Number(picked.unitPrice)
-                                        : 0,
-                                    });
-                                  }}
-                                  className="w-full h-8 px-2 rounded bg-background border border-input text-sm"
-                                >
-                                  <option value="">Select item…</option>
-                                  {billableItems.map((b) => (
-                                    <option key={b.id} value={b.name}>
-                                      {b.unitPrice != null
-                                        ? `${b.name} — $${Number(b.unitPrice).toFixed(2)}`
-                                        : b.name}
-                                    </option>
-                                  ))}
-                                  <option value="__custom__">Custom…</option>
-                                </select>
-                              );
-                            }
-                            return (
-                              <input
-                                type="text"
-                                value={it.item}
-                                onChange={(e) =>
-                                  updateItem(idx, { item: e.target.value })
-                                }
-                                placeholder="Item"
-                                className="w-full h-8 px-2 rounded bg-background border border-input text-sm"
-                              />
-                            );
+                        <ItemCombobox
+                          value={it.item}
+                          options={itemOptions}
+                          onPick={(o) =>
+                            updateItem(idx, {
+                              item: o.name,
+                              description: o.name,
+                              ...(o.unitPrice != null
+                                ? { unitPrice: o.unitPrice }
+                                : {}),
+                            })
                           }
-                          // A row is "in custom mode" when its item text
-                          // exists but isn't one of the priced catalog
-                          // labels or a custom billable item name —
-                          // either because the user picked "Custom…" or
-                          // because the item was typed in a prior session
-                          // before the dropdown existed.
-                          const isCustom =
-                            !!it.item &&
-                            !pricedItems.some((p) => p.label === it.item) &&
-                            !billableItems.some((b) => b.name === it.item);
-                          if (isCustom) {
-                            return (
-                              <div className="flex items-start gap-1">
-                                <textarea
-                                  value={it.item}
-                                  onChange={(e) => {
-                                    updateItem(idx, { item: e.target.value });
-                                    const el = e.currentTarget;
-                                    el.style.height = "auto";
-                                    el.style.height = `${el.scrollHeight}px`;
-                                  }}
-                                  ref={(el) => {
-                                    if (el) {
-                                      el.style.height = "auto";
-                                      el.style.height = `${el.scrollHeight}px`;
-                                    }
-                                  }}
-                                  placeholder="Custom item name"
-                                  rows={1}
-                                  className="flex-1 min-w-0 min-h-[2rem] px-2 py-1.5 rounded bg-background border border-input text-sm resize-none overflow-hidden"
-                                />
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    updateItem(idx, {
-                                      item: "",
-                                      description: "",
-                                      unitPrice: 0,
-                                    })
-                                  }
-                                  title="Pick from list"
-                                  className="shrink-0 mt-0.5 h-8 px-2 rounded border border-input bg-background text-xs text-muted-foreground hover:text-foreground hover:bg-secondary"
-                                >
-                                  List
-                                </button>
-                              </div>
-                            );
+                          onText={(t) =>
+                            updateItem(
+                              idx,
+                              t.trim() === ""
+                                ? { item: "", description: "", unitPrice: 0 }
+                                : { item: t },
+                            )
                           }
-                          // Standard catalog dropdown — picking an option
-                          // auto-fills description + unit price from this
-                          // doctor's effective tier / override.
-                          return (
-                            <select
-                              value={it.item}
-                              onChange={(e) => {
-                                const v = e.target.value;
-                                if (v === "") {
-                                  updateItem(idx, {
-                                    item: "",
-                                    description: "",
-                                    unitPrice: 0,
-                                  });
-                                  return;
-                                }
-                                if (v === "__custom__") {
-                                  // Seed with a single space so the row
-                                  // flips into custom mode (non-empty,
-                                  // not a catalog label) and renders the
-                                  // text input on the next paint.
-                                  updateItem(idx, {
-                                    item: " ",
-                                    description: "",
-                                    unitPrice: 0,
-                                  });
-                                  return;
-                                }
-                                const pickedPriced = pricedItems.find(
-                                  (p) => p.label === v,
-                                );
-                                if (pickedPriced) {
-                                  updateItem(idx, {
-                                    item: pickedPriced.label,
-                                    description: pickedPriced.label,
-                                    unitPrice: pickedPriced.unitPrice,
-                                  });
-                                  return;
-                                }
-                                const pickedBillable = billableItems.find(
-                                  (b) => b.name === v,
-                                );
-                                if (pickedBillable) {
-                                  updateItem(idx, {
-                                    item: pickedBillable.name,
-                                    description: pickedBillable.name,
-                                    unitPrice: pickedBillable.unitPrice
-                                      ? Number(pickedBillable.unitPrice)
-                                      : 0,
-                                  });
-                                }
-                              }}
-                              className="w-full h-8 px-2 rounded bg-background border border-input text-sm"
-                            >
-                              <option value="">Select item…</option>
-                              {pricedItems.map((p) => (
-                                <option key={p.key} value={p.label}>
-                                  {p.label}
-                                </option>
-                              ))}
-                              {billableItems.length > 0 && (
-                                <optgroup label="Custom Items">
-                                  {billableItems.map((b) => (
-                                    <option key={b.id} value={b.name}>
-                                      {b.unitPrice != null
-                                        ? `${b.name} — $${Number(b.unitPrice).toFixed(2)}`
-                                        : b.name}
-                                    </option>
-                                  ))}
-                                </optgroup>
-                              )}
-                              <option value="__custom__">Custom…</option>
-                            </select>
-                          );
-                        })()}
+                          onCreate={(name) =>
+                            createBillableItem(name, Number(it.unitPrice) || 0)
+                          }
+                          placeholder="Item"
+                        />
                       </td>
                       <td className="px-3 py-1.5">
                         {it.toothLabel ? (
@@ -2469,12 +2338,32 @@ export function InvoiceEditor({
                     {(it.subItems ?? []).map((sub, sidx) => (
                       <tr key={`sub-${sidx}`} className="border-t border-border/50 bg-muted/20">
                         <td className="py-1.5 pl-8 pr-3 align-top">
-                          <input
-                            type="text"
+                          <ItemCombobox
+                            size="sm"
                             value={sub.item}
-                            onChange={(e) => updateSubItem(idx, sidx, { item: e.target.value })}
+                            options={itemOptions}
+                            onPick={(o) =>
+                              updateSubItem(idx, sidx, {
+                                item: o.name,
+                                description: o.name,
+                                ...(o.unitPrice != null
+                                  ? { unitPrice: o.unitPrice }
+                                  : {}),
+                              })
+                            }
+                            onText={(t) =>
+                              updateSubItem(
+                                idx,
+                                sidx,
+                                t.trim() === ""
+                                  ? { item: "", description: "", unitPrice: 0 }
+                                  : { item: t },
+                              )
+                            }
+                            onCreate={(name) =>
+                              createBillableItem(name, Number(sub.unitPrice) || 0)
+                            }
                             placeholder="Sub-item"
-                            className="w-full h-7 px-2 rounded bg-background border border-input text-xs"
                           />
                         </td>
                         <td className="px-3 py-1.5">
