@@ -176,11 +176,11 @@ function readPropVal(dv,offset,type,le){
     default: return dv.getFloat32(offset,le);
   }
 }
-function readUintBySize(dv,offset,size){
+function readUintBySize(dv,offset,size,le){
   switch(size){
     case 1: return dv.getUint8(offset);
-    case 2: return dv.getUint16(offset,true);
-    case 4: return dv.getUint32(offset,true);
+    case 2: return dv.getUint16(offset,le);
+    case 4: return dv.getUint32(offset,le);
     default: return dv.getUint8(offset);
   }
 }
@@ -221,6 +221,11 @@ function parsePLY(buf){
   var vertexProps=[];
   var faceListCountType='uchar';
   var faceListIndexType='int';
+  // facePropList tracks ALL face element properties in declaration order so the
+  // binary reader can skip extra scalar / list properties correctly. Without
+  // this, per-face attributes (quality, face-color, etc.) shift the byte offset
+  // for every subsequent face, turning tooth geometry into garbage indices.
+  var facePropList=[];
   var inVertex=false,inFace=false;
   for(var i=0;i<headerLines.length;i++){
     var hl=headerLines[i].trim();
@@ -239,6 +244,12 @@ function parsePLY(buf){
       var pp=hl.split(/\\s+/);
       faceListCountType=pp[2]||'uchar';
       faceListIndexType=pp[3]||'int';
+      facePropList.push({k:'list',ct:pp[2]||'uchar',vt:pp[3]||'int',n:pp[4]||'vertex_indices'});
+    } else if(hl.startsWith('property list')&&inVertex){
+      // skip vertex list props (e.g. texture coords)
+    } else if(hl.startsWith('property')&&inFace){
+      var pp=hl.split(/\\s+/);
+      facePropList.push({k:'scalar',t:pp[1]||'uchar',n:pp[2]||''});
     } else if(hl.startsWith('property')&&inVertex){
       var pp=hl.split(/\\s+/);
       vertexProps.push({type:pp[1],name:pp[2]});
@@ -249,6 +260,11 @@ function parsePLY(buf){
   var yIdx=vertexProps.findIndex(function(p){return p.name==='y';});
   var zIdx=vertexProps.findIndex(function(p){return p.name==='z';});
   if(xIdx<0||yIdx<0||zIdx<0) return null;
+  // Pre-computed smooth normals (nx/ny/nz) — present in most iTero color PLY
+  // files. Using them produces accurate lighting on curved tooth surfaces.
+  var nxIdx=vertexProps.findIndex(function(p){return p.name==='nx';});
+  var nyIdx=vertexProps.findIndex(function(p){return p.name==='ny';});
+  var nzIdx=vertexProps.findIndex(function(p){return p.name==='nz';});
   function findColorProp(names){
     for(var n=0;n<names.length;n++){
       for(var p=0;p<vertexProps.length;p++){
@@ -258,22 +274,26 @@ function parsePLY(buf){
     return -1;
   }
   // iTero color scans store per-vertex color as red/green/blue (sometimes with
-  // alpha). Accept the common aliases too. Alpha is detected for completeness
-  // but not used by the renderer (gums/teeth are opaque).
+  // alpha). Accept the common aliases too.
   var color={
     r:findColorProp(['red','r','diffuse_red']),
     g:findColorProp(['green','g','diffuse_green']),
     b:findColorProp(['blue','b','diffuse_blue'])
   };
+  // Ensure at least one entry so the binary reader doesn't skip all faces when
+  // the header declares a face element without an explicit property line.
+  if(facePropList.length===0&&faceCount>0){
+    facePropList.push({k:'list',ct:faceListCountType,vt:faceListIndexType,n:'vertex_indices'});
+  }
   if(format==='ascii'){
     var fullText=new TextDecoder().decode(buf);
-    return parsePLYAscii(fullText,vertexCount,faceCount,xIdx,yIdx,zIdx,vertexProps,color);
+    return parsePLYAscii(fullText,vertexCount,faceCount,xIdx,yIdx,zIdx,vertexProps,color,nxIdx,nyIdx,nzIdx);
   } else {
     var le=format==='binary_le';
-    return parsePLYBinary(buf,headerEnd,vertexCount,faceCount,vertexProps,xIdx,yIdx,zIdx,le,faceListCountType,faceListIndexType,color);
+    return parsePLYBinary(buf,headerEnd,vertexCount,faceCount,vertexProps,xIdx,yIdx,zIdx,le,facePropList,color,nxIdx,nyIdx,nzIdx);
   }
 }
-function parsePLYAscii(fullText,vertexCount,faceCount,xIdx,yIdx,zIdx,vertexProps,color){
+function parsePLYAscii(fullText,vertexCount,faceCount,xIdx,yIdx,zIdx,vertexProps,color,nxIdx,nyIdx,nzIdx){
   var lines=fullText.split(/\\r?\\n/);
   var dataStart=0;
   for(var i=0;i<lines.length;i++){
@@ -283,8 +303,10 @@ function parsePLYAscii(fullText,vertexCount,faceCount,xIdx,yIdx,zIdx,vertexProps
   var rType=hasColor?vertexProps[color.r].type:null;
   var gType=hasColor?vertexProps[color.g].type:null;
   var bType=hasColor?vertexProps[color.b].type:null;
+  var hasVNorm=nxIdx>=0&&nyIdx>=0&&nzIdx>=0;
   var positions=[];
   var colors=hasColor?[]:null;
+  var vnorms=hasVNorm?[]:null;
   for(var i=0;i<vertexCount;i++){
     var lineIdx=dataStart+i;
     if(lineIdx>=lines.length) break;
@@ -297,9 +319,14 @@ function parsePLYAscii(fullText,vertexCount,faceCount,xIdx,yIdx,zIdx,vertexProps
         normColorChannel(parseFloat(parts[color.b]),bType)
       );
     }
+    if(hasVNorm){
+      vnorms.push(parseFloat(parts[nxIdx]),parseFloat(parts[nyIdx]),parseFloat(parts[nzIdx]));
+    }
   }
   var vertArr=[];
   var colArr=hasColor?[]:null;
+  var normArr=hasVNorm?[]:null;
+  var pc=positions.length;
   var faceStart=dataStart+vertexCount;
   for(var i=0;i<faceCount;i++){
     var lineIdx=faceStart+i;
@@ -313,6 +340,7 @@ function parsePLYAscii(fullText,vertexCount,faceCount,xIdx,yIdx,zIdx,vertexProps
     for(var k=1;k<=count&&k<parts.length;k++) idxs.push(parseInt(parts[k],10));
     for(var j=1;j<idxs.length-1;j++){
       var i0=idxs[0],i1=idxs[j],i2=idxs[j+1];
+      if(i0<0||i1<0||i2<0||i0*3+2>=pc||i1*3+2>=pc||i2*3+2>=pc) continue;
       vertArr.push(
         positions[i0*3],positions[i0*3+1],positions[i0*3+2],
         positions[i1*3],positions[i1*3+1],positions[i1*3+2],
@@ -325,20 +353,33 @@ function parsePLYAscii(fullText,vertexCount,faceCount,xIdx,yIdx,zIdx,vertexProps
           colors[i2*3],colors[i2*3+1],colors[i2*3+2]
         );
       }
+      if(hasVNorm){
+        normArr.push(
+          vnorms[i0*3],vnorms[i0*3+1],vnorms[i0*3+2],
+          vnorms[i1*3],vnorms[i1*3+1],vnorms[i1*3+2],
+          vnorms[i2*3],vnorms[i2*3+1],vnorms[i2*3+2]
+        );
+      }
     }
   }
   if(vertArr.length===0){
     var verts=new Float32Array(positions);
-    var res={vertices:verts,normals:computeFlatNormals(verts)};
+    var norms=hasVNorm?new Float32Array(vnorms):computeFlatNormals(verts);
+    var res={vertices:verts,normals:norms};
     if(hasColor) res.colors=new Float32Array(colors);
     return res;
   }
   var verts=new Float32Array(vertArr);
-  var res={vertices:verts,normals:computeFlatNormals(verts)};
+  var norms=hasVNorm?new Float32Array(normArr):computeFlatNormals(verts);
+  var res={vertices:verts,normals:norms};
   if(hasColor) res.colors=new Float32Array(colArr);
   return res;
 }
-function parsePLYBinary(buf,dataOffset,vertexCount,faceCount,vertexProps,xIdx,yIdx,zIdx,le,faceListCountType,faceListIndexType,color){
+// parsePLYBinary: facePropList replaces the old flat faceListCountType/faceListIndexType
+// pair. Every property in the face element is iterated in declaration order so
+// that extra scalar attributes (quality, face-color, etc.) advance the byte
+// offset correctly and don't corrupt subsequent face reads.
+function parsePLYBinary(buf,dataOffset,vertexCount,faceCount,vertexProps,xIdx,yIdx,zIdx,le,facePropList,color,nxIdx,nyIdx,nzIdx){
   var dv=new DataView(buf);
   var vertexStride=0;
   var propOffsets=[];
@@ -347,8 +388,10 @@ function parsePLYBinary(buf,dataOffset,vertexCount,faceCount,vertexProps,xIdx,yI
     vertexStride+=propByteSize(vertexProps[i].type);
   }
   var hasColor=color&&color.r>=0&&color.g>=0&&color.b>=0;
+  var hasVNorm=nxIdx>=0&&nyIdx>=0&&nzIdx>=0;
   var positions=[];
   var colors=hasColor?[]:null;
+  var vnorms=hasVNorm?[]:null;
   var off=dataOffset;
   for(var i=0;i<vertexCount;i++){
     positions.push(
@@ -363,21 +406,44 @@ function parsePLYBinary(buf,dataOffset,vertexCount,faceCount,vertexProps,xIdx,yI
         normColorChannel(readPropVal(dv,off+propOffsets[color.b],vertexProps[color.b].type,le),vertexProps[color.b].type)
       );
     }
+    if(hasVNorm){
+      vnorms.push(
+        readPropVal(dv,off+propOffsets[nxIdx],vertexProps[nxIdx].type,le),
+        readPropVal(dv,off+propOffsets[nyIdx],vertexProps[nyIdx].type,le),
+        readPropVal(dv,off+propOffsets[nzIdx],vertexProps[nzIdx].type,le)
+      );
+    }
     off+=vertexStride;
   }
-  var countSize=propByteSize(faceListCountType);
-  var indexSize=propByteSize(faceListIndexType);
   var vertArr=[];
   var colArr=hasColor?[]:null;
+  var normArr=hasVNorm?[]:null;
+  var pc=positions.length;
   if(faceCount>0){
     for(var i=0;i<faceCount;i++){
-      var count=readUintBySize(dv,off,countSize); off+=countSize;
-      var idxs=[];
-      for(var k=0;k<count;k++){
-        idxs.push(readIntBySize(dv,off,indexSize,le)); off+=indexSize;
+      // Iterate ALL face properties in declaration order to keep the byte
+      // offset correct even when extra attributes follow the index list.
+      var faceidxs=null;
+      for(var fp=0;fp<facePropList.length;fp++){
+        var fpp=facePropList[fp];
+        if(fpp.k==='list'){
+          var cnt=readUintBySize(dv,off,propByteSize(fpp.ct),le); off+=propByteSize(fpp.ct);
+          if(fpp.n==='vertex_indices'||fpp.n==='vertex_index'){
+            faceidxs=[];
+            for(var k=0;k<cnt;k++){
+              faceidxs.push(readIntBySize(dv,off,propByteSize(fpp.vt),le)); off+=propByteSize(fpp.vt);
+            }
+          } else {
+            off+=cnt*propByteSize(fpp.vt);
+          }
+        } else {
+          off+=propByteSize(fpp.t);
+        }
       }
-      for(var j=1;j<idxs.length-1;j++){
-        var i0=idxs[0],i1=idxs[j],i2=idxs[j+1];
+      if(!faceidxs||faceidxs.length<3) continue;
+      for(var j=1;j<faceidxs.length-1;j++){
+        var i0=faceidxs[0],i1=faceidxs[j],i2=faceidxs[j+1];
+        if(i0<0||i1<0||i2<0||i0*3+2>=pc||i1*3+2>=pc||i2*3+2>=pc) continue;
         vertArr.push(
           positions[i0*3],positions[i0*3+1],positions[i0*3+2],
           positions[i1*3],positions[i1*3+1],positions[i1*3+2],
@@ -390,17 +456,26 @@ function parsePLYBinary(buf,dataOffset,vertexCount,faceCount,vertexProps,xIdx,yI
             colors[i2*3],colors[i2*3+1],colors[i2*3+2]
           );
         }
+        if(hasVNorm){
+          normArr.push(
+            vnorms[i0*3],vnorms[i0*3+1],vnorms[i0*3+2],
+            vnorms[i1*3],vnorms[i1*3+1],vnorms[i1*3+2],
+            vnorms[i2*3],vnorms[i2*3+1],vnorms[i2*3+2]
+          );
+        }
       }
     }
   }
   if(vertArr.length===0){
     var verts=new Float32Array(positions);
-    var res={vertices:verts,normals:computeFlatNormals(verts)};
+    var norms=hasVNorm?new Float32Array(vnorms):computeFlatNormals(verts);
+    var res={vertices:verts,normals:norms};
     if(hasColor) res.colors=new Float32Array(colors);
     return res;
   }
   var verts=new Float32Array(vertArr);
-  var res={vertices:verts,normals:computeFlatNormals(verts)};
+  var norms=hasVNorm?new Float32Array(normArr):computeFlatNormals(verts);
+  var res={vertices:verts,normals:norms};
   if(hasColor) res.colors=new Float32Array(colArr);
   return res;
 }
