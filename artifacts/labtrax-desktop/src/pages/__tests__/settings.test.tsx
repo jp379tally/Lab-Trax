@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import SettingsPage from "@/pages/settings";
 import { makeAuthWrapper } from "../../__tests__/test-utils";
@@ -11,18 +11,6 @@ const ADMIN_USER = {
   lastName: "Lovelace",
   role: "admin",
 };
-
-beforeEach(() => {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async () => {
-      return new Response("{}", {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    }),
-  );
-});
 
 describe("SettingsPage smoke render", () => {
   it("renders the settings shell for an admin without throwing", () => {

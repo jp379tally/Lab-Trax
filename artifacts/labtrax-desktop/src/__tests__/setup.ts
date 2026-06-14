@@ -1,9 +1,26 @@
 import "@testing-library/jest-dom/vitest";
-import { afterEach } from "vitest";
+import { afterEach, beforeEach, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
 
 afterEach(() => {
   cleanup();
+});
+
+// Block all real network calls by default. Every test that exercises the
+// network layer must either rely on this safe response or override fetch in
+// its own beforeEach. This beforeEach runs before each test in every file
+// (setupFiles hooks fire first), so per-file beforeEach overrides take
+// precedence and can return whatever shape their test requires.
+beforeEach(() => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () =>
+      new Response("{}", {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    ),
+  );
 });
 
 // jsdom doesn't implement matchMedia, ResizeObserver, or IntersectionObserver
@@ -64,6 +81,3 @@ if (typeof window !== "undefined") {
   }
 }
 
-// Intentionally no global fetch stub here — that would mask real regressions
-// in tests that exercise the network layer. Renderer smoke tests stub fetch
-// per-suite via vi.stubGlobal("fetch", ...) in a beforeEach.
