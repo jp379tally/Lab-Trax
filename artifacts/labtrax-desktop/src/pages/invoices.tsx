@@ -1086,7 +1086,6 @@ export function InvoiceEditor({
     enabled: !!caseIdForPricing,
   });
   const rxAttachments = caseAttachmentsQuery.data ?? [];
-  const [rxDropdownOpen, setRxDropdownOpen] = useState(false);
   const [prescriptionPreviewOpen, setPrescriptionPreviewOpen] = useState(false);
 
   async function openAttachmentFile(att: CaseAttachment) {
@@ -1547,37 +1546,14 @@ export function InvoiceEditor({
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={handlePreviewPdf}
-              disabled={detailQuery.isLoading}
-              title="Preview the invoice without saving"
-              className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary disabled:opacity-50"
+              onClick={() => {
+                setError(null);
+                saveMutation.mutate();
+              }}
+              disabled={saveMutation.isPending || detailQuery.isLoading}
+              className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
             >
-              <Eye size={14} /> Preview
-            </button>
-            <button
-              type="button"
-              onClick={handlePrintPdf}
-              disabled={detailQuery.isLoading}
-              title="Print the invoice"
-              className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary disabled:opacity-50"
-            >
-              <Printer size={14} /> Print
-            </button>
-            <button
-              type="button"
-              onClick={handleDownloadPdf}
-              disabled={detailQuery.isLoading}
-              className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary disabled:opacity-50"
-            >
-              <Download size={14} /> PDF
-            </button>
-            <button
-              type="button"
-              onClick={() => setEmailOpen(true)}
-              disabled={detailQuery.isLoading}
-              className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary disabled:opacity-50"
-            >
-              <Mail size={14} /> Email
+              {saveMutation.isPending ? "Saving…" : "Save changes"}
             </button>
             <button
               type="button"
@@ -1587,57 +1563,14 @@ export function InvoiceEditor({
             >
               <CreditCard size={14} /> Record Payment
             </button>
-            {caseIdForPricing && (
-              <button
-                type="button"
-                onClick={() => setPrescriptionPreviewOpen(true)}
-                title="Preview the linked case's prescriptions, files & history"
-                className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary"
-              >
-                <Stethoscope size={14} /> Preview prescription
-              </button>
-            )}
-            {rxAttachments.length === 1 && (
-              <button
-                type="button"
-                onClick={() => void openAttachmentFile(rxAttachments[0]!)}
-                title={`Preview Rx: ${rxAttachments[0]!.fileName}`}
-                className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary"
-              >
-                <ScrollText size={14} /> Rx
-              </button>
-            )}
-            {rxAttachments.length > 1 && (
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setRxDropdownOpen((v) => !v)}
-                  title="Preview a case Rx file"
-                  className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary"
-                >
-                  <ScrollText size={14} /> Rx ({rxAttachments.length})
-                </button>
-                {rxDropdownOpen && (
-                  <div
-                    className="absolute right-0 mt-1 z-50 w-64 bg-card border border-border rounded-md shadow-lg py-1 text-sm"
-                    onMouseLeave={() => setRxDropdownOpen(false)}
-                  >
-                    {rxAttachments.map((att) => (
-                      <button
-                        key={att.id}
-                        type="button"
-                        onClick={() => { setRxDropdownOpen(false); void openAttachmentFile(att); }}
-                        className="w-full text-left px-3 py-1.5 hover:bg-secondary truncate flex items-center gap-2"
-                        title={att.fileName}
-                      >
-                        <ScrollText size={13} className="shrink-0 text-muted-foreground" />
-                        <span className="truncate">{att.fileName}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
+            <button
+              type="button"
+              onClick={() => setEmailOpen(true)}
+              disabled={detailQuery.isLoading}
+              className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary disabled:opacity-50"
+            >
+              <Mail size={14} /> Email
+            </button>
             <button
               type="button"
               onClick={() => {
@@ -1666,9 +1599,84 @@ export function InvoiceEditor({
               </button>
               {moreOpen && (
                 <div
-                  className="absolute right-0 mt-1 z-50 w-56 bg-card border border-border rounded-md shadow-lg py-1 text-sm"
+                  className="absolute right-0 mt-1 z-50 w-64 bg-card border border-border rounded-md shadow-lg py-1 text-sm"
                   onMouseLeave={() => setMoreOpen(false)}
                 >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMoreOpen(false);
+                      handlePreviewPdf();
+                    }}
+                    disabled={detailQuery.isLoading}
+                    className="w-full text-left px-3 py-1.5 hover:bg-secondary inline-flex items-center gap-2 disabled:opacity-50"
+                  >
+                    <Eye size={14} /> Preview PDF
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMoreOpen(false);
+                      handlePrintPdf();
+                    }}
+                    disabled={detailQuery.isLoading}
+                    className="w-full text-left px-3 py-1.5 hover:bg-secondary inline-flex items-center gap-2 disabled:opacity-50"
+                  >
+                    <Printer size={14} /> Print
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMoreOpen(false);
+                      handleDownloadPdf();
+                    }}
+                    disabled={detailQuery.isLoading}
+                    className="w-full text-left px-3 py-1.5 hover:bg-secondary inline-flex items-center gap-2 disabled:opacity-50"
+                  >
+                    <Download size={14} /> Download PDF
+                  </button>
+                  {caseIdForPricing && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMoreOpen(false);
+                        setPrescriptionPreviewOpen(true);
+                      }}
+                      title="Preview the linked case's prescriptions, files & history"
+                      className="w-full text-left px-3 py-1.5 hover:bg-secondary inline-flex items-center gap-2"
+                    >
+                      <Stethoscope size={14} /> Preview prescription
+                    </button>
+                  )}
+                  {rxAttachments.length === 1 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMoreOpen(false);
+                        void openAttachmentFile(rxAttachments[0]!);
+                      }}
+                      title={`Preview Rx: ${rxAttachments[0]!.fileName}`}
+                      className="w-full text-left px-3 py-1.5 hover:bg-secondary inline-flex items-center gap-2"
+                    >
+                      <ScrollText size={14} /> Rx
+                    </button>
+                  )}
+                  {rxAttachments.length > 1 && rxAttachments.map((att) => (
+                    <button
+                      key={att.id}
+                      type="button"
+                      onClick={() => {
+                        setMoreOpen(false);
+                        void openAttachmentFile(att);
+                      }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-secondary inline-flex items-center gap-2"
+                      title={att.fileName}
+                    >
+                      <ScrollText size={14} className="shrink-0 text-muted-foreground" />
+                      <span className="truncate">{att.fileName}</span>
+                    </button>
+                  ))}
+                  <div className="my-1 border-t border-border" />
                   <button
                     type="button"
                     onClick={() => {
@@ -1707,17 +1715,6 @@ export function InvoiceEditor({
                 </div>
               )}
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                setError(null);
-                saveMutation.mutate();
-              }}
-              disabled={saveMutation.isPending || detailQuery.isLoading}
-              className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
-            >
-              {saveMutation.isPending ? "Saving…" : "Save changes"}
-            </button>
             <button
               type="button"
               onClick={onClose}
