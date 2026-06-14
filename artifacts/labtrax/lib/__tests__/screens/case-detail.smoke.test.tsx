@@ -14,6 +14,7 @@ import {
 import { Alert } from "react-native";
 import * as Sharing from "expo-sharing";
 import { router } from "expo-router";
+import { getAuthedMediaUri } from "@/lib/authed-media-cache";
 
 import CaseDetailScreen from "@/app/case/[id]";
 import {
@@ -504,6 +505,102 @@ describe("CaseDetailScreen (read-only viewer)", () => {
       const { getByTestId } = render(<CaseDetailScreen />);
       fireEvent.press(getByTestId("section-tab-history"));
       expect(getByTestId(`history-attachment-${legacyEvent.id}`)).toBeTruthy();
+    });
+  });
+
+  // ─── Generic (non-PDF, non-scan) document attachments ────────────────────────
+  // These go through `openAttachment` → `getAuthedMediaUri` → local file:// URI
+  // before the OS share sheet sees them. The contract: the raw API URL must
+  // NEVER be passed directly to a browser tab or Linking.openURL — doing so
+  // would produce a "401 Authentication Required" page for the user.
+  describe("generic document attachments — auth-download path", () => {
+    // A file that is neither an image, PDF, nor 3-D scan — goes through the
+    // `openAttachment` / `getAuthedMediaUri` path regardless of platform.
+    const docAttachment = {
+      id: "att-docx-1",
+      fileName: "treatment_plan.docx",
+      fileType:
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      uploaderName: "Lab Tech",
+      createdAt: "2026-06-10T12:00:00.000Z",
+    };
+
+    beforeEach(() => {
+      setMockSearchParams({ id: inProgressCase.id });
+      setMockAppState({
+        cases: [inProgressCase],
+        invoices: [],
+        attachments: [docAttachment],
+      });
+    });
+
+    it("renders a tappable card for the generic document attachment", () => {
+      const { getByTestId } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-files"));
+      expect(getByTestId(`doc-open-${docAttachment.id}`)).toBeTruthy();
+    });
+
+    it("calls getAuthedMediaUri (auth-download) and shares via a local file URI — never opens a raw API URL in a browser", async () => {
+      const { getByTestId } = render(<CaseDetailScreen />);
+      fireEvent.press(getByTestId("section-tab-files"));
+      fireEvent.press(getByTestId(`doc-open-${docAttachment.id}`));
+
+      await waitFor(() => {
+        // The auth-aware cache layer must be entered: verifies the code does
+        // NOT skip straight to Linking.openURL / WebBrowser with the raw URL.
+        expect(vi.mocked(getAuthedMediaUri)).toHaveBeenCalledWith(
+          `/api/cases/${inProgressCase.id}/attachments/${docAttachment.id}/file`,
+        );
+        // The OS share sheet is reached only with a local file:// URI that was
+        // produced by downloading (with auth) and then copying to a named path.
+        expect(vi.mocked(Sharing.shareAsync)).toHaveBeenCalledWith(
+          expect.stringMatching(/^file:\/\//),
+          expect.any(Object),
+        );
+      });
+    });
+
+    it("shows a user-friendly error alert when the authenticated download fails (not a silent auth-error page)", async () => {
+      // Simulate a failed download (e.g., network error or 401 after token expiry).
+      vi.mocked(getAuthedMediaUri).mockResolvedValueOnce(null);
+
+      const alertSpy = vi.spyOn(Alert, "alert").mockImplementation(() => {});
+      try {
+        const { getByTestId } = render(<CaseDetailScreen />);
+        fireEvent.press(getByTestId("section-tab-files"));
+        fireEvent.press(getByTestId(`doc-open-${docAttachment.id}`));
+
+        await waitFor(() => {
+          expect(alertSpy).toHaveBeenCalledWith(
+            "Couldn't open file",
+            expect.stringContaining("could not be downloaded"),
+          );
+        });
+        // The OS share sheet must not be invoked when the download fails.
+        expect(vi.mocked(Sharing.shareAsync)).not.toHaveBeenCalled();
+      } finally {
+        alertSpy.mockRestore();
+      }
+    });
+
+    it("shows a user-friendly alert when the OS share sheet is not available on the device", async () => {
+      vi.mocked(Sharing.isAvailableAsync).mockResolvedValueOnce(false);
+
+      const alertSpy = vi.spyOn(Alert, "alert").mockImplementation(() => {});
+      try {
+        const { getByTestId } = render(<CaseDetailScreen />);
+        fireEvent.press(getByTestId("section-tab-files"));
+        fireEvent.press(getByTestId(`doc-open-${docAttachment.id}`));
+
+        await waitFor(() => {
+          expect(alertSpy).toHaveBeenCalledWith(
+            "Can't open file",
+            expect.stringContaining("supported"),
+          );
+        });
+      } finally {
+        alertSpy.mockRestore();
+      }
     });
   });
 });
