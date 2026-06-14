@@ -2138,6 +2138,79 @@ router.post(
   })
 );
 
+// ─── Bulk delete (admin only, soft-delete) ────────────────────────────────────
+
+const bulkDeleteSchema = z.object({
+  caseIds: z.array(z.string().min(1)).min(1).max(200),
+});
+
+router.post(
+  "/bulk-delete",
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId as string;
+    const input = bulkDeleteSchema.parse(req.body);
+
+    const uniqueCaseIds = Array.from(new Set(input.caseIds));
+
+    // Resolve the lab org from the first case.
+    const firstCase = await db.query.cases.findFirst({
+      where: and(eq(cases.id, uniqueCaseIds[0]!), notDeleted(cases)),
+    });
+    if (!firstCase) {
+      throw new HttpError(404, "No matching cases found.");
+    }
+    const labOrganizationId = firstCase.labOrganizationId;
+
+    // Admin-only — owners and admins may bulk-delete cases.
+    await requireAnyRole(userId, labOrganizationId, ADMIN_ROLES);
+
+    // Load all requested cases and verify they all belong to the same lab.
+    const casesToDelete = await db
+      .select({ id: cases.id, labOrganizationId: cases.labOrganizationId, caseNumber: cases.caseNumber })
+      .from(cases)
+      .where(and(inArray(cases.id, uniqueCaseIds), notDeleted(cases)));
+
+    const unauthorizedIds = casesToDelete
+      .filter((c) => c.labOrganizationId !== labOrganizationId)
+      .map((c) => c.id);
+    if (unauthorizedIds.length > 0) {
+      throw new HttpError(403, "Some cases do not belong to your lab.");
+    }
+
+    if (casesToDelete.length === 0) {
+      return ok(res, { deletedCount: 0 });
+    }
+
+    // Soft-delete each case and write individual audit entries.
+    for (const c of casesToDelete) {
+      await softDeleteById({
+        table: cases,
+        id: c.id,
+        actorUserId: userId,
+        req,
+        organizationId: labOrganizationId,
+        entityType: "case",
+        beforeJson: c,
+      });
+    }
+
+    await writeAuditLog({
+      userId,
+      organizationId: labOrganizationId,
+      action: "cases_bulk_deleted",
+      entityType: "case",
+      entityId: labOrganizationId,
+      metadataJson: {
+        caseIds: casesToDelete.map((c) => c.id),
+        caseNumbers: casesToDelete.map((c) => c.caseNumber),
+        count: casesToDelete.length,
+      },
+    });
+
+    return ok(res, { deletedCount: casesToDelete.length });
+  })
+);
+
 router.post(
   "/",
   asyncHandler(async (req, res) => {

@@ -340,7 +340,7 @@ describe("get_cases_due_soon", () => {
     const result = await tool.execute({}, makeCtx()) as Record<string, unknown>;
     expect(result["count"]).toBe(2);
     expect(result["todayCount"]).toBe(1);
-    expect(result["tomorrowCount"]).toBe(1);
+    expect(result["laterCount"]).toBe(1);
   });
 
   it("throws when role check fails", async () => {

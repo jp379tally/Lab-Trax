@@ -1076,6 +1076,8 @@ function readIteroActiveBatch(): { batchId: string; caseIds: string[]; importedA
 
 export default function CasesPage() {
   const [, setLocation] = useLocation();
+  const { user } = useAuth();
+  const isPageAdmin = user?.role === "admin" || user?.role === "owner";
 
   const { data, isLoading, error, isFetching, refetch } = useQuery({
     queryKey: ["cases"],
@@ -1101,6 +1103,7 @@ export default function CasesPage() {
   const [reassignTargetId, setReassignTargetId] = useState<string>("");
   const [showBulkStatusModal, setShowBulkStatusModal] = useState(false);
   const [bulkStatusValue, setBulkStatusValue] = useState<string>("");
+  const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
 
   const CASES_COL_DEFAULTS = [120, 100, 160, 140, 140, 120, 100, 90, 130, 100, 90, 200] as const;
   const { widths: caseColWidths, resizingCol: resizingCaseCol, startResize: startCaseResize, resetColumn: resetCaseColumn } =
@@ -1162,6 +1165,23 @@ export default function CasesPage() {
       setBulkStatusValue("");
       const label = STATUS_FILTERS.find((s) => s.value === bulkStatusValue)?.label ?? bulkStatusValue;
       setBulkToast(`${result.updatedCount} case${result.updatedCount !== 1 ? "s" : ""} marked as ${label}.`);
+    },
+    onError: (e: Error) => {
+      setBulkToastError(e.message);
+    },
+  });
+
+  const bulkDeleteMutation = useMutation({
+    mutationFn: (body: { caseIds: string[] }) =>
+      apiFetch<{ deletedCount: number }>("/cases/bulk-delete", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: ["cases"] });
+      setSelectedIds(new Set());
+      setShowBulkDeleteModal(false);
+      setBulkToast(`${result.deletedCount} case${result.deletedCount !== 1 ? "s" : ""} deleted.`);
     },
     onError: (e: Error) => {
       setBulkToastError(e.message);
@@ -1682,6 +1702,16 @@ export default function CasesPage() {
             >
               Change Location
             </button>
+            {isPageAdmin && (
+              <button
+                type="button"
+                onClick={() => setShowBulkDeleteModal(true)}
+                className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-destructive text-destructive-foreground text-xs font-medium hover:bg-destructive/90 transition-colors"
+              >
+                <Trash2 size={13} />
+                Delete
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setSelectedIds(new Set())}
@@ -2062,6 +2092,65 @@ export default function CasesPage() {
               >
                 {bulkStatusMutation.isPending && <Loader2 size={13} className="animate-spin" />}
                 Apply
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showBulkDeleteModal && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div
+            className="bg-card border border-border rounded-2xl shadow-2xl w-full max-w-sm mx-4"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Delete cases"
+          >
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+              <h2 className="text-base font-semibold text-destructive">Delete {selectedIds.size} case{selectedIds.size !== 1 ? "s" : ""}?</h2>
+              <button
+                type="button"
+                onClick={() => setShowBulkDeleteModal(false)}
+                disabled={bulkDeleteMutation.isPending}
+                className="text-muted-foreground hover:text-foreground transition-colors"
+                aria-label="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="px-6 py-5 space-y-3">
+              <p className="text-sm text-muted-foreground">
+                This will permanently remove{" "}
+                <span className="font-medium text-foreground">{selectedIds.size} case{selectedIds.size !== 1 ? "s" : ""}</span>{" "}
+                from the lab. This action cannot be undone.
+              </p>
+              {bulkDeleteMutation.isError && (
+                <p className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md">
+                  {bulkDeleteMutation.error instanceof Error
+                    ? bulkDeleteMutation.error.message
+                    : "An error occurred."}
+                </p>
+              )}
+            </div>
+            <div className="flex gap-3 px-6 pb-5">
+              <button
+                type="button"
+                onClick={() => setShowBulkDeleteModal(false)}
+                disabled={bulkDeleteMutation.isPending}
+                className="flex-1 h-9 rounded-lg bg-secondary text-sm font-medium text-muted-foreground hover:text-foreground"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={bulkDeleteMutation.isPending}
+                onClick={() => {
+                  bulkDeleteMutation.mutate({ caseIds: Array.from(selectedIds) });
+                }}
+                className="flex-1 h-9 rounded-lg bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 disabled:opacity-60 inline-flex items-center justify-center gap-1.5"
+              >
+                {bulkDeleteMutation.isPending && <Loader2 size={13} className="animate-spin" />}
+                Delete
               </button>
             </div>
           </div>
