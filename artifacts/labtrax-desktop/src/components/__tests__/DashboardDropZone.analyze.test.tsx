@@ -18,18 +18,12 @@
  */
 
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { vi, describe, it, expect, beforeEach, beforeAll, afterAll, afterEach } from "vitest";
 import { DashboardDropZone } from "../DashboardDropZone";
+import { makeAuthWrapper } from "../../__tests__/test-utils";
+import type { SessionUser } from "@/lib/api";
 
 // ─── Module mocks ─────────────────────────────────────────────────────────────
-
-vi.mock("@/lib/auth-context", () => ({
-  useAuth: () => ({
-    user: { id: "u1", username: "lab_staff", role: "admin" },
-    isLoading: false,
-  }),
-}));
 
 const mockApiFetch = vi.fn();
 vi.mock("@/lib/api", () => ({
@@ -143,6 +137,12 @@ const VALID_RX_RESPONSE = {
   practicePhone: "",
 };
 
+const DROP_ZONE_USER = {
+  id: "u1",
+  username: "lab_staff",
+  role: "admin",
+} as unknown as SessionUser;
+
 function makeJpegFile(name = "rx.jpg"): File {
   return new File(["fake-jpeg-bytes"], name, { type: "image/jpeg" });
 }
@@ -154,13 +154,11 @@ function makePdfFile(name = "rx.pdf"): File {
 // ─── Provider wrapper ─────────────────────────────────────────────────────────
 
 function renderDropZone() {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
+  const Wrapper = makeAuthWrapper("/", { user: DROP_ZONE_USER, status: "authed" });
   return render(
-    <QueryClientProvider client={qc}>
+    <Wrapper>
       <DashboardDropZone />
-    </QueryClientProvider>,
+    </Wrapper>,
   );
 }
 

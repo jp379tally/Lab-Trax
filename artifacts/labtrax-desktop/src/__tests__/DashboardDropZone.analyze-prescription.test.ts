@@ -20,8 +20,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { render, fireEvent, waitFor, act } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import React from "react";
+import { makeAuthWrapper } from "./test-utils";
+import type { SessionUser } from "@/lib/api";
 
 // ── Module-level mocks (vi.mock is hoisted before imports) ────────────────────
 
@@ -32,12 +33,6 @@ vi.mock("@/lib/api", () => ({
   createUploadSession: vi.fn().mockResolvedValue({ sessionId: "s1", uploadUrl: "http://x" }),
   sendUploadChunk: vi.fn().mockResolvedValue({ finished: true }),
   ApiError: class extends Error {},
-}));
-
-vi.mock("@/lib/auth-context", () => ({
-  useAuth: () => ({
-    user: { id: "u1", username: "testuser", labOrganizationId: null },
-  }),
 }));
 
 vi.mock("@/lib/format", () => ({
@@ -66,6 +61,12 @@ vi.mock("jszip", () => ({
 }));
 
 import { DashboardDropZone } from "@/components/DashboardDropZone";
+
+const PRESCRIPTION_TEST_USER = {
+  id: "u1",
+  username: "testuser",
+  labOrganizationId: null,
+} as unknown as SessionUser;
 
 // ── Static regression guards ──────────────────────────────────────────────────
 
@@ -111,8 +112,6 @@ describe("DashboardDropZone — /analyze-prescription endpoint wiring (static)",
 // ── Runtime behavioral test ───────────────────────────────────────────────────
 
 describe("DashboardDropZone — /analyze-prescription call behavior (runtime)", () => {
-  let qc: QueryClient;
-
   beforeEach(() => {
     mockApiFetch.mockReset();
     // Default: return empty lists for startup queries (/legacy/cases, /organizations)
@@ -129,18 +128,15 @@ describe("DashboardDropZone — /analyze-prescription call behavior (runtime)", 
       }
       return {};
     });
-    qc = new QueryClient({
-      defaultOptions: {
-        queries: { retry: false, gcTime: 0, staleTime: Infinity },
-      },
-    });
   });
 
   it("calls /analyze-prescription with imageBase64 when a JPEG file is submitted via the file input", async () => {
+    const Wrapper = makeAuthWrapper("/", {
+      user: PRESCRIPTION_TEST_USER,
+      status: "authed",
+    });
     const { container } = render(
-      React.createElement(
-        QueryClientProvider,
-        { client: qc },
+      React.createElement(Wrapper, null,
         React.createElement(DashboardDropZone, null)
       )
     );

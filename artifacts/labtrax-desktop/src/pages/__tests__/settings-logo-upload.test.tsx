@@ -11,8 +11,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
-import { makeWrapper } from "../../__tests__/test-utils";
+import { makeAuthWrapper } from "../../__tests__/test-utils";
 
 const uploadMock = vi.fn();
 
@@ -26,30 +25,16 @@ vi.mock("@/lib/api", async (importOriginal) => {
 
 const refreshMock = vi.fn(async () => {});
 
-vi.mock("@/lib/auth-context", async () => {
-  return {
-    AuthProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
-    useAuth: () => ({
-      user: {
-        id: "user-1",
-        username: "admin",
-        firstName: "Ada",
-        lastName: "Lovelace",
-        role: "admin",
-        practiceOrganizationId: "org-1",
-        // No practiceLogoUrl so the preview shows "No logo" (no AuthedImage
-        // blob fetch) and the button reads "Add a logo".
-      },
-      status: "authed" as const,
-      restoreStatus: "ok" as const,
-      restoreNoticeDismissed: true,
-      acknowledgeRestoreNotice: () => {},
-      login: async () => {},
-      logout: async () => {},
-      refresh: refreshMock,
-    }),
-  };
-});
+const LOGO_UPLOAD_USER = {
+  id: "user-1",
+  username: "admin",
+  firstName: "Ada",
+  lastName: "Lovelace",
+  role: "admin",
+  practiceOrganizationId: "org-1",
+  // No practiceLogoUrl so the preview shows "No logo" (no AuthedImage
+  // blob fetch) and the button reads "Add a logo".
+};
 
 import SettingsPage from "@/pages/settings";
 
@@ -71,7 +56,14 @@ beforeEach(() => {
 });
 
 function renderSettings() {
-  const Wrapper = makeWrapper("/settings");
+  const Wrapper = makeAuthWrapper("/settings", {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    user: LOGO_UPLOAD_USER as any,
+    status: "authed",
+    restoreStatus: "ok",
+    restoreNoticeDismissed: true,
+    refresh: refreshMock,
+  });
   const { container } = render(
     <Wrapper>
       <SettingsPage />

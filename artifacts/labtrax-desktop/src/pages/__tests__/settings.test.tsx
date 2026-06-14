@@ -2,30 +2,15 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import SettingsPage from "@/pages/settings";
-import type { ReactNode } from "react";
-import { makeWrapper } from "../../__tests__/test-utils";
+import { makeAuthWrapper } from "../../__tests__/test-utils";
 
-vi.mock("@/lib/auth-context", async () => {
-  return {
-    AuthProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
-    useAuth: () => ({
-      user: {
-        id: "user-1",
-        username: "admin",
-        firstName: "Ada",
-        lastName: "Lovelace",
-        role: "admin",
-      },
-      status: "authed" as const,
-      restoreStatus: "ok" as const,
-      restoreNoticeDismissed: true,
-      acknowledgeRestoreNotice: () => {},
-      login: async () => {},
-      logout: async () => {},
-      refresh: async () => {},
-    }),
-  };
-});
+const ADMIN_USER = {
+  id: "user-1",
+  username: "admin",
+  firstName: "Ada",
+  lastName: "Lovelace",
+  role: "admin",
+};
 
 beforeEach(() => {
   vi.stubGlobal(
@@ -41,7 +26,13 @@ beforeEach(() => {
 
 describe("SettingsPage smoke render", () => {
   it("renders the settings shell for an admin without throwing", () => {
-    const Wrapper = makeWrapper("/settings");
+    const Wrapper = makeAuthWrapper("/settings", {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      user: ADMIN_USER as any,
+      status: "authed",
+      restoreStatus: "ok",
+      restoreNoticeDismissed: true,
+    });
     render(
       <Wrapper>
         <SettingsPage />

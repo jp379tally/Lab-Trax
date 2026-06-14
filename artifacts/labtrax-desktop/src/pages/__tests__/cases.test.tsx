@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import CasesPage, { CaseDrawer } from "@/pages/cases";
 import type { LabCase } from "@/lib/types";
-import { makeWrapper } from "../../__tests__/test-utils";
+import { makeAuthWrapper } from "../../__tests__/test-utils";
 import { AiPanelContext } from "@/lib/ai-panel-context";
 
 function withAiPanel(children: React.ReactNode) {
@@ -13,25 +13,6 @@ function withAiPanel(children: React.ReactNode) {
     </AiPanelContext.Provider>
   );
 }
-
-// CaseDrawer calls useAuth() to read the current user. Provide a minimal
-// stub so the test doesn't have to mount the real AuthProvider (which makes
-// network calls on mount).
-vi.mock("@/lib/auth-context", () => ({
-  useAuth: () => ({
-    user: null,
-    status: "anonymous" as const,
-    restoreStatus: "empty" as const,
-    restoreNoticeDismissed: false,
-    acknowledgeRestoreNotice: () => {},
-    login: async () => {},
-    completeTwoFactor: async () => {},
-    register: async () => ({ user: null, token: "" }),
-    logout: async () => {},
-    refresh: async () => {},
-  }),
-  AuthProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
 
 // jspdf and react-pdf pull in heavy/non-jsdom-friendly modules at import
 // time. The smoke render doesn't exercise PDF code paths, so stub them.
@@ -67,7 +48,7 @@ beforeEach(() => {
 
 describe("CasesPage smoke render", () => {
   it("renders the case list shell without throwing", () => {
-    const Wrapper = makeWrapper("/cases");
+    const Wrapper = makeAuthWrapper("/cases");
     render(
       <Wrapper>{withAiPanel(<CasesPage />)}</Wrapper>,
     );
@@ -94,7 +75,7 @@ describe("CaseDrawer smoke render", () => {
       totalPrice: "0",
     } as unknown as LabCase;
 
-    const Wrapper = makeWrapper("/cases");
+    const Wrapper = makeAuthWrapper("/cases");
     render(
       <Wrapper>
         {withAiPanel(<CaseDrawer labCase={fakeCase} onClose={() => {}} />)}
