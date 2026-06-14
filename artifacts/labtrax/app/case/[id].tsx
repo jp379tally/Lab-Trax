@@ -1139,27 +1139,22 @@ function OverviewSection({
   const [locating, setLocating] = useState(false);
   const [locateMsg, setLocateMsg] = useState<string | null>(null);
 
-  // ── Related cases (same patient or same doctor) with long-press locate ──────
+  // ── Related cases (same patient only) with long-press locate ─────────────
   const relatedCasesQuery = useCases();
   const allCases = relatedCasesQuery.data ?? [];
 
   const relatedCases = useMemo(() => {
     const pFirst = (c.patientFirstName ?? "").trim().toLowerCase();
     const pLast = (c.patientLastName ?? "").trim().toLowerCase();
-    const doc = (c.doctorName ?? "").trim().toLowerCase();
     const hasPatient = !!(pFirst || pLast);
-    const hasDoctor = !!doc;
-    if (!hasPatient && !hasDoctor) return [];
+    if (!hasPatient) return [];
     return allCases.filter((other) => {
       if (other.id === caseId) return false;
       const oFirst = (other.patientFirstName ?? "").trim().toLowerCase();
       const oLast = (other.patientLastName ?? "").trim().toLowerCase();
-      const oDoc = (other.doctorName ?? "").trim().toLowerCase();
-      const samePatient = hasPatient && oFirst === pFirst && oLast === pLast;
-      const sameDoctor = hasDoctor && !!oDoc && oDoc === doc;
-      return samePatient || sameDoctor;
+      return oFirst === pFirst && oLast === pLast;
     });
-  }, [allCases, caseId, c.patientFirstName, c.patientLastName, c.doctorName]);
+  }, [allCases, caseId, c.patientFirstName, c.patientLastName]);
 
   const relatedLongPressRef = useRef(false);
   const [relatedLocatingCase, setRelatedLocatingCase] = useState<CanonicalCase | null>(null);

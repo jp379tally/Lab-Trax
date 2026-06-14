@@ -1183,27 +1183,39 @@ const getCasesDueSoonTool: AgentTool = {
   name: "get_cases_due_soon",
   kind: "readonly",
   description:
-    "Get cases whose due date falls today or tomorrow (relative to server time). Returns the count and a summary list with patient name, doctor, case type, and status. No role restriction.",
+    "Get cases whose due date falls within a specified number of days from today (relative to server time). " +
+    "Use daysAhead=0 for today only, daysAhead=1 for today and tomorrow, daysAhead=7 for the next week, daysAhead=14 for two weeks, etc. " +
+    "Returns the count and a summary list with patient name, doctor, case number, and status.",
   parameters: {
     type: "object",
     properties: {
-      includeTomorrow: {
-        type: "boolean",
-        description: "Include tomorrow's cases (default: true). Set false for today-only.",
+      daysAhead: {
+        type: "number",
+        description:
+          "How many calendar days ahead to include (0 = today only, 1 = today + tomorrow, 7 = next 7 days, etc.). Default: 1.",
       },
     },
     required: [],
   },
-  summarize: async () => "Get cases due today and tomorrow",
+  summarize: async (args) => {
+    const days = typeof args.daysAhead === "number" ? args.daysAhead : 1;
+    return days === 0
+      ? "Get cases due today"
+      : days === 1
+        ? "Get cases due today and tomorrow"
+        : `Get cases due in the next ${days} days`;
+  },
   execute: async (args, ctx) => {
     const labId = await requireLabId(ctx);
     await requireAnyRole(ctx.userId, labId, BILLING_ROLES);
 
-    const includeTomorrow = args.includeTomorrow !== false;
+    const rawDays = typeof args.daysAhead === "number" ? args.daysAhead : 1;
+    const daysAhead = Math.max(0, Math.min(90, Math.round(rawDays)));
+
     const now = new Date();
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
     const endTarget = new Date(startOfToday);
-    endTarget.setDate(endTarget.getDate() + (includeTomorrow ? 2 : 1));
+    endTarget.setDate(endTarget.getDate() + daysAhead + 1);
     endTarget.setMilliseconds(-1);
 
     const rows = await db
@@ -1228,19 +1240,20 @@ const getCasesDueSoonTool: AgentTool = {
       )
       .orderBy(asc(cases.dueDate));
 
+    const endOfToday = new Date(startOfToday);
+    endOfToday.setDate(endOfToday.getDate() + 1);
+    endOfToday.setMilliseconds(-1);
+
     const today = rows.filter((r) => {
       const d = r.dueDate;
       if (!d) return false;
-      const eot = new Date(startOfToday);
-      eot.setDate(eot.getDate() + 1);
-      eot.setMilliseconds(-1);
-      return d <= eot;
+      return d <= endOfToday;
     });
 
     return {
       count: rows.length,
       todayCount: today.length,
-      tomorrowCount: rows.length - today.length,
+      laterCount: rows.length - today.length,
       cases: rows.map((r) => ({
         id: r.id,
         caseNumber: r.caseNumber,
