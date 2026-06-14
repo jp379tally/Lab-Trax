@@ -84,6 +84,7 @@ interface ConfirmCardProps {
   colors: ThemeColors;
   onConfirm: (actionId: string) => void;
   onReject: (actionId: string) => void;
+  onTryAgain?: () => void;
   sending?: boolean;
 }
 
@@ -96,7 +97,7 @@ function formatCountdown(ms: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-function ConfirmCard({ action, colors, onConfirm, onReject, sending }: ConfirmCardProps) {
+function ConfirmCard({ action, colors, onConfirm, onReject, onTryAgain, sending }: ConfirmCardProps) {
   const [msLeft, setMsLeft] = useState<number>(() => {
     if (!action.expiresAt) return PENDING_TTL_MS;
     return Math.max(0, action.expiresAt - Date.now());
@@ -208,9 +209,20 @@ function ConfirmCard({ action, colors, onConfirm, onReject, sending }: ConfirmCa
           <Ionicons name="time-outline" size={14} color={colors.textSecondary} />
           <Text style={[confirmStyles.label, { color: colors.textSecondary }]}>Expired</Text>
         </View>
-        <Text style={[confirmStyles.summaryText, { color: colors.textSecondary }]}>
+        <Text style={[confirmStyles.summaryText, { color: colors.textSecondary, marginBottom: onTryAgain ? 10 : 0 }]}>
           This action expired — send your request again.
         </Text>
+        {onTryAgain && (
+          <Pressable
+            style={[confirmStyles.tryAgainBtn, { borderColor: colors.border, backgroundColor: colors.surface }]}
+            onPress={onTryAgain}
+            disabled={sending}
+            accessibilityLabel="Try again"
+          >
+            <Ionicons name="refresh-outline" size={13} color={colors.text} />
+            <Text style={[confirmStyles.tryAgainBtnText, { color: colors.text }]}>Try again</Text>
+          </Pressable>
+        )}
       </View>
     );
   }
@@ -324,6 +336,20 @@ const confirmStyles = StyleSheet.create({
     fontSize: 11,
     fontVariant: ["tabular-nums"],
   },
+  tryAgainBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    alignSelf: "flex-start",
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+  },
+  tryAgainBtnText: {
+    fontSize: 13,
+    fontWeight: "500",
+  },
 });
 
 // ─── Message bubble ───────────────────────────────────────────────────────────
@@ -333,10 +359,11 @@ interface BubbleProps {
   colors: ThemeColors;
   onConfirm: (actionId: string) => void;
   onReject: (actionId: string) => void;
+  onTryAgain: (msgId: string) => void;
   sending?: boolean;
 }
 
-function MessageBubble({ msg, colors, onConfirm, onReject, sending }: BubbleProps) {
+function MessageBubble({ msg, colors, onConfirm, onReject, onTryAgain, sending }: BubbleProps) {
   const isUser = msg.role === "user";
   const draftTool = msg.toolOutputs?.find((t) => t.name === "draft_message")?.result as
     | { draft?: string }
@@ -364,6 +391,7 @@ function MessageBubble({ msg, colors, onConfirm, onReject, sending }: BubbleProp
           colors={colors}
           onConfirm={onConfirm}
           onReject={onReject}
+          onTryAgain={() => onTryAgain(msg.id)}
           sending={sending}
         />
       </View>
@@ -656,6 +684,21 @@ export default function AiAssistantScreen() {
     sendMessage(input);
   }, [input, sendMessage]);
 
+  const handleTryAgain = useCallback(
+    (msgId: string) => {
+      const msgs = messagesRef.current;
+      const idx = msgs.findIndex((m) => m.id === msgId);
+      if (idx === -1) return;
+      for (let i = idx - 1; i >= 0; i--) {
+        if (msgs[i].role === "user" && msgs[i].content) {
+          sendMessage(msgs[i].content);
+          return;
+        }
+      }
+    },
+    [sendMessage],
+  );
+
   const renderItem = useCallback(
     ({ item }: { item: ChatMessage }) => (
       <MessageBubble
@@ -663,10 +706,11 @@ export default function AiAssistantScreen() {
         colors={colors}
         onConfirm={confirmAction}
         onReject={rejectAction}
+        onTryAgain={handleTryAgain}
         sending={sending}
       />
     ),
-    [colors, confirmAction, rejectAction, sending],
+    [colors, confirmAction, rejectAction, handleTryAgain, sending],
   );
 
   const keyExtractor = useCallback((item: ChatMessage) => item.id, []);
