@@ -633,6 +633,10 @@ export function DashboardDropZone() {
   const [zipSource, setZipSource] = useState<{
     originalZip: File;
     extraFileCount: number;
+    /** True when the ZIP was identified as an iTero export (iTero_Rx_*.pdf). */
+    isItero: boolean;
+    /** The basename of the PDF entry inside the ZIP. */
+    rxEntryName: string;
   } | null>(null);
   // Selected lab + practice when creating a modern /api/cases case from
   // an AI-read Rx. Lab defaults to the only lab the user belongs to.
@@ -928,22 +932,39 @@ export function DashboardDropZone() {
 
         let rxEntry: JSZip.JSZipObject | null = null;
         let rxEntryName = "";
+        let isItero = false;
         let extraFileCount = 0;
 
+        // First pass: look for an iTero Rx PDF (iTero_Rx_*.pdf).
         zip.forEach((relativePath: string, entry: JSZip.JSZipObject) => {
           if (entry.dir) return;
           const basename = relativePath.split("/").pop() || relativePath;
           if (/^itero_rx_.*\.pdf$/i.test(basename)) {
             rxEntry = entry;
             rxEntryName = basename;
+            isItero = true;
           } else {
             extraFileCount++;
           }
         });
 
+        // Second pass: if no iTero PDF found, accept any PDF (Shining, 3Shape,
+        // or any other platform that exports a ZIP with a prescription PDF +
+        // 3D scan files).
+        if (!rxEntry) {
+          zip.forEach((relativePath: string, entry: JSZip.JSZipObject) => {
+            if (entry.dir || rxEntry) return;
+            const basename = relativePath.split("/").pop() || relativePath;
+            if (/\.pdf$/i.test(basename)) {
+              rxEntry = entry;
+              rxEntryName = basename;
+            }
+          });
+        }
+
         if (!rxEntry) {
           throw new Error(
-            "No iTero Rx PDF found in this ZIP. Expected a file named iTero_Rx_*.pdf inside the archive."
+            "No Rx PDF found in this ZIP. The archive must contain a PDF prescription (e.g. from iTero, Shining, 3Shape, or similar)."
           );
         }
 
@@ -953,7 +974,7 @@ export function DashboardDropZone() {
           type: "application/pdf",
         });
 
-        setZipSource({ originalZip: zipFile, extraFileCount });
+        setZipSource({ originalZip: zipFile, extraFileCount, isItero, rxEntryName });
         await runRxAnalyze(rxFile);
       } catch (e: any) {
         setZipSource(null);
@@ -1289,101 +1310,217 @@ export function DashboardDropZone() {
       try {
         const { first, last } = splitPatientName(r.patientName);
 
-        // Re-extract the Rx PDF + .ply files from the in-memory ZIP.
+        // Re-extract files from the in-memory ZIP.
         const ab = await zipSource.originalZip.arrayBuffer();
         const zip = await new JSZip().loadAsync(ab);
+
+        // Find the Rx PDF entry (matched by the name recorded at analysis time)
+        // and collect all 3D scan files (.ply, .stl, .obj).
         let rxEntry: JSZip.JSZipObject | null = null;
-        let rxEntryName = "";
-        const plyEntries: Array<{ name: string; entry: JSZip.JSZipObject }> = [];
+        const scanEntries: Array<{ name: string; entry: JSZip.JSZipObject }> = [];
         zip.forEach((relativePath: string, entry: JSZip.JSZipObject) => {
           if (entry.dir) return;
           const basename = relativePath.split("/").pop() || relativePath;
-          if (/^itero_rx_.*\.pdf$/i.test(basename)) {
+          if (basename === zipSource.rxEntryName) {
             rxEntry = entry;
-            rxEntryName = basename;
-          } else if (/\.ply$/i.test(basename)) {
-            plyEntries.push({ name: basename, entry });
+          } else if (/\.(ply|stl|obj)$/i.test(basename)) {
+            scanEntries.push({ name: basename, entry });
           }
         });
+
         if (!rxEntry) {
-          throw new Error(
-            "No iTero Rx PDF found in this ZIP. Expected a file named iTero_Rx_*.pdf inside the archive.",
-          );
-        }
-        const orderIdMatch = rxEntryName.match(/iTero_Rx_(\d+)\./i);
-        const zipDigits = (zipSource.originalZip.name || "").match(/\d+/g);
-        const iteroOrderId =
-          orderIdMatch?.[1] ||
-          (zipDigits ? zipDigits[zipDigits.length - 1]! : "");
-        if (!iteroOrderId) {
-          throw new Error(
-            "Could not determine the iTero order ID from the Rx filename or ZIP name.",
-          );
+          throw new Error("Could not re-read the Rx PDF from the ZIP archive.");
         }
 
-        const rxArrayBuffer = await (rxEntry as JSZip.JSZipObject).async(
-          "arraybuffer",
-        );
+        const rxArrayBuffer = await (rxEntry as JSZip.JSZipObject).async("arraybuffer");
         const rxBlob = new Blob([rxArrayBuffer], { type: "application/pdf" });
-        const rxFile = new File([rxBlob], rxEntryName, {
-          type: "application/pdf",
-        });
+        const rxFile = new File([rxBlob], zipSource.rxEntryName, { type: "application/pdf" });
 
-        // 1. Create the case from the Rx PDF (small — single-shot is fine).
-        const fd = new FormData();
-        fd.append("file", rxFile);
-        fd.append("iteroOrderId", iteroOrderId);
-        fd.append("labOrganizationId", rxLabOrgId);
-        fd.append("providerOrganizationId", rxProviderOrgId);
-        if (r.doctorName?.trim()) fd.append("doctorNameHint", r.doctorName.trim());
-        if (first?.trim()) fd.append("patientFirstNameHint", first.trim());
-        if (last?.trim()) fd.append("patientLastNameHint", last.trim());
+        // ── iTero path: use the dedicated /import-from-itero-rx endpoint ──────
+        if (zipSource.isItero) {
+          const orderIdMatch = zipSource.rxEntryName.match(/iTero_Rx_(\d+)\./i);
+          const zipDigits = (zipSource.originalZip.name || "").match(/\d+/g);
+          const iteroOrderId =
+            orderIdMatch?.[1] ||
+            (zipDigits ? zipDigits[zipDigits.length - 1]! : "");
+          if (!iteroOrderId) {
+            throw new Error(
+              "Could not determine the iTero order ID from the Rx filename or ZIP name.",
+            );
+          }
 
-        const result = await apiFetch<{
-          deduped: boolean;
-          caseId: string | null;
-          caseNumber: string | null;
-        }>("/cases/import-from-itero-rx", {
+          const fd = new FormData();
+          fd.append("file", rxFile);
+          fd.append("iteroOrderId", iteroOrderId);
+          fd.append("labOrganizationId", rxLabOrgId);
+          fd.append("providerOrganizationId", rxProviderOrgId);
+          if (r.doctorName?.trim()) fd.append("doctorNameHint", r.doctorName.trim());
+          if (first?.trim()) fd.append("patientFirstNameHint", first.trim());
+          if (last?.trim()) fd.append("patientLastNameHint", last.trim());
+
+          const result = await apiFetch<{
+            deduped: boolean;
+            caseId: string | null;
+            caseNumber: string | null;
+          }>("/cases/import-from-itero-rx", {
+            method: "POST",
+            body: fd,
+            headers: {},
+          });
+
+          let attachedCount = 0;
+          let attachFailures = 0;
+          if (!result.deduped && result.caseId && scanEntries.length > 0) {
+            for (let i = 0; i < scanEntries.length; i++) {
+              const { name, entry } = scanEntries[i]!;
+              setPhase({
+                kind: "uploading",
+                message: `Uploading scan ${i + 1} of ${scanEntries.length} (${name})…`,
+              });
+              try {
+                const scanAb = await entry.async("arraybuffer");
+                const scanFile = new File(
+                  [new Blob([scanAb], { type: "application/octet-stream" })],
+                  name,
+                  { type: "application/octet-stream" },
+                );
+                const upload = await uploadMediaFile(scanFile);
+                await apiFetch(`/cases/${result.caseId}/attachments`, {
+                  method: "POST",
+                  body: JSON.stringify({
+                    storageKey: upload.url,
+                    fileName: name,
+                    fileType: "application/octet-stream",
+                    visibility: "internal_lab_only",
+                  }),
+                });
+                attachedCount++;
+              } catch (attachErr) {
+                attachFailures++;
+                console.warn(`Failed to attach ${name}:`, attachErr);
+              }
+            }
+          }
+
+          qc.invalidateQueries({ queryKey: ["legacy-cases-for-dropzone"] });
+          qc.invalidateQueries({ queryKey: ["cases"] });
+          qc.invalidateQueries({ queryKey: ["invoices"] });
+          setZipSource(null);
+
+          if (result.deduped) {
+            setPhase({
+              kind: "done",
+              message: `This iTero order was already imported as case ${result.caseNumber ?? result.caseId ?? ""}. No duplicate created.`,
+            });
+          } else {
+            const failSuffix =
+              attachFailures > 0
+                ? ` (${attachFailures} scan${attachFailures === 1 ? "" : "s"} could not be attached — add manually in the Files tab.)`
+                : "";
+            setPhase({
+              kind: "done",
+              message: `Case ${result.caseNumber} created · Rx + ${attachedCount} file${attachedCount === 1 ? "" : "s"} attached · draft invoice ready.${failSuffix}`,
+            });
+          }
+          scheduleIdleReset(5000);
+          return;
+        }
+
+        // ── Generic/Shining path: standard case creation ──────────────────────
+        // Upload the Rx PDF and fetch a case number concurrently, then create
+        // the case, attach the PDF, and then attach all 3D scan files.
+        const teethList = (r.toothIndices || "")
+          .split(/[,\s]+/)
+          .map((t) => t.trim())
+          .filter(Boolean);
+        const restorations =
+          teethList.length > 0
+            ? teethList.map((toothNumber) => ({
+                toothNumber,
+                restorationType: (r.caseType || "Other").trim() || "Other",
+                ...(r.material ? { material: r.material } : {}),
+                ...(r.shade ? { shade: r.shade } : {}),
+                quantity: 1,
+                unitPrice: 0,
+              }))
+            : undefined;
+
+        const caseNumberPromise: Promise<string> =
+          apiFetch<{ caseNumber: string }>(
+            `/cases/next-case-number?labOrganizationId=${encodeURIComponent(rxLabOrgId)}`,
+          )
+            .then((res) => res?.caseNumber || requestedCaseNumber)
+            .catch(() => requestedCaseNumber);
+
+        const rxUploadPromise = uploadMediaFile(rxFile).catch(() => null);
+
+        const [caseNumber, rxUpload] = await Promise.all([caseNumberPromise, rxUploadPromise]);
+
+        const created = await apiFetch<{ id: string; caseNumber: string }>("/cases", {
           method: "POST",
-          body: fd,
-          headers: {},
+          body: JSON.stringify({
+            caseNumber,
+            labOrganizationId: rxLabOrgId,
+            providerOrganizationId: rxProviderOrgId,
+            patientFirstName: first || "Unknown",
+            patientLastName: last || "Patient",
+            doctorName: (r.doctorName || "").trim() || "Unknown Provider",
+            priority: r.isRush ? "rush" : "normal",
+            ...(r.dueDate ? { dueDate: r.dueDate } : {}),
+            ...(restorations ? { restorations } : {}),
+            ...(r.notes && r.notes.trim() ? { notes: r.notes.trim() } : {}),
+          }),
         });
 
-        // 2. Attach any .ply scans via the chunked upload pipeline so each
-        //    file streams through /media/upload-session in 1 MB chunks
-        //    instead of one large single-shot multipart that the proxy drops.
+        // Attach the Rx PDF (already uploaded above).
+        let rxAttached = false;
+        if (rxUpload?.url) {
+          try {
+            await apiFetch(`/cases/${created.id}/attachments`, {
+              method: "POST",
+              body: JSON.stringify({
+                storageKey: rxUpload.url,
+                fileName: zipSource.rxEntryName,
+                fileType: "application/pdf",
+                visibility: "shared_with_provider",
+              }),
+            });
+            rxAttached = true;
+          } catch (e: any) {
+            console.warn("Rx PDF attachment failed:", e);
+          }
+        }
+
+        // Attach all 3D scan files (.ply, .stl, .obj) via chunked upload.
         let attachedCount = 0;
         let attachFailures = 0;
-        if (!result.deduped && result.caseId && plyEntries.length > 0) {
-          for (let i = 0; i < plyEntries.length; i++) {
-            const { name, entry } = plyEntries[i]!;
-            setPhase({
-              kind: "uploading",
-              message: `Uploading scan ${i + 1} of ${plyEntries.length} (${name})…`,
+        for (let i = 0; i < scanEntries.length; i++) {
+          const { name, entry } = scanEntries[i]!;
+          setPhase({
+            kind: "uploading",
+            message: `Uploading scan ${i + 1} of ${scanEntries.length} (${name})…`,
+          });
+          try {
+            const scanAb = await entry.async("arraybuffer");
+            const scanFile = new File(
+              [new Blob([scanAb], { type: "application/octet-stream" })],
+              name,
+              { type: "application/octet-stream" },
+            );
+            const upload = await uploadMediaFile(scanFile);
+            await apiFetch(`/cases/${created.id}/attachments`, {
+              method: "POST",
+              body: JSON.stringify({
+                storageKey: upload.url,
+                fileName: name,
+                fileType: "application/octet-stream",
+                visibility: "internal_lab_only",
+              }),
             });
-            try {
-              const plyAb = await entry.async("arraybuffer");
-              const plyFile = new File(
-                [new Blob([plyAb], { type: "application/octet-stream" })],
-                name,
-                { type: "application/octet-stream" },
-              );
-              const upload = await uploadMediaFile(plyFile);
-              await apiFetch(`/cases/${result.caseId}/attachments`, {
-                method: "POST",
-                body: JSON.stringify({
-                  storageKey: upload.url,
-                  fileName: name,
-                  fileType: "application/octet-stream",
-                  visibility: "internal_lab_only",
-                }),
-              });
-              attachedCount++;
-            } catch (attachErr) {
-              attachFailures++;
-              // eslint-disable-next-line no-console
-              console.warn(`Failed to attach ${name}:`, attachErr);
-            }
+            attachedCount++;
+          } catch (attachErr) {
+            attachFailures++;
+            console.warn(`Failed to attach ${name}:`, attachErr);
           }
         }
 
@@ -1392,26 +1529,25 @@ export function DashboardDropZone() {
         qc.invalidateQueries({ queryKey: ["invoices"] });
         setZipSource(null);
 
-        if (result.deduped) {
-          setPhase({
-            kind: "done",
-            message: `This iTero order was already imported as case ${result.caseNumber ?? result.caseId ?? ""}. No duplicate created.`,
-          });
-        } else {
-          const failSuffix =
-            attachFailures > 0
-              ? ` (${attachFailures} scan${attachFailures === 1 ? "" : "s"} could not be attached — add manually in the Files tab.)`
-              : "";
-          setPhase({
-            kind: "done",
-            message: `Case ${result.caseNumber} created · Rx + ${attachedCount} file${attachedCount === 1 ? "" : "s"} attached · draft invoice ready.${failSuffix}`,
-          });
-        }
+        const scanSuffix =
+          attachedCount > 0
+            ? ` · ${attachedCount} scan${attachedCount === 1 ? "" : "s"} attached`
+            : "";
+        const failSuffix =
+          attachFailures > 0
+            ? ` (${attachFailures} scan${attachFailures === 1 ? "" : "s"} could not be attached — add manually in the Files tab.)`
+            : "";
+        setPhase({
+          kind: "done",
+          message: rxAttached
+            ? `Case ${created.caseNumber} created · Rx attached${scanSuffix} · draft invoice ready.${failSuffix}`
+            : `Case ${created.caseNumber} created${scanSuffix} · draft invoice ready. (Rx PDF could not be attached — add manually in the Files tab.)${failSuffix}`,
+        });
         scheduleIdleReset(5000);
       } catch (e: any) {
         setPhase({
           kind: "error",
-          message: e?.message || "Could not import iTero ZIP.",
+          message: e?.message || "Could not import ZIP.",
         });
         scheduleIdleReset(5000);
       }
