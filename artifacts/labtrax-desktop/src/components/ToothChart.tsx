@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 
 /**
- * Interactive ADA Universal Numbering tooth chart.
+ * Interactive ADA Universal Numbering tooth chart — anatomical arch layout.
  *
  * Adult permanent teeth: 1–32 (1 = upper-right 3rd molar, 16 = upper-left
  * 3rd molar, 17 = lower-left 3rd molar, 32 = lower-right 3rd molar).
@@ -9,36 +9,21 @@ import { useCallback, useMemo, useState } from "react";
  * Primary (deciduous) teeth: A–T (A = upper-right 2nd molar, J = upper-left,
  * K = lower-left 2nd molar, T = lower-right 2nd molar).
  *
- * Layout (looking at the patient):
- *   Upper:  1 .. 8 | 9 .. 16          (adult)
- *           A .. E | F .. J           (primary, inside the adult row)
- *   Lower: 32 ..25 |24 ..17           (adult, mirrored so each adult sits
- *                                       directly under its same-side counterpart)
- *           T .. P | O .. K           (primary)
+ * Arch layout (patient perspective = same as ADA standard):
+ *   Upper:  1 (viewer-left, patient-right) .. 16 (viewer-right, patient-left)
+ *   Lower: 32 (viewer-left, patient-right) .. 17 (viewer-right, patient-left)
+ *
+ * Tooth-type colors (used by the Restorations tab):
+ *   crown   → blue  (bg-blue-500)
+ *   pontic  → purple (bg-purple-500)
+ *   missing → muted + ✕ glyph
  */
 
 export type ToothId = string; // "1".."32" or "A".."T"
 
-const ADULT_UPPER_RIGHT: ToothId[] = ["1", "2", "3", "4", "5", "6", "7", "8"];
-const ADULT_UPPER_LEFT: ToothId[] = [
-  "9", "10", "11", "12", "13", "14", "15", "16",
-];
-const ADULT_LOWER_LEFT: ToothId[] = [
-  "17", "18", "19", "20", "21", "22", "23", "24",
-];
-const ADULT_LOWER_RIGHT: ToothId[] = [
-  "25", "26", "27", "28", "29", "30", "31", "32",
-];
-
-const PRIMARY_UPPER_RIGHT: ToothId[] = ["A", "B", "C", "D", "E"];
-const PRIMARY_UPPER_LEFT: ToothId[] = ["F", "G", "H", "I", "J"];
-const PRIMARY_LOWER_LEFT: ToothId[] = ["K", "L", "M", "N", "O"];
-const PRIMARY_LOWER_RIGHT: ToothId[] = ["P", "Q", "R", "S", "T"];
-
 /**
  * Parse a free-text tooth field like "3, 5, 7-10, A-C" into a Set of IDs.
- * Returns an empty set on bad input rather than throwing — the field is
- * user-editable text and we should be tolerant.
+ * Returns an empty set on bad input rather than throwing.
  */
 export function parseToothField(value: string | null | undefined): Set<ToothId> {
   const out = new Set<ToothId>();
@@ -59,7 +44,6 @@ export function parseToothField(value: string | null | undefined): Set<ToothId> 
         }
         continue;
       }
-      // Letter range, e.g. A-C
       if (/^[A-T]$/.test(a) && /^[A-T]$/.test(b)) {
         const lo = Math.min(a.charCodeAt(0), b.charCodeAt(0));
         const hi = Math.max(a.charCodeAt(0), b.charCodeAt(0));
@@ -79,8 +63,7 @@ export function parseToothField(value: string | null | undefined): Set<ToothId> 
 
 /**
  * Collapse a Set of tooth IDs into a compact, comma-separated string with
- * ranges (e.g. {1,2,3,5,A,B,C} → "1-3, 5, A-C"). Adult numbers come first,
- * then primary letters; ordering inside each group is numeric / alphabetic.
+ * ranges (e.g. {1,2,3,5,A,B,C} → "1-3, 5, A-C").
  */
 export function formatToothSet(ids: Set<ToothId>): string {
   const numeric: number[] = [];
@@ -127,8 +110,7 @@ export function formatToothSet(ids: Set<ToothId>): string {
 }
 
 /**
- * Normalise a connector pair key: always "<lower>-<higher>" for numeric
- * teeth so storage and lookup are consistent regardless of rendering order.
+ * Normalise a connector pair key: always "<lower>-<higher>".
  */
 export function connectorPairKey(a: ToothId, b: ToothId): string {
   const na = Number(a);
@@ -164,111 +146,193 @@ export function formatBridgeConnectors(pairs: Set<string>): string {
   return Array.from(pairs).sort().join(",");
 }
 
-interface ToothButtonProps {
+// ── Arch Geometry ────────────────────────────────────────────────────────────
+//
+// SVG viewBox: 0 0 520 390  (y increases downward)
+// Upper arch badge ellipse: center (260,152), rx=200, ry=108
+// Lower arch badge ellipse: center (260,240), rx=200, ry=108
+//
+// Upper arch angles: tooth 1 at 195° (viewer-left) → tooth 16 at 345° (viewer-right)
+//   going clockwise through 270° (the top = incisors).
+//
+// Lower arch angles: tooth 32 at 165° (viewer-left) → tooth 17 at 15° (viewer-right)
+//   going counter-clockwise through 90° (the bottom = incisors).
+
+const DEG = Math.PI / 180;
+const UPPER_CX = 260, UPPER_CY = 152;
+const LOWER_CX = 260, LOWER_CY = 240;
+const ADULT_RX = 200, ADULT_RY = 108;
+const PRIMARY_RX = 146, PRIMARY_RY = 70;
+const FILL_RX = 166, FILL_RY = 86;
+
+function upperAngleDeg(n: number): number {
+  return 195 + (n - 1) * 10;
+}
+function lowerAngleDeg(n: number): number {
+  return 15 + (n - 17) * 10;
+}
+
+function pt(cx: number, cy: number, rx: number, ry: number, angleDeg: number) {
+  const a = angleDeg * DEG;
+  return { x: cx + rx * Math.cos(a), y: cy + ry * Math.sin(a) };
+}
+
+function adultPos(n: number, rx = ADULT_RX, ry = ADULT_RY) {
+  if (n <= 16) return pt(UPPER_CX, UPPER_CY, rx, ry, upperAngleDeg(n));
+  return pt(LOWER_CX, LOWER_CY, rx, ry, lowerAngleDeg(n));
+}
+
+// Primary upper: A–J, viewer-left (A=195°) to viewer-right (J=345°), 10 teeth
+const UPPER_PRIMARY = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
+// Primary lower viewer order (left→right): T,S,R,Q,P,O,N,M,L,K
+//   T (patient-right) at 165°, K (patient-left) at 15°
+const LOWER_PRIMARY_VIEWER = ["T", "S", "R", "Q", "P", "O", "N", "M", "L", "K"];
+
+function upperPrimaryPos(idx: number) {
+  const a = 195 + idx * (150 / 9);
+  return pt(UPPER_CX, UPPER_CY, PRIMARY_RX, PRIMARY_RY, a);
+}
+function lowerPrimaryPos(viewerIdx: number) {
+  const a = 165 - viewerIdx * (150 / 9);
+  return pt(LOWER_CX, LOWER_CY, PRIMARY_RX, PRIMARY_RY, a);
+}
+
+// ── SVG sub-components ───────────────────────────────────────────────────────
+
+interface BadgeProps {
   id: ToothId;
+  x: number;
+  y: number;
+  r: number;
   selected: boolean;
   billed: boolean;
   billedTitle?: string;
-  primary?: boolean;
   readOnly?: boolean;
   toothType?: "crown" | "pontic" | "missing";
   onToggle: (id: ToothId) => void;
 }
 
-function ToothButton({
-  id,
-  selected,
-  billed,
-  billedTitle,
-  primary,
-  readOnly,
-  toothType,
-  onToggle,
-}: ToothButtonProps) {
-  const base =
-    "h-7 w-7 text-[11px] rounded-md border font-mono tabular-nums transition-colors flex items-center justify-center select-none";
-  const interactive = !readOnly;
+function SvgBadge({ id, x, y, r, selected, billed, billedTitle, readOnly, toothType, onToggle }: BadgeProps) {
+  const fontSize = r <= 11 ? 7.5 : r <= 13 ? 8.5 : 9.5;
+  const strokeW = 1.5;
 
-  let cls: string;
+  let fill: string, stroke: string, textFill: string;
+  const label = toothType === "missing" && selected ? "✕" : id;
+
   if (selected && toothType === "crown") {
-    cls = `bg-blue-500 text-white border-blue-500 ${interactive ? "hover:bg-blue-600" : ""}`;
+    fill = "#3B82F6";
+    stroke = "#3B82F6";
+    textFill = "#ffffff";
   } else if (selected && toothType === "pontic") {
-    cls = `bg-purple-500 text-white border-purple-500 ${interactive ? "hover:bg-purple-600" : ""}`;
+    fill = "#A855F7";
+    stroke = "#A855F7";
+    textFill = "#ffffff";
   } else if (selected && toothType === "missing") {
-    cls = `bg-muted text-muted-foreground border-muted-foreground/40 ${interactive ? "hover:bg-muted/80" : ""}`;
+    fill = "hsl(var(--muted))";
+    stroke = "rgba(107,114,128,0.4)";
+    textFill = "hsl(var(--muted-foreground))";
   } else if (selected) {
-    cls = "bg-primary text-primary-foreground border-primary";
+    fill = "hsl(var(--primary))";
+    stroke = "hsl(var(--primary))";
+    textFill = "hsl(var(--primary-foreground))";
   } else if (billed) {
-    cls = `bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30 ${interactive ? "hover:bg-emerald-500/25" : ""}`;
+    fill = "rgba(16,185,129,0.15)";
+    stroke = "rgba(16,185,129,0.45)";
+    textFill = "rgb(6,95,70)";
   } else {
-    cls = `bg-secondary text-foreground border-transparent ${interactive ? "hover:bg-secondary/80" : ""}`;
+    fill = "hsl(var(--secondary))";
+    stroke = "hsl(var(--border))";
+    textFill = "hsl(var(--foreground))";
   }
 
-  const sizeOverride = primary ? "h-6 w-6 text-[10px]" : "";
-  const label = toothType === "missing" && selected ? "✕" : id;
+  const title = billed ? (billedTitle ?? `Tooth ${id} — billed`) : `Tooth ${id}`;
+  const ariaLabel = `Tooth ${id}${selected ? " (highlighted)" : ""}`;
+
+  const inner = (
+    <>
+      <title>{title}</title>
+      {!readOnly && (
+        <circle cx={x} cy={y} r={r + 4} fill="transparent" />
+      )}
+      <circle cx={x} cy={y} r={r} fill={fill} stroke={stroke} strokeWidth={strokeW} />
+      <text
+        x={x}
+        y={y}
+        textAnchor="middle"
+        dominantBaseline="central"
+        fontSize={fontSize}
+        fontWeight="700"
+        fill={textFill}
+        fontFamily="ui-monospace, 'Courier New', monospace"
+        style={{ pointerEvents: "none", userSelect: "none" }}
+      >
+        {label}
+      </text>
+    </>
+  );
 
   if (readOnly) {
     return (
-      <span
-        className={`${base} ${sizeOverride} ${cls} cursor-default`}
-        title={billed ? billedTitle ?? `Tooth ${id} — billed` : `Tooth ${id}`}
-        aria-label={`Tooth ${id}${selected ? " (highlighted)" : ""}`}
-      >
-        {label}
-      </span>
+      <g aria-label={ariaLabel}>
+        {inner}
+      </g>
     );
   }
+
   return (
-    <button
-      type="button"
+    <g
       onClick={() => onToggle(id)}
-      className={`${base} ${sizeOverride} ${cls}`}
-      title={billed ? billedTitle ?? `Tooth ${id} — billed` : `Tooth ${id}`}
+      style={{ cursor: "pointer" }}
+      role="button"
       aria-pressed={selected}
+      aria-label={ariaLabel}
+      className="hover:opacity-80 transition-opacity"
     >
-      {label}
-    </button>
+      {inner}
+    </g>
   );
 }
 
-/** Small toggleable connector dot between two adjacent adult teeth. */
-function ConnectorDot({
-  pairKey,
-  active,
-  readOnly,
-  onToggle,
-}: {
+interface DotProps {
+  x: number;
+  y: number;
   pairKey: string;
   active: boolean;
   readOnly?: boolean;
   onToggle: (key: string) => void;
-}) {
+}
+
+function SvgConnectorDot({ x, y, pairKey, active, readOnly, onToggle }: DotProps) {
+  const fill = active ? "rgb(16,185,129)" : "transparent";
+  const stroke = active ? "rgb(16,185,129)" : "rgba(107,114,128,0.35)";
+  const label = active ? "Bridge connector (click to remove)" : "Add bridge connector";
+
   if (readOnly) {
     return (
-      <span
-        className={`flex-shrink-0 w-2 h-2 rounded-full border ${
-          active
-            ? "bg-emerald-500 border-emerald-500"
-            : "bg-transparent border-muted-foreground/20"
-        }`}
-        title={active ? "Bridge connector" : undefined}
-      />
+      <g>
+        {active && <title>Bridge connector</title>}
+        <circle cx={x} cy={y} r={3.5} fill={fill} stroke={stroke} strokeWidth={1} />
+      </g>
     );
   }
+
   return (
-    <button
-      type="button"
+    <g
       onClick={() => onToggle(pairKey)}
-      className={`flex-shrink-0 w-2 h-2 rounded-full border transition-colors ${
-        active
-          ? "bg-emerald-500 border-emerald-500 hover:bg-emerald-600"
-          : "bg-transparent border-muted-foreground/30 hover:border-emerald-400 hover:bg-emerald-400/20"
-      }`}
-      title={active ? "Bridge connector (click to remove)" : "Add bridge connector"}
+      style={{ cursor: "pointer" }}
+      role="button"
       aria-pressed={active}
-    />
+      aria-label={label}
+      className="hover:opacity-80 transition-opacity"
+    >
+      <title>{label}</title>
+      <circle cx={x} cy={y} r={8} fill="transparent" />
+      <circle cx={x} cy={y} r={3.5} fill={fill} stroke={stroke} strokeWidth={1} />
+    </g>
   );
 }
+
+// ── Main component props ─────────────────────────────────────────────────────
 
 export interface ToothChartProps {
   /** Free-text tooth field value (e.g. "3, 5-8, A-C"). */
@@ -278,39 +342,29 @@ export interface ToothChartProps {
   billedTeeth?: Iterable<ToothId>;
   /**
    * Optional: per-tooth restoration descriptions used in the hover
-   * tooltip for billed teeth (e.g. "Crown", "Bridge"). When provided,
-   * the tooltip lists the existing restoration types so the user knows
-   * exactly what is already on the invoice.
+   * tooltip for billed teeth (e.g. "Crown", "Bridge").
    */
   billedTeethTypes?: Map<ToothId, string[]>;
   /**
-   * Whether to show the primary-dentition (A–T) row. When unspecified
-   * the chart starts collapsed (adult teeth only) and offers an
-   * inline toggle so single-arch / pediatric workflows can opt in.
+   * Whether to show the primary-dentition (A–T) inner ring. When
+   * unspecified the chart starts collapsed and offers an inline toggle.
    */
   showPrimary?: boolean;
   /**
-   * When true, the chart renders as a non-interactive view: teeth can be
-   * highlighted via `value` but cannot be clicked or cleared. Used by
-   * the case Overview tab to preview an Rx without exposing edit
-   * controls (editing still happens in the Restorations tab).
+   * When true, the chart renders as a non-interactive view.
    */
   readOnly?: boolean;
   /**
-   * When provided, clicking a tooth calls this callback instead of the
-   * default toggle behaviour. Used by the Restorations tab to open a
-   * guided dialog rather than just toggling a text field.
+   * When provided, clicking a tooth calls this instead of the default
+   * toggle. Used by the Restorations tab to open a guided dialog.
    */
   onToothClick?: (toothId: ToothId) => void;
   /**
-   * Set of normalised connector pair keys (e.g. "13-14") indicating which
-   * adjacent tooth pairs are connected as a bridge span. Adult teeth only
-   * (1–32). Controlled from the parent form.
+   * Set of normalised connector pair keys (e.g. "13-14") for bridge spans.
    */
   connectedPairs?: Set<string>;
   /**
-   * Called when the user toggles a connector dot. Passes the updated set.
-   * Only called when `readOnly` is false.
+   * Called when the user toggles a connector dot.
    */
   onConnectedPairsChange?: (pairs: Set<string>) => void;
   /** Teeth with a crown/restoration — rendered blue. */
@@ -320,6 +374,8 @@ export interface ToothChartProps {
   /** Teeth marked as missing — rendered with ✕ glyph instead of number. */
   missingTeeth?: Set<ToothId>;
 }
+
+// ── ToothChart ───────────────────────────────────────────────────────────────
 
 export function ToothChart({
   value,
@@ -335,11 +391,8 @@ export function ToothChart({
   ponticTeeth,
   missingTeeth,
 }: ToothChartProps) {
-  const [showPrimaryState, setShowPrimaryState] = useState(
-    showPrimaryProp ?? false,
-  );
-  const showPrimary =
-    showPrimaryProp !== undefined ? showPrimaryProp : showPrimaryState;
+  const [showPrimaryState, setShowPrimaryState] = useState(showPrimaryProp ?? false);
+  const showPrimary = showPrimaryProp !== undefined ? showPrimaryProp : showPrimaryState;
   const selected = useMemo(() => parseToothField(value), [value]);
   const billed = useMemo(
     () => new Set<ToothId>(billedTeeth ? Array.from(billedTeeth) : []),
@@ -357,6 +410,13 @@ export function ToothChart({
   );
 
   const showConnectors = !readOnly && !!onConnectedPairsChange;
+
+  function toothTypeFor(id: string): "crown" | "pontic" | "missing" | undefined {
+    if (missingTeeth?.has(id)) return "missing";
+    if (ponticTeeth?.has(id)) return "pontic";
+    if (crownTeeth?.has(id)) return "crown";
+    return undefined;
+  }
 
   function toggle(id: ToothId) {
     if (onToothClick) {
@@ -381,116 +441,67 @@ export function ToothChart({
     onChange("");
   }
 
-  function ToothRow({
-    leftIds,
-    rightIds,
-    primary,
-  }: {
-    leftIds: ToothId[];
-    rightIds: ToothId[];
-    primary?: boolean;
-  }) {
-    const showDots = showConnectors && !primary;
+  // Pre-compute positions for adult teeth (1–32)
+  const adultPositions = useMemo(() => {
+    const map = new Map<number, { x: number; y: number }>();
+    for (let n = 1; n <= 32; n++) map.set(n, adultPos(n));
+    return map;
+  }, []);
 
-    function toothTypeFor(id: string): "crown" | "pontic" | "missing" | undefined {
-      if (missingTeeth?.has(id)) return "missing";
-      if (ponticTeeth?.has(id)) return "pontic";
-      if (crownTeeth?.has(id)) return "crown";
-      return undefined;
-    }
+  // Groups of adult teeth for connector-dot adjacency (no midline connector)
+  const adultGroups: number[][] = [
+    [1, 2, 3, 4, 5, 6, 7, 8],
+    [9, 10, 11, 12, 13, 14, 15, 16],
+    [17, 18, 19, 20, 21, 22, 23, 24],
+    [25, 26, 27, 28, 29, 30, 31, 32],
+  ];
 
-    function renderTeethWithDots(ids: ToothId[]) {
-      if (!showDots || ids.length === 0) {
-        return (
-          <div className="flex gap-0.5">
-            {ids.map((id) => (
-              <ToothButton
-                key={id}
-                id={String(id)}
-                selected={selected.has(String(id))}
-                billed={billed.has(String(id))}
-                billedTitle={billedTitleFor(String(id))}
-                primary={primary}
-                readOnly={readOnly}
-                toothType={toothTypeFor(String(id))}
-                onToggle={toggle}
-              />
-            ))}
-          </div>
-        );
-      }
-      const elements: React.ReactNode[] = [];
-      ids.forEach((id, idx) => {
-        elements.push(
-          <ToothButton
-            key={id}
-            id={String(id)}
-            selected={selected.has(String(id))}
-            billed={billed.has(String(id))}
-            billedTitle={billedTitleFor(String(id))}
-            primary={primary}
-            readOnly={readOnly}
-            toothType={toothTypeFor(String(id))}
-            onToggle={toggle}
-          />,
-        );
-        if (idx < ids.length - 1) {
-          const nextId = ids[idx + 1]!;
-          const pKey = connectorPairKey(id, nextId);
-          const isActive = (connectedPairs ?? new Set()).has(pKey);
-          elements.push(
-            <ConnectorDot
-              key={`dot-${pKey}`}
-              pairKey={pKey}
-              active={isActive}
-              readOnly={readOnly}
-              onToggle={toggleConnector}
-            />,
-          );
-        }
-      });
-      return <div className="flex items-center gap-0.5">{elements}</div>;
-    }
+  // Arch background path: M start A rx ry 0 largeArc sweep end
+  // Upper: tooth 1 → tooth 16, through top (270°) → clockwise, small arc (150° < 180°)
+  const pos1 = adultPos(1, FILL_RX, FILL_RY);
+  const pos16 = adultPos(16, FILL_RX, FILL_RY);
+  const upperFillPath = `M ${pos1.x.toFixed(1)} ${pos1.y.toFixed(1)} A ${FILL_RX} ${FILL_RY} 0 0 1 ${pos16.x.toFixed(1)} ${pos16.y.toFixed(1)}`;
 
-    return (
-      <div className="flex items-center justify-center gap-1">
-        {renderTeethWithDots(leftIds)}
-        <div className="w-3 border-l border-border h-6 mx-1" aria-hidden />
-        {renderTeethWithDots(rightIds)}
-      </div>
-    );
-  }
+  // Lower: tooth 32 → tooth 17, through bottom (90°) → counter-clockwise, small arc (150° < 180°)
+  const pos32 = adultPos(32, FILL_RX, FILL_RY);
+  const pos17 = adultPos(17, FILL_RX, FILL_RY);
+  const lowerFillPath = `M ${pos32.x.toFixed(1)} ${pos32.y.toFixed(1)} A ${FILL_RX} ${FILL_RY} 0 0 0 ${pos17.x.toFixed(1)} ${pos17.y.toFixed(1)}`;
+
+  const BADGE_R = 14;
+  const PRIMARY_BADGE_R = 11;
+  const hasTypedTeeth = !!(crownTeeth || ponticTeeth || missingTeeth);
 
   return (
     <div className="border border-border rounded-md p-3 space-y-2 bg-secondary/20">
+      {/* Header row */}
       <div className="flex items-center justify-between gap-2">
         <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
           Tooth chart
         </div>
         <div className="flex items-center gap-3 text-[10px] text-muted-foreground flex-wrap">
-          {crownTeeth || ponticTeeth || missingTeeth ? (
+          {hasTypedTeeth ? (
             <>
               <span className="inline-flex items-center gap-1">
-                <span className="h-2.5 w-2.5 rounded-sm bg-blue-500 inline-block" />
+                <span className="h-2.5 w-2.5 rounded-full bg-blue-500 inline-block" />
                 Crown
               </span>
               <span className="inline-flex items-center gap-1">
-                <span className="h-2.5 w-2.5 rounded-sm bg-purple-500 inline-block" />
+                <span className="h-2.5 w-2.5 rounded-full bg-purple-500 inline-block" />
                 Pontic
               </span>
               <span className="inline-flex items-center gap-1">
-                <span className="h-2.5 w-2.5 rounded-sm bg-muted border border-muted-foreground/30 inline-flex items-center justify-center text-[8px] text-muted-foreground font-mono">✕</span>
+                <span className="h-2.5 w-2.5 rounded-full bg-muted border border-muted-foreground/30 inline-flex items-center justify-center text-[8px] text-muted-foreground font-mono">✕</span>
                 Missing
               </span>
             </>
           ) : (
             <span className="inline-flex items-center gap-1">
-              <span className="h-2.5 w-2.5 rounded-sm bg-primary inline-block" />
+              <span className="h-2.5 w-2.5 rounded-full bg-primary inline-block" />
               Selected
             </span>
           )}
           <span className="inline-flex items-center gap-1">
-            <span className="h-2.5 w-2.5 rounded-sm bg-emerald-500/40 border border-emerald-500/50 inline-block" />
+            <span className="h-2.5 w-2.5 rounded-full bg-emerald-500/40 border border-emerald-500/50 inline-block" />
             Billed
           </span>
           {showConnectors && (
@@ -505,7 +516,7 @@ export function ToothChart({
               onClick={() => setShowPrimaryState((v) => !v)}
               className="text-muted-foreground underline hover:text-foreground"
               aria-pressed={showPrimaryState}
-              title="Toggle primary (deciduous A–T) teeth row"
+              title="Toggle primary (deciduous A–T) teeth ring"
             >
               {showPrimaryState ? "Hide primary (A–T)" : "Show primary (A–T)"}
             </button>
@@ -522,34 +533,167 @@ export function ToothChart({
         </div>
       </div>
 
-      {/* Patient's right (1-8) | left (9-16) */}
-      <div className="space-y-1">
-        <ToothRow leftIds={ADULT_UPPER_RIGHT} rightIds={ADULT_UPPER_LEFT} />
-        {showPrimary && (
-          <ToothRow
-            leftIds={PRIMARY_UPPER_RIGHT}
-            rightIds={PRIMARY_UPPER_LEFT}
-            primary
-          />
-        )}
-      </div>
-      <div className="border-t border-dashed border-border my-1" />
-      <div className="space-y-1">
-        {showPrimary && (
-          <ToothRow
-            leftIds={PRIMARY_LOWER_RIGHT.slice().reverse()}
-            rightIds={PRIMARY_LOWER_LEFT.slice().reverse()}
-            primary
-          />
-        )}
-        {/* Lower row mirrored so the rightmost tooth (32 / T) stays on
-            the patient's right, directly under tooth 1. */}
-        <ToothRow
-          leftIds={ADULT_LOWER_RIGHT.slice().reverse()}
-          rightIds={ADULT_LOWER_LEFT.slice().reverse()}
+      {/* SVG arch chart */}
+      <svg
+        viewBox="0 0 520 390"
+        className="w-full"
+        role="img"
+        aria-label="Dental tooth chart"
+        style={{ maxHeight: 340 }}
+      >
+        {/* ── Arch background strokes ── */}
+        <path
+          d={upperFillPath}
+          fill="none"
+          stroke="hsl(var(--border))"
+          strokeWidth={32}
+          strokeLinecap="round"
+          opacity={0.45}
         />
-      </div>
+        <path
+          d={lowerFillPath}
+          fill="none"
+          stroke="hsl(var(--border))"
+          strokeWidth={32}
+          strokeLinecap="round"
+          opacity={0.45}
+        />
 
+        {/* ── Arch labels ── */}
+        <text
+          x={UPPER_CX}
+          y={UPPER_CY + 18}
+          textAnchor="middle"
+          fontSize={9}
+          fill="hsl(var(--muted-foreground))"
+          fontFamily="ui-sans-serif, system-ui, sans-serif"
+          opacity={0.6}
+        >
+          UPPER
+        </text>
+        <text
+          x={LOWER_CX}
+          y={LOWER_CY - 14}
+          textAnchor="middle"
+          fontSize={9}
+          fill="hsl(var(--muted-foreground))"
+          fontFamily="ui-sans-serif, system-ui, sans-serif"
+          opacity={0.6}
+        >
+          LOWER
+        </text>
+
+        {/* ── Connector dots for adult teeth ── */}
+        {showConnectors &&
+          adultGroups.map((group) =>
+            group.slice(0, -1).map((n) => {
+              const a = adultPositions.get(n)!;
+              const b = adultPositions.get(n + 1)!;
+              const mx = (a.x + b.x) / 2;
+              const my = (a.y + b.y) / 2;
+              const pKey = connectorPairKey(String(n), String(n + 1));
+              const isActive = (connectedPairs ?? new Set()).has(pKey);
+              return (
+                <SvgConnectorDot
+                  key={`dot-${pKey}`}
+                  x={mx}
+                  y={my}
+                  pairKey={pKey}
+                  active={isActive}
+                  readOnly={readOnly}
+                  onToggle={toggleConnector}
+                />
+              );
+            }),
+          )}
+
+        {/* Read-only connector dots (active pairs only) */}
+        {readOnly && connectedPairs && connectedPairs.size > 0 &&
+          adultGroups.map((group) =>
+            group.slice(0, -1).map((n) => {
+              const pKey = connectorPairKey(String(n), String(n + 1));
+              const isActive = connectedPairs.has(pKey);
+              if (!isActive) return null;
+              const a = adultPositions.get(n)!;
+              const b = adultPositions.get(n + 1)!;
+              return (
+                <SvgConnectorDot
+                  key={`dot-ro-${pKey}`}
+                  x={(a.x + b.x) / 2}
+                  y={(a.y + b.y) / 2}
+                  pairKey={pKey}
+                  active
+                  readOnly
+                  onToggle={toggleConnector}
+                />
+              );
+            }),
+          )}
+
+        {/* ── Primary teeth (inner ring) ── */}
+        {showPrimary && (
+          <>
+            {UPPER_PRIMARY.map((id, i) => {
+              const { x, y } = upperPrimaryPos(i);
+              return (
+                <SvgBadge
+                  key={id}
+                  id={id}
+                  x={x}
+                  y={y}
+                  r={PRIMARY_BADGE_R}
+                  selected={selected.has(id)}
+                  billed={billed.has(id)}
+                  billedTitle={billedTitleFor(id)}
+                  readOnly={readOnly}
+                  toothType={toothTypeFor(id)}
+                  onToggle={toggle}
+                />
+              );
+            })}
+            {LOWER_PRIMARY_VIEWER.map((id, viewerIdx) => {
+              const { x, y } = lowerPrimaryPos(viewerIdx);
+              return (
+                <SvgBadge
+                  key={id}
+                  id={id}
+                  x={x}
+                  y={y}
+                  r={PRIMARY_BADGE_R}
+                  selected={selected.has(id)}
+                  billed={billed.has(id)}
+                  billedTitle={billedTitleFor(id)}
+                  readOnly={readOnly}
+                  toothType={toothTypeFor(id)}
+                  onToggle={toggle}
+                />
+              );
+            })}
+          </>
+        )}
+
+        {/* ── Adult teeth (outer ring) ── */}
+        {Array.from({ length: 32 }, (_, i) => i + 1).map((n) => {
+          const { x, y } = adultPositions.get(n)!;
+          return (
+            <SvgBadge
+              key={n}
+              id={String(n)}
+              x={x}
+              y={y}
+              r={BADGE_R}
+              selected={selected.has(String(n))}
+              billed={billed.has(String(n))}
+              billedTitle={billedTitleFor(String(n))}
+              readOnly={readOnly}
+              toothType={toothTypeFor(String(n))}
+              onToggle={toggle}
+            />
+          );
+        })}
+      </svg>
+
+      {/* Footer hint text */}
       {!readOnly && !onToothClick && (
         <div className="text-[11px] text-muted-foreground pt-1">
           Click teeth to toggle. Selection is mirrored to the Tooth # field
@@ -562,7 +706,7 @@ export function ToothChart({
         <div className="text-[11px] text-muted-foreground pt-1">
           Click a tooth to add, replace, or mark it.
           {showConnectors && (
-            <> Click a <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 align-middle mx-0.5" /> dot between teeth to mark a bridge connector.</>
+            <>{" "}Click a <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 align-middle mx-0.5" /> dot between teeth to mark a bridge connector.</>
           )}
         </div>
       )}
