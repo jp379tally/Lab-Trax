@@ -18,8 +18,10 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { ScreenShell, SettingsSection } from "@/components/settings/SettingsRow";
+import { FormSheet } from "@/components/ui/FormSheet";
 import { resilientFetch, getApiUrl } from "@/lib/query-client";
 import { ME_QUERY_KEY } from "@/lib/auth-me";
+import { formatPhone } from "@/lib/data";
 
 interface OrgMembership {
   id: string;
@@ -48,7 +50,7 @@ interface OrgMembership {
 }
 
 interface MeResponse {
-  user?: unknown;
+  user?: { id?: string; userType?: string | null } | null;
   memberships?: OrgMembership[];
 }
 
@@ -594,6 +596,172 @@ function OrgCard({ m, colors, styles }: { m: OrgMembership; colors: ThemeColors;
   );
 }
 
+function LabField({
+  label,
+  value,
+  onChangeText,
+  placeholder,
+  colors,
+  styles,
+  keyboardType,
+  autoCapitalize,
+  maxLength,
+  autoFocus,
+}: {
+  label: string;
+  value: string;
+  onChangeText: (t: string) => void;
+  placeholder: string;
+  colors: ThemeColors;
+  styles: ReturnType<typeof makeStyles>;
+  keyboardType?: "default" | "email-address" | "phone-pad" | "number-pad";
+  autoCapitalize?: "none" | "sentences" | "words" | "characters";
+  maxLength?: number;
+  autoFocus?: boolean;
+}) {
+  return (
+    <View style={styles.fieldWrap}>
+      <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>{label}</Text>
+      <TextInput
+        value={value}
+        onChangeText={onChangeText}
+        placeholder={placeholder}
+        placeholderTextColor={colors.textTertiary}
+        keyboardType={keyboardType}
+        autoCapitalize={autoCapitalize}
+        maxLength={maxLength}
+        autoFocus={autoFocus}
+        style={[
+          styles.fieldInput,
+          { color: colors.text, backgroundColor: colors.surfaceAlt, borderColor: colors.border },
+        ]}
+      />
+    </View>
+  );
+}
+
+function CreateLabSheet({
+  visible,
+  onClose,
+  colors,
+  styles,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  colors: ThemeColors;
+  styles: ReturnType<typeof makeStyles>;
+}) {
+  const qc = useQueryClient();
+  const [name, setName] = useState("");
+  const [license, setLicense] = useState("");
+  const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
+  const [addressLine1, setAddressLine1] = useState("");
+  const [addressLine2, setAddressLine2] = useState("");
+  const [city, setCity] = useState("");
+  const [state, setState] = useState("");
+  const [zip, setZip] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  function reset() {
+    setName("");
+    setLicense("");
+    setPhone("");
+    setEmail("");
+    setAddressLine1("");
+    setAddressLine2("");
+    setCity("");
+    setState("");
+    setZip("");
+    setError(null);
+  }
+
+  const createMutation = useMutation({
+    mutationFn: async () => {
+      const res = await resilientFetch("/api/organizations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "lab",
+          name: name.trim(),
+          displayName: name.trim(),
+          licenseNumber: license.trim(),
+          phone: phone.trim(),
+          billingEmail: email.trim(),
+          addressLine1: addressLine1.trim(),
+          addressLine2: addressLine2.trim() || undefined,
+          city: city.trim() || undefined,
+          state: state.trim() || undefined,
+          zip: zip.trim() || undefined,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as any)?.error || `Failed to create lab (${res.status}).`);
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
+      qc.invalidateQueries({ queryKey: ["organizations"] });
+      reset();
+      onClose();
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  function handleSubmit() {
+    if (
+      !name.trim() ||
+      !license.trim() ||
+      !phone.trim() ||
+      !email.trim() ||
+      !addressLine1.trim()
+    ) {
+      setError("Lab name, license number, phone, email, and street address are required.");
+      return;
+    }
+    setError(null);
+    createMutation.mutate();
+  }
+
+  return (
+    <FormSheet
+      visible={visible}
+      title="Create lab"
+      onClose={() => {
+        if (createMutation.isPending) return;
+        reset();
+        onClose();
+      }}
+      onSubmit={handleSubmit}
+      submitting={createMutation.isPending}
+      submitLabel="Create lab"
+    >
+      <Text style={[styles.createIntro, { color: colors.textSecondary }]}>
+        Set up your lab environment. Name, license number, phone, email, and street address are required.
+      </Text>
+      <LabField label="Lab name" value={name} onChangeText={setName} placeholder="Acme Dental Lab" colors={colors} styles={styles} autoCapitalize="words" autoFocus />
+      <LabField label="License number" value={license} onChangeText={(t) => setLicense(t.toUpperCase())} placeholder="Lab license number" colors={colors} styles={styles} autoCapitalize="characters" />
+      <LabField label="Phone" value={phone} onChangeText={(t) => setPhone(formatPhone(t))} placeholder="000-000-0000" colors={colors} styles={styles} keyboardType="phone-pad" />
+      <LabField label="Email" value={email} onChangeText={setEmail} placeholder="lab@example.com" colors={colors} styles={styles} keyboardType="email-address" autoCapitalize="none" />
+      <LabField label="Address line 1" value={addressLine1} onChangeText={setAddressLine1} placeholder="123 Main St" colors={colors} styles={styles} autoCapitalize="words" />
+      <LabField label="Address line 2" value={addressLine2} onChangeText={setAddressLine2} placeholder="Suite 200 (optional)" colors={colors} styles={styles} autoCapitalize="words" />
+      <View style={styles.cityStateRow}>
+        <View style={{ flex: 2 }}>
+          <LabField label="City" value={city} onChangeText={setCity} placeholder="City" colors={colors} styles={styles} autoCapitalize="words" />
+        </View>
+        <View style={{ flex: 1 }}>
+          <LabField label="State" value={state} onChangeText={(t) => setState(t.toUpperCase())} placeholder="CA" colors={colors} styles={styles} autoCapitalize="characters" maxLength={2} />
+        </View>
+        <View style={{ flex: 1.2 }}>
+          <LabField label="ZIP" value={zip} onChangeText={setZip} placeholder="00000" colors={colors} styles={styles} keyboardType="number-pad" />
+        </View>
+      </View>
+      {error && <Text style={[styles.createError, { color: colors.error }]}>{error}</Text>}
+    </FormSheet>
+  );
+}
+
 export default function OrganizationsScreen() {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
@@ -615,6 +783,13 @@ export default function OrganizationsScreen() {
 
   const memberships = meQuery.data?.memberships ?? [];
   const [search, setSearch] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
+
+  const isLabUser = (meQuery.data?.user?.userType ?? null) === "lab";
+  const hasLabMembership = memberships.some(
+    (m) => m.organization?.type === "lab" && m.status === "active"
+  );
+  const canCreateLab = isLabUser && !hasLabMembership && !meQuery.isLoading;
 
   const filtered = useMemo(() => {
     if (!search.trim()) return memberships;
@@ -654,11 +829,23 @@ export default function OrganizationsScreen() {
         )}
       </View>
 
+      {canCreateLab && (
+        <Pressable
+          style={[styles.createLabBtn, { backgroundColor: colors.tint }]}
+          onPress={() => setCreateOpen(true)}
+        >
+          <Ionicons name="add-circle-outline" size={18} color={colors.textInverse} />
+          <Text style={[styles.createLabBtnText, { color: colors.textInverse }]}>Create lab</Text>
+        </Pressable>
+      )}
+
       <ScrollView contentContainerStyle={styles.body}>
         {meQuery.isLoading && <ActivityIndicator color={colors.tint} />}
         {!meQuery.isLoading && memberships.length === 0 && (
           <Text style={[styles.empty, { color: colors.textSecondary }]}>
-            You're not a member of any organization yet.
+            {canCreateLab
+              ? "You haven't set up your lab yet. Tap \"Create lab\" above to get started."
+              : "You're not a member of any organization yet."}
           </Text>
         )}
         {!meQuery.isLoading && memberships.length > 0 && filtered.length === 0 && (
@@ -671,6 +858,13 @@ export default function OrganizationsScreen() {
           <OrgCard key={m.id} m={m} colors={colors} styles={styles} />
         ))}
       </ScrollView>
+
+      <CreateLabSheet
+        visible={createOpen}
+        onClose={() => setCreateOpen(false)}
+        colors={colors}
+        styles={styles}
+      />
     </ScreenShell>
   );
 }
@@ -690,6 +884,28 @@ function makeStyles(c: ThemeColors) {
     },
     searchIcon: { flexShrink: 0 },
     searchInput: { flex: 1, ...Typography.body, paddingVertical: Spacing.md },
+    createLabBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: Spacing.sm,
+      marginHorizontal: Spacing.lg,
+      marginBottom: Spacing.md,
+      paddingVertical: Spacing.md,
+      borderRadius: Radius.md,
+    },
+    createLabBtnText: { ...Typography.bodySemibold },
+    createIntro: { ...Typography.caption },
+    createError: { ...Typography.caption },
+    fieldWrap: { gap: Spacing.xs },
+    fieldInput: {
+      height: 42,
+      borderRadius: Radius.md,
+      borderWidth: 1,
+      paddingHorizontal: Spacing.md,
+      ...Typography.body,
+    },
+    cityStateRow: { flexDirection: "row", gap: Spacing.sm },
     body: { paddingHorizontal: Spacing.lg, gap: Spacing.md, paddingBottom: Spacing.xxxl },
     empty: { ...Typography.body, textAlign: "center", marginTop: Spacing.xxl },
     card: {
