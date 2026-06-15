@@ -1,0 +1,472 @@
+Create new epic:
+
+# LabTrax Account Signup, Lab Creation, Invitations, and Provider Portal Foundation
+
+## What & Why
+
+LabTrax needs a complete account onboarding system for new users, labs, and providers.
+
+The mobile app is now functioning well, and the next major platform layer is account creation and provider/lab onboarding.
+
+The goal is to support:
+
+1. New user signup.
+2. Two-factor authentication.
+3. Lab environment creation.
+4. Provider portal foundation.
+5. Lab invitations with roles.
+6. Role-based access control.
+7. HIPAA-conscious onboarding and auditability.
+
+This must be built using canonical database models and shared workflows across web, desktop, and mobile.
+
+No mobile-only account logic.
+No desktop-only account logic.
+No local-only user/lab state.
+No insecure invitation links.
+
+---
+
+## Core User Types
+
+LabTrax accounts must support at least two account types:
+
+1. Lab account
+2. Provider account
+
+The account type must be represented in the user/account number.
+
+---
+
+## User Signup Workflow
+
+A new user must be able to create a LabTrax account by providing:
+
+* username
+* email address
+* phone number
+* password
+* account type: Lab or Provider
+
+Username rules:
+
+* 3 to 12 characters
+* unique
+* validated before account creation
+* allowed characters should be explicitly defined by engineering before implementation
+
+Authentication requirements:
+
+* email verification
+* phone verification / SMS two-factor authentication
+* support email-based 2FA as an alternative if the user chooses
+* follow HIPAA-conscious security practices
+* audit account creation and verification events
+
+The user should not gain access to lab/provider data until verification and onboarding are complete.
+
+---
+
+## Account Number Format
+
+Every new user receives an automatically generated account number.
+
+Format:
+
+`<TYPE>-<YEAR>-<SEQUENCE>-<PHONE>`
+
+Where:
+
+* `<TYPE>` = `L` for lab user / lab account, `P` for provider account
+* `<YEAR>` = four-digit signup year
+* `<SEQUENCE>` = count of accounts created that year, incrementing from 1
+* `<PHONE>` = user's 10-digit phone number
+
+Examples:
+
+* `L-2026-3-5551234567`
+* `P-2026-4-5559876543`
+
+Requirements:
+
+* account number generated server-side only
+* unique
+* immutable after creation unless a formal admin workflow exists
+* generated inside a transaction to avoid duplicate sequence numbers
+* phone number normalized to 10 digits before use
+* account number stored on the user/account record
+* account number visible in profile/account settings
+
+---
+
+## Lab Environment Creation
+
+A verified lab-type user may create a lab environment.
+
+Required lab fields:
+
+* lab name
+* lab address
+* lab license number
+* lab phone number
+* lab email address
+
+Validation requirements:
+
+* lab name must be unique
+* duplicate lab names are not allowed
+* lab license number required
+* lab phone and email required
+* address required
+* audit log must record lab creation
+
+When a lab is created:
+
+* the creating user becomes the lab environment creator
+* the creating user receives admin/owner permissions by default
+* the user is linked to that lab organization
+* the lab organization becomes available across web, desktop, and mobile
+
+---
+
+## Lab Roles and Permissions
+
+At minimum, support:
+
+1. Lab Creator / Owner
+2. Admin
+3. User
+
+Permissions must be enforced server-side, not only in the UI.
+
+Lab Creator / Owner:
+
+* full access
+* can manage lab settings
+* can invite users
+* can assign admin/user roles
+* can see invitation status
+
+Admin:
+
+* elevated lab access
+* can perform admin actions allowed by the lab creator
+* may invite users if allowed by permissions
+
+User:
+
+* limited lab access
+* cannot manage lab environment unless granted permission
+
+Engineering should verify existing roles and map them cleanly instead of inventing duplicate role names.
+
+---
+
+## Lab Invitation Workflow
+
+A lab creator/admin can invite another LabTrax user to join the lab.
+
+Important privacy rule:
+
+Users should not be searchable by email from within the app.
+
+Invitation flow:
+
+1. Lab creator/admin enters invitee email address manually.
+2. Inviter selects invitation role:
+
+   * Admin
+   * User
+3. System sends an email invitation.
+4. Email says the user has been invited to join the lab.
+5. Email includes a secure accept/deny link.
+6. Invitee clicks the link.
+7. Invitee must authenticate or create a verified account if not already signed in.
+8. Invitee accepts or denies.
+9. If accepted:
+
+   * invitee is linked to the lab
+   * invitee receives the invited role
+   * access permissions apply immediately
+10. If denied:
+
+* no lab access is granted
+
+11. Inviter receives notification of accepted/denied result.
+
+Security requirements:
+
+* invitation tokens must be secure, random, one-time-use
+* invitation tokens must expire
+* invitation must be scoped to the intended email
+* accepting user email must match invited email unless admin-approved transfer exists
+* invitation status must be stored:
+
+  * pending
+  * accepted
+  * denied
+  * expired
+  * revoked
+* all invitation actions must be audited
+
+---
+
+## Provider Portal Foundation
+
+Provider accounts need their own portal workflow.
+
+Provider account requirements:
+
+* provider user signup
+* provider account number starts with `P`
+* provider may create or join a provider/practice environment
+* provider can see only cases assigned to their account/provider organization
+* provider cannot see unrelated lab cases
+* provider permissions must be enforced server-side
+
+Provider portal scope for this first implementation:
+
+1. Provider signup.
+2. Provider account creation.
+3. Provider organization/practice creation or linking.
+4. Provider can log in.
+5. Provider can view only their assigned cases.
+6. Provider cannot access other provider/lab cases.
+7. Provider dashboard/list should be minimal at first.
+
+Do not add advanced provider features until access control is proven.
+
+---
+
+## HIPAA-Conscious Requirements
+
+Before implementation, engineering must produce a short security design note covering:
+
+* user signup flow
+* password storage assumptions
+* email verification
+* SMS/email 2FA
+* session handling
+* invitation token security
+* audit logging
+* role/permission enforcement
+* provider data isolation
+* account deletion/deactivation strategy
+* PHI exposure risk
+
+Do not store PHI in invitation email content.
+
+Do not include patient details in signup/invitation emails.
+
+Do not expose lab case data before user verification.
+
+---
+
+## Platform Requirements
+
+This workflow must work consistently across:
+
+* web
+* desktop
+* mobile
+
+Desktop/web remains the source of truth for UI/workflow, but mobile must receive the same functionality once the workflow is confirmed.
+
+Any desktop/web change that affects signup, roles, labs, invitations, provider access, or onboarding must include a mobile parity plan.
+
+---
+
+## API / Backend Requirements
+
+Before UI work, define or verify canonical backend endpoints for:
+
+* create user account
+* verify email
+* verify phone / SMS 2FA
+* email-based 2FA
+* login
+* logout
+* create lab organization
+* create provider organization
+* get current user's organizations
+* send lab invitation
+* accept invitation
+* deny invitation
+* revoke invitation
+* list invitation status
+* update role
+* provider case visibility
+* audit logs
+
+Add OpenAPI coverage and generated hooks before building UI.
+
+---
+
+## Testing Requirements
+
+Add tests for:
+
+### Account Creation
+
+* username validation
+* duplicate username rejection
+* account number generation
+* sequence generation by year
+* lab vs provider prefix
+* phone normalization
+
+### Lab Creation
+
+* required fields
+* duplicate lab name rejection
+* creator becomes owner/admin
+* audit log created
+
+### Invitations
+
+* invite email sent
+* token created
+* token expires
+* token single-use
+* accept invitation
+* deny invitation
+* wrong email cannot accept
+* inviter notified of result
+* role assigned correctly
+
+### Provider Portal
+
+* provider account created
+* provider sees only assigned cases
+* provider cannot access unrelated lab cases
+* provider isolation enforced server-side
+
+### Security
+
+* unverified user cannot access lab data
+* role permissions enforced server-side
+* audit logging occurs
+
+---
+
+## Regression Guardrails
+
+Update `REGRESSION_GUARDRAILS.md`.
+
+Add protected workflows:
+
+1. User signup.
+2. Email verification.
+3. SMS/email 2FA.
+4. Account number generation.
+5. Lab creation.
+6. Lab invitation.
+7. Invitation acceptance/denial.
+8. Role assignment.
+9. Provider signup.
+10. Provider case isolation.
+
+Also confirm this work does not regress existing beta mobile workflows:
+
+* login/logout
+* cases list
+* case detail
+* files/documents
+* tooth chart
+* invoice
+* history
+* lab slip
+* case label
+* locate case
+* no local-only saves
+* no duplicate invoices
+
+---
+
+## Implementation Order
+
+Do not build everything at once.
+
+Suggested phases:
+
+### Phase 1 — Backend / Contract Design
+
+* data model audit
+* account number generation design
+* security design note
+* OpenAPI endpoint definitions
+* server tests
+
+### Phase 2 — User Signup + Verification
+
+* username/email/phone signup
+* email verification
+* phone/email 2FA
+* account number assignment
+
+### Phase 3 — Lab Creation
+
+* create lab environment
+* creator becomes owner/admin
+* lab validation
+* lab settings base page
+
+### Phase 4 — Invitations
+
+* send invitation
+* accept/deny
+* role assignment
+* notification to inviter
+
+### Phase 5 — Provider Portal Foundation
+
+* provider signup
+* provider/practice creation/linking
+* provider case isolation
+* provider case list
+
+### Phase 6 — Mobile/Desktop/Web Parity
+
+* make sure onboarding works consistently across platforms
+* add mobile parity where applicable
+* update regression tests
+
+No phase may start without approval.
+
+---
+
+## Out of Scope For First Pass
+
+* Billing/subscriptions
+* Advanced provider messaging
+* Provider case submission
+* Bulk user import
+* Organization mergers
+* Public signup marketing pages
+* Patient-facing portal
+
+---
+
+## Acceptance Criteria
+
+The first release is accepted when:
+
+1. A new lab user can sign up.
+2. User verifies email and phone/2FA.
+3. User receives a valid account number like `L-2026-3-5551234567`.
+4. User creates a lab environment.
+5. Lab name duplicate is rejected.
+6. Lab creator has owner/admin permissions.
+7. Lab creator invites another user by email.
+8. Invitee accepts.
+9. Invitee receives correct role.
+10. Inviter is notified.
+11. A provider user can sign up.
+12. Provider receives `P-...` account number.
+13. Provider can access only assigned provider cases.
+14. Unauthorized provider access is blocked server-side.
+15. Existing LabTrax beta workflows do not regress.
+
+Checkpoint:
+
+“Account Signup Lab Invitations Provider Portal Plan”

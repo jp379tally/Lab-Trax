@@ -4269,6 +4269,7 @@ export function CaseDrawer({
                         Doctor name
                       </label>
                       <input
+                        list="edit-doctor-names"
                         value={editForm.doctorName}
                         onChange={(e) => {
                           setEditForm((f) => ({ ...f, doctorName: e.target.value }));
@@ -4277,6 +4278,11 @@ export function CaseDrawer({
                         placeholder="Dr. Smith"
                         className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
                       />
+                      <datalist id="edit-doctor-names">
+                        {doctorNames.map((n) => (
+                          <option key={n} value={n} />
+                        ))}
+                      </datalist>
                     </div>
                     <div>
                       <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
