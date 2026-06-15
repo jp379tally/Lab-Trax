@@ -31,7 +31,7 @@ import {
 } from "lucide-react";
 import QRCodeLib from "qrcode";
 import { apiFetch, ApiError, getApiOrigin, getAccessToken } from "@/lib/api";
-import { setNavBlocker, runWithoutNavBlock } from "@/lib/nav-guard";
+import { setNavBlocker } from "@/lib/nav-guard";
 import {
   ItemCombobox,
   type ItemComboboxOption,
@@ -580,14 +580,13 @@ export default function InvoicesPage() {
           onClose={() => setEditing(null)}
           onGoToCase={() => {
             const caseId = editing.caseId;
-            setEditing(null);
             if (caseId) {
-              // The editor's own "Go to case" jump is intentional and already
-              // tears the editor down, so skip the unsaved-edits navigation
-              // guard rather than prompting the user about their own action.
-              runWithoutNavBlock(() =>
-                setLocation(`/cases?caseId=${encodeURIComponent(caseId)}`),
-              );
+              // Don't unmount the editor first — navigating while dirty must let
+              // the navigation guard show the discard prompt. The route change
+              // itself unmounts the editor once the user proceeds.
+              setLocation(`/cases?caseId=${encodeURIComponent(caseId)}`);
+            } else {
+              setEditing(null);
             }
           }}
         />
@@ -1824,7 +1823,9 @@ export function InvoiceEditor({
                 if (onGoToCase) {
                   onGoToCase();
                 } else if (invoice.caseId) {
-                  onClose();
+                  // Navigate without closing first — while dirty the navigation
+                  // blocker surfaces the discard prompt (the editor must stay
+                  // mounted to render it); the route change unmounts us anyway.
                   setLocation(`/cases?caseId=${encodeURIComponent(invoice.caseId)}`);
                 }
               }}
