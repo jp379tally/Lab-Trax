@@ -97,6 +97,7 @@ export const mockAddCaseNoteMutateAsync = vi.fn(async () => ({ ok: true, data: n
 export const mockDeleteAttachmentMutateAsync = vi.fn(async () => ({ ok: true, data: null }));
 export const mockEmailInvoiceMutateAsync = vi.fn(async () => ({ ok: true, data: null }));
 export const mockUpdateInvoiceMutateAsync = vi.fn(async () => ({ ok: true, data: null }));
+export const mockAddCaseRestorationMutateAsync = vi.fn(async () => ({ ok: true, data: null }));
 
 // Mutable handler for the mocked `resilientFetch`. The default returns
 // `{ data: null }` (preserves the previous behaviour). Tests that need
@@ -540,7 +541,7 @@ vi.mock("@workspace/api-client-react", () => ({
     isError: false,
   }),
   useAddCaseRestoration: () => ({
-    mutateAsync: vi.fn(async () => undefined),
+    mutateAsync: mockAddCaseRestorationMutateAsync,
     mutate: vi.fn(),
     isPending: false,
     isError: false,
