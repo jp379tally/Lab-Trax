@@ -2610,6 +2610,10 @@ export function CaseDrawer({
   const [pendingDeletes, setPendingDeletes] = useState<Set<string>>(new Set());
   const [pendingUpdates, setPendingUpdates] = useState<PendingUpdate[]>([]);
   const [pendingCaseEdit, setPendingCaseEdit] = useState<PendingCaseEdit | null>(null);
+  // Optimistic state for missing-tooth auto-saves (applied immediately, cleared
+  // after the server round-trip + cache refetch complete so there's no flicker).
+  const [optimisticMissingAdds, setOptimisticMissingAdds] = useState<Set<string>>(new Set());
+  const [optimisticMissingDeletes, setOptimisticMissingDeletes] = useState<Set<string>>(new Set());
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   // When unsaved edits would be lost (close, in-app route navigation, etc.) we
@@ -2784,21 +2788,21 @@ export function CaseDrawer({
     return set;
   }, [data?.restorations, pendingDeletes, pendingCreates]);
 
-  // Missing-tooth markers — derived from server data + pending creates/deletes
-  // so the set always reflects what will be on the server after the next save.
+  // Missing-tooth markers — derived from server data + optimistic add/delete
+  // state so the chart updates instantly even before the server round-trip
+  // completes.  Missing teeth are auto-saved (not part of pending changes).
   const missingTeethIds = useMemo(() => {
     const set = new Set<string>();
     for (const r of data?.restorations ?? []) {
       if (r.restorationType !== "missing") continue;
       if (pendingDeletes.has(r.id)) continue;
-      for (const id of parseToothField(r.toothNumber)) set.add(id);
+      for (const id of parseToothField(r.toothNumber)) {
+        if (!optimisticMissingDeletes.has(id)) set.add(id);
+      }
     }
-    for (const c of pendingCreates) {
-      if (c.restorationType !== "missing") continue;
-      for (const id of parseToothField(c.toothNumber)) set.add(id);
-    }
+    for (const id of optimisticMissingAdds) set.add(id);
     return set;
-  }, [data?.restorations, pendingDeletes, pendingCreates]);
+  }, [data?.restorations, pendingDeletes, optimisticMissingAdds, optimisticMissingDeletes]);
 
   // Per-tooth restoration descriptions surfaced in the tooth-chart
   // tooltip so users immediately see what's already on the case.
@@ -3108,109 +3112,77 @@ export function CaseDrawer({
     onError: (e: Error) => setRestError(e.message),
   });
 
-  function invalidateAfterRestorationChange() {
-    qc.invalidateQueries({ queryKey: ["case", labCase.id] });
-    qc.invalidateQueries({ queryKey: ["cases"] });
-    qc.invalidateQueries({ queryKey: ["invoice-for-case", labCase.id] });
-    qc.invalidateQueries({ queryKey: ["invoice-detail"] });
-    qc.invalidateQueries({ queryKey: ["invoices"] });
+  async function invalidateAfterRestorationChange() {
+    await Promise.all([
+      qc.invalidateQueries({ queryKey: ["case", labCase.id] }),
+      qc.invalidateQueries({ queryKey: ["cases"] }),
+      qc.invalidateQueries({ queryKey: ["invoice-for-case", labCase.id] }),
+      qc.invalidateQueries({ queryKey: ["invoice-detail"] }),
+      qc.invalidateQueries({ queryKey: ["invoices"] }),
+    ]);
   }
 
-  const toothDialogMutation = useMutation({
-    mutationFn: async (payload: ToothActionPayload) => {
-      if (payload.kind === "add_crown") {
+  // Auto-save mutation for marking/unmarking a tooth as missing.
+  // Missing-tooth state is persisted immediately (not queued in pending changes)
+  // so the chart reflects reality for every user who opens the case next.
+  const saveMissingMutation = useMutation({
+    mutationFn: async (payload:
+      | { kind: "add"; toothId: string }
+      | { kind: "remove"; toothId: string; restorationId: string }
+    ) => {
+      if (payload.kind === "add") {
         await apiFetch(`/cases/${labCase.id}/restorations`, {
           method: "POST",
           body: JSON.stringify({
             toothNumber: payload.toothId,
-            restorationType: payload.restorationType,
-            material: payload.material,
-            ...(payload.shade ? { shade: payload.shade } : {}),
+            restorationType: "missing",
             quantity: 1,
+            unitPrice: 0,
           }),
         });
-      } else if (payload.kind === "add_pontic") {
-        // Infer material from the nearest abutment crown in the same bridge
-        // span so the price resolves immediately rather than showing $0.00.
-        let inferredMaterial: string | undefined;
-        const ponticTooth = Number(payload.toothId);
-        if (
-          Number.isInteger(ponticTooth) &&
-          ponticTooth >= 1 &&
-          ponticTooth <= 32 &&
-          connectedPairs.size > 0
-        ) {
-          // BFS through connectedPairs to find all teeth in the same span.
-          const span = new Set<number>();
-          const toVisit: number[] = [ponticTooth];
-          while (toVisit.length > 0) {
-            const curr = toVisit.pop()!;
-            if (span.has(curr)) continue;
-            span.add(curr);
-            for (const pair of connectedPairs) {
-              const [as, bs] = pair.split("-");
-              const a = Number(as);
-              const b = Number(bs);
-              if (a === curr && !span.has(b)) toVisit.push(b);
-              if (b === curr && !span.has(a)) toVisit.push(a);
-            }
-          }
-          // Find the first non-pontic restoration in the span with a material.
-          const abutment = (data?.restorations ?? []).find((r) => {
-            const rTooth = Number((r.toothNumber ?? "").trim());
-            return (
-              span.has(rTooth) &&
-              !/pontic/i.test(r.restorationType) &&
-              r.material
-            );
-          });
-          inferredMaterial = abutment?.material ?? undefined;
-        }
-        await apiFetch(`/cases/${labCase.id}/restorations`, {
-          method: "POST",
-          body: JSON.stringify({
-            toothNumber: payload.toothId,
-            restorationType: "Pontic",
-            quantity: 1,
-            ...(inferredMaterial ? { material: inferredMaterial } : {}),
-          }),
-        });
-      } else if (payload.kind === "mark_missing") {
-        // Missing is visual-only — toggle the tooth into the "selected" set
-        // on the current restForm so it shows on the chart; no server call.
-        return { kind: "missing", toothId: payload.toothId };
-      } else if (payload.kind === "replace_tooth") {
+      } else {
         await apiFetch(
           `/cases/${labCase.id}/restorations/${payload.restorationId}`,
-          {
-            method: "PATCH",
-            body: JSON.stringify({
-              toothNumber: payload.newToothNumber,
-              ...(payload.material ? { material: payload.material } : {}),
-              ...(payload.shade ? { shade: payload.shade } : {}),
-            }),
-          },
+          { method: "DELETE" },
         );
       }
-      return null;
+      return payload;
     },
-    onSuccess: (result) => {
-      if (result && (result as any).kind === "missing") {
-        // Mark-missing is local-only: add to the form tooth field so it
-        // appears highlighted on the chart.
-        const existing = parseToothField(restForm.toothNumber);
-        existing.add((result as any).toothId);
-        setRestForm((f) => ({
-          ...f,
-          toothNumber: Array.from(existing).join(", "),
-        }));
+    onSuccess: async (payload) => {
+      // Await the refetch so data is current before we clear optimistic state,
+      // preventing a momentary flicker where the tooth disappears and reappears.
+      await invalidateAfterRestorationChange();
+      if (payload.kind === "add") {
+        setOptimisticMissingAdds((prev) => {
+          const next = new Set(prev);
+          next.delete(payload.toothId);
+          return next;
+        });
       } else {
-        invalidateAfterRestorationChange();
+        setOptimisticMissingDeletes((prev) => {
+          const next = new Set(prev);
+          next.delete(payload.toothId);
+          return next;
+        });
       }
-      setToothDialogId(null);
-      setToothDialogError(null);
     },
-    onError: (e: Error) => setToothDialogError(e.message),
+    onError: (e: Error, payload) => {
+      // Roll back optimistic state on error.
+      if (payload.kind === "add") {
+        setOptimisticMissingAdds((prev) => {
+          const next = new Set(prev);
+          next.delete(payload.toothId);
+          return next;
+        });
+      } else {
+        setOptimisticMissingDeletes((prev) => {
+          const next = new Set(prev);
+          next.delete(payload.toothId);
+          return next;
+        });
+      }
+      setToothDialogError(e.message);
+    },
   });
 
   const saveConnectorsMutation = useMutation({
@@ -3435,21 +3407,11 @@ export function CaseDrawer({
       setToothDialogId(null);
       setToothDialogError(null);
     } else if (payload.kind === "mark_missing") {
-      const localId = `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      setPendingCreates((prev) => [
-        ...prev,
-        {
-          localId,
-          toothNumber: payload.toothId,
-          restorationType: "missing",
-          material: "",
-          shade: "",
-          quantity: 1,
-          unitPrice: "0.00",
-        },
-      ]);
+      // Auto-save missing teeth immediately — no pending-changes save required.
+      setOptimisticMissingAdds((prev) => new Set([...prev, payload.toothId]));
       setToothDialogId(null);
       setToothDialogError(null);
+      saveMissingMutation.mutate({ kind: "add", toothId: payload.toothId });
     } else if (payload.kind === "remove_restoration") {
       if (payload.restorationId) {
         setPendingDeletes((prev) => {
@@ -3458,30 +3420,32 @@ export function CaseDrawer({
           return next;
         });
       } else if (missingTeethIds.has(payload.toothId)) {
-        // Check if the missing marker is already saved to the server.
+        // Find the server-saved missing restoration for this tooth and auto-delete it.
         const serverMissingRow = (data?.restorations ?? []).find(
           (r) =>
             r.restorationType === "missing" &&
-            parseToothField(r.toothNumber).has(payload.toothId) &&
-            !pendingDeletes.has(r.id),
+            parseToothField(r.toothNumber).has(payload.toothId),
         );
         if (serverMissingRow) {
-          setPendingDeletes((prev) => {
+          setOptimisticMissingDeletes((prev) => new Set([...prev, payload.toothId]));
+          setToothDialogId(null);
+          setToothDialogError(null);
+          saveMissingMutation.mutate({
+            kind: "remove",
+            toothId: payload.toothId,
+            restorationId: serverMissingRow.id,
+          });
+          return;
+        } else if (optimisticMissingAdds.has(payload.toothId)) {
+          // Still in-flight add — cancel the optimistic add.
+          setOptimisticMissingAdds((prev) => {
             const next = new Set(prev);
-            next.add(serverMissingRow.id);
+            next.delete(payload.toothId);
             return next;
           });
-        } else {
-          // Still a pending create — remove it from the queue.
-          setPendingCreates((prev) =>
-            prev.filter(
-              (c) =>
-                !(
-                  c.restorationType === "missing" &&
-                  parseToothField(c.toothNumber).has(payload.toothId)
-                ),
-            ),
-          );
+          setToothDialogId(null);
+          setToothDialogError(null);
+          return;
         }
       } else {
         setPendingCreates((prev) =>

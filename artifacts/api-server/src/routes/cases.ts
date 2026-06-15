@@ -2567,7 +2567,12 @@ router.post(
               }),
             ]);
 
-          const hasLines = restorationsForInvoice.length > 0;
+          // "missing" markers are clinical annotations, not billable items —
+          // exclude them from invoice line items and display metadata.
+          const billableRestorations = restorationsForInvoice.filter(
+            (r) => !/^missing$/i.test(r.restorationType ?? ""),
+          );
+          const hasLines = billableRestorations.length > 0;
           const invoiceNumber = `INV-${createdCase.caseNumber}`;
           const noChargeNote = noChargeRemake
             ? `No-charge remake of case ${remakeOriginal!.caseNumber}${input.remakeReason ? ` — reason: ${input.remakeReason}` : ""}`
@@ -2586,21 +2591,21 @@ router.post(
             providerOrgRow?.displayName || providerOrgRow?.name || "";
           const teethList = Array.from(
             new Set(
-              restorationsForInvoice
+              billableRestorations
                 .map((r) => (r.toothNumber || "").trim())
                 .filter(Boolean),
             ),
           ).join(", ");
           const shadeList = Array.from(
             new Set(
-              restorationsForInvoice
+              billableRestorations
                 .map((r) => (r.shade || "").trim())
                 .filter(Boolean),
             ),
           ).join(", ");
           const caseNotesText = [
             ...caseLevelNotes.map((n) => (n.noteText || "").trim()),
-            ...restorationsForInvoice.map((r) => (r.notes || "").trim()),
+            ...billableRestorations.map((r) => (r.notes || "").trim()),
           ]
             .filter(Boolean)
             .join("\n");
@@ -2611,7 +2616,7 @@ router.post(
             shade: shadeList,
             caseNotes: caseNotesText,
             credits: 0,
-            lineItems: restorationsForInvoice.map((r) => ({
+            lineItems: billableRestorations.map((r) => ({
               item: r.restorationType,
               description: `${r.restorationType} - Tooth ${r.toothNumber}`,
             })),
@@ -2647,7 +2652,7 @@ router.post(
                 createdCase.labOrganizationId,
               );
               await db.insert(invoiceLineItems).values(
-                restorationsForInvoice.map((r, idx) => {
+                billableRestorations.map((r, idx) => {
                   const pk =
                     materialToPriceKey(r.material, r.restorationType) ??
                     r.restorationType;
@@ -2820,14 +2825,18 @@ router.get(
     }
     const enriched: any[] = rows.map((row: any) => {
       const items = byCase.get(row.id) ?? [];
-      const teeth = items.map((i: any) => i.toothNumber).join(", ");
+      // Exclude "missing" markers from display metadata — they are clinical
+      // annotations, not billable restorations, and should not inflate counts
+      // or pollute the type list shown in the case grid.
+      const billableItems = items.filter((i: any) => !/^missing$/i.test(i.restorationType ?? ""));
+      const teeth = billableItems.map((i: any) => i.toothNumber).join(", ");
       const types = Array.from(
-        new Set(items.map((i: any) => i.restorationType).filter(Boolean))
+        new Set(billableItems.map((i: any) => i.restorationType).filter(Boolean))
       ).join(", ");
       const materials = Array.from(
-        new Set(items.map((i: any) => i.material).filter(Boolean))
+        new Set(billableItems.map((i: any) => i.material).filter(Boolean))
       ).join(", ");
-      const price = items.reduce(
+      const price = billableItems.reduce(
         (sum: number, i: any) =>
           sum + Number(i.quantity ?? 0) * Number(i.unitPrice ?? 0),
         0
@@ -2835,7 +2844,7 @@ router.get(
       return {
         ...row,
         caseNotes: (row as any).rxNotes ?? null,
-        restorationCount: items.length,
+        restorationCount: billableItems.length,
         restorationTypes: types || null,
         restorationMaterials: materials || null,
         teeth: teeth || null,
