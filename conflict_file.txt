@@ -1,0 +1,273 @@
+<<<<<<< HEAD
+function PendingInvitesCard({
+  colors,
+  styles,
+}: {
+=======
+function EditLabSheet({
+  visible,
+  orgId,
+  initialValues,
+  onClose,
+  colors,
+  styles,
+}: {
+  visible: boolean;
+  orgId: string;
+  initialValues: {
+    name: string;
+    license: string;
+    phone: string;
+    email: string;
+    addressLine1: string;
+    addressLine2: string;
+    city: string;
+    state: string;
+    zip: string;
+  };
+  onClose: () => void;
+>>>>>>> ac82cb2c (feat(mobile): let lab owners edit lab details from the mobile app)
+  colors: ThemeColors;
+  styles: ReturnType<typeof makeStyles>;
+}) {
+  const qc = useQueryClient();
+<<<<<<< HEAD
+  const [actingToken, setActingToken] = useState<string | null>(null);
+
+  const invitesQuery = useQuery<PendingInvite[]>({
+    queryKey: PENDING_INVITES_QUERY_KEY,
+    queryFn: async () => {
+      const res = await resilientFetch("/api/organizations/invites/pending-for-me");
+      if (!res.ok) throw new Error(`Failed (${res.status})`);
+      const body = await res.json();
+      const list = Array.isArray(body) ? body : body?.data;
+      return Array.isArray(list) ? (list as PendingInvite[]) : [];
+    },
+    staleTime: 30_000,
+  });
+
+  const respondMutation = useMutation({
+    mutationFn: async ({
+      token,
+      action,
+    }: {
+      token: string;
+      action: "accept" | "decline";
+    }) => {
+      const res = await resilientFetch(
+        `/api/organizations/invites/${encodeURIComponent(token)}/${action}`,
+        { method: "POST" },
+      );
+      if (!res.ok) {
+        let message = `Failed (${res.status})`;
+        try {
+          const body = await res.json();
+          message = body?.message || body?.error || message;
+        } catch {
+          /* ignore */
+        }
+        throw new Error(message);
+      }
+      return action;
+    },
+    onSuccess: (action) => {
+      qc.invalidateQueries({ queryKey: PENDING_INVITES_QUERY_KEY });
+      if (action === "accept") {
+        qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
+      }
+    },
+    onError: (err: unknown) => {
+      Alert.alert(
+        "Couldn't update invitation",
+        err instanceof Error ? err.message : "Please try again.",
+      );
+    },
+    onSettled: () => setActingToken(null),
+  });
+
+  const invites = invitesQuery.data ?? [];
+  if (invitesQuery.isLoading || invites.length === 0) return null;
+
+  function respond(token: string, action: "accept" | "decline") {
+    setActingToken(token);
+    respondMutation.mutate({ token, action });
+  }
+
+  return (
+    <SettingsSection title="Pending invitations">
+      <View style={{ gap: Spacing.md }}>
+        {invites.map((invite) => {
+          const orgName =
+            invite.organization?.displayName ||
+            invite.organization?.name ||
+            "a lab";
+          const inviter =
+            invite.invitedByUser?.username || invite.invitedByUser?.email;
+          const busy = actingToken === invite.token && respondMutation.isPending;
+          return (
+            <View
+              key={invite.id}
+              style={[
+                styles.card,
+                { backgroundColor: colors.surface, borderColor: colors.border },
+              ]}
+            >
+              <View style={styles.cardRow}>
+                <View
+                  style={[styles.iconWrap, { backgroundColor: colors.tint + "22" }]}
+                >
+                  <Ionicons name="mail-open-outline" size={18} color={colors.tint} />
+                </View>
+                <View style={styles.cardInfo}>
+                  <Text style={[styles.orgName, { color: colors.text }]}>
+                    {orgName}
+                  </Text>
+                  <Text style={[styles.orgMeta, { color: colors.textSecondary }]}>
+                    Role: {inviteRoleLabel(invite.roleToAssign)}
+                  </Text>
+                  {inviter && (
+                    <Text style={[styles.orgMeta, { color: colors.textSecondary }]}>
+                      Invited by {inviter}
+                    </Text>
+                  )}
+                </View>
+              </View>
+              <View style={styles.inviteActions}>
+                <Pressable
+                  disabled={busy}
+                  onPress={() => respond(invite.token, "decline")}
+                  style={[
+                    styles.inviteDeclineBtn,
+                    { borderColor: colors.border },
+                    busy && { opacity: 0.5 },
+                  ]}
+                >
+                  <Text
+                    style={[styles.inviteDeclineText, { color: colors.text }]}
+                  >
+                    Decline
+                  </Text>
+                </Pressable>
+                <Pressable
+                  disabled={busy}
+                  onPress={() => respond(invite.token, "accept")}
+                  style={[
+                    styles.inviteAcceptBtn,
+                    { backgroundColor: colors.tint },
+                    busy && { opacity: 0.5 },
+                  ]}
+                >
+                  {busy ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Text style={styles.inviteAcceptText}>Accept</Text>
+                  )}
+                </Pressable>
+              </View>
+            </View>
+          );
+        })}
+      </View>
+    </SettingsSection>
+=======
+  const [name, setName] = useState(initialValues.name);
+  const [license, setLicense] = useState(initialValues.license);
+  const [phone, setPhone] = useState(initialValues.phone);
+  const [email, setEmail] = useState(initialValues.email);
+  const [addressLine1, setAddressLine1] = useState(initialValues.addressLine1);
+  const [addressLine2, setAddressLine2] = useState(initialValues.addressLine2);
+  const [city, setCity] = useState(initialValues.city);
+  const [state, setState] = useState(initialValues.state);
+  const [zip, setZip] = useState(initialValues.zip);
+  const [error, setError] = useState<string | null>(null);
+
+  function resetToInitial() {
+    setName(initialValues.name);
+    setLicense(initialValues.license);
+    setPhone(initialValues.phone);
+    setEmail(initialValues.email);
+    setAddressLine1(initialValues.addressLine1);
+    setAddressLine2(initialValues.addressLine2);
+    setCity(initialValues.city);
+    setState(initialValues.state);
+    setZip(initialValues.zip);
+    setError(null);
+  }
+
+  const editMutation = useMutation({
+    mutationFn: async () => {
+      const res = await resilientFetch(`/api/organizations/${orgId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name.trim(),
+          displayName: name.trim(),
+          licenseNumber: license.trim() || undefined,
+          phone: phone.trim() || undefined,
+          billingEmail: email.trim() || undefined,
+          addressLine1: addressLine1.trim() || undefined,
+          addressLine2: addressLine2.trim() || undefined,
+          city: city.trim() || undefined,
+          state: state.trim() || undefined,
+          zip: zip.trim() || undefined,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 409) {
+          throw new Error("That lab name is already taken. Please choose a different name.");
+        }
+        throw new Error((body as any)?.error || `Failed to update lab (${res.status}).`);
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
+      qc.invalidateQueries({ queryKey: ["organizations"] });
+      setError(null);
+      onClose();
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  function handleSubmit() {
+    if (!name.trim()) {
+      setError("Lab name is required.");
+      return;
+    }
+    setError(null);
+    editMutation.mutate();
+  }
+
+  return (
+    <FormSheet
+      visible={visible}
+      title="Edit lab details"
+      onClose={() => {
+        if (editMutation.isPending) return;
+        resetToInitial();
+        onClose();
+      }}
+      onSubmit={handleSubmit}
+      submitting={editMutation.isPending}
+      submitLabel="Save changes"
+    >
+      <LabField label="Lab name" value={name} onChangeText={setName} placeholder="Acme Dental Lab" colors={colors} styles={styles} autoCapitalize="words" autoFocus />
+      <LabField label="License number" value={license} onChangeText={(t) => setLicense(t.toUpperCase())} placeholder="Lab license number" colors={colors} styles={styles} autoCapitalize="characters" />
+      <LabField label="Phone" value={phone} onChangeText={(t) => setPhone(formatPhone(t))} placeholder="000-000-0000" colors={colors} styles={styles} keyboardType="phone-pad" />
+      <LabField label="Billing email" value={email} onChangeText={setEmail} placeholder="lab@example.com" colors={colors} styles={styles} keyboardType="email-address" autoCapitalize="none" />
+      <LabField label="Address line 1" value={addressLine1} onChangeText={setAddressLine1} placeholder="123 Main St" colors={colors} styles={styles} autoCapitalize="words" />
+      <LabField label="Address line 2" value={addressLine2} onChangeText={setAddressLine2} placeholder="Suite 200 (optional)" colors={colors} styles={styles} autoCapitalize="words" />
+      <View style={styles.cityStateRow}>
+        <View style={{ flex: 2 }}>
+          <LabField label="City" value={city} onChangeText={setCity} placeholder="City" colors={colors} styles={styles} autoCapitalize="words" />
+        </View>
+        <View style={{ flex: 1 }}>
+          <LabField label="State" value={state} onChangeText={(t) => setState(t.toUpperCase())} placeholder="CA" colors={colors} styles={styles} autoCapitalize="characters" maxLength={2} />
+        </View>
+        <View style={{ flex: 1.2 }}>
+          <LabField label="ZIP" value={zip} onChangeText={setZip} placeholder="00000" colors={colors} styles={styles} keyboardType="number-pad" />
+        </View>
+      </View>
+      {error && <Text style={[styles.createError, { color: colors.error }]}>{error}</Text>}
+    </FormSheet>
+>>>>>>> ac82cb2c (feat(mobile): let lab owners edit lab details from the mobile app)

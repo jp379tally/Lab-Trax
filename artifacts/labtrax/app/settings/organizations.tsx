@@ -146,6 +146,7 @@ function OrgCard({ m, colors, styles }: { m: OrgMembership; colors: ThemeColors;
     org?.defaultCaseDueDays != null ? String(org.defaultCaseDueDays) : ""
   );
   const [dueDaysSaved, setDueDaysSaved] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [logoUploading, setLogoUploading] = useState(false);
   const logoXhrRef = useRef<XMLHttpRequest | null>(null);
 
@@ -340,6 +341,19 @@ function OrgCard({ m, colors, styles }: { m: OrgMembership; colors: ThemeColors;
 
       {type === "lab" && (
         <View style={[styles.detailsSection, { borderTopColor: colors.border }]}>
+          <View style={styles.detailsSectionHeader}>
+            <Text style={[styles.detailsSectionTitle, { color: colors.textSecondary }]}>Lab details</Text>
+            {isAdmin && (
+              <Pressable
+                style={[styles.editLabBtn, { borderColor: colors.border, backgroundColor: colors.surfaceAlt }]}
+                onPress={() => setEditOpen(true)}
+                hitSlop={8}
+              >
+                <Ionicons name="pencil-outline" size={12} color={colors.textSecondary} />
+                <Text style={[styles.editLabBtnText, { color: colors.textSecondary }]}>Edit</Text>
+              </Pressable>
+            )}
+          </View>
           {org?.licenseNumber ? (
             <View style={styles.detailRow}>
               <Text style={[styles.detailLabel, { color: colors.textTertiary }]}>License</Text>
@@ -371,6 +385,27 @@ function OrgCard({ m, colors, styles }: { m: OrgMembership; colors: ThemeColors;
             </View>
           ) : null}
         </View>
+      )}
+
+      {isAdmin && orgId && org?.type === "lab" && (
+        <EditLabSheet
+          visible={editOpen}
+          orgId={orgId}
+          initialValues={{
+            name: org?.displayName || org?.name || "",
+            license: org?.licenseNumber || "",
+            phone: org?.phone || "",
+            email: org?.billingEmail || "",
+            addressLine1: org?.addressLine1 || "",
+            addressLine2: org?.addressLine2 || "",
+            city: org?.city || "",
+            state: org?.state || "",
+            zip: org?.zip || "",
+          }}
+          onClose={() => setEditOpen(false)}
+          colors={colors}
+          styles={styles}
+        />
       )}
 
       {/* Lab branding — admin/owner only */}
@@ -798,6 +833,135 @@ function CreateLabSheet({
   );
 }
 
+function EditLabSheet({
+  visible,
+  orgId,
+  initialValues,
+  onClose,
+  colors,
+  styles,
+}: {
+  visible: boolean;
+  orgId: string;
+  initialValues: {
+    name: string;
+    license: string;
+    phone: string;
+    email: string;
+    addressLine1: string;
+    addressLine2: string;
+    city: string;
+    state: string;
+    zip: string;
+  };
+  onClose: () => void;
+  colors: ThemeColors;
+  styles: ReturnType<typeof makeStyles>;
+}) {
+  const qc = useQueryClient();
+  const [name, setName] = useState(initialValues.name);
+  const [license, setLicense] = useState(initialValues.license);
+  const [phone, setPhone] = useState(initialValues.phone);
+  const [email, setEmail] = useState(initialValues.email);
+  const [addressLine1, setAddressLine1] = useState(initialValues.addressLine1);
+  const [addressLine2, setAddressLine2] = useState(initialValues.addressLine2);
+  const [city, setCity] = useState(initialValues.city);
+  const [state, setState] = useState(initialValues.state);
+  const [zip, setZip] = useState(initialValues.zip);
+  const [error, setError] = useState<string | null>(null);
+
+  function resetToInitial() {
+    setName(initialValues.name);
+    setLicense(initialValues.license);
+    setPhone(initialValues.phone);
+    setEmail(initialValues.email);
+    setAddressLine1(initialValues.addressLine1);
+    setAddressLine2(initialValues.addressLine2);
+    setCity(initialValues.city);
+    setState(initialValues.state);
+    setZip(initialValues.zip);
+    setError(null);
+  }
+
+  const editMutation = useMutation({
+    mutationFn: async () => {
+      const res = await resilientFetch(`/api/organizations/${orgId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name.trim(),
+          displayName: name.trim(),
+          licenseNumber: license.trim() || undefined,
+          phone: phone.trim() || undefined,
+          billingEmail: email.trim() || undefined,
+          addressLine1: addressLine1.trim() || undefined,
+          addressLine2: addressLine2.trim() || undefined,
+          city: city.trim() || undefined,
+          state: state.trim() || undefined,
+          zip: zip.trim() || undefined,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 409) {
+          throw new Error("That lab name is already taken. Please choose a different name.");
+        }
+        throw new Error((body as any)?.error || `Failed to update lab (${res.status}).`);
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
+      qc.invalidateQueries({ queryKey: ["organizations"] });
+      setError(null);
+      onClose();
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  function handleSubmit() {
+    if (!name.trim()) {
+      setError("Lab name is required.");
+      return;
+    }
+    setError(null);
+    editMutation.mutate();
+  }
+
+  return (
+    <FormSheet
+      visible={visible}
+      title="Edit lab details"
+      onClose={() => {
+        if (editMutation.isPending) return;
+        resetToInitial();
+        onClose();
+      }}
+      onSubmit={handleSubmit}
+      submitting={editMutation.isPending}
+      submitLabel="Save changes"
+    >
+      <LabField label="Lab name" value={name} onChangeText={setName} placeholder="Acme Dental Lab" colors={colors} styles={styles} autoCapitalize="words" autoFocus />
+      <LabField label="License number" value={license} onChangeText={(t) => setLicense(t.toUpperCase())} placeholder="Lab license number" colors={colors} styles={styles} autoCapitalize="characters" />
+      <LabField label="Phone" value={phone} onChangeText={(t) => setPhone(formatPhone(t))} placeholder="000-000-0000" colors={colors} styles={styles} keyboardType="phone-pad" />
+      <LabField label="Billing email" value={email} onChangeText={setEmail} placeholder="lab@example.com" colors={colors} styles={styles} keyboardType="email-address" autoCapitalize="none" />
+      <LabField label="Address line 1" value={addressLine1} onChangeText={setAddressLine1} placeholder="123 Main St" colors={colors} styles={styles} autoCapitalize="words" />
+      <LabField label="Address line 2" value={addressLine2} onChangeText={setAddressLine2} placeholder="Suite 200 (optional)" colors={colors} styles={styles} autoCapitalize="words" />
+      <View style={styles.cityStateRow}>
+        <View style={{ flex: 2 }}>
+          <LabField label="City" value={city} onChangeText={setCity} placeholder="City" colors={colors} styles={styles} autoCapitalize="words" />
+        </View>
+        <View style={{ flex: 1 }}>
+          <LabField label="State" value={state} onChangeText={(t) => setState(t.toUpperCase())} placeholder="CA" colors={colors} styles={styles} autoCapitalize="characters" maxLength={2} />
+        </View>
+        <View style={{ flex: 1.2 }}>
+          <LabField label="ZIP" value={zip} onChangeText={setZip} placeholder="00000" colors={colors} styles={styles} keyboardType="number-pad" />
+        </View>
+      </View>
+      {error && <Text style={[styles.createError, { color: colors.error }]}>{error}</Text>}
+    </FormSheet>
+  );
+}
+
 function PendingInvitesCard({
   colors,
   styles,
@@ -1122,6 +1286,23 @@ function makeStyles(c: ThemeColors) {
       marginTop: Spacing.md,
       gap: Spacing.xs,
     },
+    detailsSectionHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      marginBottom: 2,
+    },
+    detailsSectionTitle: { ...Typography.captionSemibold },
+    editLabBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 4,
+      borderWidth: 1,
+      borderRadius: Radius.sm,
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+    },
+    editLabBtnText: { ...Typography.tiny },
     detailRow: { flexDirection: "row", justifyContent: "space-between", gap: Spacing.md },
     detailLabel: { ...Typography.caption },
     detailValue: { ...Typography.caption, fontWeight: "600" },
