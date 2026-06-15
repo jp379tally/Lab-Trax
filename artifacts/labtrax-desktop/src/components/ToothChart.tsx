@@ -450,6 +450,11 @@ export function ToothChart({
     return undefined;
   }
 
+  const hasCrownTeeth = (crownTeeth?.size ?? 0) > 0;
+  const hasPonticTeeth = (ponticTeeth?.size ?? 0) > 0;
+  const hasMissingTeeth = (missingTeeth?.size ?? 0) > 0;
+  const hasTypedTeeth = hasCrownTeeth || hasPonticTeeth || hasMissingTeeth;
+
   function toggle(id: ToothId) {
     if (onToothClick) {
       onToothClick(id);
@@ -511,7 +516,6 @@ export function ToothChart({
 
   const BADGE_R = 14;
   const PRIMARY_BADGE_R = 11;
-  const hasTypedTeeth = !!(crownTeeth || ponticTeeth || missingTeeth);
 
   return (
     <div className="border border-border rounded-md p-3 space-y-2 bg-secondary/20">
@@ -523,18 +527,24 @@ export function ToothChart({
         <div className="flex items-center gap-3 text-[10px] text-muted-foreground flex-wrap">
           {hasTypedTeeth ? (
             <>
-              <span className="inline-flex items-center gap-1">
-                <span className="h-2.5 w-2.5 rounded-full bg-blue-500 inline-block" />
-                Crown
-              </span>
-              <span className="inline-flex items-center gap-1">
-                <span className="h-3 w-3 rounded-full bg-purple-500 border border-dashed border-purple-400 inline-block" />
-                Pontic
-              </span>
-              <span className="inline-flex items-center gap-1">
-                <span className="h-2.5 w-2.5 rounded-full bg-muted border border-dashed border-muted-foreground/50 inline-flex items-center justify-center text-[8px] text-muted-foreground font-mono">✕</span>
-                Missing
-              </span>
+              {hasCrownTeeth && (
+                <span className="inline-flex items-center gap-1">
+                  <span className="h-2.5 w-2.5 rounded-full bg-blue-500 inline-block" />
+                  Crown
+                </span>
+              )}
+              {hasPonticTeeth && (
+                <span className="inline-flex items-center gap-1">
+                  <span className="h-3 w-3 rounded-full bg-purple-500 border border-dashed border-purple-400 inline-block" />
+                  Pontic
+                </span>
+              )}
+              {hasMissingTeeth && (
+                <span className="inline-flex items-center gap-1">
+                  <span className="h-2.5 w-2.5 rounded-full bg-muted border border-dashed border-muted-foreground/50 inline-flex items-center justify-center text-[8px] text-muted-foreground font-mono">✕</span>
+                  Missing
+                </span>
+              )}
             </>
           ) : (
             <span className="inline-flex items-center gap-1">

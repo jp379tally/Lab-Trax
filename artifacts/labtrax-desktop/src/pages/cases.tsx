@@ -4629,12 +4629,15 @@ export function CaseDrawer({
                           )}
                         </div>
                         <ToothChart
-                          value={highlightValue}
+                          value={[highlightValue, ...Array.from(missingTeethIds)]
+                            .filter(Boolean)
+                            .join(",")}
                           onChange={() => {}}
                           readOnly
                           showPrimary={false}
                           crownTeeth={crownTeeth}
                           ponticTeeth={ponticTeeth}
+                          missingTeeth={missingTeethIds}
                         />
                       </div>
                     )}
