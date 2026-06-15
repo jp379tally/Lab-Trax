@@ -2584,7 +2584,6 @@ export function CaseDrawer({
   const [pendingDeletes, setPendingDeletes] = useState<Set<string>>(new Set());
   const [pendingUpdates, setPendingUpdates] = useState<PendingUpdate[]>([]);
   const [pendingCaseEdit, setPendingCaseEdit] = useState<PendingCaseEdit | null>(null);
-  const [missingTeethIds, setMissingTeethIds] = useState<Set<string>>(new Set());
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   // When unsaved edits would be lost (close, in-app route navigation, etc.) we
@@ -2749,9 +2748,27 @@ export function CaseDrawer({
     const set = new Set<string>();
     for (const r of data?.restorations ?? []) {
       if (pendingDeletes.has(r.id)) continue;
+      if (r.restorationType === "missing") continue;
       for (const id of parseToothField(r.toothNumber)) set.add(id);
     }
     for (const c of pendingCreates) {
+      if (c.restorationType === "missing") continue;
+      for (const id of parseToothField(c.toothNumber)) set.add(id);
+    }
+    return set;
+  }, [data?.restorations, pendingDeletes, pendingCreates]);
+
+  // Missing-tooth markers — derived from server data + pending creates/deletes
+  // so the set always reflects what will be on the server after the next save.
+  const missingTeethIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of data?.restorations ?? []) {
+      if (r.restorationType !== "missing") continue;
+      if (pendingDeletes.has(r.id)) continue;
+      for (const id of parseToothField(r.toothNumber)) set.add(id);
+    }
+    for (const c of pendingCreates) {
+      if (c.restorationType !== "missing") continue;
       for (const id of parseToothField(c.toothNumber)) set.add(id);
     }
     return set;
@@ -2763,6 +2780,7 @@ export function CaseDrawer({
     const map = new Map<string, string[]>();
     for (const r of data?.restorations ?? []) {
       if (pendingDeletes.has(r.id)) continue;
+      if (r.restorationType === "missing") continue;
       const materialShade = [r.material, r.shade].filter(Boolean).join(" · ");
       const label = [r.restorationType, materialShade].filter(Boolean).join(" / ");
       for (const id of parseToothField(r.toothNumber)) {
@@ -2772,6 +2790,7 @@ export function CaseDrawer({
       }
     }
     for (const c of pendingCreates) {
+      if (c.restorationType === "missing") continue;
       const materialShade = [c.material, c.shade].filter(Boolean).join(" · ");
       const label = [c.restorationType, materialShade].filter(Boolean).join(" / ");
       for (const id of parseToothField(c.toothNumber)) {
@@ -2787,10 +2806,12 @@ export function CaseDrawer({
     const set = new Set<string>();
     for (const r of data?.restorations ?? []) {
       if (pendingDeletes.has(r.id)) continue;
+      if (r.restorationType === "missing") continue;
       if (/pontic/i.test(r.restorationType)) continue;
       for (const id of parseToothField(r.toothNumber)) set.add(id);
     }
     for (const c of pendingCreates) {
+      if (c.restorationType === "missing") continue;
       if (/pontic/i.test(c.restorationType)) continue;
       for (const id of parseToothField(c.toothNumber)) set.add(id);
     }
@@ -3388,11 +3409,19 @@ export function CaseDrawer({
       setToothDialogId(null);
       setToothDialogError(null);
     } else if (payload.kind === "mark_missing") {
-      setMissingTeethIds((prev) => {
-        const next = new Set(prev);
-        next.add(payload.toothId);
-        return next;
-      });
+      const localId = `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      setPendingCreates((prev) => [
+        ...prev,
+        {
+          localId,
+          toothNumber: payload.toothId,
+          restorationType: "missing",
+          material: "",
+          shade: "",
+          quantity: 1,
+          unitPrice: "0.00",
+        },
+      ]);
       setToothDialogId(null);
       setToothDialogError(null);
     } else if (payload.kind === "remove_restoration") {
@@ -3403,11 +3432,31 @@ export function CaseDrawer({
           return next;
         });
       } else if (missingTeethIds.has(payload.toothId)) {
-        setMissingTeethIds((prev) => {
-          const next = new Set(prev);
-          next.delete(payload.toothId);
-          return next;
-        });
+        // Check if the missing marker is already saved to the server.
+        const serverMissingRow = (data?.restorations ?? []).find(
+          (r) =>
+            r.restorationType === "missing" &&
+            parseToothField(r.toothNumber).has(payload.toothId) &&
+            !pendingDeletes.has(r.id),
+        );
+        if (serverMissingRow) {
+          setPendingDeletes((prev) => {
+            const next = new Set(prev);
+            next.add(serverMissingRow.id);
+            return next;
+          });
+        } else {
+          // Still a pending create — remove it from the queue.
+          setPendingCreates((prev) =>
+            prev.filter(
+              (c) =>
+                !(
+                  c.restorationType === "missing" &&
+                  parseToothField(c.toothNumber).has(payload.toothId)
+                ),
+            ),
+          );
+        }
       } else {
         setPendingCreates((prev) =>
           prev.filter((c) => {
@@ -5844,7 +5893,9 @@ export function CaseDrawer({
       {toothDialogId !== null && (
         <ToothActionDialog
           toothId={toothDialogId}
-          restorations={data?.restorations ?? []}
+          restorations={(data?.restorations ?? []).filter(
+            (r) => r.restorationType !== "missing",
+          )}
           isPending={false}
           error={toothDialogError}
           onClose={() => {

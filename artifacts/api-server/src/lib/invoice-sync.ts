@@ -81,9 +81,13 @@ export async function syncInvoiceFromRestorations(args: {
   // (or vice versa). Read restorations inside the transaction so we
   // see a consistent snapshot under concurrent restoration writes.
   await db.transaction(async (tx) => {
-    const restorations = await tx.query.caseRestorations.findMany({
+    const allRestorations = await tx.query.caseRestorations.findMany({
       where: eq(caseRestorations.caseId, caseId),
     });
+    // Missing-tooth markers are visual-only; exclude them from invoice line items.
+    const restorations = allRestorations.filter(
+      (r) => r.restorationType !== "missing",
+    );
 
     await tx
       .delete(invoiceLineItems)
@@ -266,7 +270,12 @@ export function buildGroupedLineItemsForInvoice(
   invoiceId: string,
   aiRestorations?: AiRestoration[] | null,
 ): GroupedLineItemInsert[] {
-  if (restorations.length === 0) return [];
+  // Missing-tooth markers are visual-only; exclude them from invoice line items.
+  const billableRestorations = restorations.filter(
+    (r) => r.restorationType !== "missing",
+  );
+  if (billableRestorations.length === 0) return [];
+  restorations = billableRestorations;
 
   if (aiRestorations && aiRestorations.length > 0) {
     // AI-guided grouping: each AI element becomes one line item.
