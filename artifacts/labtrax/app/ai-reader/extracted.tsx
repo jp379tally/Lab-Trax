@@ -147,8 +147,6 @@ export default function AiReaderExtractedScreen() {
   // (e.g. right after inline create or alias auto-resolve).
   const [pickedPracticeName, setPickedPracticeName] = useState<string | null>(null);
   const [aliasResolved, setAliasResolved] = useState(false);
-  // True when user explicitly opted to proceed without linking a provider
-  const [skipProvider, setSkipProvider] = useState(false);
   // ── Practice picker modal ──
   const [pickerVisible, setPickerVisible] = useState(false);
   const [pickerFilter, setPickerFilter] = useState("");
@@ -263,7 +261,6 @@ export default function AiReaderExtractedScreen() {
   function selectProvider(p: LabProvider) {
     setProviderOrgId(p.id);
     setPickedPracticeName(p.displayName || p.name);
-    setSkipProvider(false);
     setPickerVisible(false);
     setCreatePracticeVisible(false);
     Keyboard.dismiss();
@@ -316,7 +313,6 @@ export default function AiReaderExtractedScreen() {
       if (newDoctorName.trim() && !doctorName.trim()) {
         setDoctorName(newDoctorName.trim());
       }
-      setSkipProvider(false);
       setCreatePracticeVisible(false);
       setPickerVisible(false);
       setPickerFilter("");
@@ -332,23 +328,6 @@ export default function AiReaderExtractedScreen() {
     } finally {
       setCreatingPractice(false);
     }
-  }
-
-  function confirmSkipProvider() {
-    Alert.alert(
-      "Continue without linking a practice?",
-      "The case will be created without a practice link. You can link it from the case detail later.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Continue anyway",
-          onPress: () => {
-            setSkipProvider(true);
-            Keyboard.dismiss();
-          },
-        },
-      ],
-    );
   }
 
   // ── Patient similarity ──
@@ -435,7 +414,7 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
   }
 
   // ── Submit ──
-  async function handleSubmit(skipDupeCheck = false, forceSkipProvider = false) {
+  async function handleSubmit(skipDupeCheck = false) {
     if (!selectedLabId) {
       Alert.alert("No lab selected", "Select a lab to create the case in.");
       return;
@@ -449,25 +428,27 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
       return;
     }
 
-    // If provider is not resolved and user hasn't confirmed skip, prompt.
-    // Use `forceSkipProvider` as an explicit param to avoid the React async-state
-    // race that occurs when setSkipProvider(true) is called immediately before
-    // handleSubmit() — the state update hasn't committed yet in that same call.
-    const effectiveSkipProvider = forceSkipProvider || skipProvider;
-    if (!providerOrgId && !effectiveSkipProvider) {
+    // A practice (provider organization) is mandatory — every case must be
+    // linked to one (DB-enforced). Prompt the user to pick or add a practice
+    // instead of letting the create fail server-side.
+    if (!providerOrgId) {
       Alert.alert(
-        "No practice linked",
-        "This case isn't linked to a practice yet. Select a practice, or continue without linking.",
+        "Practice required",
+        "Link this case to a practice before creating it. Select an existing practice or add a new one.",
         [
-          { text: "Select practice", style: "cancel", onPress: openPicker },
-          {
-            text: "Continue without linking",
-            onPress: () => {
-              setSkipProvider(true);
-              handleSubmit(skipDupeCheck, true);
-            },
-          },
+          { text: "Cancel", style: "cancel" },
+          { text: "Select practice", onPress: openPicker },
         ],
+      );
+      return;
+    }
+
+    // The server requires a non-empty doctor name (doctorName.min(1)). Guard here
+    // so an empty field surfaces a clear prompt instead of a server-side 400.
+    if (!doctorName.trim()) {
+      Alert.alert(
+        "Doctor name required",
+        "Enter the doctor's name on this Rx before creating the case.",
       );
       return;
     }
@@ -507,10 +488,10 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
     const payload: CreateCaseInput = {
       caseNumber: caseNumber.trim(),
       labOrganizationId: selectedLabId,
-      ...(providerOrgId ? { providerOrganizationId: providerOrgId } : {}),
+      providerOrganizationId: providerOrgId,
       patientFirstName: patientFirst.trim(),
       patientLastName: patientLast.trim(),
-      ...(doctorName.trim() ? { doctorName: doctorName.trim() } : {}),
+      doctorName: doctorName.trim(),
       priority,
       ...(dueDate.trim() ? { dueDate: dueDate.trim() } : {}),
       ...(notes.trim() ? { notes: notes.trim() } : {}),
@@ -793,14 +774,6 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
                 <Ionicons name="close-circle" size={18} color={colors.textTertiary} />
               </Pressable>
             </View>
-          ) : skipProvider ? (
-            <View style={[styles.resolvedRow, styles.resolvedRowWarn]}>
-              <Ionicons name="alert-circle-outline" size={18} color={colors.warningStrong} />
-              <Text style={styles.resolvedName} numberOfLines={1}>Not linked to a practice</Text>
-              <Pressable onPress={() => setSkipProvider(false)} hitSlop={8} accessibilityLabel="Undo skip">
-                <Ionicons name="close-circle" size={18} color={colors.textTertiary} />
-              </Pressable>
-            </View>
           ) : (
             <Pressable style={styles.pickerTrigger} onPress={openPicker} accessibilityRole="button">
               <Ionicons name="business-outline" size={18} color={colors.textTertiary} />
@@ -819,13 +792,6 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
             placeholderTextColor={colors.textTertiary}
             autoCorrect={false}
           />
-
-          {!providerResolved && !skipProvider && (
-            <Pressable style={styles.skipProviderBtn} onPress={confirmSkipProvider}>
-              <Ionicons name="arrow-forward-circle-outline" size={15} color={colors.textTertiary} />
-              <Text style={styles.skipProviderBtnText}>Continue without linking a practice</Text>
-            </Pressable>
-          )}
         </Section>
 
         {/* Due date + priority */}
@@ -1144,16 +1110,6 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
                   <Ionicons name="add-circle-outline" size={18} color={colors.tint} />
                   <Text style={styles.addNewText}>Add new practice</Text>
                 </Pressable>
-
-                <Pressable
-                  style={styles.pickerSkipBtn}
-                  onPress={() => {
-                    setPickerVisible(false);
-                    confirmSkipProvider();
-                  }}
-                >
-                  <Text style={styles.pickerSkipText}>Continue without linking</Text>
-                </Pressable>
               </>
             ) : (
               <ScrollView keyboardShouldPersistTaps="handled" style={styles.createScroll}>
@@ -1320,10 +1276,6 @@ function makeStyles(c: ThemeColors) {
       borderWidth: 1,
       borderColor: c.success + "40",
     },
-    resolvedRowWarn: {
-      backgroundColor: c.warningStrong + "10",
-      borderColor: c.warningStrong + "40",
-    },
     resolvedName: { ...Typography.bodyMedium, color: c.text, flex: 1 },
 
     pickerTrigger: {
@@ -1340,14 +1292,6 @@ function makeStyles(c: ThemeColors) {
     pickerTriggerText: { ...Typography.body, color: c.textSecondary, flex: 1 },
 
     subLabel: { marginTop: Spacing.sm },
-
-    skipProviderBtn: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: Spacing.xs,
-      paddingVertical: 2,
-    },
-    skipProviderBtnText: { ...Typography.captionSemibold, color: c.textTertiary },
 
     createPracticeForm: {
       marginTop: Spacing.sm,
@@ -1427,8 +1371,6 @@ function makeStyles(c: ThemeColors) {
       paddingVertical: Spacing.sm,
     },
     addNewText: { ...Typography.bodySemibold, color: c.tint },
-    pickerSkipBtn: { paddingVertical: Spacing.sm, alignItems: "center" },
-    pickerSkipText: { ...Typography.body, color: c.textTertiary },
     createScroll: { gap: Spacing.sm },
     createFieldGap: { marginTop: Spacing.sm },
     createCancelBtn: { paddingVertical: Spacing.sm, alignItems: "center", marginTop: Spacing.xs },

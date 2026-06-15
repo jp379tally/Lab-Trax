@@ -47,3 +47,4 @@
 - [Background commands die on return](background-commands-die-on-return.md) — nohup/backgrounded bash is SIGKILLed on tool-call return; run long jobs (api-server vitest ~2min) via a workflow, not `&`.
 - [LabTrax mobile manage-screen gating](labtrax-manage-screen-gating.md) — Pricing/Reports admin-only, Lists billing (item-label edit admin); gate on server RBAC not desktop isAdmin; non-eligible roles blocked not read-only.
 - [expo-sensors lazy import](expo-sensors-lazy-import.md) — requireNativeModule runs at module load time; static import crashes on navigation; must dynamic-import inside the function that needs it.
+- [Mobile create-case required fields](mobile-create-case-required-fields.md) — create needs providerOrganizationId (DB notNull) + doctorName.min(1); no placeholder org, so "unlinked"/skip paths always 400 — gate submit on both.
