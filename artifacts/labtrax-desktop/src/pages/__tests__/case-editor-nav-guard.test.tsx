@@ -83,7 +83,13 @@ function renderDrawer() {
   const Wrapper = makeAuthWrapper("/cases");
   const view = render(
     <Wrapper>
-      {withAiPanel(<CaseDrawer labCase={fakeCase} onClose={onClose} />)}
+      {withAiPanel(
+        <CaseDrawer
+          labCase={fakeCase}
+          onClose={onClose}
+          doctorNames={["Dr. Smith", "Dr. Jones"]}
+        />,
+      )}
     </Wrapper>,
   );
   return { onClose, view };
@@ -93,8 +99,11 @@ function renderDrawer() {
 // applying it to the drawer's pending-changes state.
 async function makeDirty() {
   fireEvent.click(await screen.findByRole("button", { name: /Edit/i }));
-  const doctorInput = await screen.findByDisplayValue("Dr. Smith");
-  fireEvent.change(doctorInput, { target: { value: "Dr. Jones" } });
+  // Doctor field is now a DoctorNamePicker (button + dropdown)
+  const doctorPicker = await screen.findByRole("button", { name: /Dr\. Smith/i });
+  fireEvent.click(doctorPicker);
+  const drJones = await screen.findByRole("button", { name: /Dr\. Jones/i });
+  fireEvent.click(drJones);
   fireEvent.click(await screen.findByRole("button", { name: /Save changes/i }));
 }
 

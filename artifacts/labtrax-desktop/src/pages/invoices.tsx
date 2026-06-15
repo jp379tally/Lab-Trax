@@ -8,7 +8,9 @@ import {
   ArrowDown,
   ArrowUp,
   Ban,
+  Check,
   CheckCircle2,
+  ChevronDown,
   Copy,
   CreditCard,
   Download,
@@ -32,6 +34,7 @@ import {
 import QRCodeLib from "qrcode";
 import { apiFetch, ApiError, getApiOrigin, getAccessToken } from "@/lib/api";
 import { setNavBlocker } from "@/lib/nav-guard";
+import { DoctorNamePicker } from "@/components/DoctorNamePicker";
 import {
   ItemCombobox,
   type ItemComboboxOption,
@@ -155,6 +158,19 @@ export default function InvoicesPage() {
         `/invoices${queryString ? `?${queryString}` : ""}`,
       ),
   });
+
+  const casesQuery = useQuery({
+    queryKey: ["cases"],
+    queryFn: () => apiFetch<LabCase[]>("/cases"),
+    staleTime: 60_000,
+  });
+  const distinctDoctorNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const c of casesQuery.data ?? []) {
+      if (c.doctorName?.trim()) names.add(c.doctorName.trim());
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [casesQuery.data]);
 
   const practicesQuery = useQuery({
     queryKey: ["organizations"],
@@ -577,6 +593,7 @@ export default function InvoicesPage() {
       {editing && (
         <InvoiceEditor
           invoice={editing}
+          doctorNames={distinctDoctorNames}
           onClose={() => setEditing(null)}
           onGoToCase={() => {
             const caseId = editing.caseId;
@@ -915,10 +932,12 @@ function serializeInvoiceForm(f: {
 
 export function InvoiceEditor({
   invoice,
+  doctorNames,
   onClose,
   onGoToCase,
 }: {
   invoice: Invoice;
+  doctorNames?: string[];
   onClose: () => void;
   onGoToCase?: () => void;
 }) {
@@ -1036,6 +1055,22 @@ export function InvoiceEditor({
     queryKey: ["invoice", invoice.id],
     queryFn: () => apiFetch<Invoice>(`/invoices/${invoice.id}`),
   });
+
+  // Self-fetch doctors when the parent page doesn't provide them.
+  const casesQuery = useQuery({
+    queryKey: ["cases"],
+    queryFn: () => apiFetch<LabCase[]>("/cases"),
+    staleTime: 60_000,
+    enabled: !doctorNames,
+  });
+  const editorDoctorNames = useMemo(() => {
+    if (doctorNames) return doctorNames;
+    const names = new Set<string>();
+    for (const c of casesQuery.data ?? []) {
+      if (c.doctorName?.trim()) names.add(c.doctorName.trim());
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [doctorNames, casesQuery.data]);
 
   const practicesQuery = useQuery({
     queryKey: ["organizations"],
@@ -2231,12 +2266,11 @@ export function InvoiceEditor({
                 <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
                   Bill to
                 </label>
-                <input
-                  type="text"
+                <DoctorNamePicker
                   value={billTo}
-                  onChange={(e) => setBillTo(e.target.value)}
-                  placeholder="Doctor or practice name"
-                  className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+                  onChange={(name) => setBillTo(name)}
+                  doctorNames={editorDoctorNames}
+                  placeholder="Select doctor…"
                 />
               </div>
               <div>

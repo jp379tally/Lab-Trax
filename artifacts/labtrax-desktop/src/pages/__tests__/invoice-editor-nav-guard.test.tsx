@@ -69,7 +69,7 @@ function renderEditor() {
   const Wrapper = makeAuthWrapper("/invoices");
   const view = render(
     <Wrapper>
-      <InvoiceEditor invoice={baseInvoice} onClose={onClose} />
+      <InvoiceEditor invoice={baseInvoice} doctorNames={[]} onClose={onClose} />
     </Wrapper>,
   );
   return { onClose, view };
