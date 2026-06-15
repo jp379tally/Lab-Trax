@@ -245,8 +245,20 @@ function SvgBadge({ id, x, y, r, selected, billed, billedTitle, readOnly, toothT
     textFill = "hsl(var(--foreground))";
   }
 
-  const title = billed ? (billedTitle ?? `Tooth ${id} — billed`) : `Tooth ${id}`;
-  const ariaLabel = `Tooth ${id}${selected ? " (highlighted)" : ""}`;
+  const isPontic = selected && toothType === "pontic";
+  const isMissing = selected && toothType === "missing";
+
+  const typeTitleSuffix =
+    isMissing ? " — missing"
+    : isPontic ? " — pontic (bridge unit)"
+    : toothType === "crown" && selected ? " — crown"
+    : "";
+  const title = billed
+    ? (billedTitle ?? `Tooth ${id} — billed`)
+    : `Tooth ${id}${typeTitleSuffix}`;
+  const ariaLabel = `Tooth ${id}${
+    isMissing ? " (missing)" : isPontic ? " (pontic)" : selected ? " (highlighted)" : ""
+  }`;
 
   const inner = (
     <>
@@ -254,7 +266,27 @@ function SvgBadge({ id, x, y, r, selected, billed, billedTitle, readOnly, toothT
       {!readOnly && (
         <circle cx={x} cy={y} r={r + 4} fill="transparent" />
       )}
-      <circle cx={x} cy={y} r={r} fill={fill} stroke={stroke} strokeWidth={strokeW} />
+      {/* Pontic: dashed "bridge-link" halo ring around the badge */}
+      {isPontic && (
+        <circle
+          cx={x}
+          cy={y}
+          r={r + 3}
+          fill="none"
+          stroke="#A855F7"
+          strokeWidth={1.25}
+          strokeDasharray="2.5 2"
+        />
+      )}
+      <circle
+        cx={x}
+        cy={y}
+        r={r}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={strokeW}
+        strokeDasharray={isMissing ? "2.5 2" : undefined}
+      />
       <text
         x={x}
         y={y}
@@ -496,11 +528,11 @@ export function ToothChart({
                 Crown
               </span>
               <span className="inline-flex items-center gap-1">
-                <span className="h-2.5 w-2.5 rounded-full bg-purple-500 inline-block" />
+                <span className="h-3 w-3 rounded-full bg-purple-500 border border-dashed border-purple-400 inline-block" />
                 Pontic
               </span>
               <span className="inline-flex items-center gap-1">
-                <span className="h-2.5 w-2.5 rounded-full bg-muted border border-muted-foreground/30 inline-flex items-center justify-center text-[8px] text-muted-foreground font-mono">✕</span>
+                <span className="h-2.5 w-2.5 rounded-full bg-muted border border-dashed border-muted-foreground/50 inline-flex items-center justify-center text-[8px] text-muted-foreground font-mono">✕</span>
                 Missing
               </span>
             </>

@@ -124,7 +124,7 @@ export function ReadOnlyToothChart({ crownTeeth, ponticTeeth, missingTeeth, high
           )}
           {hasPontic && (
             <>
-              <View style={[styles.legendSwatch, { backgroundColor: COLOR_PONTIC, marginLeft: hasCrown ? 6 : 0 }]} />
+              <View style={[styles.legendSwatchPontic, { marginLeft: hasCrown ? 6 : 0 }]} />
               <Text style={styles.legendText}>Pontic</Text>
             </>
           )}
@@ -228,6 +228,18 @@ export function ReadOnlyToothChart({ crownTeeth, ponticTeeth, missingTeeth, high
 
           return (
             <G key={n}>
+              {/* Pontic: dashed "bridge-link" halo ring */}
+              {toothType === "pontic" && (
+                <Circle
+                  cx={x}
+                  cy={y}
+                  r={BADGE_R + 3}
+                  fill="none"
+                  stroke={COLOR_PONTIC}
+                  strokeWidth={1.25}
+                  strokeDasharray="2.5,2"
+                />
+              )}
               <Circle
                 cx={x}
                 cy={y}
@@ -235,6 +247,7 @@ export function ReadOnlyToothChart({ crownTeeth, ponticTeeth, missingTeeth, high
                 fill={circleFill}
                 stroke={circleStroke}
                 strokeWidth={1.5}
+                strokeDasharray={toothType === "missing" ? "2.5,2" : undefined}
               />
               <SvgText
                 x={x}
@@ -288,6 +301,15 @@ const makeStyles = (colors: ThemeColors) =>
       width: 10,
       height: 10,
       borderRadius: 5,
+    },
+    legendSwatchPontic: {
+      width: 11,
+      height: 11,
+      borderRadius: 6,
+      backgroundColor: COLOR_PONTIC,
+      borderWidth: 1,
+      borderStyle: "dashed",
+      borderColor: COLOR_PONTIC,
     },
     legendSwatchMissing: {
       width: 10,
