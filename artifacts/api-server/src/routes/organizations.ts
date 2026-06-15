@@ -47,6 +47,10 @@ import {
 } from "@workspace/db";
 import { generateInviteToken } from "../lib/auth";
 import { writeAuditLog } from "../lib/audit";
+import {
+  assertLabCreationFields,
+  assertLabNameAvailable,
+} from "../lib/lab-creation";
 import { hashPassword } from "../lib/crypto";
 import { HttpError, ok } from "../lib/http";
 import { notDeleted, restoreDeleted, softDeleteById } from "../lib/soft-delete";
@@ -64,7 +68,11 @@ import {
   type MembershipRole,
 } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
-import { requireAuth } from "../middlewares/auth";
+import {
+  requireAuth,
+  isAccountVerified,
+  isCanonicalAccount,
+} from "../middlewares/auth";
 import {
   allocatePlatformAccountNumber,
   deriveAccountNameParts,
@@ -90,6 +98,9 @@ const createOrgSchema = z.object({
   // Default days after received-date to set as the due date for new cases.
   // Null clears the override (no default applied). Lab orgs only.
   defaultCaseDueDays: z.number().int().min(1).max(365).nullable().optional(),
+  // Lab license / registration number (Account epic Phase 3). Required when
+  // creating a lab environment; ignored on provider orgs.
+  licenseNumber: z.string().optional(),
   // Doctor name is used (alongside the address) to derive the auto account
   // number when the lab admin doesn't supply one. It's optional and not
   // persisted on the org row directly — it just feeds the derivation.
@@ -361,6 +372,44 @@ router.post(
     let parentLabOrganizationId: string | null = null;
     let accountNumber: string | null = null;
 
+    if (input.type === "lab") {
+      // Account epic Phase 3 — only a verified account may stand up a lab
+      // environment. Lazy adoption matches requireVerifiedAccount: legacy
+      // (non-canonical) accounts are grandfathered.
+      const caller = (req as any).user;
+      if (
+        process.env.DISABLE_VERIFICATION_ENFORCEMENT !== "true" &&
+        isCanonicalAccount(caller) &&
+        !isAccountVerified(caller)
+      ) {
+        throw new HttpError(
+          403,
+          "Please verify your email or phone before creating a lab.",
+          { code: "VERIFICATION_REQUIRED" }
+        );
+      }
+      // Only lab-type accounts may stand up a lab environment. UI gating is not
+      // sufficient — a provider account could call this endpoint directly.
+      // userType defaults to "lab" in the schema, so legacy/unspecified
+      // accounts are grandfathered; provider accounts are blocked.
+      const callerUserType = caller?.userType ?? "lab";
+      if (callerUserType !== "lab") {
+        throw new HttpError(
+          403,
+          "Only lab accounts can create a lab environment.",
+          { code: "LAB_USER_REQUIRED" }
+        );
+      }
+      assertLabCreationFields({
+        name: input.name,
+        addressLine1: input.addressLine1,
+        licenseNumber: input.licenseNumber,
+        phone: input.phone,
+        billingEmail: input.billingEmail,
+      });
+      await assertLabNameAvailable(input.name);
+    }
+
     if (input.type === "provider") {
       // Resolve the parent lab. Either supplied explicitly (and the caller
       // must be an admin of that lab) or inferred from the caller's primary
@@ -400,8 +449,13 @@ router.post(
       doctorName: _doctorName,
       accountNumber: _accountNumberInput,
       parentLabOrganizationId: _parentLabInput,
+      licenseNumber: _licenseNumberInput,
       ...persistableInput
     } = input;
+
+    // License number is only meaningful for lab orgs.
+    const licenseNumber =
+      input.type === "lab" ? input.licenseNumber?.trim() || null : null;
 
     // Platform-wide account number for provider organizations (Task #320).
     // Best-effort; never blocks creation.
@@ -427,6 +481,7 @@ router.post(
       .insert(organizations)
       .values({
         ...persistableInput,
+        licenseNumber,
         parentLabOrganizationId,
         accountNumber,
         platformAccountNumber,

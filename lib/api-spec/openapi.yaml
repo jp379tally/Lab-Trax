@@ -2924,6 +2924,10 @@ components:
         isActive: { type: boolean, nullable: true }
         statementEmailOptOut: { type: boolean, nullable: true }
         defaultCaseDueDays: { type: integer, nullable: true }
+        licenseNumber:
+          type: string
+          nullable: true
+          description: Lab license / registration number. Required when creating a lab; ignored on provider orgs.
         doctorName:
           type: string
           nullable: true
@@ -2953,6 +2957,7 @@ components:
         isActive: { type: boolean, nullable: true }
         statementEmailOptOut: { type: boolean, nullable: true }
         defaultCaseDueDays: { type: integer, nullable: true }
+        licenseNumber: { type: string, nullable: true }
         accountNumber: { type: string, nullable: true }
     Organization:
       type: object
@@ -2967,6 +2972,7 @@ components:
         parentLabOrganizationId: { type: string, nullable: true }
         accountNumber: { type: string, nullable: true }
         platformAccountNumber: { type: string, nullable: true }
+        licenseNumber: { type: string, nullable: true }
         isActive: { type: boolean, nullable: true }
       required: [id]
     OrganizationResult:

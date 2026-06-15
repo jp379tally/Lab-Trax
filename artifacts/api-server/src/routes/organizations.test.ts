@@ -36,12 +36,30 @@ function rid(prefix: string) {
   return `${prefix}_${randomBytes(8).toString("hex")}`;
 }
 
+/**
+ * Phase 3 lab creation requires license number, phone, billing email, and a
+ * street address in addition to a unique name. Helper builds a complete,
+ * valid lab payload so CRUD/role tests are not rejected by field validation.
+ */
+function labBody(name: string) {
+  return {
+    type: "lab" as const,
+    name,
+    licenseNumber: `LIC-${randomBytes(3).toString("hex")}`,
+    phone: "555-111-2222",
+    billingEmail: "lab@example.com",
+    addressLine1: "123 Test St",
+  };
+}
+
 maybe("Organizations CRUD (db integration)", () => {
   let dbMod: typeof import("@workspace/db");
   let appMod: { default: import("express").Express };
   let authLib: typeof import("../lib/auth.js");
 
   const ownerId = rid("u");
+  // A provider-type user — must NOT be allowed to create a lab environment.
+  const providerUserId = rid("pu");
   // IDs for orgs created via the API (collected at runtime).
   const createdOrgIds: string[] = [];
 
@@ -69,6 +87,12 @@ maybe("Organizations CRUD (db integration)", () => {
       username: `orgowner_${ownerId}`,
       password: "doesnotmatter",
     });
+    await db.insert(users).values({
+      id: providerUserId,
+      username: `provider_${providerUserId}`,
+      password: "doesnotmatter",
+      userType: "provider",
+    });
   });
 
   afterAll(async () => {
@@ -95,12 +119,13 @@ maybe("Organizations CRUD (db integration)", () => {
       const providerIds = allOrgIds;
       await db.delete(organizations).where(inArray(organizations.id, providerIds));
     }
-    await db.delete(auditLogs).where(inArray(auditLogs.userId, [ownerId]));
-    await db.delete(userSessions).where(inArray(userSessions.userId, [ownerId]));
+    const allUserIds = [ownerId, providerUserId];
+    await db.delete(auditLogs).where(inArray(auditLogs.userId, allUserIds));
+    await db.delete(userSessions).where(inArray(userSessions.userId, allUserIds));
     await db.delete(organizationMemberships).where(
-      inArray(organizationMemberships.userId, [ownerId])
+      inArray(organizationMemberships.userId, allUserIds)
     );
-    await db.delete(users).where(inArray(users.id, [ownerId]));
+    await db.delete(users).where(inArray(users.id, allUserIds));
   });
 
   // ── POST /api/organizations ───────────────────────────────────────────────
@@ -112,7 +137,7 @@ maybe("Organizations CRUD (db integration)", () => {
     const r = await request(appMod.default)
       .post("/api/organizations")
       .set("Authorization", `Bearer ${access}`)
-      .send({ type: "lab", name });
+      .send(labBody(name));
 
     expect(r.status).toBe(201);
     expect(r.body.data).toBeDefined();
@@ -130,6 +155,102 @@ maybe("Organizations CRUD (db integration)", () => {
     expect(r.status).toBe(401);
   });
 
+  // ── Phase 3: lab creation validation ──────────────────────────────────────
+
+  it("persists licenseNumber and records an organization_created audit entry", async () => {
+    const { access } = await makeSession(ownerId);
+    const name = rid("LicLab");
+    const license = `LIC-${randomBytes(4).toString("hex")}`;
+
+    const r = await request(appMod.default)
+      .post("/api/organizations")
+      .set("Authorization", `Bearer ${access}`)
+      .send({ ...labBody(name), licenseNumber: license });
+
+    expect(r.status).toBe(201);
+    expect(r.body.data.licenseNumber).toBe(license);
+    const orgId = r.body.data.id;
+    createdOrgIds.push(orgId);
+
+    // License persisted in the DB.
+    const { db, organizations, auditLogs } = dbMod as any;
+    const [row] = await db
+      .select()
+      .from(organizations)
+      .where(eq(organizations.id, orgId));
+    expect(row?.licenseNumber).toBe(license);
+
+    // Audit entry written for the creation.
+    const logs = await db
+      .select()
+      .from(auditLogs)
+      .where(eq(auditLogs.organizationId, orgId));
+    expect(
+      logs.some((l: any) => l.action === "organization_created")
+    ).toBe(true);
+  });
+
+  it("rejects lab creation missing required fields with 400 LAB_FIELDS_REQUIRED", async () => {
+    const { access } = await makeSession(ownerId);
+    const r = await request(appMod.default)
+      .post("/api/organizations")
+      .set("Authorization", `Bearer ${access}`)
+      .send({ type: "lab", name: rid("MissingFields") });
+    expect(r.status).toBe(400);
+    expect(r.body.details?.code).toBe("LAB_FIELDS_REQUIRED");
+  });
+
+  it("rejects a duplicate lab name (case-insensitive) with 409 LAB_NAME_TAKEN", async () => {
+    const { access } = await makeSession(ownerId);
+    const name = rid("DupLab");
+
+    const first = await request(appMod.default)
+      .post("/api/organizations")
+      .set("Authorization", `Bearer ${access}`)
+      .send(labBody(name));
+    expect(first.status).toBe(201);
+    createdOrgIds.push(first.body.data.id);
+
+    const second = await request(appMod.default)
+      .post("/api/organizations")
+      .set("Authorization", `Bearer ${access}`)
+      .send(labBody(name.toUpperCase()));
+    expect(second.status).toBe(409);
+    expect(second.body.details?.code).toBe("LAB_NAME_TAKEN");
+  });
+
+  it("rejects lab creation by a non-lab (provider) account with 403 LAB_USER_REQUIRED", async () => {
+    const { access } = await makeSession(providerUserId);
+    const r = await request(appMod.default)
+      .post("/api/organizations")
+      .set("Authorization", `Bearer ${access}`)
+      .send(labBody(rid("ProviderLab")));
+    expect(r.status).toBe(403);
+    expect(r.body.details?.code).toBe("LAB_USER_REQUIRED");
+  });
+
+  it("creator becomes an active owner of the new lab", async () => {
+    const { access } = await makeSession(ownerId);
+    const name = rid("OwnerLab");
+
+    const create = await request(appMod.default)
+      .post("/api/organizations")
+      .set("Authorization", `Bearer ${access}`)
+      .send(labBody(name));
+    expect(create.status).toBe(201);
+    const orgId = create.body.data.id;
+    createdOrgIds.push(orgId);
+
+    const { db, organizationMemberships } = dbMod as any;
+    const memberships = await db
+      .select()
+      .from(organizationMemberships)
+      .where(eq(organizationMemberships.labId, orgId));
+    const owner = memberships.find((m: any) => m.userId === ownerId);
+    expect(owner?.role).toBe("owner");
+    expect(owner?.status).toBe("active");
+  });
+
   // ── GET /api/organizations/:id ────────────────────────────────────────────
 
   it("GET /api/organizations/:id returns the org", async () => {
@@ -139,7 +260,7 @@ maybe("Organizations CRUD (db integration)", () => {
     const create = await request(appMod.default)
       .post("/api/organizations")
       .set("Authorization", `Bearer ${access}`)
-      .send({ type: "lab", name });
+      .send(labBody(name));
     expect(create.status).toBe(201);
     const orgId = create.body.data.id;
     createdOrgIds.push(orgId);
@@ -169,7 +290,7 @@ maybe("Organizations CRUD (db integration)", () => {
     const create = await request(appMod.default)
       .post("/api/organizations")
       .set("Authorization", `Bearer ${access}`)
-      .send({ type: "lab", name });
+      .send(labBody(name));
     expect(create.status).toBe(201);
     const orgId = create.body.data.id;
     createdOrgIds.push(orgId);
@@ -191,7 +312,7 @@ maybe("Organizations CRUD (db integration)", () => {
     const create = await request(appMod.default)
       .post("/api/organizations")
       .set("Authorization", `Bearer ${access}`)
-      .send({ type: "lab", name });
+      .send(labBody(name));
     expect(create.status).toBe(201);
     const orgId = create.body.data.id;
     createdOrgIds.push(orgId);
@@ -213,7 +334,7 @@ maybe("Organizations CRUD (db integration)", () => {
     const create = await request(appMod.default)
       .post("/api/organizations")
       .set("Authorization", `Bearer ${access}`)
-      .send({ type: "lab", name });
+      .send(labBody(name));
     expect(create.status).toBe(201);
     const orgId = create.body.data.id;
     createdOrgIds.push(orgId);
@@ -247,7 +368,7 @@ maybe("Organizations CRUD (db integration)", () => {
     const create = await request(appMod.default)
       .post("/api/organizations")
       .set("Authorization", `Bearer ${access}`)
-      .send({ type: "lab", name: orgName });
+      .send(labBody(orgName));
     expect(create.status).toBe(201);
     const orgId = create.body.data.id;
     createdOrgIds.push(orgId);
@@ -287,7 +408,7 @@ maybe("Organizations CRUD (db integration)", () => {
     const create = await request(appMod.default)
       .post("/api/organizations")
       .set("Authorization", `Bearer ${adminAccess}`)
-      .send({ type: "lab", name: orgName });
+      .send(labBody(orgName));
     expect(create.status).toBe(201);
     const orgId = create.body.data.id;
     createdOrgIds.push(orgId);
@@ -345,7 +466,7 @@ maybe("Organizations CRUD (db integration)", () => {
     const create = await request(appMod.default)
       .post("/api/organizations")
       .set("Authorization", `Bearer ${access}`)
-      .send({ type: "lab", name: orgName });
+      .send(labBody(orgName));
     expect(create.status).toBe(201);
     const orgId = create.body.data.id;
     createdOrgIds.push(orgId);
@@ -390,7 +511,7 @@ maybe("Organizations CRUD (db integration)", () => {
     const create = await request(appMod.default)
       .post("/api/organizations")
       .set("Authorization", `Bearer ${adminAccess}`)
-      .send({ type: "lab", name: orgName });
+      .send(labBody(orgName));
     expect(create.status).toBe(201);
     const orgId = create.body.data.id;
     createdOrgIds.push(orgId);
@@ -465,7 +586,7 @@ maybe("Organizations CRUD (db integration)", () => {
     const create = await request(appMod.default)
       .post("/api/organizations")
       .set("Authorization", `Bearer ${adminAccess}`)
-      .send({ type: "lab", name: rid("DeclineOrg") });
+      .send(labBody(rid("DeclineOrg")));
     expect(create.status).toBe(201);
     const orgId = create.body.data.id;
     createdOrgIds.push(orgId);
@@ -509,7 +630,7 @@ maybe("Organizations CRUD (db integration)", () => {
     const create = await request(appMod.default)
       .post("/api/organizations")
       .set("Authorization", `Bearer ${access}`)
-      .send({ type: "lab", name: rid("RolePatchOrg") });
+      .send(labBody(rid("RolePatchOrg")));
     expect(create.status).toBe(201);
     const orgId = create.body.data.id;
     createdOrgIds.push(orgId);
@@ -555,7 +676,7 @@ maybe("Organizations CRUD (db integration)", () => {
     const create = await request(appMod.default)
       .post("/api/organizations")
       .set("Authorization", `Bearer ${escalAccess.access}`)
-      .send({ type: "lab", name: rid("EscalOrg") });
+      .send(labBody(rid("EscalOrg")));
     expect(create.status).toBe(201);
     const orgId = create.body.data.id;
     createdOrgIds.push(orgId);
@@ -600,7 +721,7 @@ maybe("Organizations CRUD (db integration)", () => {
     const create = await request(appMod.default)
       .post("/api/organizations")
       .set("Authorization", `Bearer ${escalAccess.access}`)
-      .send({ type: "lab", name: rid("CeilOrg") });
+      .send(labBody(rid("CeilOrg")));
     expect(create.status).toBe(201);
     const orgId = create.body.data.id;
     createdOrgIds.push(orgId);

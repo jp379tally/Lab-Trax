@@ -305,7 +305,8 @@ export default function SignupWizard({ onCancel }: Props) {
       !labState.trim() ||
       !labZip.trim() ||
       !labPhone.trim() ||
-      !labEmail.trim()
+      !labEmail.trim() ||
+      !licenseNumber.trim()
     ) {
       return fail("Please fill in all fields.");
     }
@@ -706,6 +707,17 @@ export default function SignupWizard({ onCancel }: Props) {
                 value={labEmail}
                 onChange={(e) => {
                   setLabEmail(e.target.value);
+                  clearError();
+                }}
+              />
+            </div>
+            <div>
+              <label className={labelClass}>Lab License Number</label>
+              <input
+                className={inputClass}
+                value={licenseNumber}
+                onChange={(e) => {
+                  setLicenseNumber(e.target.value.toUpperCase());
                   clearError();
                 }}
               />

@@ -21,6 +21,8 @@ export interface CreateOrganizationInput {
   isActive?: boolean | null;
   statementEmailOptOut?: boolean | null;
   defaultCaseDueDays?: number | null;
+  /** Lab license / registration number. Required when creating a lab; ignored on provider orgs. */
+  licenseNumber?: string | null;
   /** Provider orgs only — feeds account-number derivation; not persisted on the org row. */
   doctorName?: string | null;
   /** Optional caller override; must be unique within the parent lab. */

@@ -36,6 +36,7 @@ import { HttpError, ok } from "../lib/http";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
 import { writeAuditLog } from "../lib/audit";
+import { assertLabNameAvailable, assertLabCreationFields } from "../lib/lab-creation";
 import { softDeleteById } from "../lib/soft-delete";
 import { notifications } from "@workspace/db";
 import {
@@ -405,7 +406,11 @@ router.post(
     // Captured inside the transaction; billing trials are started AFTER the
     // commit (best-effort, must never roll back account creation).
     let orgCreation:
-      | { orgId: string; billingSubjectType: "lab_org" | "provider_org" }
+      | {
+          orgId: string;
+          billingSubjectType: "lab_org" | "provider_org";
+          org: typeof organizations.$inferSelect;
+        }
       | null = null;
 
     // Allocate the immutable platform account number(s) and create the user
@@ -457,6 +462,22 @@ router.post(
         responseMessage = `Your request to join ${targetName} has been sent to the lab admin.`;
       } else if (shouldCreateOrganization) {
         const orgType = input.userType === "provider" ? "provider" : "lab";
+        // Account epic Phase 3 — lab names are unique (case-insensitive)
+        // across all non-deleted lab orgs. Checked inside the transaction so
+        // the user row rolls back if the name collides.
+        if (orgType === "lab") {
+          // Account epic Phase 3 — a lab environment cannot be created without
+          // all required fields. Enforced here as well as in
+          // POST /api/organizations so the signup path can't bypass it.
+          assertLabCreationFields({
+            name: input.practiceName,
+            addressLine1: input.practiceAddress,
+            licenseNumber: input.licenseNumber,
+            phone: input.practicePhone,
+            billingEmail: input.email,
+          });
+          await assertLabNameAvailable(input.practiceName!.trim());
+        }
         const orgPlatformAccountNumber = await allocateAccountNumberV2(
           accountTypeFor(orgType),
           input.practicePhone || input.phone,
@@ -471,6 +492,8 @@ router.post(
             addressLine1: input.practiceAddress || null,
             phone: input.practicePhone || null,
             billingEmail: input.email || null,
+            licenseNumber:
+              orgType === "lab" ? input.licenseNumber?.trim() || null : null,
             createdByUserId: createdUser.id,
             platformAccountNumber: orgPlatformAccountNumber,
           })
@@ -488,6 +511,7 @@ router.post(
         orgCreation = {
           orgId: org.id,
           billingSubjectType: orgType === "lab" ? "lab_org" : "provider_org",
+          org,
         };
       }
 
@@ -521,7 +545,18 @@ router.post(
     // Start billing trials AFTER the account-creation transaction commits.
     // These are best-effort and must never roll back the new account.
     if (orgCreation) {
-      const { billingSubjectType, orgId } = orgCreation;
+      const { billingSubjectType, orgId, org } = orgCreation;
+      // Account epic Phase 3 — record lab/provider environment creation so it
+      // is audited consistently with POST /api/organizations.
+      await writeAuditLog({
+        req,
+        userId: user.id,
+        organizationId: orgId,
+        action: "organization_created",
+        entityType: "organization",
+        entityId: orgId,
+        afterJson: org,
+      });
       startBillingTrial(billingSubjectType, orgId, user.id).catch((err: any) => {
         req.log?.warn?.(
           { err: err?.message },

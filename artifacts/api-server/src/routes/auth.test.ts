@@ -132,6 +132,26 @@ maybe("Auth registration and password reset (db integration)", () => {
     expect(second.status).toBe(409);
   });
 
+  it("register that creates a lab org without required fields returns 400 LAB_FIELDS_REQUIRED", async () => {
+    const username = uname("labmissing");
+    const r = await request(appMod.default)
+      .post("/api/auth/register")
+      .send({
+        username,
+        password: "TestPassword1!",
+        email: `${username}@example.com`,
+        userType: "lab",
+        clientType: "mobile",
+        createOrganization: true,
+        practiceName: `Missing Fields Lab ${username}`,
+        // No practiceAddress / practicePhone / licenseNumber — must be rejected.
+      });
+    expect(r.status).toBe(400);
+    expect(r.body.details?.code).toBe("LAB_FIELDS_REQUIRED");
+    // No user should be persisted when org creation validation fails.
+    if (r.body.user?.id) createdUserIds.push(r.body.user.id);
+  });
+
   // ── POST /api/forgot-password (no-enumeration) ────────────────────────────
 
   it("forgot-password returns 200 for a non-existent email (no enumeration)", async () => {

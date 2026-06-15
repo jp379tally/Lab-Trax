@@ -1426,6 +1426,66 @@ function OrganizationsPanel() {
     },
   });
 
+  const isLabUser = (meQuery.data?.user?.userType ?? null) === "lab";
+  const hasLabMembership = memberships.some((m) => {
+    const org = m.organization || orgsById.get(m.organizationId);
+    return org?.type === "lab" && m.status === "active";
+  });
+
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createName, setCreateName] = useState("");
+  const [createLicense, setCreateLicense] = useState("");
+  const [createPhone, setCreatePhone] = useState("");
+  const [createEmail, setCreateEmail] = useState("");
+  const [createAddressLine1, setCreateAddressLine1] = useState("");
+  const [createAddressLine2, setCreateAddressLine2] = useState("");
+  const [createCity, setCreateCity] = useState("");
+  const [createState, setCreateState] = useState("");
+  const [createZip, setCreateZip] = useState("");
+  const [createError, setCreateError] = useState<string | null>(null);
+
+  const resetCreateForm = () => {
+    setCreateName("");
+    setCreateLicense("");
+    setCreatePhone("");
+    setCreateEmail("");
+    setCreateAddressLine1("");
+    setCreateAddressLine2("");
+    setCreateCity("");
+    setCreateState("");
+    setCreateZip("");
+    setCreateError(null);
+  };
+
+  const createLabMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<Organization>("/organizations", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "lab",
+          name: createName.trim(),
+          displayName: createName.trim(),
+          licenseNumber: createLicense.trim(),
+          phone: createPhone.trim(),
+          billingEmail: createEmail.trim(),
+          addressLine1: createAddressLine1.trim(),
+          addressLine2: createAddressLine2.trim() || undefined,
+          city: createCity.trim() || undefined,
+          state: createState.trim() || undefined,
+          zip: createZip.trim() || undefined,
+        }),
+      }),
+    onSuccess: () => {
+      setCreateOpen(false);
+      resetCreateForm();
+      queryClient.invalidateQueries({ queryKey: ["auth", "me"] });
+      queryClient.invalidateQueries({ queryKey: ["organizations"] });
+    },
+    onError: (err: Error) => {
+      setCreateError(err.message || "Failed to create lab.");
+    },
+  });
+
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState("");
   const [editBillingEmail, setEditBillingEmail] = useState("");
@@ -1435,14 +1495,15 @@ function OrganizationsPanel() {
   const [editCity, setEditCity] = useState("");
   const [editState, setEditState] = useState("");
   const [editZip, setEditZip] = useState("");
+  const [editLicenseNumber, setEditLicenseNumber] = useState("");
   const [editError, setEditError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
   const updateOrgMutation = useMutation({
-    mutationFn: ({ orgId, name, billingEmail, phone, addressLine1, addressLine2, city, state, zip }: {
+    mutationFn: ({ orgId, name, billingEmail, phone, addressLine1, addressLine2, city, state, zip, licenseNumber }: {
       orgId: string; name: string; billingEmail: string;
       phone: string; addressLine1: string; addressLine2: string;
-      city: string; state: string; zip: string;
+      city: string; state: string; zip: string; licenseNumber: string;
     }) =>
       apiFetch<Organization>(`/organizations/${orgId}`, {
         method: "PATCH",
@@ -1456,9 +1517,10 @@ function OrganizationsPanel() {
           city: city.trim() || undefined,
           state: state.trim() || undefined,
           zip: zip.trim() || undefined,
+          licenseNumber: licenseNumber.trim() || undefined,
         }),
       }),
-    onMutate: async ({ orgId, name, billingEmail, phone, addressLine1, addressLine2, city, state, zip }) => {
+    onMutate: async ({ orgId, name, billingEmail, phone, addressLine1, addressLine2, city, state, zip, licenseNumber }) => {
       await queryClient.cancelQueries({ queryKey: ["organizations"] });
       await queryClient.cancelQueries({ queryKey: ["auth", "me"] });
 
@@ -1470,7 +1532,8 @@ function OrganizationsPanel() {
           ? { ...o, name, displayName: name, billingEmail: billingEmail.trim() || null,
               phone: phone.trim() || null, addressLine1: addressLine1.trim() || null,
               addressLine2: addressLine2.trim() || null, city: city.trim() || null,
-              state: state.trim() || null, zip: zip.trim() || null }
+              state: state.trim() || null, zip: zip.trim() || null,
+              licenseNumber: licenseNumber.trim() || null }
           : o;
 
       if (prevOrgs) {
@@ -1600,6 +1663,19 @@ function OrganizationsPanel() {
         <div className="text-sm text-muted-foreground">
           <Loader2 size={14} className="inline animate-spin mr-2" />
           Loading…
+        </div>
+      )}
+
+      {isLabUser && !hasLabMembership && !meQuery.isLoading && (
+        <div className="mb-3">
+          <button
+            type="button"
+            onClick={() => { resetCreateForm(); setCreateOpen(true); }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors"
+          >
+            <Building2 size={14} />
+            Create lab
+          </button>
         </div>
       )}
 
@@ -1737,6 +1813,7 @@ function OrganizationsPanel() {
                               setEditCity(selectedOrg.city ?? "");
                               setEditState(selectedOrg.state ?? "");
                               setEditZip(selectedOrg.zip ?? "");
+                              setEditLicenseNumber(selectedOrg.licenseNumber ?? "");
                               setEditError(null);
                               setIsEditing(true);
                             }}
@@ -1795,6 +1872,28 @@ function OrganizationsPanel() {
                     </div>
                   )}
                 </div>
+                {/* License number row (lab orgs only) */}
+                {selectedOrg.type === "lab" && (
+                  <div className="px-3 py-2.5">
+                    {isEditing ? (
+                      <div className="space-y-1">
+                        <label className="text-muted-foreground text-xs">License number</label>
+                        <input
+                          type="text"
+                          value={editLicenseNumber}
+                          onChange={(e) => setEditLicenseNumber(e.target.value.toUpperCase())}
+                          className="w-full h-8 px-2 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                          placeholder="Lab license number"
+                        />
+                      </div>
+                    ) : (
+                      <div className="flex justify-between items-center">
+                        <span className="text-muted-foreground text-xs">License number</span>
+                        <span>{selectedOrg.licenseNumber || <span className="text-muted-foreground italic">none</span>}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
                 {/* Address rows */}
                 <div className="px-3 py-2.5">
                   {isEditing ? (
@@ -1933,6 +2032,7 @@ function OrganizationsPanel() {
                           city: editCity,
                           state: editState,
                           zip: editZip,
+                          licenseNumber: editLicenseNumber,
                         });
                       }}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
@@ -2124,6 +2224,162 @@ function OrganizationsPanel() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Sheet
+        open={createOpen}
+        onOpenChange={(open) => {
+          setCreateOpen(open);
+          if (!open) resetCreateForm();
+        }}
+      >
+        <SheetContent side="right" className="w-full sm:max-w-lg overflow-y-auto">
+          <SheetHeader className="mb-4">
+            <SheetTitle className="flex items-center gap-2">
+              <Building2 size={18} />
+              Create lab
+            </SheetTitle>
+            <SheetDescription>
+              Set up your lab environment. All fields below are required.
+            </SheetDescription>
+          </SheetHeader>
+
+          <form
+            className="space-y-3 text-sm"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (
+                !createName.trim() ||
+                !createLicense.trim() ||
+                !createPhone.trim() ||
+                !createEmail.trim() ||
+                !createAddressLine1.trim()
+              ) {
+                setCreateError("Lab name, license number, phone, email, and street address are required.");
+                return;
+              }
+              setCreateError(null);
+              createLabMutation.mutate();
+            }}
+          >
+            <div className="space-y-1">
+              <label className="text-muted-foreground text-xs">Lab name</label>
+              <input
+                type="text"
+                value={createName}
+                onChange={(e) => setCreateName(e.target.value)}
+                className="w-full h-8 px-2 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                placeholder="Acme Dental Lab"
+                autoFocus
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-muted-foreground text-xs">License number</label>
+              <input
+                type="text"
+                value={createLicense}
+                onChange={(e) => setCreateLicense(e.target.value.toUpperCase())}
+                className="w-full h-8 px-2 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                placeholder="Lab license number"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-muted-foreground text-xs">Phone</label>
+              <input
+                type="tel"
+                value={createPhone}
+                onChange={(e) => setCreatePhone(formatPhone(e.target.value))}
+                className="w-full h-8 px-2 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                placeholder="000-000-0000"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-muted-foreground text-xs">Email</label>
+              <input
+                type="email"
+                value={createEmail}
+                onChange={(e) => setCreateEmail(e.target.value)}
+                className="w-full h-8 px-2 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                placeholder="lab@example.com"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-muted-foreground text-xs">Address line 1</label>
+              <input
+                type="text"
+                value={createAddressLine1}
+                onChange={(e) => setCreateAddressLine1(e.target.value)}
+                className="w-full h-8 px-2 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                placeholder="123 Main St"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-muted-foreground text-xs">Address line 2</label>
+              <input
+                type="text"
+                value={createAddressLine2}
+                onChange={(e) => setCreateAddressLine2(e.target.value)}
+                className="w-full h-8 px-2 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                placeholder="Suite 200 (optional)"
+              />
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              <div className="col-span-1 space-y-1">
+                <label className="text-muted-foreground text-xs">City</label>
+                <input
+                  type="text"
+                  value={createCity}
+                  onChange={(e) => setCreateCity(e.target.value)}
+                  className="w-full h-8 px-2 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  placeholder="City"
+                />
+              </div>
+              <div className="col-span-1 space-y-1">
+                <label className="text-muted-foreground text-xs">State</label>
+                <input
+                  type="text"
+                  value={createState}
+                  onChange={(e) => setCreateState(e.target.value.toUpperCase())}
+                  className="w-full h-8 px-2 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  placeholder="CA"
+                  maxLength={2}
+                />
+              </div>
+              <div className="col-span-1 space-y-1">
+                <label className="text-muted-foreground text-xs">ZIP</label>
+                <input
+                  type="text"
+                  value={createZip}
+                  onChange={(e) => setCreateZip(e.target.value)}
+                  className="w-full h-8 px-2 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  placeholder="00000"
+                />
+              </div>
+            </div>
+            {createError && <p className="text-xs text-destructive">{createError}</p>}
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => { setCreateOpen(false); resetCreateForm(); }}
+                disabled={createLabMutation.isPending}
+                className="px-3 py-1.5 rounded-md border border-border text-xs font-medium hover:bg-muted/50 transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={createLabMutation.isPending}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {createLabMutation.isPending ? (
+                  <><Loader2 size={12} className="animate-spin" />Creating…</>
+                ) : (
+                  <><Check size={12} />Create lab</>
+                )}
+              </button>
+            </div>
+          </form>
+        </SheetContent>
+      </Sheet>
     </PanelShell>
   );
 }

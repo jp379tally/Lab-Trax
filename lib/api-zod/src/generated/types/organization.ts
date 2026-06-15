@@ -18,6 +18,7 @@ export interface Organization {
   parentLabOrganizationId?: string | null;
   accountNumber?: string | null;
   platformAccountNumber?: string | null;
+  licenseNumber?: string | null;
   isActive?: boolean | null;
   [key: string]: unknown;
 }

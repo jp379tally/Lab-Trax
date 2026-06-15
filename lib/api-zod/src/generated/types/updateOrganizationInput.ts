@@ -22,5 +22,6 @@ export interface UpdateOrganizationInput {
   isActive?: boolean | null;
   statementEmailOptOut?: boolean | null;
   defaultCaseDueDays?: number | null;
+  licenseNumber?: string | null;
   accountNumber?: string | null;
 }

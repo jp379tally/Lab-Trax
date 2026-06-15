@@ -3154,6 +3154,12 @@ export const CreateOrganizationBody = zod.object({
   isActive: zod.boolean().nullish(),
   statementEmailOptOut: zod.boolean().nullish(),
   defaultCaseDueDays: zod.number().nullish(),
+  licenseNumber: zod
+    .string()
+    .nullish()
+    .describe(
+      "Lab license \/ registration number. Required when creating a lab; ignored on provider orgs.",
+    ),
   doctorName: zod
     .string()
     .nullish()
@@ -3192,6 +3198,7 @@ export const GetOrganizationResponse = zod.object({
       parentLabOrganizationId: zod.string().nullish(),
       accountNumber: zod.string().nullish(),
       platformAccountNumber: zod.string().nullish(),
+      licenseNumber: zod.string().nullish(),
       isActive: zod.boolean().nullish(),
     })
     .describe(
@@ -3220,6 +3227,7 @@ export const UpdateOrganizationBody = zod
     isActive: zod.boolean().nullish(),
     statementEmailOptOut: zod.boolean().nullish(),
     defaultCaseDueDays: zod.number().nullish(),
+    licenseNumber: zod.string().nullish(),
     accountNumber: zod.string().nullish(),
   })
   .describe("Partial update. Type and parent lab cannot be changed.");
@@ -3235,6 +3243,7 @@ export const UpdateOrganizationResponse = zod.object({
       parentLabOrganizationId: zod.string().nullish(),
       accountNumber: zod.string().nullish(),
       platformAccountNumber: zod.string().nullish(),
+      licenseNumber: zod.string().nullish(),
       isActive: zod.boolean().nullish(),
     })
     .describe(

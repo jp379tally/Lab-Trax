@@ -380,6 +380,7 @@ export interface Organization {
   duplicateSuggestionThreshold?: string | number | null;
   trustedDeviceTtlDays?: number | null;
   defaultCaseDueDays?: number | null;
+  licenseNumber?: string | null;
 }
 
 export interface BankAccount {
@@ -502,6 +503,7 @@ export interface MeResponse {
     firstName?: string | null;
     lastName?: string | null;
     role?: string | null;
+    userType?: string | null;
     practiceName?: string | null;
   };
   memberships: Membership[];

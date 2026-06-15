@@ -273,6 +273,10 @@ export const organizations = pgTable(
     // should be set. Null = no default (field left blank on new cases).
     // Only meaningful on type="lab" rows.
     defaultCaseDueDays: integer("default_case_due_days"),
+    // Lab license / registration number captured at lab-environment creation
+    // (Account epic Phase 3). Required for type="lab" rows created through the
+    // canonical create-lab flow; null on provider orgs and legacy lab rows.
+    licenseNumber: text("license_number"),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     deletedByUserId: varchar("deleted_by_user_id"),
   },

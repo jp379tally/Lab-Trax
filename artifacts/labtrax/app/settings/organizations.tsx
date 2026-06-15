@@ -32,8 +32,12 @@ interface OrgMembership {
     displayName?: string;
     type?: string | null;
     phone?: string | null;
+    addressLine1?: string | null;
+    addressLine2?: string | null;
     city?: string | null;
     state?: string | null;
+    zip?: string | null;
+    licenseNumber?: string | null;
     billingEmail?: string | null;
     duplicateSuggestionThreshold?: number | null;
     defaultCaseDueDays?: number | null;
@@ -295,6 +299,41 @@ function OrgCard({ m, colors, styles }: { m: OrgMembership; colors: ThemeColors;
           </Text>
         </View>
       </View>
+
+      {type === "lab" && (
+        <View style={[styles.detailsSection, { borderTopColor: colors.border }]}>
+          {org?.licenseNumber ? (
+            <View style={styles.detailRow}>
+              <Text style={[styles.detailLabel, { color: colors.textTertiary }]}>License</Text>
+              <Text style={[styles.detailValue, { color: colors.text }]}>{org.licenseNumber}</Text>
+            </View>
+          ) : null}
+          {org?.phone ? (
+            <View style={styles.detailRow}>
+              <Text style={[styles.detailLabel, { color: colors.textTertiary }]}>Phone</Text>
+              <Text style={[styles.detailValue, { color: colors.text }]}>{org.phone}</Text>
+            </View>
+          ) : null}
+          {org?.billingEmail ? (
+            <View style={styles.detailRow}>
+              <Text style={[styles.detailLabel, { color: colors.textTertiary }]}>Email</Text>
+              <Text style={[styles.detailValue, { color: colors.text }]}>{org.billingEmail}</Text>
+            </View>
+          ) : null}
+          {(org?.addressLine1 || org?.city || org?.state || org?.zip) ? (
+            <View style={styles.detailRow}>
+              <Text style={[styles.detailLabel, { color: colors.textTertiary }]}>Address</Text>
+              <Text style={[styles.detailValue, { color: colors.text, textAlign: "right", flex: 1 }]}>
+                {[
+                  org?.addressLine1,
+                  org?.addressLine2,
+                  [org?.city, org?.state, org?.zip].filter(Boolean).join(", "),
+                ].filter(Boolean).join("\n")}
+              </Text>
+            </View>
+          ) : null}
+        </View>
+      )}
 
       {/* Lab branding — admin/owner only */}
       {isAdmin && orgId && (
@@ -673,6 +712,16 @@ function makeStyles(c: ThemeColors) {
     orgMeta: { ...Typography.caption },
     badge: { borderRadius: Radius.full, paddingHorizontal: 8, paddingVertical: 2 },
     badgeText: { ...Typography.tiny },
+
+    detailsSection: {
+      borderTopWidth: StyleSheet.hairlineWidth,
+      paddingTop: Spacing.md,
+      marginTop: Spacing.md,
+      gap: Spacing.xs,
+    },
+    detailRow: { flexDirection: "row", justifyContent: "space-between", gap: Spacing.md },
+    detailLabel: { ...Typography.caption },
+    detailValue: { ...Typography.caption, fontWeight: "600" },
 
     adminSection: {
       borderTopWidth: StyleSheet.hairlineWidth,
