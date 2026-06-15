@@ -171,6 +171,7 @@ interface ToothButtonProps {
   billedTitle?: string;
   primary?: boolean;
   readOnly?: boolean;
+  toothType?: "crown" | "pontic" | "missing";
   onToggle: (id: ToothId) => void;
 }
 
@@ -181,17 +182,31 @@ function ToothButton({
   billedTitle,
   primary,
   readOnly,
+  toothType,
   onToggle,
 }: ToothButtonProps) {
   const base =
     "h-7 w-7 text-[11px] rounded-md border font-mono tabular-nums transition-colors flex items-center justify-center select-none";
   const interactive = !readOnly;
-  const cls = selected
-    ? "bg-primary text-primary-foreground border-primary"
-    : billed
-      ? `bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30 ${interactive ? "hover:bg-emerald-500/25" : ""}`
-      : `bg-secondary text-foreground border-transparent ${interactive ? "hover:bg-secondary/80" : ""}`;
+
+  let cls: string;
+  if (selected && toothType === "crown") {
+    cls = `bg-blue-500 text-white border-blue-500 ${interactive ? "hover:bg-blue-600" : ""}`;
+  } else if (selected && toothType === "pontic") {
+    cls = `bg-purple-500 text-white border-purple-500 ${interactive ? "hover:bg-purple-600" : ""}`;
+  } else if (selected && toothType === "missing") {
+    cls = `bg-muted text-muted-foreground border-muted-foreground/40 ${interactive ? "hover:bg-muted/80" : ""}`;
+  } else if (selected) {
+    cls = "bg-primary text-primary-foreground border-primary";
+  } else if (billed) {
+    cls = `bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30 ${interactive ? "hover:bg-emerald-500/25" : ""}`;
+  } else {
+    cls = `bg-secondary text-foreground border-transparent ${interactive ? "hover:bg-secondary/80" : ""}`;
+  }
+
   const sizeOverride = primary ? "h-6 w-6 text-[10px]" : "";
+  const label = toothType === "missing" && selected ? "✕" : id;
+
   if (readOnly) {
     return (
       <span
@@ -199,7 +214,7 @@ function ToothButton({
         title={billed ? billedTitle ?? `Tooth ${id} — billed` : `Tooth ${id}`}
         aria-label={`Tooth ${id}${selected ? " (highlighted)" : ""}`}
       >
-        {id}
+        {label}
       </span>
     );
   }
@@ -211,7 +226,7 @@ function ToothButton({
       title={billed ? billedTitle ?? `Tooth ${id} — billed` : `Tooth ${id}`}
       aria-pressed={selected}
     >
-      {id}
+      {label}
     </button>
   );
 }
@@ -298,6 +313,12 @@ export interface ToothChartProps {
    * Only called when `readOnly` is false.
    */
   onConnectedPairsChange?: (pairs: Set<string>) => void;
+  /** Teeth with a crown/restoration — rendered blue. */
+  crownTeeth?: Set<ToothId>;
+  /** Teeth marked as pontic — rendered purple. */
+  ponticTeeth?: Set<ToothId>;
+  /** Teeth marked as missing — rendered with ✕ glyph instead of number. */
+  missingTeeth?: Set<ToothId>;
 }
 
 export function ToothChart({
@@ -310,6 +331,9 @@ export function ToothChart({
   onToothClick,
   connectedPairs,
   onConnectedPairsChange,
+  crownTeeth,
+  ponticTeeth,
+  missingTeeth,
 }: ToothChartProps) {
   const [showPrimaryState, setShowPrimaryState] = useState(
     showPrimaryProp ?? false,
@@ -368,6 +392,13 @@ export function ToothChart({
   }) {
     const showDots = showConnectors && !primary;
 
+    function toothTypeFor(id: string): "crown" | "pontic" | "missing" | undefined {
+      if (missingTeeth?.has(id)) return "missing";
+      if (ponticTeeth?.has(id)) return "pontic";
+      if (crownTeeth?.has(id)) return "crown";
+      return undefined;
+    }
+
     function renderTeethWithDots(ids: ToothId[]) {
       if (!showDots || ids.length === 0) {
         return (
@@ -381,6 +412,7 @@ export function ToothChart({
                 billedTitle={billedTitleFor(String(id))}
                 primary={primary}
                 readOnly={readOnly}
+                toothType={toothTypeFor(String(id))}
                 onToggle={toggle}
               />
             ))}
@@ -398,6 +430,7 @@ export function ToothChart({
             billedTitle={billedTitleFor(String(id))}
             primary={primary}
             readOnly={readOnly}
+            toothType={toothTypeFor(String(id))}
             onToggle={toggle}
           />,
         );
@@ -434,11 +467,28 @@ export function ToothChart({
         <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
           Tooth chart
         </div>
-        <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
-          <span className="inline-flex items-center gap-1">
-            <span className="h-2.5 w-2.5 rounded-sm bg-primary inline-block" />
-            Selected
-          </span>
+        <div className="flex items-center gap-3 text-[10px] text-muted-foreground flex-wrap">
+          {crownTeeth || ponticTeeth || missingTeeth ? (
+            <>
+              <span className="inline-flex items-center gap-1">
+                <span className="h-2.5 w-2.5 rounded-sm bg-blue-500 inline-block" />
+                Crown
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="h-2.5 w-2.5 rounded-sm bg-purple-500 inline-block" />
+                Pontic
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="h-2.5 w-2.5 rounded-sm bg-muted border border-muted-foreground/30 inline-flex items-center justify-center text-[8px] text-muted-foreground font-mono">✕</span>
+                Missing
+              </span>
+            </>
+          ) : (
+            <span className="inline-flex items-center gap-1">
+              <span className="h-2.5 w-2.5 rounded-sm bg-primary inline-block" />
+              Selected
+            </span>
+          )}
           <span className="inline-flex items-center gap-1">
             <span className="h-2.5 w-2.5 rounded-sm bg-emerald-500/40 border border-emerald-500/50 inline-block" />
             Billed

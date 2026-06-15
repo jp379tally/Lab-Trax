@@ -2584,6 +2584,7 @@ export function CaseDrawer({
   const [pendingDeletes, setPendingDeletes] = useState<Set<string>>(new Set());
   const [pendingUpdates, setPendingUpdates] = useState<PendingUpdate[]>([]);
   const [pendingCaseEdit, setPendingCaseEdit] = useState<PendingCaseEdit | null>(null);
+  const [missingTeethIds, setMissingTeethIds] = useState<Set<string>>(new Set());
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   // When unsaved edits would be lost (close, in-app route navigation, etc.) we
@@ -2780,6 +2781,34 @@ export function CaseDrawer({
       }
     }
     return map;
+  }, [data?.restorations, pendingDeletes, pendingCreates]);
+
+  const crownTeeth = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of data?.restorations ?? []) {
+      if (pendingDeletes.has(r.id)) continue;
+      if (/pontic/i.test(r.restorationType)) continue;
+      for (const id of parseToothField(r.toothNumber)) set.add(id);
+    }
+    for (const c of pendingCreates) {
+      if (/pontic/i.test(c.restorationType)) continue;
+      for (const id of parseToothField(c.toothNumber)) set.add(id);
+    }
+    return set;
+  }, [data?.restorations, pendingDeletes, pendingCreates]);
+
+  const ponticTeeth = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of data?.restorations ?? []) {
+      if (pendingDeletes.has(r.id)) continue;
+      if (!/pontic/i.test(r.restorationType)) continue;
+      for (const id of parseToothField(r.toothNumber)) set.add(id);
+    }
+    for (const c of pendingCreates) {
+      if (!/pontic/i.test(c.restorationType)) continue;
+      for (const id of parseToothField(c.toothNumber)) set.add(id);
+    }
+    return set;
   }, [data?.restorations, pendingDeletes, pendingCreates]);
 
   const editMutation = useMutation({
@@ -3359,9 +3388,34 @@ export function CaseDrawer({
       setToothDialogId(null);
       setToothDialogError(null);
     } else if (payload.kind === "mark_missing") {
-      const existing = parseToothField(restForm.toothNumber);
-      existing.add(payload.toothId);
-      setRestForm((f) => ({ ...f, toothNumber: Array.from(existing).join(", ") }));
+      setMissingTeethIds((prev) => {
+        const next = new Set(prev);
+        next.add(payload.toothId);
+        return next;
+      });
+      setToothDialogId(null);
+      setToothDialogError(null);
+    } else if (payload.kind === "remove_restoration") {
+      if (payload.restorationId) {
+        setPendingDeletes((prev) => {
+          const next = new Set(prev);
+          next.add(payload.restorationId!);
+          return next;
+        });
+      } else if (missingTeethIds.has(payload.toothId)) {
+        setMissingTeethIds((prev) => {
+          const next = new Set(prev);
+          next.delete(payload.toothId);
+          return next;
+        });
+      } else {
+        setPendingCreates((prev) =>
+          prev.filter((c) => {
+            const teeth = parseToothField(c.toothNumber);
+            return !teeth.has(payload.toothId);
+          }),
+        );
+      }
       setToothDialogId(null);
       setToothDialogError(null);
     } else if (payload.kind === "replace_tooth") {
@@ -4492,6 +4546,8 @@ export function CaseDrawer({
                           onChange={() => {}}
                           readOnly
                           showPrimary={false}
+                          crownTeeth={crownTeeth}
+                          ponticTeeth={ponticTeeth}
                         />
                       </div>
                     )}
@@ -4614,7 +4670,7 @@ export function CaseDrawer({
 
               {/* Interactive chart — primary entry point for the click-driven workflow */}
               <ToothChart
-                value={Array.from(billedTeeth).join(", ")}
+                value={[...Array.from(billedTeeth), ...Array.from(missingTeethIds)].join(", ")}
                 onChange={() => {}}
                 billedTeeth={billedTeeth}
                 billedTeethTypes={billedTeethTypes}
@@ -4624,6 +4680,9 @@ export function CaseDrawer({
                 }}
                 connectedPairs={connectedPairs}
                 onConnectedPairsChange={handleConnectedPairsChange}
+                crownTeeth={crownTeeth}
+                ponticTeeth={ponticTeeth}
+                missingTeeth={missingTeethIds}
               />
 
               {showAddRest && (
@@ -5793,6 +5852,23 @@ export function CaseDrawer({
             setToothDialogError(null);
           }}
           onConfirm={(payload) => handleToothDialogStage(payload)}
+          locallySelectedType={
+            missingTeethIds.has(toothDialogId)
+              ? "missing"
+              : pendingCreates.some(
+                  (c) =>
+                    parseToothField(c.toothNumber).has(toothDialogId) &&
+                    /pontic/i.test(c.restorationType),
+                )
+              ? "pontic"
+              : pendingCreates.some(
+                  (c) =>
+                    parseToothField(c.toothNumber).has(toothDialogId) &&
+                    !/pontic/i.test(c.restorationType),
+                )
+              ? "crown"
+              : undefined
+          }
         />
       )}
 

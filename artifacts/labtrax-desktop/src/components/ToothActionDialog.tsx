@@ -41,7 +41,8 @@ export type ToothActionPayload =
       newToothNumber: string;
       material?: string;
       shade?: string;
-    };
+    }
+  | { kind: "remove_restoration"; toothId: string; restorationId?: string };
 
 type Step =
   | "choose_action"
@@ -60,6 +61,7 @@ interface ToothActionDialogProps {
   error?: string | null;
   onClose: () => void;
   onConfirm: (payload: ToothActionPayload) => void;
+  locallySelectedType?: "crown" | "pontic" | "missing";
 }
 
 export function ToothActionDialog({
@@ -69,6 +71,7 @@ export function ToothActionDialog({
   error,
   onClose,
   onConfirm,
+  locallySelectedType,
 }: ToothActionDialogProps) {
   const billedRestorations = restorations.filter((r) => {
     const teeth = parseToothField(r.toothNumber);
@@ -325,7 +328,7 @@ export function ToothActionDialog({
                 </div>
               )}
 
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-3 gap-2">
                 <button
                   type="button"
                   onClick={handleChooseReplace}
@@ -348,6 +351,24 @@ export function ToothActionDialog({
                     New restoration on this tooth
                   </span>
                 </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onConfirm({
+                      kind: "remove_restoration",
+                      toothId,
+                      restorationId: selectedRestorationId || undefined,
+                    })
+                  }
+                  disabled={isPending}
+                  className="h-20 rounded-lg border border-destructive/40 bg-destructive/10 hover:bg-destructive/20 text-destructive text-sm font-medium flex flex-col items-center justify-center gap-1 transition-colors px-2 text-center disabled:opacity-50"
+                >
+                  <span className="text-base">🗑️</span>
+                  Remove
+                  <span className="text-[10px] font-normal text-destructive/70">
+                    Delete this restoration
+                  </span>
+                </button>
               </div>
             </>
           )}
@@ -356,8 +377,10 @@ export function ToothActionDialog({
           {step === "choose_kind" && (
             <>
               <p className="text-sm text-muted-foreground">
-                What are you adding to tooth{" "}
-                <span className="font-medium text-foreground">{toothId}</span>?
+                {locallySelectedType
+                  ? <>Tooth <span className="font-medium text-foreground">{toothId}</span> is already marked as <span className="font-medium text-foreground">{locallySelectedType}</span>. Add a different type or remove it.</>
+                  : <>What are you adding to tooth{" "}<span className="font-medium text-foreground">{toothId}</span>?</>
+                }
               </p>
               <div className="grid grid-cols-3 gap-2">
                 {(
@@ -396,6 +419,18 @@ export function ToothActionDialog({
                   </button>
                 ))}
               </div>
+              {locallySelectedType && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    onConfirm({ kind: "remove_restoration", toothId })
+                  }
+                  disabled={isPending}
+                  className="w-full h-9 rounded-lg border border-destructive/40 bg-destructive/10 hover:bg-destructive/20 text-destructive text-sm font-medium transition-colors disabled:opacity-50"
+                >
+                  Remove from chart
+                </button>
+              )}
             </>
           )}
 
