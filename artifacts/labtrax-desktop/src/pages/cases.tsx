@@ -4177,6 +4177,7 @@ export function CaseDrawer({
                       value={`${pendingCaseEdit?.patientFirstName ?? data?.patientFirstName ?? labCase.patientFirstName} ${pendingCaseEdit?.patientLastName ?? data?.patientLastName ?? labCase.patientLastName}`}
                     />
                     <Field label="Doctor" value={pendingCaseEdit?.doctorName ?? data?.doctorName ?? labCase.doctorName} />
+                    <Field label="Practice" value={currentProviderOrg?.displayName ?? currentProviderOrg?.name ?? (pendingCaseEdit?.providerOrganizationId ? "—" : "—")} />
                     <Field label="Status" value={statusLabel(currentStatus)} />
                     <Field
                       label="Priority"
@@ -4242,23 +4243,36 @@ export function CaseDrawer({
                     </div>
                     <div>
                       <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
-                        Doctor
+                        Practice
+                      </label>
+                      <div className="mt-1">
+                        <ProviderPicker
+                          value={editForm.providerOrganizationId}
+                          providers={drawerProviderOrgs}
+                          onChange={(id, org) => {
+                            setEditForm((f) => ({
+                              ...f,
+                              providerOrganizationId: id,
+                              doctorName: org?.displayName || org?.name || f.doctorName,
+                            }));
+                            setEditError(null);
+                          }}
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                        Doctor name
                       </label>
                       <input
-                        list="edit-doctor-names"
                         value={editForm.doctorName}
                         onChange={(e) => {
                           setEditForm((f) => ({ ...f, doctorName: e.target.value }));
                           setEditError(null);
                         }}
-                        placeholder="Type or select a doctor…"
+                        placeholder="Dr. Smith"
                         className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
                       />
-                      <datalist id="edit-doctor-names">
-                        {doctorNames.map((n) => (
-                          <option key={n} value={n} />
-                        ))}
-                      </datalist>
                     </div>
                     <div>
                       <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
