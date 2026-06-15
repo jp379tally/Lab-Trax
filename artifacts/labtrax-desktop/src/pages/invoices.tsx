@@ -854,6 +854,60 @@ function BulkSendDialog({
   );
 }
 
+// Serialize the editable invoice form fields into a stable string so we can
+// detect whether the user has made unsaved edits (dirty check). Only fields
+// that the Save action actually persists are included; provider reassignment
+// is saved independently and is intentionally excluded.
+function serializeInvoiceForm(f: {
+  invoiceNumber: string;
+  statusValue: string;
+  issuedAt: string;
+  dueAt: string;
+  tax: number;
+  discount: number;
+  credits: number;
+  notes: string;
+  patientName: string;
+  billTo: string;
+  teeth: string;
+  shade: string;
+  caseNotes: string;
+  layoutPresetId: string | null;
+  items: DraftLine[];
+}): string {
+  return JSON.stringify({
+    invoiceNumber: f.invoiceNumber,
+    statusValue: f.statusValue,
+    issuedAt: f.issuedAt,
+    dueAt: f.dueAt,
+    tax: Number(f.tax || 0),
+    discount: Number(f.discount || 0),
+    credits: Number(f.credits || 0),
+    notes: f.notes,
+    patientName: f.patientName,
+    billTo: f.billTo,
+    teeth: f.teeth,
+    shade: f.shade,
+    caseNotes: f.caseNotes,
+    layoutPresetId: f.layoutPresetId ?? null,
+    items: f.items.map((it) => ({
+      item: it.item,
+      description: it.description,
+      quantity: Number(it.quantity || 0),
+      unitPrice: Number(it.unitPrice || 0),
+      toothNumber: it.toothNumber ?? null,
+      toothLabel: it.toothLabel ?? null,
+      subItems: (it.subItems ?? []).map((sub) => ({
+        item: sub.item,
+        description: sub.description,
+        quantity: Number(sub.quantity || 0),
+        unitPrice: Number(sub.unitPrice || 0),
+        toothNumber: sub.toothNumber ?? null,
+      })),
+    })),
+  });
+}
+
 export function InvoiceEditor({
   invoice,
   onClose,
@@ -1163,33 +1217,35 @@ export function InvoiceEditor({
   const [caseNotes, setCaseNotes] = useState<string>("");
   const [credits, setCredits] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
+  // Baseline snapshot of the form (set when detail loads) for the dirty check,
+  // and a flag controlling the "discard changes?" confirmation on close.
+  const baselineRef = useRef<string | null>(null);
+  const [confirmClose, setConfirmClose] = useState(false);
 
   useEffect(() => {
     const d = detailQuery.data;
     if (!d) return;
-    setInvoiceNumber(d.invoiceNumber);
-    setStatusValue(
-      EDITABLE_STATUSES.includes(d.status as (typeof EDITABLE_STATUSES)[number])
-        ? d.status
-        : "open",
-    );
-    setProviderId(d.providerOrganizationId);
-    setIssuedAt(toInputDate(d.issuedAt));
-    setDueAt(toInputDate(d.dueAt ?? d.dueDate));
-    setTax(Number(d.tax ?? 0));
-    setDiscount(Number(d.discount ?? 0));
-    setNotes(d.notes ?? "");
+    const nextStatus = EDITABLE_STATUSES.includes(
+      d.status as (typeof EDITABLE_STATUSES)[number],
+    )
+      ? d.status
+      : "open";
+    const nextIssuedAt = toInputDate(d.issuedAt);
+    const nextDueAt = toInputDate(d.dueAt ?? d.dueDate);
+    const nextTax = Number(d.tax ?? 0);
+    const nextDiscount = Number(d.discount ?? 0);
+    const nextNotes = d.notes ?? "";
     const meta = readDisplayMetadata(d);
-    setPatientName(meta.patientName ?? "");
-    setBillTo(meta.billTo ?? "");
-    setTeeth(meta.teeth ?? "");
-    setShade(meta.shade ?? "");
-    setCaseNotes(meta.caseNotes ?? "");
-    setCredits(Number(meta.credits ?? 0) || 0);
-    setLayoutPresetId((d as any).layoutPresetId ?? null);
+    const nextPatientName = meta.patientName ?? "";
+    const nextBillTo = meta.billTo ?? "";
+    const nextTeeth = meta.teeth ?? "";
+    const nextShade = meta.shade ?? "";
+    const nextCaseNotes = meta.caseNotes ?? "";
+    const nextCredits = Number(meta.credits ?? 0) || 0;
+    const nextLayoutPresetId = (d as any).layoutPresetId ?? null;
     const metaItems = Array.isArray(meta.lineItems) ? meta.lineItems : [];
-    setItems(
-      (d.items ?? []).map((it: InvoiceLineItem, idx: number) => ({
+    const nextItems: DraftLine[] = (d.items ?? []).map(
+      (it: InvoiceLineItem, idx: number) => ({
         id: it.id,
         item: metaItems[idx]?.item ?? "",
         description: it.description,
@@ -1205,8 +1261,42 @@ export function InvoiceEditor({
           unitPrice: Number(sub.unitPrice ?? 0),
           toothNumber: sub.toothNumber ?? null,
         })),
-      })),
+      }),
     );
+    setInvoiceNumber(d.invoiceNumber);
+    setStatusValue(nextStatus);
+    setProviderId(d.providerOrganizationId);
+    setIssuedAt(nextIssuedAt);
+    setDueAt(nextDueAt);
+    setTax(nextTax);
+    setDiscount(nextDiscount);
+    setNotes(nextNotes);
+    setPatientName(nextPatientName);
+    setBillTo(nextBillTo);
+    setTeeth(nextTeeth);
+    setShade(nextShade);
+    setCaseNotes(nextCaseNotes);
+    setCredits(nextCredits);
+    setLayoutPresetId(nextLayoutPresetId);
+    setItems(nextItems);
+    // Record the loaded state as the dirty-check baseline.
+    baselineRef.current = serializeInvoiceForm({
+      invoiceNumber: d.invoiceNumber,
+      statusValue: nextStatus,
+      issuedAt: nextIssuedAt,
+      dueAt: nextDueAt,
+      tax: nextTax,
+      discount: nextDiscount,
+      credits: nextCredits,
+      notes: nextNotes,
+      patientName: nextPatientName,
+      billTo: nextBillTo,
+      teeth: nextTeeth,
+      shade: nextShade,
+      caseNotes: nextCaseNotes,
+      layoutPresetId: nextLayoutPresetId,
+      items: nextItems,
+    });
   }, [detailQuery.data]);
 
   const subtotal = useMemo(
@@ -1498,6 +1588,57 @@ export function InvoiceEditor({
     onError: (err: Error) => setError(err.message || "Operation failed."),
   });
 
+  // Whether the form has unsaved edits compared to the loaded invoice. Until
+  // the baseline is captured (detail still loading) we treat it as clean.
+  const isDirty = useMemo(() => {
+    if (baselineRef.current == null) return false;
+    return (
+      serializeInvoiceForm({
+        invoiceNumber,
+        statusValue,
+        issuedAt,
+        dueAt,
+        tax,
+        discount,
+        credits,
+        notes,
+        patientName,
+        billTo,
+        teeth,
+        shade,
+        caseNotes,
+        layoutPresetId,
+        items,
+      }) !== baselineRef.current
+    );
+  }, [
+    invoiceNumber,
+    statusValue,
+    issuedAt,
+    dueAt,
+    tax,
+    discount,
+    credits,
+    notes,
+    patientName,
+    billTo,
+    teeth,
+    shade,
+    caseNotes,
+    layoutPresetId,
+    items,
+  ]);
+
+  // Close the editor. If there are unsaved edits, ask for confirmation first
+  // so the user can intentionally discard or keep editing.
+  const requestClose = useCallback(() => {
+    if (isDirty) {
+      setConfirmClose(true);
+    } else {
+      onClose();
+    }
+  }, [isDirty, onClose]);
+
   // Keyboard shortcuts: Cmd/Ctrl+S = save, Cmd/Ctrl+P = print, Esc = close
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -1513,7 +1654,13 @@ export function InvoiceEditor({
         setEmailOpen(true);
       } else if (e.key === "Escape") {
         e.preventDefault();
-        onClose();
+        // If the discard confirmation is open, Escape cancels that prompt
+        // rather than the whole editor, so a stray keystroke can't lose work.
+        if (confirmClose) {
+          setConfirmClose(false);
+        } else {
+          requestClose();
+        }
       }
     }
     window.addEventListener("keydown", onKey);
@@ -1606,12 +1753,12 @@ export function InvoiceEditor({
           className="absolute left-0 top-0 h-full w-1.5 cursor-col-resize z-20 hover:bg-primary/30 active:bg-primary/50 transition-colors"
           title="Drag to resize"
         />
-        <header className="sticky top-0 z-10 bg-card border-b border-border px-6 py-4 flex items-center justify-between">
-          <div>
+        <header className="sticky top-0 z-10 bg-card border-b border-border px-6 py-4 flex items-start gap-3">
+          <div className="shrink-0">
             <div className="text-xs text-muted-foreground">Invoice</div>
             <div className="font-mono text-sm font-semibold">{invoice.invoiceNumber}</div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-1 min-w-0 flex-wrap items-center justify-end gap-2">
             <button
               type="button"
               onClick={() => {
@@ -1783,15 +1930,16 @@ export function InvoiceEditor({
                 </div>
               )}
             </div>
-            <button
-              type="button"
-              onClick={onClose}
-              className="h-9 w-9 rounded-md hover:bg-secondary flex items-center justify-center"
-              aria-label="Close"
-            >
-              <X size={16} />
-            </button>
           </div>
+          <button
+            type="button"
+            onClick={requestClose}
+            className="shrink-0 inline-flex items-center gap-1.5 h-9 px-3 rounded-md border border-border text-sm font-medium hover:bg-secondary"
+            aria-label="Close without saving"
+            title="Close without saving (Esc)"
+          >
+            <X size={16} /> Close
+          </button>
         </header>
 
         <div className="px-6 py-6 space-y-6">
@@ -2661,6 +2809,36 @@ export function InvoiceEditor({
                   <Loader2 size={14} className="animate-spin" />
                 )}
                 Reassign
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {confirmClose && (
+        <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-card border border-border rounded-lg w-full max-w-md p-5 space-y-4">
+            <h3 className="text-base font-semibold">Discard changes?</h3>
+            <p className="text-sm text-muted-foreground">
+              You have unsaved edits to this invoice. If you close now, your
+              changes will be lost.
+            </p>
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setConfirmClose(false)}
+                className="h-9 px-4 rounded-md bg-secondary text-secondary-foreground text-sm font-medium hover:bg-secondary/80"
+              >
+                Keep editing
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmClose(false);
+                  onClose();
+                }}
+                className="h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90"
+              >
+                Discard changes
               </button>
             </div>
           </div>
