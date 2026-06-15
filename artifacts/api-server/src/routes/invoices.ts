@@ -41,7 +41,7 @@ import {
 } from "../lib/statements";
 import { ADMIN_ROLES, BILLING_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
-import { requireAuth } from "../middlewares/auth";
+import { requireAuth, requireVerifiedAccount } from "../middlewares/auth";
 import {
   buildLineItemDescription,
   materialToPriceKey,
@@ -51,6 +51,7 @@ import { invoiceDueDate } from "../lib/invoice-due-date";
 
 const router = Router();
 router.use(requireAuth);
+router.use(requireVerifiedAccount);
 
 const emailStatementSchema = z.object({
   labOrganizationId: z.string().min(1),

@@ -134,3 +134,104 @@ export async function allocatePlatformAccountNumber(
   }
   return await db.transaction(async (tx: any) => exec(tx));
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Account epic Phase 2 — canonical account-number format
+//
+// Format: <TYPE>-<YEAR>-<SEQUENCE>-<PHONE>
+//   - <TYPE>      "L" (lab) | "P" (provider)
+//   - <YEAR>      four-digit calendar year of allocation (UTC)
+//   - <SEQUENCE>  monotonically increasing per (year, TYPE), no padding
+//   - <PHONE>     the account's normalized 10-digit phone (omitted when the
+//                 phone is missing/invalid, producing a 3-segment number)
+//
+// Example: type=L, year=2026, seq=3, phone="(555) 123-4567"
+//          -> "L-2026-3-5551234567"
+//
+// Allocation reuses `platform_account_sequences` keyed by TYPE ("L"/"P") and
+// is serialized via `SELECT ... FOR UPDATE`, identical to the legacy allocator.
+// ───────────────────────────────────────────────────────────────────────────
+
+export type AccountType = "L" | "P";
+
+/**
+ * Map a user/org "lab" | "provider" type to the single-letter account TYPE.
+ */
+export function accountTypeFor(
+  userOrOrgType: string | null | undefined
+): AccountType {
+  return userOrOrgType === "lab" ? "L" : "P";
+}
+
+/**
+ * Normalize a free-form phone string to exactly 10 digits, or null when it
+ * cannot be normalized. Strips all non-digits, drops a leading US country
+ * code "1" from 11-digit numbers, and requires exactly 10 digits otherwise.
+ */
+export function normalizePhone10(
+  phone: string | null | undefined
+): string | null {
+  if (!phone) return null;
+  let digits = phone.replace(/\D/g, "");
+  if (digits.length === 11 && digits.startsWith("1")) {
+    digits = digits.slice(1);
+  }
+  return digits.length === 10 ? digits : null;
+}
+
+/**
+ * Format a canonical (Phase 2) account number from its parts. The phone
+ * segment is omitted when `phone10` is null/invalid. Exported for the
+ * backfill script (which supplies deterministic sequence numbers).
+ */
+export function formatAccountNumberV2(
+  type: AccountType,
+  year: number,
+  seq: number,
+  phone10: string | null
+): string {
+  const base = `${type}-${year}-${seq}`;
+  return phone10 ? `${base}-${phone10}` : base;
+}
+
+/**
+ * Reserve the next sequence number for (year, TYPE) atomically and return the
+ * formatted canonical account number. Pass `tx` to participate in a caller's
+ * transaction (recommended — the number must be allocated in the same
+ * transaction as the row it belongs to so it is immutable and gap-free).
+ */
+export async function allocateAccountNumberV2(
+  type: AccountType,
+  phone: string | null | undefined,
+  options: { year?: number; tx?: any } = {}
+): Promise<string> {
+  const year = options.year ?? new Date().getUTCFullYear();
+  const phone10 = normalizePhone10(phone);
+  const exec = async (runner: any): Promise<string> => {
+    await runner.execute(sql`
+      INSERT INTO platform_account_sequences (year, entity_type, next_seq, updated_at)
+      VALUES (${year}, ${type}, 1, now())
+      ON CONFLICT DO NOTHING
+    `);
+    const lockedRaw: any = await runner.execute(sql`
+      SELECT next_seq FROM platform_account_sequences
+      WHERE year = ${year} AND entity_type = ${type}
+      FOR UPDATE
+    `);
+    const lockedRows: any[] = Array.isArray(lockedRaw)
+      ? lockedRaw
+      : (lockedRaw?.rows ?? []);
+    const seq = Number(lockedRows[0]?.next_seq ?? 1);
+    await runner.execute(sql`
+      UPDATE platform_account_sequences
+      SET next_seq = next_seq + 1, updated_at = now()
+      WHERE year = ${year} AND entity_type = ${type}
+    `);
+    return formatAccountNumberV2(type, year, seq, phone10);
+  };
+
+  if (options.tx) {
+    return exec(options.tx);
+  }
+  return await db.transaction(async (tx: any) => exec(tx));
+}

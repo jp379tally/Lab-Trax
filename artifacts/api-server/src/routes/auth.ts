@@ -5,7 +5,7 @@ import multer from "multer";
 import sharp from "sharp";
 import { Router } from "express";
 import { createRateLimit } from "../lib/rate-limit";
-import { and, asc, eq, gt, inArray, isNull, ne } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import {
@@ -39,8 +39,8 @@ import { writeAuditLog } from "../lib/audit";
 import { softDeleteById } from "../lib/soft-delete";
 import { notifications } from "@workspace/db";
 import {
-  allocatePlatformAccountNumber,
-  deriveAccountNameParts,
+  allocateAccountNumberV2,
+  accountTypeFor,
 } from "../lib/platform-account-number";
 import {
   matchAndInviteCrossLabDoctors,
@@ -88,6 +88,14 @@ function safeUser(user: any) {
     practicePhone: user.practicePhone,
     phoneContactName: user.phoneContactName,
     accountNumber: user.accountNumber,
+    platformAccountNumber: user.platformAccountNumber ?? null,
+    emailVerifiedAt: user.emailVerifiedAt
+      ? new Date(user.emailVerifiedAt).toISOString()
+      : null,
+    phoneVerifiedAt: user.phoneVerifiedAt
+      ? new Date(user.phoneVerifiedAt).toISOString()
+      : null,
+    twoFactorChannel: user.twoFactorChannel ?? null,
     wantsUpdates: user.wantsUpdates,
     workStatus: user.workStatus ?? "available",
     profilePhotoUrl: user.profilePhotoUrl ?? null,
@@ -241,14 +249,32 @@ async function hydrateUsersWithActiveMemberships(rawUsers: any[]) {
   });
 }
 
+// Username rules (Account epic Phase 2): 3–12 characters, ASCII letters,
+// digits, and underscore only. Uniqueness is enforced case-insensitively
+// below. Documented in docs/account-epic/account-number-format.md.
+export const USERNAME_REGEX = /^[a-zA-Z0-9_]{3,12}$/;
+
 const registerSchema = z.object({
-  username: z.string().min(1),
+  username: z
+    .string()
+    .trim()
+    .regex(
+      USERNAME_REGEX,
+      "Username must be 3–12 characters using only letters, numbers, and underscores."
+    ),
   password: z.string().min(1),
-  email: z.string().email().optional().or(z.literal("")),
+  // Canonical signup (Account epic Phase 2) requires an email and an account
+  // type. Phone stays optional: design note §0 mandates "email and/or phone"
+  // verification, not both, and provider signups without SMS opt-in are valid
+  // (the canonical account number simply omits the phone segment).
+  email: z.string().email(),
   phone: z.string().optional(),
   firstName: z.string().optional(),
   lastName: z.string().optional(),
-  userType: z.string().optional(),
+  // Account type is constrained to lab|provider. A strict enum also prevents a
+  // public caller from self-assigning an elevated/arbitrary userType (e.g.
+  // "master_admin") via this unauthenticated endpoint (design note §1, §8).
+  userType: z.enum(["lab", "provider"]),
   licenseNumber: z.string().optional(),
   practiceName: z.string().optional(),
   doctorName: z.string().optional(),
@@ -290,7 +316,7 @@ router.post(
       : null;
 
     const existing = await db.query.users.findFirst({
-      where: eq(users.username, input.username.trim()),
+      where: sql`lower(${users.username}) = ${input.username.trim().toLowerCase()}`,
     });
     if (existing)
       throw new HttpError(409, "Username already taken.");
@@ -370,49 +396,103 @@ router.post(
 
     const hashed = await hashPassword(input.password);
 
-    // Allocate platform-wide account number for every new user (Task #320).
-    // Allocation is best-effort here; a failure does not block registration.
-    let userPlatformAccountNumber: string | null = null;
-    try {
-      userPlatformAccountNumber = await allocatePlatformAccountNumber(
-        "user",
-        deriveAccountNameParts({
-          firstName: input.firstName,
-          lastName: input.lastName,
-          doctorName: input.doctorName,
-          practiceName: input.practiceName,
-        })
-      );
-    } catch (err: any) {
-      req.log?.warn?.(
-        { err: err?.message ?? String(err) },
-        "Failed to allocate platform account number for user (non-fatal)"
-      );
-    }
+    // Canonical (Account epic Phase 2) account TYPE for the new user.
+    const userAccountType = accountTypeFor(input.userType);
 
-    const [user] = await db
-      .insert(users)
-      .values({
-        username: input.username.trim(),
-        password: hashed,
-        email: input.email || null,
-        phone: input.phone || null,
-        firstName: input.firstName || null,
-        lastName: input.lastName || null,
-        initials,
-        userType: input.userType || "lab",
-        licenseNumber: input.licenseNumber || null,
-        doctorName: input.doctorName || null,
-        practiceAddress: input.practiceAddress || null,
-        practicePhone: input.practicePhone || null,
-        phoneContactName: input.phoneContactName || null,
-        accountNumber: input.accountNumber || null,
-        wantsUpdates: input.wantsUpdates || false,
-        role: normalizedUserRole,
-        practiceName: normalizedPracticeName,
-        platformAccountNumber: userPlatformAccountNumber,
-      })
-      .returning();
+    let responseMessage = "Account created.";
+    let pendingJoinRequest = false;
+    let organizationInfo: any = null;
+    // Captured inside the transaction; billing trials are started AFTER the
+    // commit (best-effort, must never roll back account creation).
+    let orgCreation:
+      | { orgId: string; billingSubjectType: "lab_org" | "provider_org" }
+      | null = null;
+
+    // Allocate the immutable platform account number(s) and create the user
+    // (plus any org/membership or join request) atomically. The canonical
+    // account number MUST be allocated in the same transaction as the row it
+    // belongs to so it can never be partially assigned or duplicated.
+    const user = await db.transaction(async (tx) => {
+      const userPlatformAccountNumber = await allocateAccountNumberV2(
+        userAccountType,
+        input.phone,
+        { tx }
+      );
+
+      const [createdUser] = await tx
+        .insert(users)
+        .values({
+          username: input.username.trim(),
+          password: hashed,
+          email: input.email || null,
+          phone: input.phone || null,
+          firstName: input.firstName || null,
+          lastName: input.lastName || null,
+          initials,
+          userType: input.userType || "lab",
+          licenseNumber: input.licenseNumber || null,
+          doctorName: input.doctorName || null,
+          practiceAddress: input.practiceAddress || null,
+          practicePhone: input.practicePhone || null,
+          phoneContactName: input.phoneContactName || null,
+          accountNumber: input.accountNumber || null,
+          wantsUpdates: input.wantsUpdates || false,
+          role: normalizedUserRole,
+          practiceName: normalizedPracticeName,
+          platformAccountNumber: userPlatformAccountNumber,
+        })
+        .returning();
+
+      if (joinTargetOrg) {
+        const targetName = joinTargetOrg.displayName || joinTargetOrg.name;
+        await tx.insert(organizationJoinRequests).values({
+          labId: joinTargetOrg.id,
+          userId: createdUser.id,
+          requestedRole: "user",
+          message: `${createdUser.username} would like to join ${targetName}.`,
+          status: "pending",
+        });
+        organizationInfo = { id: joinTargetOrg.id, name: targetName };
+        pendingJoinRequest = true;
+        responseMessage = `Your request to join ${targetName} has been sent to the lab admin.`;
+      } else if (shouldCreateOrganization) {
+        const orgType = input.userType === "provider" ? "provider" : "lab";
+        const orgPlatformAccountNumber = await allocateAccountNumberV2(
+          accountTypeFor(orgType),
+          input.practicePhone || input.phone,
+          { tx }
+        );
+        const [org] = await tx
+          .insert(organizations)
+          .values({
+            type: orgType,
+            name: input.practiceName!.trim(),
+            displayName: input.practiceName!.trim(),
+            addressLine1: input.practiceAddress || null,
+            phone: input.practicePhone || null,
+            billingEmail: input.email || null,
+            createdByUserId: createdUser.id,
+            platformAccountNumber: orgPlatformAccountNumber,
+          })
+          .returning();
+        await tx.insert(organizationMemberships).values({
+          labId: org.id,
+          userId: createdUser.id,
+          role: "owner",
+          status: "active",
+          approvedByUserId: createdUser.id,
+          joinedAt: new Date(),
+        });
+        organizationInfo = { id: org.id, name: org.displayName || org.name };
+        responseMessage = `${org.displayName || org.name} created and linked to your account.`;
+        orgCreation = {
+          orgId: org.id,
+          billingSubjectType: orgType === "lab" ? "lab_org" : "provider_org",
+        };
+      }
+
+      return createdUser;
+    });
 
     const sessionId = crypto.randomUUID();
     const rawRefreshToken = signRefreshToken(user.id, sessionId);
@@ -438,78 +518,16 @@ router.post(
       entityId: user.id,
     });
 
-    let responseMessage = "Account created.";
-    let pendingJoinRequest = false;
-    let organizationInfo: any = null;
-
-    if (joinTargetOrg) {
-      const targetName = joinTargetOrg.displayName || joinTargetOrg.name;
-      await db.insert(organizationJoinRequests).values({
-        labId: joinTargetOrg.id,
-        userId: user.id,
-        requestedRole: "user",
-        message: `${user.username} would like to join ${targetName}.`,
-        status: "pending",
-      });
-      organizationInfo = { id: joinTargetOrg.id, name: targetName };
-      pendingJoinRequest = true;
-      responseMessage = `Your request to join ${targetName} has been sent to the lab admin.`;
-    } else if (shouldCreateOrganization) {
-      const orgType = input.userType === "provider" ? "provider" : "lab";
-      // Allocate platform-wide account number for every new organization
-      // (Task #320). Best-effort; never blocks registration.
-      let orgPlatformAccountNumber: string | null = null;
-      try {
-        orgPlatformAccountNumber = await allocatePlatformAccountNumber(
-          "org",
-          deriveAccountNameParts({
-            practiceName: input.practiceName,
-            doctorName: input.doctorName,
-            firstName: input.firstName,
-            lastName: input.lastName,
-          })
-        );
-      } catch (err: any) {
+    // Start billing trials AFTER the account-creation transaction commits.
+    // These are best-effort and must never roll back the new account.
+    if (orgCreation) {
+      const { billingSubjectType, orgId } = orgCreation;
+      startBillingTrial(billingSubjectType, orgId, user.id).catch((err: any) => {
         req.log?.warn?.(
-          { err: err?.message ?? String(err) },
-          "Failed to allocate platform account number for org (non-fatal)"
+          { err: err?.message },
+          "[billing] Failed to start org billing trial (non-fatal)"
         );
-      }
-      const [org] = await db
-        .insert(organizations)
-        .values({
-          type: orgType,
-          name: input.practiceName!.trim(),
-          displayName: input.practiceName!.trim(),
-          addressLine1: input.practiceAddress || null,
-          phone: input.practicePhone || null,
-          billingEmail: input.email || null,
-          createdByUserId: user.id,
-          platformAccountNumber: orgPlatformAccountNumber,
-        })
-        .returning();
-      await db.insert(organizationMemberships).values({
-        labId: org.id,
-        userId: user.id,
-        role: "owner",
-        status: "active",
-        approvedByUserId: user.id,
-        joinedAt: new Date(),
       });
-      organizationInfo = { id: org.id, name: org.displayName || org.name };
-      responseMessage = `${org.displayName || org.name} created and linked to your account.`;
-
-      // Start billing trial for the new organization. Best-effort — never
-      // blocks registration. Trial begins the moment the org is created.
-      const billingSubjectType = orgType === "lab" ? "lab_org" : "provider_org";
-      startBillingTrial(billingSubjectType, org.id, user.id).catch(
-        (err: any) => {
-          req.log?.warn?.(
-            { err: err?.message },
-            "[billing] Failed to start org billing trial (non-fatal)"
-          );
-        }
-      );
     } else if (!joinTargetOrg) {
       // Solo user who didn't create or join an org yet (e.g. a provider
       // who will claim their practice later). Give them a user-level trial
@@ -527,7 +545,7 @@ router.post(
     // the two accounts. Best-effort; never blocks registration (Task #320).
     if (
       (input.userType || "lab") === "provider" &&
-      userPlatformAccountNumber
+      user.platformAccountNumber
     ) {
       const labName =
         (organizationInfo as any)?.name ||
@@ -537,7 +555,7 @@ router.post(
           id: user.id,
           email: user.email,
           phone: user.phone,
-          platformAccountNumber: userPlatformAccountNumber,
+          platformAccountNumber: user.platformAccountNumber,
         },
         newLabName: labName,
         log: req.log,

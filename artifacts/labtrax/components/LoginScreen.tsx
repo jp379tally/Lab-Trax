@@ -328,8 +328,10 @@ export default function LoginScreen() {
       setSignUpError("Please enter a username.");
       return;
     }
-    if (signUpUsername.trim().length < 3) {
-      setSignUpError("Username must be at least 3 characters.");
+    // Mirrors the server-side rule (USERNAME_REGEX in api-server auth.ts):
+    // 3–12 chars, letters/numbers/underscore only.
+    if (!/^[a-zA-Z0-9_]{3,12}$/.test(signUpUsername.trim())) {
+      setSignUpError("Username must be 3–12 characters using only letters, numbers, or underscores.");
       return;
     }
 
@@ -2058,10 +2060,11 @@ export default function LoginScreen() {
               style={styles.input}
               value={signUpUsername}
               onChangeText={(t) => { setSignUpUsername(t); setSignUpError(null); }}
-              placeholder="Username"
+              placeholder="Username (3–12 letters, numbers, _)"
               placeholderTextColor="rgba(255,255,255,0.3)"
               autoCapitalize="none"
               autoCorrect={false}
+              maxLength={12}
               editable={!signUpLoading}
               testID="signup-username"
             />

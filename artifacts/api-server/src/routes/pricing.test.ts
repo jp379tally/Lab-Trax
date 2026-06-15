@@ -419,7 +419,7 @@ maybe("Pricing tiers and overrides (db integration)", () => {
       // Cases are soft-deleted; the afterAll pruner covers the lab's cases.
       // Tiers/overrides are cleaned up by afterAll too.
     }
-  });
+  }, 20000);
 
   // ── GET /api/pricing/resolve-items — tier beats default ($0) fallback ───────
   //

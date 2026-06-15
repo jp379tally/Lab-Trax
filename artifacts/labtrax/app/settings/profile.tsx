@@ -24,6 +24,7 @@ import { ME_QUERY_KEY } from "@/lib/auth-me";
 interface MeUser {
   id?: string;
   username?: string;
+  platformAccountNumber?: string | null;
   firstName?: string | null;
   lastName?: string | null;
   email?: string | null;
@@ -417,6 +418,12 @@ export default function ProfileScreen() {
                 <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Role</Text>
                 <Text style={[styles.readOnly, { color: colors.textSecondary }]}>{user?.role ?? "—"}</Text>
               </View>
+              {user?.platformAccountNumber ? (
+                <View style={[styles.fieldWrap, styles.fieldDivider, { borderTopColor: colors.border }]}>
+                  <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Account number</Text>
+                  <Text style={[styles.readOnly, { color: colors.textSecondary }]}>{user.platformAccountNumber}</Text>
+                </View>
+              ) : null}
             </SettingsSection>
 
             {/* Lab branding — admin only */}

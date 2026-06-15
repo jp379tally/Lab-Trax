@@ -2685,6 +2685,25 @@ components:
         practicePhone: { type: string, nullable: true }
         phoneContactName: { type: string, nullable: true }
         accountNumber: { type: string, nullable: true }
+        platformAccountNumber:
+          type: string
+          nullable: true
+          description: Immutable platform-wide account number. Canonical format is `<TYPE>-<YEAR>-<SEQUENCE>-<PHONE>` (e.g. `L-2026-3-5551234567`); legacy accounts use the older `<seq><YY><F><L>` format.
+        emailVerifiedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the user's email was verified, or null if unverified.
+        phoneVerifiedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the user's phone was verified, or null if unverified.
+        twoFactorChannel:
+          type: string
+          nullable: true
+          enum: [sms, email]
+          description: Preferred second-factor / verification channel.
         wantsUpdates: { type: boolean, nullable: true }
         workStatus: { type: string, nullable: true }
         profilePhotoUrl: { type: string, nullable: true }
@@ -2693,7 +2712,12 @@ components:
       type: object
       description: New-account registration. The global role is always the base user role; account/platform numbers are allocated server-side and never grant privilege.
       properties:
-        username: { type: string }
+        username:
+          type: string
+          minLength: 3
+          maxLength: 12
+          pattern: "^[a-zA-Z0-9_]{3,12}$"
+          description: 3–12 characters, letters/numbers/underscore only. Unique case-insensitively.
         password: { type: string }
         email: { type: string, nullable: true }
         phone: { type: string, nullable: true }

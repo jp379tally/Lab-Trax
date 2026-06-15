@@ -2777,9 +2777,23 @@ export const MarkConversationReadBody = zod.object({
 /**
  * @summary Register a new user account (base role only; 14-day trial starts)
  */
+export const registerUserBodyUsernameMin = 3;
+export const registerUserBodyUsernameMax = 12;
+
+export const registerUserBodyUsernameRegExp = new RegExp(
+  "^[a-zA-Z0-9_]{3,12}$",
+);
+
 export const RegisterUserBody = zod
   .object({
-    username: zod.string(),
+    username: zod
+      .string()
+      .min(registerUserBodyUsernameMin)
+      .max(registerUserBodyUsernameMax)
+      .regex(registerUserBodyUsernameRegExp)
+      .describe(
+        "3–12 characters, letters\/numbers\/underscore only. Unique case-insensitively.",
+      ),
     password: zod.string(),
     email: zod.string().nullish(),
     phone: zod.string().nullish(),
@@ -2824,6 +2838,28 @@ export const RegisterUserResponse = zod
         practicePhone: zod.string().nullish(),
         phoneContactName: zod.string().nullish(),
         accountNumber: zod.string().nullish(),
+        platformAccountNumber: zod
+          .string()
+          .nullish()
+          .describe(
+            "Immutable platform-wide account number. Canonical format is `<TYPE>-<YEAR>-<SEQUENCE>-<PHONE>` (e.g. `L-2026-3-5551234567`); legacy accounts use the older `<seq><YY><F><L>` format.",
+          ),
+        emailVerifiedAt: zod.coerce
+          .date()
+          .nullish()
+          .describe(
+            "When the user's email was verified, or null if unverified.",
+          ),
+        phoneVerifiedAt: zod.coerce
+          .date()
+          .nullish()
+          .describe(
+            "When the user's phone was verified, or null if unverified.",
+          ),
+        twoFactorChannel: zod
+          .enum(["sms", "email"])
+          .nullish()
+          .describe("Preferred second-factor \/ verification channel."),
         wantsUpdates: zod.boolean().nullish(),
         workStatus: zod.string().nullish(),
         profilePhotoUrl: zod.string().nullish(),
@@ -2881,6 +2917,28 @@ export const LoginUserResponse = zod
         practicePhone: zod.string().nullish(),
         phoneContactName: zod.string().nullish(),
         accountNumber: zod.string().nullish(),
+        platformAccountNumber: zod
+          .string()
+          .nullish()
+          .describe(
+            "Immutable platform-wide account number. Canonical format is `<TYPE>-<YEAR>-<SEQUENCE>-<PHONE>` (e.g. `L-2026-3-5551234567`); legacy accounts use the older `<seq><YY><F><L>` format.",
+          ),
+        emailVerifiedAt: zod.coerce
+          .date()
+          .nullish()
+          .describe(
+            "When the user's email was verified, or null if unverified.",
+          ),
+        phoneVerifiedAt: zod.coerce
+          .date()
+          .nullish()
+          .describe(
+            "When the user's phone was verified, or null if unverified.",
+          ),
+        twoFactorChannel: zod
+          .enum(["sms", "email"])
+          .nullish()
+          .describe("Preferred second-factor \/ verification channel."),
         wantsUpdates: zod.boolean().nullish(),
         workStatus: zod.string().nullish(),
         profilePhotoUrl: zod.string().nullish(),
@@ -2952,6 +3010,24 @@ export const GetCurrentUserResponse = zod.object({
       practicePhone: zod.string().nullish(),
       phoneContactName: zod.string().nullish(),
       accountNumber: zod.string().nullish(),
+      platformAccountNumber: zod
+        .string()
+        .nullish()
+        .describe(
+          "Immutable platform-wide account number. Canonical format is `<TYPE>-<YEAR>-<SEQUENCE>-<PHONE>` (e.g. `L-2026-3-5551234567`); legacy accounts use the older `<seq><YY><F><L>` format.",
+        ),
+      emailVerifiedAt: zod.coerce
+        .date()
+        .nullish()
+        .describe("When the user's email was verified, or null if unverified."),
+      phoneVerifiedAt: zod.coerce
+        .date()
+        .nullish()
+        .describe("When the user's phone was verified, or null if unverified."),
+      twoFactorChannel: zod
+        .enum(["sms", "email"])
+        .nullish()
+        .describe("Preferred second-factor \/ verification channel."),
       wantsUpdates: zod.boolean().nullish(),
       workStatus: zod.string().nullish(),
       profilePhotoUrl: zod.string().nullish(),

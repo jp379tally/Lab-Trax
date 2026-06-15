@@ -54,6 +54,10 @@ export type SessionUser = {
   initials?: string | null;
   userType?: string | null;
   role?: string | null;
+  // Immutable platform-wide account number (Account epic). Format
+  // `<TYPE>-<YEAR>-<SEQUENCE>-<PHONE>` for canonical accounts; legacy
+  // accounts may carry an older format or null.
+  platformAccountNumber?: string | null;
   practiceName?: string | null;
   // Caller's primary lab (from active memberships) and its uploaded
   // logo URL, surfaced by the API so the desktop can show + replace

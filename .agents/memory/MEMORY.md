@@ -49,3 +49,5 @@
 - [expo-sensors lazy import](expo-sensors-lazy-import.md) — requireNativeModule runs at module load time; static import crashes on navigation; must dynamic-import inside the function that needs it.
 - [Mobile create-case required fields](mobile-create-case-required-fields.md) — create needs providerOrganizationId (DB notNull) + doctorName.min(1); no placeholder org, so "unlinked"/skip paths always 400 — gate submit on both.
 - [LabTrax Desktop PWA stale clients](labtrax-desktop-pwa-stale-clients.md) — injectManifest+autoUpdate needs manual skipWaiting/clientsClaim in sw.ts or republished UI never reaches returning users (waiting SW serves old precache).
+- [api-server vitest hermeticity](api-server-test-hermeticity.md) — LABTRAX_ENABLE_DEMO_SEEDS=true breaks mocked-db suites at app-init; createRateLimit no-ops under VITEST; both fixed in vitest.config/rate-limit.ts.
+- [Mobile rx-summary DetailRestoration mismatch](mobile-rx-summary-mismatch.md) — mobile RxSummary has no `shades` field; DetailRestoration has all-optional fields (incompatible with RestorationLike); derive type/material/shade directly from the array instead of using deriveRxSummary.

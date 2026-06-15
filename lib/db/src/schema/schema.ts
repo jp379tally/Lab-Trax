@@ -66,6 +66,16 @@ export const users = pgTable(
     twoFactorSecret: text("two_factor_secret"),
     twoFactorEnabled: boolean("two_factor_enabled").default(false).notNull(),
     twoFactorBackupCodes: jsonb("two_factor_backup_codes"),
+    // Which channel the login second-factor challenge uses
+    // ("totp" | "email" | "sms"). Null = TOTP (back-compat). Phase 2
+    // (Account epic) lets users pick email/SMS as an alternative to TOTP.
+    twoFactorChannel: text("two_factor_channel"),
+    // Durable email/phone verification state (Account epic Phase 2).
+    // Null = unverified. Set the moment a one-time code is confirmed for the
+    // account's own contact value. Enforced server-side: unverified users are
+    // blocked from PHI routes (cases/invoices/finance/statements).
+    emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
+    phoneVerifiedAt: timestamp("phone_verified_at", { withTimezone: true }),
     profilePhotoUrl: text("profile_photo_url"),
     createdAt: timestamp("created_at").defaultNow(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
@@ -284,9 +294,14 @@ export const organizations = pgTable(
 
 /**
  * Per-(year, entity_type) monotonic sequence used by the platform-account-
- * number allocator (Task #320). Locked with `SELECT ... FOR UPDATE` inside a
- * transaction so concurrent allocations get strictly increasing values.
- * `entity_type` is one of "user" | "org".
+ * number allocator. Locked with `SELECT ... FOR UPDATE` inside a transaction
+ * so concurrent allocations get strictly increasing values.
+ *
+ * `entity_type` historically held "user" | "org" (legacy `<seq><YY><F><L>`
+ * format, Task #320). The Account epic Phase 2 `<TYPE>-<YEAR>-<SEQUENCE>-<PHONE>`
+ * format reuses this same table keyed by account TYPE — "L" (lab) | "P"
+ * (provider) — so labs and providers keep independent per-year counters and a
+ * lab user + lab org created the same year draw from the same "L" sequence.
  */
 export const platformAccountSequences = pgTable(
   "platform_account_sequences",
@@ -301,6 +316,40 @@ export const platformAccountSequences = pgTable(
       table.year,
       table.entityType
     ),
+  })
+);
+
+/**
+ * Durable one-time verification codes (Account epic Phase 2). Replaces the
+ * old in-memory `Map` used by send/verify email/phone code routes so the
+ * "is this contact verified?" signal survives restarts and works across
+ * instances. Codes are stored HASHED (never plaintext); `target` is the
+ * normalized contact value (lowercased email, or 10-digit phone). `userId`
+ * is set when the request is authenticated (signup-time flow). `attemptCount`
+ * supports per-code attempt limiting; `consumedAt` marks a single-use code as
+ * spent.
+ */
+export const verificationCodes = pgTable(
+  "verification_codes",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    userId: varchar("user_id"),
+    channel: text("channel").notNull(), // "email" | "sms"
+    target: text("target").notNull(),
+    codeHash: text("code_hash").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    attemptCount: integer("attempt_count").default(0).notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => ({
+    targetChannelIdx: index("verification_codes_target_channel_idx").on(
+      table.target,
+      table.channel
+    ),
+    userIdx: index("verification_codes_user_idx").on(table.userId),
   })
 );
 

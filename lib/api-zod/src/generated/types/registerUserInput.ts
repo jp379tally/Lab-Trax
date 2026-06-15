@@ -12,6 +12,12 @@ import type { RegisterUserInputUserType } from "./registerUserInputUserType";
  * New-account registration. The global role is always the base user role; account/platform numbers are allocated server-side and never grant privilege.
  */
 export interface RegisterUserInput {
+  /**
+   * 3–12 characters, letters/numbers/underscore only. Unique case-insensitively.
+   * @minLength 3
+   * @maxLength 12
+   * @pattern ^[a-zA-Z0-9_]{3,12}$
+   */
   username: string;
   password: string;
   email?: string | null;

@@ -1129,6 +1129,7 @@ function OverviewSection({
   const [printModalVisible, setPrintModalVisible] = useState(false);
   const [printLoading, setPrintLoading] = useState(false);
   const [pendingPrintBarcode, setPendingPrintBarcode] = useState<string | null>(null);
+  const [rxPreviewOpen, setRxPreviewOpen] = useState(false);
   const insets = useSafeAreaInsets();
 
   // ── Locate Case ─────────────────────────────────────────────────────────────
@@ -1402,7 +1403,20 @@ function OverviewSection({
           </View>
         ) : (
           <View>
-            <FieldRow label="Patient" value={patientName(c)} styles={styles} />
+            <View style={styles.fieldRow}>
+              <Text style={styles.fieldLabel}>Patient</Text>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: Spacing.xs, flexShrink: 1, justifyContent: "flex-end" }}>
+                <Text style={[styles.fieldValue, { textAlign: "right" }]}>{patientName(c)}</Text>
+                <Pressable
+                  hitSlop={8}
+                  onPress={() => setRxPreviewOpen(true)}
+                  style={{ flexDirection: "row", alignItems: "center", gap: 3, paddingHorizontal: 6, paddingVertical: 2, borderRadius: Radius.xs, backgroundColor: colors.tintLight }}
+                >
+                  <Ionicons name="document-text-outline" size={11} color={colors.tint} />
+                  <Text style={{ fontSize: 10, color: colors.tint, fontWeight: "600" }}>Preview Rx</Text>
+                </Pressable>
+              </View>
+            </View>
             <FieldRow label="Doctor" value={c.doctorName || "—"} styles={styles} />
             <FieldRow label="Case #" value={c.caseNumber || "—"} styles={styles} />
             <FieldRow label="Priority" value={c.priority ? titleCase(c.priority) : "Standard"} styles={styles} />
@@ -1669,6 +1683,87 @@ function OverviewSection({
               <Text style={styles.labelPrintSkipText}>Skip</Text>
             </Pressable>
           </View>
+        </View>
+      </Modal>
+
+      {/* Prescription preview */}
+      <Modal
+        visible={rxPreviewOpen}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setRxPreviewOpen(false)}
+      >
+        <View style={{ flex: 1, backgroundColor: colors.backgroundSolid, paddingTop: insets.top }}>
+          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: Spacing.xs }}>
+              <Ionicons name="document-text-outline" size={18} color={colors.tint} />
+              <Text style={{ fontSize: 16, fontWeight: "600", color: colors.text }}>Prescription Preview</Text>
+            </View>
+            <Pressable hitSlop={8} onPress={() => setRxPreviewOpen(false)}>
+              <Ionicons name="close" size={22} color={colors.textSecondary} />
+            </Pressable>
+          </View>
+          <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: Spacing.md, gap: Spacing.md }}>
+            <View style={{ backgroundColor: colors.surface, borderRadius: Radius.md, padding: Spacing.md, gap: Spacing.sm, marginBottom: Spacing.md }}>
+              <View style={styles.fieldRow}>
+                <Text style={styles.fieldLabel}>Patient</Text>
+                <Text style={styles.fieldValue}>{patientName(c)}</Text>
+              </View>
+              <View style={styles.fieldRow}>
+                <Text style={styles.fieldLabel}>Doctor</Text>
+                <Text style={styles.fieldValue}>{c.doctorName || "—"}</Text>
+              </View>
+              <View style={styles.fieldRow}>
+                <Text style={styles.fieldLabel}>Case #</Text>
+                <Text style={styles.fieldValue}>{c.caseNumber || "—"}</Text>
+              </View>
+              {(c.restorations ?? []).length > 0 && (() => {
+                const rests = c.restorations ?? [];
+                const types = [...new Set(rests.map((r) => r.restorationType).filter((v): v is string => !!v))];
+                const materials = [...new Set(rests.map((r) => r.material).filter((v): v is string => !!v))];
+                const shades = [...new Set(rests.map((r) => r.shade).filter((v): v is string => !!v))];
+                return (
+                  <>
+                    {types.length > 0 ? (
+                      <View style={styles.fieldRow}>
+                        <Text style={styles.fieldLabel}>Type</Text>
+                        <Text style={styles.fieldValue}>{types.join(", ")}</Text>
+                      </View>
+                    ) : null}
+                    {materials.length > 0 ? (
+                      <View style={styles.fieldRow}>
+                        <Text style={styles.fieldLabel}>Material</Text>
+                        <Text style={styles.fieldValue}>{materials.join(", ")}</Text>
+                      </View>
+                    ) : null}
+                    {shades.length > 0 ? (
+                      <View style={styles.fieldRow}>
+                        <Text style={styles.fieldLabel}>Shade</Text>
+                        <Text style={styles.fieldValue}>{shades.join(", ")}</Text>
+                      </View>
+                    ) : null}
+                  </>
+                );
+              })()}
+            </View>
+            {(c.restorations ?? []).length > 0 && (
+              <View style={{ backgroundColor: colors.surface, borderRadius: Radius.md, overflow: "hidden" }}>
+                <View style={{ flexDirection: "row", backgroundColor: colors.surfaceAlt, paddingHorizontal: Spacing.sm, paddingVertical: Spacing.xs }}>
+                  {["Tooth", "Type", "Material", "Shade"].map((h) => (
+                    <Text key={h} style={{ flex: 1, fontSize: 10, fontWeight: "600", color: colors.textSecondary, textTransform: "uppercase", letterSpacing: 0.5 }}>{h}</Text>
+                  ))}
+                </View>
+                {(c.restorations ?? []).map((r, idx) => (
+                  <View key={r.id ?? String(idx)} style={{ flexDirection: "row", paddingHorizontal: Spacing.sm, paddingVertical: Spacing.xs, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border }}>
+                    <Text style={{ flex: 1, fontSize: 13, color: colors.text }}>{r.toothNumber || "—"}</Text>
+                    <Text style={{ flex: 1, fontSize: 13, color: colors.text }}>{r.restorationType || "—"}</Text>
+                    <Text style={{ flex: 1, fontSize: 13, color: colors.text }}>{r.material || "—"}</Text>
+                    <Text style={{ flex: 1, fontSize: 13, color: colors.text }}>{r.shade || "—"}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
+          </ScrollView>
         </View>
       </Modal>
     </View>

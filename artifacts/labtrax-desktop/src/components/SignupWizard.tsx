@@ -91,6 +91,10 @@ function validatePassword(pw: string) {
   };
 }
 
+// Mirrors the server-side rule (USERNAME_REGEX in api-server auth.ts):
+// 3–12 chars, letters/numbers/underscore only.
+const USERNAME_REGEX = /^[a-zA-Z0-9_]{3,12}$/;
+
 const inputClass =
   "w-full h-10 px-3 rounded-md bg-background border border-input text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary";
 const labelClass = "block text-xs font-medium text-foreground mb-1.5";
@@ -242,6 +246,11 @@ export default function SignupWizard({ onCancel }: Props) {
     e.preventDefault();
     if (!username.trim() || !email.trim() || !password) {
       return fail("Please fill in all fields.");
+    }
+    if (!USERNAME_REGEX.test(username.trim())) {
+      return fail(
+        "Username must be 3–12 characters using only letters, numbers, or underscores.",
+      );
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
       return fail("Please enter a valid email address.");
@@ -507,11 +516,15 @@ export default function SignupWizard({ onCancel }: Props) {
                 value={username}
                 autoFocus
                 autoComplete="username"
+                maxLength={12}
                 onChange={(e) => {
                   setUsername(e.target.value);
                   clearError();
                 }}
               />
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                3–12 characters: letters, numbers, or underscores.
+              </p>
             </div>
             <div>
               <label className={labelClass}>Email</label>

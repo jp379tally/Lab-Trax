@@ -35,6 +35,15 @@ function rid(prefix: string) {
   return `${prefix}_${randomBytes(8).toString("hex")}`;
 }
 
+/**
+ * Random username conforming to the canonical signup rule (3–12 chars,
+ * [a-zA-Z0-9_]). Use this for register-endpoint inputs; rid() stays for emails
+ * and DB-level identifiers where length is unrestricted.
+ */
+function uname(prefix: string) {
+  return `${prefix}${randomBytes(6).toString("hex")}`.slice(0, 12);
+}
+
 maybe("Auth registration and password reset (db integration)", () => {
   let dbMod: typeof import("@workspace/db");
   let appMod: { default: import("express").Express };
@@ -62,10 +71,16 @@ maybe("Auth registration and password reset (db integration)", () => {
   // ── POST /api/auth/register ───────────────────────────────────────────────
 
   it("register with valid credentials returns 200 with access token and user", async () => {
-    const username = rid("reguser");
+    const username = uname("reg");
     const r = await request(appMod.default)
       .post("/api/auth/register")
-      .send({ username, password: "TestPassword1!", clientType: "mobile" });
+      .send({
+        username,
+        password: "TestPassword1!",
+        email: `${username}@example.com`,
+        userType: "lab",
+        clientType: "mobile",
+      });
 
     expect(r.status).toBe(200);
     expect(r.body.success).toBe(true);
@@ -77,17 +92,29 @@ maybe("Auth registration and password reset (db integration)", () => {
   });
 
   it("register with duplicate username returns 409", async () => {
-    const username = rid("dupuser");
+    const username = uname("dup");
 
     const first = await request(appMod.default)
       .post("/api/auth/register")
-      .send({ username, password: "Pass1234!", clientType: "mobile" });
+      .send({
+        username,
+        password: "Pass1234!",
+        email: `${username}.1@example.com`,
+        userType: "lab",
+        clientType: "mobile",
+      });
     expect(first.status).toBe(200);
     if (first.body.user?.id) createdUserIds.push(first.body.user.id);
 
     const second = await request(appMod.default)
       .post("/api/auth/register")
-      .send({ username, password: "OtherPass!", clientType: "mobile" });
+      .send({
+        username,
+        password: "OtherPass!",
+        email: `${username}.2@example.com`,
+        userType: "lab",
+        clientType: "mobile",
+      });
     expect(second.status).toBe(409);
   });
 
@@ -95,13 +122,13 @@ maybe("Auth registration and password reset (db integration)", () => {
     const email = `${rid("regdupe")}@example.com`;
     const first = await request(appMod.default)
       .post("/api/auth/register")
-      .send({ username: rid("udup1"), password: "Pass1234!", email, clientType: "mobile" });
+      .send({ username: uname("ua"), password: "Pass1234!", email, userType: "lab", clientType: "mobile" });
     expect(first.status).toBe(200);
     if (first.body.user?.id) createdUserIds.push(first.body.user.id);
 
     const second = await request(appMod.default)
       .post("/api/auth/register")
-      .send({ username: rid("udup2"), password: "OtherPass!", email, clientType: "mobile" });
+      .send({ username: uname("ub"), password: "OtherPass!", email, userType: "lab", clientType: "mobile" });
     expect(second.status).toBe(409);
   });
 

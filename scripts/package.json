@@ -14,6 +14,7 @@
     "lint-protected-tables": "tsx ./src/lint-protected-tables.ts",
     "lint-mobile-legacy-paths": "tsx ./src/lint-mobile-legacy-paths.ts",
     "backfill-platform-account-numbers": "tsx ./src/backfill-platform-account-numbers.ts",
+    "backfill-account-numbers-v2": "tsx ./src/backfill-account-numbers-v2.ts",
     "backfill-restoration-buckets": "tsx ./src/backfill-restoration-buckets.ts",
     "backfill-vendor-links": "tsx ./src/backfill-vendor-links.ts",
     "backfill-expected-delivery-dates": "tsx ./src/backfill-expected-delivery-dates.ts",

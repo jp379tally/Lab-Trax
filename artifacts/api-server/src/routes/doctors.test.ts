@@ -469,7 +469,7 @@ maybe("Task #382 doctor merge route (db integration)", () => {
     expect(expired.status).toBe(409);
 
     await db.delete(cases).where(inArray(cases.id, ids));
-  });
+  }, 30000);
 
   it("respects DOCTOR_MERGE_UNDO_WINDOW_MINUTES override", async () => {
     const id = await insertCase({

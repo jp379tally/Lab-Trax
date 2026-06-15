@@ -32,6 +32,13 @@ import { eq, and, inArray, or, isNull, sql, desc, count, type SQL } from "drizzl
 import { hashPassword } from "../lib/crypto";
 import { HttpError } from "../lib/http";
 import { requireAuth, optionalAuth } from "../middlewares/auth";
+import { writeAuditLog } from "../lib/audit";
+import {
+  createVerificationCode,
+  verifyCode,
+  normalizeEmailTarget,
+  normalizePhoneTarget,
+} from "../lib/verification";
 import { createRateLimit } from "../lib/rate-limit";
 import { parseOrganizationIdFromAffiliationKey } from "../lib/case-visibility";
 import { getUncachableStripeClient, isStripeConfigured } from "../lib/stripeClient";
@@ -144,7 +151,6 @@ import messengerRoutes from "./messenger";
 import { registerAiChatRoutes } from "./ai-chat";
 import { registerAiAgentRoutes } from "./ai-agent";
 
-const verificationCodes = new Map<string, { code: string; expiresAt: number }>();
 const passwordResetTokens = new Map<string, { userId: string; expiresAt: number }>();
 const DEMO_SEED_USERS_ENABLED = process.env.LABTRAX_ENABLE_DEMO_SEEDS === "true";
 let cachedOpenAIClient: OpenAI | undefined;
@@ -3283,14 +3289,18 @@ export async function registerRoutes(): Promise<IRouter> {
     }
   });
 
-  router.post("/send-phone-code", sendCodeRateLimit, async (req, res) => {
+  router.post("/send-phone-code", sendCodeRateLimit, optionalAuth, async (req, res) => {
     const { phone } = req.body;
     if (!phone || typeof phone !== "string") {
       return res.status(400).json({ error: "Phone number required" });
     }
     const code = generateCode();
-    const key = `phone:${phone.trim()}`;
-    verificationCodes.set(key, { code, expiresAt: Date.now() + 10 * 60 * 1000 });
+    await createVerificationCode({
+      channel: "sms",
+      target: normalizePhoneTarget(phone),
+      code,
+      userId: (req as any).auth?.userId ?? null,
+    });
 
     const twilioSid = process.env.TWILIO_ACCOUNT_SID;
     const twilioToken = process.env.TWILIO_AUTH_TOKEN;
@@ -3328,24 +3338,47 @@ export async function registerRoutes(): Promise<IRouter> {
     return res.json({ success: true, message: "Verification code sent via SMS.", ...(isDev && (!twilioSid || !twilioToken || !twilioFrom) ? { demoCode: code } : {}) });
   });
 
-  router.post("/verify-phone-code", (req, res) => {
+  router.post("/verify-phone-code", optionalAuth, async (req, res) => {
     const { phone, code } = req.body;
     if (!phone || !code) return res.status(400).json({ error: "Phone and code required" });
-    const key = `phone:${phone.trim()}`;
-    const stored = verificationCodes.get(key);
-    if (!stored) return res.json({ verified: false, error: "No code sent. Please request a new one." });
-    if (Date.now() > stored.expiresAt) { verificationCodes.delete(key); return res.json({ verified: false, error: "Code expired." }); }
-    if (stored.code !== code.trim()) return res.json({ verified: false, error: "Incorrect code." });
-    verificationCodes.delete(key);
+    const target = normalizePhoneTarget(phone);
+    const result = await verifyCode({ channel: "sms", target, code: String(code) });
+    if (!result.verified) {
+      return res.json({ verified: false, error: result.error });
+    }
+    // Bind the verification to the requesting user when authenticated, else to
+    // the user the code was originally issued to. Only set the durable flag
+    // when the verified phone actually belongs to that account.
+    const boundUserId = (req as any).auth?.userId ?? result.userId ?? null;
+    if (boundUserId) {
+      const user = await db.query.users.findFirst({ where: eq(users.id, boundUserId) });
+      if (user && normalizePhoneTarget(user.phone ?? "") === target) {
+        await db
+          .update(users)
+          .set({ phoneVerifiedAt: new Date() })
+          .where(eq(users.id, boundUserId));
+        await writeAuditLog({
+          req,
+          userId: boundUserId,
+          action: "phone_verified",
+          entityType: "user",
+          entityId: boundUserId,
+        });
+      }
+    }
     return res.json({ verified: true });
   });
 
-  router.post("/send-email-code", sendCodeRateLimit, async (req, res) => {
+  router.post("/send-email-code", sendCodeRateLimit, optionalAuth, async (req, res) => {
     const { email } = req.body;
     if (!email || typeof email !== "string") return res.status(400).json({ error: "Email required" });
     const code = generateCode();
-    const key = `email:${email.trim().toLowerCase()}`;
-    verificationCodes.set(key, { code, expiresAt: Date.now() + 10 * 60 * 1000 });
+    await createVerificationCode({
+      channel: "email",
+      target: normalizeEmailTarget(email),
+      code,
+      userId: (req as any).auth?.userId ?? null,
+    });
 
     const smtpHost = process.env.SMTP_HOST;
     const smtpUser = process.env.SMTP_USER;
@@ -3391,15 +3424,31 @@ export async function registerRoutes(): Promise<IRouter> {
     return res.json({ success: true, message: "Verification code sent.", ...(isDev && (!smtpHost || !smtpUser || !smtpPass) ? { demoCode: code } : {}) });
   });
 
-  router.post("/verify-email-code", (req, res) => {
+  router.post("/verify-email-code", optionalAuth, async (req, res) => {
     const { email, code } = req.body;
     if (!email || !code) return res.status(400).json({ error: "Email and code required" });
-    const key = `email:${email.trim().toLowerCase()}`;
-    const stored = verificationCodes.get(key);
-    if (!stored) return res.json({ verified: false, error: "No code sent." });
-    if (Date.now() > stored.expiresAt) { verificationCodes.delete(key); return res.json({ verified: false, error: "Code expired." }); }
-    if (stored.code !== code.trim()) return res.json({ verified: false, error: "Incorrect code." });
-    verificationCodes.delete(key);
+    const target = normalizeEmailTarget(email);
+    const result = await verifyCode({ channel: "email", target, code: String(code) });
+    if (!result.verified) {
+      return res.json({ verified: false, error: result.error });
+    }
+    const boundUserId = (req as any).auth?.userId ?? result.userId ?? null;
+    if (boundUserId) {
+      const user = await db.query.users.findFirst({ where: eq(users.id, boundUserId) });
+      if (user && normalizeEmailTarget(user.email ?? "") === target) {
+        await db
+          .update(users)
+          .set({ emailVerifiedAt: new Date() })
+          .where(eq(users.id, boundUserId));
+        await writeAuditLog({
+          req,
+          userId: boundUserId,
+          action: "email_verified",
+          entityType: "user",
+          entityId: boundUserId,
+        });
+      }
+    }
     return res.json({ verified: true });
   });
 

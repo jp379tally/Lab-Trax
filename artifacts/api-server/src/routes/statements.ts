@@ -6,7 +6,7 @@ import { statementSchedules, statementSendRuns } from "@workspace/db";
 import { HttpError, ok } from "../lib/http";
 import { ADMIN_ROLES, BILLING_ROLES, requireAnyRole } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
-import { requireAuth } from "../middlewares/auth";
+import { requireAuth, requireVerifiedAccount } from "../middlewares/auth";
 import {
   generateStatementsZipBufferForLab,
   retryStatementSendRun,
@@ -17,6 +17,7 @@ import {
 
 const router = Router();
 router.use(requireAuth);
+router.use(requireVerifiedAccount);
 
 async function loadOrCreateSchedule(labOrganizationId: string) {
   const existing = await db.query.statementSchedules.findFirst({

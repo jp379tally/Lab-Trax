@@ -6,6 +6,18 @@
  * OpenAPI spec version: 0.1.0
  */
 /**
+ * Preferred second-factor / verification channel.
+ */
+export type SafeUserTwoFactorChannel =
+  | (typeof SafeUserTwoFactorChannel)[keyof typeof SafeUserTwoFactorChannel]
+  | null;
+
+export const SafeUserTwoFactorChannel = {
+  sms: "sms",
+  email: "email",
+} as const;
+
+/**
  * User fields safe to return to clients (no password/secret material).
  */
 export interface SafeUser {
@@ -25,6 +37,14 @@ export interface SafeUser {
   practicePhone?: string | null;
   phoneContactName?: string | null;
   accountNumber?: string | null;
+  /** Immutable platform-wide account number. Canonical format is `<TYPE>-<YEAR>-<SEQUENCE>-<PHONE>` (e.g. `L-2026-3-5551234567`); legacy accounts use the older `<seq><YY><F><L>` format. */
+  platformAccountNumber?: string | null;
+  /** When the user's email was verified, or null if unverified. */
+  emailVerifiedAt?: string | null;
+  /** When the user's phone was verified, or null if unverified. */
+  phoneVerifiedAt?: string | null;
+  /** Preferred second-factor / verification channel. */
+  twoFactorChannel?: SafeUserTwoFactorChannel;
   wantsUpdates?: boolean | null;
   workStatus?: string | null;
   profilePhotoUrl?: string | null;
@@ -53,6 +73,12 @@ export const RegisterUserInputClientType = {
  * New-account registration. The global role is always the base user role; account/platform numbers are allocated server-side and never grant privilege.
  */
 export interface RegisterUserInput {
+  /**
+   * 3–12 characters, letters/numbers/underscore only. Unique case-insensitively.
+   * @minLength 3
+   * @maxLength 12
+   * @pattern ^[a-zA-Z0-9_]{3,12}$
+   */
   username: string;
   password: string;
   email?: string | null;

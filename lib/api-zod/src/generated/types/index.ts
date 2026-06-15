@@ -210,6 +210,7 @@ export * from "./rxPracticeAliasInput";
 export * from "./rxPracticeAliasResult";
 export * from "./rxPracticeAliasResultData";
 export * from "./safeUser";
+export * from "./safeUserTwoFactorChannel";
 export * from "./searchDoctorsParams";
 export * from "./searchMessengerUsersParams";
 export * from "./sendEmailCodeInput";

@@ -26,6 +26,15 @@ export function createRateLimit(opts: {
   message?: string;
 }) {
   return (req: Request, res: Response, next: NextFunction): void => {
+    // Rate limiting is a production safeguard. Disable it under Vitest: test
+    // suites register/login many times from a single loopback IP and share this
+    // in-process store across files within a fork, which would otherwise throttle
+    // unrelated tests in an order-dependent way. No test asserts 429 here.
+    if (process.env["VITEST"]) {
+      next();
+      return;
+    }
+
     const ip = getClientIp(req);
     const key = `${req.path}:${ip}`;
     const now = Date.now();

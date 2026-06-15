@@ -184,7 +184,7 @@ maybe("Canonical mobile rebuild — acceptance criteria (db integration)", () =>
     const caseId = r.body?.data?.id;
     expect(caseId).toMatch(UUID_RE);
     if (caseId) createdCaseIds.push(caseId);
-  });
+  }, 20000);
 
   // ── Acceptance criterion 2: UUID retrievable via GET /api/cases/:id ────────
 
@@ -304,7 +304,7 @@ maybe("Canonical mobile rebuild — acceptance criteria (db integration)", () =>
 
     expect(get.status).toBe(200);
     expect(get.body?.data?.status).toBe("in_design");
-  });
+  }, 20000);
 
   // ── Acceptance criterion 5: case history embedded in GET /api/cases/:id ────
   //

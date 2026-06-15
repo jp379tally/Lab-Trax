@@ -642,6 +642,11 @@ function ProfilePanel() {
         <Field label="Role">
           <input value={user?.role ?? ""} disabled className={`${inputCls} bg-secondary/40 text-muted-foreground cursor-not-allowed capitalize`} />
         </Field>
+        {user?.platformAccountNumber && (
+          <Field label="Account number">
+            <input value={user.platformAccountNumber} disabled className={`${inputCls} bg-secondary/40 text-muted-foreground cursor-not-allowed font-mono`} />
+          </Field>
+        )}
       </div>
       <div className="flex justify-end pt-1">
         <button

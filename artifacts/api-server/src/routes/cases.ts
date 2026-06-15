@@ -57,7 +57,7 @@ import {
 } from "../lib/pricing";
 import { ADMIN_ROLES, BILLING_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
-import { requireAuth } from "../middlewares/auth";
+import { requireAuth, requireVerifiedAccount } from "../middlewares/auth";
 import {
   getProviderOrgIdsForUserAndLinks,
   getLinkedProviderOrgsForProviderOrg,
@@ -96,6 +96,7 @@ function _bigramSimilarity(a: string, b: string): number {
 
 const router = Router();
 router.use(requireAuth);
+router.use(requireVerifiedAccount);
 
 // Derive the set of doctor names that "belong" to a given (lab, provider)
 // org pair so legacy `lab_cases` rows (which only carry a free-form

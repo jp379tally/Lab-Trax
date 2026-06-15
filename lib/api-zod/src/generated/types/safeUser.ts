@@ -5,6 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { SafeUserTwoFactorChannel } from "./safeUserTwoFactorChannel";
 
 /**
  * User fields safe to return to clients (no password/secret material).
@@ -26,6 +27,14 @@ export interface SafeUser {
   practicePhone?: string | null;
   phoneContactName?: string | null;
   accountNumber?: string | null;
+  /** Immutable platform-wide account number. Canonical format is `<TYPE>-<YEAR>-<SEQUENCE>-<PHONE>` (e.g. `L-2026-3-5551234567`); legacy accounts use the older `<seq><YY><F><L>` format. */
+  platformAccountNumber?: string | null;
+  /** When the user's email was verified, or null if unverified. */
+  emailVerifiedAt?: Date | null;
+  /** When the user's phone was verified, or null if unverified. */
+  phoneVerifiedAt?: Date | null;
+  /** Preferred second-factor / verification channel. */
+  twoFactorChannel?: SafeUserTwoFactorChannel;
   wantsUpdates?: boolean | null;
   workStatus?: string | null;
   profilePhotoUrl?: string | null;

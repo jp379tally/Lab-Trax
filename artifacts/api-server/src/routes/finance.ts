@@ -28,10 +28,11 @@ import {
 } from "../lib/vendor-types-seed";
 import { ADMIN_ROLES, BILLING_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
-import { requireAuth } from "../middlewares/auth";
+import { requireAuth, requireVerifiedAccount } from "../middlewares/auth";
 
 const router = Router();
 router.use(requireAuth);
+router.use(requireVerifiedAccount);
 
 // Resolve end-of-day for a calendar Y/M/D in an IANA tz, returned as
 // the UTC instant. Falls back to UTC if no tz is supplied or invalid.

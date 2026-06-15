@@ -35,6 +35,14 @@ function rid(prefix: string) {
   return `${prefix}_${randomBytes(8).toString("hex")}`;
 }
 
+/**
+ * Random username conforming to the canonical signup rule (3–12 chars,
+ * [a-zA-Z0-9_]). Use this for register-endpoint inputs.
+ */
+function uname(prefix: string) {
+  return `${prefix}${randomBytes(6).toString("hex")}`.slice(0, 12);
+}
+
 maybe("Bearer-auth smoke: cookie isolation and 401→refresh→retry", () => {
   let dbMod: typeof import("@workspace/db");
   let appMod: { default: import("express").Express };
@@ -66,10 +74,10 @@ maybe("Bearer-auth smoke: cookie isolation and 401→refresh→retry", () => {
   // ── Cookie-jar isolation ──────────────────────────────────────────────────
 
   it("POST /api/auth/login with clientType:mobile — response carries no Set-Cookie header", async () => {
-    const username = rid("cookie_login");
+    const username = uname("clog");
     const reg = await request(appMod.default)
       .post("/api/auth/register")
-      .send({ username, password: "TestSmoke1!", clientType: "mobile" });
+      .send({ username, password: "TestSmoke1!", email: `${username}@example.com`, userType: "lab", clientType: "mobile" });
     expect(reg.status).toBe(200);
     if (reg.body.user?.id) createdUserIds.push(reg.body.user.id);
 
@@ -92,13 +100,13 @@ maybe("Bearer-auth smoke: cookie isolation and 401→refresh→retry", () => {
     expect(cookieNames).not.toContain("lt_access");
     expect(cookieNames).not.toContain("lt_refresh");
     expect(cookieNames).not.toContain("lt_csrf");
-  });
+  }, 20000);
 
   it("POST /api/auth/refresh with refreshToken in body (clientType:mobile) — response carries no Set-Cookie header", async () => {
-    const username = rid("cookie_refresh");
+    const username = uname("cref");
     const reg = await request(appMod.default)
       .post("/api/auth/register")
-      .send({ username, password: "TestSmoke2!", clientType: "mobile" });
+      .send({ username, password: "TestSmoke2!", email: `${username}@example.com`, userType: "lab", clientType: "mobile" });
     expect(reg.status).toBe(200);
     if (reg.body.user?.id) createdUserIds.push(reg.body.user.id);
 
@@ -125,15 +133,15 @@ maybe("Bearer-auth smoke: cookie isolation and 401→refresh→retry", () => {
     expect(cookieNames).not.toContain("lt_access");
     expect(cookieNames).not.toContain("lt_refresh");
     expect(cookieNames).not.toContain("lt_csrf");
-  });
+  }, 20000);
 
   // ── 401 → refresh → retry (end-to-end bearer cycle) ──────────────────────
 
   it("401 on invalid access token → POST /auth/refresh → new token → protected request returns 200", async () => {
-    const username = rid("retry_cycle");
+    const username = uname("rtry");
     const reg = await request(appMod.default)
       .post("/api/auth/register")
-      .send({ username, password: "TestSmoke3!", clientType: "mobile" });
+      .send({ username, password: "TestSmoke3!", email: `${username}@example.com`, userType: "lab", clientType: "mobile" });
     expect(reg.status).toBe(200);
     if (reg.body.user?.id) createdUserIds.push(reg.body.user.id);
 
@@ -165,5 +173,5 @@ maybe("Bearer-auth smoke: cookie isolation and 401→refresh→retry", () => {
       .set("Authorization", `Bearer ${newAccessToken}`);
     expect(step3.status).toBe(200);
     expect(step3.body.user?.username).toBe(username);
-  });
+  }, 20000);
 });

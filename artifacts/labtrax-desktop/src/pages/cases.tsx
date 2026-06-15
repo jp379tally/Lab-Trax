@@ -30,6 +30,7 @@ import {
   QrCode,
   ReceiptText,
   Search,
+  ScrollText,
   Settings2,
   Sparkles,
   Trash2,
@@ -88,6 +89,7 @@ import ScanThumbnail from "@/components/ScanThumbnail";
 import type { ScanFormat } from "@workspace/scan-viewer";
 import { PrintLayoutEditor } from "@/components/PrintLayoutEditor";
 import { CasePrintLayoutEditor } from "@/components/CasePrintLayoutEditor";
+import { PrescriptionPreview } from "@/components/PrescriptionPreview";
 import {
   type PrintLayoutConfig,
   isDefaultLayout,
@@ -2193,6 +2195,7 @@ export default function CasesPage() {
 }
 
 function MobileCaseDrawer({ labCase, onClose }: { labCase: LabCase; onClose: () => void }) {
+  const [rxPreviewOpen, setRxPreviewOpen] = useState(false);
   return (
     <div className="fixed inset-0 z-50 flex">
       <div className="flex-1 bg-foreground/30" onClick={onClose} />
@@ -2215,7 +2218,21 @@ function MobileCaseDrawer({ labCase, onClose }: { labCase: LabCase; onClose: () 
             This case was created on the mobile app. Open LabTrax on your phone or tablet to edit it.
           </div>
           <div className="grid grid-cols-2 gap-4 text-sm">
-            <Field label="Patient" value={`${labCase.patientFirstName} ${labCase.patientLastName}`} />
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Patient</div>
+              <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                <span className="text-sm">{`${labCase.patientFirstName} ${labCase.patientLastName}`.trim() || "—"}</span>
+                <button
+                  type="button"
+                  onClick={() => setRxPreviewOpen(true)}
+                  className="inline-flex items-center gap-1 h-5 px-1.5 rounded text-[10px] font-medium text-primary/80 hover:text-primary hover:bg-primary/10 transition-colors"
+                  title="Preview prescription"
+                >
+                  <ScrollText size={10} />
+                  Preview Rx
+                </button>
+              </div>
+            </div>
             <Field label="Doctor" value={labCase.doctorName} />
             <Field label="Status" value={statusLabel(labCase.status)} />
             <Field label="Priority" value={labCase.priority === "rush" ? "Rush" : "Normal"} />
@@ -2236,6 +2253,13 @@ function MobileCaseDrawer({ labCase, onClose }: { labCase: LabCase; onClose: () 
           </div>
         </div>
       </aside>
+      {rxPreviewOpen && (
+        <PrescriptionPreview
+          caseId={labCase.id}
+          invoiceCaseId={labCase.id}
+          onClose={() => setRxPreviewOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -2439,6 +2463,7 @@ export function CaseDrawer({
   const [confirmDeleteCase, setConfirmDeleteCase] = useState(false);
   const [showPrintLayoutEditor, setShowPrintLayoutEditor] = useState(false);
   const [showCaseAdvancedEditor, setShowCaseAdvancedEditor] = useState(false);
+  const [rxPreviewOpen, setRxPreviewOpen] = useState(false);
   const [printLayout, setPrintLayout] = useState<PrintLayoutConfig>(() => loadPrintLayoutConfig());
 
   // Per-lab advanced (drag/scale) print template. Null = no custom layout
@@ -4276,10 +4301,23 @@ export function CaseDrawer({
                 </div>
                 {!editMode ? (
                   <div className="grid grid-cols-2 gap-4 text-sm">
-                    <Field
-                      label="Patient"
-                      value={`${pendingCaseEdit?.patientFirstName ?? data?.patientFirstName ?? labCase.patientFirstName} ${pendingCaseEdit?.patientLastName ?? data?.patientLastName ?? labCase.patientLastName}`}
-                    />
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Patient</div>
+                      <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                        <span className="text-sm break-words">
+                          {`${pendingCaseEdit?.patientFirstName ?? data?.patientFirstName ?? labCase.patientFirstName} ${pendingCaseEdit?.patientLastName ?? data?.patientLastName ?? labCase.patientLastName}`.trim() || "—"}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setRxPreviewOpen(true)}
+                          className="inline-flex items-center gap-1 h-5 px-1.5 rounded text-[10px] font-medium text-primary/80 hover:text-primary hover:bg-primary/10 transition-colors shrink-0"
+                          title="Preview prescription"
+                        >
+                          <ScrollText size={10} />
+                          Preview Rx
+                        </button>
+                      </div>
+                    </div>
                     <Field label="Doctor" value={pendingCaseEdit?.doctorName ?? data?.doctorName ?? labCase.doctorName} />
                     <Field label="Practice" value={(() => {
                       const pid = pendingCaseEdit?.providerOrganizationId ?? data?.providerOrganizationId ?? labCase.providerOrganizationId;
@@ -5830,6 +5868,15 @@ export function CaseDrawer({
       {showCaseAdvancedEditor && (
         <CasePrintLayoutEditor
           onClose={() => setShowCaseAdvancedEditor(false)}
+        />
+      )}
+
+      {/* Prescription preview */}
+      {rxPreviewOpen && (
+        <PrescriptionPreview
+          caseId={labCase.id}
+          invoiceCaseId={labCase.id}
+          onClose={() => setRxPreviewOpen(false)}
         />
       )}
 
