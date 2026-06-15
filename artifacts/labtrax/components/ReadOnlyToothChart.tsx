@@ -105,11 +105,19 @@ export function ReadOnlyToothChart({ crownTeeth, ponticTeeth, missingTeeth, high
   const upperPath = useMemo(() => archStrokePath(true), []);
   const lowerPath = useMemo(() => archStrokePath(false), []);
 
-  const hasCrown = (crownTeeth?.size ?? 0) > 0;
-  const hasPontic = (ponticTeeth?.size ?? 0) > 0;
-  const hasMissing = (missingTeeth?.size ?? 0) > 0;
+  const crownCount = crownTeeth?.size ?? 0;
+  const ponticCount = ponticTeeth?.size ?? 0;
+  const missingCount = missingTeeth?.size ?? 0;
+  const hasCrown = crownCount > 0;
+  const hasPontic = ponticCount > 0;
+  const hasMissing = missingCount > 0;
   const hasHighlighted = (highlighted?.size ?? 0) > 0;
   const hasTyped = hasCrown || hasPontic || hasMissing;
+
+  const counts: { key: string; label: string }[] = [];
+  if (hasCrown) counts.push({ key: "crown", label: `${crownCount} ${crownCount === 1 ? "crown" : "crowns"}` });
+  if (hasPontic) counts.push({ key: "pontic", label: `${ponticCount} ${ponticCount === 1 ? "pontic" : "pontics"}` });
+  if (hasMissing) counts.push({ key: "missing", label: `${missingCount} missing` });
 
   return (
     <View style={styles.container}>
@@ -142,6 +150,17 @@ export function ReadOnlyToothChart({ crownTeeth, ponticTeeth, missingTeeth, high
           )}
         </View>
       </View>
+
+      {counts.length > 0 && (
+        <View style={styles.countRow}>
+          {counts.map((c, i) => (
+            <Text key={c.key} style={styles.countText}>
+              {i > 0 ? "  ·  " : ""}
+              {c.label}
+            </Text>
+          ))}
+        </View>
+      )}
 
       <Svg
         viewBox="0 0 520 390"
@@ -323,6 +342,17 @@ const makeStyles = (colors: ThemeColors) =>
       fontSize: 10,
       fontFamily: "Inter_500Medium",
       color: colors.textTertiary,
+    },
+    countRow: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      alignItems: "center",
+      marginBottom: 2,
+    },
+    countText: {
+      fontSize: 11,
+      fontFamily: "Inter_600SemiBold",
+      color: colors.textSecondary,
     },
     svg: {
       aspectRatio: 520 / 390,
