@@ -38,6 +38,7 @@ import {
 } from "lucide-react";
 import QRCodeSVG from "react-qr-code";
 import { apiFetch, getAccessToken, getApiOrigin } from "@/lib/api";
+import { uploadMediaFile } from "@/lib/upload-media-file";
 import { DoctorNamePicker } from "@/components/DoctorNamePicker";
 import { setNavBlocker } from "@/lib/nav-guard";
 import { AuthedImage, AuthedVideo, isSameApiOrigin } from "@/components/AuthedMedia";
@@ -3530,12 +3531,9 @@ export function CaseDrawer({
     const errors: string[] = [];
     for (const file of files) {
       try {
-        const fd = new FormData();
-        fd.append("file", file);
-        const { url } = await apiFetch<{ url: string }>("/media/upload", {
-          method: "POST",
-          body: fd,
-        });
+        // Files >~20 MB are routed through the resumable chunked pipeline so
+        // the Replit reverse proxy never silently drops them.
+        const { url } = await uploadMediaFile(file);
         await apiFetch(`/cases/${labCase.id}/attachments`, {
           method: "POST",
           body: JSON.stringify({
