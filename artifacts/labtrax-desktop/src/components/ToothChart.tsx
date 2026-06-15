@@ -467,6 +467,16 @@ export function ToothChart({
   const pos17 = adultPos(17, FILL_RX, FILL_RY);
   const lowerFillPath = `M ${pos32.x.toFixed(1)} ${pos32.y.toFixed(1)} A ${FILL_RX} ${FILL_RY} 0 0 0 ${pos17.x.toFixed(1)} ${pos17.y.toFixed(1)}`;
 
+  // Arc along the adult-arch ellipse linking tooth n to tooth n+1, used to
+  // draw a continuous bridge span. Upper arch sweeps clockwise (flag 1),
+  // lower arch counter-clockwise (flag 0), matching the arch fill paths.
+  function bridgeArcPath(n: number): string {
+    const a = adultPositions.get(n)!;
+    const b = adultPositions.get(n + 1)!;
+    const sweep = n <= 15 ? 1 : 0;
+    return `M ${a.x.toFixed(2)} ${a.y.toFixed(2)} A ${ADULT_RX} ${ADULT_RY} 0 0 ${sweep} ${b.x.toFixed(2)} ${b.y.toFixed(2)}`;
+  }
+
   const BADGE_R = 14;
   const PRIMARY_BADGE_R = 11;
   const hasTypedTeeth = !!(crownTeeth || ponticTeeth || missingTeeth);
@@ -582,6 +592,27 @@ export function ToothChart({
         >
           LOWER
         </text>
+
+        {/* ── Bridge span lines (behind badges, both modes) ── */}
+        {connectedPairs && connectedPairs.size > 0 &&
+          adultGroups.flatMap((group) =>
+            group.slice(0, -1).map((n) => {
+              const pKey = connectorPairKey(String(n), String(n + 1));
+              if (!connectedPairs.has(pKey)) return null;
+              return (
+                <path
+                  key={`bridge-${pKey}`}
+                  d={bridgeArcPath(n)}
+                  fill="none"
+                  stroke="rgb(16,185,129)"
+                  strokeWidth={3}
+                  strokeLinecap="round"
+                  opacity={0.7}
+                  style={{ pointerEvents: "none" }}
+                />
+              );
+            }),
+          )}
 
         {/* ── Connector dots for adult teeth ── */}
         {showConnectors &&
