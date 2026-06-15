@@ -46,3 +46,11 @@ Artifacts consume the api-client-react type, so send ISO strings and never
 import the api-zod type for a date field — mixing them is a typecheck trap, not
 a runtime bug.
 **Why:** the two generators are configured independently; only api-zod coerces.
+
+**Required query params don't reject `undefined` in the generated zod.** Orval
+emits required query params as `zod.coerce.string()` (no `.optional()`), but
+`z.coerce.string().parse(undefined)` → `"undefined"`, so a contract test that
+expects `QueryParams.parse({})` to throw will FAIL. Test the bounded numeric
+fields (`limit` min/max) for rejection instead — those keep real constraints.
+Required *body* fields (non-coerced `zod.string()`) do reject missing values
+normally.

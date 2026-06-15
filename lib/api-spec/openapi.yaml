@@ -28,6 +28,12 @@ tags:
     description: User profile and preference operations (LabTrax)
   - name: messenger
     description: Real-time direct-message operations (LabTrax)
+  - name: auth
+    description: Authentication, registration, sessions, and verification (LabTrax)
+  - name: organizations
+    description: Organization, membership, and invitation operations (LabTrax)
+  - name: audit
+    description: Audit-log read operations (LabTrax)
 paths:
   /ai-chat/history:
     get:
@@ -2224,8 +2230,842 @@ paths:
       responses:
         "200":
           description: Marked as read
+  /auth/register:
+    post:
+      operationId: registerUser
+      tags: [auth]
+      summary: Register a new user account (base role only; 14-day trial starts)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterUserInput"
+      responses:
+        "200":
+          description: Account created and session issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResult"
+        "400":
+          description: Validation error
+        "409":
+          description: Username or email already in use
+  /auth/login:
+    post:
+      operationId: loginUser
+      tags: [auth]
+      summary: Authenticate with an identifier (username, email, or account number) and password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginInput"
+      responses:
+        "200":
+          description: Login complete, or a 2FA challenge is required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResult"
+        "401":
+          description: Invalid credentials
+  /auth/refresh:
+    post:
+      operationId: refreshSession
+      tags: [auth]
+      summary: Rotate the refresh token and issue a new access token (reuse detection)
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshSessionInput"
+      responses:
+        "200":
+          description: New tokens issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthTokensResult"
+        "401":
+          description: Missing, expired, or reused refresh token
+  /auth/logout:
+    post:
+      operationId: logoutUser
+      tags: [auth]
+      summary: Revoke the current session
+      responses:
+        "200":
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResult"
+  /auth/me:
+    get:
+      operationId: getCurrentUser
+      tags: [auth]
+      summary: Get the authenticated user and the organizations they belong to
+      responses:
+        "200":
+          description: Current user and memberships
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CurrentUserResult"
+        "401":
+          description: Not authenticated
+  /auth/sessions:
+    get:
+      operationId: listSessions
+      tags: [auth]
+      summary: List active sessions for the authenticated user
+      responses:
+        "200":
+          description: Active sessions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionListResult"
+        "401":
+          description: Not authenticated
+  /auth/sessions/{id}:
+    delete:
+      operationId: revokeSession
+      tags: [auth]
+      summary: Revoke a specific session by id
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Session revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResult"
+        "401":
+          description: Not authenticated
+  /send-email-code:
+    post:
+      operationId: sendEmailVerificationCode
+      tags: [auth]
+      summary: Send a one-time email verification code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendEmailCodeInput"
+      responses:
+        "200":
+          description: Code sent (demoCode present only in dev when email is unconfigured)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerificationSendResult"
+  /verify-email-code:
+    post:
+      operationId: verifyEmailCode
+      tags: [auth]
+      summary: Verify a one-time email verification code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyEmailCodeInput"
+      responses:
+        "200":
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerificationVerifyResult"
+  /send-phone-code:
+    post:
+      operationId: sendPhoneVerificationCode
+      tags: [auth]
+      summary: Send a one-time SMS verification code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendPhoneCodeInput"
+      responses:
+        "200":
+          description: Code sent (demoCode present only in dev when SMS is unconfigured)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerificationSendResult"
+  /verify-phone-code:
+    post:
+      operationId: verifyPhoneCode
+      tags: [auth]
+      summary: Verify a one-time SMS verification code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyPhoneCodeInput"
+      responses:
+        "200":
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerificationVerifyResult"
+  /organizations:
+    post:
+      operationId: createOrganization
+      tags: [organizations]
+      summary: Create a lab or provider organization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOrganizationInput"
+      responses:
+        "201":
+          description: Organization created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationResult"
+        "401":
+          description: Not authenticated
+  /organizations/{organizationId}:
+    get:
+      operationId: getOrganization
+      tags: [organizations]
+      summary: Get an organization the caller can access
+      parameters:
+        - in: path
+          name: organizationId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Organization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationResult"
+        "403":
+          description: Caller does not belong to this organization
+        "404":
+          description: Not found
+    patch:
+      operationId: updateOrganization
+      tags: [organizations]
+      summary: Update an organization (admin only)
+      parameters:
+        - in: path
+          name: organizationId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateOrganizationInput"
+      responses:
+        "200":
+          description: Updated organization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationResult"
+        "403":
+          description: Insufficient role
+  /organizations/{organizationId}/invites:
+    post:
+      operationId: createInvitation
+      tags: [organizations]
+      summary: Invite a user to an organization (admin only). Invite messages carry no PHI.
+      parameters:
+        - in: path
+          name: organizationId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateInvitationInput"
+      responses:
+        "201":
+          description: Invitation created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvitationResult"
+        "409":
+          description: A pending invite already exists for that email
+    get:
+      operationId: listInvitations
+      tags: [organizations]
+      summary: List invitations for an organization (admin only)
+      parameters:
+        - in: path
+          name: organizationId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Invitations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvitationListResult"
+  /organizations/invites/pending-for-me:
+    get:
+      operationId: listMyPendingInvitations
+      tags: [organizations]
+      summary: List pending invitations addressed to the authenticated user
+      responses:
+        "200":
+          description: Pending invitations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvitationListResult"
+  /organizations/invites/{token}/accept:
+    post:
+      operationId: acceptInvitation
+      tags: [organizations]
+      summary: Accept an invitation by token (the caller's email must match the invite)
+      parameters:
+        - in: path
+          name: token
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Invitation accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AcceptInvitationResult"
+        "403":
+          description: Invite does not belong to the caller
+        "410":
+          description: Invite expired or invalid
+  /organizations/invites/{inviteId}/decline:
+    post:
+      operationId: declineInvitation
+      tags: [organizations]
+      summary: Decline an invitation
+      parameters:
+        - in: path
+          name: inviteId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Invitation declined
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+  /organizations/invites/{inviteId}/cancel:
+    post:
+      operationId: revokeInvitation
+      tags: [organizations]
+      summary: Cancel/revoke a pending invitation (admin only)
+      parameters:
+        - in: path
+          name: inviteId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Invitation revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+  /organizations/memberships/{membershipId}:
+    patch:
+      operationId: updateMembership
+      tags: [organizations]
+      summary: Update a membership's role or status (admin only; role ceiling enforced)
+      parameters:
+        - in: path
+          name: membershipId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMembershipInput"
+      responses:
+        "200":
+          description: Updated membership
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MembershipResult"
+        "403":
+          description: Cannot assign a role above your own
+    delete:
+      operationId: removeMembership
+      tags: [organizations]
+      summary: Remove a membership (admin only)
+      parameters:
+        - in: path
+          name: membershipId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Membership removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+  /audit-logs:
+    get:
+      operationId: listAuditLogs
+      tags: [audit]
+      summary: List audit-log entries for an organization (admin only). Contract for Phase 2 implementation.
+      parameters:
+        - in: query
+          name: organizationId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200 }
+        - in: query
+          name: before
+          description: ISO timestamp cursor — return entries created before this time
+          schema: { type: string, format: date-time }
+      responses:
+        "200":
+          description: Audit-log entries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditLogListResult"
+        "403":
+          description: Insufficient role
 components:
   schemas:
+    SafeUser:
+      type: object
+      description: User fields safe to return to clients (no password/secret material).
+      properties:
+        id: { type: string }
+        username: { type: string, nullable: true }
+        email: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        firstName: { type: string, nullable: true }
+        lastName: { type: string, nullable: true }
+        initials: { type: string, nullable: true }
+        userType: { type: string, nullable: true }
+        role: { type: string, nullable: true }
+        licenseNumber: { type: string, nullable: true }
+        practiceName: { type: string, nullable: true }
+        doctorName: { type: string, nullable: true }
+        practiceAddress: { type: string, nullable: true }
+        practicePhone: { type: string, nullable: true }
+        phoneContactName: { type: string, nullable: true }
+        accountNumber: { type: string, nullable: true }
+        wantsUpdates: { type: boolean, nullable: true }
+        workStatus: { type: string, nullable: true }
+        profilePhotoUrl: { type: string, nullable: true }
+      required: [id]
+    RegisterUserInput:
+      type: object
+      description: New-account registration. The global role is always the base user role; account/platform numbers are allocated server-side and never grant privilege.
+      properties:
+        username: { type: string }
+        password: { type: string }
+        email: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        firstName: { type: string, nullable: true }
+        lastName: { type: string, nullable: true }
+        userType:
+          type: string
+          enum: [lab, provider]
+          nullable: true
+        practiceName: { type: string, nullable: true }
+        doctorName: { type: string, nullable: true }
+        createOrganization:
+          type: boolean
+          nullable: true
+          description: When true, also creates the user's lab organization and an owner membership.
+        clientType:
+          type: string
+          enum: [web, mobile, desktop]
+          nullable: true
+        wantsUpdates: { type: boolean, nullable: true }
+      required: [username, password]
+    AuthResult:
+      type: object
+      description: Bare (non-enveloped) auth response. Tokens are present only for non-web (bearer) clients; web clients receive httpOnly cookies instead.
+      properties:
+        success: { type: boolean }
+        accessToken: { type: string, nullable: true }
+        refreshToken: { type: string, nullable: true }
+        user:
+          oneOf:
+            - $ref: "#/components/schemas/SafeUser"
+          nullable: true
+        message: { type: string, nullable: true }
+        organization:
+          type: object
+          nullable: true
+          additionalProperties: true
+        pendingJoinRequest:
+          type: object
+          nullable: true
+          additionalProperties: true
+        requiresTwoFactor: { type: boolean, nullable: true }
+        pendingToken: { type: string, nullable: true }
+      required: [success]
+    LoginInput:
+      type: object
+      description: Provide either username or identifier (identifier matches username, email, or platform account number — case-insensitive).
+      properties:
+        username: { type: string, nullable: true }
+        identifier: { type: string, nullable: true }
+        password: { type: string }
+        deviceName: { type: string, nullable: true }
+        clientType:
+          type: string
+          enum: [web, mobile, desktop]
+          nullable: true
+        deviceTrustToken: { type: string, nullable: true }
+      required: [password]
+    LoginResult:
+      type: object
+      description: Either a completed login (success + optional tokens) or a 2FA challenge (requiresTwoFactor + pendingToken).
+      properties:
+        success: { type: boolean, nullable: true }
+        accessToken: { type: string, nullable: true }
+        refreshToken: { type: string, nullable: true }
+        user:
+          oneOf:
+            - $ref: "#/components/schemas/SafeUser"
+          nullable: true
+        message: { type: string, nullable: true }
+        organization:
+          type: object
+          nullable: true
+          additionalProperties: true
+        pendingJoinRequest:
+          type: object
+          nullable: true
+          additionalProperties: true
+        requiresTwoFactor: { type: boolean, nullable: true }
+        pendingToken: { type: string, nullable: true }
+    RefreshSessionInput:
+      type: object
+      description: Refresh token is optional in the body — web clients send it via httpOnly cookie.
+      properties:
+        refreshToken: { type: string, nullable: true }
+    AuthTokensResult:
+      type: object
+      description: Enveloped token-rotation response (ok + data). Tokens are present only for bearer clients.
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          properties:
+            accessToken: { type: string }
+            refreshToken: { type: string }
+          required: [accessToken]
+      required: [ok, data]
+    CurrentUserMembership:
+      type: object
+      properties:
+        id: { type: string }
+        role: { type: string, nullable: true }
+        status: { type: string, nullable: true }
+        organizationId: { type: string, nullable: true }
+        organization:
+          type: object
+          nullable: true
+          additionalProperties: true
+      required: [id]
+    CurrentUserResult:
+      type: object
+      properties:
+        success: { type: boolean }
+        user:
+          oneOf:
+            - $ref: "#/components/schemas/SafeUser"
+          nullable: true
+        memberships:
+          type: array
+          items:
+            $ref: "#/components/schemas/CurrentUserMembership"
+      required: [success, memberships]
+    SessionInfo:
+      type: object
+      properties:
+        id: { type: string }
+        deviceName: { type: string, nullable: true }
+        ipAddress: { type: string, nullable: true }
+        userAgent: { type: string, nullable: true }
+        createdAt: { type: string, nullable: true }
+        expiresAt: { type: string }
+        current: { type: boolean }
+        isSuspicious: { type: boolean }
+      required: [id, expiresAt, current, isSuspicious]
+    SessionListResult:
+      type: object
+      properties:
+        success: { type: boolean }
+        sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionInfo"
+      required: [success, sessions]
+    SendEmailCodeInput:
+      type: object
+      properties:
+        email: { type: string }
+      required: [email]
+    VerifyEmailCodeInput:
+      type: object
+      properties:
+        email: { type: string }
+        code: { type: string }
+      required: [email, code]
+    SendPhoneCodeInput:
+      type: object
+      properties:
+        phone: { type: string }
+      required: [phone]
+    VerifyPhoneCodeInput:
+      type: object
+      properties:
+        phone: { type: string }
+        code: { type: string }
+      required: [phone, code]
+    VerificationSendResult:
+      type: object
+      properties:
+        success: { type: boolean }
+        demoCode:
+          type: string
+          nullable: true
+          description: Only returned in development when the email/SMS provider is unconfigured. Never present in production.
+      required: [success]
+    VerificationVerifyResult:
+      type: object
+      properties:
+        success: { type: boolean }
+        verified: { type: boolean }
+      required: [success, verified]
+    OrganizationType:
+      type: string
+      enum: [lab, provider]
+    OrganizationRole:
+      type: string
+      enum: [owner, admin, user, billing, read_only]
+    MembershipStatus:
+      type: string
+      enum: [active, pending, invited, suspended]
+    CreateOrganizationInput:
+      type: object
+      properties:
+        type:
+          $ref: "#/components/schemas/OrganizationType"
+        name: { type: string }
+        displayName: { type: string, nullable: true }
+        billingEmail: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        addressLine1: { type: string, nullable: true }
+        addressLine2: { type: string, nullable: true }
+        city: { type: string, nullable: true }
+        state: { type: string, nullable: true }
+        zip: { type: string, nullable: true }
+        isActive: { type: boolean, nullable: true }
+        statementEmailOptOut: { type: boolean, nullable: true }
+        defaultCaseDueDays: { type: integer, nullable: true }
+        doctorName:
+          type: string
+          nullable: true
+          description: Provider orgs only — feeds account-number derivation; not persisted on the org row.
+        accountNumber:
+          type: string
+          nullable: true
+          description: Optional caller override; must be unique within the parent lab.
+        parentLabOrganizationId:
+          type: string
+          nullable: true
+          description: Provider orgs only; falls back to the caller's primary lab membership.
+      required: [type, name]
+    UpdateOrganizationInput:
+      type: object
+      description: Partial update. Type and parent lab cannot be changed.
+      properties:
+        name: { type: string, nullable: true }
+        displayName: { type: string, nullable: true }
+        billingEmail: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        addressLine1: { type: string, nullable: true }
+        addressLine2: { type: string, nullable: true }
+        city: { type: string, nullable: true }
+        state: { type: string, nullable: true }
+        zip: { type: string, nullable: true }
+        isActive: { type: boolean, nullable: true }
+        statementEmailOptOut: { type: boolean, nullable: true }
+        defaultCaseDueDays: { type: integer, nullable: true }
+        accountNumber: { type: string, nullable: true }
+    Organization:
+      type: object
+      description: Organization row (lab or provider). Shape mirrors the organizations table; extra fields may be present.
+      additionalProperties: true
+      properties:
+        id: { type: string }
+        type:
+          $ref: "#/components/schemas/OrganizationType"
+        name: { type: string, nullable: true }
+        displayName: { type: string, nullable: true }
+        parentLabOrganizationId: { type: string, nullable: true }
+        accountNumber: { type: string, nullable: true }
+        platformAccountNumber: { type: string, nullable: true }
+        isActive: { type: boolean, nullable: true }
+      required: [id]
+    OrganizationResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          $ref: "#/components/schemas/Organization"
+      required: [ok, data]
+    CreateInvitationInput:
+      type: object
+      properties:
+        email: { type: string }
+        phone: { type: string, nullable: true }
+        roleToAssign:
+          $ref: "#/components/schemas/OrganizationRole"
+        expiresInDays:
+          type: integer
+          minimum: 1
+          maximum: 30
+          nullable: true
+      required: [email, roleToAssign]
+    Invitation:
+      type: object
+      additionalProperties: true
+      properties:
+        id: { type: string }
+        organizationId: { type: string, nullable: true }
+        labId: { type: string, nullable: true }
+        email: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        roleToAssign: { type: string, nullable: true }
+        status: { type: string, nullable: true }
+        token: { type: string, nullable: true }
+        expiresAt: { type: string, nullable: true }
+      required: [id]
+    InvitationResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          $ref: "#/components/schemas/Invitation"
+      required: [ok, data]
+    InvitationListResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Invitation"
+      required: [ok, data]
+    AcceptInvitationResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          properties:
+            accepted: { type: boolean }
+          required: [accepted]
+      required: [ok, data]
+    UpdateMembershipInput:
+      type: object
+      properties:
+        role:
+          $ref: "#/components/schemas/OrganizationRole"
+        status:
+          $ref: "#/components/schemas/MembershipStatus"
+    Membership:
+      type: object
+      additionalProperties: true
+      properties:
+        id: { type: string }
+        labId: { type: string, nullable: true }
+        userId: { type: string, nullable: true }
+        role: { type: string, nullable: true }
+        status: { type: string, nullable: true }
+      required: [id]
+    MembershipResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          $ref: "#/components/schemas/Membership"
+      required: [ok, data]
+    SuccessEnvelope:
+      type: object
+      description: Generic enveloped success response (ok + data).
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          additionalProperties: true
+      required: [ok]
+    AuditLogEntry:
+      type: object
+      properties:
+        id: { type: string }
+        userId: { type: string, nullable: true }
+        organizationId: { type: string, nullable: true }
+        action: { type: string }
+        entityType: { type: string }
+        entityId: { type: string, nullable: true }
+        ipAddress: { type: string, nullable: true }
+        userAgent: { type: string, nullable: true }
+        beforeJson:
+          nullable: true
+        afterJson:
+          nullable: true
+        metadataJson:
+          nullable: true
+        createdAt: { type: string, nullable: true }
+      required: [id, action, entityType]
+    AuditLogListResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditLogEntry"
+      required: [ok, data]
     CanonicalActivityEntry:
       type: object
       properties:

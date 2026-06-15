@@ -5,6 +5,394 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+/**
+ * User fields safe to return to clients (no password/secret material).
+ */
+export interface SafeUser {
+  id: string;
+  username?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  initials?: string | null;
+  userType?: string | null;
+  role?: string | null;
+  licenseNumber?: string | null;
+  practiceName?: string | null;
+  doctorName?: string | null;
+  practiceAddress?: string | null;
+  practicePhone?: string | null;
+  phoneContactName?: string | null;
+  accountNumber?: string | null;
+  wantsUpdates?: boolean | null;
+  workStatus?: string | null;
+  profilePhotoUrl?: string | null;
+}
+
+export type RegisterUserInputUserType =
+  | (typeof RegisterUserInputUserType)[keyof typeof RegisterUserInputUserType]
+  | null;
+
+export const RegisterUserInputUserType = {
+  lab: "lab",
+  provider: "provider",
+} as const;
+
+export type RegisterUserInputClientType =
+  | (typeof RegisterUserInputClientType)[keyof typeof RegisterUserInputClientType]
+  | null;
+
+export const RegisterUserInputClientType = {
+  web: "web",
+  mobile: "mobile",
+  desktop: "desktop",
+} as const;
+
+/**
+ * New-account registration. The global role is always the base user role; account/platform numbers are allocated server-side and never grant privilege.
+ */
+export interface RegisterUserInput {
+  username: string;
+  password: string;
+  email?: string | null;
+  phone?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  userType?: RegisterUserInputUserType;
+  practiceName?: string | null;
+  doctorName?: string | null;
+  /** When true, also creates the user's lab organization and an owner membership. */
+  createOrganization?: boolean | null;
+  clientType?: RegisterUserInputClientType;
+  wantsUpdates?: boolean | null;
+}
+
+export type AuthResultOrganization = { [key: string]: unknown } | null;
+
+export type AuthResultPendingJoinRequest = { [key: string]: unknown } | null;
+
+/**
+ * Bare (non-enveloped) auth response. Tokens are present only for non-web (bearer) clients; web clients receive httpOnly cookies instead.
+ */
+export interface AuthResult {
+  success: boolean;
+  accessToken?: string | null;
+  refreshToken?: string | null;
+  user?: SafeUser | null;
+  message?: string | null;
+  organization?: AuthResultOrganization;
+  pendingJoinRequest?: AuthResultPendingJoinRequest;
+  requiresTwoFactor?: boolean | null;
+  pendingToken?: string | null;
+}
+
+export type LoginInputClientType =
+  | (typeof LoginInputClientType)[keyof typeof LoginInputClientType]
+  | null;
+
+export const LoginInputClientType = {
+  web: "web",
+  mobile: "mobile",
+  desktop: "desktop",
+} as const;
+
+/**
+ * Provide either username or identifier (identifier matches username, email, or platform account number — case-insensitive).
+ */
+export interface LoginInput {
+  username?: string | null;
+  identifier?: string | null;
+  password: string;
+  deviceName?: string | null;
+  clientType?: LoginInputClientType;
+  deviceTrustToken?: string | null;
+}
+
+export type LoginResultOrganization = { [key: string]: unknown } | null;
+
+export type LoginResultPendingJoinRequest = { [key: string]: unknown } | null;
+
+/**
+ * Either a completed login (success + optional tokens) or a 2FA challenge (requiresTwoFactor + pendingToken).
+ */
+export interface LoginResult {
+  success?: boolean | null;
+  accessToken?: string | null;
+  refreshToken?: string | null;
+  user?: SafeUser | null;
+  message?: string | null;
+  organization?: LoginResultOrganization;
+  pendingJoinRequest?: LoginResultPendingJoinRequest;
+  requiresTwoFactor?: boolean | null;
+  pendingToken?: string | null;
+}
+
+/**
+ * Refresh token is optional in the body — web clients send it via httpOnly cookie.
+ */
+export interface RefreshSessionInput {
+  refreshToken?: string | null;
+}
+
+export type AuthTokensResultData = {
+  accessToken: string;
+  refreshToken?: string;
+};
+
+/**
+ * Enveloped token-rotation response (ok + data). Tokens are present only for bearer clients.
+ */
+export interface AuthTokensResult {
+  ok: boolean;
+  data: AuthTokensResultData;
+}
+
+export type CurrentUserMembershipOrganization = {
+  [key: string]: unknown;
+} | null;
+
+export interface CurrentUserMembership {
+  id: string;
+  role?: string | null;
+  status?: string | null;
+  organizationId?: string | null;
+  organization?: CurrentUserMembershipOrganization;
+}
+
+export interface CurrentUserResult {
+  success: boolean;
+  user?: SafeUser | null;
+  memberships: CurrentUserMembership[];
+}
+
+export interface SessionInfo {
+  id: string;
+  deviceName?: string | null;
+  ipAddress?: string | null;
+  userAgent?: string | null;
+  createdAt?: string | null;
+  expiresAt: string;
+  current: boolean;
+  isSuspicious: boolean;
+}
+
+export interface SessionListResult {
+  success: boolean;
+  sessions: SessionInfo[];
+}
+
+export interface SendEmailCodeInput {
+  email: string;
+}
+
+export interface VerifyEmailCodeInput {
+  email: string;
+  code: string;
+}
+
+export interface SendPhoneCodeInput {
+  phone: string;
+}
+
+export interface VerifyPhoneCodeInput {
+  phone: string;
+  code: string;
+}
+
+export interface VerificationSendResult {
+  success: boolean;
+  /** Only returned in development when the email/SMS provider is unconfigured. Never present in production. */
+  demoCode?: string | null;
+}
+
+export interface VerificationVerifyResult {
+  success: boolean;
+  verified: boolean;
+}
+
+export type OrganizationType =
+  (typeof OrganizationType)[keyof typeof OrganizationType];
+
+export const OrganizationType = {
+  lab: "lab",
+  provider: "provider",
+} as const;
+
+export type OrganizationRole =
+  (typeof OrganizationRole)[keyof typeof OrganizationRole];
+
+export const OrganizationRole = {
+  owner: "owner",
+  admin: "admin",
+  user: "user",
+  billing: "billing",
+  read_only: "read_only",
+} as const;
+
+export type MembershipStatus =
+  (typeof MembershipStatus)[keyof typeof MembershipStatus];
+
+export const MembershipStatus = {
+  active: "active",
+  pending: "pending",
+  invited: "invited",
+  suspended: "suspended",
+} as const;
+
+export interface CreateOrganizationInput {
+  type: OrganizationType;
+  name: string;
+  displayName?: string | null;
+  billingEmail?: string | null;
+  phone?: string | null;
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  city?: string | null;
+  state?: string | null;
+  zip?: string | null;
+  isActive?: boolean | null;
+  statementEmailOptOut?: boolean | null;
+  defaultCaseDueDays?: number | null;
+  /** Provider orgs only — feeds account-number derivation; not persisted on the org row. */
+  doctorName?: string | null;
+  /** Optional caller override; must be unique within the parent lab. */
+  accountNumber?: string | null;
+  /** Provider orgs only; falls back to the caller's primary lab membership. */
+  parentLabOrganizationId?: string | null;
+}
+
+/**
+ * Partial update. Type and parent lab cannot be changed.
+ */
+export interface UpdateOrganizationInput {
+  name?: string | null;
+  displayName?: string | null;
+  billingEmail?: string | null;
+  phone?: string | null;
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  city?: string | null;
+  state?: string | null;
+  zip?: string | null;
+  isActive?: boolean | null;
+  statementEmailOptOut?: boolean | null;
+  defaultCaseDueDays?: number | null;
+  accountNumber?: string | null;
+}
+
+/**
+ * Organization row (lab or provider). Shape mirrors the organizations table; extra fields may be present.
+ */
+export interface Organization {
+  id: string;
+  type?: OrganizationType;
+  name?: string | null;
+  displayName?: string | null;
+  parentLabOrganizationId?: string | null;
+  accountNumber?: string | null;
+  platformAccountNumber?: string | null;
+  isActive?: boolean | null;
+  [key: string]: unknown;
+}
+
+export interface OrganizationResult {
+  ok: boolean;
+  data: Organization;
+}
+
+export interface CreateInvitationInput {
+  email: string;
+  phone?: string | null;
+  roleToAssign: OrganizationRole;
+  /**
+   * @minimum 1
+   * @maximum 30
+   */
+  expiresInDays?: number | null;
+}
+
+export interface Invitation {
+  id: string;
+  organizationId?: string | null;
+  labId?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  roleToAssign?: string | null;
+  status?: string | null;
+  token?: string | null;
+  expiresAt?: string | null;
+  [key: string]: unknown;
+}
+
+export interface InvitationResult {
+  ok: boolean;
+  data: Invitation;
+}
+
+export interface InvitationListResult {
+  ok: boolean;
+  data: Invitation[];
+}
+
+export type AcceptInvitationResultData = {
+  accepted: boolean;
+};
+
+export interface AcceptInvitationResult {
+  ok: boolean;
+  data: AcceptInvitationResultData;
+}
+
+export interface UpdateMembershipInput {
+  role?: OrganizationRole;
+  status?: MembershipStatus;
+}
+
+export interface Membership {
+  id: string;
+  labId?: string | null;
+  userId?: string | null;
+  role?: string | null;
+  status?: string | null;
+  [key: string]: unknown;
+}
+
+export interface MembershipResult {
+  ok: boolean;
+  data: Membership;
+}
+
+export type SuccessEnvelopeData = { [key: string]: unknown };
+
+/**
+ * Generic enveloped success response (ok + data).
+ */
+export interface SuccessEnvelope {
+  ok: boolean;
+  data?: SuccessEnvelopeData;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  userId?: string | null;
+  organizationId?: string | null;
+  action: string;
+  entityType: string;
+  entityId?: string | null;
+  ipAddress?: string | null;
+  userAgent?: string | null;
+  beforeJson?: unknown | null;
+  afterJson?: unknown | null;
+  metadataJson?: unknown | null;
+  createdAt?: string | null;
+}
+
+export interface AuditLogListResult {
+  ok: boolean;
+  data: AuditLogEntry[];
+}
+
 export interface CanonicalActivityEntry {
   id?: string | null;
   type?: string | null;
@@ -1911,4 +2299,17 @@ export type GetConversationMessagesParams = {
    * @maximum 100
    */
   limit?: number;
+};
+
+export type ListAuditLogsParams = {
+  organizationId: string;
+  /**
+   * @minimum 1
+   * @maximum 200
+   */
+  limit?: number;
+  /**
+   * ISO timestamp cursor — return entries created before this time
+   */
+  before?: string;
 };

@@ -2773,3 +2773,572 @@ export const MarkConversationReadParams = zod.object({
 export const MarkConversationReadBody = zod.object({
   lastMessageId: zod.string(),
 });
+
+/**
+ * @summary Register a new user account (base role only; 14-day trial starts)
+ */
+export const RegisterUserBody = zod
+  .object({
+    username: zod.string(),
+    password: zod.string(),
+    email: zod.string().nullish(),
+    phone: zod.string().nullish(),
+    firstName: zod.string().nullish(),
+    lastName: zod.string().nullish(),
+    userType: zod.enum(["lab", "provider"]).nullish(),
+    practiceName: zod.string().nullish(),
+    doctorName: zod.string().nullish(),
+    createOrganization: zod
+      .boolean()
+      .nullish()
+      .describe(
+        "When true, also creates the user's lab organization and an owner membership.",
+      ),
+    clientType: zod.enum(["web", "mobile", "desktop"]).nullish(),
+    wantsUpdates: zod.boolean().nullish(),
+  })
+  .describe(
+    "New-account registration. The global role is always the base user role; account\/platform numbers are allocated server-side and never grant privilege.",
+  );
+
+export const RegisterUserResponse = zod
+  .object({
+    success: zod.boolean(),
+    accessToken: zod.string().nullish(),
+    refreshToken: zod.string().nullish(),
+    user: zod
+      .object({
+        id: zod.string(),
+        username: zod.string().nullish(),
+        email: zod.string().nullish(),
+        phone: zod.string().nullish(),
+        firstName: zod.string().nullish(),
+        lastName: zod.string().nullish(),
+        initials: zod.string().nullish(),
+        userType: zod.string().nullish(),
+        role: zod.string().nullish(),
+        licenseNumber: zod.string().nullish(),
+        practiceName: zod.string().nullish(),
+        doctorName: zod.string().nullish(),
+        practiceAddress: zod.string().nullish(),
+        practicePhone: zod.string().nullish(),
+        phoneContactName: zod.string().nullish(),
+        accountNumber: zod.string().nullish(),
+        wantsUpdates: zod.boolean().nullish(),
+        workStatus: zod.string().nullish(),
+        profilePhotoUrl: zod.string().nullish(),
+      })
+      .describe(
+        "User fields safe to return to clients (no password\/secret material).",
+      )
+      .nullish(),
+    message: zod.string().nullish(),
+    organization: zod.record(zod.string(), zod.unknown()).nullish(),
+    pendingJoinRequest: zod.record(zod.string(), zod.unknown()).nullish(),
+    requiresTwoFactor: zod.boolean().nullish(),
+    pendingToken: zod.string().nullish(),
+  })
+  .describe(
+    "Bare (non-enveloped) auth response. Tokens are present only for non-web (bearer) clients; web clients receive httpOnly cookies instead.",
+  );
+
+/**
+ * @summary Authenticate with an identifier (username, email, or account number) and password
+ */
+export const LoginUserBody = zod
+  .object({
+    username: zod.string().nullish(),
+    identifier: zod.string().nullish(),
+    password: zod.string(),
+    deviceName: zod.string().nullish(),
+    clientType: zod.enum(["web", "mobile", "desktop"]).nullish(),
+    deviceTrustToken: zod.string().nullish(),
+  })
+  .describe(
+    "Provide either username or identifier (identifier matches username, email, or platform account number — case-insensitive).",
+  );
+
+export const LoginUserResponse = zod
+  .object({
+    success: zod.boolean().nullish(),
+    accessToken: zod.string().nullish(),
+    refreshToken: zod.string().nullish(),
+    user: zod
+      .object({
+        id: zod.string(),
+        username: zod.string().nullish(),
+        email: zod.string().nullish(),
+        phone: zod.string().nullish(),
+        firstName: zod.string().nullish(),
+        lastName: zod.string().nullish(),
+        initials: zod.string().nullish(),
+        userType: zod.string().nullish(),
+        role: zod.string().nullish(),
+        licenseNumber: zod.string().nullish(),
+        practiceName: zod.string().nullish(),
+        doctorName: zod.string().nullish(),
+        practiceAddress: zod.string().nullish(),
+        practicePhone: zod.string().nullish(),
+        phoneContactName: zod.string().nullish(),
+        accountNumber: zod.string().nullish(),
+        wantsUpdates: zod.boolean().nullish(),
+        workStatus: zod.string().nullish(),
+        profilePhotoUrl: zod.string().nullish(),
+      })
+      .describe(
+        "User fields safe to return to clients (no password\/secret material).",
+      )
+      .nullish(),
+    message: zod.string().nullish(),
+    organization: zod.record(zod.string(), zod.unknown()).nullish(),
+    pendingJoinRequest: zod.record(zod.string(), zod.unknown()).nullish(),
+    requiresTwoFactor: zod.boolean().nullish(),
+    pendingToken: zod.string().nullish(),
+  })
+  .describe(
+    "Either a completed login (success + optional tokens) or a 2FA challenge (requiresTwoFactor + pendingToken).",
+  );
+
+/**
+ * @summary Rotate the refresh token and issue a new access token (reuse detection)
+ */
+export const RefreshSessionBody = zod
+  .object({
+    refreshToken: zod.string().nullish(),
+  })
+  .describe(
+    "Refresh token is optional in the body — web clients send it via httpOnly cookie.",
+  );
+
+export const RefreshSessionResponse = zod
+  .object({
+    ok: zod.boolean(),
+    data: zod.object({
+      accessToken: zod.string(),
+      refreshToken: zod.string().optional(),
+    }),
+  })
+  .describe(
+    "Enveloped token-rotation response (ok + data). Tokens are present only for bearer clients.",
+  );
+
+/**
+ * @summary Revoke the current session
+ */
+export const LogoutUserResponse = zod.object({
+  success: zod.boolean(),
+});
+
+/**
+ * @summary Get the authenticated user and the organizations they belong to
+ */
+export const GetCurrentUserResponse = zod.object({
+  success: zod.boolean(),
+  user: zod
+    .object({
+      id: zod.string(),
+      username: zod.string().nullish(),
+      email: zod.string().nullish(),
+      phone: zod.string().nullish(),
+      firstName: zod.string().nullish(),
+      lastName: zod.string().nullish(),
+      initials: zod.string().nullish(),
+      userType: zod.string().nullish(),
+      role: zod.string().nullish(),
+      licenseNumber: zod.string().nullish(),
+      practiceName: zod.string().nullish(),
+      doctorName: zod.string().nullish(),
+      practiceAddress: zod.string().nullish(),
+      practicePhone: zod.string().nullish(),
+      phoneContactName: zod.string().nullish(),
+      accountNumber: zod.string().nullish(),
+      wantsUpdates: zod.boolean().nullish(),
+      workStatus: zod.string().nullish(),
+      profilePhotoUrl: zod.string().nullish(),
+    })
+    .describe(
+      "User fields safe to return to clients (no password\/secret material).",
+    )
+    .nullish(),
+  memberships: zod.array(
+    zod.object({
+      id: zod.string(),
+      role: zod.string().nullish(),
+      status: zod.string().nullish(),
+      organizationId: zod.string().nullish(),
+      organization: zod.record(zod.string(), zod.unknown()).nullish(),
+    }),
+  ),
+});
+
+/**
+ * @summary List active sessions for the authenticated user
+ */
+export const ListSessionsResponse = zod.object({
+  success: zod.boolean(),
+  sessions: zod.array(
+    zod.object({
+      id: zod.string(),
+      deviceName: zod.string().nullish(),
+      ipAddress: zod.string().nullish(),
+      userAgent: zod.string().nullish(),
+      createdAt: zod.string().nullish(),
+      expiresAt: zod.string(),
+      current: zod.boolean(),
+      isSuspicious: zod.boolean(),
+    }),
+  ),
+});
+
+/**
+ * @summary Revoke a specific session by id
+ */
+export const RevokeSessionParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const RevokeSessionResponse = zod.object({
+  success: zod.boolean(),
+});
+
+/**
+ * @summary Send a one-time email verification code
+ */
+export const SendEmailVerificationCodeBody = zod.object({
+  email: zod.string(),
+});
+
+export const SendEmailVerificationCodeResponse = zod.object({
+  success: zod.boolean(),
+  demoCode: zod
+    .string()
+    .nullish()
+    .describe(
+      "Only returned in development when the email\/SMS provider is unconfigured. Never present in production.",
+    ),
+});
+
+/**
+ * @summary Verify a one-time email verification code
+ */
+export const VerifyEmailCodeBody = zod.object({
+  email: zod.string(),
+  code: zod.string(),
+});
+
+export const VerifyEmailCodeResponse = zod.object({
+  success: zod.boolean(),
+  verified: zod.boolean(),
+});
+
+/**
+ * @summary Send a one-time SMS verification code
+ */
+export const SendPhoneVerificationCodeBody = zod.object({
+  phone: zod.string(),
+});
+
+export const SendPhoneVerificationCodeResponse = zod.object({
+  success: zod.boolean(),
+  demoCode: zod
+    .string()
+    .nullish()
+    .describe(
+      "Only returned in development when the email\/SMS provider is unconfigured. Never present in production.",
+    ),
+});
+
+/**
+ * @summary Verify a one-time SMS verification code
+ */
+export const VerifyPhoneCodeBody = zod.object({
+  phone: zod.string(),
+  code: zod.string(),
+});
+
+export const VerifyPhoneCodeResponse = zod.object({
+  success: zod.boolean(),
+  verified: zod.boolean(),
+});
+
+/**
+ * @summary Create a lab or provider organization
+ */
+export const CreateOrganizationBody = zod.object({
+  type: zod.enum(["lab", "provider"]),
+  name: zod.string(),
+  displayName: zod.string().nullish(),
+  billingEmail: zod.string().nullish(),
+  phone: zod.string().nullish(),
+  addressLine1: zod.string().nullish(),
+  addressLine2: zod.string().nullish(),
+  city: zod.string().nullish(),
+  state: zod.string().nullish(),
+  zip: zod.string().nullish(),
+  isActive: zod.boolean().nullish(),
+  statementEmailOptOut: zod.boolean().nullish(),
+  defaultCaseDueDays: zod.number().nullish(),
+  doctorName: zod
+    .string()
+    .nullish()
+    .describe(
+      "Provider orgs only — feeds account-number derivation; not persisted on the org row.",
+    ),
+  accountNumber: zod
+    .string()
+    .nullish()
+    .describe(
+      "Optional caller override; must be unique within the parent lab.",
+    ),
+  parentLabOrganizationId: zod
+    .string()
+    .nullish()
+    .describe(
+      "Provider orgs only; falls back to the caller's primary lab membership.",
+    ),
+});
+
+/**
+ * @summary Get an organization the caller can access
+ */
+export const GetOrganizationParams = zod.object({
+  organizationId: zod.coerce.string(),
+});
+
+export const GetOrganizationResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod
+    .object({
+      id: zod.string(),
+      type: zod.enum(["lab", "provider"]).optional(),
+      name: zod.string().nullish(),
+      displayName: zod.string().nullish(),
+      parentLabOrganizationId: zod.string().nullish(),
+      accountNumber: zod.string().nullish(),
+      platformAccountNumber: zod.string().nullish(),
+      isActive: zod.boolean().nullish(),
+    })
+    .describe(
+      "Organization row (lab or provider). Shape mirrors the organizations table; extra fields may be present.",
+    ),
+});
+
+/**
+ * @summary Update an organization (admin only)
+ */
+export const UpdateOrganizationParams = zod.object({
+  organizationId: zod.coerce.string(),
+});
+
+export const UpdateOrganizationBody = zod
+  .object({
+    name: zod.string().nullish(),
+    displayName: zod.string().nullish(),
+    billingEmail: zod.string().nullish(),
+    phone: zod.string().nullish(),
+    addressLine1: zod.string().nullish(),
+    addressLine2: zod.string().nullish(),
+    city: zod.string().nullish(),
+    state: zod.string().nullish(),
+    zip: zod.string().nullish(),
+    isActive: zod.boolean().nullish(),
+    statementEmailOptOut: zod.boolean().nullish(),
+    defaultCaseDueDays: zod.number().nullish(),
+    accountNumber: zod.string().nullish(),
+  })
+  .describe("Partial update. Type and parent lab cannot be changed.");
+
+export const UpdateOrganizationResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod
+    .object({
+      id: zod.string(),
+      type: zod.enum(["lab", "provider"]).optional(),
+      name: zod.string().nullish(),
+      displayName: zod.string().nullish(),
+      parentLabOrganizationId: zod.string().nullish(),
+      accountNumber: zod.string().nullish(),
+      platformAccountNumber: zod.string().nullish(),
+      isActive: zod.boolean().nullish(),
+    })
+    .describe(
+      "Organization row (lab or provider). Shape mirrors the organizations table; extra fields may be present.",
+    ),
+});
+
+/**
+ * @summary Invite a user to an organization (admin only). Invite messages carry no PHI.
+ */
+export const CreateInvitationParams = zod.object({
+  organizationId: zod.coerce.string(),
+});
+
+export const createInvitationBodyExpiresInDaysMax = 30;
+
+export const CreateInvitationBody = zod.object({
+  email: zod.string(),
+  phone: zod.string().nullish(),
+  roleToAssign: zod.enum(["owner", "admin", "user", "billing", "read_only"]),
+  expiresInDays: zod
+    .number()
+    .min(1)
+    .max(createInvitationBodyExpiresInDaysMax)
+    .nullish(),
+});
+
+/**
+ * @summary List invitations for an organization (admin only)
+ */
+export const ListInvitationsParams = zod.object({
+  organizationId: zod.coerce.string(),
+});
+
+export const ListInvitationsResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.array(
+    zod.object({
+      id: zod.string(),
+      organizationId: zod.string().nullish(),
+      labId: zod.string().nullish(),
+      email: zod.string().nullish(),
+      phone: zod.string().nullish(),
+      roleToAssign: zod.string().nullish(),
+      status: zod.string().nullish(),
+      token: zod.string().nullish(),
+      expiresAt: zod.string().nullish(),
+    }),
+  ),
+});
+
+/**
+ * @summary List pending invitations addressed to the authenticated user
+ */
+export const ListMyPendingInvitationsResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.array(
+    zod.object({
+      id: zod.string(),
+      organizationId: zod.string().nullish(),
+      labId: zod.string().nullish(),
+      email: zod.string().nullish(),
+      phone: zod.string().nullish(),
+      roleToAssign: zod.string().nullish(),
+      status: zod.string().nullish(),
+      token: zod.string().nullish(),
+      expiresAt: zod.string().nullish(),
+    }),
+  ),
+});
+
+/**
+ * @summary Accept an invitation by token (the caller's email must match the invite)
+ */
+export const AcceptInvitationParams = zod.object({
+  token: zod.coerce.string(),
+});
+
+export const AcceptInvitationResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.object({
+    accepted: zod.boolean(),
+  }),
+});
+
+/**
+ * @summary Decline an invitation
+ */
+export const DeclineInvitationParams = zod.object({
+  inviteId: zod.coerce.string(),
+});
+
+export const DeclineInvitationResponse = zod
+  .object({
+    ok: zod.boolean(),
+    data: zod.record(zod.string(), zod.unknown()).optional(),
+  })
+  .describe("Generic enveloped success response (ok + data).");
+
+/**
+ * @summary Cancel/revoke a pending invitation (admin only)
+ */
+export const RevokeInvitationParams = zod.object({
+  inviteId: zod.coerce.string(),
+});
+
+export const RevokeInvitationResponse = zod
+  .object({
+    ok: zod.boolean(),
+    data: zod.record(zod.string(), zod.unknown()).optional(),
+  })
+  .describe("Generic enveloped success response (ok + data).");
+
+/**
+ * @summary Update a membership's role or status (admin only; role ceiling enforced)
+ */
+export const UpdateMembershipParams = zod.object({
+  membershipId: zod.coerce.string(),
+});
+
+export const UpdateMembershipBody = zod.object({
+  role: zod.enum(["owner", "admin", "user", "billing", "read_only"]).optional(),
+  status: zod.enum(["active", "pending", "invited", "suspended"]).optional(),
+});
+
+export const UpdateMembershipResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.object({
+    id: zod.string(),
+    labId: zod.string().nullish(),
+    userId: zod.string().nullish(),
+    role: zod.string().nullish(),
+    status: zod.string().nullish(),
+  }),
+});
+
+/**
+ * @summary Remove a membership (admin only)
+ */
+export const RemoveMembershipParams = zod.object({
+  membershipId: zod.coerce.string(),
+});
+
+export const RemoveMembershipResponse = zod
+  .object({
+    ok: zod.boolean(),
+    data: zod.record(zod.string(), zod.unknown()).optional(),
+  })
+  .describe("Generic enveloped success response (ok + data).");
+
+/**
+ * @summary List audit-log entries for an organization (admin only). Contract for Phase 2 implementation.
+ */
+export const listAuditLogsQueryLimitMax = 200;
+
+export const ListAuditLogsQueryParams = zod.object({
+  organizationId: zod.coerce.string(),
+  limit: zod.coerce.number().min(1).max(listAuditLogsQueryLimitMax).optional(),
+  before: zod
+    .date()
+    .optional()
+    .describe("ISO timestamp cursor — return entries created before this time"),
+});
+
+export const ListAuditLogsResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.array(
+    zod.object({
+      id: zod.string(),
+      userId: zod.string().nullish(),
+      organizationId: zod.string().nullish(),
+      action: zod.string(),
+      entityType: zod.string(),
+      entityId: zod.string().nullish(),
+      ipAddress: zod.string().nullish(),
+      userAgent: zod.string().nullish(),
+      beforeJson: zod.unknown().nullish(),
+      afterJson: zod.unknown().nullish(),
+      metadataJson: zod.unknown().nullish(),
+      createdAt: zod.string().nullish(),
+    }),
+  ),
+});
