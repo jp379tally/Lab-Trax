@@ -150,7 +150,6 @@ interface ProviderPickerProps {
 }
 
 function ProviderPicker({ value, onChange, providers, disabled }: ProviderPickerProps) {
-  const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
@@ -4177,7 +4176,12 @@ export function CaseDrawer({
                       value={`${pendingCaseEdit?.patientFirstName ?? data?.patientFirstName ?? labCase.patientFirstName} ${pendingCaseEdit?.patientLastName ?? data?.patientLastName ?? labCase.patientLastName}`}
                     />
                     <Field label="Doctor" value={pendingCaseEdit?.doctorName ?? data?.doctorName ?? labCase.doctorName} />
-                    <Field label="Practice" value={currentProviderOrg?.displayName ?? currentProviderOrg?.name ?? (pendingCaseEdit?.providerOrganizationId ? "—" : "—")} />
+                    <Field label="Practice" value={(() => {
+                      const pid = pendingCaseEdit?.providerOrganizationId ?? data?.providerOrganizationId ?? labCase.providerOrganizationId;
+                      if (!pid) return "—";
+                      const org = drawerProviderOrgs.find((o) => o.id === pid);
+                      return org?.displayName ?? org?.name ?? "—";
+                    })()} />
                     <Field label="Status" value={statusLabel(currentStatus)} />
                     <Field
                       label="Priority"
