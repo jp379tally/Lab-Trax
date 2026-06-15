@@ -1015,6 +1015,7 @@ export default function OrganizationsScreen() {
 
       {canCreateLab && (
         <Pressable
+          testID="create-lab-open-btn"
           style={[styles.createLabBtn, { backgroundColor: colors.tint }]}
           onPress={() => setCreateOpen(true)}
         >
