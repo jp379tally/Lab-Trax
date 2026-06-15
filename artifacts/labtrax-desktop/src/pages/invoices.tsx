@@ -2947,7 +2947,7 @@ function VoidConfirmDialog({
   );
 }
 
-function StatementBuilderDialog({
+export function StatementBuilderDialog({
   knownLabOrgId,
   onClose,
 }: {
@@ -2971,6 +2971,39 @@ function StatementBuilderDialog({
   const [generated, setGenerated] = useState<PracticeStatement | null>(null);
   const [emailTo, setEmailTo] = useState("");
   const [smsTo, setSmsTo] = useState("");
+  const [confirmClose, setConfirmClose] = useState(false);
+  // Defaults captured at mount so the dirty check treats an edited-then-reverted
+  // field as clean, mirroring the InvoiceEditor safe-exit behavior.
+  const initialPeriodStartRef = useRef(periodStart);
+  const initialPeriodEndRef = useRef(periodEnd);
+
+  // Any user-entered selection or recipient counts as unsaved input. A
+  // generated statement is already persisted server-side, so it doesn't count.
+  const isDirty =
+    providerOrgId !== "" ||
+    periodStart !== initialPeriodStartRef.current ||
+    periodEnd !== initialPeriodEndRef.current ||
+    !openOnly ||
+    emailTo.trim() !== "" ||
+    smsTo.trim() !== "";
+
+  // Close the dialog, prompting to discard first if there is unsaved input so a
+  // stray Escape or Close can't silently throw away a half-filled form.
+  const requestClose = useCallback(() => {
+    if (isDirty) setConfirmClose(true);
+    else onClose();
+  }, [isDirty, onClose]);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      if (confirmClose) setConfirmClose(false);
+      else requestClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [confirmClose, requestClose]);
 
   const labOrgId = useMemo(() => {
     if (knownLabOrgId) return knownLabOrgId;
@@ -3068,9 +3101,9 @@ function StatementBuilderDialog({
           <h3 className="text-base font-semibold">Build practice statement</h3>
           <button
             type="button"
-            onClick={onClose}
+            onClick={requestClose}
             className="h-8 w-8 inline-flex items-center justify-center rounded hover:bg-secondary"
-            aria-label="Close"
+            aria-label="Close without saving"
           >
             <X size={16} />
           </button>
@@ -3210,6 +3243,37 @@ function StatementBuilderDialog({
           </div>
         )}
       </div>
+
+      {confirmClose && (
+        <div className="fixed inset-0 z-[70] bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-card border border-border rounded-lg w-full max-w-md p-5 space-y-4">
+            <h3 className="text-base font-semibold">Discard changes?</h3>
+            <p className="text-sm text-muted-foreground">
+              You have unsaved input on this statement. If you close now, your
+              changes will be lost.
+            </p>
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setConfirmClose(false)}
+                className="h-9 px-4 rounded-md bg-secondary text-secondary-foreground text-sm font-medium hover:bg-secondary/80"
+              >
+                Keep editing
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmClose(false);
+                  onClose();
+                }}
+                className="h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90"
+              >
+                Discard changes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -3522,7 +3586,7 @@ function RecordPaymentDialog({
   );
 }
 
-function CreateInvoiceDialog({
+export function CreateInvoiceDialog({
   knownLabOrgId,
   onClose,
   onCreated,
@@ -3548,10 +3612,40 @@ function CreateInvoiceDialog({
   const [dueAt, setDueAt] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmClose, setConfirmClose] = useState(false);
+  // Issue date defaults to today; capture it so reverting back to the default
+  // reads as clean, mirroring the InvoiceEditor safe-exit behavior.
+  const initialIssuedAtRef = useRef(issuedAt);
 
   useEffect(() => {
     if (!labOrgId && labOrgs.length) setLabOrgId(labOrgs[0].id);
   }, [labOrgs, labOrgId]);
+
+  // The lab is auto-selected, so it doesn't count as unsaved input. Any
+  // practice, invoice number, changed issue date, or due date does.
+  const isDirty =
+    providerOrgId !== "" ||
+    invoiceNumber.trim() !== "" ||
+    issuedAt !== initialIssuedAtRef.current ||
+    dueAt !== "";
+
+  // Close the dialog, prompting to discard first if there is unsaved input so a
+  // stray Escape or Close can't silently throw away a half-filled form.
+  const requestClose = useCallback(() => {
+    if (isDirty) setConfirmClose(true);
+    else onClose();
+  }, [isDirty, onClose]);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      if (confirmClose) setConfirmClose(false);
+      else requestClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [confirmClose, requestClose]);
 
   async function submit() {
     if (!invoiceNumber.trim()) { setError("Invoice number is required."); return; }
@@ -3584,7 +3678,8 @@ function CreateInvoiceDialog({
           <div className="text-sm font-semibold">New Invoice</div>
           <button
             type="button"
-            onClick={onClose}
+            onClick={requestClose}
+            aria-label="Close without saving"
             className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"
           >
             <X size={16} />
@@ -3663,7 +3758,7 @@ function CreateInvoiceDialog({
         <footer className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border">
           <button
             type="button"
-            onClick={onClose}
+            onClick={requestClose}
             className="h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary"
           >
             Cancel
@@ -3679,6 +3774,37 @@ function CreateInvoiceDialog({
           </button>
         </footer>
       </div>
+
+      {confirmClose && (
+        <div className="fixed inset-0 z-[70] bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-card border border-border rounded-lg w-full max-w-md p-5 space-y-4">
+            <h3 className="text-base font-semibold">Discard changes?</h3>
+            <p className="text-sm text-muted-foreground">
+              You have unsaved input on this invoice. If you close now, your
+              changes will be lost.
+            </p>
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setConfirmClose(false)}
+                className="h-9 px-4 rounded-md bg-secondary text-secondary-foreground text-sm font-medium hover:bg-secondary/80"
+              >
+                Keep editing
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmClose(false);
+                  onClose();
+                }}
+                className="h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90"
+              >
+                Discard changes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
