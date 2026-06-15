@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 import QRCodeLib from "qrcode";
 import { apiFetch, ApiError, getApiOrigin, getAccessToken } from "@/lib/api";
+import { setNavBlocker, runWithoutNavBlock } from "@/lib/nav-guard";
 import {
   ItemCombobox,
   type ItemComboboxOption,
@@ -581,7 +582,12 @@ export default function InvoicesPage() {
             const caseId = editing.caseId;
             setEditing(null);
             if (caseId) {
-              setLocation(`/cases?caseId=${encodeURIComponent(caseId)}`);
+              // The editor's own "Go to case" jump is intentional and already
+              // tears the editor down, so skip the unsaved-edits navigation
+              // guard rather than prompting the user about their own action.
+              runWithoutNavBlock(() =>
+                setLocation(`/cases?caseId=${encodeURIComponent(caseId)}`),
+              );
             }
           }}
         />
@@ -1217,10 +1223,14 @@ export function InvoiceEditor({
   const [caseNotes, setCaseNotes] = useState<string>("");
   const [credits, setCredits] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
-  // Baseline snapshot of the form (set when detail loads) for the dirty check,
-  // and a flag controlling the "discard changes?" confirmation on close.
+  // Baseline snapshot of the form (set when detail loads) for the dirty check.
   const baselineRef = useRef<string | null>(null);
-  const [confirmClose, setConfirmClose] = useState(false);
+  // When unsaved edits would be lost (close, route navigation, etc.) we stash
+  // the action to run if the user confirms; a non-null value shows the
+  // "Discard changes?" confirmation.
+  const [pendingDiscard, setPendingDiscard] = useState<(() => void) | null>(
+    null,
+  );
 
   useEffect(() => {
     const d = detailQuery.data;
@@ -1633,11 +1643,33 @@ export function InvoiceEditor({
   // so the user can intentionally discard or keep editing.
   const requestClose = useCallback(() => {
     if (isDirty) {
-      setConfirmClose(true);
+      setPendingDiscard(() => onClose);
     } else {
       onClose();
     }
   }, [isDirty, onClose]);
+
+  // While the form has unsaved edits, intercept in-app route navigations (the
+  // sidebar links, programmatic redirects, etc.) so the user can confirm before
+  // losing work, and warn on a native window close/reload via beforeunload.
+  useEffect(() => {
+    if (!isDirty) {
+      setNavBlocker(null);
+      return;
+    }
+    setNavBlocker((proceed) => {
+      setPendingDiscard(() => proceed);
+    });
+    function onBeforeUnload(e: BeforeUnloadEvent) {
+      e.preventDefault();
+      e.returnValue = "";
+    }
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      setNavBlocker(null);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+    };
+  }, [isDirty]);
 
   // Keyboard shortcuts: Cmd/Ctrl+S = save, Cmd/Ctrl+P = print, Esc = close
   useEffect(() => {
@@ -1656,8 +1688,8 @@ export function InvoiceEditor({
         e.preventDefault();
         // If the discard confirmation is open, Escape cancels that prompt
         // rather than the whole editor, so a stray keystroke can't lose work.
-        if (confirmClose) {
-          setConfirmClose(false);
+        if (pendingDiscard) {
+          setPendingDiscard(null);
         } else {
           requestClose();
         }
@@ -2814,18 +2846,18 @@ export function InvoiceEditor({
           </div>
         </div>
       )}
-      {confirmClose && (
+      {pendingDiscard && (
         <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4">
           <div className="bg-card border border-border rounded-lg w-full max-w-md p-5 space-y-4">
             <h3 className="text-base font-semibold">Discard changes?</h3>
             <p className="text-sm text-muted-foreground">
-              You have unsaved edits to this invoice. If you close now, your
+              You have unsaved edits to this invoice. If you leave now, your
               changes will be lost.
             </p>
             <div className="flex justify-end gap-2 pt-1">
               <button
                 type="button"
-                onClick={() => setConfirmClose(false)}
+                onClick={() => setPendingDiscard(null)}
                 className="h-9 px-4 rounded-md bg-secondary text-secondary-foreground text-sm font-medium hover:bg-secondary/80"
               >
                 Keep editing
@@ -2833,8 +2865,9 @@ export function InvoiceEditor({
               <button
                 type="button"
                 onClick={() => {
-                  setConfirmClose(false);
-                  onClose();
+                  const proceed = pendingDiscard;
+                  setPendingDiscard(null);
+                  proceed();
                 }}
                 className="h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90"
               >

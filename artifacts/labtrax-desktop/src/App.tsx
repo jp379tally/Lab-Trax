@@ -7,6 +7,7 @@ import {
 } from "@workspace/api-client-react";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { getApiOrigin, getAccessToken } from "@/lib/api";
+import { guardNavigation } from "@/lib/nav-guard";
 import { describeAuthRestoreStatus } from "@/lib/auth-restore-status";
 import { UploadsProvider } from "@/lib/uploads-context";
 import LoginPage from "@/pages/login";
@@ -151,7 +152,15 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <WouterRouter base={import.meta.env.BASE_URL === "./" ? "" : import.meta.env.BASE_URL.replace(/\/$/, "")}>
+        <WouterRouter
+          base={import.meta.env.BASE_URL === "./" ? "" : import.meta.env.BASE_URL.replace(/\/$/, "")}
+          aroundNav={(navigate, to, options) => {
+            // Let an active navigation guard (e.g. a dirty invoice editor)
+            // intercept and defer the navigation; otherwise proceed normally.
+            if (guardNavigation(() => navigate(to, options))) return;
+            navigate(to, options);
+          }}
+        >
           <Gate />
         </WouterRouter>
       </AuthProvider>
