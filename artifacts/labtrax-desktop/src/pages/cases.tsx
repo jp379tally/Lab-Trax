@@ -2472,6 +2472,7 @@ export function CaseDrawer({
     patientFirstName: labCase.patientFirstName || "",
     patientLastName: labCase.patientLastName || "",
     doctorName: labCase.doctorName || "",
+    providerOrganizationId: labCase.providerOrganizationId || "",
     dueDate: labCase.dueDate
       ? new Date(labCase.dueDate).toISOString().split("T")[0]
       : "",
@@ -2572,6 +2573,7 @@ export function CaseDrawer({
     patientFirstName: string;
     patientLastName: string;
     doctorName: string;
+    providerOrganizationId: string;
     dueDate: string;
     priority: "normal" | "rush";
     casePanBarcode: string;
@@ -3223,16 +3225,20 @@ export function CaseDrawer({
     try {
       // 1. Case detail patch (single atomic call)
       if (snapshotCaseEdit) {
+        const patchBody: Record<string, unknown> = {
+          patientFirstName: snapshotCaseEdit.patientFirstName,
+          patientLastName: snapshotCaseEdit.patientLastName,
+          doctorName: snapshotCaseEdit.doctorName,
+          priority: snapshotCaseEdit.priority,
+          ...(snapshotCaseEdit.dueDate ? { dueDate: snapshotCaseEdit.dueDate } : {}),
+          casePanBarcode: snapshotCaseEdit.casePanBarcode || null,
+        };
+        if (snapshotCaseEdit.providerOrganizationId) {
+          patchBody.providerOrganizationId = snapshotCaseEdit.providerOrganizationId;
+        }
         await apiFetch(`/cases/${labCase.id}`, {
           method: "PATCH",
-          body: JSON.stringify({
-            patientFirstName: snapshotCaseEdit.patientFirstName,
-            patientLastName: snapshotCaseEdit.patientLastName,
-            doctorName: snapshotCaseEdit.doctorName,
-            priority: snapshotCaseEdit.priority,
-            ...(snapshotCaseEdit.dueDate ? { dueDate: snapshotCaseEdit.dueDate } : {}),
-            casePanBarcode: snapshotCaseEdit.casePanBarcode || null,
-          }),
+          body: JSON.stringify(patchBody),
         });
         setPendingCaseEdit(null);
       }
@@ -3479,6 +3485,7 @@ export function CaseDrawer({
       patientFirstName: src.patientFirstName || "",
       patientLastName: src.patientLastName || "",
       doctorName: src.doctorName || "",
+      providerOrganizationId: src.providerOrganizationId || "",
       dueDate: src.dueDate
         ? new Date(src.dueDate).toISOString().split("T")[0]
         : "",
