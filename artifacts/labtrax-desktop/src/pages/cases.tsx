@@ -37,6 +37,7 @@ import {
 } from "lucide-react";
 import QRCodeSVG from "react-qr-code";
 import { apiFetch, getAccessToken, getApiOrigin } from "@/lib/api";
+import { setNavBlocker } from "@/lib/nav-guard";
 import { AuthedImage, AuthedVideo, isSameApiOrigin } from "@/components/AuthedMedia";
 import type {
   CaseAttachment,
@@ -2582,7 +2583,12 @@ export function CaseDrawer({
   const [pendingCaseEdit, setPendingCaseEdit] = useState<PendingCaseEdit | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
+  // When unsaved edits would be lost (close, in-app route navigation, etc.) we
+  // stash the action to run if the user confirms; a non-null value shows the
+  // "Unsaved changes" discard confirmation.
+  const [pendingDiscard, setPendingDiscard] = useState<(() => void) | null>(
+    null,
+  );
 
   // Bridge connector state — initialised from case data once loaded
   const [connectedPairs, setConnectedPairs] = useState<Set<string>>(() =>
@@ -3165,11 +3171,33 @@ export function CaseDrawer({
 
   function handleCloseWithGuard() {
     if (hasPendingChanges) {
-      setShowDiscardConfirm(true);
+      setPendingDiscard(() => onClose);
     } else {
       onClose();
     }
   }
+
+  // While the case has unsaved edits, intercept in-app route navigations (the
+  // sidebar links, programmatic redirects, etc.) so the user can confirm before
+  // losing work, and warn on a native window close/reload via beforeunload.
+  useEffect(() => {
+    if (!hasPendingChanges) {
+      setNavBlocker(null);
+      return;
+    }
+    setNavBlocker((proceed) => {
+      setPendingDiscard(() => proceed);
+    });
+    function onBeforeUnload(e: BeforeUnloadEvent) {
+      e.preventDefault();
+      e.returnValue = "";
+    }
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      setNavBlocker(null);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+    };
+  }, [hasPendingChanges]);
 
   async function handleSaveChanges() {
     setIsSaving(true);
@@ -5739,11 +5767,11 @@ export function CaseDrawer({
         />
       )}
 
-      {/* Discard confirm overlay — shown when closing with unsaved changes */}
-      {showDiscardConfirm && (
+      {/* Discard confirm overlay — shown when closing or navigating away with unsaved changes */}
+      {pendingDiscard && (
         <div
           className="fixed inset-0 z-[70] flex items-center justify-center bg-foreground/40"
-          onClick={() => setShowDiscardConfirm(false)}
+          onClick={() => setPendingDiscard(null)}
         >
           <div
             className="bg-card rounded-xl border border-border p-6 max-w-sm mx-4 space-y-4 shadow-xl"
@@ -5756,14 +5784,14 @@ export function CaseDrawer({
               <div>
                 <h3 className="font-semibold">Unsaved changes</h3>
                 <p className="text-sm text-muted-foreground mt-1">
-                  You have unsaved changes to this case. Do you want to discard them and close?
+                  You have unsaved changes to this case. Do you want to discard them?
                 </p>
               </div>
             </div>
             <div className="flex gap-2 pt-1">
               <button
                 type="button"
-                onClick={() => setShowDiscardConfirm(false)}
+                onClick={() => setPendingDiscard(null)}
                 className="flex-1 h-9 rounded-md bg-secondary text-sm font-medium text-muted-foreground hover:text-foreground"
               >
                 Keep editing
@@ -5771,13 +5799,14 @@ export function CaseDrawer({
               <button
                 type="button"
                 onClick={() => {
+                  const proceed = pendingDiscard;
                   handleDiscardChanges();
-                  setShowDiscardConfirm(false);
-                  onClose();
+                  setPendingDiscard(null);
+                  proceed?.();
                 }}
                 className="flex-1 h-9 rounded-md bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90"
               >
-                Discard &amp; close
+                Discard changes
               </button>
             </div>
           </div>
