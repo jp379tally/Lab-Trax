@@ -24,6 +24,8 @@ import {
   useUpdateCase,
   useAddCaseNote,
   useAddCaseRestoration,
+  useDeleteCaseRestoration,
+  useUpdateCaseRestoration,
   useDeleteCaseAttachment,
   useGenerateInvoiceForCase,
   useEmailInvoice,
@@ -1883,6 +1885,8 @@ function RestorationsSection({
   colors: ThemeColors;
 }) {
   const addRestoration = useAddCaseRestoration();
+  const deleteRestoration = useDeleteCaseRestoration();
+  const updateRestoration = useUpdateCaseRestoration();
   const [activeTooth, setActiveTooth] = useState<string | null>(null);
   const [sheetError, setSheetError] = useState<string | null>(null);
   const crownTeeth = useMemo(() => {
@@ -1925,8 +1929,51 @@ function RestorationsSection({
     return labels.length > 0 ? labels.join(", ") : null;
   }, [activeTooth, restorations]);
 
+  const existingRestorationIdForTooth = useMemo(() => {
+    if (!activeTooth) return null;
+    const match = restorations.find(
+      (r) => r.toothNumber && parseToothField(r.toothNumber).has(activeTooth)
+    );
+    return match?.id ?? null;
+  }, [activeTooth, restorations]);
+
   async function handleToothAction(payload: ToothActionPayload) {
     setSheetError(null);
+
+    if (payload.kind === "remove_restoration") {
+      const restorationId = payload.restorationId ?? existingRestorationIdForTooth;
+      if (!restorationId) {
+        setSheetError("Could not find restoration to remove.");
+        return;
+      }
+      try {
+        await deleteRestoration.mutateAsync({ caseId, restorationId });
+        setActiveTooth(null);
+        await onSaved();
+      } catch (e) {
+        setSheetError(errorMessage(e));
+      }
+      return;
+    }
+
+    if (payload.kind === "change_restoration") {
+      try {
+        await updateRestoration.mutateAsync({
+          caseId,
+          restorationId: payload.restorationId,
+          data: {
+            material: payload.material,
+            ...(payload.shade ? { shade: payload.shade } : {}),
+          },
+        });
+        setActiveTooth(null);
+        await onSaved();
+      } catch (e) {
+        setSheetError(errorMessage(e));
+      }
+      return;
+    }
+
     const data =
       payload.kind === "add_crown"
         ? {
@@ -1974,7 +2021,8 @@ function RestorationsSection({
     <ToothActionSheet
       toothId={activeTooth}
       existingLabel={existingLabelForTooth}
-      submitting={addRestoration.isPending}
+      existingRestorationId={existingRestorationIdForTooth}
+      submitting={addRestoration.isPending || deleteRestoration.isPending || updateRestoration.isPending}
       error={sheetError}
       onClose={() => {
         setActiveTooth(null);

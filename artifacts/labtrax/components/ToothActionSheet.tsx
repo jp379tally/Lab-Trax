@@ -45,14 +45,30 @@ export type ToothActionPayload =
       shade?: string;
     }
   | { kind: "add_pontic"; toothId: string }
-  | { kind: "mark_missing"; toothId: string };
+  | { kind: "mark_missing"; toothId: string }
+  | { kind: "remove_restoration"; toothId: string; restorationId?: string }
+  | {
+      kind: "change_restoration";
+      toothId: string;
+      restorationId: string;
+      material: string;
+      shade?: string;
+    };
 
-type Step = "choose_kind" | "choose_material" | "choose_shade";
+type Step =
+  | "choose_action"
+  | "choose_kind"
+  | "choose_material"
+  | "choose_shade"
+  | "change_material"
+  | "change_shade";
 
 interface Props {
   toothId: ToothId | null;
-  /** Comma-separated description(s) of any restoration already on this tooth. */
+  /** Human-readable description(s) of any restoration already on this tooth. */
   existingLabel?: string | null;
+  /** ID of the restoration on this tooth targeted by Change/Remove actions. */
+  existingRestorationId?: string | null;
   submitting?: boolean;
   error?: string | null;
   onClose: () => void;
@@ -63,10 +79,14 @@ interface Props {
  * Mobile mirror of the desktop ToothActionDialog. A bottom-sheet that lets a
  * technician record a restoration on a tapped tooth: pick the kind (crown,
  * pontic, or missing); for a crown also pick a material and an optional shade.
+ *
+ * When the tooth already has a restoration the sheet opens at `choose_action`
+ * which offers Remove, Change (material/shade via PATCH), or Add alongside.
  */
 export function ToothActionSheet({
   toothId,
   existingLabel,
+  existingRestorationId,
   submitting = false,
   error,
   onClose,
@@ -82,16 +102,20 @@ export function ToothActionSheet({
   const [customShade, setCustomShade] = useState("");
   const [isCustomShade, setIsCustomShade] = useState(false);
 
-  // Reset the wizard whenever a new tooth is opened.
+  function resetWizard() {
+    setMaterial("");
+    setShade("");
+    setCustomShade("");
+    setIsCustomShade(false);
+  }
+
   useEffect(() => {
     if (toothId !== null) {
-      setStep("choose_kind");
-      setMaterial("");
-      setShade("");
-      setCustomShade("");
-      setIsCustomShade(false);
+      setStep(existingLabel ? "choose_action" : "choose_kind");
+      resetWizard();
     }
-  }, [toothId]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [toothId, existingLabel]);
 
   const visible = toothId !== null;
 
@@ -130,12 +154,49 @@ export function ToothActionSheet({
     });
   }
 
+  function handleChangeMaterialNext() {
+    if (!material) return;
+    setShade("");
+    setCustomShade("");
+    setIsCustomShade(false);
+    setStep("change_shade");
+  }
+
+  function handleChangeShadeConfirm(withShade: boolean) {
+    if (!toothId || !existingRestorationId) return;
+    onConfirm({
+      kind: "change_restoration",
+      toothId,
+      restorationId: existingRestorationId,
+      material,
+      shade: withShade ? resolvedShade() : undefined,
+    });
+  }
+
+  const isInChangePath = step === "change_material" || step === "change_shade";
+
   const headerTitle =
-    step === "choose_material"
+    step === "choose_material" || step === "change_material"
       ? "Choose material"
-      : step === "choose_shade"
+      : step === "choose_shade" || step === "change_shade"
       ? "Choose shade"
       : `Tooth ${toothId ?? ""}`;
+
+  function backStep(): Step {
+    if (step === "choose_shade") return "choose_material";
+    if (step === "change_shade") return "change_material";
+    if (step === "choose_material") return "choose_kind";
+    if (step === "change_material") return "choose_action";
+    if (step === "choose_kind" && existingLabel) return "choose_action";
+    return "choose_kind";
+  }
+
+  const showBack =
+    step === "choose_material" ||
+    step === "choose_shade" ||
+    step === "change_material" ||
+    step === "change_shade" ||
+    (step === "choose_kind" && !!existingLabel);
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -147,11 +208,9 @@ export function ToothActionSheet({
           <View style={styles.grabber} />
 
           <View style={styles.headerRow}>
-            {step !== "choose_kind" ? (
+            {showBack ? (
               <Pressable
-                onPress={() =>
-                  setStep(step === "choose_shade" ? "choose_material" : "choose_kind")
-                }
+                onPress={() => setStep(backStep())}
                 disabled={submitting}
                 hitSlop={8}
                 testID="tooth-action-back"
@@ -172,11 +231,72 @@ export function ToothActionSheet({
             contentContainerStyle={styles.bodyContent}
             keyboardShouldPersistTaps="handled"
           >
+            {/* choose_action — tooth already has a restoration */}
+            {step === "choose_action" && (
+              <>
+                <Text style={styles.prompt}>
+                  Tooth {toothId} already has {existingLabel}.
+                </Text>
+                <View style={styles.kindGrid}>
+                  <Pressable
+                    style={({ pressed }) => [styles.kindCard, pressed && styles.cardPressed]}
+                    onPress={() => {
+                      resetWizard();
+                      setStep("change_material");
+                    }}
+                    disabled={submitting}
+                    testID="tooth-action-change"
+                  >
+                    <Text style={styles.kindIcon}>✏️</Text>
+                    <Text style={styles.kindLabel}>Change</Text>
+                    <Text style={styles.kindDesc}>Update material or shade</Text>
+                  </Pressable>
+                  <Pressable
+                    style={({ pressed }) => [styles.kindCard, pressed && styles.cardPressed]}
+                    onPress={() => {
+                      resetWizard();
+                      setStep("choose_kind");
+                    }}
+                    disabled={submitting}
+                    testID="tooth-action-add"
+                  >
+                    <Text style={styles.kindIcon}>➕</Text>
+                    <Text style={styles.kindLabel}>Add alongside</Text>
+                    <Text style={styles.kindDesc}>New restoration on this tooth</Text>
+                  </Pressable>
+                  <Pressable
+                    style={({ pressed }) => [styles.kindCard, styles.kindCardDanger, pressed && styles.cardPressed]}
+                    onPress={() => {
+                      if (!toothId) return;
+                      onConfirm({
+                        kind: "remove_restoration",
+                        toothId,
+                        restorationId: existingRestorationId ?? undefined,
+                      });
+                    }}
+                    disabled={submitting}
+                    testID="tooth-action-remove"
+                  >
+                    {submitting ? (
+                      <ActivityIndicator size="small" color={colors.error} />
+                    ) : (
+                      <>
+                        <Text style={styles.kindIcon}>🗑️</Text>
+                        <Text style={[styles.kindLabel, styles.dangerText]}>Remove</Text>
+                        <Text style={styles.kindDesc}>Delete this restoration</Text>
+                      </>
+                    )}
+                  </Pressable>
+                </View>
+              </>
+            )}
+
+            {/* choose_kind — add a new restoration (alongside or on empty tooth) */}
             {step === "choose_kind" && (
               <>
                 <Text style={styles.prompt}>
                   {existingLabel
-                    ? `Tooth ${toothId} already has ${existingLabel}. Add another restoration:`
+                    ? `Add another restoration to tooth ${toothId}:`
                     : `What are you adding to tooth ${toothId}?`}
                 </Text>
                 <View style={styles.kindGrid}>
@@ -201,6 +321,7 @@ export function ToothActionSheet({
               </>
             )}
 
+            {/* choose_material — add new crown path */}
             {step === "choose_material" && (
               <>
                 <Text style={styles.prompt}>Select a material for the crown on tooth {toothId}:</Text>
@@ -231,84 +352,77 @@ export function ToothActionSheet({
               </>
             )}
 
-            {step === "choose_shade" && (
+            {/* change_material — update existing restoration path */}
+            {step === "change_material" && (
               <>
                 <Text style={styles.prompt}>
-                  Select a shade <Text style={styles.muted}>(optional)</Text>:
+                  Choose a new material for tooth {toothId}:
                 </Text>
                 <View style={styles.optionWrap}>
-                  {VITA_SHADES.map((s) => {
-                    const on = !isCustomShade && shade === s;
+                  {CROWN_MATERIALS.map((m) => {
+                    const on = material === m;
                     return (
                       <Pressable
-                        key={s}
+                        key={m}
                         style={[styles.optionChip, on && styles.optionChipOn]}
-                        onPress={() => {
-                          setShade(s);
-                          setIsCustomShade(false);
-                          setCustomShade("");
-                        }}
+                        onPress={() => setMaterial(m)}
                         disabled={submitting}
-                        testID={`tooth-shade-${s}`}
+                        testID={`tooth-change-material-${m}`}
                       >
-                        <Text style={[styles.optionText, on && styles.optionTextOn]}>{s}</Text>
+                        <Text style={[styles.optionText, on && styles.optionTextOn]}>{m}</Text>
                       </Pressable>
                     );
                   })}
-                  <Pressable
-                    style={[styles.optionChip, isCustomShade && styles.optionChipOn]}
-                    onPress={() => {
-                      setIsCustomShade(true);
-                      setShade("");
-                    }}
-                    disabled={submitting}
-                    testID="tooth-shade-other"
-                  >
-                    <Text style={[styles.optionText, isCustomShade && styles.optionTextOn]}>Other</Text>
-                  </Pressable>
                 </View>
-                {isCustomShade && (
-                  <TextInput
-                    style={styles.input}
-                    placeholder="Type custom shade…"
-                    placeholderTextColor={colors.textTertiary}
-                    value={customShade}
-                    onChangeText={setCustomShade}
-                    autoFocus
-                    testID="tooth-shade-custom"
-                  />
-                )}
-                <View style={styles.shadeFooter}>
-                  <Pressable
-                    style={[styles.secondaryBtn, submitting && styles.btnDisabled]}
-                    onPress={() => handleShadeConfirm(false)}
-                    disabled={submitting}
-                    testID="tooth-shade-skip"
-                  >
-                    {submitting ? (
-                      <ActivityIndicator size="small" color={colors.textSecondary} />
-                    ) : (
-                      <Text style={styles.secondaryText}>Skip</Text>
-                    )}
-                  </Pressable>
-                  <Pressable
-                    style={[
-                      styles.primaryBtn,
-                      styles.flex1,
-                      (submitting || (isCustomShade ? !customShade.trim() : !shade)) && styles.btnDisabled,
-                    ]}
-                    onPress={() => handleShadeConfirm(true)}
-                    disabled={submitting || (isCustomShade ? !customShade.trim() : !shade)}
-                    testID="tooth-shade-confirm"
-                  >
-                    {submitting ? (
-                      <ActivityIndicator size="small" color={colors.textInverse} />
-                    ) : (
-                      <Text style={styles.primaryText}>Confirm</Text>
-                    )}
-                  </Pressable>
-                </View>
+                <Pressable
+                  style={[styles.primaryBtn, (!material || submitting) && styles.btnDisabled]}
+                  onPress={handleChangeMaterialNext}
+                  disabled={!material || submitting}
+                  testID="tooth-change-material-next"
+                >
+                  <Text style={styles.primaryText}>Next — Pick shade</Text>
+                </Pressable>
               </>
+            )}
+
+            {/* choose_shade — add new crown path */}
+            {step === "choose_shade" && (
+              <ShadeStep
+                toothId={toothId}
+                shade={shade}
+                isCustomShade={isCustomShade}
+                customShade={customShade}
+                submitting={submitting}
+                colors={colors}
+                styles={styles}
+                onShadeSelect={(s) => { setShade(s); setIsCustomShade(false); setCustomShade(""); }}
+                onCustomShadeToggle={() => { setIsCustomShade(true); setShade(""); }}
+                onCustomShadeChange={setCustomShade}
+                onSkip={() => handleShadeConfirm(false)}
+                onConfirm={() => handleShadeConfirm(true)}
+                skipTestID="tooth-shade-skip"
+                confirmTestID="tooth-shade-confirm"
+              />
+            )}
+
+            {/* change_shade — update existing restoration path */}
+            {step === "change_shade" && (
+              <ShadeStep
+                toothId={toothId}
+                shade={shade}
+                isCustomShade={isCustomShade}
+                customShade={customShade}
+                submitting={submitting}
+                colors={colors}
+                styles={styles}
+                onShadeSelect={(s) => { setShade(s); setIsCustomShade(false); setCustomShade(""); }}
+                onCustomShadeToggle={() => { setIsCustomShade(true); setShade(""); }}
+                onCustomShadeChange={setCustomShade}
+                onSkip={() => handleChangeShadeConfirm(false)}
+                onConfirm={() => handleChangeShadeConfirm(true)}
+                skipTestID="tooth-change-shade-skip"
+                confirmTestID="tooth-change-shade-confirm"
+              />
             )}
 
             {error ? <Text style={styles.errorText}>{error}</Text> : null}
@@ -316,6 +430,112 @@ export function ToothActionSheet({
         </Pressable>
       </Pressable>
     </Modal>
+  );
+}
+
+interface ShadeStepProps {
+  toothId: string | null;
+  shade: string;
+  isCustomShade: boolean;
+  customShade: string;
+  submitting: boolean;
+  colors: ThemeColors;
+  styles: ReturnType<typeof makeStyles>;
+  onShadeSelect: (s: string) => void;
+  onCustomShadeToggle: () => void;
+  onCustomShadeChange: (v: string) => void;
+  onSkip: () => void;
+  onConfirm: () => void;
+  skipTestID: string;
+  confirmTestID: string;
+}
+
+function ShadeStep({
+  shade,
+  isCustomShade,
+  customShade,
+  submitting,
+  colors,
+  styles,
+  onShadeSelect,
+  onCustomShadeToggle,
+  onCustomShadeChange,
+  onSkip,
+  onConfirm,
+  skipTestID,
+  confirmTestID,
+}: ShadeStepProps) {
+  return (
+    <>
+      <Text style={styles.prompt}>
+        Select a shade <Text style={styles.muted}>(optional)</Text>:
+      </Text>
+      <View style={styles.optionWrap}>
+        {VITA_SHADES.map((s) => {
+          const on = !isCustomShade && shade === s;
+          return (
+            <Pressable
+              key={s}
+              style={[styles.optionChip, on && styles.optionChipOn]}
+              onPress={() => onShadeSelect(s)}
+              disabled={submitting}
+              testID={`tooth-shade-${s}`}
+            >
+              <Text style={[styles.optionText, on && styles.optionTextOn]}>{s}</Text>
+            </Pressable>
+          );
+        })}
+        <Pressable
+          style={[styles.optionChip, isCustomShade && styles.optionChipOn]}
+          onPress={onCustomShadeToggle}
+          disabled={submitting}
+          testID="tooth-shade-other"
+        >
+          <Text style={[styles.optionText, isCustomShade && styles.optionTextOn]}>Other</Text>
+        </Pressable>
+      </View>
+      {isCustomShade && (
+        <TextInput
+          style={styles.input}
+          placeholder="Type custom shade…"
+          placeholderTextColor={colors.textTertiary}
+          value={customShade}
+          onChangeText={onCustomShadeChange}
+          autoFocus
+          testID="tooth-shade-custom"
+        />
+      )}
+      <View style={styles.shadeFooter}>
+        <Pressable
+          style={[styles.secondaryBtn, submitting && styles.btnDisabled]}
+          onPress={onSkip}
+          disabled={submitting}
+          testID={skipTestID}
+        >
+          {submitting ? (
+            <ActivityIndicator size="small" color={colors.textSecondary} />
+          ) : (
+            <Text style={styles.secondaryText}>Skip</Text>
+          )}
+        </Pressable>
+        <Pressable
+          style={[
+            styles.primaryBtn,
+            styles.flex1,
+            (submitting || (isCustomShade ? !customShade.trim() : !shade)) && styles.btnDisabled,
+          ]}
+          onPress={onConfirm}
+          disabled={submitting || (isCustomShade ? !customShade.trim() : !shade)}
+          testID={confirmTestID}
+        >
+          {submitting ? (
+            <ActivityIndicator size="small" color={colors.textInverse} />
+          ) : (
+            <Text style={styles.primaryText}>Confirm</Text>
+          )}
+        </Pressable>
+      </View>
+    </>
   );
 }
 
@@ -359,9 +579,14 @@ function makeStyles(c: ThemeColors) {
       backgroundColor: c.surfaceAlt,
       gap: 2,
     },
+    kindCardDanger: {
+      borderColor: `${c.error}55`,
+      backgroundColor: `${c.error}12`,
+    },
     cardPressed: { opacity: 0.6 },
     kindIcon: { fontSize: 22 },
     kindLabel: { ...Typography.bodySemibold, color: c.text },
+    dangerText: { color: c.error },
     kindDesc: { ...Typography.caption, color: c.textTertiary },
     optionWrap: { flexDirection: "row", flexWrap: "wrap", gap: Spacing.sm },
     optionChip: {

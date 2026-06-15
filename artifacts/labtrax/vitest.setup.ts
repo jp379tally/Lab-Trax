@@ -545,6 +545,18 @@ vi.mock("@workspace/api-client-react", () => ({
     isPending: false,
     isError: false,
   }),
+  useDeleteCaseRestoration: () => ({
+    mutateAsync: vi.fn(async () => undefined),
+    mutate: vi.fn(),
+    isPending: false,
+    isError: false,
+  }),
+  useUpdateCaseRestoration: () => ({
+    mutateAsync: vi.fn(async () => undefined),
+    mutate: vi.fn(),
+    isPending: false,
+    isError: false,
+  }),
   UpdateCaseInputStatus: {},
   UpdateCaseInputPriority: {},
   AddCaseNoteInputVisibility: {},
