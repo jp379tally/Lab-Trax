@@ -441,6 +441,14 @@ vi.mock("@/components/ReadOnlyToothChart", () => ({
   ReadOnlyToothChart: nullComponent,
 }));
 
+vi.mock("@/components/ToothChart", () => ({
+  ToothChart: nullComponent,
+}));
+
+vi.mock("@/components/ToothActionSheet", () => ({
+  ToothActionSheet: nullComponent,
+}));
+
 vi.mock("@/lib/audit", () => ({ logAudit: vi.fn(async () => undefined) }));
 
 vi.mock("react-native-webview", () => ({
@@ -527,6 +535,12 @@ vi.mock("@workspace/api-client-react", () => ({
   }),
   useAddCaseNote: () => ({
     mutateAsync: mockAddCaseNoteMutateAsync,
+    mutate: vi.fn(),
+    isPending: false,
+    isError: false,
+  }),
+  useAddCaseRestoration: () => ({
+    mutateAsync: vi.fn(async () => undefined),
     mutate: vi.fn(),
     isPending: false,
     isError: false,

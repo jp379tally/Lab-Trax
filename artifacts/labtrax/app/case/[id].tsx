@@ -23,6 +23,7 @@ import {
   useCaseAttachments,
   useUpdateCase,
   useAddCaseNote,
+  useAddCaseRestoration,
   useDeleteCaseAttachment,
   useGenerateInvoiceForCase,
   useEmailInvoice,
@@ -50,6 +51,8 @@ import { Card } from "@/components/ui/Card";
 import { StatusBadge, type BadgeVariant } from "@/components/ui/StatusBadge";
 import { AuthedImage } from "@/components/ui/AuthedImage";
 import { ReadOnlyToothChart } from "@/components/ReadOnlyToothChart";
+import { ToothChart } from "@/components/ToothChart";
+import { ToothActionSheet, type ToothActionPayload } from "@/components/ToothActionSheet";
 import { deriveRxSummary, buildHighlightedToothSet, formatRxTeethLabel, parseToothField } from "@/lib/rx-summary";
 import { CASE_STATIONS as STATUS_OPTIONS } from "@/lib/case-stations";
 import {
@@ -978,6 +981,9 @@ export default function CaseDetailScreen() {
             restorations={c.restorations ?? []}
             highlighted={highlightedTeeth}
             teethLabel={formatRxTeethLabel(rxSummary)}
+            caseId={c.id}
+            canEdit={canEdit}
+            onSaved={() => caseQuery.refetch()}
             styles={styles}
             colors={colors}
           />
@@ -1861,15 +1867,24 @@ function RestorationsSection({
   restorations,
   highlighted,
   teethLabel,
+  caseId,
+  canEdit,
+  onSaved,
   styles,
   colors,
 }: {
   restorations: DetailRestoration[];
   highlighted: Set<string>;
   teethLabel: string;
+  caseId: string;
+  canEdit: boolean;
+  onSaved: () => void | Promise<unknown>;
   styles: Styles;
   colors: ThemeColors;
 }) {
+  const addRestoration = useAddCaseRestoration();
+  const [activeTooth, setActiveTooth] = useState<string | null>(null);
+  const [sheetError, setSheetError] = useState<string | null>(null);
   const crownTeeth = useMemo(() => {
     const set = new Set<string>();
     for (const r of restorations) {
@@ -1902,22 +1917,94 @@ function RestorationsSection({
 
   const hasTypedTeeth = crownTeeth.size > 0 || ponticTeeth.size > 0 || missingTeeth.size > 0;
 
+  const existingLabelForTooth = useMemo(() => {
+    if (!activeTooth) return null;
+    const labels = restorations
+      .filter((r) => r.toothNumber && parseToothField(r.toothNumber).has(activeTooth))
+      .map((r) => (r.restorationType ? titleCase(r.restorationType) : "a restoration"));
+    return labels.length > 0 ? labels.join(", ") : null;
+  }, [activeTooth, restorations]);
+
+  async function handleToothAction(payload: ToothActionPayload) {
+    setSheetError(null);
+    const data =
+      payload.kind === "add_crown"
+        ? {
+            toothNumber: payload.toothId,
+            restorationType: payload.restorationType,
+            material: payload.material,
+            ...(payload.shade ? { shade: payload.shade } : {}),
+            quantity: 1,
+          }
+        : payload.kind === "add_pontic"
+        ? { toothNumber: payload.toothId, restorationType: "Pontic", quantity: 1 }
+        : { toothNumber: payload.toothId, restorationType: "Missing", quantity: 1, unitPrice: 0 };
+    try {
+      await addRestoration.mutateAsync({ caseId, data });
+      setActiveTooth(null);
+      await onSaved();
+    } catch (e) {
+      setSheetError(errorMessage(e));
+    }
+  }
+
+  const chart = canEdit ? (
+    <ToothChart
+      crownTeeth={hasTypedTeeth ? crownTeeth : undefined}
+      ponticTeeth={hasTypedTeeth ? ponticTeeth : undefined}
+      missingTeeth={hasTypedTeeth ? missingTeeth : undefined}
+      highlighted={highlighted}
+      readOnly={false}
+      onToothClick={(id) => {
+        setSheetError(null);
+        setActiveTooth(id);
+      }}
+      selected={activeTooth ? new Set([activeTooth]) : undefined}
+    />
+  ) : (
+    <ReadOnlyToothChart
+      crownTeeth={hasTypedTeeth ? crownTeeth : undefined}
+      ponticTeeth={hasTypedTeeth ? ponticTeeth : undefined}
+      missingTeeth={hasTypedTeeth ? missingTeeth : undefined}
+      highlighted={highlighted}
+    />
+  );
+
+  const actionSheet = canEdit ? (
+    <ToothActionSheet
+      toothId={activeTooth}
+      existingLabel={existingLabelForTooth}
+      submitting={addRestoration.isPending}
+      error={sheetError}
+      onClose={() => {
+        setActiveTooth(null);
+        setSheetError(null);
+      }}
+      onConfirm={handleToothAction}
+    />
+  ) : null;
+
   if (restorations.length === 0) {
-    return <EmptyState icon="construct-outline" text="No restorations on this case." styles={styles} colors={colors} />;
+    if (!canEdit) {
+      return <EmptyState icon="construct-outline" text="No restorations on this case." styles={styles} colors={colors} />;
+    }
+    return (
+      <View style={styles.sectionGap}>
+        <Card>
+          <Text style={styles.cardHeading}>Teeth</Text>
+          <Text style={styles.teethLabel}>Tap a tooth to add a restoration.</Text>
+          <View style={styles.toothChartWrap}>{chart}</View>
+        </Card>
+        {actionSheet}
+      </View>
+    );
   }
   return (
     <View style={styles.sectionGap}>
       <Card>
         <Text style={styles.cardHeading}>Teeth</Text>
         <Text style={styles.teethLabel}>{teethLabel}</Text>
-        <View style={styles.toothChartWrap}>
-          <ReadOnlyToothChart
-            crownTeeth={hasTypedTeeth ? crownTeeth : undefined}
-            ponticTeeth={hasTypedTeeth ? ponticTeeth : undefined}
-            missingTeeth={hasTypedTeeth ? missingTeeth : undefined}
-            highlighted={highlighted}
-          />
-        </View>
+        <View style={styles.toothChartWrap}>{chart}</View>
       </Card>
 
       {restorations.map((r, i) => (
@@ -1945,6 +2032,7 @@ function RestorationsSection({
           ) : null}
         </Card>
       ))}
+      {actionSheet}
     </View>
   );
 }
