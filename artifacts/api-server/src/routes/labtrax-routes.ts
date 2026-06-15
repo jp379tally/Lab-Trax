@@ -135,7 +135,7 @@ async function fetchUserActiveLabIds(userId: string): Promise<string[]> {
 
 import authRoutes from "./auth";
 import twoFactorRoutes from "./two-factor";
-import organizationRoutes from "./organizations";
+import organizationRoutes, { publicInviteRouter } from "./organizations";
 import caseRoutes from "./cases";
 import doctorRoutes from "./doctors";
 import practiceRoutes from "./practices";
@@ -1213,6 +1213,9 @@ export async function registerRoutes(): Promise<IRouter> {
   router.use("/auth", authRoutes);
   router.use("/auth/2fa", twoFactorRoutes);
   router.use("/users", usersRoutes);
+  // Public invite preview (no auth) must mount BEFORE the auth-gated org
+  // router so an unauthenticated invitee can render the accept/deny page.
+  router.use("/organizations", publicInviteRouter);
   router.use("/organizations", organizationRoutes);
   router.use("/cases", caseRoutes);
   router.use("/doctors", doctorRoutes);

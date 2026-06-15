@@ -198,6 +198,66 @@ export interface CleanupAlertParams {
   };
 }
 
+export interface InviteResultEmailParams {
+  /** Inviting admin's email address. */
+  to: string;
+  inviterName?: string | null;
+  organizationName: string;
+  roleAssigned: string;
+  /** The invitee's own contact email (not PHI). */
+  inviteeEmail: string;
+  outcome: "accepted" | "declined";
+}
+
+/**
+ * Notify the inviting admin that their invitation was accepted or declined.
+ * Contains no PHI — only org name, assigned role, the invitee's own email,
+ * and the outcome.
+ */
+export async function sendInviteResultEmail(
+  params: InviteResultEmailParams
+): Promise<SendMailResult> {
+  const roleLabel = formatRoleLabel(params.roleAssigned);
+  const accepted = params.outcome === "accepted";
+  const greeting = params.inviterName?.trim()
+    ? `Hi ${params.inviterName.trim()},`
+    : "Hi,";
+  const verb = accepted ? "accepted" : "declined";
+  const accentColor = accepted ? "#16A34A" : "#B45309";
+  const settingsUrl = `${getAppBaseUrl()}/desktop/settings`;
+  const inviteeLabel = params.inviteeEmail
+    ? escapeHtml(params.inviteeEmail)
+    : "An invited user";
+
+  const detailHtml = accepted
+    ? `<strong>${inviteeLabel}</strong> accepted your invitation to join <strong>${escapeHtml(params.organizationName)}</strong> as <strong>${escapeHtml(roleLabel)}</strong> and now has access.`
+    : `<strong>${inviteeLabel}</strong> declined your invitation to join <strong>${escapeHtml(params.organizationName)}</strong> as <strong>${escapeHtml(roleLabel)}</strong>. No access was granted.`;
+  const detailText = accepted
+    ? `${params.inviteeEmail || "An invited user"} accepted your invitation to join ${params.organizationName} as ${roleLabel} and now has access.`
+    : `${params.inviteeEmail || "An invited user"} declined your invitation to join ${params.organizationName} as ${roleLabel}. No access was granted.`;
+
+  const html = `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+    <div style="background: ${accentColor}; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+      <h2 style="margin: 0;">LabTrax</h2>
+      <p style="margin: 4px 0 0; opacity: 0.85;">Invitation ${verb}</p>
+    </div>
+    <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
+      <p>${escapeHtml(greeting)}</p>
+      <p>${detailHtml}</p>
+      <p style="color: #666; font-size: 13px;">Manage your team in <a href="${settingsUrl}">LabTrax settings</a>.</p>
+    </div>
+  </div>`;
+
+  const text = `${greeting}\n\n${detailText}\n\nManage your team: ${settingsUrl}\n`;
+
+  return sendMail({
+    to: params.to,
+    subject: `Invitation ${verb}: ${params.organizationName}`,
+    html,
+    text,
+  });
+}
+
 function formatTriggeredByLabel(triggeredBy: string | undefined): string {
   if (!triggeredBy || triggeredBy === "scheduler") return "Scheduled";
   if (triggeredBy.startsWith("admin:")) {

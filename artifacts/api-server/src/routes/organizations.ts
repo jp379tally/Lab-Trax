@@ -54,7 +54,7 @@ import {
 import { hashPassword } from "../lib/crypto";
 import { HttpError, ok } from "../lib/http";
 import { notDeleted, restoreDeleted, softDeleteById } from "../lib/soft-delete";
-import { getAppBaseUrl, sendInviteEmail } from "../lib/mail";
+import { getAppBaseUrl, sendInviteEmail, sendInviteResultEmail } from "../lib/mail";
 import { checkEmailPref } from "../lib/email-prefs";
 import {
   assertCustomAccountNumberAvailable,
@@ -1034,12 +1034,20 @@ router.get(
       return ok(res, []);
     }
 
-    const invites = await db.query.organizationInvites.findMany({
+    const pendingInvites = await db.query.organizationInvites.findMany({
       where: and(
         eq(organizationInvites.email, currentEmail),
         eq(organizationInvites.status, "pending")
       ),
     });
+
+    // Lazily expire any past-TTL invites and drop them from the result so the
+    // invitee never sees (or can act on) an expired invitation.
+    const invites = (
+      await Promise.all(
+        pendingInvites.map((invite) => expireInviteIfNeeded(invite, req))
+      )
+    ).filter((invite) => invite.status === "pending");
 
     const organizationIds = [...new Set(invites.map((invite) => invite.labId))];
     const inviterIds = [...new Set(invites.map((invite) => invite.invitedByUserId))].filter(
@@ -1425,6 +1433,160 @@ const inviteSchema = z.object({
   expiresInDays: z.coerce.number().int().min(1).max(30).default(7),
 });
 
+/**
+ * Lazy expiry: when a pending invite is read after its TTL, persist the
+ * "expired" status (idempotently) and audit the transition once. Returns the
+ * (possibly updated) invite so callers surface the effective status. Any read
+ * path — admin listing, invitee preview, accept/decline — funnels through this
+ * so an expired token can never be acted upon.
+ */
+async function expireInviteIfNeeded<T extends typeof organizationInvites.$inferSelect>(
+  invite: T,
+  req?: any
+): Promise<T> {
+  if (
+    invite.status !== "pending" ||
+    !invite.expiresAt ||
+    new Date() <= invite.expiresAt
+  ) {
+    return invite;
+  }
+  const [updated] = await db
+    .update(organizationInvites)
+    .set({ status: "expired" })
+    .where(
+      and(
+        eq(organizationInvites.id, invite.id),
+        eq(organizationInvites.status, "pending")
+      )
+    )
+    .returning();
+  if (!updated) return invite;
+  await writeAuditLog({
+    req,
+    organizationId: invite.labId,
+    action: "organization_invite_expired",
+    entityType: "organization_invite",
+    entityId: invite.id,
+    beforeJson: invite,
+    afterJson: updated,
+  });
+  return updated as T;
+}
+
+/**
+ * Notify the inviting admin (best-effort) when an invitee accepts or declines.
+ * No PHI: the email contains only the org name, assigned role, the invitee's
+ * own contact email, and the outcome. Honors the inviter's email preferences.
+ */
+async function notifyInviterOfResult(
+  invite: typeof organizationInvites.$inferSelect,
+  outcome: "accepted" | "declined",
+  req: any
+): Promise<void> {
+  try {
+    if (!invite.invitedByUserId) return;
+    const [organization, inviter] = await Promise.all([
+      db.query.organizations.findFirst({
+        where: eq(organizations.id, invite.labId),
+      }),
+      db.query.users.findFirst({
+        where: eq(users.id, invite.invitedByUserId),
+      }),
+    ]);
+    if (!inviter?.email) return;
+    const allowed = await checkEmailPref(inviter.email, "orgInviteNotifications");
+    if (!allowed) {
+      req?.log?.info?.(
+        { inviteId: invite.id },
+        "invite result email skipped — inviter opted out"
+      );
+      return;
+    }
+    const inviterName =
+      [inviter.firstName, inviter.lastName]
+        .filter((part) => !!part && String(part).trim().length > 0)
+        .join(" ")
+        .trim() ||
+      inviter.username ||
+      null;
+    const result = await sendInviteResultEmail({
+      to: inviter.email,
+      inviterName,
+      organizationName:
+        organization?.displayName?.trim() ||
+        organization?.name ||
+        "your organization",
+      roleAssigned: invite.roleToAssign ?? "user",
+      inviteeEmail: invite.email ?? "",
+      outcome,
+    });
+    if (!result.sent) {
+      req?.log?.warn?.(
+        { inviteId: invite.id, reason: result.reason },
+        "invite result email not sent"
+      );
+    }
+  } catch (err: any) {
+    req?.log?.error?.(
+      { err: err?.message || String(err), inviteId: invite.id },
+      "invite result email failed"
+    );
+  }
+}
+
+/**
+ * Public (no-auth) router for invite surfaces that an invitee must reach
+ * **before** authenticating — namely the accept/deny landing page preview.
+ * Mounted at `/organizations` ahead of the auth-gated router so only the
+ * explicitly declared routes here bypass `requireAuth`; everything else falls
+ * through. The token is the only secret: it's high-entropy, one-time-use, and
+ * email-scoped, so a valid token may reveal the org/role to render the page.
+ */
+export const publicInviteRouter = Router();
+
+publicInviteRouter.get(
+  "/invite-preview/:token",
+  asyncHandler(async (req, res) => {
+    let invite = await db.query.organizationInvites.findFirst({
+      where: eq(organizationInvites.token, req.params.token),
+    });
+    if (!invite) throw new HttpError(404, "Invite not found.");
+    invite = await expireInviteIfNeeded(invite, req);
+
+    const [organization, inviter] = await Promise.all([
+      db.query.organizations.findFirst({
+        where: eq(organizations.id, invite.labId),
+      }),
+      invite.invitedByUserId
+        ? db.query.users.findFirst({
+            where: eq(users.id, invite.invitedByUserId),
+          })
+        : Promise.resolve(undefined),
+    ]);
+    const inviterName = inviter
+      ? [inviter.firstName, inviter.lastName]
+          .filter((part) => !!part && String(part).trim().length > 0)
+          .join(" ")
+          .trim() ||
+        inviter.username ||
+        null
+      : null;
+
+    return ok(res, {
+      status: invite.status,
+      email: invite.email,
+      roleToAssign: invite.roleToAssign,
+      organizationName:
+        organization?.displayName?.trim() ||
+        organization?.name ||
+        "this organization",
+      inviterName,
+      expiresAt: invite.expiresAt,
+    });
+  })
+);
+
 router.post(
   "/:organizationId/invites",
   asyncHandler(async (req, res) => {
@@ -1535,9 +1697,12 @@ router.get(
       organizationId,
       ADMIN_ROLES
     );
-    const invites = await db.query.organizationInvites.findMany({
+    const rawInvites = await db.query.organizationInvites.findMany({
       where: eq(organizationInvites.labId, organizationId),
     });
+    const invites = await Promise.all(
+      rawInvites.map((inv) => expireInviteIfNeeded(inv, req))
+    );
     return ok(res, invites.map((inv) => ({ ...inv, organizationId: inv.labId })));
   })
 );
@@ -1694,7 +1859,7 @@ router.post(
 router.post(
   "/invites/:inviteId/decline",
   asyncHandler(async (req, res) => {
-    const invite = await db.query.organizationInvites.findFirst({
+    let invite = await db.query.organizationInvites.findFirst({
       where: and(
         eq(organizationInvites.id, req.params.inviteId),
         eq(organizationInvites.status, "pending")
@@ -1708,6 +1873,11 @@ router.post(
     const currentEmail = (req as any).user.email?.toLowerCase?.().trim?.();
     if (!currentEmail || !invite.email || invite.email.toLowerCase() !== currentEmail) {
       throw new HttpError(403, "This invite does not belong to your account.");
+    }
+
+    invite = await expireInviteIfNeeded(invite, req);
+    if (invite.status === "expired") {
+      throw new HttpError(410, "Invite has expired.");
     }
 
     const [updatedInvite] = await db
@@ -1727,30 +1897,96 @@ router.post(
       afterJson: updatedInvite,
     });
 
+    await notifyInviterOfResult(invite, "declined", req);
+
     return ok(res, updatedInvite);
+  })
+);
+
+router.post(
+  "/invites/:token/decline",
+  asyncHandler(async (req, res) => {
+    let invite = await db.query.organizationInvites.findFirst({
+      where: and(
+        eq(organizationInvites.token, req.params.token),
+        eq(organizationInvites.status, "pending")
+      ),
+    });
+
+    if (!invite) {
+      throw new HttpError(404, "Invite not found or already handled.");
+    }
+
+    const currentEmail = (req as any).user.email?.toLowerCase?.().trim?.();
+    if (!currentEmail || !invite.email || invite.email.toLowerCase() !== currentEmail) {
+      throw new HttpError(403, "This invite does not belong to your account.");
+    }
+
+    invite = await expireInviteIfNeeded(invite, req);
+    if (invite.status === "expired") {
+      throw new HttpError(410, "Invite has expired.");
+    }
+
+    const [updatedInvite] = await db
+      .update(organizationInvites)
+      .set({
+        status: "declined",
+      })
+      .where(eq(organizationInvites.id, invite.id))
+      .returning();
+
+    await writeAuditLog({
+      req,
+      labId: invite.labId,
+      action: "organization_invite_declined",
+      entityType: "organization_invite",
+      entityId: invite.id,
+      afterJson: updatedInvite,
+    });
+
+    await notifyInviterOfResult(invite, "declined", req);
+
+    return ok(res, { ...updatedInvite, organizationId: updatedInvite.labId });
   })
 );
 
 router.post(
   "/invites/:token/accept",
   asyncHandler(async (req, res) => {
-    const invite = await db.query.organizationInvites.findFirst({
+    let invite = await db.query.organizationInvites.findFirst({
       where: and(
         eq(organizationInvites.token, req.params.token),
         eq(organizationInvites.status, "pending")
       ),
     });
     if (!invite) throw new HttpError(404, "Invite not found or already used.");
+    invite = await expireInviteIfNeeded(invite, req);
+    if (invite.status === "expired")
+      throw new HttpError(410, "Invite has expired.");
     if (!invite.roleToAssign || !invite.email)
       throw new HttpError(410, "Invite is invalid or incomplete.");
-    if (invite.expiresAt && new Date() > invite.expiresAt)
-      throw new HttpError(410, "Invite has expired.");
 
     const userId = (req as any).auth.userId;
-    const currentEmail = (req as any).user.email?.toLowerCase?.().trim?.();
+    const caller = (req as any).user;
+    const currentEmail = caller.email?.toLowerCase?.().trim?.();
 
     if (!currentEmail || invite.email.toLowerCase() !== currentEmail) {
       throw new HttpError(403, "This invite does not belong to your account.");
+    }
+
+    // Account epic Phase 4 — only a verified account may accept an invite and
+    // gain access to lab data. Lazy adoption: legacy (non-canonical) accounts
+    // are grandfathered, matching requireVerifiedAccount.
+    if (
+      process.env.DISABLE_VERIFICATION_ENFORCEMENT !== "true" &&
+      isCanonicalAccount(caller) &&
+      !isAccountVerified(caller)
+    ) {
+      throw new HttpError(
+        403,
+        "Please verify your email or phone before accepting this invitation.",
+        { code: "VERIFICATION_REQUIRED" }
+      );
     }
 
     const assignedRole = invite.roleToAssign;
@@ -1797,6 +2033,8 @@ router.post(
       entityType: "organization_invite",
       entityId: invite.id,
     });
+
+    await notifyInviterOfResult(invite, "accepted", req);
 
     return ok(res, { accepted: true });
   })

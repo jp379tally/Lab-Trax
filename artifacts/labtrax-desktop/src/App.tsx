@@ -1,6 +1,6 @@
 import { Switch, Route, Router as WouterRouter, Redirect } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useState } from "react";
 import {
   setBaseUrl as setApiClientBaseUrl,
   setAuthTokenGetter as setApiClientAuthTokenGetter,
@@ -36,6 +36,7 @@ const DownloadPage = lazy(() => import("@/pages/download"));
 const BillingPage = lazy(() => import("@/pages/billing"));
 const CustomerCenterPage = lazy(() => import("@/pages/customer-center"));
 const NotFound = lazy(() => import("@/pages/not-found"));
+const AcceptInvitePage = lazy(() => import("@/pages/accept-invite"));
 
 // Wire the generated react-query hooks (`@workspace/api-client-react`) up
 // to the same bearer-token + base-URL machinery the legacy `apiFetch`
@@ -121,8 +122,50 @@ function AuthRestoreBanner() {
   );
 }
 
+function readInviteToken(): string | null {
+  try {
+    const t = new URLSearchParams(window.location.search).get("invite");
+    return t && t.trim() ? t.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 function Gate() {
   const { status } = useAuth();
+  const [inviteToken, setInviteToken] = useState<string | null>(() =>
+    readInviteToken(),
+  );
+
+  if (inviteToken) {
+    return (
+      <>
+        <OfflineBanner />
+        <Suspense
+          fallback={
+            <div className="min-h-screen flex items-center justify-center text-sm text-muted-foreground">
+              Loading…
+            </div>
+          }
+        >
+          <AcceptInvitePage
+            token={inviteToken}
+            onDone={() => {
+              try {
+                const url = new URL(window.location.href);
+                url.searchParams.delete("invite");
+                window.history.replaceState({}, "", url.toString());
+              } catch {
+                /* ignore */
+              }
+              setInviteToken(null);
+            }}
+          />
+        </Suspense>
+      </>
+    );
+  }
+
   if (status === "loading") {
     return (
       <div className="min-h-screen flex items-center justify-center text-sm text-muted-foreground">

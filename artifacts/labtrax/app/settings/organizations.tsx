@@ -54,6 +54,42 @@ interface MeResponse {
   memberships?: OrgMembership[];
 }
 
+interface PendingInvite {
+  id: string;
+  token: string;
+  email: string | null;
+  roleToAssign: string | null;
+  status: string;
+  organizationId: string;
+  expiresAt: string | null;
+  organization?: {
+    id?: string;
+    name?: string | null;
+    displayName?: string | null;
+  } | null;
+  invitedByUser?: {
+    id?: string;
+    username?: string | null;
+    email?: string | null;
+  } | null;
+}
+
+const PENDING_INVITES_QUERY_KEY = ["pending-invites"] as const;
+
+const INVITE_ROLE_LABELS: Record<string, string> = {
+  owner: "Owner",
+  admin: "Admin",
+  user: "Team member",
+  member: "Team member",
+  billing: "Billing",
+  read_only: "Read-only",
+};
+
+function inviteRoleLabel(role: string | null): string {
+  if (!role) return "Team member";
+  return INVITE_ROLE_LABELS[role] ?? role.replace(/_/g, " ");
+}
+
 const DUP_STEPS = [0.50, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00];
 
 function nearestStep(v: number) {
@@ -762,6 +798,154 @@ function CreateLabSheet({
   );
 }
 
+function PendingInvitesCard({
+  colors,
+  styles,
+}: {
+  colors: ThemeColors;
+  styles: ReturnType<typeof makeStyles>;
+}) {
+  const qc = useQueryClient();
+  const [actingToken, setActingToken] = useState<string | null>(null);
+
+  const invitesQuery = useQuery<PendingInvite[]>({
+    queryKey: PENDING_INVITES_QUERY_KEY,
+    queryFn: async () => {
+      const res = await resilientFetch("/api/organizations/invites/pending-for-me");
+      if (!res.ok) throw new Error(`Failed (${res.status})`);
+      const body = await res.json();
+      const list = Array.isArray(body) ? body : body?.data;
+      return Array.isArray(list) ? (list as PendingInvite[]) : [];
+    },
+    staleTime: 30_000,
+  });
+
+  const respondMutation = useMutation({
+    mutationFn: async ({
+      token,
+      action,
+    }: {
+      token: string;
+      action: "accept" | "decline";
+    }) => {
+      const res = await resilientFetch(
+        `/api/organizations/invites/${encodeURIComponent(token)}/${action}`,
+        { method: "POST" },
+      );
+      if (!res.ok) {
+        let message = `Failed (${res.status})`;
+        try {
+          const body = await res.json();
+          message = body?.message || body?.error || message;
+        } catch {
+          /* ignore */
+        }
+        throw new Error(message);
+      }
+      return action;
+    },
+    onSuccess: (action) => {
+      qc.invalidateQueries({ queryKey: PENDING_INVITES_QUERY_KEY });
+      if (action === "accept") {
+        qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
+      }
+    },
+    onError: (err: unknown) => {
+      Alert.alert(
+        "Couldn't update invitation",
+        err instanceof Error ? err.message : "Please try again.",
+      );
+    },
+    onSettled: () => setActingToken(null),
+  });
+
+  const invites = invitesQuery.data ?? [];
+  if (invitesQuery.isLoading || invites.length === 0) return null;
+
+  function respond(token: string, action: "accept" | "decline") {
+    setActingToken(token);
+    respondMutation.mutate({ token, action });
+  }
+
+  return (
+    <SettingsSection title="Pending invitations">
+      <View style={{ gap: Spacing.md }}>
+        {invites.map((invite) => {
+          const orgName =
+            invite.organization?.displayName ||
+            invite.organization?.name ||
+            "a lab";
+          const inviter =
+            invite.invitedByUser?.username || invite.invitedByUser?.email;
+          const busy = actingToken === invite.token && respondMutation.isPending;
+          return (
+            <View
+              key={invite.id}
+              style={[
+                styles.card,
+                { backgroundColor: colors.surface, borderColor: colors.border },
+              ]}
+            >
+              <View style={styles.cardRow}>
+                <View
+                  style={[styles.iconWrap, { backgroundColor: colors.tint + "22" }]}
+                >
+                  <Ionicons name="mail-open-outline" size={18} color={colors.tint} />
+                </View>
+                <View style={styles.cardInfo}>
+                  <Text style={[styles.orgName, { color: colors.text }]}>
+                    {orgName}
+                  </Text>
+                  <Text style={[styles.orgMeta, { color: colors.textSecondary }]}>
+                    Role: {inviteRoleLabel(invite.roleToAssign)}
+                  </Text>
+                  {inviter && (
+                    <Text style={[styles.orgMeta, { color: colors.textSecondary }]}>
+                      Invited by {inviter}
+                    </Text>
+                  )}
+                </View>
+              </View>
+              <View style={styles.inviteActions}>
+                <Pressable
+                  disabled={busy}
+                  onPress={() => respond(invite.token, "decline")}
+                  style={[
+                    styles.inviteDeclineBtn,
+                    { borderColor: colors.border },
+                    busy && { opacity: 0.5 },
+                  ]}
+                >
+                  <Text
+                    style={[styles.inviteDeclineText, { color: colors.text }]}
+                  >
+                    Decline
+                  </Text>
+                </Pressable>
+                <Pressable
+                  disabled={busy}
+                  onPress={() => respond(invite.token, "accept")}
+                  style={[
+                    styles.inviteAcceptBtn,
+                    { backgroundColor: colors.tint },
+                    busy && { opacity: 0.5 },
+                  ]}
+                >
+                  {busy ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Text style={styles.inviteAcceptText}>Accept</Text>
+                  )}
+                </Pressable>
+              </View>
+            </View>
+          );
+        })}
+      </View>
+    </SettingsSection>
+  );
+}
+
 export default function OrganizationsScreen() {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
@@ -853,6 +1037,8 @@ export default function OrganizationsScreen() {
             No organizations match "{search}".
           </Text>
         )}
+
+        <PendingInvitesCard colors={colors} styles={styles} />
 
         {filtered.map((m) => (
           <OrgCard key={m.id} m={m} colors={colors} styles={styles} />
@@ -1066,5 +1252,27 @@ function makeStyles(c: ThemeColors) {
       paddingVertical: Spacing.xs,
     },
     leaveBtnText: { ...Typography.captionMedium },
+
+    inviteActions: {
+      flexDirection: "row",
+      justifyContent: "flex-end",
+      gap: Spacing.sm,
+    },
+    inviteDeclineBtn: {
+      borderWidth: 1,
+      borderRadius: Radius.sm,
+      paddingHorizontal: Spacing.lg,
+      paddingVertical: Spacing.sm,
+    },
+    inviteDeclineText: { ...Typography.captionMedium },
+    inviteAcceptBtn: {
+      borderRadius: Radius.sm,
+      paddingHorizontal: Spacing.lg,
+      paddingVertical: Spacing.sm,
+      minWidth: 84,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    inviteAcceptText: { ...Typography.captionMedium, color: "#fff" },
   });
 }
