@@ -50,7 +50,7 @@ import { Card } from "@/components/ui/Card";
 import { StatusBadge, type BadgeVariant } from "@/components/ui/StatusBadge";
 import { AuthedImage } from "@/components/ui/AuthedImage";
 import { ReadOnlyToothChart } from "@/components/ReadOnlyToothChart";
-import { deriveRxSummary, buildHighlightedToothSet, formatRxTeethLabel } from "@/lib/rx-summary";
+import { deriveRxSummary, buildHighlightedToothSet, formatRxTeethLabel, parseToothField } from "@/lib/rx-summary";
 import { CASE_STATIONS as STATUS_OPTIONS } from "@/lib/case-stations";
 import {
   attachmentFileUrl,
@@ -1775,6 +1775,38 @@ function RestorationsSection({
   styles: Styles;
   colors: ThemeColors;
 }) {
+  const crownTeeth = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of restorations) {
+      if (!r.toothNumber) continue;
+      if (/pontic/i.test(r.restorationType ?? "") || /^missing$/i.test(r.restorationType ?? "")) continue;
+      for (const id of parseToothField(r.toothNumber)) set.add(id);
+    }
+    return set;
+  }, [restorations]);
+
+  const ponticTeeth = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of restorations) {
+      if (!r.toothNumber) continue;
+      if (!/pontic/i.test(r.restorationType ?? "")) continue;
+      for (const id of parseToothField(r.toothNumber)) set.add(id);
+    }
+    return set;
+  }, [restorations]);
+
+  const missingTeeth = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of restorations) {
+      if (!r.toothNumber) continue;
+      if (!/missing/i.test(r.restorationType ?? "")) continue;
+      for (const id of parseToothField(r.toothNumber)) set.add(id);
+    }
+    return set;
+  }, [restorations]);
+
+  const hasTypedTeeth = crownTeeth.size > 0 || ponticTeeth.size > 0 || missingTeeth.size > 0;
+
   if (restorations.length === 0) {
     return <EmptyState icon="construct-outline" text="No restorations on this case." styles={styles} colors={colors} />;
   }
@@ -1784,7 +1816,12 @@ function RestorationsSection({
         <Text style={styles.cardHeading}>Teeth</Text>
         <Text style={styles.teethLabel}>{teethLabel}</Text>
         <View style={styles.toothChartWrap}>
-          <ReadOnlyToothChart highlighted={highlighted} />
+          <ReadOnlyToothChart
+            crownTeeth={hasTypedTeeth ? crownTeeth : undefined}
+            ponticTeeth={hasTypedTeeth ? ponticTeeth : undefined}
+            missingTeeth={hasTypedTeeth ? missingTeeth : undefined}
+            highlighted={highlighted}
+          />
         </View>
       </Card>
 
