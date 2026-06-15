@@ -2551,6 +2551,88 @@ export const useCreateCase = <
 };
 
 /**
+ * Provider-portal foundation. Returns up to 500 most-recent canonical
+cases whose `providerOrganizationId` belongs to the caller's own
+provider organization(s), expanded across cross-lab linked-doctor
+identities. Strictly provider-scoped: never returns lab-only cases or
+another provider's cases, and is not influenced by any client-supplied
+org id. A caller with no provider organization receives an empty list.
+
+ * @summary List the authenticated provider's assigned cases
+ */
+export const getListProviderCasesUrl = () => {
+  return `/api/cases/provider`;
+};
+
+export const listProviderCases = async (
+  options?: RequestInit,
+): Promise<CaseListResult> => {
+  return customFetch<CaseListResult>(getListProviderCasesUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getListProviderCasesQueryKey = () => {
+  return [`/api/cases/provider`] as const;
+};
+
+export const getListProviderCasesQueryOptions = <
+  TData = Awaited<ReturnType<typeof listProviderCases>>,
+  TError = ErrorType<void>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof listProviderCases>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getListProviderCasesQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof listProviderCases>>
+  > = ({ signal }) => listProviderCases({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof listProviderCases>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ListProviderCasesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listProviderCases>>
+>;
+export type ListProviderCasesQueryError = ErrorType<void>;
+
+/**
+ * @summary List the authenticated provider's assigned cases
+ */
+
+export function useListProviderCases<
+  TData = Awaited<ReturnType<typeof listProviderCases>>,
+  TError = ErrorType<void>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof listProviderCases>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getListProviderCasesQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
  * Updates a list of cases to the same status in one operation. Every
 case ID must belong to a lab the caller is a member of. Returns the
 count of cases actually updated.

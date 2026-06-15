@@ -2730,36 +2730,41 @@ router.get(
     const includeRestorations = include.includes("restorations");
     const callerId = (req as any).auth.userId as string;
 
-    // Resolve the caller's userType so we can decide whether to expand
-    // cross-lab linked-doctor memberships (Task #320). Lab users always see
-    // only their own lab; provider users see every linked-doctor copy.
-    let baseOrgIds: string[];
-    if (organizationId) {
-      baseOrgIds = [organizationId];
-    } else {
-      baseOrgIds = (
-        await db.query.organizationMemberships.findMany({
-          where: and(
-            eq(organizationMemberships.userId, callerId),
-            eq(organizationMemberships.status, "active"),
-            isNull(organizationMemberships.deletedAt)
-          ),
-        })
-      ).map((m: any) => m.labId);
+    // Compute the caller's authoritative set of authorized organization ids:
+    // direct active memberships plus, for provider users, every cross-lab
+    // linked-doctor provider org (Task #320). This is the isolation boundary —
+    // a case is only ever returned when its lab or provider org is in this set.
+    const directMembershipOrgIds = (
+      await db.query.organizationMemberships.findMany({
+        where: and(
+          eq(organizationMemberships.userId, callerId),
+          eq(organizationMemberships.status, "active"),
+          isNull(organizationMemberships.deletedAt)
+        ),
+      })
+    ).map((m: any) => m.labId as string);
+    const authorizedOrgIds = new Set<string>(directMembershipOrgIds);
+    const callerUser = await db.query.users.findFirst({
+      where: eq(users.id, callerId),
+    });
+    if (callerUser?.userType === "provider") {
+      const { providerOrgIds } =
+        await getProviderOrgIdsForUserAndLinks(callerId);
+      for (const id of providerOrgIds) authorizedOrgIds.add(id);
     }
-    let membershipOrgIds = baseOrgIds;
-    if (!organizationId) {
-      const callerUser = await db.query.users.findFirst({
-        where: eq(users.id, callerId),
-      });
-      if (callerUser?.userType === "provider") {
-        const { providerOrgIds } = await getProviderOrgIdsForUserAndLinks(
-          callerId
-        );
-        membershipOrgIds = Array.from(
-          new Set([...baseOrgIds, ...providerOrgIds])
-        );
+
+    // When the caller narrows to a single org it MUST be one they are
+    // authorized for. Without this check any authenticated user could read
+    // another tenant's cases by passing a foreign `organizationId`
+    // (cross-tenant IDOR). Previously the supplied id was trusted verbatim.
+    let membershipOrgIds: string[];
+    if (organizationId) {
+      if (!authorizedOrgIds.has(organizationId)) {
+        throw new HttpError(403, "You do not have access to this organization.");
       }
+      membershipOrgIds = [organizationId];
+    } else {
+      membershipOrgIds = Array.from(authorizedOrgIds);
     }
 
     // Status map: mobile legacy → desktop format.
@@ -2938,6 +2943,87 @@ router.get(
 
     if (!filtered.length) return ok(res, []);
     return ok(res, filtered);
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /cases/provider
+//
+// Provider-portal foundation (Account epic Phase 5). A minimal, strictly
+// provider-scoped case list: returns ONLY canonical cases whose
+// providerOrganizationId belongs to the caller's own provider organization(s),
+// expanded across cross-lab linked-doctor identities (Task #320).
+//
+// Isolation guarantees (enforced server-side, not just hidden in the UI):
+//   * Never returns lab-only cases (cases where the caller is a lab member but
+//     not the assigned provider) — only provider-assigned rows.
+//   * Never returns another provider's cases — scoping is by the caller's
+//     provider org id set, derived from their own memberships + links, and is
+//     not influenced by any client-supplied org id.
+//   * A non-provider (no provider org membership) gets an empty list.
+//
+// NOTE: declared before "/:caseId" so Express does not shadow the literal path.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get(
+  "/provider",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+
+    // The provider org set is derived entirely from the caller's identity and
+    // cannot be widened by request input. Empty set ⇒ empty list (a lab user
+    // or an unaffiliated provider sees nothing here).
+    const { providerOrgIds } =
+      await getProviderOrgIdsForUserAndLinks(callerId);
+    if (providerOrgIds.length === 0) return ok(res, []);
+
+    const rows = await db.query.cases.findMany({
+      where: and(
+        inArray(cases.providerOrganizationId, providerOrgIds),
+        notDeleted(cases)
+      ),
+      orderBy: [desc(cases.createdAt)],
+      limit: 500,
+    });
+
+    const caseIds = rows.map((r: any) => r.id);
+    const restorations = caseIds.length
+      ? await db.query.caseRestorations.findMany({
+          where: inArray(caseRestorations.caseId, caseIds),
+        })
+      : [];
+    const byCase = new Map<string, typeof restorations>();
+    for (const r of restorations) {
+      const list = byCase.get(r.caseId) ?? [];
+      list.push(r);
+      byCase.set(r.caseId, list);
+    }
+
+    const enriched = rows.map((row: any) => {
+      const items = byCase.get(row.id) ?? [];
+      // "missing" markers are clinical annotations, not billable restorations.
+      const billableItems = items.filter(
+        (i: any) => !/^missing$/i.test(i.restorationType ?? "")
+      );
+      const teeth = billableItems.map((i: any) => i.toothNumber).join(", ");
+      const types = Array.from(
+        new Set(
+          billableItems.map((i: any) => i.restorationType).filter(Boolean)
+        )
+      ).join(", ");
+      const materials = Array.from(
+        new Set(billableItems.map((i: any) => i.material).filter(Boolean))
+      ).join(", ");
+      return {
+        ...row,
+        caseNotes: (row as any).rxNotes ?? null,
+        restorationCount: billableItems.length,
+        restorationTypes: types || null,
+        restorationMaterials: materials || null,
+        teeth: teeth || null,
+      };
+    });
+
+    return ok(res, enriched);
   })
 );
 

@@ -18,6 +18,7 @@ import { canReceivePayments } from "@/components/finance/FinanceShell";
 
 const DashboardPage = lazy(() => import("@/pages/dashboard"));
 const CasesPage = lazy(() => import("@/pages/cases"));
+const ProviderCasesPage = lazy(() => import("@/pages/provider-cases"));
 const InvoicesPage = lazy(() => import("@/pages/invoices"));
 const AccountsPage = lazy(() => import("@/pages/accounts"));
 const StatementsPage = lazy(() => import("@/pages/statements"));
@@ -131,8 +132,22 @@ function readInviteToken(): string | null {
   }
 }
 
+function ProviderPortal() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen flex items-center justify-center text-sm text-muted-foreground">
+          Loading…
+        </div>
+      }
+    >
+      <ProviderCasesPage />
+    </Suspense>
+  );
+}
+
 function Gate() {
-  const { status } = useAuth();
+  const { status, user } = useAuth();
   const [inviteToken, setInviteToken] = useState<string | null>(() =>
     readInviteToken(),
   );
@@ -179,6 +194,15 @@ function Gate() {
         <OfflineBanner />
         <AuthRestoreBanner />
         <LoginPage />
+      </>
+    );
+  }
+  if (user?.userType === "provider") {
+    return (
+      <>
+        <OfflineBanner />
+        <AuthRestoreBanner />
+        <ProviderPortal />
       </>
     );
   }

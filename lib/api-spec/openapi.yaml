@@ -546,6 +546,27 @@ paths:
           description: Caller is not a member of the lab
         "503":
           description: Server busy — retry
+  /cases/provider:
+    get:
+      operationId: listProviderCases
+      tags: [cases]
+      summary: List the authenticated provider's assigned cases
+      description: |
+        Provider-portal foundation. Returns up to 500 most-recent canonical
+        cases whose `providerOrganizationId` belongs to the caller's own
+        provider organization(s), expanded across cross-lab linked-doctor
+        identities. Strictly provider-scoped: never returns lab-only cases or
+        another provider's cases, and is not influenced by any client-supplied
+        org id. A caller with no provider organization receives an empty list.
+      responses:
+        "200":
+          description: Provider case list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CaseListResult"
+        "401":
+          description: Not authenticated
   /cases/bulk-status:
     post:
       operationId: bulkChangeCaseStatus
