@@ -1891,7 +1891,18 @@ export function InvoiceEditor({
         <header className="sticky top-0 z-10 bg-card border-b border-border px-6 py-4 flex items-start gap-3">
           <div className="shrink-0">
             <div className="text-xs text-muted-foreground">Invoice</div>
-            <div className="font-mono text-sm font-semibold">{invoice.invoiceNumber}</div>
+            <div className="flex items-center gap-2">
+              <div className="font-mono text-sm font-semibold">{invoice.invoiceNumber}</div>
+              {invoice.frozen && (
+                <span
+                  title="Invoice is frozen — the linked case was deleted"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium rounded-full uppercase tracking-wide bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-400 border border-amber-300/60 dark:border-amber-700/40"
+                >
+                  <Lock size={9} />
+                  Frozen
+                </span>
+              )}
+            </div>
           </div>
           <div className="flex flex-1 min-w-0 flex-wrap items-center justify-end gap-2">
             <button
