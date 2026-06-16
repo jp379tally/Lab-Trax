@@ -39,7 +39,7 @@ import {
   normalizeEmailTarget,
   normalizePhoneTarget,
 } from "../lib/verification";
-import { createRateLimit } from "../lib/rate-limit";
+import { createRateLimit, createSendCodeThrottle } from "../lib/rate-limit";
 import { parseOrganizationIdFromAffiliationKey } from "../lib/case-visibility";
 import { getUncachableStripeClient, isStripeConfigured } from "../lib/stripeClient";
 
@@ -581,10 +581,25 @@ function pruneStaleUploadSessions(): void {
   }
 }
 
-const sendCodeRateLimit = createRateLimit({
-  windowMs: 60_000,
-  max: 5,
-  message: "Too many code requests. Please wait a minute and try again.",
+// Abuse control for verification-code sends: per-identifier + per-IP rolling
+// windows plus a resend cooldown. Throttled requests get a 429 before the
+// handler runs, so no email/SMS is dispatched. See createSendCodeThrottle.
+const SEND_CODE_WINDOW_MS = 10 * 60_000;
+const sendEmailCodeThrottle = createSendCodeThrottle({
+  channel: "email",
+  field: "email",
+  cooldownMs: 30_000,
+  windowMs: SEND_CODE_WINDOW_MS,
+  maxPerIdentifier: 5,
+  maxPerIp: 10,
+});
+const sendPhoneCodeThrottle = createSendCodeThrottle({
+  channel: "sms",
+  field: "phone",
+  cooldownMs: 30_000,
+  windowMs: SEND_CODE_WINDOW_MS,
+  maxPerIdentifier: 5,
+  maxPerIp: 10,
 });
 const passwordResetRateLimit = createRateLimit({
   windowMs: 15 * 60_000,
@@ -3292,7 +3307,7 @@ export async function registerRoutes(): Promise<IRouter> {
     }
   });
 
-  router.post("/send-phone-code", sendCodeRateLimit, optionalAuth, async (req, res) => {
+  router.post("/send-phone-code", sendPhoneCodeThrottle, optionalAuth, async (req, res) => {
     const { phone } = req.body;
     if (!phone || typeof phone !== "string") {
       return res.status(400).json({ error: "Phone number required" });
@@ -3372,7 +3387,7 @@ export async function registerRoutes(): Promise<IRouter> {
     return res.json({ verified: true });
   });
 
-  router.post("/send-email-code", sendCodeRateLimit, optionalAuth, async (req, res) => {
+  router.post("/send-email-code", sendEmailCodeThrottle, optionalAuth, async (req, res) => {
     const { email } = req.body;
     if (!email || typeof email !== "string") return res.status(400).json({ error: "Email required" });
     const code = generateCode();

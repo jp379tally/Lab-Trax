@@ -59,6 +59,19 @@ maybe("Account epic — email/phone verification (db integration)", () => {
   const email = `${username}@test.local`;
   const phone = "5551230099";
 
+  // Extra verification-code targets created by the throttle tests; cleaned up
+  // in afterAll alongside the primary email/phone targets.
+  const throttleTargets: string[] = [];
+
+  async function codeCountForTarget(target: string): Promise<number> {
+    const { db, verificationCodes } = dbMod as any;
+    const rows = await db
+      .select()
+      .from(verificationCodes)
+      .where(eq(verificationCodes.target, target));
+    return rows.length;
+  }
+
   async function makeAccess(uid: string): Promise<string> {
     const { db, userSessions } = dbMod as any;
     const sessionId = rid("sess");
@@ -108,6 +121,7 @@ maybe("Account epic — email/phone verification (db integration)", () => {
         inArray(verificationCodes.target, [
           verifyLib.normalizeEmailTarget(email),
           verifyLib.normalizePhoneTarget(phone),
+          ...throttleTargets,
         ])
       );
     await db.delete(users).where(eq(users.id, userId));
@@ -197,5 +211,86 @@ maybe("Account epic — email/phone verification (db integration)", () => {
     const [u] = await db.select().from(users).where(eq(users.id, userId));
     expect(u.phoneVerifiedAt).toBeTruthy();
     expect(await latestAudit("phone_verified")).toBeTruthy();
+  });
+
+  // ── Abuse control (rate limit / cooldown) ───────────────────────────────
+  // These guard the denial-of-service / cost-abuse surface flagged in the
+  // threat model: an attacker hammering the send endpoints to run up email/SMS
+  // bills and spam a victim. A throttled request must return 429 BEFORE the
+  // handler dispatches a message — proven here by asserting no new
+  // verification_codes row is written for the throttled request.
+
+  it("send-email-code: a rapid resend for the same email is rejected with 429 and dispatches no code", async () => {
+    const target = verifyLib.normalizeEmailTarget(`cooldown_${randomBytes(4).toString("hex")}@test.local`);
+    throttleTargets.push(target);
+    // Unique source IP isolates this test's per-IP bucket from other requests.
+    const ip = "203.0.113.10";
+
+    const first = await request(appMod.default)
+      .post("/api/send-email-code")
+      .set("X-Forwarded-For", ip)
+      .send({ email: target });
+    expect(first.status).toBe(200);
+    expect(await codeCountForTarget(target)).toBe(1);
+
+    const second = await request(appMod.default)
+      .post("/api/send-email-code")
+      .set("X-Forwarded-For", ip)
+      .send({ email: target });
+    expect(second.status).toBe(429);
+    expect(second.headers["retry-after"]).toBeTruthy();
+    // Downstream not invoked: no second code was created for this target.
+    expect(await codeCountForTarget(target)).toBe(1);
+  });
+
+  it("send-phone-code: a rapid resend for the same phone is rejected with 429 and dispatches no code", async () => {
+    const rawPhone = `555${Math.floor(1000000 + Math.random() * 8999999)}`;
+    const target = verifyLib.normalizePhoneTarget(rawPhone);
+    throttleTargets.push(target);
+    const ip = "203.0.113.11";
+
+    const first = await request(appMod.default)
+      .post("/api/send-phone-code")
+      .set("X-Forwarded-For", ip)
+      .send({ phone: rawPhone });
+    expect(first.status).toBe(200);
+    expect(await codeCountForTarget(target)).toBe(1);
+
+    const second = await request(appMod.default)
+      .post("/api/send-phone-code")
+      .set("X-Forwarded-For", ip)
+      .send({ phone: rawPhone });
+    expect(second.status).toBe(429);
+    expect(second.headers["retry-after"]).toBeTruthy();
+    expect(await codeCountForTarget(target)).toBe(1);
+  });
+
+  it("send-email-code: a single source IP is throttled after the per-IP cap, blocking further sends", async () => {
+    // Distinct emails avoid the per-identifier cooldown so the per-IP window is
+    // the gate under test. maxPerIp is 10 → the 11th request from this IP 429s.
+    const ip = "203.0.113.20";
+    const statuses: number[] = [];
+    for (let i = 0; i < 11; i++) {
+      const target = verifyLib.normalizeEmailTarget(
+        `ipcap_${i}_${randomBytes(3).toString("hex")}@test.local`
+      );
+      throttleTargets.push(target);
+      const r = await request(appMod.default)
+        .post("/api/send-email-code")
+        .set("X-Forwarded-For", ip)
+        .send({ email: target });
+      statuses.push(r.status);
+    }
+    // First 10 allowed, 11th throttled.
+    expect(statuses.slice(0, 10).every((s) => s === 200)).toBe(true);
+    expect(statuses[10]).toBe(429);
+  });
+
+  it("send-email-code: a missing email still returns the handler's 400 (throttle does not mask validation)", async () => {
+    const bad = await request(appMod.default)
+      .post("/api/send-email-code")
+      .set("X-Forwarded-For", "203.0.113.30")
+      .send({});
+    expect(bad.status).toBe(400);
   });
 });

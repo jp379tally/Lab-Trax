@@ -353,6 +353,7 @@ Protected sub-behaviors:
 - **Send endpoints validate a target** — `/send-email-code` and `/send-phone-code` return 400 without a target, 200 with one.
 - **Verify is single-use and channel-correct** — `/verify-email-code` and `/verify-phone-code` reject a wrong code (`verified: false`), accept the correct code once (`verified: true`), and a consumed code cannot be replayed.
 - **Verification stamps state + audit** — a successful email/phone verification sets `users.emailVerifiedAt` / `users.phoneVerifiedAt` and writes an `email_verified` / `phone_verified` audit entry.
+- **Send endpoints are abuse-throttled** — `/send-email-code` and `/send-phone-code` enforce a resend cooldown plus per-identifier and per-IP rolling limits (`createSendCodeThrottle` in `lib/rate-limit.ts`). A throttled request returns **429** *before* the handler runs, so no email/SMS is dispatched and no `verification_codes` row is written. This protects the threat-model denial-of-service / cost-abuse surface (an attacker hammering the endpoints to run up email/SMS bills or spam a victim). Guarded by the throttle cases in `account-epic-verification.test.ts`.
 
 ---
 

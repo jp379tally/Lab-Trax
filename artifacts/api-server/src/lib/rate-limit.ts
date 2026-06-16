@@ -7,10 +7,18 @@ interface RateLimitEntry {
 
 const store = new Map<string, RateLimitEntry>();
 
+// Tracks the last time a code was issued for a given (channel, identifier) pair
+// so we can enforce a resend cooldown independently of the rolling window.
+const cooldownStore = new Map<string, number>();
+
 setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of store.entries()) {
     if (entry.resetAt < now) store.delete(key);
+  }
+  for (const [key, last] of cooldownStore.entries()) {
+    // Drop cooldown markers well past any plausible cooldown window.
+    if (now - last > 60 * 60 * 1000) cooldownStore.delete(key);
   }
 }, 5 * 60 * 1000).unref();
 
@@ -57,6 +65,106 @@ export function createRateLimit(opts: {
       return;
     }
 
+    next();
+  };
+}
+
+/**
+ * Abuse control for the public-ish verification-code send endpoints
+ * (`/api/send-email-code`, `/api/send-phone-code`). Each outbound request can
+ * trigger a real email/SMS, so these are a denial-of-service and cost-abuse
+ * surface. This middleware enforces three layers before the handler ever runs
+ * (so no email/SMS is dispatched once throttled):
+ *
+ *  1. **Resend cooldown** — the same identifier (email/phone) cannot request a
+ *     fresh code more than once per `cooldownMs`.
+ *  2. **Per-identifier window** — at most `maxPerIdentifier` codes per identifier
+ *     within `windowMs` (stops hammering a single victim).
+ *  3. **Per-IP window** — at most `maxPerIp` codes per source IP within
+ *     `windowMs` (stops one host spraying many identifiers).
+ *
+ * Unlike {@link createRateLimit}, this is NOT disabled under Vitest: it is keyed
+ * on the (channel, identifier) and (channel, ip) pair, so tests using distinct
+ * identifiers / `X-Forwarded-For` values exercise it deterministically without
+ * cross-test bleed. Requests missing an identifier fall through so the handler
+ * can return its own 400.
+ */
+export function createSendCodeThrottle(opts: {
+  channel: string;
+  field: "email" | "phone";
+  cooldownMs: number;
+  windowMs: number;
+  maxPerIdentifier: number;
+  maxPerIp: number;
+}) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const raw = (req.body as Record<string, unknown> | undefined)?.[opts.field];
+    if (typeof raw !== "string" || !raw.trim()) {
+      next();
+      return;
+    }
+
+    const identifier =
+      opts.field === "email" ? raw.trim().toLowerCase() : raw.replace(/\D/g, "");
+    if (!identifier) {
+      next();
+      return;
+    }
+
+    const ip = getClientIp(req);
+    const now = Date.now();
+
+    const reject = (retryAfterMs: number, message: string): void => {
+      const retryAfter = Math.max(1, Math.ceil(retryAfterMs / 1000));
+      res.setHeader("Retry-After", String(retryAfter));
+      res.status(429).json({ error: message });
+    };
+
+    // 1. Resend cooldown (per identifier).
+    const cooldownKey = `${opts.channel}:${identifier}`;
+    const last = cooldownStore.get(cooldownKey);
+    if (last !== undefined && now - last < opts.cooldownMs) {
+      reject(
+        opts.cooldownMs - (now - last),
+        "Please wait before requesting another verification code."
+      );
+      return;
+    }
+
+    // 2. Per-identifier rolling window.
+    const idKey = `sendcode:id:${opts.channel}:${identifier}`;
+    let idEntry = store.get(idKey);
+    if (!idEntry || idEntry.resetAt < now) {
+      idEntry = { count: 0, resetAt: now + opts.windowMs };
+      store.set(idKey, idEntry);
+    }
+    idEntry.count++;
+    if (idEntry.count > opts.maxPerIdentifier) {
+      reject(
+        idEntry.resetAt - now,
+        "Too many verification codes requested for this contact. Please try again later."
+      );
+      return;
+    }
+
+    // 3. Per-IP rolling window.
+    const ipKey = `sendcode:ip:${opts.channel}:${ip}`;
+    let ipEntry = store.get(ipKey);
+    if (!ipEntry || ipEntry.resetAt < now) {
+      ipEntry = { count: 0, resetAt: now + opts.windowMs };
+      store.set(ipKey, ipEntry);
+    }
+    ipEntry.count++;
+    if (ipEntry.count > opts.maxPerIp) {
+      reject(
+        ipEntry.resetAt - now,
+        "Too many verification code requests. Please try again later."
+      );
+      return;
+    }
+
+    // Allowed — record the issue time for the cooldown gate.
+    cooldownStore.set(cooldownKey, now);
     next();
   };
 }
