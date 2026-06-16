@@ -578,6 +578,10 @@ export function DashboardDropZone() {
   // an AI-read Rx. Lab defaults to the only lab the user belongs to.
   const [rxLabOrgId, setRxLabOrgId] = useState<string>("");
   const [rxProviderOrgId, setRxProviderOrgId] = useState<string>("");
+  const [rxPracticeError, setRxPracticeError] = useState(false);
+  useEffect(() => {
+    if (phase.kind !== "rxConfirm") setRxPracticeError(false);
+  }, [phase.kind]);
 
   // Auto-pick the lab as soon as the membership list loads. This
   // matters for single-lab users (the lab <select> is hidden in that
@@ -968,6 +972,7 @@ export function DashboardDropZone() {
     setQueueProgress(null);
     setZipSource(null);
     setPhase({ kind: "idle" });
+    setRxPracticeError(false);
     clearManualRemake();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clearIdleResetTimer]);
@@ -1159,10 +1164,7 @@ export function DashboardDropZone() {
       return;
     }
     if (!rxProviderOrgId) {
-      setPhase({
-        kind: "error",
-        message: "Pick a practice (provider) for this case.",
-      });
+      setRxPracticeError(true);
       return;
     }
 
@@ -1691,7 +1693,7 @@ export function DashboardDropZone() {
             </span>
             <div className="flex items-stretch gap-2">
               <select
-                className={inputCls + " flex-1 min-w-0"}
+                className={inputCls + " flex-1 min-w-0" + (rxPracticeError ? " border-destructive ring-1 ring-destructive" : "")}
                 value={rxProviderOrgId}
                 onChange={(e) => {
                   if (e.target.value === "__add_new__") {
@@ -1700,6 +1702,7 @@ export function DashboardDropZone() {
                   }
                   const newOrgId = e.target.value;
                   setRxProviderOrgId(newOrgId);
+                  setRxPracticeError(false);
                   // Dismiss any existing alias prompt whenever the selection changes.
                   setShowAliasSavePrompt(false);
                   // Show the alias save prompt when:
@@ -1745,6 +1748,9 @@ export function DashboardDropZone() {
                   ))}
               </select>
             </div>
+            {rxPracticeError && (
+              <p className="text-xs text-destructive">Practice is required.</p>
+            )}
             {rxProviderSearch && !rxProviderOrgId && (
               <span className="block text-[10px] text-muted-foreground">
                 No exact match for "{rxProviderSearch}". Pick the closest
