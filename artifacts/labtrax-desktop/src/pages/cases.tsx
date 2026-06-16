@@ -2677,6 +2677,27 @@ export function CaseDrawer({
     if (!pid) return null;
     return drawerProviderOrgs.find((o) => o.id === pid) ?? null;
   }, [drawerProviderOrgs, data?.providerOrganizationId, labCase.providerOrganizationId]);
+
+  // Doctor-name suggestions for the lab-slip picker. The cases LIST view passes
+  // a precomputed `doctorNames` list, but other entry points (e.g. the
+  // dashboard) render this drawer without one — leaving the picker showing
+  // "No doctors found." Self-fetch the lab's cases and derive distinct doctor
+  // names as a fallback, mirroring the invoice editor. Only runs when the
+  // parent didn't supply names, so the cases page pays no extra request.
+  const selfDoctorCasesQuery = useQuery({
+    queryKey: ["cases"],
+    queryFn: () => apiFetch<LabCase[]>("/cases"),
+    staleTime: 60_000,
+    enabled: doctorNames.length === 0,
+  });
+  const effectiveDoctorNames = useMemo(() => {
+    if (doctorNames.length > 0) return doctorNames;
+    const names = new Set<string>();
+    for (const c of selfDoctorCasesQuery.data ?? []) {
+      if (c.doctorName?.trim()) names.add(c.doctorName.trim());
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [doctorNames, selfDoctorCasesQuery.data]);
   const [aiPracticePickerOpen, setAiPracticePickerOpen] = useState(false);
   const [aiPracticeError, setAiPracticeError] = useState<string | null>(null);
   const changeAiPracticeMutation = useMutation({
@@ -4380,7 +4401,7 @@ export function CaseDrawer({
                             setEditForm((f) => ({ ...f, doctorName: name }));
                             setEditError(null);
                           }}
-                          doctorNames={doctorNames}
+                          doctorNames={effectiveDoctorNames}
                           placeholder="Select doctor…"
                         />
                       </div>
