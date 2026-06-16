@@ -20,6 +20,44 @@ import { resilientFetch } from "@/lib/query-client";
 
 type Phase = "loading" | "status" | "setup" | "confirm" | "backup-codes" | "disable" | "regen-confirm" | "regen-codes";
 
+interface TrustedDevice {
+  id: string;
+  deviceName: string | null;
+  userAgent: string | null;
+  ipAddress: string | null;
+  createdAt: string;
+  lastUsedAt: string | null;
+  expiresAt: string;
+}
+
+function describeDevice(d: TrustedDevice): string {
+  if (d.deviceName) return d.deviceName;
+  const ua = d.userAgent ?? "";
+  if (/iphone|ipad|ios/i.test(ua)) return "iPhone / iPad";
+  if (/android/i.test(ua)) return "Android device";
+  if (/mobile/i.test(ua)) return "Mobile app";
+  if (/electron/i.test(ua)) return "Desktop app";
+  return "Desktop / Browser";
+}
+
+function formatRelativeDate(iso: string | null): string {
+  if (!iso) return "—";
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return "—";
+  const diff = t - Date.now();
+  const future = diff > 0;
+  const absMs = Math.abs(diff);
+  const min = Math.round(absMs / 60000);
+  const suffix = (label: string) => (future ? `in ${label}` : `${label} ago`);
+  if (min < 1) return future ? "in a moment" : "just now";
+  if (min < 60) return suffix(`${min} min`);
+  const hr = Math.round(min / 60);
+  if (hr < 24) return suffix(`${hr} hr`);
+  const day = Math.round(hr / 24);
+  if (day < 30) return suffix(`${day} day${day === 1 ? "" : "s"}`);
+  return new Date(iso).toLocaleDateString();
+}
+
 async function apiCall(path: string, method = "GET", body?: unknown) {
   const res = await resilientFetch(path, {
     method,
@@ -49,15 +87,57 @@ export default function TwoFactorScreen() {
   const [regenCode, setRegenCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [devices, setDevices] = useState<TrustedDevice[]>([]);
+  const [devicesError, setDevicesError] = useState(false);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
+
+  async function fetchDevices() {
+    try {
+      const r = (await apiCall("/api/auth/2fa/trusted-devices")) as {
+        devices?: TrustedDevice[];
+      };
+      setDevices(r?.devices ?? []);
+      setDevicesError(false);
+    } catch {
+      setDevicesError(true);
+    }
+  }
 
   useEffect(() => {
     apiCall("/api/auth/2fa/status")
       .then((r) => {
-        setEnabled((r as any)?.twoFactorEnabled ?? false);
+        const isEnabled = (r as { twoFactorEnabled?: boolean })?.twoFactorEnabled ?? false;
+        setEnabled(isEnabled);
         setPhase("status");
+        if (isEnabled) fetchDevices();
       })
       .catch(() => setPhase("status"));
   }, []);
+
+  function confirmRevoke(d: TrustedDevice) {
+    Alert.alert(
+      "Sign out this device?",
+      `${describeDevice(d)} will need to pass the 2FA challenge the next time it signs in.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Sign out",
+          style: "destructive",
+          onPress: async () => {
+            setRevokingId(d.id);
+            try {
+              await apiCall(`/api/auth/2fa/trusted-devices/${d.id}`, "DELETE");
+              setDevices((prev) => prev.filter((x) => x.id !== d.id));
+            } catch (e: any) {
+              Alert.alert("Error", e?.message || "Could not sign out that device.");
+            } finally {
+              setRevokingId(null);
+            }
+          },
+        },
+      ],
+    );
+  }
 
   async function startSetup() {
     setError(null); setBusy(true);
@@ -300,6 +380,56 @@ export default function TwoFactorScreen() {
             </View>
           </SettingsSection>
         )}
+
+        {enabled && (
+          <SettingsSection title="Remembered devices">
+            <View style={styles.devicesIntro}>
+              <Text style={[styles.statusDesc, { color: colors.textSecondary }]}>
+                These devices can skip the 2FA challenge until they expire. Sign out any you don't recognise.
+              </Text>
+            </View>
+            {devicesError ? (
+              <View style={styles.deviceEmpty}>
+                <Text style={[styles.statusDesc, { color: colors.error }]}>
+                  Couldn't load your remembered devices. Pull to refresh or try again later.
+                </Text>
+              </View>
+            ) : devices.length === 0 ? (
+              <View style={styles.deviceEmpty}>
+                <Text style={[styles.statusDesc, { color: colors.textSecondary }]}>
+                  No remembered devices. Devices appear here when you choose "remember this device" during sign-in.
+                </Text>
+              </View>
+            ) : (
+              devices.map((d) => (
+                <View key={d.id} style={[styles.deviceRow, { borderTopColor: colors.border }]}>
+                  <View style={styles.deviceInfo}>
+                    <Text style={[styles.statusTitle, { color: colors.text }]} numberOfLines={1}>
+                      {describeDevice(d)}
+                    </Text>
+                    <Text style={[styles.deviceMeta, { color: colors.textSecondary }]}>
+                      {d.ipAddress || "Unknown IP"}
+                    </Text>
+                    <Text style={[styles.deviceMeta, { color: colors.textTertiary }]}>
+                      {`Last used ${formatRelativeDate(d.lastUsedAt ?? d.createdAt)} · expires ${formatRelativeDate(d.expiresAt)}`}
+                    </Text>
+                  </View>
+                  <Pressable
+                    style={[styles.smallBtn, { borderColor: colors.error }, revokingId === d.id && { opacity: 0.5 }]}
+                    onPress={() => confirmRevoke(d)}
+                    disabled={revokingId === d.id}
+                  >
+                    {revokingId === d.id ? (
+                      <ActivityIndicator size="small" color={colors.error} />
+                    ) : (
+                      <Text style={[styles.smallBtnText, { color: colors.error }]}>Sign out</Text>
+                    )}
+                  </Pressable>
+                </View>
+              ))
+            )}
+          </SettingsSection>
+        )}
       </ScrollView>
     </ScreenShell>
   );
@@ -362,5 +492,16 @@ function makeStyles(c: ThemeColors) {
     smallBtnText: { ...Typography.captionMedium },
     btn: { borderRadius: Radius.md, padding: Spacing.md, alignItems: "center" },
     btnText: { ...Typography.bodySemibold, color: "#fff" },
+    devicesIntro: { paddingHorizontal: Spacing.lg, paddingTop: Spacing.md, paddingBottom: Spacing.xs },
+    deviceEmpty: { paddingHorizontal: Spacing.lg, paddingBottom: Spacing.lg },
+    deviceRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.md,
+      padding: Spacing.lg,
+      borderTopWidth: StyleSheet.hairlineWidth,
+    },
+    deviceInfo: { flex: 1, gap: 2 },
+    deviceMeta: { ...Typography.caption },
   });
 }

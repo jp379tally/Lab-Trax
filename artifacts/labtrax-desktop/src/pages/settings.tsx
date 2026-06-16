@@ -1021,8 +1021,8 @@ function TwoFactorPanel() {
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    apiFetch<{ data: { twoFactorEnabled: boolean } }>("/auth/2fa/status")
-      .then((r) => { setEnabled(r.data.twoFactorEnabled); setLoading(false); })
+    apiFetch<{ twoFactorEnabled: boolean }>("/auth/2fa/status")
+      .then((r) => { setEnabled(r.twoFactorEnabled); setLoading(false); })
       .catch(() => { setLoading(false); });
   }, []);
 
@@ -1030,9 +1030,9 @@ function TwoFactorPanel() {
     setError(null);
     setBusy(true);
     try {
-      const r = await apiFetch<{ data: { qrCodeDataUrl: string; secret: string } }>("/auth/2fa/setup", { method: "POST" });
-      setQrCodeDataUrl(r.data.qrCodeDataUrl);
-      setSecretKey(r.data.secret);
+      const r = await apiFetch<{ qrCodeDataUrl: string; secret: string }>("/auth/2fa/setup", { method: "POST" });
+      setQrCodeDataUrl(r.qrCodeDataUrl);
+      setSecretKey(r.secret);
       setVerifyCode("");
       setPhase("setup");
     } catch (e: any) { setError(e.message || "Setup failed."); }
@@ -1044,11 +1044,11 @@ function TwoFactorPanel() {
     setError(null);
     setBusy(true);
     try {
-      const r = await apiFetch<{ data: { success: boolean; backupCodes: string[] } }>("/auth/2fa/confirm", {
+      const r = await apiFetch<{ success: boolean; backupCodes: string[] }>("/auth/2fa/confirm", {
         method: "POST",
         body: JSON.stringify({ code: verifyCode.trim() }),
       });
-      setBackupCodes(r.data.backupCodes);
+      setBackupCodes(r.backupCodes);
       setEnabled(true);
       setPhase("backup-codes");
     } catch (e: any) { setError(e.message || "Verification failed."); }
@@ -1075,11 +1075,11 @@ function TwoFactorPanel() {
     setError(null);
     setBusy(true);
     try {
-      const r = await apiFetch<{ data: { backupCodes: string[] } }>("/auth/2fa/backup-codes", {
+      const r = await apiFetch<{ backupCodes: string[] }>("/auth/2fa/backup-codes", {
         method: "POST",
         body: JSON.stringify({ code: regenCode.trim() }),
       });
-      setBackupCodes(r.data.backupCodes);
+      setBackupCodes(r.backupCodes);
       setRegenCode("");
       setPhase("regen-codes");
     } catch (e: any) { setError(e.message || "Could not regenerate backup codes."); }
