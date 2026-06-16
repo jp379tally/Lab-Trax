@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLocation } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Building2, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, FileDown, Github, History, KeyRound, LayoutList, Loader2, LogOut, Monitor, Package, Pencil, Play, RotateCcw, RefreshCcw, Search, ShieldCheck, Smartphone, Sparkles, Trash2, Upload, User as UserIcon, UserMinus, UserPlus, Wrench, X } from "lucide-react";
 import {
@@ -53,9 +54,9 @@ interface AdminUser {
   lastLoginAt?: string | null;
 }
 
-type TabKey = "profile" | "password" | "two-factor" | "sessions" | "organizations" | "users" | "backup" | "desktop" | "mobile" | "itero" | "platform-admin" | "subscriptions" | "notifications" | "templates" | "statement-layout" | "correspondence-layout" | "invoice-layout";
+type TabKey = "profile" | "password" | "two-factor" | "sessions" | "organizations" | "users" | "backup" | "desktop" | "mobile" | "itero" | "platform-admin" | "subscriptions" | "notifications" | "templates" | "statement-layout" | "correspondence-layout" | "invoice-layout" | "deleted-cases";
 
-const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "two-factor", "sessions", "organizations", "users", "backup", "desktop", "mobile", "itero", "platform-admin", "subscriptions", "notifications", "templates", "statement-layout", "correspondence-layout", "invoice-layout"];
+const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "two-factor", "sessions", "organizations", "users", "backup", "desktop", "mobile", "itero", "platform-admin", "subscriptions", "notifications", "templates", "statement-layout", "correspondence-layout", "invoice-layout", "deleted-cases"];
 
 function readInitialTab(): TabKey {
   if (typeof window === "undefined") return "profile";
@@ -82,6 +83,7 @@ export default function SettingsPage() {
     { key: "organizations", label: "Organizations", icon: Building2, show: true },
     { key: "users", label: "Users", icon: ShieldCheck, show: isAdmin },
     { key: "backup", label: "Backup", icon: ShieldCheck, show: isAdmin },
+    { key: "deleted-cases", label: "Deleted Cases", icon: Trash2, show: isAdmin },
     { key: "desktop", label: "Desktop app", icon: Download, show: true },
     { key: "templates", label: "Templates", icon: LayoutList, show: isAdmin },
     { key: "invoice-layout", label: "Invoice layout", icon: LayoutList, show: isAdmin, parentKey: "templates" },
@@ -190,6 +192,7 @@ export default function SettingsPage() {
           {tab === "platform-admin" && isAdmin && <PlatformAdminPanel />}
           {tab === "subscriptions" && isAdmin && <SubscriptionsPanel />}
           {tab === "notifications" && <NotificationsPanel isAdmin={isAdmin} />}
+          {tab === "deleted-cases" && isAdmin && <DeletedCasesPanel />}
         </div>
       </div>
     </div>
@@ -8713,6 +8716,181 @@ function NotificationsPanel({ isAdmin }: { isAdmin: boolean }) {
           ))}
         </div>
       </div>
+    </PanelShell>
+  );
+}
+
+interface DeletedCase {
+  id: string;
+  caseNumber: string;
+  patientFirstName: string;
+  patientLastName: string;
+  doctorName: string;
+  labOrganizationId: string;
+  deletedAt: string;
+  deletedByUserId?: string | null;
+  createdAt: string;
+}
+
+function DeletedCasesPanel() {
+  const qc = useQueryClient();
+  const [, setLocation] = useLocation();
+
+  const meQuery = useQuery<MeResponse>({
+    queryKey: ["auth", "me"],
+    queryFn: () => apiFetch("/auth/me"),
+    staleTime: 60_000,
+  });
+
+  const adminLabs = useMemo(() => {
+    return (meQuery.data?.memberships ?? []).filter(
+      (m) =>
+        m.organization?.type === "lab" &&
+        m.status === "active" &&
+        (m.role === "admin" || m.role === "owner"),
+    );
+  }, [meQuery.data]);
+
+  const [selectedLabId, setSelectedLabId] = useState<string | null>(null);
+  const effectiveLabId = selectedLabId ?? adminLabs[0]?.organizationId ?? null;
+
+  const deletedQuery = useQuery<{ cases: DeletedCase[] }>({
+    enabled: !!effectiveLabId,
+    queryKey: ["cases", "deleted", effectiveLabId],
+    queryFn: () =>
+      apiFetch(`/cases/deleted?labOrganizationId=${encodeURIComponent(effectiveLabId!)}`),
+    staleTime: 30_000,
+  });
+
+  const [restoreError, setRestoreError] = useState<string | null>(null);
+  const [restoringId, setRestoringId] = useState<string | null>(null);
+
+  async function handleRestore(caseId: string) {
+    setRestoringId(caseId);
+    setRestoreError(null);
+    try {
+      await apiFetch(`/cases/${caseId}/restore`, { method: "POST" });
+      qc.invalidateQueries({ queryKey: ["cases"] });
+      qc.invalidateQueries({ queryKey: ["cases", "deleted", effectiveLabId] });
+      qc.invalidateQueries({ queryKey: ["invoices"] });
+      setLocation(`/cases?caseId=${encodeURIComponent(caseId)}`);
+    } catch (err: unknown) {
+      setRestoreError(
+        err instanceof Error ? err.message : "Could not restore case.",
+      );
+    } finally {
+      setRestoringId(null);
+    }
+  }
+
+  const deletedList = useMemo(() => {
+    const raw = deletedQuery.data;
+    if (!raw) return [];
+    if (Array.isArray(raw)) return raw as DeletedCase[];
+    return (raw as { cases?: DeletedCase[] }).cases ?? [];
+  }, [deletedQuery.data]);
+
+  return (
+    <PanelShell
+      title="Deleted Cases"
+      subtitle="Soft-deleted cases for this lab. Restoring a case will also unfreeze any linked invoices."
+    >
+      {adminLabs.length > 1 && (
+        <div className="mb-4">
+          <select
+            value={effectiveLabId ?? ""}
+            onChange={(e) => setSelectedLabId(e.target.value || null)}
+            className="h-9 px-3 rounded-md bg-secondary text-sm border border-border focus:outline-none"
+          >
+            {adminLabs.map((m) => (
+              <option key={m.organizationId} value={m.organizationId}>
+                {m.organization?.name ?? m.organizationId}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {restoreError && (
+        <div className="text-xs text-destructive bg-destructive/10 border border-destructive/30 rounded-md px-3 py-2 mb-3">
+          {restoreError}
+        </div>
+      )}
+
+      {deletedQuery.isLoading && (
+        <div className="flex items-center gap-2 text-muted-foreground text-sm py-8 justify-center">
+          <Loader2 size={14} className="animate-spin" />
+          Loading…
+        </div>
+      )}
+
+      {deletedQuery.isError && (
+        <div className="text-sm text-destructive py-6 text-center">
+          Failed to load deleted cases.
+        </div>
+      )}
+
+      {!deletedQuery.isLoading && !deletedQuery.isError && (
+        <>
+          {deletedList.length === 0 ? (
+            <div className="text-sm text-muted-foreground text-center py-10">
+              No deleted cases.
+            </div>
+          ) : (
+            <div className="border border-border rounded-md overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
+                    <th className="text-left font-medium px-3 py-2">Case #</th>
+                    <th className="text-left font-medium py-2">Patient</th>
+                    <th className="text-left font-medium py-2">Doctor</th>
+                    <th className="text-left font-medium py-2">Deleted</th>
+                    <th className="px-3 py-2"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {deletedList.map((c, i) => (
+                    <tr
+                      key={c.id}
+                      className={i % 2 === 0 ? "" : "bg-secondary/20"}
+                    >
+                      <td className="px-3 py-2.5 font-medium text-foreground whitespace-nowrap">
+                        {c.caseNumber}
+                      </td>
+                      <td className="py-2.5 text-foreground pr-4">
+                        {c.patientFirstName} {c.patientLastName}
+                      </td>
+                      <td className="py-2.5 text-muted-foreground pr-4">
+                        {c.doctorName}
+                      </td>
+                      <td className="py-2.5 text-muted-foreground text-xs whitespace-nowrap pr-4">
+                        {c.deletedAt
+                          ? new Date(c.deletedAt).toLocaleDateString()
+                          : "—"}
+                      </td>
+                      <td className="px-3 py-2.5 text-right">
+                        <button
+                          type="button"
+                          disabled={restoringId === c.id}
+                          onClick={() => handleRestore(c.id)}
+                          className="inline-flex items-center gap-1.5 h-7 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-60"
+                        >
+                          {restoringId === c.id ? (
+                            <Loader2 size={11} className="animate-spin" />
+                          ) : (
+                            <RotateCcw size={11} />
+                          )}
+                          Restore
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
     </PanelShell>
   );
 }

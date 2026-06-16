@@ -1271,6 +1271,52 @@ paths:
           description: Case not found
         "409":
           description: Case is not currently deleted
+  /cases/deleted:
+    get:
+      operationId: listDeletedCases
+      tags: [cases]
+      summary: List soft-deleted cases for a lab (admin only)
+      description: |
+        Returns all soft-deleted canonical cases for the given lab, ordered by
+        `deletedAt` descending. The caller must be an admin of the lab.
+      parameters:
+        - in: query
+          name: labOrganizationId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Deleted cases list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      cases:
+                        type: array
+                        items:
+                          type: object
+                          required: [id, caseNumber, patientFirstName, patientLastName, doctorName, labOrganizationId, deletedAt, createdAt]
+                          properties:
+                            id: { type: string }
+                            caseNumber: { type: string }
+                            patientFirstName: { type: string }
+                            patientLastName: { type: string }
+                            doctorName: { type: string }
+                            labOrganizationId: { type: string }
+                            deletedAt: { type: string, format: date-time }
+                            deletedByUserId: { type: string, nullable: true }
+                            createdAt: { type: string, format: date-time }
+        "400":
+          description: labOrganizationId is required
+        "401":
+          description: Not authenticated
+        "403":
+          description: Caller is not an admin of the lab
   /cases/{caseId}/ai-review:
     patch:
       operationId: acknowledgeAiReview

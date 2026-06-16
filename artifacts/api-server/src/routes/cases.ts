@@ -2208,6 +2208,43 @@ router.post(
   })
 );
 
+// ─── List deleted cases (admin only) ────────────────────────────────────────
+
+router.get(
+  "/deleted",
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId as string;
+    const labOrganizationId = String(req.query.labOrganizationId ?? "").trim();
+    if (!labOrganizationId) {
+      throw new HttpError(400, "labOrganizationId is required.");
+    }
+    await requireAnyRole(userId, labOrganizationId, ADMIN_ROLES);
+
+    const deleted = await db
+      .select({
+        id: cases.id,
+        caseNumber: cases.caseNumber,
+        patientFirstName: cases.patientFirstName,
+        patientLastName: cases.patientLastName,
+        doctorName: cases.doctorName,
+        labOrganizationId: cases.labOrganizationId,
+        deletedAt: cases.deletedAt,
+        deletedByUserId: cases.deletedByUserId,
+        createdAt: cases.createdAt,
+      })
+      .from(cases)
+      .where(
+        and(
+          eq(cases.labOrganizationId, labOrganizationId),
+          isNotNull(cases.deletedAt),
+        ),
+      )
+      .orderBy(desc(cases.deletedAt));
+
+    return ok(res, { cases: deleted });
+  })
+);
+
 // ─── Bulk delete (admin only, soft-delete) ────────────────────────────────────
 
 const bulkDeleteSchema = z.object({

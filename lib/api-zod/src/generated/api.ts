@@ -1882,6 +1882,67 @@ export const UpdateCaseResponse = zod.object({
 });
 
 /**
+ * Restores a soft-deleted case by clearing its `deleted_at` /
+`deleted_by_user_id` columns and unfreezes every linked non-deleted
+invoice that was frozen when the case was deleted (clears `frozen`,
+`caseDeletedAt`, `caseDeletedByUserId`, `caseDeletedNote`, and
+restores `balanceDue` to the invoice `total`). An audit log entry is
+written for each unfrozen invoice. The caller must be an admin of the
+case's lab.
+
+ * @summary Restore a soft-deleted case and unfreeze linked invoices
+ */
+export const RestoreCaseParams = zod.object({
+  caseId: zod.coerce.string(),
+});
+
+export const RestoreCaseResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      restored: zod.boolean().optional(),
+      unfrozenInvoices: zod
+        .number()
+        .optional()
+        .describe("Number of invoices that were unfrozen"),
+    })
+    .optional(),
+});
+
+/**
+ * Returns all soft-deleted canonical cases for the given lab, ordered by
+`deletedAt` descending. The caller must be an admin of the lab.
+
+ * @summary List soft-deleted cases for a lab (admin only)
+ */
+export const ListDeletedCasesQueryParams = zod.object({
+  labOrganizationId: zod.coerce.string(),
+});
+
+export const ListDeletedCasesResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      cases: zod
+        .array(
+          zod.object({
+            id: zod.string(),
+            caseNumber: zod.string(),
+            patientFirstName: zod.string(),
+            patientLastName: zod.string(),
+            doctorName: zod.string(),
+            labOrganizationId: zod.string(),
+            deletedAt: zod.coerce.date(),
+            deletedByUserId: zod.string().nullish(),
+            createdAt: zod.coerce.date(),
+          }),
+        )
+        .optional(),
+    })
+    .optional(),
+});
+
+/**
  * @summary Acknowledge an AI-imported case as reviewed
  */
 export const AcknowledgeAiReviewParams = zod.object({

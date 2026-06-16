@@ -2206,6 +2206,42 @@ export type UpdateCase200 = {
   data?: UpdateCase200Data;
 };
 
+export type RestoreCase200Data = {
+  restored?: boolean;
+  /** Number of invoices that were unfrozen */
+  unfrozenInvoices?: number;
+};
+
+export type RestoreCase200 = {
+  ok?: boolean;
+  data?: RestoreCase200Data;
+};
+
+export type ListDeletedCasesParams = {
+  labOrganizationId: string;
+};
+
+export type ListDeletedCases200DataCasesItem = {
+  id: string;
+  caseNumber: string;
+  patientFirstName: string;
+  patientLastName: string;
+  doctorName: string;
+  labOrganizationId: string;
+  deletedAt: string;
+  deletedByUserId?: string | null;
+  createdAt: string;
+};
+
+export type ListDeletedCases200Data = {
+  cases?: ListDeletedCases200DataCasesItem[];
+};
+
+export type ListDeletedCases200 = {
+  ok?: boolean;
+  data?: ListDeletedCases200Data;
+};
+
 export type AcknowledgeAiReview200Data = {
   caseId?: string;
   needsAiReview?: boolean;

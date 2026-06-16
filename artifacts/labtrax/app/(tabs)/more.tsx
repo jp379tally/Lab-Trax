@@ -55,6 +55,13 @@ const ITEMS: MenuItem[] = [
     route: "/manage/reports",
     requiresAdmin: true,
   },
+  {
+    title: "Deleted Cases",
+    subtitle: "View and restore soft-deleted cases",
+    icon: "trash-outline",
+    route: "/manage/deleted-cases",
+    requiresAdmin: true,
+  },
 ];
 
 export default function MoreMenuScreen() {

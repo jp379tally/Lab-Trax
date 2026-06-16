@@ -98,6 +98,8 @@ import type {
   ListAuditLogsParams,
   ListCasesParams,
   ListCategoriesParams,
+  ListDeletedCases200,
+  ListDeletedCasesParams,
   ListInvoicesParams,
   ListOpenInvoicesParams,
   ListVendorsParams,
@@ -123,6 +125,7 @@ import type {
   ResolveItemPrice200,
   ResolveItemPriceParams,
   RestoreBackupBody,
+  RestoreCase200,
   RestoreStartResult,
   RestoreStatusResult,
   RxPracticeAliasInput,
@@ -4530,6 +4533,198 @@ export const useUpdateCase = <
 > => {
   return useMutation(getUpdateCaseMutationOptions(options));
 };
+
+/**
+ * Restores a soft-deleted case by clearing its `deleted_at` /
+`deleted_by_user_id` columns and unfreezes every linked non-deleted
+invoice that was frozen when the case was deleted (clears `frozen`,
+`caseDeletedAt`, `caseDeletedByUserId`, `caseDeletedNote`, and
+restores `balanceDue` to the invoice `total`). An audit log entry is
+written for each unfrozen invoice. The caller must be an admin of the
+case's lab.
+
+ * @summary Restore a soft-deleted case and unfreeze linked invoices
+ */
+export const getRestoreCaseUrl = (caseId: string) => {
+  return `/api/cases/${caseId}/restore`;
+};
+
+export const restoreCase = async (
+  caseId: string,
+  options?: RequestInit,
+): Promise<RestoreCase200> => {
+  return customFetch<RestoreCase200>(getRestoreCaseUrl(caseId), {
+    ...options,
+    method: "POST",
+  });
+};
+
+export const getRestoreCaseMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof restoreCase>>,
+    TError,
+    { caseId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof restoreCase>>,
+  TError,
+  { caseId: string },
+  TContext
+> => {
+  const mutationKey = ["restoreCase"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof restoreCase>>,
+    { caseId: string }
+  > = (props) => {
+    const { caseId } = props ?? {};
+
+    return restoreCase(caseId, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type RestoreCaseMutationResult = NonNullable<
+  Awaited<ReturnType<typeof restoreCase>>
+>;
+
+export type RestoreCaseMutationError = ErrorType<void>;
+
+/**
+ * @summary Restore a soft-deleted case and unfreeze linked invoices
+ */
+export const useRestoreCase = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof restoreCase>>,
+    TError,
+    { caseId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof restoreCase>>,
+  TError,
+  { caseId: string },
+  TContext
+> => {
+  return useMutation(getRestoreCaseMutationOptions(options));
+};
+
+/**
+ * Returns all soft-deleted canonical cases for the given lab, ordered by
+`deletedAt` descending. The caller must be an admin of the lab.
+
+ * @summary List soft-deleted cases for a lab (admin only)
+ */
+export const getListDeletedCasesUrl = (params: ListDeletedCasesParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/cases/deleted?${stringifiedParams}`
+    : `/api/cases/deleted`;
+};
+
+export const listDeletedCases = async (
+  params: ListDeletedCasesParams,
+  options?: RequestInit,
+): Promise<ListDeletedCases200> => {
+  return customFetch<ListDeletedCases200>(getListDeletedCasesUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getListDeletedCasesQueryKey = (
+  params?: ListDeletedCasesParams,
+) => {
+  return [`/api/cases/deleted`, ...(params ? [params] : [])] as const;
+};
+
+export const getListDeletedCasesQueryOptions = <
+  TData = Awaited<ReturnType<typeof listDeletedCases>>,
+  TError = ErrorType<void>,
+>(
+  params: ListDeletedCasesParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listDeletedCases>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getListDeletedCasesQueryKey(params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof listDeletedCases>>
+  > = ({ signal }) => listDeletedCases(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof listDeletedCases>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ListDeletedCasesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listDeletedCases>>
+>;
+export type ListDeletedCasesQueryError = ErrorType<void>;
+
+/**
+ * @summary List soft-deleted cases for a lab (admin only)
+ */
+
+export function useListDeletedCases<
+  TData = Awaited<ReturnType<typeof listDeletedCases>>,
+  TError = ErrorType<void>,
+>(
+  params: ListDeletedCasesParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listDeletedCases>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getListDeletedCasesQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
 
 /**
  * @summary Acknowledge an AI-imported case as reviewed
