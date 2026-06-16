@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -277,6 +277,15 @@ function TierEditor({
   const [name, setName] = useState(tier?.name ?? "");
   const [prices, setPrices] = useState<Record<string, string>>(() => pricesToStrings(tier?.prices, keys));
 
+  // Re-seed from the latest props whenever a different tier is opened, so a
+  // reopened sheet always reflects the current server values rather than a
+  // stale snapshot captured when the editor first mounted.
+  useEffect(() => {
+    setName(tier?.name ?? "");
+    setPrices(pricesToStrings(tier?.prices, keys));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tier?.id]);
+
   const save = useMutation({
     mutationFn: async () => {
       const body = { name: name.trim(), prices: stringsToPrices(prices) };
@@ -340,6 +349,18 @@ function OverrideEditor({
   const [tierName, setTierName] = useState<string | null>(override?.tierName ?? null);
   const [notes, setNotes] = useState(override?.notes ?? "");
   const [prices, setPrices] = useState<Record<string, string>>(() => pricesToStrings(override?.prices, keys));
+
+  // Re-seed from the latest props whenever a different override is opened, so a
+  // reopened sheet always reflects the current server values rather than a
+  // stale snapshot captured when the editor first mounted.
+  useEffect(() => {
+    setDoctorName(override?.doctorName ?? "");
+    setPracticeName(override?.practiceName ?? "");
+    setTierName(override?.tierName ?? null);
+    setNotes(override?.notes ?? "");
+    setPrices(pricesToStrings(override?.prices, keys));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [override?.id]);
 
   const save = useMutation({
     mutationFn: async () => {

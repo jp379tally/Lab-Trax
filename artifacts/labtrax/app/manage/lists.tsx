@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -268,14 +268,27 @@ function VendorEditor({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const [name, setName] = useState(vendor?.name ?? "");
-  const [kind, setKind] = useState<VendorKind | null>(() => {
-    const n = (vendor?.vendorTypeName ?? "").toLowerCase();
+  const vendorKindFromName = (v: Vendor | null): VendorKind | null => {
+    const n = (v?.vendorTypeName ?? "").toLowerCase();
     return (VENDOR_KINDS.find((k) => k.label.toLowerCase() === n)?.value as VendorKind) ?? null;
-  });
+  };
+  const [name, setName] = useState(vendor?.name ?? "");
+  const [kind, setKind] = useState<VendorKind | null>(() => vendorKindFromName(vendor));
   const [phone, setPhone] = useState(vendor?.phone ?? "");
   const [email, setEmail] = useState(vendor?.email ?? "");
   const [notes, setNotes] = useState(vendor?.notes ?? "");
+
+  // Re-seed from the latest props whenever a different vendor is opened, so a
+  // reopened sheet always reflects the current server values rather than a
+  // stale snapshot captured when the editor first mounted.
+  useEffect(() => {
+    setName(vendor?.name ?? "");
+    setKind(vendorKindFromName(vendor));
+    setPhone(vendor?.phone ?? "");
+    setEmail(vendor?.email ?? "");
+    setNotes(vendor?.notes ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vendor?.id]);
 
   const save = useMutation({
     mutationFn: async () => {
@@ -348,6 +361,17 @@ function CategoryEditor({
   const [kind, setKind] = useState<CategoryKind>((category?.kind as CategoryKind) ?? "expense");
   const [color, setColor] = useState<string | null>(category?.color ?? null);
   const [description, setDescription] = useState(category?.description ?? "");
+
+  // Re-seed from the latest props whenever a different category is opened, so a
+  // reopened sheet always reflects the current server values rather than a
+  // stale snapshot captured when the editor first mounted.
+  useEffect(() => {
+    setName(category?.name ?? "");
+    setKind((category?.kind as CategoryKind) ?? "expense");
+    setColor(category?.color ?? null);
+    setDescription(category?.description ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [category?.id]);
 
   const save = useMutation({
     mutationFn: async () => {
@@ -430,6 +454,14 @@ function LabelEditor({
   onSaved: () => void;
 }) {
   const [value, setValue] = useState(entry.value);
+
+  // Re-seed from the latest props whenever a different label is opened, so a
+  // reopened sheet always reflects the current server value rather than a
+  // stale snapshot captured when the editor first mounted.
+  useEffect(() => {
+    setValue(entry.value);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entry.key]);
 
   const save = useMutation({
     mutationFn: () =>
