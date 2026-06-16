@@ -33,6 +33,47 @@ APP_JSON="$REPO_ROOT/artifacts/labtrax/app.json"
 #        touch .local/.eas-build-approved
 #   4. Restart the "EAS iOS Build + Submit" workflow in the Replit workflow pane
 #
+SUBMIT_ONLY_TOKEN="$REPO_ROOT/.local/.eas-submit-only"
+if [ -f "$SUBMIT_ONLY_TOKEN" ]; then
+  BUILD_ID_FILE="$REPO_ROOT/.local/.eas-submit-build-id"
+  BUILD_ID=""
+  if [ -f "$BUILD_ID_FILE" ]; then
+    BUILD_ID=$(cat "$BUILD_ID_FILE")
+    rm -f "$BUILD_ID_FILE"
+  fi
+  rm -f "$SUBMIT_ONLY_TOKEN"
+  echo "==> Submit-only mode activated (no build consumed)."
+  echo ""
+  cd "$REPO_ROOT/artifacts/labtrax"
+  python3 scripts/write-asc-key.py
+  export EAS_NO_VCS=1
+  export EAS_BUILD_NO_EXPO_GO_WARNING=true
+  export EXPO_ASC_API_KEY_PATH=/tmp/AuthKey_RV23AJ8V62.p8
+  export EXPO_ASC_KEY_ID=RV23AJ8V62
+  export EXPO_ASC_ISSUER_ID=1d2faabc-3d66-4e64-b514-c234043e143a
+  export EXPO_APPLE_TEAM_ID=2D9XT8L3D2
+  export EXPO_APPLE_TEAM_TYPE=COMPANY_OR_ORGANIZATION
+  IPA_URL_FILE="$REPO_ROOT/.local/.eas-submit-ipa-url"
+  if [ -n "$BUILD_ID" ] && [ -f "$IPA_URL_FILE" ]; then
+    IPA_URL=$(cat "$IPA_URL_FILE")
+    rm -f "$IPA_URL_FILE"
+    echo "==> Downloading IPA from EAS artifact store..."
+    curl -sL -H "Authorization: Bearer $EXPO_TOKEN" "$IPA_URL" -o /tmp/build-submit.ipa
+    IPA_SIZE=$(wc -c < /tmp/build-submit.ipa)
+    echo "    Downloaded: $IPA_SIZE bytes"
+    echo "==> Submitting via local IPA path (bypasses pre-signed URL expiry)..."
+    eas submit --platform ios --path /tmp/build-submit.ipa --non-interactive
+  elif [ -n "$BUILD_ID" ]; then
+    echo "==> Submitting build $BUILD_ID to App Store Connect..."
+    eas submit --platform ios --id "$BUILD_ID" --non-interactive
+  else
+    echo "==> Submitting latest iOS build to App Store Connect..."
+    eas submit --platform ios --latest --non-interactive
+  fi
+  echo "==> Submit complete."
+  exit 0
+fi
+
 APPROVAL_TOKEN="$REPO_ROOT/.local/.eas-build-approved"
 if [ ! -f "$APPROVAL_TOKEN" ]; then
   echo "==> EAS build requires manual approval."
