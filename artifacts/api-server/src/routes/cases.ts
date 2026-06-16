@@ -1325,7 +1325,7 @@ async function tryProjectLegacyCaseForDesktop(
     suggestedDoctorName: null,
     suggestedProviderOrgId: null,
     suggestedPracticeName: null,
-    casePanBarcode: null,
+    casePanBarcode: parsed?.assignedBarcode ?? null,
     caseNotes: notesText || null,
     restorations,
     notes: notesOut,
@@ -4360,33 +4360,63 @@ router.patch(
         );
       }
 
-      if (input.status) {
-        let parsed: any = {};
-        try { parsed = JSON.parse(mobileRow.caseData); } catch { /* ignore */ }
+      let parsed: any = {};
+      try { parsed = JSON.parse(mobileRow.caseData); } catch { /* ignore */ }
 
-        // Map desktop station back to mobile status token.
-        const DESKTOP_TO_MOBILE_STATUS: Record<string, string> = {
-          received: "INTAKE",
-          in_design: "DESIGN",
-          scan: "SCAN",
-          in_milling: "MILLING",
-          post_mill: "POST_MILL",
-          sintering_furnace: "SINTERING_FURNACE",
-          model_room: "MODEL_ROOM",
-          in_porcelain: "PORCELAIN",
-          qc: "QC",
-          complete: "COMPLETE",
-          shipped: "SHIP",
-          delivered: "COMPLETE",
-          on_hold: "HOLD",
-          remake: "REMAKE",
-        };
+      const DESKTOP_TO_MOBILE_STATUS: Record<string, string> = {
+        received: "INTAKE",
+        in_design: "DESIGN",
+        scan: "SCAN",
+        in_milling: "MILLING",
+        post_mill: "POST_MILL",
+        sintering_furnace: "SINTERING_FURNACE",
+        model_room: "MODEL_ROOM",
+        in_porcelain: "PORCELAIN",
+        qc: "QC",
+        complete: "COMPLETE",
+        shipped: "SHIP",
+        delivered: "COMPLETE",
+        on_hold: "HOLD",
+        remake: "REMAKE",
+      };
+
+      let needsUpdate = false;
+
+      if (input.status !== undefined) {
         parsed.status = DESKTOP_TO_MOBILE_STATUS[input.status] ?? input.status.toUpperCase();
-
         if (input.status === "complete") {
           parsed.assignedBarcode = null;
         }
+        needsUpdate = true;
+      }
+      if (input.casePanBarcode !== undefined) {
+        parsed.assignedBarcode = input.casePanBarcode;
+        needsUpdate = true;
+      }
+      if (input.doctorName !== undefined) {
+        parsed.doctorName = input.doctorName;
+        needsUpdate = true;
+      }
+      if (input.patientFirstName !== undefined || input.patientLastName !== undefined) {
+        const existingName = String(parsed.patientName ?? "");
+        const spaceIdx = existingName.indexOf(" ");
+        const existingFirst = spaceIdx >= 0 ? existingName.slice(0, spaceIdx) : existingName;
+        const existingLast = spaceIdx >= 0 ? existingName.slice(spaceIdx + 1) : "";
+        const newFirst = input.patientFirstName !== undefined ? input.patientFirstName : existingFirst;
+        const newLast = input.patientLastName !== undefined ? input.patientLastName : existingLast;
+        parsed.patientName = newLast ? `${newFirst} ${newLast}` : newFirst;
+        needsUpdate = true;
+      }
+      if (input.priority !== undefined) {
+        parsed.isRush = input.priority === "rush";
+        needsUpdate = true;
+      }
+      if (input.dueDate !== undefined) {
+        parsed.dueDate = input.dueDate;
+        needsUpdate = true;
+      }
 
+      if (needsUpdate) {
         await db
           .update(labCases)
           .set({ caseData: JSON.stringify(parsed), updatedAt: new Date() })
@@ -4396,6 +4426,7 @@ router.patch(
       return ok(res, {
         id: mobileRow.id,
         status: input.status,
+        casePanBarcode: parsed.assignedBarcode ?? null,
         _source: "mobile",
       });
     }
