@@ -524,14 +524,28 @@ export async function cleanupOrphanedCaseMedia(
 
   setCleanupProgress({ stage: "checking-references", scannedFiles: report.scannedFiles });
 
-  const rows = await db
-    .select({ storageKey: caseAttachments.storageKey })
-    .from(caseAttachments);
-
+  // Any failure while gathering references means we cannot reliably tell
+  // which files are still in use. Fail safe: never trash on an incomplete
+  // reference set (see the guard below). A transient DB error during the
+  // canonical or legacy scans previously skipped protection and trashed
+  // ledger-bound legacy media when two full-suite test workflows (or a
+  // nightly job under DB load) ran concurrently against the same directory.
+  let referenceScanFailed = false;
   const referenced = new Set<string>();
-  for (const row of rows) {
-    const name = extractMediaFileName(row.storageKey);
-    if (name) referenced.add(name);
+  try {
+    const rows = await db
+      .select({ storageKey: caseAttachments.storageKey })
+      .from(caseAttachments);
+    for (const row of rows) {
+      const name = extractMediaFileName(row.storageKey);
+      if (name) referenced.add(name);
+    }
+  } catch (err) {
+    referenceScanFailed = true;
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "cleanupOrphanedCaseMedia: case_attachments scan failed — aborting deletion to avoid false-positive trashing",
+    );
   }
 
   // Legacy mobile cases (rows in `lab_cases`) cannot have `case_attachments`
@@ -548,9 +562,10 @@ export async function cleanupOrphanedCaseMedia(
       if (row.fileName) referenced.add(row.fileName);
     }
   } catch (err) {
+    referenceScanFailed = true;
     logger.warn(
       { err: err instanceof Error ? err.message : String(err) },
-      "cleanupOrphanedCaseMedia: legacy_case_media scan failed — skipping ledger protection",
+      "cleanupOrphanedCaseMedia: legacy_case_media scan failed — aborting deletion to avoid false-positive trashing",
     );
   }
   try {
@@ -564,13 +579,30 @@ export async function cleanupOrphanedCaseMedia(
       }
     }
   } catch (err) {
+    referenceScanFailed = true;
     logger.warn(
       { err: err instanceof Error ? err.message : String(err) },
-      "cleanupOrphanedCaseMedia: lab_cases caseData scan failed — skipping live-reference protection",
+      "cleanupOrphanedCaseMedia: lab_cases caseData scan failed — aborting deletion to avoid false-positive trashing",
     );
   }
 
   report.referencedFiles = referenced.size;
+
+  // Fail safe: a reference scan failed, so the `referenced` set is
+  // incomplete. Trashing now would falsely remove in-use files (this caused
+  // ledger-bound legacy media to be trashed under transient DB load when two
+  // full-suite workflows ran concurrently). Skip the deletion phase entirely
+  // and record the failure; the next scheduled run retries. Protected media
+  // goes to .trash and is recoverable, but the correct behaviour is to never
+  // trash on incomplete information in the first place.
+  if (referenceScanFailed) {
+    report.errors.push({
+      fileName: "*",
+      error:
+        "reference scan incomplete — skipped deletion to avoid false-positive trashing",
+    });
+    return report;
+  }
 
   checkCancellation();
 

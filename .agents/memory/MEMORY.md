@@ -17,6 +17,7 @@
 - [Desktop media fetch must refresh on 401](desktop-media-auth-refresh.md) — raw bearer media fetches go blank after 15-min token expiry while data silently refreshes; route all media through authedMediaFetch.
 - [Idle auto-logout architecture](idle-autologout.md) — desktop: interval-based timer in AppLayout + sessionStorage flag for login notice; mobile: PanResponder feeds resetInactivityTimer → lock screen (not full logout).
 - [Legacy-photo synthetic id serving](legacy-photo-synthetic-id-serving.md) — legacy `legacy-photo-<caseId>-<idx>` ids have no DB row; id-based serve route must resolve from lab_cases blob + authorize file via legacy_case_media ledger (IDOR risk).
+- [Orphan media cleanup fail-closed](orphan-media-cleanup-fail-closed.md) — if any reference scan throws, skip deletion entirely; never trash on a partial referenced set. api-server-tests+regression-tests share DB+uploads dir → concurrency surfaces it.
 - [LabTrax mobile theming](labtrax-theming.md) — tokens via useTheme, but ThemeProvider wraps only the authed tree (login/lock can't use it); most screens hardcode Colors.light, full migration is a big rewrite.
 - [LabTrax deployment target](labtrax-deployment-target.md) — must run as Reserved VM (vm), not autoscale; autoscale scale-to-zero caused overnight outages and skipped cron jobs.
 - [LabTrax design-system adoption](labtrax-design-system.md) — dashboard metric rows use StatTile; hub/menu lists use Card+inline (not the MenuItem component) to stay visually consistent.

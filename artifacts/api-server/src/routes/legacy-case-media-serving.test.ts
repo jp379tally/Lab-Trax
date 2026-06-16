@@ -253,4 +253,31 @@ maybe("GET /api/cases/attachment-file/:filename — legacy case media", () => {
     // File must still be present (protected by the ledger reference).
     await expect(fsp.access(filePath)).resolves.toBeUndefined();
   });
+
+  it("fail-safe: skips deletion when a reference scan errors", async () => {
+    // Root cause of the cross-suite flake: when a reference-gathering query
+    // throws (e.g. transient DB pressure while two full-suite workflows hit
+    // the same DB + uploads/case-media dir), the cleanup must NOT trash on an
+    // incomplete reference set — doing so removed ledger-bound legacy media.
+    // Force the first reference query to throw and assert the cleanup skips
+    // the deletion phase entirely instead of trashing.
+    const { db } = dbMod as any;
+    const spy = vi.spyOn(db, "select").mockImplementation(() => {
+      throw new Error("simulated reference scan failure");
+    });
+    try {
+      const report = await caseMediaMod.cleanupOrphanedCaseMedia({
+        dryRun: false,
+      });
+      expect(report.removedCount).toBe(0);
+      expect(report.orphanCount).toBe(0);
+      expect(
+        report.errors.some((e: { error: string }) =>
+          /reference scan incomplete/i.test(e.error),
+        ),
+      ).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
