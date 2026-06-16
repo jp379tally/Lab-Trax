@@ -2486,26 +2486,19 @@ export function InvoiceEditor({
                         />
                       </td>
                       <td className="px-3 py-1.5">
-                        {it.toothLabel ? (
-                          <div className="w-full h-8 px-2 flex items-center justify-end rounded bg-secondary/30 border border-input/50 text-sm tabular-nums text-muted-foreground select-none">
-                            {it.toothLabel}
-                          </div>
-                        ) : (
-                          <input
-                            type="number"
-                            min={1}
-                            max={32}
-                            step={1}
-                            value={it.toothNumber ?? ""}
-                            onChange={(e) =>
-                              updateItem(idx, {
-                                toothNumber: e.target.value === "" ? null : Number(e.target.value),
-                              })
-                            }
-                            placeholder="—"
-                            className="w-full h-8 px-2 rounded bg-background border border-input text-sm text-right tabular-nums"
-                          />
-                        )}
+                        <input
+                          type="text"
+                          value={it.toothLabel ?? (it.toothNumber != null ? String(it.toothNumber) : "")}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            updateItem(idx, {
+                              toothLabel: v || null,
+                              toothNumber: null,
+                            });
+                          }}
+                          placeholder="—"
+                          className="w-full h-8 px-2 rounded bg-background border border-input text-sm text-right tabular-nums"
+                        />
                       </td>
                       <td className="px-3 py-1.5 align-top">
                         <textarea
@@ -2620,16 +2613,15 @@ export function InvoiceEditor({
                         </td>
                         <td className="px-3 py-1.5">
                           <input
-                            type="number"
-                            min={1}
-                            max={32}
-                            step={1}
-                            value={sub.toothNumber ?? ""}
-                            onChange={(e) =>
+                            type="text"
+                            value={sub.toothLabel ?? (sub.toothNumber != null ? String(sub.toothNumber) : "")}
+                            onChange={(e) => {
+                              const v = e.target.value;
                               updateSubItem(idx, sidx, {
-                                toothNumber: e.target.value === "" ? null : Number(e.target.value),
-                              })
-                            }
+                                toothLabel: v || null,
+                                toothNumber: null,
+                              });
+                            }}
                             placeholder="—"
                             className="w-full h-7 px-2 rounded bg-background border border-input text-xs text-right tabular-nums"
                           />
