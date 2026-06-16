@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef } from "react";
+import React, { useState, useMemo, useRef, useEffect } from "react";
 import {
   View,
   Text,
@@ -882,6 +882,14 @@ function EditLabSheet({
     setZip(initialValues.zip);
     setError(null);
   }
+
+  const wasVisible = useRef(visible);
+  useEffect(() => {
+    if (visible && !wasVisible.current) {
+      resetToInitial();
+    }
+    wasVisible.current = visible;
+  });
 
   const editMutation = useMutation({
     mutationFn: async () => {
