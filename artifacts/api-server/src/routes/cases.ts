@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Router, type Request, type Response } from "express";
-import { and, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import {
@@ -39,7 +39,7 @@ import {
   splitDisplayName,
   type SimilarityMatchKind,
 } from "../lib/patient-similarity";
-import { notDeleted, softDeleteById } from "../lib/soft-delete";
+import { notDeleted, restoreDeleted, softDeleteById } from "../lib/soft-delete";
 import { caseMediaDir, extractMediaFileName } from "../lib/case-media";
 import {
   openCaseMediaObjectStream,
@@ -4751,6 +4751,96 @@ router.delete(
     }
 
     return ok(res, { deleted: true });
+  })
+);
+
+router.post(
+  "/:caseId/restore",
+  asyncHandler(async (req, res) => {
+    const restoringUserId = (req as any).auth.userId as string;
+
+    // Look up the case including soft-deleted rows; standard assertCaseAccess
+    // excludes them, so query directly here.
+    const found = await db.query.cases.findFirst({
+      where: eq(cases.id, req.params.caseId),
+    });
+    if (!found) throw new HttpError(404, "Case not found.");
+    if (!found.deletedAt) {
+      throw new HttpError(409, "Case is not deleted.");
+    }
+
+    await requireAnyRole(restoringUserId, found.labOrganizationId, ADMIN_ROLES);
+
+    // Restore the soft-deleted case row.
+    await restoreDeleted({
+      table: cases,
+      where: eq(cases.id, found.id),
+      actorUserId: restoringUserId,
+      req,
+      organizationId: found.labOrganizationId,
+      entityType: "case",
+      entityId: found.id,
+    });
+
+    // Unfreeze every linked invoice that was frozen specifically because this case
+    // was deleted (caseDeletedAt IS NOT NULL distinguishes case-delete freezes from
+    // any other freeze reasons that may be added in the future).
+    const frozenInvoices = await db
+      .select()
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.caseId, found.id),
+          eq(invoices.frozen, true),
+          isNotNull(invoices.caseDeletedAt),
+          isNull(invoices.deletedAt),
+        ),
+      );
+
+    if (frozenInvoices.length > 0) {
+      // Restore balanceDue to the invoice total — the original balanceDue was
+      // zeroed out at freeze time and is not recoverable here. Using total is
+      // the correct business default: billing resumes as if the invoice is
+      // fully outstanding.
+      await db
+        .update(invoices)
+        .set({
+          frozen: false,
+          balanceDue: sql`${invoices.total}`,
+          caseDeletedAt: null,
+          caseDeletedByUserId: null,
+          caseDeletedNote: null,
+          updatedByUserId: restoringUserId,
+        } as any)
+        .where(
+          and(
+            inArray(
+              invoices.id,
+              frozenInvoices.map((inv) => inv.id),
+            ),
+            eq(invoices.frozen, true),
+            isNull(invoices.deletedAt),
+          ),
+        );
+
+      for (const inv of frozenInvoices) {
+        await writeAuditLog({
+          req,
+          userId: restoringUserId,
+          organizationId: found.labOrganizationId,
+          action: "invoice_unfrozen_case_restored",
+          entityType: "invoice",
+          entityId: inv.id,
+          beforeJson: inv,
+          metadataJson: {
+            caseId: found.id,
+            caseNumber: found.caseNumber,
+          },
+        });
+      }
+    }
+
+    return ok(res, { restored: true, unfrozenInvoices: frozenInvoices.length });
   })
 );
 

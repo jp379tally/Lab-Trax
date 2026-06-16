@@ -1143,6 +1143,48 @@ paths:
           description: Caller is not a member of the case's lab
         "404":
           description: Case not found or caller lacks access
+  /cases/{caseId}/restore:
+    post:
+      operationId: restoreCase
+      tags: [cases]
+      summary: Restore a soft-deleted case and unfreeze linked invoices
+      description: |
+        Restores a soft-deleted case by clearing its `deleted_at` /
+        `deleted_by_user_id` columns and unfreezes every linked non-deleted
+        invoice that was frozen when the case was deleted (clears `frozen`,
+        `caseDeletedAt`, `caseDeletedByUserId`, `caseDeletedNote`, and
+        restores `balanceDue` to the invoice `total`). An audit log entry is
+        written for each unfrozen invoice. The caller must be an admin of the
+        case's lab.
+      parameters:
+        - in: path
+          name: caseId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Case restored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      restored: { type: boolean }
+                      unfrozenInvoices:
+                        type: integer
+                        description: Number of invoices that were unfrozen
+        "401":
+          description: Not authenticated
+        "403":
+          description: Caller is not an admin of the case's lab
+        "404":
+          description: Case not found
+        "409":
+          description: Case is not currently deleted
   /cases/{caseId}/ai-review:
     patch:
       operationId: acknowledgeAiReview

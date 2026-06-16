@@ -1,5 +1,7 @@
 /**
- * Integration tests for Task #1745: Freeze invoice forever when a case is deleted.
+ * Integration tests for:
+ *   - Task #1745: Freeze invoice forever when a case is deleted.
+ *   - Task #1758: Unfreeze an invoice when a deleted case is restored.
  *
  * Verifies:
  *   - Deleting a case sets frozen=true, balanceDue="0.00", caseDeletedNote on
@@ -8,6 +10,9 @@
  *   - A subsequent POST /invoices/:id/void returns 409.
  *   - A subsequent POST /invoices/:id/write-off returns 409.
  *   - An unlinked invoice in the same lab is NOT frozen.
+ *   - Restoring the case clears frozen fields and restores balanceDue on linked invoices.
+ *   - POST /:caseId/restore on a non-deleted case returns 409.
+ *   - POST /:caseId/restore returns 404 for an unknown case.
  *
  * These tests are gated on DATABASE_URL and skip cleanly when it is not set.
  */
@@ -231,5 +236,60 @@ maybe("frozen-invoice (db integration)", () => {
       .expect(409);
 
     expect(res.body.message ?? res.body.error).toMatch(/frozen/i);
+  });
+
+  it("restoring the case unfreezes its linked invoice", async () => {
+    const res = await request(appMod.default)
+      .post(`/api/cases/${caseId}/restore`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .expect(200);
+
+    expect(res.body.data?.restored).toBe(true);
+    expect(res.body.data?.unfrozenInvoices).toBe(1);
+
+    const { db, invoices } = dbMod as any;
+    const inv = await db.query.invoices.findFirst({
+      where: eq(invoices.id, invoiceId),
+    });
+
+    expect(inv).toBeDefined();
+    expect(inv.frozen).toBe(false);
+    expect(inv.caseDeletedAt).toBeNull();
+    expect(inv.caseDeletedByUserId).toBeNull();
+    expect(inv.caseDeletedNote).toBeNull();
+    // balanceDue restored to invoice total
+    expect(inv.balanceDue).toBe("100.00");
+    // invoice itself not deleted
+    expect(inv.deletedAt).toBeNull();
+  });
+
+  it("restoring a non-deleted case returns 409", async () => {
+    // After the previous test the case is restored (not deleted)
+    const res = await request(appMod.default)
+      .post(`/api/cases/${caseId}/restore`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .expect(409);
+
+    expect(res.body.message ?? res.body.error).toMatch(/not deleted/i);
+  });
+
+  it("restoring an unknown case returns 404", async () => {
+    const res = await request(appMod.default)
+      .post(`/api/cases/nonexistent-case-id/restore`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .expect(404);
+
+    expect(res.body.message ?? res.body.error).toBeTruthy();
+  });
+
+  it("unlinked invoice is not affected by restore", async () => {
+    const { db, invoices } = dbMod as any;
+    const inv = await db.query.invoices.findFirst({
+      where: eq(invoices.id, unlinkedInvoiceId),
+    });
+    // Should remain exactly as it was — not frozen, balanceDue unchanged
+    expect(inv.frozen).toBe(false);
+    expect(inv.balanceDue).toBe("50.00");
+    expect(inv.caseDeletedNote).toBeNull();
   });
 });
