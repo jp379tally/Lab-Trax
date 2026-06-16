@@ -42,6 +42,13 @@ const ITEMS: MenuItem[] = [
     requiresAdmin: true,
   },
   {
+    title: "Locations",
+    subtitle: "Lab stations and case tracking spots",
+    icon: "location-outline",
+    route: "/manage/locations",
+    requiresAdmin: true,
+  },
+  {
     title: "Lists",
     subtitle: "Vendors, categories, and item labels",
     icon: "list-outline",
