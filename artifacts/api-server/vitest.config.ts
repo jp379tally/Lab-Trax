@@ -15,14 +15,18 @@ export default defineConfig({
     },
     // Cap parallel forks so the shared PG connection pool is not exhausted when
     // many integration test files run simultaneously.  Each fork imports app.js
-    // and creates its own connection(s); 4 concurrent forks keeps total
-    // connections well within the default pool size.
+    // and creates its own connection pool (pg default max = 10); capping at 4
+    // concurrent workers keeps total connections (~40) well within the
+    // database's max_connections and avoids the CPU/event-loop contention that
+    // made DB beforeAll hooks intermittently exceed hookTimeout.
+    //
+    // NOTE: Vitest 4 removed `test.poolOptions` (the old
+    // `poolOptions.forks.maxForks` is silently ignored). The cap is now the
+    // top-level `maxWorkers`; without this the suite runs with uncapped
+    // parallelism, which is what made this protected regression gate flaky.
     pool: "forks",
-    poolOptions: {
-      forks: {
-        maxForks: 4,
-      },
-    },
+    maxWorkers: 4,
+    minWorkers: 1,
     // Allow slow beforeAll/afterAll hooks (DB imports, heavy setup) more time.
     hookTimeout: 30000,
   },
