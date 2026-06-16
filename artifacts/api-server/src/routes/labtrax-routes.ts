@@ -26,7 +26,7 @@ import OpenAI, { toFile } from "openai";
 import nodemailer from "nodemailer";
 import sharp from "sharp";
 import { db } from "@workspace/db";
-import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, caseEvents, caseRestorations, mediaCleanupRuns, systemSettings, installerChangelog, installerUploads, subscriptions, backupRuns, rxPracticeNameAliases, bankTransactions } from "@workspace/db";
+import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, caseEvents, caseRestorations, mediaCleanupRuns, systemSettings, installerChangelog, installerUploads, subscriptions, backupRuns, rxPracticeNameAliases, bankTransactions, trustedDevices } from "@workspace/db";
 import { notDeleted } from "../lib/soft-delete";
 import { eq, and, inArray, or, isNull, sql, desc, count, type SQL } from "drizzle-orm";
 import { hashPassword } from "../lib/crypto";
@@ -3566,6 +3566,10 @@ export async function registerRoutes(): Promise<IRouter> {
 
       const hashed = await hashPassword(newPassword);
       await db.update(users).set({ password: hashed }).where(eq(users.id, resetData.userId));
+      // Resetting a forgotten password is an account-recovery event: revoke ALL
+      // remembered ("trusted") devices so a previously-issued device-trust token
+      // can't keep skipping the 2FA challenge after the owner locks out an attacker.
+      await db.delete(trustedDevices).where(eq(trustedDevices.userId, resetData.userId));
       passwordResetTokens.delete(token);
       return res.json({ success: true, message: "Password has been reset successfully." });
     } catch (error: any) {

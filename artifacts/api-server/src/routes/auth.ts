@@ -1060,6 +1060,11 @@ router.put(
       .set({ password: hashed })
       .where(eq(users.id, id));
 
+    // Changing the password revokes ALL remembered ("trusted") devices, matching
+    // the forgot-password reset flow: a prior device-trust token must not keep
+    // skipping the 2FA challenge after the owner rotates their password.
+    await db.delete(trustedDevices).where(eq(trustedDevices.userId, id));
+
     await writeAuditLog({
       req,
       userId: id,

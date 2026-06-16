@@ -23,7 +23,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { inArray, eq } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
-import { generateSync } from "otplib";
+import { generateSync, generateSecret } from "otplib";
 import request from "supertest";
 import * as path from "node:path";
 
@@ -67,6 +67,9 @@ maybe("Two-factor authentication (db integration)", () => {
   let backupCodes: string[] = [];
   let deviceTrustToken = "";
 
+  // Extra throwaway users created inside individual tests (cleaned in afterAll).
+  const extraUserIds: string[] = [];
+
   async function makeSession(uid: string): Promise<string> {
     const { db, userSessions } = dbMod as any;
     const sessionId = rid("sess");
@@ -97,10 +100,11 @@ maybe("Two-factor authentication (db integration)", () => {
   afterAll(async () => {
     if (!SHOULD_RUN) return;
     const { db, auditLogs, userSessions, trustedDevices, users } = dbMod as any;
-    await db.delete(auditLogs).where(inArray(auditLogs.userId, [userId]));
-    await db.delete(trustedDevices).where(eq(trustedDevices.userId, userId));
-    await db.delete(userSessions).where(eq(userSessions.userId, userId));
-    await db.delete(users).where(eq(users.id, userId));
+    const ids = [userId, ...extraUserIds];
+    await db.delete(auditLogs).where(inArray(auditLogs.userId, ids));
+    await db.delete(trustedDevices).where(inArray(trustedDevices.userId, ids));
+    await db.delete(userSessions).where(inArray(userSessions.userId, ids));
+    await db.delete(users).where(inArray(users.id, ids));
   });
 
   it("GET /status defaults to disabled for a fresh account", async () => {
@@ -377,6 +381,122 @@ maybe("Two-factor authentication (db integration)", () => {
     const staleLogin = await request(appMod.default)
       .post("/api/auth/login")
       .send({ username, password, clientType: "mobile", deviceTrustToken: staleToken });
+    expect(staleLogin.body.requiresTwoFactor).toBe(true);
+    expect(typeof staleLogin.body.pendingToken).toBe("string");
+    expect(staleLogin.body.accessToken).toBeUndefined();
+    expect(staleLogin.body.refreshToken).toBeUndefined();
+  });
+
+  // ---------------------------------------------------------------------
+  // Password reset (account recovery) — security guardrail.
+  //
+  // Resetting a forgotten password is exactly the moment all prior device
+  // trust should be invalidated: if an attacker had marked a device
+  // "remember me", that device's trust token must NOT keep skipping the
+  // 2FA challenge after the owner resets the password to lock the attacker
+  // out. This mirrors the disable-2FA purge above.
+  // ---------------------------------------------------------------------
+
+  it("resetting a forgotten password forgets trusted devices so a stale token can't skip the 2FA challenge", async () => {
+    const { db, users: usersTable, trustedDevices } = dbMod as any;
+    const { encryptTotpSecret } = await import("../lib/totp-encryption.js");
+
+    // Dedicated 2FA-enabled user so we can safely rotate its password without
+    // disturbing the ordered tests that reuse the shared account.
+    const rUserId = rid("urst");
+    const rUsername = `rst_${randomBytes(3).toString("hex")}`;
+    const rEmail = `${rUsername}@test.local`;
+    const rPassword = "ResetPass1!";
+    const rSecret = generateSecret();
+    extraUserIds.push(rUserId);
+
+    await db.insert(usersTable).values({
+      id: rUserId,
+      username: rUsername,
+      password: await cryptoLib.hashPassword(rPassword),
+      email: rEmail,
+      isActive: true,
+      twoFactorEnabled: true,
+      twoFactorSecret: encryptTotpSecret(rSecret),
+    });
+
+    // 1. Trust this device via the challenge endpoint.
+    const login = await request(appMod.default)
+      .post("/api/auth/login")
+      .send({ username: rUsername, password: rPassword, clientType: "mobile" });
+    expect(login.body.requiresTwoFactor).toBe(true);
+    const challenge = await request(appMod.default)
+      .post("/api/auth/2fa/challenge")
+      .send({
+        pendingToken: login.body.pendingToken,
+        code: generateSync({ secret: rSecret }),
+        clientType: "mobile",
+        trustDevice: true,
+        deviceName: "Pre-reset Device",
+      });
+    expect(challenge.status).toBe(200);
+    const staleToken = challenge.body.data.deviceTrustToken;
+    expect(typeof staleToken).toBe("string");
+
+    // Sanity: the freshly-trusted device skips the 2FA challenge.
+    const trustedLogin = await request(appMod.default)
+      .post("/api/auth/login")
+      .send({ username: rUsername, password: rPassword, clientType: "mobile", deviceTrustToken: staleToken });
+    expect(trustedLogin.body.requiresTwoFactor).toBeFalsy();
+    expect(typeof trustedLogin.body.accessToken).toBe("string");
+
+    // There is at least one trusted-device row before the reset.
+    const before = await db
+      .select()
+      .from(trustedDevices)
+      .where(eq(trustedDevices.userId, rUserId));
+    expect(before.length).toBeGreaterThan(0);
+
+    // 2. Run the forgot-password → reset-password flow. The reset token is
+    //    only surfaced via demoResetLink in development with SMTP unset.
+    const prevNodeEnv = process.env["NODE_ENV"];
+    const prevSmtpHost = process.env["SMTP_HOST"];
+    const prevSmtpUser = process.env["SMTP_USER"];
+    const prevSmtpPass = process.env["SMTP_PASS"];
+    process.env["NODE_ENV"] = "development";
+    delete process.env["SMTP_HOST"];
+    delete process.env["SMTP_USER"];
+    delete process.env["SMTP_PASS"];
+
+    let resetToken: string | undefined;
+    try {
+      const forgot = await request(appMod.default)
+        .post("/api/forgot-password")
+        .send({ email: rEmail });
+      expect(forgot.status).toBe(200);
+      expect(typeof forgot.body.demoResetLink).toBe("string");
+      resetToken = new URL(forgot.body.demoResetLink).searchParams.get("token") ?? undefined;
+      expect(typeof resetToken).toBe("string");
+
+      const reset = await request(appMod.default)
+        .post("/api/reset-password")
+        .send({ token: resetToken, newPassword: "NewResetPass2!" });
+      expect(reset.status).toBe(200);
+      expect(reset.body.success).toBe(true);
+    } finally {
+      if (prevNodeEnv === undefined) delete process.env["NODE_ENV"]; else process.env["NODE_ENV"] = prevNodeEnv;
+      if (prevSmtpHost === undefined) delete process.env["SMTP_HOST"]; else process.env["SMTP_HOST"] = prevSmtpHost;
+      if (prevSmtpUser === undefined) delete process.env["SMTP_USER"]; else process.env["SMTP_USER"] = prevSmtpUser;
+      if (prevSmtpPass === undefined) delete process.env["SMTP_PASS"]; else process.env["SMTP_PASS"] = prevSmtpPass;
+    }
+
+    // 3. All trusted_devices rows for the user are gone after the reset.
+    const after = await db
+      .select()
+      .from(trustedDevices)
+      .where(eq(trustedDevices.userId, rUserId));
+    expect(after.length).toBe(0);
+
+    // 4. The pre-reset trust token must NOT survive — login with the new
+    //    password still forces the 2FA challenge and leaks no session tokens.
+    const staleLogin = await request(appMod.default)
+      .post("/api/auth/login")
+      .send({ username: rUsername, password: "NewResetPass2!", clientType: "mobile", deviceTrustToken: staleToken });
     expect(staleLogin.body.requiresTwoFactor).toBe(true);
     expect(typeof staleLogin.body.pendingToken).toBe("string");
     expect(staleLogin.body.accessToken).toBeUndefined();
