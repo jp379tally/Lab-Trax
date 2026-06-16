@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Ban, ChevronsUpDown, ChevronUp, ChevronDown as ChevronDownIcon, Download, History, Loader2, Pencil, Plus, Search, Trash2, Upload, X } from "lucide-react";
+import { Ban, ChevronsUpDown, ChevronUp, ChevronDown as ChevronDownIcon, Download, GripVertical, History, Loader2, Pencil, Plus, Search, Trash2, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch } from "@/lib/api";
 import { formatDate, formatMoney, formatPhone } from "@/lib/format";
@@ -481,6 +481,29 @@ function ListsContent({ organizationId }: { organizationId: string }) {
     },
   });
 
+  async function handleLocationReorder(ordered: Location[]) {
+    const original = [...allLocations].sort((a, b) => a.sortOrder - b.sortOrder);
+    const changed = ordered.filter((loc, i) => {
+      const orig = original.find((l) => l.id === loc.id);
+      return orig === undefined || orig.sortOrder !== i;
+    });
+    if (changed.length === 0) return;
+    try {
+      await Promise.all(
+        changed.map((loc) =>
+          apiFetch(`/locations/${loc.id}`, {
+            method: "PATCH",
+            body: JSON.stringify({ sortOrder: loc.sortOrder }),
+          })
+        )
+      );
+      invalidateLocations();
+    } catch {
+      toast.error("Failed to save new order");
+      invalidateLocations();
+    }
+  }
+
   function openAddVendor(type: VendorType) {
     setDrawerVendor(null);
     setDrawerCategory(null);
@@ -742,6 +765,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
             search={search}
             onEdit={openEditLocation}
             onDelete={(loc) => setConfirmDeleteLocation(loc)}
+            onReorder={handleLocationReorder}
           />
         ) : isCategoriesTab ? (
           <CategoriesTable
@@ -1327,27 +1351,59 @@ function LocationsTable({
   search,
   onEdit,
   onDelete,
+  onReorder,
 }: {
   locations: Location[];
   isLoading: boolean;
   search: string;
   onEdit: (loc: Location) => void;
   onDelete: (loc: Location) => void;
+  onReorder: (ordered: Location[]) => void;
 }) {
-  type SortKey = keyof Pick<Location, "name" | "code" | "sortOrder">;
-  const [sortKey, setSortKey] = useState<SortKey>("sortOrder");
-  const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const isDraggable = !search.trim();
 
-  function handleSort(key: string) {
-    if (key === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    else { setSortKey(key as SortKey); setSortDir("asc"); }
+  const dragIdx = useRef<number | null>(null);
+  const [overIdx, setOverIdx] = useState<number | null>(null);
+  const [localRows, setLocalRows] = useState<Location[]>([]);
+
+  useEffect(() => {
+    setLocalRows([...locations].sort((a, b) => a.sortOrder - b.sortOrder));
+  }, [locations]);
+
+  function handleDragStart(idx: number) {
+    dragIdx.current = idx;
   }
 
-  const sorted = [...locations].sort((a, b) => {
-    const av = String(a[sortKey] ?? "").toLowerCase();
-    const bv = String(b[sortKey] ?? "").toLowerCase();
-    return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
-  });
+  function handleDragEnter(idx: number) {
+    setOverIdx(idx);
+  }
+
+  function handleDragOver(e: React.DragEvent) {
+    e.preventDefault();
+  }
+
+  function handleDrop(dropIdx: number) {
+    const from = dragIdx.current;
+    if (from === null || from === dropIdx) {
+      dragIdx.current = null;
+      setOverIdx(null);
+      return;
+    }
+    const next = [...localRows];
+    const [moved] = next.splice(from, 1);
+    next.splice(dropIdx, 0, moved);
+    const reindexed = next.map((loc, i) => ({ ...loc, sortOrder: i }));
+    setLocalRows(reindexed);
+    dragIdx.current = null;
+    setOverIdx(null);
+    const changed = reindexed.filter((loc, i) => loc.sortOrder !== locations[i]?.sortOrder || loc.id !== locations.find((l) => l.sortOrder === loc.sortOrder)?.id);
+    if (changed.length > 0) onReorder(reindexed);
+  }
+
+  function handleDragEnd() {
+    dragIdx.current = null;
+    setOverIdx(null);
+  }
 
   if (isLoading) {
     return (
@@ -1366,60 +1422,82 @@ function LocationsTable({
       </div>
     );
   }
+
+  const displayRows = isDraggable ? localRows : [...locations].sort((a, b) => a.sortOrder - b.sortOrder);
+
   return (
     <table className="w-full text-sm">
       <thead className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
         <tr>
-          <SortTh label="Name" sortKey="name" active={sortKey === "name"} dir={sortDir} onClick={handleSort} className="px-4" />
-          <SortTh label="Code" sortKey="code" active={sortKey === "code"} dir={sortDir} onClick={handleSort} className="w-32" />
-          <SortTh label="Order" sortKey="sortOrder" active={sortKey === "sortOrder"} dir={sortDir} onClick={handleSort} className="w-24" />
+          {isDraggable && <th className="px-2 py-2 w-8" />}
+          <th className="text-left font-medium px-4 py-2">Name</th>
+          <th className="text-left font-medium px-3 py-2 w-32">Code</th>
           <th className="text-center font-medium px-3 py-2 w-20">Active</th>
           <th className="px-2 py-2 w-20" />
         </tr>
       </thead>
       <tbody>
-        {sorted.map((loc) => (
-          <tr
-            key={loc.id}
-            className={`border-t border-border hover:bg-secondary/20 ${!loc.isActive ? "opacity-50" : ""}`}
-          >
-            <td className="px-4 py-2.5 font-medium">
-              {loc.name}
-              {!loc.isActive && (
-                <span className="ml-2 text-[10px] uppercase tracking-wide text-muted-foreground font-normal">
-                  inactive
-                </span>
+        {displayRows.map((loc, idx) => {
+          const isOver = overIdx === idx && dragIdx.current !== null && dragIdx.current !== idx;
+          const isDragging = isDraggable && dragIdx.current === idx;
+          return (
+            <tr
+              key={loc.id}
+              draggable={isDraggable}
+              onDragStart={isDraggable ? () => handleDragStart(idx) : undefined}
+              onDragEnter={isDraggable ? () => handleDragEnter(idx) : undefined}
+              onDragOver={isDraggable ? handleDragOver : undefined}
+              onDrop={isDraggable ? () => handleDrop(idx) : undefined}
+              onDragEnd={isDraggable ? handleDragEnd : undefined}
+              className={[
+                "border-t border-border",
+                !loc.isActive ? "opacity-50" : "",
+                isDragging ? "opacity-40" : "",
+                isOver ? "bg-primary/8 border-t-2 border-t-primary" : "hover:bg-secondary/20",
+              ].join(" ")}
+            >
+              {isDraggable && (
+                <td className="px-2 py-2.5 text-muted-foreground/50 cursor-grab active:cursor-grabbing select-none">
+                  <GripVertical size={14} />
+                </td>
               )}
-            </td>
-            <td className="px-3 py-2.5 font-mono text-xs text-muted-foreground">{loc.code}</td>
-            <td className="px-3 py-2.5 text-muted-foreground text-xs tabular-nums">{loc.sortOrder}</td>
-            <td className="px-3 py-2.5 text-center">
-              <span
-                className={`inline-block h-2 w-2 rounded-full ${loc.isActive ? "bg-emerald-500" : "bg-muted-foreground/30"}`}
-              />
-            </td>
-            <td className="px-2 py-2.5 text-right">
-              <div className="flex items-center justify-end gap-1">
-                <button
-                  type="button"
-                  onClick={() => onEdit(loc)}
-                  className="h-7 w-7 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground"
-                  aria-label="Edit"
-                >
-                  <Pencil size={13} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onDelete(loc)}
-                  className="h-7 w-7 rounded-md hover:bg-destructive/10 flex items-center justify-center text-muted-foreground hover:text-destructive"
-                  aria-label="Delete"
-                >
-                  <Trash2 size={13} />
-                </button>
-              </div>
-            </td>
-          </tr>
-        ))}
+              <td className="px-4 py-2.5 font-medium">
+                {loc.name}
+                {!loc.isActive && (
+                  <span className="ml-2 text-[10px] uppercase tracking-wide text-muted-foreground font-normal">
+                    inactive
+                  </span>
+                )}
+              </td>
+              <td className="px-3 py-2.5 font-mono text-xs text-muted-foreground">{loc.code}</td>
+              <td className="px-3 py-2.5 text-center">
+                <span
+                  className={`inline-block h-2 w-2 rounded-full ${loc.isActive ? "bg-emerald-500" : "bg-muted-foreground/30"}`}
+                />
+              </td>
+              <td className="px-2 py-2.5 text-right">
+                <div className="flex items-center justify-end gap-1">
+                  <button
+                    type="button"
+                    onClick={() => onEdit(loc)}
+                    className="h-7 w-7 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground"
+                    aria-label="Edit"
+                  >
+                    <Pencil size={13} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onDelete(loc)}
+                    className="h-7 w-7 rounded-md hover:bg-destructive/10 flex items-center justify-center text-muted-foreground hover:text-destructive"
+                    aria-label="Delete"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              </td>
+            </tr>
+          );
+        })}
       </tbody>
     </table>
   );
