@@ -621,6 +621,7 @@ export const cases = pgTable(
     deliveryDateProposalDate: timestamp("delivery_date_proposal_date", { withTimezone: true }),
     deliveryDateProposalNote: text("delivery_date_proposal_note"),
     rxNotes: text("rx_notes"),
+    shade: text("shade"),
   },
   (table) => ({
     caseNumberUnique: uniqueIndex("cases_case_number_unique").on(

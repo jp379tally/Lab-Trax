@@ -1395,6 +1395,9 @@ const createCaseSchema = z.object({
   // Optional barcode to assign to the case pan at creation time.
   // Empty strings are treated as omitted (no barcode assigned).
   casePanBarcode: z.string().optional().transform((v) => (v && v.trim().length > 0 ? v.trim() : undefined)),
+  // Top-level shade extracted from the Rx (stored directly on the case row so
+  // it's visible in the overview even when no tooth indices were identified).
+  shade: z.string().optional(),
 }).refine(
   // caseNumber is required for non-remake cases; server assigns it for remakes.
   (v) => !!v.remakeOfCaseId || (typeof v.caseNumber === "string" && v.caseNumber.trim().length > 0),
@@ -2395,6 +2398,7 @@ router.post(
             ? input.remakeCharged ?? null
             : null,
           casePanBarcode: input.casePanBarcode ?? null,
+          shade: input.shade ?? null,
         })
         .returning();
 
@@ -3686,7 +3690,7 @@ router.get(
 
     return ok(res, {
       ...found,
-      caseNotes: (found as any).rxNotes ?? null,
+      caseNotes: (found as any).rxNotes ?? (enrichedNotes.length > 0 ? enrichedNotes.map((n: any) => n.noteText).join("\n\n") : null),
       suggestedPracticeName,
       providerOrganizationContact,
       restorations,

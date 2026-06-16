@@ -1430,7 +1430,7 @@ function OverviewSection({
             <FieldRow label="Priority" value={c.priority ? titleCase(c.priority) : "Standard"} styles={styles} />
             <FieldRow label="Case type" value={uniqueJoin((c.restorations ?? []).map((r) => r.restorationType))} styles={styles} />
             <FieldRow label="Tooth number" value={uniqueJoin((c.restorations ?? []).map((r) => r.toothNumber))} styles={styles} />
-            <FieldRow label="Shade" value={uniqueJoin((c.restorations ?? []).map((r) => r.shade))} styles={styles} />
+            <FieldRow label="Shade" value={uniqueJoin((c.restorations ?? []).map((r) => r.shade)) || (c as any).shade || null} styles={styles} />
             <FieldRow label="Material" value={uniqueJoin((c.restorations ?? []).map((r) => r.material))} styles={styles} />
             <FieldRow label="Case created" value={formatDate(c.createdAt)} styles={styles} />
             <FieldRow label="Expected delivery" value={formatDate(c.expectedDeliveryDate)} styles={styles} />

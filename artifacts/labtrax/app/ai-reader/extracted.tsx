@@ -63,8 +63,21 @@ function toothIndicesToRestorations(
   material: string | null | undefined,
   shade: string | null | undefined,
 ): AiReaderRestoration[] {
-  if (!toothIndices?.trim()) return [];
   const rest = caseType?.trim() || "Crown & Bridge";
+  if (!toothIndices?.trim()) {
+    // No tooth numbers extracted — but if shade/material/caseType carries
+    // meaningful information, preserve it as a single fallback restoration so
+    // the values aren't silently dropped from the case overview.
+    if (shade?.trim() || material?.trim() || caseType?.trim()) {
+      return [{
+        toothNumber: "N/A",
+        restorationType: rest,
+        ...(material?.trim() ? { material: material.trim() } : {}),
+        ...(shade?.trim() ? { shade: shade.trim() } : {}),
+      }];
+    }
+    return [];
+  }
   const teeth = toothIndices.split(/[\s,;]+/).map((t) => t.trim()).filter(Boolean);
   return teeth.slice(0, 12).map((tooth) => ({
     toothNumber: tooth,
@@ -495,6 +508,7 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
       priority,
       ...(dueDate.trim() ? { dueDate: dueDate.trim() } : {}),
       ...(notes.trim() ? { notes: notes.trim() } : {}),
+      ...(shade?.trim() ? { shade: shade.trim() } : {}),
       ...(cleanRests.length ? { restorations: cleanRests } : {}),
       ...(remakeOfCaseId ? { remakeOfCaseId } : {}),
     };

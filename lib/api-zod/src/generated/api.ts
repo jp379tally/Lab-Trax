@@ -5,28 +5,29 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import * as zod from "zod";
+import * as zod from 'zod';
+
 
 /**
  * @summary Fetch recent AI chat history for the authenticated user
  */
 export const GetAiChatHistoryResponse = zod.object({
-  messages: zod.array(
-    zod.object({
-      id: zod.string(),
-      role: zod.enum(["user", "assistant"]),
-      content: zod.string(),
-      createdAt: zod.coerce.date(),
-    }),
-  ),
-});
+  "messages": zod.array(zod.object({
+  "id": zod.string(),
+  "role": zod.enum(['user', 'assistant']),
+  "content": zod.string(),
+  "createdAt": zod.coerce.date()
+}))
+})
+
 
 /**
  * @summary Clear all AI chat history for the authenticated user
  */
 export const DeleteAiChatHistoryResponse = zod.object({
-  success: zod.boolean(),
-});
+  "success": zod.boolean()
+})
+
 
 /**
  * @summary Send a message to the context-aware AI assistant
@@ -35,209 +36,186 @@ export const postAiChatBodyMessagesItemContentMax = 2000;
 
 export const postAiChatBodyMessagesMax = 20;
 
+
+
 export const PostAiChatBody = zod.object({
-  messages: zod
-    .array(
-      zod.object({
-        role: zod.enum(["user", "assistant"]),
-        content: zod.string().max(postAiChatBodyMessagesItemContentMax),
-      }),
-    )
-    .min(1)
-    .max(postAiChatBodyMessagesMax),
-});
+  "messages": zod.array(zod.object({
+  "role": zod.enum(['user', 'assistant']),
+  "content": zod.string().max(postAiChatBodyMessagesItemContentMax)
+})).min(1).max(postAiChatBodyMessagesMax)
+})
 
 export const PostAiChatResponse = zod.object({
-  reply: zod.string(),
-});
+  "reply": zod.string()
+})
+
 
 /**
  * @summary Get current 2FA status for the authenticated user
  */
 export const GetTwoFactorStatusResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      twoFactorEnabled: zod.boolean(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "twoFactorEnabled": zod.boolean()
+}).optional()
+})
+
 
 /**
  * @summary Initiate 2FA setup — generates a TOTP secret and QR code
  */
 export const SetupTwoFactorResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      otpauthUrl: zod.string(),
-      qrCodeDataUrl: zod.string(),
-      secret: zod.string(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "otpauthUrl": zod.string(),
+  "qrCodeDataUrl": zod.string(),
+  "secret": zod.string()
+}).optional()
+})
+
 
 /**
  * @summary Confirm 2FA setup by submitting a verification code
  */
 export const ConfirmTwoFactorBody = zod.object({
-  code: zod.string(),
-});
+  "code": zod.string()
+})
 
 export const ConfirmTwoFactorResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      success: zod.boolean(),
-      backupCodes: zod.array(zod.string()),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "success": zod.boolean(),
+  "backupCodes": zod.array(zod.string())
+}).optional()
+})
+
 
 /**
  * @summary Disable 2FA (requires current password confirmation)
  */
 export const DisableTwoFactorBody = zod.object({
-  code: zod.string(),
-});
+  "code": zod.string()
+})
 
 export const DisableTwoFactorResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      disabled: zod.boolean().optional(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "disabled": zod.boolean().optional()
+}).optional()
+})
+
 
 /**
  * @summary Regenerate backup codes (requires current TOTP code)
  */
 export const RegenerateBackupCodesBody = zod.object({
-  code: zod.string(),
-});
+  "code": zod.string()
+})
 
 export const RegenerateBackupCodesResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      backupCodes: zod.array(zod.string()),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "backupCodes": zod.array(zod.string())
+}).optional()
+})
+
 
 /**
  * @summary Complete login by verifying a TOTP or backup code
  */
 export const TwoFactorChallengeBody = zod.object({
-  pendingToken: zod.string(),
-  code: zod.string(),
-  deviceName: zod.string().optional(),
-  clientType: zod.enum(["web", "mobile", "desktop"]).optional(),
-});
+  "pendingToken": zod.string(),
+  "code": zod.string(),
+  "deviceName": zod.string().optional(),
+  "clientType": zod.enum(['web', 'mobile', 'desktop']).optional()
+})
 
 export const TwoFactorChallengeResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      success: zod.boolean().optional(),
-      accessToken: zod.string().optional(),
-      refreshToken: zod.string().optional(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "success": zod.boolean().optional(),
+  "accessToken": zod.string().optional(),
+  "refreshToken": zod.string().optional()
+}).optional()
+})
+
 
 /**
  * @summary List vendors / employees / items for a lab
  */
 export const ListVendorsQueryParams = zod.object({
-  organizationId: zod.coerce.string(),
-  vendorType: zod.enum(["vendor", "employee", "item"]).optional(),
-  includeInactive: zod.coerce.boolean().optional(),
-});
+  "organizationId": zod.coerce.string(),
+  "vendorType": zod.enum(['vendor', 'employee', 'item']).optional(),
+  "includeInactive": zod.coerce.boolean().optional()
+})
 
 export const ListVendorsResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .array(
-      zod.object({
-        id: zod.string(),
-        labOrganizationId: zod.string(),
-        name: zod.string(),
-        address: zod.string().nullish(),
-        city: zod.string().nullish(),
-        state: zod.string().nullish(),
-        zip: zod.string().nullish(),
-        phone: zod.string().nullish(),
-        email: zod.string().nullish(),
-        website: zod.string().nullish(),
-        notes: zod.string().nullish(),
-        vendorType: zod
-          .enum(["vendor", "employee", "item"])
-          .describe(
-            "Category of the payee — general vendor, employee, or lab supply item",
-          ),
-        isActive: zod.boolean(),
-        createdAt: zod.coerce.date(),
-        updatedAt: zod.coerce.date(),
-        deletedAt: zod.coerce.date().nullish(),
-      }),
-    )
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.array(zod.object({
+  "id": zod.string(),
+  "labOrganizationId": zod.string(),
+  "name": zod.string(),
+  "address": zod.string().nullish(),
+  "city": zod.string().nullish(),
+  "state": zod.string().nullish(),
+  "zip": zod.string().nullish(),
+  "phone": zod.string().nullish(),
+  "email": zod.string().nullish(),
+  "website": zod.string().nullish(),
+  "notes": zod.string().nullish(),
+  "vendorType": zod.enum(['vendor', 'employee', 'item']).describe('Category of the payee — general vendor, employee, or lab supply item'),
+  "isActive": zod.boolean(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date(),
+  "deletedAt": zod.coerce.date().nullish()
+})).optional()
+})
+
 
 /**
  * @summary Create a vendor / employee / item
  */
 export const createVendorBodyNameMax = 200;
 
+
+
 export const CreateVendorBody = zod.object({
-  organizationId: zod.string(),
-  name: zod.string().min(1).max(createVendorBodyNameMax),
-  address: zod.string().nullish(),
-  city: zod.string().nullish(),
-  state: zod.string().nullish(),
-  zip: zod.string().nullish(),
-  phone: zod.string().nullish(),
-  email: zod.string().nullish(),
-  website: zod.string().nullish(),
-  notes: zod.string().nullish(),
-  vendorType: zod
-    .enum(["vendor", "employee", "item"])
-    .optional()
-    .describe(
-      "Category of the payee — general vendor, employee, or lab supply item",
-    ),
-  isActive: zod.boolean().optional(),
-});
+  "organizationId": zod.string(),
+  "name": zod.string().min(1).max(createVendorBodyNameMax),
+  "address": zod.string().nullish(),
+  "city": zod.string().nullish(),
+  "state": zod.string().nullish(),
+  "zip": zod.string().nullish(),
+  "phone": zod.string().nullish(),
+  "email": zod.string().nullish(),
+  "website": zod.string().nullish(),
+  "notes": zod.string().nullish(),
+  "vendorType": zod.enum(['vendor', 'employee', 'item']).optional().describe('Category of the payee — general vendor, employee, or lab supply item'),
+  "isActive": zod.boolean().optional()
+})
 
 export const CreateVendorResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      id: zod.string(),
-      labOrganizationId: zod.string(),
-      name: zod.string(),
-      address: zod.string().nullish(),
-      city: zod.string().nullish(),
-      state: zod.string().nullish(),
-      zip: zod.string().nullish(),
-      phone: zod.string().nullish(),
-      email: zod.string().nullish(),
-      website: zod.string().nullish(),
-      notes: zod.string().nullish(),
-      vendorType: zod
-        .enum(["vendor", "employee", "item"])
-        .describe(
-          "Category of the payee — general vendor, employee, or lab supply item",
-        ),
-      isActive: zod.boolean(),
-      createdAt: zod.coerce.date(),
-      updatedAt: zod.coerce.date(),
-      deletedAt: zod.coerce.date().nullish(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "id": zod.string(),
+  "labOrganizationId": zod.string(),
+  "name": zod.string(),
+  "address": zod.string().nullish(),
+  "city": zod.string().nullish(),
+  "state": zod.string().nullish(),
+  "zip": zod.string().nullish(),
+  "phone": zod.string().nullish(),
+  "email": zod.string().nullish(),
+  "website": zod.string().nullish(),
+  "notes": zod.string().nullish(),
+  "vendorType": zod.enum(['vendor', 'employee', 'item']).describe('Category of the payee — general vendor, employee, or lab supply item'),
+  "isActive": zod.boolean(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date(),
+  "deletedAt": zod.coerce.date().nullish()
+}).optional()
+})
+
 
 /**
  * @summary Bulk-import vendors from CSV data
@@ -246,35 +224,31 @@ export const importVendorsBodyRecordsItemNameMax = 200;
 
 export const importVendorsBodyRecordsMax = 1000;
 
+
+
 export const ImportVendorsBody = zod.object({
-  organizationId: zod.string(),
-  records: zod
-    .array(
-      zod.object({
-        name: zod.string().min(1).max(importVendorsBodyRecordsItemNameMax),
-        address: zod.string().nullish(),
-        city: zod.string().nullish(),
-        state: zod.string().nullish(),
-        zip: zod.string().nullish(),
-        phone: zod.string().nullish(),
-        email: zod.string().nullish(),
-        website: zod.string().nullish(),
-        notes: zod.string().nullish(),
-      }),
-    )
-    .min(1)
-    .max(importVendorsBodyRecordsMax),
-});
+  "organizationId": zod.string(),
+  "records": zod.array(zod.object({
+  "name": zod.string().min(1).max(importVendorsBodyRecordsItemNameMax),
+  "address": zod.string().nullish(),
+  "city": zod.string().nullish(),
+  "state": zod.string().nullish(),
+  "zip": zod.string().nullish(),
+  "phone": zod.string().nullish(),
+  "email": zod.string().nullish(),
+  "website": zod.string().nullish(),
+  "notes": zod.string().nullish()
+})).min(1).max(importVendorsBodyRecordsMax)
+})
 
 export const ImportVendorsResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      imported: zod.number(),
-      skipped: zod.number(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "imported": zod.number(),
+  "skipped": zod.number()
+}).optional()
+})
+
 
 /**
  * @summary Bulk-import employees from CSV data
@@ -283,414 +257,331 @@ export const importEmployeesBodyRecordsItemNameMax = 200;
 
 export const importEmployeesBodyRecordsMax = 1000;
 
+
+
 export const ImportEmployeesBody = zod.object({
-  organizationId: zod.string(),
-  records: zod
-    .array(
-      zod.object({
-        name: zod.string().min(1).max(importEmployeesBodyRecordsItemNameMax),
-        address: zod.string().nullish(),
-        city: zod.string().nullish(),
-        state: zod.string().nullish(),
-        zip: zod.string().nullish(),
-        phone: zod.string().nullish(),
-        email: zod.string().nullish(),
-        website: zod.string().nullish(),
-        notes: zod.string().nullish(),
-      }),
-    )
-    .min(1)
-    .max(importEmployeesBodyRecordsMax),
-});
+  "organizationId": zod.string(),
+  "records": zod.array(zod.object({
+  "name": zod.string().min(1).max(importEmployeesBodyRecordsItemNameMax),
+  "address": zod.string().nullish(),
+  "city": zod.string().nullish(),
+  "state": zod.string().nullish(),
+  "zip": zod.string().nullish(),
+  "phone": zod.string().nullish(),
+  "email": zod.string().nullish(),
+  "website": zod.string().nullish(),
+  "notes": zod.string().nullish()
+})).min(1).max(importEmployeesBodyRecordsMax)
+})
 
 export const ImportEmployeesResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      imported: zod.number(),
-      skipped: zod.number(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "imported": zod.number(),
+  "skipped": zod.number()
+}).optional()
+})
+
 
 /**
  * @summary Update a vendor / employee / item
  */
 export const UpdateVendorParams = zod.object({
-  vendorId: zod.coerce.string(),
-});
+  "vendorId": zod.coerce.string()
+})
 
 export const updateVendorBodyNameMax = 200;
 
+
+
 export const UpdateVendorBody = zod.object({
-  name: zod.string().min(1).max(updateVendorBodyNameMax).optional(),
-  address: zod.string().nullish(),
-  city: zod.string().nullish(),
-  state: zod.string().nullish(),
-  zip: zod.string().nullish(),
-  phone: zod.string().nullish(),
-  email: zod.string().nullish(),
-  website: zod.string().nullish(),
-  notes: zod.string().nullish(),
-  vendorType: zod
-    .enum(["vendor", "employee", "item"])
-    .optional()
-    .describe(
-      "Category of the payee — general vendor, employee, or lab supply item",
-    ),
-  isActive: zod.boolean().optional(),
-});
+  "name": zod.string().min(1).max(updateVendorBodyNameMax).optional(),
+  "address": zod.string().nullish(),
+  "city": zod.string().nullish(),
+  "state": zod.string().nullish(),
+  "zip": zod.string().nullish(),
+  "phone": zod.string().nullish(),
+  "email": zod.string().nullish(),
+  "website": zod.string().nullish(),
+  "notes": zod.string().nullish(),
+  "vendorType": zod.enum(['vendor', 'employee', 'item']).optional().describe('Category of the payee — general vendor, employee, or lab supply item'),
+  "isActive": zod.boolean().optional()
+})
 
 export const UpdateVendorResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      id: zod.string(),
-      labOrganizationId: zod.string(),
-      name: zod.string(),
-      address: zod.string().nullish(),
-      city: zod.string().nullish(),
-      state: zod.string().nullish(),
-      zip: zod.string().nullish(),
-      phone: zod.string().nullish(),
-      email: zod.string().nullish(),
-      website: zod.string().nullish(),
-      notes: zod.string().nullish(),
-      vendorType: zod
-        .enum(["vendor", "employee", "item"])
-        .describe(
-          "Category of the payee — general vendor, employee, or lab supply item",
-        ),
-      isActive: zod.boolean(),
-      createdAt: zod.coerce.date(),
-      updatedAt: zod.coerce.date(),
-      deletedAt: zod.coerce.date().nullish(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "id": zod.string(),
+  "labOrganizationId": zod.string(),
+  "name": zod.string(),
+  "address": zod.string().nullish(),
+  "city": zod.string().nullish(),
+  "state": zod.string().nullish(),
+  "zip": zod.string().nullish(),
+  "phone": zod.string().nullish(),
+  "email": zod.string().nullish(),
+  "website": zod.string().nullish(),
+  "notes": zod.string().nullish(),
+  "vendorType": zod.enum(['vendor', 'employee', 'item']).describe('Category of the payee — general vendor, employee, or lab supply item'),
+  "isActive": zod.boolean(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date(),
+  "deletedAt": zod.coerce.date().nullish()
+}).optional()
+})
+
 
 /**
  * @summary Deactivate a vendor / employee / item (sets isActive=false)
  */
 export const DeleteVendorParams = zod.object({
-  vendorId: zod.coerce.string(),
-});
+  "vendorId": zod.coerce.string()
+})
 
 export const DeleteVendorResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      id: zod.string(),
-      labOrganizationId: zod.string(),
-      name: zod.string(),
-      address: zod.string().nullish(),
-      city: zod.string().nullish(),
-      state: zod.string().nullish(),
-      zip: zod.string().nullish(),
-      phone: zod.string().nullish(),
-      email: zod.string().nullish(),
-      website: zod.string().nullish(),
-      notes: zod.string().nullish(),
-      vendorType: zod
-        .enum(["vendor", "employee", "item"])
-        .describe(
-          "Category of the payee — general vendor, employee, or lab supply item",
-        ),
-      isActive: zod.boolean(),
-      createdAt: zod.coerce.date(),
-      updatedAt: zod.coerce.date(),
-      deletedAt: zod.coerce.date().nullish(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "id": zod.string(),
+  "labOrganizationId": zod.string(),
+  "name": zod.string(),
+  "address": zod.string().nullish(),
+  "city": zod.string().nullish(),
+  "state": zod.string().nullish(),
+  "zip": zod.string().nullish(),
+  "phone": zod.string().nullish(),
+  "email": zod.string().nullish(),
+  "website": zod.string().nullish(),
+  "notes": zod.string().nullish(),
+  "vendorType": zod.enum(['vendor', 'employee', 'item']).describe('Category of the payee — general vendor, employee, or lab supply item'),
+  "isActive": zod.boolean(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date(),
+  "deletedAt": zod.coerce.date().nullish()
+}).optional()
+})
+
 
 /**
  * @summary List transaction categories for a lab
  */
 export const ListCategoriesQueryParams = zod.object({
-  organizationId: zod.coerce.string(),
-  includeArchived: zod.coerce.boolean().optional(),
-});
+  "organizationId": zod.coerce.string(),
+  "includeArchived": zod.coerce.boolean().optional()
+})
 
 export const ListCategoriesResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .array(
-      zod.object({
-        id: zod.string(),
-        labOrganizationId: zod.string(),
-        name: zod.string(),
-        kind: zod.enum(["income", "expense", "transfer"]),
-        color: zod.string().nullish(),
-        description: zod.string().nullish(),
-        isArchived: zod.boolean(),
-        createdAt: zod.coerce.date(),
-        updatedAt: zod.coerce.date(),
-      }),
-    )
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.array(zod.object({
+  "id": zod.string(),
+  "labOrganizationId": zod.string(),
+  "name": zod.string(),
+  "kind": zod.enum(['income', 'expense', 'transfer']),
+  "color": zod.string().nullish(),
+  "description": zod.string().nullish(),
+  "isArchived": zod.boolean(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date()
+})).optional()
+})
+
 
 /**
  * @summary Create a transaction category
  */
 
+
+
 export const CreateCategoryBody = zod.object({
-  organizationId: zod.string(),
-  name: zod.string().min(1),
-  kind: zod.enum(["income", "expense", "transfer"]).optional(),
-  color: zod.string().nullish(),
-  description: zod.string().nullish(),
-});
+  "organizationId": zod.string(),
+  "name": zod.string().min(1),
+  "kind": zod.enum(['income', 'expense', 'transfer']).optional(),
+  "color": zod.string().nullish(),
+  "description": zod.string().nullish()
+})
 
 export const CreateCategoryResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      id: zod.string(),
-      labOrganizationId: zod.string(),
-      name: zod.string(),
-      kind: zod.enum(["income", "expense", "transfer"]),
-      color: zod.string().nullish(),
-      description: zod.string().nullish(),
-      isArchived: zod.boolean(),
-      createdAt: zod.coerce.date(),
-      updatedAt: zod.coerce.date(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "id": zod.string(),
+  "labOrganizationId": zod.string(),
+  "name": zod.string(),
+  "kind": zod.enum(['income', 'expense', 'transfer']),
+  "color": zod.string().nullish(),
+  "description": zod.string().nullish(),
+  "isArchived": zod.boolean(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date()
+}).optional()
+})
+
 
 /**
  * @summary Update a transaction category
  */
 export const UpdateCategoryParams = zod.object({
-  id: zod.coerce.string(),
-});
+  "id": zod.coerce.string()
+})
+
+
+
 
 export const UpdateCategoryBody = zod.object({
-  name: zod.string().min(1).optional(),
-  kind: zod.enum(["income", "expense", "transfer"]).optional(),
-  color: zod.string().nullish(),
-  description: zod.string().nullish(),
-  isArchived: zod.boolean().optional(),
-});
+  "name": zod.string().min(1).optional(),
+  "kind": zod.enum(['income', 'expense', 'transfer']).optional(),
+  "color": zod.string().nullish(),
+  "description": zod.string().nullish(),
+  "isArchived": zod.boolean().optional()
+})
 
 export const UpdateCategoryResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      id: zod.string(),
-      labOrganizationId: zod.string(),
-      name: zod.string(),
-      kind: zod.enum(["income", "expense", "transfer"]),
-      color: zod.string().nullish(),
-      description: zod.string().nullish(),
-      isArchived: zod.boolean(),
-      createdAt: zod.coerce.date(),
-      updatedAt: zod.coerce.date(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "id": zod.string(),
+  "labOrganizationId": zod.string(),
+  "name": zod.string(),
+  "kind": zod.enum(['income', 'expense', 'transfer']),
+  "color": zod.string().nullish(),
+  "description": zod.string().nullish(),
+  "isArchived": zod.boolean(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date()
+}).optional()
+})
+
 
 /**
  * @summary Archive a transaction category (sets isArchived=true)
  */
 export const ArchiveCategoryParams = zod.object({
-  id: zod.coerce.string(),
-});
+  "id": zod.coerce.string()
+})
 
 export const ArchiveCategoryResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      id: zod.string(),
-      labOrganizationId: zod.string(),
-      name: zod.string(),
-      kind: zod.enum(["income", "expense", "transfer"]),
-      color: zod.string().nullish(),
-      description: zod.string().nullish(),
-      isArchived: zod.boolean(),
-      createdAt: zod.coerce.date(),
-      updatedAt: zod.coerce.date(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "id": zod.string(),
+  "labOrganizationId": zod.string(),
+  "name": zod.string(),
+  "kind": zod.enum(['income', 'expense', 'transfer']),
+  "color": zod.string().nullish(),
+  "description": zod.string().nullish(),
+  "isArchived": zod.boolean(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date()
+}).optional()
+})
+
 
 /**
  * Returns the stored preferences merged with all-true defaults so missing keys are always ON.
  * @summary Get the authenticated user's email notification preferences
  */
 export const GetEmailPreferencesResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      caseNoteNotifications: zod
-        .boolean()
-        .optional()
-        .describe(
-          "Emails when someone adds a note to a case you are involved in",
-        ),
-      orgInviteNotifications: zod
-        .boolean()
-        .optional()
-        .describe("Emails when you are invited to join a lab or practice"),
-      statementEmails: zod
-        .boolean()
-        .optional()
-        .describe("Statement PDFs emailed by a lab (provider-side recipients)"),
-      billingReminders: zod
-        .boolean()
-        .optional()
-        .describe("Trial expiry warnings and payment failure emails"),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "caseNoteNotifications": zod.boolean().optional().describe('Emails when someone adds a note to a case you are involved in'),
+  "orgInviteNotifications": zod.boolean().optional().describe('Emails when you are invited to join a lab or practice'),
+  "statementEmails": zod.boolean().optional().describe('Statement PDFs emailed by a lab (provider-side recipients)'),
+  "billingReminders": zod.boolean().optional().describe('Trial expiry warnings and payment failure emails')
+}).optional()
+})
+
 
 /**
  * Accepts a partial update — only provided keys are written. Omitted keys are left unchanged.
  * @summary Update the authenticated user's email notification preferences
  */
-export const UpdateEmailPreferencesBody = zod
-  .object({
-    caseNoteNotifications: zod.boolean().optional(),
-    orgInviteNotifications: zod.boolean().optional(),
-    statementEmails: zod.boolean().optional(),
-    billingReminders: zod.boolean().optional(),
-  })
-  .describe(
-    "Partial update — only provided keys are written; omitted keys are unchanged.",
-  );
+export const UpdateEmailPreferencesBody = zod.object({
+  "caseNoteNotifications": zod.boolean().optional(),
+  "orgInviteNotifications": zod.boolean().optional(),
+  "statementEmails": zod.boolean().optional(),
+  "billingReminders": zod.boolean().optional()
+}).describe('Partial update — only provided keys are written; omitted keys are unchanged.')
 
 export const UpdateEmailPreferencesResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      caseNoteNotifications: zod
-        .boolean()
-        .optional()
-        .describe(
-          "Emails when someone adds a note to a case you are involved in",
-        ),
-      orgInviteNotifications: zod
-        .boolean()
-        .optional()
-        .describe("Emails when you are invited to join a lab or practice"),
-      statementEmails: zod
-        .boolean()
-        .optional()
-        .describe("Statement PDFs emailed by a lab (provider-side recipients)"),
-      billingReminders: zod
-        .boolean()
-        .optional()
-        .describe("Trial expiry warnings and payment failure emails"),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "caseNoteNotifications": zod.boolean().optional().describe('Emails when someone adds a note to a case you are involved in'),
+  "orgInviteNotifications": zod.boolean().optional().describe('Emails when you are invited to join a lab or practice'),
+  "statementEmails": zod.boolean().optional().describe('Statement PDFs emailed by a lab (provider-side recipients)'),
+  "billingReminders": zod.boolean().optional().describe('Trial expiry warnings and payment failure emails')
+}).optional()
+})
+
 
 /**
  * Returns the stored preferences merged with all-true defaults so missing keys are always ON.
  * @summary Get the authenticated user's SMS notification preferences
  */
 export const GetSmsPreferencesResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      accountLinkInvites: zod
-        .boolean()
-        .optional()
-        .describe(
-          "SMS when another lab adds a doctor with the same email\/phone (cross-lab link invite)",
-        ),
-      caseNoteNotifications: zod
-        .boolean()
-        .optional()
-        .describe("SMS when a note is added to one of your cases"),
-      billingReminders: zod
-        .boolean()
-        .optional()
-        .describe("Trial expiry warnings and payment failure texts"),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "accountLinkInvites": zod.boolean().optional().describe('SMS when another lab adds a doctor with the same email\/phone (cross-lab link invite)'),
+  "caseNoteNotifications": zod.boolean().optional().describe('SMS when a note is added to one of your cases'),
+  "billingReminders": zod.boolean().optional().describe('Trial expiry warnings and payment failure texts')
+}).optional()
+})
+
 
 /**
  * Accepts a partial update — only provided keys are written. Omitted keys are left unchanged.
  * @summary Update the authenticated user's SMS notification preferences
  */
-export const UpdateSmsPreferencesBody = zod
-  .object({
-    accountLinkInvites: zod.boolean().optional(),
-    caseNoteNotifications: zod.boolean().optional(),
-    billingReminders: zod.boolean().optional(),
-  })
-  .describe(
-    "Partial update — only provided keys are written; omitted keys are unchanged.",
-  );
+export const UpdateSmsPreferencesBody = zod.object({
+  "accountLinkInvites": zod.boolean().optional(),
+  "caseNoteNotifications": zod.boolean().optional(),
+  "billingReminders": zod.boolean().optional()
+}).describe('Partial update — only provided keys are written; omitted keys are unchanged.')
 
 export const UpdateSmsPreferencesResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      accountLinkInvites: zod
-        .boolean()
-        .optional()
-        .describe(
-          "SMS when another lab adds a doctor with the same email\/phone (cross-lab link invite)",
-        ),
-      caseNoteNotifications: zod
-        .boolean()
-        .optional()
-        .describe("SMS when a note is added to one of your cases"),
-      billingReminders: zod
-        .boolean()
-        .optional()
-        .describe("Trial expiry warnings and payment failure texts"),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "accountLinkInvites": zod.boolean().optional().describe('SMS when another lab adds a doctor with the same email\/phone (cross-lab link invite)'),
+  "caseNoteNotifications": zod.boolean().optional().describe('SMS when a note is added to one of your cases'),
+  "billingReminders": zod.boolean().optional().describe('Trial expiry warnings and payment failure texts')
+}).optional()
+})
+
 
 /**
  * Returns server health status
  * @summary Health check
  */
 export const HealthCheckResponse = zod.object({
-  status: zod.string(),
-});
+  "status": zod.string()
+})
+
 
 /**
  * Returns up to 50 notifications for the authenticated user, newest first.
  * @summary List the calling user's notifications
  */
 export const ListNotificationsResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .array(
-      zod.object({
-        id: zod.string(),
-        userId: zod.string(),
-        type: zod.string(),
-        title: zod.string(),
-        body: zod.string(),
-        dataJson: zod.unknown().nullish(),
-        readAt: zod.coerce.date().nullish(),
-        createdAt: zod.coerce.date(),
-      }),
-    )
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.array(zod.object({
+  "id": zod.string(),
+  "userId": zod.string(),
+  "type": zod.string(),
+  "title": zod.string(),
+  "body": zod.string(),
+  "dataJson": zod.unknown().nullish(),
+  "readAt": zod.coerce.date().nullish(),
+  "createdAt": zod.coerce.date()
+})).optional()
+})
+
 
 /**
  * Sets read_at = now() on every unread notification for the authenticated user.
  * @summary Mark all notifications as read
  */
 export const MarkAllNotificationsReadResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      ok: zod.boolean().optional(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "ok": zod.boolean().optional()
+}).optional()
+})
+
 
 /**
  * Returns up to 500 most-recent canonical cases (plus projected legacy
@@ -701,129 +592,102 @@ automatically include cross-lab linked-doctor cases.
  * @summary List cases visible to the authenticated user
  */
 export const ListCasesQueryParams = zod.object({
-  organizationId: zod.coerce
-    .string()
-    .optional()
-    .describe("Filter to a single lab\/provider org (optional)."),
-  include: zod.coerce
-    .string()
-    .optional()
-    .describe('Comma-separated extras to include (e.g. \"restorations\").'),
-});
+  "organizationId": zod.coerce.string().optional().describe('Filter to a single lab\/provider org (optional).'),
+  "include": zod.coerce.string().optional().describe('Comma-separated extras to include (e.g. \"restorations\").')
+})
 
 export const ListCasesResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .array(
-      zod.object({
-        id: zod.string(),
-        caseNumber: zod.string(),
-        labOrganizationId: zod.string().nullish(),
-        providerOrganizationId: zod.string().nullish(),
-        patientFirstName: zod.string().nullish(),
-        patientLastName: zod.string().nullish(),
-        doctorName: zod.string().nullish(),
-        status: zod.string(),
-        priority: zod.string().nullish(),
-        dueDate: zod.string().nullish(),
-        createdAt: zod.string().nullish(),
-        updatedAt: zod.string().nullish(),
-        restorationCount: zod.number().nullish(),
-        restorationTypes: zod.string().nullish(),
-        restorationMaterials: zod.string().nullish(),
-        teeth: zod.string().nullish(),
-        totalPrice: zod.string().nullish(),
-        casePanBarcode: zod.string().nullish(),
-        remakeOfCaseId: zod.string().nullish(),
-        remakeReason: zod.string().nullish(),
-        remakeCharged: zod.boolean().nullish(),
-        needsAiReview: zod.boolean().nullish(),
-        aiImportSource: zod.string().nullish(),
-        shade: zod.string().nullish(),
-        notes: zod.string().nullish(),
-        patientDob: zod.string().nullish(),
-        trackingNumber: zod.string().nullish(),
-        expectedDeliveryDate: zod.string().nullish(),
-        createdByUserId: zod.string().nullish(),
-        suggestedProviderOrgId: zod.string().nullish(),
-        suggestedPracticeName: zod.string().nullish(),
-        suggestedDoctorName: zod.string().nullish(),
-        photos: zod.array(zod.string()).nullish(),
-        videos: zod.array(zod.string()).nullish(),
-        activityLog: zod
-          .array(
-            zod.object({
-              id: zod.string().nullish(),
-              type: zod.string().nullish(),
-              timestamp: zod.union([zod.number(), zod.string()]).nullish(),
-              description: zod.string().nullish(),
-              imageUri: zod.string().nullish(),
-              attachmentId: zod.string().nullish(),
-              fileType: zod.string().nullish(),
-              station: zod.string().nullish(),
-              user: zod.string().nullish(),
-            }),
-          )
-          .nullish(),
-        attachments: zod
-          .array(
-            zod.object({
-              id: zod.string(),
-              caseId: zod.string().nullish(),
-              fileName: zod.string().nullish(),
-              fileType: zod.string().nullish(),
-              storageKey: zod.string().nullish(),
-              visibility: zod.string().nullish(),
-              createdAt: zod.string().nullish(),
-              uploaderName: zod.string().nullish(),
-            }),
-          )
-          .nullish(),
-        restorations: zod
-          .array(
-            zod.object({
-              id: zod.string().nullish(),
-              toothNumber: zod.string().nullish(),
-              restorationType: zod.string().nullish(),
-              restorationSubtype: zod.string().nullish(),
-              material: zod.string().nullish(),
-              shade: zod.string().nullish(),
-              notes: zod.string().nullish(),
-              quantity: zod.number().nullish(),
-            }),
-          )
-          .nullish(),
-        remakeOriginal: zod
-          .object({
-            id: zod.string(),
-            caseNumber: zod.string(),
-            patientFirstName: zod.string().nullish(),
-            patientLastName: zod.string().nullish(),
-            status: zod.string().nullish(),
-            createdAt: zod.string().nullish(),
-            remakeReason: zod.string().nullish(),
-            remakeCharged: zod.boolean().nullish(),
-          })
-          .nullish(),
-        remakeChildren: zod
-          .array(
-            zod.object({
-              id: zod.string(),
-              caseNumber: zod.string(),
-              patientFirstName: zod.string().nullish(),
-              patientLastName: zod.string().nullish(),
-              status: zod.string().nullish(),
-              createdAt: zod.string().nullish(),
-              remakeReason: zod.string().nullish(),
-              remakeCharged: zod.boolean().nullish(),
-            }),
-          )
-          .nullish(),
-        _source: zod.string().optional(),
-      }),
-    )
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.array(zod.object({
+  "id": zod.string(),
+  "caseNumber": zod.string(),
+  "labOrganizationId": zod.string().nullish(),
+  "providerOrganizationId": zod.string().nullish(),
+  "patientFirstName": zod.string().nullish(),
+  "patientLastName": zod.string().nullish(),
+  "doctorName": zod.string().nullish(),
+  "status": zod.string(),
+  "priority": zod.string().nullish(),
+  "dueDate": zod.string().nullish(),
+  "createdAt": zod.string().nullish(),
+  "updatedAt": zod.string().nullish(),
+  "restorationCount": zod.number().nullish(),
+  "restorationTypes": zod.string().nullish(),
+  "restorationMaterials": zod.string().nullish(),
+  "teeth": zod.string().nullish(),
+  "totalPrice": zod.string().nullish(),
+  "casePanBarcode": zod.string().nullish(),
+  "remakeOfCaseId": zod.string().nullish(),
+  "remakeReason": zod.string().nullish(),
+  "remakeCharged": zod.boolean().nullish(),
+  "needsAiReview": zod.boolean().nullish(),
+  "aiImportSource": zod.string().nullish(),
+  "shade": zod.string().nullish(),
+  "notes": zod.string().nullish(),
+  "patientDob": zod.string().nullish(),
+  "trackingNumber": zod.string().nullish(),
+  "expectedDeliveryDate": zod.string().nullish(),
+  "createdByUserId": zod.string().nullish(),
+  "suggestedProviderOrgId": zod.string().nullish(),
+  "suggestedPracticeName": zod.string().nullish(),
+  "suggestedDoctorName": zod.string().nullish(),
+  "photos": zod.array(zod.string()).nullish(),
+  "videos": zod.array(zod.string()).nullish(),
+  "activityLog": zod.array(zod.object({
+  "id": zod.string().nullish(),
+  "type": zod.string().nullish(),
+  "timestamp": zod.union([zod.number(),zod.string()]).nullish(),
+  "description": zod.string().nullish(),
+  "imageUri": zod.string().nullish(),
+  "attachmentId": zod.string().nullish(),
+  "fileType": zod.string().nullish(),
+  "station": zod.string().nullish(),
+  "user": zod.string().nullish()
+})).nullish(),
+  "attachments": zod.array(zod.object({
+  "id": zod.string(),
+  "caseId": zod.string().nullish(),
+  "fileName": zod.string().nullish(),
+  "fileType": zod.string().nullish(),
+  "storageKey": zod.string().nullish(),
+  "visibility": zod.string().nullish(),
+  "createdAt": zod.string().nullish(),
+  "uploaderName": zod.string().nullish()
+})).nullish(),
+  "restorations": zod.array(zod.object({
+  "id": zod.string().nullish(),
+  "toothNumber": zod.string().nullish(),
+  "restorationType": zod.string().nullish(),
+  "restorationSubtype": zod.string().nullish(),
+  "material": zod.string().nullish(),
+  "shade": zod.string().nullish(),
+  "notes": zod.string().nullish(),
+  "quantity": zod.number().nullish()
+})).nullish(),
+  "remakeOriginal": zod.object({
+  "id": zod.string(),
+  "caseNumber": zod.string(),
+  "patientFirstName": zod.string().nullish(),
+  "patientLastName": zod.string().nullish(),
+  "status": zod.string().nullish(),
+  "createdAt": zod.string().nullish(),
+  "remakeReason": zod.string().nullish(),
+  "remakeCharged": zod.boolean().nullish()
+}).nullish(),
+  "remakeChildren": zod.array(zod.object({
+  "id": zod.string(),
+  "caseNumber": zod.string(),
+  "patientFirstName": zod.string().nullish(),
+  "patientLastName": zod.string().nullish(),
+  "status": zod.string().nullish(),
+  "createdAt": zod.string().nullish(),
+  "remakeReason": zod.string().nullish(),
+  "remakeCharged": zod.boolean().nullish()
+})).nullish(),
+  "_source": zod.string().optional()
+})).optional()
+})
+
 
 /**
  * Creates a new case row in the canonical `cases` table. The caller must
@@ -833,40 +697,31 @@ when the case has a `providerOrganizationId`.
  * @summary Create a canonical case
  */
 export const CreateCaseBody = zod.object({
-  caseNumber: zod
-    .string()
-    .describe("Client-supplied case number (ignored for remakes)."),
-  labOrganizationId: zod.string(),
-  providerOrganizationId: zod.string().nullish(),
-  patientFirstName: zod.string().nullish(),
-  patientLastName: zod.string().nullish(),
-  doctorName: zod.string().nullish(),
-  status: zod.string().nullish(),
-  remakeOfCaseId: zod
-    .string()
-    .nullish()
-    .describe("ID of the case being remade."),
-  notes: zod.string().nullish(),
-  shade: zod.string().nullish(),
-  dueDate: zod.coerce.date().nullish(),
-  rushOrder: zod.boolean().nullish(),
-  priority: zod.enum(["normal", "rush"]).nullish(),
-  restorations: zod
-    .array(
-      zod.object({
-        toothNumber: zod.string(),
-        restorationType: zod.string(),
-        material: zod.string().nullish(),
-        shade: zod.string().nullish(),
-        notes: zod.string().nullish(),
-        quantity: zod.number().nullish(),
-        unitPrice: zod.number().nullish(),
-      }),
-    )
-    .nullish()
-    .describe("Inline restoration line items created alongside the case."),
-  needsAiReview: zod.boolean().nullish(),
-});
+  "caseNumber": zod.string().describe('Client-supplied case number (ignored for remakes).'),
+  "labOrganizationId": zod.string(),
+  "providerOrganizationId": zod.string().nullish(),
+  "patientFirstName": zod.string().nullish(),
+  "patientLastName": zod.string().nullish(),
+  "doctorName": zod.string().nullish(),
+  "status": zod.string().nullish(),
+  "remakeOfCaseId": zod.string().nullish().describe('ID of the case being remade.'),
+  "notes": zod.string().nullish(),
+  "shade": zod.string().nullish(),
+  "dueDate": zod.coerce.date().nullish(),
+  "rushOrder": zod.boolean().nullish(),
+  "priority": zod.enum(['normal', 'rush']).nullish(),
+  "restorations": zod.array(zod.object({
+  "toothNumber": zod.string(),
+  "restorationType": zod.string(),
+  "material": zod.string().nullish(),
+  "shade": zod.string().nullish(),
+  "notes": zod.string().nullish(),
+  "quantity": zod.number().nullish(),
+  "unitPrice": zod.number().nullish()
+})).nullish().describe('Inline restoration line items created alongside the case.'),
+  "needsAiReview": zod.boolean().nullish()
+})
+
 
 /**
  * Provider-portal foundation. Returns up to 500 most-recent canonical
@@ -879,118 +734,97 @@ org id. A caller with no provider organization receives an empty list.
  * @summary List the authenticated provider's assigned cases
  */
 export const ListProviderCasesResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .array(
-      zod.object({
-        id: zod.string(),
-        caseNumber: zod.string(),
-        labOrganizationId: zod.string().nullish(),
-        providerOrganizationId: zod.string().nullish(),
-        patientFirstName: zod.string().nullish(),
-        patientLastName: zod.string().nullish(),
-        doctorName: zod.string().nullish(),
-        status: zod.string(),
-        priority: zod.string().nullish(),
-        dueDate: zod.string().nullish(),
-        createdAt: zod.string().nullish(),
-        updatedAt: zod.string().nullish(),
-        restorationCount: zod.number().nullish(),
-        restorationTypes: zod.string().nullish(),
-        restorationMaterials: zod.string().nullish(),
-        teeth: zod.string().nullish(),
-        totalPrice: zod.string().nullish(),
-        casePanBarcode: zod.string().nullish(),
-        remakeOfCaseId: zod.string().nullish(),
-        remakeReason: zod.string().nullish(),
-        remakeCharged: zod.boolean().nullish(),
-        needsAiReview: zod.boolean().nullish(),
-        aiImportSource: zod.string().nullish(),
-        shade: zod.string().nullish(),
-        notes: zod.string().nullish(),
-        patientDob: zod.string().nullish(),
-        trackingNumber: zod.string().nullish(),
-        expectedDeliveryDate: zod.string().nullish(),
-        createdByUserId: zod.string().nullish(),
-        suggestedProviderOrgId: zod.string().nullish(),
-        suggestedPracticeName: zod.string().nullish(),
-        suggestedDoctorName: zod.string().nullish(),
-        photos: zod.array(zod.string()).nullish(),
-        videos: zod.array(zod.string()).nullish(),
-        activityLog: zod
-          .array(
-            zod.object({
-              id: zod.string().nullish(),
-              type: zod.string().nullish(),
-              timestamp: zod.union([zod.number(), zod.string()]).nullish(),
-              description: zod.string().nullish(),
-              imageUri: zod.string().nullish(),
-              attachmentId: zod.string().nullish(),
-              fileType: zod.string().nullish(),
-              station: zod.string().nullish(),
-              user: zod.string().nullish(),
-            }),
-          )
-          .nullish(),
-        attachments: zod
-          .array(
-            zod.object({
-              id: zod.string(),
-              caseId: zod.string().nullish(),
-              fileName: zod.string().nullish(),
-              fileType: zod.string().nullish(),
-              storageKey: zod.string().nullish(),
-              visibility: zod.string().nullish(),
-              createdAt: zod.string().nullish(),
-              uploaderName: zod.string().nullish(),
-            }),
-          )
-          .nullish(),
-        restorations: zod
-          .array(
-            zod.object({
-              id: zod.string().nullish(),
-              toothNumber: zod.string().nullish(),
-              restorationType: zod.string().nullish(),
-              restorationSubtype: zod.string().nullish(),
-              material: zod.string().nullish(),
-              shade: zod.string().nullish(),
-              notes: zod.string().nullish(),
-              quantity: zod.number().nullish(),
-            }),
-          )
-          .nullish(),
-        remakeOriginal: zod
-          .object({
-            id: zod.string(),
-            caseNumber: zod.string(),
-            patientFirstName: zod.string().nullish(),
-            patientLastName: zod.string().nullish(),
-            status: zod.string().nullish(),
-            createdAt: zod.string().nullish(),
-            remakeReason: zod.string().nullish(),
-            remakeCharged: zod.boolean().nullish(),
-          })
-          .nullish(),
-        remakeChildren: zod
-          .array(
-            zod.object({
-              id: zod.string(),
-              caseNumber: zod.string(),
-              patientFirstName: zod.string().nullish(),
-              patientLastName: zod.string().nullish(),
-              status: zod.string().nullish(),
-              createdAt: zod.string().nullish(),
-              remakeReason: zod.string().nullish(),
-              remakeCharged: zod.boolean().nullish(),
-            }),
-          )
-          .nullish(),
-        _source: zod.string().optional(),
-      }),
-    )
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.array(zod.object({
+  "id": zod.string(),
+  "caseNumber": zod.string(),
+  "labOrganizationId": zod.string().nullish(),
+  "providerOrganizationId": zod.string().nullish(),
+  "patientFirstName": zod.string().nullish(),
+  "patientLastName": zod.string().nullish(),
+  "doctorName": zod.string().nullish(),
+  "status": zod.string(),
+  "priority": zod.string().nullish(),
+  "dueDate": zod.string().nullish(),
+  "createdAt": zod.string().nullish(),
+  "updatedAt": zod.string().nullish(),
+  "restorationCount": zod.number().nullish(),
+  "restorationTypes": zod.string().nullish(),
+  "restorationMaterials": zod.string().nullish(),
+  "teeth": zod.string().nullish(),
+  "totalPrice": zod.string().nullish(),
+  "casePanBarcode": zod.string().nullish(),
+  "remakeOfCaseId": zod.string().nullish(),
+  "remakeReason": zod.string().nullish(),
+  "remakeCharged": zod.boolean().nullish(),
+  "needsAiReview": zod.boolean().nullish(),
+  "aiImportSource": zod.string().nullish(),
+  "shade": zod.string().nullish(),
+  "notes": zod.string().nullish(),
+  "patientDob": zod.string().nullish(),
+  "trackingNumber": zod.string().nullish(),
+  "expectedDeliveryDate": zod.string().nullish(),
+  "createdByUserId": zod.string().nullish(),
+  "suggestedProviderOrgId": zod.string().nullish(),
+  "suggestedPracticeName": zod.string().nullish(),
+  "suggestedDoctorName": zod.string().nullish(),
+  "photos": zod.array(zod.string()).nullish(),
+  "videos": zod.array(zod.string()).nullish(),
+  "activityLog": zod.array(zod.object({
+  "id": zod.string().nullish(),
+  "type": zod.string().nullish(),
+  "timestamp": zod.union([zod.number(),zod.string()]).nullish(),
+  "description": zod.string().nullish(),
+  "imageUri": zod.string().nullish(),
+  "attachmentId": zod.string().nullish(),
+  "fileType": zod.string().nullish(),
+  "station": zod.string().nullish(),
+  "user": zod.string().nullish()
+})).nullish(),
+  "attachments": zod.array(zod.object({
+  "id": zod.string(),
+  "caseId": zod.string().nullish(),
+  "fileName": zod.string().nullish(),
+  "fileType": zod.string().nullish(),
+  "storageKey": zod.string().nullish(),
+  "visibility": zod.string().nullish(),
+  "createdAt": zod.string().nullish(),
+  "uploaderName": zod.string().nullish()
+})).nullish(),
+  "restorations": zod.array(zod.object({
+  "id": zod.string().nullish(),
+  "toothNumber": zod.string().nullish(),
+  "restorationType": zod.string().nullish(),
+  "restorationSubtype": zod.string().nullish(),
+  "material": zod.string().nullish(),
+  "shade": zod.string().nullish(),
+  "notes": zod.string().nullish(),
+  "quantity": zod.number().nullish()
+})).nullish(),
+  "remakeOriginal": zod.object({
+  "id": zod.string(),
+  "caseNumber": zod.string(),
+  "patientFirstName": zod.string().nullish(),
+  "patientLastName": zod.string().nullish(),
+  "status": zod.string().nullish(),
+  "createdAt": zod.string().nullish(),
+  "remakeReason": zod.string().nullish(),
+  "remakeCharged": zod.boolean().nullish()
+}).nullish(),
+  "remakeChildren": zod.array(zod.object({
+  "id": zod.string(),
+  "caseNumber": zod.string(),
+  "patientFirstName": zod.string().nullish(),
+  "patientLastName": zod.string().nullish(),
+  "status": zod.string().nullish(),
+  "createdAt": zod.string().nullish(),
+  "remakeReason": zod.string().nullish(),
+  "remakeCharged": zod.boolean().nullish()
+})).nullish(),
+  "_source": zod.string().optional()
+})).optional()
+})
+
 
 /**
  * Updates a list of cases to the same status in one operation. Every
@@ -1001,38 +835,20 @@ count of cases actually updated.
  */
 export const bulkChangeCaseStatusBodyCaseIdsMax = 500;
 
+
+
 export const BulkChangeCaseStatusBody = zod.object({
-  caseIds: zod
-    .array(zod.string())
-    .min(1)
-    .max(bulkChangeCaseStatusBodyCaseIdsMax),
-  status: zod.enum([
-    "received",
-    "in_design",
-    "scan",
-    "in_milling",
-    "post_mill",
-    "sintering_furnace",
-    "model_room",
-    "in_porcelain",
-    "qc",
-    "complete",
-    "shipped",
-    "delivered",
-    "on_hold",
-    "remake",
-    "cancelled",
-  ]),
-});
+  "caseIds": zod.array(zod.string()).min(1).max(bulkChangeCaseStatusBodyCaseIdsMax),
+  "status": zod.enum(['received', 'in_design', 'scan', 'in_milling', 'post_mill', 'sintering_furnace', 'model_room', 'in_porcelain', 'qc', 'complete', 'shipped', 'delivered', 'on_hold', 'remake', 'cancelled'])
+})
 
 export const BulkChangeCaseStatusResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      updatedCount: zod.number(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "updatedCount": zod.number()
+}).optional()
+})
+
 
 /**
  * Reassigns a list of cases to a new provider organization in one
@@ -1043,19 +859,20 @@ of. Returns the count of cases actually updated.
  */
 export const bulkReassignCasesBodyCaseIdsMax = 500;
 
+
+
 export const BulkReassignCasesBody = zod.object({
-  caseIds: zod.array(zod.string()).min(1).max(bulkReassignCasesBodyCaseIdsMax),
-  providerOrganizationId: zod.string(),
-});
+  "caseIds": zod.array(zod.string()).min(1).max(bulkReassignCasesBodyCaseIdsMax),
+  "providerOrganizationId": zod.string()
+})
 
 export const BulkReassignCasesResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      updatedCount: zod.number(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "updatedCount": zod.number()
+}).optional()
+})
+
 
 /**
  * Auto-create a LabTrax case from an iTero Lab-Review prescription. The
@@ -1068,44 +885,30 @@ order id in `itero_imported_orders` so re-polls are idempotent.
  * @summary Import a case from an iTero Lab-Review Rx
  */
 export const ImportCaseFromIteroRxBody = zod.object({
-  file: zod.string().describe("Rx PDF or image (binary upload)"),
-  iteroOrderId: zod.string(),
-  labOrganizationId: zod.string(),
-  providerOrganizationId: zod.string(),
-  doctorNameHint: zod.string().optional(),
-  patientFirstNameHint: zod.string().optional(),
-  patientLastNameHint: zod.string().optional(),
-});
+  "file": zod.string().describe('Rx PDF or image (binary upload)'),
+  "iteroOrderId": zod.string(),
+  "labOrganizationId": zod.string(),
+  "providerOrganizationId": zod.string(),
+  "doctorNameHint": zod.string().optional(),
+  "patientFirstNameHint": zod.string().optional(),
+  "patientLastNameHint": zod.string().optional()
+})
 
 export const ImportCaseFromIteroRxResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      deduped: zod.boolean().optional(),
-      caseId: zod.string().nullish(),
-      caseNumber: zod.string().nullish(),
-      needsAiReview: zod.boolean().optional(),
-      attachmentId: zod.string().nullish(),
-      iteroOrderId: zod.string().optional(),
-      suggestedDoctorName: zod
-        .string()
-        .nullish()
-        .describe(
-          'Present when the AI-extracted doctor name closely matches\n(but does not exactly equal) an existing doctor on file.\nShown as a \"Did you mean?\" prompt in the desktop review\nbanner. Cleared via `PATCH \/cases\/{caseId}` with\n`clearSuggestion: true`.\n',
-        ),
-      suggestedProviderOrgId: zod
-        .string()
-        .nullish()
-        .describe("Provider org id of the suggested match doctor."),
-      suggestedPracticeName: zod
-        .string()
-        .nullish()
-        .describe(
-          "Display name of the suggested provider org, resolved\nserver-side so the desktop banner needs no extra round-trip.\n",
-        ),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "deduped": zod.boolean().optional(),
+  "caseId": zod.string().nullish(),
+  "caseNumber": zod.string().nullish(),
+  "needsAiReview": zod.boolean().optional(),
+  "attachmentId": zod.string().nullish(),
+  "iteroOrderId": zod.string().optional(),
+  "suggestedDoctorName": zod.string().nullish().describe('Present when the AI-extracted doctor name closely matches\n(but does not exactly equal) an existing doctor on file.\nShown as a \"Did you mean?\" prompt in the desktop review\nbanner. Cleared via `PATCH \/cases\/{caseId}` with\n`clearSuggestion: true`.\n'),
+  "suggestedProviderOrgId": zod.string().nullish().describe('Provider org id of the suggested match doctor.'),
+  "suggestedPracticeName": zod.string().nullish().describe('Display name of the suggested provider org, resolved\nserver-side so the desktop banner needs no extra round-trip.\n')
+}).optional()
+})
+
 
 /**
  * Accepts a full iTero export ZIP (e.g. OrthoCAD_Export_306682066.zip).
@@ -1119,41 +922,30 @@ single-file flow: an already-imported order returns `deduped: true`.
  * @summary Import a case from an iTero export ZIP
  */
 export const ImportCaseFromIteroZipBody = zod.object({
-  file: zod.string().describe("iTero export ZIP (binary upload, max 300 MB)"),
-  labOrganizationId: zod.string(),
-  providerOrganizationId: zod.string(),
-  doctorNameHint: zod.string().optional(),
-  patientFirstNameHint: zod.string().optional(),
-  patientLastNameHint: zod.string().optional(),
-});
+  "file": zod.string().describe('iTero export ZIP (binary upload, max 300 MB)'),
+  "labOrganizationId": zod.string(),
+  "providerOrganizationId": zod.string(),
+  "doctorNameHint": zod.string().optional(),
+  "patientFirstNameHint": zod.string().optional(),
+  "patientLastNameHint": zod.string().optional()
+})
 
 export const ImportCaseFromIteroZipResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      deduped: zod.boolean().optional(),
-      caseId: zod.string().nullish(),
-      caseNumber: zod.string().nullish(),
-      needsAiReview: zod.boolean().optional(),
-      attachmentId: zod.string().nullish(),
-      iteroOrderId: zod.string().optional(),
-      extraFilesAttached: zod
-        .number()
-        .optional()
-        .describe(
-          "Number of non-Rx files from the ZIP that were attached to the case.",
-        ),
-      extraFilesFailed: zod
-        .number()
-        .optional()
-        .describe(
-          "Number of non-Rx files that could not be attached (partial-failure indicator).",
-        ),
-      suggestedDoctorName: zod.string().nullish(),
-      suggestedProviderOrgId: zod.string().nullish(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "deduped": zod.boolean().optional(),
+  "caseId": zod.string().nullish(),
+  "caseNumber": zod.string().nullish(),
+  "needsAiReview": zod.boolean().optional(),
+  "attachmentId": zod.string().nullish(),
+  "iteroOrderId": zod.string().optional(),
+  "extraFilesAttached": zod.number().optional().describe('Number of non-Rx files from the ZIP that were attached to the case.'),
+  "extraFilesFailed": zod.number().optional().describe('Number of non-Rx files that could not be attached (partial-failure indicator).'),
+  "suggestedDoctorName": zod.string().nullish(),
+  "suggestedProviderOrgId": zod.string().nullish()
+}).optional()
+})
+
 
 /**
  * Accepts up to 20 iTero export ZIP files in a single multipart request
@@ -1166,24 +958,14 @@ individual ZIPs are captured per-entry and do not abort the batch.
  * @summary Batch-import cases from multiple iTero export ZIPs
  */
 export const ImportCasesFromIteroZipBatchBody = zod.object({
-  "files[]": zod
-    .array(
-      zod
-        .string()
-        .describe("iTero export ZIP (binary upload, max 300 MB each)"),
-    )
-    .describe("Up to 20 iTero export ZIPs"),
-  labOrganizationId: zod.string(),
-  providerOrganizationId: zod
-    .string()
-    .optional()
-    .describe(
-      "Optional — if omitted the case is created without a linked practice.",
-    ),
-  doctorNameHint: zod.string().optional(),
-  patientFirstNameHint: zod.string().optional(),
-  patientLastNameHint: zod.string().optional(),
-});
+  "files[]": zod.array(zod.string().describe('iTero export ZIP (binary upload, max 300 MB each)')).describe('Up to 20 iTero export ZIPs'),
+  "labOrganizationId": zod.string(),
+  "providerOrganizationId": zod.string().optional().describe('Optional — if omitted the case is created without a linked practice.'),
+  "doctorNameHint": zod.string().optional(),
+  "patientFirstNameHint": zod.string().optional(),
+  "patientLastNameHint": zod.string().optional()
+})
+
 
 /**
  * Returns the single case whose `casePanBarcode` exactly matches the
@@ -1194,27 +976,22 @@ barcode scanner workflows that need a precise one-to-one lookup.
  * @summary Find a case by its pan barcode
  */
 export const GetCaseByBarcodeParams = zod.object({
-  code: zod.coerce.string().describe("The exact pan barcode value to look up."),
-});
+  "code": zod.coerce.string().describe('The exact pan barcode value to look up.')
+})
 
 export const GetCaseByBarcodeQueryParams = zod.object({
-  labOrganizationId: zod.coerce
-    .string()
-    .describe("The lab the barcode belongs to."),
-});
+  "labOrganizationId": zod.coerce.string().describe('The lab the barcode belongs to.')
+})
 
 export const GetCaseByBarcodeResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      case: zod
-        .object({})
-        .passthrough()
-        .optional()
-        .describe("The matching case row (Drizzle shape)"),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "case": zod.object({
+
+}).passthrough().optional().describe('The matching case row (Drizzle shape)')
+}).optional()
+})
+
 
 /**
  * Returns patient-similarity hits for the given first+last name within a
@@ -1229,71 +1006,41 @@ be an active member of `labOrganizationId`. Results are capped at
 export const getPatientSimilarityQueryLimitDefault = 50;
 export const getPatientSimilarityQueryLimitMax = 200;
 
+
+
 export const GetPatientSimilarityQueryParams = zod.object({
-  patientFirstName: zod.coerce.string(),
-  patientLastName: zod.coerce.string(),
-  labOrganizationId: zod.coerce.string(),
-  providerOrganizationId: zod.coerce
-    .string()
-    .optional()
-    .describe("Scope results to a specific provider org when known."),
-  doctorName: zod.coerce
-    .string()
-    .optional()
-    .describe(
-      "Fallback doctor-name scope when providerOrganizationId is not known.",
-    ),
-  limit: zod.coerce
-    .number()
-    .min(1)
-    .max(getPatientSimilarityQueryLimitMax)
-    .default(getPatientSimilarityQueryLimitDefault)
-    .describe(
-      "Maximum number of hits to return (default 50, max 200). When the full result set exceeds this value, the response includes truncated:true and totalFound.",
-    ),
-});
+  "patientFirstName": zod.coerce.string(),
+  "patientLastName": zod.coerce.string(),
+  "labOrganizationId": zod.coerce.string(),
+  "providerOrganizationId": zod.coerce.string().optional().describe('Scope results to a specific provider org when known.'),
+  "doctorName": zod.coerce.string().optional().describe('Fallback doctor-name scope when providerOrganizationId is not known.'),
+  "limit": zod.coerce.number().min(1).max(getPatientSimilarityQueryLimitMax).default(getPatientSimilarityQueryLimitDefault).describe('Maximum number of hits to return (default 50, max 200). When the full result set exceeds this value, the response includes truncated:true and totalFound.')
+})
 
 export const GetPatientSimilarityResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      matches: zod.array(
-        zod.object({
-          id: zod.string(),
-          source: zod.enum(["canonical", "legacy"]),
-          labOrganizationId: zod
-            .string()
-            .describe(
-              "The lab that owns this case. Matches the requested labOrganizationId for primary-lab hits; differs for cross-lab linked-doctor hits.",
-            ),
-          caseNumber: zod.string().nullish(),
-          patientFirstName: zod.string().nullish(),
-          patientLastName: zod.string().nullish(),
-          doctorName: zod.string().nullish(),
-          status: zod.string().nullish(),
-          matchKind: zod.enum(["exact", "nickname", "fuzzy"]),
-          createdAt: zod.string().nullish(),
-          dueDate: zod.string().nullish(),
-          toothNumbers: zod.string().nullish(),
-          restorationTypes: zod.string().nullish(),
-          hasInvoice: zod.boolean().optional(),
-        }),
-      ),
-      truncated: zod
-        .boolean()
-        .optional()
-        .describe(
-          "Present and true when the result set was capped by the limit parameter.",
-        ),
-      totalFound: zod
-        .number()
-        .optional()
-        .describe(
-          "Total number of hits before the cap was applied. Only present when truncated is true.",
-        ),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "matches": zod.array(zod.object({
+  "id": zod.string(),
+  "source": zod.enum(['canonical', 'legacy']),
+  "labOrganizationId": zod.string().describe('The lab that owns this case. Matches the requested labOrganizationId for primary-lab hits; differs for cross-lab linked-doctor hits.'),
+  "caseNumber": zod.string().nullish(),
+  "patientFirstName": zod.string().nullish(),
+  "patientLastName": zod.string().nullish(),
+  "doctorName": zod.string().nullish(),
+  "status": zod.string().nullish(),
+  "matchKind": zod.enum(['exact', 'nickname', 'fuzzy']),
+  "createdAt": zod.string().nullish(),
+  "dueDate": zod.string().nullish(),
+  "toothNumbers": zod.string().nullish(),
+  "restorationTypes": zod.string().nullish(),
+  "hasInvoice": zod.boolean().optional()
+})),
+  "truncated": zod.boolean().optional().describe('Present and true when the result set was capped by the limit parameter.'),
+  "totalFound": zod.number().optional().describe('Total number of hits before the cap was applied. Only present when truncated is true.')
+}).optional()
+})
+
 
 /**
  * Returns import sessions grouped by batchId (newest first). Each session
@@ -1307,35 +1054,32 @@ export const getIteroImportHistoryQueryLimitDefault = 50;
 export const getIteroImportHistoryQueryOffsetDefault = 0;
 
 export const GetIteroImportHistoryQueryParams = zod.object({
-  labOrganizationId: zod.coerce.string(),
-  limit: zod.coerce.number().default(getIteroImportHistoryQueryLimitDefault),
-  offset: zod.coerce.number().default(getIteroImportHistoryQueryOffsetDefault),
-});
+  "labOrganizationId": zod.coerce.string(),
+  "limit": zod.coerce.number().default(getIteroImportHistoryQueryLimitDefault),
+  "offset": zod.coerce.number().default(getIteroImportHistoryQueryOffsetDefault)
+})
 
 export const GetIteroImportHistoryResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      total: zod.number(),
-      limit: zod.number(),
-      offset: zod.number(),
-      sessions: zod.array(
-        zod.object({
-          batchId: zod.string(),
-          importedAt: zod.coerce.date(),
-          importedByUserId: zod.string().nullish(),
-          importedByUsername: zod.string().nullish(),
-          importedByName: zod.string().nullish(),
-          createdCount: zod.number(),
-          dedupedCount: zod.number(),
-          erroredCount: zod.number(),
-          totalCount: zod.number(),
-          caseIds: zod.array(zod.string()),
-        }),
-      ),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "total": zod.number(),
+  "limit": zod.number(),
+  "offset": zod.number(),
+  "sessions": zod.array(zod.object({
+  "batchId": zod.string(),
+  "importedAt": zod.coerce.date(),
+  "importedByUserId": zod.string().nullish(),
+  "importedByUsername": zod.string().nullish(),
+  "importedByName": zod.string().nullish(),
+  "createdCount": zod.number(),
+  "dedupedCount": zod.number(),
+  "erroredCount": zod.number(),
+  "totalCount": zod.number(),
+  "caseIds": zod.array(zod.string())
+}))
+}).optional()
+})
+
 
 /**
  * Lists distinct (doctorName, providerOrganizationId) groups in the
@@ -1352,58 +1096,32 @@ export const searchDoctorsQueryLimitMax = 500;
 export const searchDoctorsQueryOffsetDefault = 0;
 export const searchDoctorsQueryOffsetMin = 0;
 
+
+
 export const SearchDoctorsQueryParams = zod.object({
-  labOrganizationId: zod.coerce.string(),
-  q: zod.coerce
-    .string()
-    .optional()
-    .describe("Free-text search across doctor + practice names."),
-  like: zod.coerce
-    .string()
-    .optional()
-    .describe(
-      "Optional reference doctor name; when provided, results are\nranked by similarity to this name so likely duplicates float\nto the top.\n",
-    ),
-  limit: zod.coerce
-    .number()
-    .min(1)
-    .max(searchDoctorsQueryLimitMax)
-    .default(searchDoctorsQueryLimitDefault),
-  offset: zod.coerce
-    .number()
-    .min(searchDoctorsQueryOffsetMin)
-    .default(searchDoctorsQueryOffsetDefault)
-    .describe(
-      "Page offset for cursoring through every doctor in a large lab.\n",
-    ),
-});
+  "labOrganizationId": zod.coerce.string(),
+  "q": zod.coerce.string().optional().describe('Free-text search across doctor + practice names.'),
+  "like": zod.coerce.string().optional().describe('Optional reference doctor name; when provided, results are\nranked by similarity to this name so likely duplicates float\nto the top.\n'),
+  "limit": zod.coerce.number().min(1).max(searchDoctorsQueryLimitMax).default(searchDoctorsQueryLimitDefault),
+  "offset": zod.coerce.number().min(searchDoctorsQueryOffsetMin).default(searchDoctorsQueryOffsetDefault).describe('Page offset for cursoring through every doctor in a large lab.\n')
+})
 
 export const SearchDoctorsResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      entries: zod
-        .array(
-          zod.object({
-            doctorName: zod.string().optional(),
-            providerOrganizationId: zod.string().nullish(),
-            practiceName: zod.string().nullish(),
-            totalCases: zod.number().optional(),
-            similarity: zod
-              .number()
-              .optional()
-              .describe(
-                "0..1 similarity to the `like` query parameter, or 0 when\n`like` was not supplied.\n",
-              ),
-          }),
-        )
-        .optional(),
-      total: zod.number().optional(),
-      offset: zod.number().optional(),
-      limit: zod.number().optional(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "entries": zod.array(zod.object({
+  "doctorName": zod.string().optional(),
+  "providerOrganizationId": zod.string().nullish(),
+  "practiceName": zod.string().nullish(),
+  "totalCases": zod.number().optional(),
+  "similarity": zod.number().optional().describe('0..1 similarity to the `like` query parameter, or 0 when\n`like` was not supplied.\n')
+})).optional(),
+  "total": zod.number().optional(),
+  "offset": zod.number().optional(),
+  "limit": zod.number().optional()
+}).optional()
+})
+
 
 /**
  * Returns aggregate counts for what a merge would move: per-source
@@ -1417,60 +1135,36 @@ when `includeSoftDeleted` is true.
 export const previewDoctorMergeBodyIncludeSoftDeletedDefault = false;
 
 export const PreviewDoctorMergeBody = zod.object({
-  sources: zod
-    .array(
-      zod.object({
-        doctorName: zod.string(),
-        providerOrganizationId: zod
-          .string()
-          .nullish()
-          .describe(
-            "May be `null` for legacy cases that were created without a\npractice attached.\n",
-          ),
-      }),
-    )
-    .min(1),
-  targetDoctorName: zod.string(),
-  targetProviderOrganizationId: zod
-    .string()
-    .nullish()
-    .describe(
-      "Practice that will own the target doctor's cases. Must be\nsupplied — even if the target had no cases before the merge —\nso the merge can resolve practice-less targets in one call.\n",
-    ),
-  labOrganizationId: zod.string(),
-  includeSoftDeleted: zod
-    .boolean()
-    .default(previewDoctorMergeBodyIncludeSoftDeletedDefault)
-    .describe(
-      "When true, soft-deleted cases under each source group are\nalso remapped to the target.\n",
-    ),
-});
+  "sources": zod.array(zod.object({
+  "doctorName": zod.string(),
+  "providerOrganizationId": zod.string().nullish().describe('May be `null` for legacy cases that were created without a\npractice attached.\n')
+})).min(1),
+  "targetDoctorName": zod.string(),
+  "targetProviderOrganizationId": zod.string().nullish().describe('Practice that will own the target doctor\'s cases. Must be\nsupplied — even if the target had no cases before the merge —\nso the merge can resolve practice-less targets in one call.\n'),
+  "labOrganizationId": zod.string(),
+  "includeSoftDeleted": zod.boolean().default(previewDoctorMergeBodyIncludeSoftDeletedDefault).describe('When true, soft-deleted cases under each source group are\nalso remapped to the target.\n')
+})
 
 export const PreviewDoctorMergeResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      totalCases: zod.number().optional(),
-      totalOverrides: zod.number().optional(),
-      sources: zod
-        .array(
-          zod.object({
-            doctorName: zod.string().optional(),
-            providerOrganizationId: zod.string().nullish(),
-            practiceName: zod.string().nullish(),
-            totalCases: zod.number().optional(),
-            firstCaseAt: zod.string().nullish(),
-            lastCaseAt: zod.string().nullish(),
-            recentCaseNumbers: zod.array(zod.string()).optional(),
-            overridesCount: zod.number().optional(),
-          }),
-        )
-        .optional(),
-      targetExists: zod.boolean().optional(),
-      targetCases: zod.number().optional(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "totalCases": zod.number().optional(),
+  "totalOverrides": zod.number().optional(),
+  "sources": zod.array(zod.object({
+  "doctorName": zod.string().optional(),
+  "providerOrganizationId": zod.string().nullish(),
+  "practiceName": zod.string().nullish(),
+  "totalCases": zod.number().optional(),
+  "firstCaseAt": zod.string().nullish(),
+  "lastCaseAt": zod.string().nullish(),
+  "recentCaseNumbers": zod.array(zod.string()).optional(),
+  "overridesCount": zod.number().optional()
+})).optional(),
+  "targetExists": zod.boolean().optional(),
+  "targetCases": zod.number().optional()
+}).optional()
+})
+
 
 /**
  * Reassigns every (optionally including soft-deleted) case from each
@@ -1489,65 +1183,36 @@ caller must be a lab admin.
 export const mergeDoctorsBodyIncludeSoftDeletedDefault = false;
 
 export const MergeDoctorsBody = zod.object({
-  sources: zod
-    .array(
-      zod.object({
-        doctorName: zod.string(),
-        providerOrganizationId: zod
-          .string()
-          .nullish()
-          .describe(
-            "May be `null` for legacy cases that were created without a\npractice attached.\n",
-          ),
-      }),
-    )
-    .min(1),
-  targetDoctorName: zod.string(),
-  targetProviderOrganizationId: zod
-    .string()
-    .nullish()
-    .describe(
-      "Practice that will own the target doctor's cases. Must be\nsupplied — even if the target had no cases before the merge —\nso the merge can resolve practice-less targets in one call.\n",
-    ),
-  labOrganizationId: zod.string(),
-  includeSoftDeleted: zod
-    .boolean()
-    .default(mergeDoctorsBodyIncludeSoftDeletedDefault)
-    .describe(
-      "When true, soft-deleted cases under each source group are\nalso remapped to the target.\n",
-    ),
-});
+  "sources": zod.array(zod.object({
+  "doctorName": zod.string(),
+  "providerOrganizationId": zod.string().nullish().describe('May be `null` for legacy cases that were created without a\npractice attached.\n')
+})).min(1),
+  "targetDoctorName": zod.string(),
+  "targetProviderOrganizationId": zod.string().nullish().describe('Practice that will own the target doctor\'s cases. Must be\nsupplied — even if the target had no cases before the merge —\nso the merge can resolve practice-less targets in one call.\n'),
+  "labOrganizationId": zod.string(),
+  "includeSoftDeleted": zod.boolean().default(mergeDoctorsBodyIncludeSoftDeletedDefault).describe('When true, soft-deleted cases under each source group are\nalso remapped to the target.\n')
+})
 
 export const MergeDoctorsResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      casesMoved: zod.number().optional(),
-      overridesMoved: zod.number().optional(),
-      overridesCollapsed: zod.number().optional(),
-      targetDoctorName: zod.string().optional(),
-      targetProviderOrganizationId: zod.string().nullish(),
-      undoWindowMs: zod
-        .number()
-        .optional()
-        .describe(
-          "How many milliseconds the undo button should remain\nactionable, mirroring the server's configured window\n(`DOCTOR_MERGE_UNDO_WINDOW_MINUTES`).\n",
-        ),
-      entries: zod
-        .array(
-          zod.object({
-            auditLogId: zod.string().optional(),
-            sourceDoctorName: zod.string().optional(),
-            sourceProviderOrganizationId: zod.string().nullish(),
-            casesMoved: zod.number().optional(),
-            overridesMoved: zod.number().optional(),
-            overridesCollapsed: zod.number().optional(),
-          }),
-        )
-        .optional(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "casesMoved": zod.number().optional(),
+  "overridesMoved": zod.number().optional(),
+  "overridesCollapsed": zod.number().optional(),
+  "targetDoctorName": zod.string().optional(),
+  "targetProviderOrganizationId": zod.string().nullish(),
+  "undoWindowMs": zod.number().optional().describe('How many milliseconds the undo button should remain\nactionable, mirroring the server\'s configured window\n(`DOCTOR_MERGE_UNDO_WINDOW_MINUTES`).\n'),
+  "entries": zod.array(zod.object({
+  "auditLogId": zod.string().optional(),
+  "sourceDoctorName": zod.string().optional(),
+  "sourceProviderOrganizationId": zod.string().nullish(),
+  "casesMoved": zod.number().optional(),
+  "overridesMoved": zod.number().optional(),
+  "overridesCollapsed": zod.number().optional()
+})).optional()
+}).optional()
+})
+
 
 /**
  * Within a configurable time window (default 10 minutes), reverses
@@ -1561,20 +1226,19 @@ original merge.
  * @summary Undo a recent doctor merge
  */
 export const UndoDoctorMergeParams = zod.object({
-  auditLogId: zod.coerce.string(),
-});
+  "auditLogId": zod.coerce.string()
+})
 
 export const UndoDoctorMergeResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      casesReverted: zod.number().optional(),
-      overridesReverted: zod.number().optional(),
-      sourceDoctorName: zod.string().optional(),
-      sourceProviderOrganizationId: zod.string().nullish(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "casesReverted": zod.number().optional(),
+  "overridesReverted": zod.number().optional(),
+  "sourceDoctorName": zod.string().optional(),
+  "sourceProviderOrganizationId": zod.string().nullish()
+}).optional()
+})
+
 
 /**
  * Sends an email or SMS notification to the provider organization's primary
@@ -1586,22 +1250,21 @@ info for the requested method.
  * @summary Notify the provider about a shared case note
  */
 export const NotifyCaseNoteParams = zod.object({
-  caseId: zod.coerce.string(),
-  noteId: zod.coerce.string(),
-});
+  "caseId": zod.coerce.string(),
+  "noteId": zod.coerce.string()
+})
 
 export const NotifyCaseNoteBody = zod.object({
-  method: zod.enum(["email", "sms"]),
-});
+  "method": zod.enum(['email', 'sms'])
+})
 
 export const NotifyCaseNoteResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      ok: zod.boolean().optional(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "ok": zod.boolean().optional()
+}).optional()
+})
+
 
 /**
  * Returns the full case detail including restorations, notes, attachments,
@@ -1611,120 +1274,101 @@ case when the ID is not found in the canonical `cases` table.
  * @summary Get full case detail
  */
 export const GetCaseParams = zod.object({
-  caseId: zod.coerce.string(),
-});
+  "caseId": zod.coerce.string()
+})
 
 export const GetCaseResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      id: zod.string(),
-      caseNumber: zod.string(),
-      labOrganizationId: zod.string().nullish(),
-      providerOrganizationId: zod.string().nullish(),
-      patientFirstName: zod.string().nullish(),
-      patientLastName: zod.string().nullish(),
-      doctorName: zod.string().nullish(),
-      status: zod.string(),
-      priority: zod.string().nullish(),
-      dueDate: zod.string().nullish(),
-      createdAt: zod.string().nullish(),
-      updatedAt: zod.string().nullish(),
-      restorationCount: zod.number().nullish(),
-      restorationTypes: zod.string().nullish(),
-      restorationMaterials: zod.string().nullish(),
-      teeth: zod.string().nullish(),
-      totalPrice: zod.string().nullish(),
-      casePanBarcode: zod.string().nullish(),
-      remakeOfCaseId: zod.string().nullish(),
-      remakeReason: zod.string().nullish(),
-      remakeCharged: zod.boolean().nullish(),
-      needsAiReview: zod.boolean().nullish(),
-      aiImportSource: zod.string().nullish(),
-      shade: zod.string().nullish(),
-      notes: zod.string().nullish(),
-      patientDob: zod.string().nullish(),
-      trackingNumber: zod.string().nullish(),
-      expectedDeliveryDate: zod.string().nullish(),
-      createdByUserId: zod.string().nullish(),
-      suggestedProviderOrgId: zod.string().nullish(),
-      suggestedPracticeName: zod.string().nullish(),
-      suggestedDoctorName: zod.string().nullish(),
-      photos: zod.array(zod.string()).nullish(),
-      videos: zod.array(zod.string()).nullish(),
-      activityLog: zod
-        .array(
-          zod.object({
-            id: zod.string().nullish(),
-            type: zod.string().nullish(),
-            timestamp: zod.union([zod.number(), zod.string()]).nullish(),
-            description: zod.string().nullish(),
-            imageUri: zod.string().nullish(),
-            attachmentId: zod.string().nullish(),
-            fileType: zod.string().nullish(),
-            station: zod.string().nullish(),
-            user: zod.string().nullish(),
-          }),
-        )
-        .nullish(),
-      attachments: zod
-        .array(
-          zod.object({
-            id: zod.string(),
-            caseId: zod.string().nullish(),
-            fileName: zod.string().nullish(),
-            fileType: zod.string().nullish(),
-            storageKey: zod.string().nullish(),
-            visibility: zod.string().nullish(),
-            createdAt: zod.string().nullish(),
-            uploaderName: zod.string().nullish(),
-          }),
-        )
-        .nullish(),
-      restorations: zod
-        .array(
-          zod.object({
-            id: zod.string().nullish(),
-            toothNumber: zod.string().nullish(),
-            restorationType: zod.string().nullish(),
-            restorationSubtype: zod.string().nullish(),
-            material: zod.string().nullish(),
-            shade: zod.string().nullish(),
-            notes: zod.string().nullish(),
-            quantity: zod.number().nullish(),
-          }),
-        )
-        .nullish(),
-      remakeOriginal: zod
-        .object({
-          id: zod.string(),
-          caseNumber: zod.string(),
-          patientFirstName: zod.string().nullish(),
-          patientLastName: zod.string().nullish(),
-          status: zod.string().nullish(),
-          createdAt: zod.string().nullish(),
-          remakeReason: zod.string().nullish(),
-          remakeCharged: zod.boolean().nullish(),
-        })
-        .nullish(),
-      remakeChildren: zod
-        .array(
-          zod.object({
-            id: zod.string(),
-            caseNumber: zod.string(),
-            patientFirstName: zod.string().nullish(),
-            patientLastName: zod.string().nullish(),
-            status: zod.string().nullish(),
-            createdAt: zod.string().nullish(),
-            remakeReason: zod.string().nullish(),
-            remakeCharged: zod.boolean().nullish(),
-          }),
-        )
-        .nullish(),
-      _source: zod.string().optional(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "id": zod.string(),
+  "caseNumber": zod.string(),
+  "labOrganizationId": zod.string().nullish(),
+  "providerOrganizationId": zod.string().nullish(),
+  "patientFirstName": zod.string().nullish(),
+  "patientLastName": zod.string().nullish(),
+  "doctorName": zod.string().nullish(),
+  "status": zod.string(),
+  "priority": zod.string().nullish(),
+  "dueDate": zod.string().nullish(),
+  "createdAt": zod.string().nullish(),
+  "updatedAt": zod.string().nullish(),
+  "restorationCount": zod.number().nullish(),
+  "restorationTypes": zod.string().nullish(),
+  "restorationMaterials": zod.string().nullish(),
+  "teeth": zod.string().nullish(),
+  "totalPrice": zod.string().nullish(),
+  "casePanBarcode": zod.string().nullish(),
+  "remakeOfCaseId": zod.string().nullish(),
+  "remakeReason": zod.string().nullish(),
+  "remakeCharged": zod.boolean().nullish(),
+  "needsAiReview": zod.boolean().nullish(),
+  "aiImportSource": zod.string().nullish(),
+  "shade": zod.string().nullish(),
+  "notes": zod.string().nullish(),
+  "patientDob": zod.string().nullish(),
+  "trackingNumber": zod.string().nullish(),
+  "expectedDeliveryDate": zod.string().nullish(),
+  "createdByUserId": zod.string().nullish(),
+  "suggestedProviderOrgId": zod.string().nullish(),
+  "suggestedPracticeName": zod.string().nullish(),
+  "suggestedDoctorName": zod.string().nullish(),
+  "photos": zod.array(zod.string()).nullish(),
+  "videos": zod.array(zod.string()).nullish(),
+  "activityLog": zod.array(zod.object({
+  "id": zod.string().nullish(),
+  "type": zod.string().nullish(),
+  "timestamp": zod.union([zod.number(),zod.string()]).nullish(),
+  "description": zod.string().nullish(),
+  "imageUri": zod.string().nullish(),
+  "attachmentId": zod.string().nullish(),
+  "fileType": zod.string().nullish(),
+  "station": zod.string().nullish(),
+  "user": zod.string().nullish()
+})).nullish(),
+  "attachments": zod.array(zod.object({
+  "id": zod.string(),
+  "caseId": zod.string().nullish(),
+  "fileName": zod.string().nullish(),
+  "fileType": zod.string().nullish(),
+  "storageKey": zod.string().nullish(),
+  "visibility": zod.string().nullish(),
+  "createdAt": zod.string().nullish(),
+  "uploaderName": zod.string().nullish()
+})).nullish(),
+  "restorations": zod.array(zod.object({
+  "id": zod.string().nullish(),
+  "toothNumber": zod.string().nullish(),
+  "restorationType": zod.string().nullish(),
+  "restorationSubtype": zod.string().nullish(),
+  "material": zod.string().nullish(),
+  "shade": zod.string().nullish(),
+  "notes": zod.string().nullish(),
+  "quantity": zod.number().nullish()
+})).nullish(),
+  "remakeOriginal": zod.object({
+  "id": zod.string(),
+  "caseNumber": zod.string(),
+  "patientFirstName": zod.string().nullish(),
+  "patientLastName": zod.string().nullish(),
+  "status": zod.string().nullish(),
+  "createdAt": zod.string().nullish(),
+  "remakeReason": zod.string().nullish(),
+  "remakeCharged": zod.boolean().nullish()
+}).nullish(),
+  "remakeChildren": zod.array(zod.object({
+  "id": zod.string(),
+  "caseNumber": zod.string(),
+  "patientFirstName": zod.string().nullish(),
+  "patientLastName": zod.string().nullish(),
+  "status": zod.string().nullish(),
+  "createdAt": zod.string().nullish(),
+  "remakeReason": zod.string().nullish(),
+  "remakeCharged": zod.boolean().nullish()
+})).nullish(),
+  "_source": zod.string().optional()
+}).optional()
+})
+
 
 /**
  * Partially update a case. All fields are optional. The caller must be
@@ -1737,89 +1381,46 @@ without affecting any other fields.
  * @summary Update case fields
  */
 export const UpdateCaseParams = zod.object({
-  caseId: zod.coerce.string(),
-});
+  "caseId": zod.coerce.string()
+})
 
 export const UpdateCaseBody = zod.object({
-  status: zod
-    .enum([
-      "received",
-      "in_design",
-      "scan",
-      "in_milling",
-      "post_mill",
-      "sintering_furnace",
-      "model_room",
-      "in_porcelain",
-      "qc",
-      "complete",
-      "shipped",
-      "delivered",
-      "on_hold",
-      "remake",
-      "cancelled",
-    ])
-    .optional(),
-  priority: zod.enum(["normal", "rush"]).optional(),
-  dueDate: zod.coerce.date().optional(),
-  doctorName: zod.string().optional(),
-  patientFirstName: zod.string().optional(),
-  patientLastName: zod.string().optional(),
-  providerOrganizationId: zod
-    .string()
-    .optional()
-    .describe(
-      "Re-assign the case to a different provider organization.\nMust be an active provider org that belongs to the same lab\nas the case (validated server-side).\n",
-    ),
-  clearSuggestion: zod
-    .boolean()
-    .optional()
-    .describe(
-      'When `true`, clears the AI-generated `suggestedDoctorName` and\n`suggestedProviderOrgId` fields without affecting any other\ncase fields. Used by the \"Keep as-is\" action in the desktop\nreview banner.\n',
-    ),
-  bridgeConnectors: zod
-    .string()
-    .optional()
-    .describe(
-      "Comma-separated bridge-connector tooth-pair string controlling\nwhich adjacent restorations form a bridge span. An empty string\nclears all connectors on the case.\n",
-    ),
-  expectedDeliveryDate: zod.coerce
-    .date()
-    .nullish()
-    .describe("Expected delivery date; `null` clears it."),
-  casePanBarcode: zod
-    .string()
-    .optional()
-    .describe(
-      "Physical tray (pan) barcode assigned to this case. An empty\nstring or omitted value leaves the existing barcode unchanged.\nTrimmed server-side.\n",
-    ),
-});
+  "status": zod.enum(['received', 'in_design', 'scan', 'in_milling', 'post_mill', 'sintering_furnace', 'model_room', 'in_porcelain', 'qc', 'complete', 'shipped', 'delivered', 'on_hold', 'remake', 'cancelled']).optional(),
+  "priority": zod.enum(['normal', 'rush']).optional(),
+  "dueDate": zod.coerce.date().optional(),
+  "doctorName": zod.string().optional(),
+  "patientFirstName": zod.string().optional(),
+  "patientLastName": zod.string().optional(),
+  "providerOrganizationId": zod.string().optional().describe('Re-assign the case to a different provider organization.\nMust be an active provider org that belongs to the same lab\nas the case (validated server-side).\n'),
+  "clearSuggestion": zod.boolean().optional().describe('When `true`, clears the AI-generated `suggestedDoctorName` and\n`suggestedProviderOrgId` fields without affecting any other\ncase fields. Used by the \"Keep as-is\" action in the desktop\nreview banner.\n'),
+  "bridgeConnectors": zod.string().optional().describe('Comma-separated bridge-connector tooth-pair string controlling\nwhich adjacent restorations form a bridge span. An empty string\nclears all connectors on the case.\n'),
+  "expectedDeliveryDate": zod.coerce.date().nullish().describe('Expected delivery date; `null` clears it.'),
+  "casePanBarcode": zod.string().optional().describe('Physical tray (pan) barcode assigned to this case. An empty\nstring or omitted value leaves the existing barcode unchanged.\nTrimmed server-side.\n')
+})
 
 export const UpdateCaseResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({})
-    .passthrough()
-    .optional()
-    .describe("Raw updated case row (Drizzle shape)"),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+
+}).passthrough().optional().describe('Raw updated case row (Drizzle shape)')
+})
+
 
 /**
  * @summary Acknowledge an AI-imported case as reviewed
  */
 export const AcknowledgeAiReviewParams = zod.object({
-  caseId: zod.coerce.string(),
-});
+  "caseId": zod.coerce.string()
+})
 
 export const AcknowledgeAiReviewResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      caseId: zod.string().optional(),
-      needsAiReview: zod.boolean().optional(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "caseId": zod.string().optional(),
+  "needsAiReview": zod.boolean().optional()
+}).optional()
+})
+
 
 /**
  * Creates a case note. Lab members author internal or shared notes;
@@ -1829,17 +1430,17 @@ defaults to `shared_with_provider`.
  * @summary Add a note to a case
  */
 export const AddCaseNoteParams = zod.object({
-  caseId: zod.coerce.string(),
-});
+  "caseId": zod.coerce.string()
+})
+
 
 export const addCaseNoteBodyVisibilityDefault = `shared_with_provider`;
 
 export const AddCaseNoteBody = zod.object({
-  noteText: zod.string().min(1),
-  visibility: zod
-    .enum(["internal_lab_only", "shared_with_provider"])
-    .default(addCaseNoteBodyVisibilityDefault),
-});
+  "noteText": zod.string().min(1),
+  "visibility": zod.enum(['internal_lab_only', 'shared_with_provider']).default(addCaseNoteBodyVisibilityDefault)
+})
+
 
 /**
  * Appends a location-change entry for the case (e.g. moving it to a
@@ -1848,14 +1449,19 @@ new station). Only lab members may call this endpoint.
  * @summary Record a case location/station change
  */
 export const ChangeCaseLocationParams = zod.object({
-  caseId: zod.coerce.string(),
-});
+  "caseId": zod.coerce.string()
+})
+
+
+
+
 
 export const ChangeCaseLocationBody = zod.object({
-  locationCode: zod.string().min(1),
-  locationName: zod.string().min(1),
-  notes: zod.string().optional(),
-});
+  "locationCode": zod.string().min(1),
+  "locationName": zod.string().min(1),
+  "notes": zod.string().optional()
+})
+
 
 /**
  * Adds a restoration line item (crown, pontic, etc.) to a case. Unit
@@ -1865,26 +1471,28 @@ Only lab members may call this endpoint.
  * @summary Add a restoration to a case
  */
 export const AddCaseRestorationParams = zod.object({
-  caseId: zod.coerce.string(),
-});
+  "caseId": zod.coerce.string()
+})
+
+
 
 export const addCaseRestorationBodyQuantityDefault = 1;
 
 export const addCaseRestorationBodyUnitPriceDefault = 0;
 export const addCaseRestorationBodyUnitPriceMin = 0;
 
+
+
 export const AddCaseRestorationBody = zod.object({
-  toothNumber: zod.string().min(1),
-  restorationType: zod.string().min(1),
-  material: zod.string().optional(),
-  shade: zod.string().optional(),
-  notes: zod.string().optional(),
-  quantity: zod.number().min(1).default(addCaseRestorationBodyQuantityDefault),
-  unitPrice: zod
-    .number()
-    .min(addCaseRestorationBodyUnitPriceMin)
-    .default(addCaseRestorationBodyUnitPriceDefault),
-});
+  "toothNumber": zod.string().min(1),
+  "restorationType": zod.string().min(1),
+  "material": zod.string().optional(),
+  "shade": zod.string().optional(),
+  "notes": zod.string().optional(),
+  "quantity": zod.number().min(1).default(addCaseRestorationBodyQuantityDefault),
+  "unitPrice": zod.number().min(addCaseRestorationBodyUnitPriceMin).default(addCaseRestorationBodyUnitPriceDefault)
+})
+
 
 /**
  * Partially updates a restoration line item. All fields are optional.
@@ -1894,36 +1502,39 @@ members may call this endpoint.
  * @summary Update a case restoration
  */
 export const UpdateCaseRestorationParams = zod.object({
-  caseId: zod.coerce.string(),
-  restorationId: zod.coerce.string(),
-});
+  "caseId": zod.coerce.string(),
+  "restorationId": zod.coerce.string()
+})
+
+
 
 export const updateCaseRestorationBodyUnitPriceMin = 0;
 
+
+
 export const UpdateCaseRestorationBody = zod.object({
-  toothNumber: zod.string().min(1).optional(),
-  material: zod.string().optional(),
-  shade: zod.string().optional(),
-  notes: zod.string().optional(),
-  quantity: zod.number().min(1).optional(),
-  unitPrice: zod.number().min(updateCaseRestorationBodyUnitPriceMin).optional(),
-});
+  "toothNumber": zod.string().min(1).optional(),
+  "material": zod.string().optional(),
+  "shade": zod.string().optional(),
+  "notes": zod.string().optional(),
+  "quantity": zod.number().min(1).optional(),
+  "unitPrice": zod.number().min(updateCaseRestorationBodyUnitPriceMin).optional()
+})
 
 export const UpdateCaseRestorationResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      id: zod.string().nullish(),
-      toothNumber: zod.string().nullish(),
-      restorationType: zod.string().nullish(),
-      restorationSubtype: zod.string().nullish(),
-      material: zod.string().nullish(),
-      shade: zod.string().nullish(),
-      notes: zod.string().nullish(),
-      quantity: zod.number().nullish(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "id": zod.string().nullish(),
+  "toothNumber": zod.string().nullish(),
+  "restorationType": zod.string().nullish(),
+  "restorationSubtype": zod.string().nullish(),
+  "material": zod.string().nullish(),
+  "shade": zod.string().nullish(),
+  "notes": zod.string().nullish(),
+  "quantity": zod.number().nullish()
+}).optional()
+})
+
 
 /**
  * Removes a restoration line item and keeps the case invoice in sync.
@@ -1932,18 +1543,17 @@ Only lab members may call this endpoint.
  * @summary Delete a case restoration
  */
 export const DeleteCaseRestorationParams = zod.object({
-  caseId: zod.coerce.string(),
-  restorationId: zod.coerce.string(),
-});
+  "caseId": zod.coerce.string(),
+  "restorationId": zod.coerce.string()
+})
 
 export const DeleteCaseRestorationResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      deleted: zod.boolean().optional(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "deleted": zod.boolean().optional()
+}).optional()
+})
+
 
 /**
  * Records a case attachment for a file already uploaded to storage
@@ -1953,20 +1563,21 @@ canonical case. Visibility defaults to `shared_with_provider`.
  * @summary Attach an uploaded file to a case
  */
 export const UploadCaseAttachmentParams = zod.object({
-  caseId: zod.coerce.string(),
-});
+  "caseId": zod.coerce.string()
+})
+
+
 
 export const uploadCaseAttachmentBodyFileTypeDefault = `application/octet-stream`;
 export const uploadCaseAttachmentBodyVisibilityDefault = `shared_with_provider`;
 
 export const UploadCaseAttachmentBody = zod.object({
-  storageKey: zod.string().min(1),
-  fileName: zod.string().min(1),
-  fileType: zod.string().default(uploadCaseAttachmentBodyFileTypeDefault),
-  visibility: zod
-    .enum(["internal_lab_only", "shared_with_provider"])
-    .default(uploadCaseAttachmentBodyVisibilityDefault),
-});
+  "storageKey": zod.string().min(1),
+  "fileName": zod.string().min(1),
+  "fileType": zod.string().default(uploadCaseAttachmentBodyFileTypeDefault),
+  "visibility": zod.enum(['internal_lab_only', 'shared_with_provider']).default(uploadCaseAttachmentBodyVisibilityDefault)
+})
+
 
 /**
  * Soft-deletes a case attachment. Only lab members may call this
@@ -1975,18 +1586,17 @@ endpoint.
  * @summary Delete a case attachment
  */
 export const DeleteCaseAttachmentParams = zod.object({
-  caseId: zod.coerce.string(),
-  attachmentId: zod.coerce.string(),
-});
+  "caseId": zod.coerce.string(),
+  "attachmentId": zod.coerce.string()
+})
 
 export const DeleteCaseAttachmentResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      deleted: zod.boolean().optional(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "deleted": zod.boolean().optional()
+}).optional()
+})
+
 
 /**
  * Checks per-doctor overrides, practice-level pricing tiers, and lab
@@ -1996,36 +1606,19 @@ invoices. Any active lab member may call this endpoint.
  * @summary Resolve the canonical unit price for a case item
  */
 export const ResolveItemPriceQueryParams = zod.object({
-  labOrganizationId: zod.coerce
-    .string()
-    .describe("Lab organisation to resolve pricing for."),
-  doctorName: zod.coerce
-    .string()
-    .optional()
-    .describe("Doctor name for per-doctor override lookup."),
-  caseType: zod.coerce
-    .string()
-    .optional()
-    .describe('Case\/restoration type (e.g. \"Crown\", \"Appliance\").'),
-  material: zod.coerce
-    .string()
-    .optional()
-    .describe(
-      'Material or appliance subtype (e.g. \"Zirconia\", \"Snore Guard\").',
-    ),
-});
+  "labOrganizationId": zod.coerce.string().describe('Lab organisation to resolve pricing for.'),
+  "doctorName": zod.coerce.string().optional().describe('Doctor name for per-doctor override lookup.'),
+  "caseType": zod.coerce.string().optional().describe('Case\/restoration type (e.g. \"Crown\", \"Appliance\").'),
+  "material": zod.coerce.string().optional().describe('Material or appliance subtype (e.g. \"Zirconia\", \"Snore Guard\").')
+})
 
 export const ResolveItemPriceResponse = zod.object({
-  ok: zod.boolean(),
-  data: zod.object({
-    price: zod
-      .number()
-      .nullable()
-      .describe(
-        "Resolved unit price, or null when no price can be determined.",
-      ),
-  }),
-});
+  "ok": zod.boolean(),
+  "data": zod.object({
+  "price": zod.number().nullable().describe('Resolved unit price, or null when no price can be determined.')
+})
+})
+
 
 /**
  * Returns the merged label map for the caller's lab: admin-configured
@@ -2036,27 +1629,17 @@ this endpoint.
  * @summary Get admin-configured line item labels for the caller's lab
  */
 export const GetItemLabelsQueryParams = zod.object({
-  labOrganizationId: zod.coerce
-    .string()
-    .optional()
-    .describe(
-      "Lab org to fetch labels for. Defaults to the caller's first active lab.",
-    ),
-});
+  "labOrganizationId": zod.coerce.string().optional().describe('Lab org to fetch labels for. Defaults to the caller\'s first active lab.')
+})
 
 export const GetItemLabelsResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      labOrganizationId: zod.string(),
-      labels: zod
-        .record(zod.string(), zod.string())
-        .describe(
-          "Map of priceKey → display label (all known keys always included)",
-        ),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "labOrganizationId": zod.string(),
+  "labels": zod.record(zod.string(), zod.string()).describe('Map of priceKey → display label (all known keys always included)')
+}).optional()
+})
+
 
 /**
  * Saves the provided label map for the caller's lab. Each key in
@@ -2067,68 +1650,56 @@ request body are updated; omitted keys are left unchanged.
  * @summary Upsert admin-configured line item labels for the caller's lab
  */
 export const UpdateItemLabelsBody = zod.object({
-  labOrganizationId: zod
-    .string()
-    .optional()
-    .describe("Lab org to update. Defaults to the caller's first admin lab."),
-  labels: zod
-    .record(zod.string(), zod.string())
-    .describe("Partial map of priceKey → display label to upsert."),
-});
+  "labOrganizationId": zod.string().optional().describe('Lab org to update. Defaults to the caller\'s first admin lab.'),
+  "labels": zod.record(zod.string(), zod.string()).describe('Partial map of priceKey → display label to upsert.')
+})
 
 export const UpdateItemLabelsResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      labOrganizationId: zod.string(),
-      labels: zod
-        .record(zod.string(), zod.string())
-        .describe(
-          "Map of priceKey → display label (all known keys always included)",
-        ),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "labOrganizationId": zod.string(),
+  "labels": zod.record(zod.string(), zod.string()).describe('Map of priceKey → display label (all known keys always included)')
+}).optional()
+})
+
 
 /**
  * @summary Get or create the auto-send schedule for a lab
  */
 export const GetStatementScheduleParams = zod.object({
-  orgId: zod.coerce.string(),
-});
+  "orgId": zod.coerce.string()
+})
 
 export const getStatementScheduleResponseDataDayOfMonthMin = 0;
 export const getStatementScheduleResponseDataDayOfMonthMax = 31;
 
+
+
 export const GetStatementScheduleResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      id: zod.string(),
-      labOrganizationId: zod.string(),
-      enabled: zod.boolean(),
-      dayOfMonth: zod
-        .number()
-        .min(getStatementScheduleResponseDataDayOfMonthMin)
-        .max(getStatementScheduleResponseDataDayOfMonthMax),
-      emailSubject: zod.string().nullish(),
-      emailBody: zod.string().nullish(),
-      emailReplyTo: zod.string().nullish(),
-      includedOrgIds: zod.array(zod.string()).nullish(),
-      lastSentForMonth: zod.string().nullish(),
-      lastRunAt: zod.coerce.date().nullish(),
-      createdAt: zod.coerce.date().optional(),
-      updatedAt: zod.coerce.date().optional(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "id": zod.string(),
+  "labOrganizationId": zod.string(),
+  "enabled": zod.boolean(),
+  "dayOfMonth": zod.number().min(getStatementScheduleResponseDataDayOfMonthMin).max(getStatementScheduleResponseDataDayOfMonthMax),
+  "emailSubject": zod.string().nullish(),
+  "emailBody": zod.string().nullish(),
+  "emailReplyTo": zod.string().nullish(),
+  "includedOrgIds": zod.array(zod.string()).nullish(),
+  "lastSentForMonth": zod.string().nullish(),
+  "lastRunAt": zod.coerce.date().nullish(),
+  "createdAt": zod.coerce.date().optional(),
+  "updatedAt": zod.coerce.date().optional()
+}).optional()
+})
+
 
 /**
  * @summary Update the auto-send schedule for a lab
  */
 export const UpdateStatementScheduleParams = zod.object({
-  orgId: zod.coerce.string(),
-});
+  "orgId": zod.coerce.string()
+})
 
 export const updateStatementScheduleBodyDayOfMonthMin = 0;
 export const updateStatementScheduleBodyDayOfMonthMax = 31;
@@ -2141,59 +1712,40 @@ export const updateStatementScheduleBodyEmailReplyToMax = 320;
 
 export const updateStatementScheduleBodyIncludedOrgIdsMax = 500;
 
+
+
 export const UpdateStatementScheduleBody = zod.object({
-  enabled: zod.boolean(),
-  dayOfMonth: zod
-    .number()
-    .min(updateStatementScheduleBodyDayOfMonthMin)
-    .max(updateStatementScheduleBodyDayOfMonthMax)
-    .describe("0 = last day of month; 1–31 = specific numbered day"),
-  emailSubject: zod
-    .string()
-    .max(updateStatementScheduleBodyEmailSubjectMax)
-    .nullish(),
-  emailBody: zod
-    .string()
-    .max(updateStatementScheduleBodyEmailBodyMax)
-    .nullish(),
-  emailReplyTo: zod
-    .string()
-    .max(updateStatementScheduleBodyEmailReplyToMax)
-    .nullish(),
-  includedOrgIds: zod
-    .array(zod.string())
-    .max(updateStatementScheduleBodyIncludedOrgIdsMax)
-    .nullish()
-    .describe(
-      "null or omitted = send to all; non-empty = only these practice IDs",
-    ),
-});
+  "enabled": zod.boolean(),
+  "dayOfMonth": zod.number().min(updateStatementScheduleBodyDayOfMonthMin).max(updateStatementScheduleBodyDayOfMonthMax).describe('0 = last day of month; 1–31 = specific numbered day'),
+  "emailSubject": zod.string().max(updateStatementScheduleBodyEmailSubjectMax).nullish(),
+  "emailBody": zod.string().max(updateStatementScheduleBodyEmailBodyMax).nullish(),
+  "emailReplyTo": zod.string().max(updateStatementScheduleBodyEmailReplyToMax).nullish(),
+  "includedOrgIds": zod.array(zod.string()).max(updateStatementScheduleBodyIncludedOrgIdsMax).nullish().describe('null or omitted = send to all; non-empty = only these practice IDs')
+})
 
 export const updateStatementScheduleResponseDataDayOfMonthMin = 0;
 export const updateStatementScheduleResponseDataDayOfMonthMax = 31;
 
+
+
 export const UpdateStatementScheduleResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      id: zod.string(),
-      labOrganizationId: zod.string(),
-      enabled: zod.boolean(),
-      dayOfMonth: zod
-        .number()
-        .min(updateStatementScheduleResponseDataDayOfMonthMin)
-        .max(updateStatementScheduleResponseDataDayOfMonthMax),
-      emailSubject: zod.string().nullish(),
-      emailBody: zod.string().nullish(),
-      emailReplyTo: zod.string().nullish(),
-      includedOrgIds: zod.array(zod.string()).nullish(),
-      lastSentForMonth: zod.string().nullish(),
-      lastRunAt: zod.coerce.date().nullish(),
-      createdAt: zod.coerce.date().optional(),
-      updatedAt: zod.coerce.date().optional(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "id": zod.string(),
+  "labOrganizationId": zod.string(),
+  "enabled": zod.boolean(),
+  "dayOfMonth": zod.number().min(updateStatementScheduleResponseDataDayOfMonthMin).max(updateStatementScheduleResponseDataDayOfMonthMax),
+  "emailSubject": zod.string().nullish(),
+  "emailBody": zod.string().nullish(),
+  "emailReplyTo": zod.string().nullish(),
+  "includedOrgIds": zod.array(zod.string()).nullish(),
+  "lastSentForMonth": zod.string().nullish(),
+  "lastRunAt": zod.coerce.date().nullish(),
+  "createdAt": zod.coerce.date().optional(),
+  "updatedAt": zod.coerce.date().optional()
+}).optional()
+})
+
 
 /**
  * Returns invoices for all organizations the caller is an active member
@@ -2203,46 +1755,20 @@ of. Supports filtering by `caseId`, `practiceId`, `practiceIds`,
  * @summary List invoices visible to the authenticated user
  */
 export const ListInvoicesQueryParams = zod.object({
-  caseId: zod.coerce
-    .string()
-    .optional()
-    .describe("Filter to invoices for a specific case."),
-  practiceId: zod.coerce
-    .string()
-    .optional()
-    .describe("Filter to invoices for a specific provider org."),
-  practiceIds: zod.coerce
-    .string()
-    .optional()
-    .describe("Comma-separated list of provider org IDs."),
-  labOrganizationId: zod.coerce
-    .string()
-    .optional()
-    .describe("Filter to a specific lab org."),
-  status: zod.coerce
-    .string()
-    .optional()
-    .describe("Filter by status: 'open', 'all', or comma-separated statuses."),
-  dateFrom: zod
-    .date()
-    .optional()
-    .describe("Return invoices issued at or after this date."),
-  dateTo: zod
-    .date()
-    .optional()
-    .describe("Return invoices issued at or before this date."),
-});
+  "caseId": zod.coerce.string().optional().describe('Filter to invoices for a specific case.'),
+  "practiceId": zod.coerce.string().optional().describe('Filter to invoices for a specific provider org.'),
+  "practiceIds": zod.coerce.string().optional().describe('Comma-separated list of provider org IDs.'),
+  "labOrganizationId": zod.coerce.string().optional().describe('Filter to a specific lab org.'),
+  "status": zod.coerce.string().optional().describe('Filter by status: \'open\', \'all\', or comma-separated statuses.'),
+  "dateFrom": zod.date().optional().describe('Return invoices issued at or after this date.'),
+  "dateTo": zod.date().optional().describe('Return invoices issued at or before this date.')
+})
 
 export const ListInvoicesResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .array(
-      zod
-        .record(zod.string(), zod.unknown())
-        .describe("Invoice row with line items"),
-    )
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.array(zod.record(zod.string(), zod.unknown()).describe('Invoice row with line items')).optional()
+})
+
 
 /**
  * Partially updates an invoice. Requires a billing role (owner, admin,
@@ -2252,65 +1778,50 @@ when supplied. Returns the updated invoice with totals.
  * @summary Update an invoice (status, line items, metadata)
  */
 export const UpdateInvoiceParams = zod.object({
-  invoiceId: zod.coerce.string(),
-});
+  "invoiceId": zod.coerce.string()
+})
 
 export const updateInvoiceBodyTaxMin = 0;
 
 export const updateInvoiceBodyDiscountMin = 0;
 
+
+
 export const UpdateInvoiceBody = zod.object({
-  status: zod
-    .enum(["draft", "open", "partially_paid", "paid", "void"])
-    .nullish(),
-  tax: zod.number().min(updateInvoiceBodyTaxMin).nullish(),
-  discount: zod.number().min(updateInvoiceBodyDiscountMin).nullish(),
-  dueAt: zod.coerce.date().nullish(),
-  issuedAt: zod.coerce.date().nullish(),
-  invoiceNumber: zod.string().nullish(),
-  notes: zod.string().nullish(),
-  providerOrganizationId: zod.string().nullish(),
-  items: zod
-    .array(
-      zod.object({
-        id: zod.string().optional(),
-        toothNumber: zod.number().nullish(),
-        toothLabel: zod.string().nullish(),
-        description: zod.string(),
-        quantity: zod.number(),
-        unitPrice: zod.number(),
-        sortOrder: zod.number().optional(),
-        subItems: zod
-          .array(
-            zod.object({
-              id: zod.string().optional(),
-              toothNumber: zod.number().nullish(),
-              description: zod.string(),
-              quantity: zod.number(),
-              unitPrice: zod.number(),
-              sortOrder: zod.number().optional(),
-            }),
-          )
-          .optional(),
-      }),
-    )
-    .nullish(),
-  displayMetadata: zod
-    .record(zod.string(), zod.unknown())
-    .nullish()
-    .describe(
-      "Free-form invoice presentation metadata (teeth, shade, patientName, billTo, caseNotes, credits, lineItems). Server merges\/overwrites displayMetadataJson; credits drive total. Spread existing metadata before writing to avoid clobbering desktop-authored fields.",
-    ),
-  layoutPresetId: zod.string().nullish(),
-});
+  "status": zod.enum(['draft', 'open', 'partially_paid', 'paid', 'void']).nullish(),
+  "tax": zod.number().min(updateInvoiceBodyTaxMin).nullish(),
+  "discount": zod.number().min(updateInvoiceBodyDiscountMin).nullish(),
+  "dueAt": zod.coerce.date().nullish(),
+  "issuedAt": zod.coerce.date().nullish(),
+  "invoiceNumber": zod.string().nullish(),
+  "notes": zod.string().nullish(),
+  "providerOrganizationId": zod.string().nullish(),
+  "items": zod.array(zod.object({
+  "id": zod.string().optional(),
+  "toothNumber": zod.number().nullish(),
+  "toothLabel": zod.string().nullish(),
+  "description": zod.string(),
+  "quantity": zod.number(),
+  "unitPrice": zod.number(),
+  "sortOrder": zod.number().optional(),
+  "subItems": zod.array(zod.object({
+  "id": zod.string().optional(),
+  "toothNumber": zod.number().nullish(),
+  "description": zod.string(),
+  "quantity": zod.number(),
+  "unitPrice": zod.number(),
+  "sortOrder": zod.number().optional()
+})).optional()
+})).nullish(),
+  "displayMetadata": zod.record(zod.string(), zod.unknown()).nullish().describe('Free-form invoice presentation metadata (teeth, shade, patientName, billTo, caseNotes, credits, lineItems). Server merges\/overwrites displayMetadataJson; credits drive total. Spread existing metadata before writing to avoid clobbering desktop-authored fields.'),
+  "layoutPresetId": zod.string().nullish()
+})
 
 export const UpdateInvoiceResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .record(zod.string(), zod.unknown())
-    .optional()
-    .describe("Invoice row with line items and totals"),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.record(zod.string(), zod.unknown()).optional().describe('Invoice row with line items and totals')
+})
+
 
 /**
  * Creates a draft invoice for the specified case, pre-filling line items
@@ -2321,15 +1832,13 @@ invoice number already exists. Requires a billing role on the case's lab.
  * @summary Generate an invoice for a canonical case
  */
 export const GenerateInvoiceForCaseParams = zod.object({
-  caseId: zod.coerce.string(),
-});
+  "caseId": zod.coerce.string()
+})
 
 export const GenerateInvoiceForCaseBody = zod.object({
-  layoutPresetId: zod
-    .string()
-    .nullish()
-    .describe("Optional layout preset to apply to the generated invoice."),
-});
+  "layoutPresetId": zod.string().nullish().describe('Optional layout preset to apply to the generated invoice.')
+})
+
 
 /**
  * Returns the open (issued or partially-paid) invoices the lab can
@@ -2339,33 +1848,26 @@ billing role (owner, admin, or billing) in `labOrganizationId`.
  * @summary List open invoices for a provider/practice (Receive Payments)
  */
 export const ListOpenInvoicesQueryParams = zod.object({
-  labOrganizationId: zod.coerce
-    .string()
-    .describe("Lab organization to scope the invoices to."),
-  providerOrganizationId: zod.coerce
-    .string()
-    .describe("Provider\/practice to filter open invoices for."),
-});
+  "labOrganizationId": zod.coerce.string().describe('Lab organization to scope the invoices to.'),
+  "providerOrganizationId": zod.coerce.string().describe('Provider\/practice to filter open invoices for.')
+})
 
 export const ListOpenInvoicesResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .array(
-      zod.object({
-        id: zod.string(),
-        invoiceNumber: zod.string(),
-        status: zod.string().describe("open | partially_paid | overdue"),
-        total: zod.string().describe("Decimal string"),
-        balanceDue: zod.string().describe("Decimal string"),
-        issuedAt: zod.coerce.date().nullish(),
-        dueAt: zod.coerce.date().nullish(),
-        ageDays: zod.number().nullish(),
-        labOrganizationId: zod.string(),
-        providerOrganizationId: zod.string(),
-      }),
-    )
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.array(zod.object({
+  "id": zod.string(),
+  "invoiceNumber": zod.string(),
+  "status": zod.string().describe('open | partially_paid | overdue'),
+  "total": zod.string().describe('Decimal string'),
+  "balanceDue": zod.string().describe('Decimal string'),
+  "issuedAt": zod.coerce.date().nullish(),
+  "dueAt": zod.coerce.date().nullish(),
+  "ageDays": zod.number().nullish(),
+  "labOrganizationId": zod.string(),
+  "providerOrganizationId": zod.string()
+})).optional()
+})
+
 
 /**
  * Upload a LabTrax `.zip.enc` backup file. The server validates the file,
@@ -2377,12 +1879,9 @@ at a time (returns 409 if another is already in progress).
  * @summary Restore a backup from an uploaded .zip.enc file
  */
 export const RestoreBackupBody = zod.object({
-  file: zod
-    .string()
-    .describe(
-      "The encrypted .zip.enc backup file (max 2 GB). Represented as\n`type: string` (not `format: binary`) so the generated client\ndoes not depend on the DOM `File` global. Pass a Blob\/File at runtime.\n",
-    ),
-});
+  "file": zod.string().describe('The encrypted .zip.enc backup file (max 2 GB). Represented as\n`type: string` (not `format: binary`) so the generated client\ndoes not depend on the DOM `File` global. Pass a Blob\/File at runtime.\n')
+})
+
 
 /**
  * Returns the current restore state for polling. The `phase` field cycles
@@ -2393,23 +1892,13 @@ header.
  * @summary Get current restore phase and progress
  */
 export const GetRestoreStatusResponse = zod.object({
-  ok: zod.boolean().optional(),
-  phase: zod
-    .enum([
-      "idle",
-      "uploading",
-      "validating",
-      "decrypting",
-      "restoring_db",
-      "restoring_media",
-      "done",
-      "error",
-    ])
-    .optional(),
-  message: zod.string().nullish(),
-  startedAt: zod.coerce.date().nullish(),
-  completedAt: zod.coerce.date().nullish(),
-});
+  "ok": zod.boolean().optional(),
+  "phase": zod.enum(['idle', 'uploading', 'validating', 'decrypting', 'restoring_db', 'restoring_media', 'done', 'error']).optional(),
+  "message": zod.string().nullish(),
+  "startedAt": zod.coerce.date().nullish(),
+  "completedAt": zod.coerce.date().nullish()
+})
+
 
 /**
  * Triggers an immediate full backup (all cases, invoices, media, etc.)
@@ -2418,21 +1907,17 @@ to the chosen destination. Requires the X-Platform-Admin-Secret header.
  * @summary Run an immediate full backup
  */
 export const RunBackupNowBody = zod.object({
-  destination: zod.enum(["onedrive", "local", "network"]),
-  path: zod
-    .string()
-    .nullish()
-    .describe(
-      "Target folder path (required for local and network destinations)",
-    ),
-});
+  "destination": zod.enum(['onedrive', 'local', 'network']),
+  "path": zod.string().nullish().describe('Target folder path (required for local and network destinations)')
+})
 
 export const RunBackupNowResponse = zod.object({
-  ok: zod.boolean().optional(),
-  size: zod.number().optional().describe("Backup archive size in bytes"),
-  completedAt: zod.coerce.date().optional(),
-  fileName: zod.string().optional(),
-});
+  "ok": zod.boolean().optional(),
+  "size": zod.number().optional().describe('Backup archive size in bytes'),
+  "completedAt": zod.coerce.date().optional(),
+  "fileName": zod.string().optional()
+})
+
 
 /**
  * Returns the recurring backup schedule stored in system settings.
@@ -2441,19 +1926,14 @@ Requires the X-Platform-Admin-Secret header.
  * @summary Get the current backup schedule configuration
  */
 export const GetBackupScheduleResponse = zod.object({
-  ok: zod.boolean().optional(),
-  interval: zod
-    .number()
-    .nullish()
-    .describe("Number of interval units (null if no schedule is set)"),
-  unit: zod
-    .enum(["minutes", "hours"])
-    .nullish()
-    .describe("Unit for the interval value"),
-  destination: zod.enum(["onedrive", "local", "network"]).nullish(),
-  path: zod.string().nullish(),
-  enabled: zod.boolean().optional(),
-});
+  "ok": zod.boolean().optional(),
+  "interval": zod.number().nullish().describe('Number of interval units (null if no schedule is set)'),
+  "unit": zod.enum(['minutes', 'hours']).nullish().describe('Unit for the interval value'),
+  "destination": zod.enum(['onedrive', 'local', 'network']).nullish(),
+  "path": zod.string().nullish(),
+  "enabled": zod.boolean().optional()
+})
+
 
 /**
  * Persists the schedule configuration to system settings and restarts
@@ -2463,31 +1943,22 @@ X-Platform-Admin-Secret header.
  * @summary Save the recurring backup schedule
  */
 export const SaveBackupScheduleBody = zod.object({
-  interval: zod
-    .number()
-    .describe(
-      "Number of interval units between backups (e.g. 15 minutes, 1 hour)",
-    ),
-  unit: zod.enum(["minutes", "hours"]).describe("Unit for the interval value"),
-  destination: zod.enum(["onedrive", "local", "network"]),
-  path: zod.string().nullish(),
-  enabled: zod.boolean(),
-});
+  "interval": zod.number().describe('Number of interval units between backups (e.g. 15 minutes, 1 hour)'),
+  "unit": zod.enum(['minutes', 'hours']).describe('Unit for the interval value'),
+  "destination": zod.enum(['onedrive', 'local', 'network']),
+  "path": zod.string().nullish(),
+  "enabled": zod.boolean()
+})
 
 export const SaveBackupScheduleResponse = zod.object({
-  ok: zod.boolean().optional(),
-  interval: zod
-    .number()
-    .nullish()
-    .describe("Number of interval units (null if no schedule is set)"),
-  unit: zod
-    .enum(["minutes", "hours"])
-    .nullish()
-    .describe("Unit for the interval value"),
-  destination: zod.enum(["onedrive", "local", "network"]).nullish(),
-  path: zod.string().nullish(),
-  enabled: zod.boolean().optional(),
-});
+  "ok": zod.boolean().optional(),
+  "interval": zod.number().nullish().describe('Number of interval units (null if no schedule is set)'),
+  "unit": zod.enum(['minutes', 'hours']).nullish().describe('Unit for the interval value'),
+  "destination": zod.enum(['onedrive', 'local', 'network']).nullish(),
+  "path": zod.string().nullish(),
+  "enabled": zod.boolean().optional()
+})
+
 
 /**
  * Sets the schedule to disabled in system settings and stops the
@@ -2496,9 +1967,10 @@ in-process interval job. Requires the X-Platform-Admin-Secret header.
  * @summary Disable the recurring backup schedule
  */
 export const DisableBackupScheduleResponse = zod.object({
-  ok: zod.boolean().optional(),
-  enabled: zod.boolean().optional(),
-});
+  "ok": zod.boolean().optional(),
+  "enabled": zod.boolean().optional()
+})
+
 
 /**
  * Returns the saved provider organization ID for the given
@@ -2509,19 +1981,18 @@ matched case-insensitively (normalized to lowercase). Returns
  * @summary Look up a saved Rx-name → practice alias for a lab
  */
 export const GetRxPracticeAliasQueryParams = zod.object({
-  labOrganizationId: zod.coerce.string(),
-  rxName: zod.coerce.string(),
-});
+  "labOrganizationId": zod.coerce.string(),
+  "rxName": zod.coerce.string()
+})
 
 export const GetRxPracticeAliasResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      found: zod.boolean().optional(),
-      providerOrganizationId: zod.string().nullish(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "found": zod.boolean().optional(),
+  "providerOrganizationId": zod.string().nullish()
+}).optional()
+})
+
 
 /**
  * Upserts an alias that maps a normalized Rx doctor/practice name to a
@@ -2532,20 +2003,19 @@ Lab-member auth required.
  * @summary Save or update an Rx-name → practice alias for a lab
  */
 export const UpsertRxPracticeAliasBody = zod.object({
-  labOrganizationId: zod.string(),
-  rxName: zod.string(),
-  providerOrganizationId: zod.string(),
-});
+  "labOrganizationId": zod.string(),
+  "rxName": zod.string(),
+  "providerOrganizationId": zod.string()
+})
 
 export const UpsertRxPracticeAliasResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      found: zod.boolean().optional(),
-      providerOrganizationId: zod.string().nullish(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "found": zod.boolean().optional(),
+  "providerOrganizationId": zod.string().nullish()
+}).optional()
+})
+
 
 /**
  * Accepts a base64-encoded primary image (JPEG, PNG, or PDF) and up to
@@ -2558,43 +2028,32 @@ Auth is optional — the caller may be authenticated or not.
  * @summary Extract dental prescription fields from image(s) using AI
  */
 export const AnalyzePrescriptionBody = zod.object({
-  imageBase64: zod
-    .string()
-    .describe(
-      "Primary page as a data URI (data:image\/jpeg;base64,...) or raw base64.",
-    ),
-  additionalImages: zod
-    .array(zod.string())
-    .optional()
-    .describe("Additional pages (same base64 format)."),
-  fast: zod
-    .boolean()
-    .optional()
-    .describe("Use the fast model chain (mobile live-preview mode)."),
-});
+  "imageBase64": zod.string().describe('Primary page as a data URI (data:image\/jpeg;base64,...) or raw base64.'),
+  "additionalImages": zod.array(zod.string()).optional().describe('Additional pages (same base64 format).'),
+  "fast": zod.boolean().optional().describe('Use the fast model chain (mobile live-preview mode).')
+})
 
 export const AnalyzePrescriptionResponse = zod.object({
-  success: zod.boolean(),
-  data: zod
-    .object({
-      doctorName: zod.string().nullish(),
-      patientName: zod.string().nullish(),
-      patientInitials: zod.string().nullish(),
-      caseType: zod.string().nullish(),
-      toothIndices: zod.string().nullish(),
-      shade: zod.string().nullish(),
-      material: zod.string().nullish(),
-      dueDate: zod.string().nullish(),
-      isRush: zod.boolean().nullish(),
-      notes: zod.string().nullish(),
-      practiceName: zod.string().nullish(),
-      practiceAddress: zod.string().nullish(),
-      practicePhone: zod.string().nullish(),
-      confidence: zod.number().optional(),
-    })
-    .optional(),
-  error: zod.string().nullish(),
-});
+  "success": zod.boolean(),
+  "data": zod.object({
+  "doctorName": zod.string().nullish(),
+  "patientName": zod.string().nullish(),
+  "patientInitials": zod.string().nullish(),
+  "caseType": zod.string().nullish(),
+  "toothIndices": zod.string().nullish(),
+  "shade": zod.string().nullish(),
+  "material": zod.string().nullish(),
+  "dueDate": zod.string().nullish(),
+  "isRush": zod.boolean().nullish(),
+  "notes": zod.string().nullish(),
+  "practiceName": zod.string().nullish(),
+  "practiceAddress": zod.string().nullish(),
+  "practicePhone": zod.string().nullish(),
+  "confidence": zod.number().optional()
+}).optional(),
+  "error": zod.string().nullish()
+})
+
 
 /**
  * QuickBooks-style "Receive Payments" — record one payment from a
@@ -2608,26 +2067,22 @@ export const receiveInvoicePaymentsBodyApplicationsItemAmountMin = 0.01;
 
 export const receiveInvoicePaymentsBodyApplicationsMax = 500;
 
+
+
 export const ReceiveInvoicePaymentsBody = zod.object({
-  labOrganizationId: zod.string(),
-  providerOrganizationId: zod.string(),
-  paymentMethod: zod.enum(["card", "ach", "check", "cash", "other"]),
-  referenceNumber: zod.string().nullish(),
-  paymentDate: zod.coerce.date().optional(),
-  depositBankAccountId: zod.string(),
-  memo: zod.string().nullish(),
-  applications: zod
-    .array(
-      zod.object({
-        invoiceId: zod.string(),
-        amount: zod
-          .number()
-          .min(receiveInvoicePaymentsBodyApplicationsItemAmountMin),
-      }),
-    )
-    .min(1)
-    .max(receiveInvoicePaymentsBodyApplicationsMax),
-});
+  "labOrganizationId": zod.string(),
+  "providerOrganizationId": zod.string(),
+  "paymentMethod": zod.enum(['card', 'ach', 'check', 'cash', 'other']),
+  "referenceNumber": zod.string().nullish(),
+  "paymentDate": zod.coerce.date().optional(),
+  "depositBankAccountId": zod.string(),
+  "memo": zod.string().nullish(),
+  "applications": zod.array(zod.object({
+  "invoiceId": zod.string(),
+  "amount": zod.number().min(receiveInvoicePaymentsBodyApplicationsItemAmountMin)
+})).min(1).max(receiveInvoicePaymentsBodyApplicationsMax)
+})
+
 
 /**
  * Returns the provider practices (organizations of type "provider")
@@ -2641,47 +2096,43 @@ still appear. Soft-deleted practices are excluded.
  * @summary List provider practices for a lab
  */
 export const ListLabProvidersParams = zod.object({
-  labId: zod.coerce.string(),
-});
+  "labId": zod.coerce.string()
+})
 
 export const ListLabProvidersResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      providers: zod
-        .array(
-          zod.object({
-            id: zod.string(),
-            name: zod.string(),
-            displayName: zod.string().nullish(),
-            phone: zod.string().nullish(),
-            addressLine1: zod.string().nullish(),
-            city: zod.string().nullish(),
-            state: zod.string().nullish(),
-            zip: zod.string().nullish(),
-            accountNumber: zod.string().nullish(),
-            platformAccountNumber: zod.string().nullish(),
-          }),
-        )
-        .optional(),
-    })
-    .optional(),
-});
+  "ok": zod.boolean().optional(),
+  "data": zod.object({
+  "providers": zod.array(zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "displayName": zod.string().nullish(),
+  "phone": zod.string().nullish(),
+  "addressLine1": zod.string().nullish(),
+  "city": zod.string().nullish(),
+  "state": zod.string().nullish(),
+  "zip": zod.string().nullish(),
+  "accountNumber": zod.string().nullish(),
+  "platformAccountNumber": zod.string().nullish()
+})).optional()
+}).optional()
+})
+
 
 /**
  * @summary Update logo placement preferences for an organization
  */
 export const UpdateOrganizationLogoPlacementsParams = zod.object({
-  organizationId: zod.coerce.string(),
-});
+  "organizationId": zod.coerce.string()
+})
 
 export const UpdateOrganizationLogoPlacementsBody = zod.object({
-  placements: zod.array(zod.string()),
-});
+  "placements": zod.array(zod.string())
+})
 
 export const UpdateOrganizationLogoPlacementsResponse = zod.object({
-  logoplacements: zod.array(zod.string()).nullish(),
-});
+  "logoplacements": zod.array(zod.string()).nullish()
+})
+
 
 /**
  * Generates a PDF from the supplied base-64 payload and sends it to the
@@ -2692,8 +2143,8 @@ invoice. Returns 503 when SMTP is not configured.
  * @summary Email a single invoice as a PDF attachment
  */
 export const EmailInvoiceParams = zod.object({
-  invoiceId: zod.coerce.string(),
-});
+  "invoiceId": zod.coerce.string()
+})
 
 export const emailInvoiceBodyCcMax = 10;
 
@@ -2705,28 +2156,24 @@ export const emailInvoiceBodyFilenameMax = 200;
 
 export const emailInvoiceBodyAttachmentIdsMax = 20;
 
+
+
 export const EmailInvoiceBody = zod.object({
-  to: zod
-    .string()
-    .email()
-    .optional()
-    .describe("Recipient override; falls back to practice billingEmail."),
-  cc: zod.array(zod.string().email()).max(emailInvoiceBodyCcMax).optional(),
-  subject: zod.string().min(1).max(emailInvoiceBodySubjectMax),
-  message: zod.string().min(1).max(emailInvoiceBodyMessageMax),
-  filename: zod.string().min(1).max(emailInvoiceBodyFilenameMax),
-  pdfBase64: zod.string().describe("Base-64 encoded PDF bytes."),
-  attachmentIds: zod
-    .array(zod.string())
-    .max(emailInvoiceBodyAttachmentIdsMax)
-    .optional(),
-});
+  "to": zod.string().email().optional().describe('Recipient override; falls back to practice billingEmail.'),
+  "cc": zod.array(zod.string().email()).max(emailInvoiceBodyCcMax).optional(),
+  "subject": zod.string().min(1).max(emailInvoiceBodySubjectMax),
+  "message": zod.string().min(1).max(emailInvoiceBodyMessageMax),
+  "filename": zod.string().min(1).max(emailInvoiceBodyFilenameMax),
+  "pdfBase64": zod.string().describe('Base-64 encoded PDF bytes.'),
+  "attachmentIds": zod.array(zod.string()).max(emailInvoiceBodyAttachmentIdsMax).optional()
+})
 
 export const EmailInvoiceResponse = zod.object({
-  sentAt: zod.coerce.date(),
-  to: zod.string(),
-  cc: zod.array(zod.string()),
-});
+  "sentAt": zod.coerce.date(),
+  "to": zod.string(),
+  "cc": zod.array(zod.string())
+})
+
 
 /**
  * Sends an SMS message to the practice's phone number (or the `to`
@@ -2737,166 +2184,157 @@ not configured.
  * @summary Send a single invoice notification via SMS
  */
 export const SmsInvoiceParams = zod.object({
-  invoiceId: zod.coerce.string(),
-});
+  "invoiceId": zod.coerce.string()
+})
 
 export const smsInvoiceBodyMessageMax = 1500;
 
+
+
 export const SmsInvoiceBody = zod.object({
-  to: zod
-    .string()
-    .optional()
-    .describe("Phone number override; falls back to practice phone."),
-  message: zod.string().min(1).max(smsInvoiceBodyMessageMax),
-});
+  "to": zod.string().optional().describe('Phone number override; falls back to practice phone.'),
+  "message": zod.string().min(1).max(smsInvoiceBodyMessageMax)
+})
 
 export const SmsInvoiceResponse = zod.object({
-  sentAt: zod.coerce.date(),
-  to: zod.string(),
-});
+  "sentAt": zod.coerce.date(),
+  "to": zod.string()
+})
+
 
 /**
  * @summary Search users to start a conversation with
  */
 export const SearchMessengerUsersQueryParams = zod.object({
-  q: zod.coerce
-    .string()
-    .describe("Search query (username, first name, last name)"),
-});
+  "q": zod.coerce.string().describe('Search query (username, first name, last name)')
+})
 
 export const SearchMessengerUsersResponse = zod.object({
-  ok: zod.boolean(),
-  data: zod.array(
-    zod.object({
-      id: zod.string(),
-      username: zod.string(),
-      firstName: zod.string().nullish(),
-      lastName: zod.string().nullish(),
-      initials: zod.string(),
-      displayName: zod.string(),
-      userType: zod.string(),
-      role: zod.string(),
-      workStatus: zod.string().nullish(),
-      platformAccountNumber: zod.string().nullish(),
-    }),
-  ),
-});
+  "ok": zod.boolean(),
+  "data": zod.array(zod.object({
+  "id": zod.string(),
+  "username": zod.string(),
+  "firstName": zod.string().nullish(),
+  "lastName": zod.string().nullish(),
+  "initials": zod.string(),
+  "displayName": zod.string(),
+  "userType": zod.string(),
+  "role": zod.string(),
+  "workStatus": zod.string().nullish(),
+  "platformAccountNumber": zod.string().nullish()
+}))
+})
+
 
 /**
  * @summary List all conversations for the current user
  */
 export const ListConversationsResponse = zod.object({
-  ok: zod.boolean(),
-  data: zod.array(
-    zod.object({
-      id: zod.string(),
-      updatedAt: zod.string().optional(),
-      unreadCount: zod.number(),
-      lastMessage: zod
-        .object({
-          id: zod.string(),
-          body: zod.string(),
-          senderId: zod.string(),
-          createdAt: zod.string(),
-        })
-        .nullish(),
-      otherUser: zod
-        .object({
-          id: zod.string(),
-          username: zod.string(),
-          firstName: zod.string().nullish(),
-          lastName: zod.string().nullish(),
-          initials: zod.string(),
-          displayName: zod.string(),
-          userType: zod.string(),
-          role: zod.string(),
-          workStatus: zod.string().nullish(),
-          platformAccountNumber: zod.string().nullish(),
-        })
-        .nullish(),
-    }),
-  ),
-});
+  "ok": zod.boolean(),
+  "data": zod.array(zod.object({
+  "id": zod.string(),
+  "updatedAt": zod.string().optional(),
+  "unreadCount": zod.number(),
+  "lastMessage": zod.object({
+  "id": zod.string(),
+  "body": zod.string(),
+  "senderId": zod.string(),
+  "createdAt": zod.string()
+}).nullish(),
+  "otherUser": zod.object({
+  "id": zod.string(),
+  "username": zod.string(),
+  "firstName": zod.string().nullish(),
+  "lastName": zod.string().nullish(),
+  "initials": zod.string(),
+  "displayName": zod.string(),
+  "userType": zod.string(),
+  "role": zod.string(),
+  "workStatus": zod.string().nullish(),
+  "platformAccountNumber": zod.string().nullish()
+}).nullish()
+}))
+})
+
 
 /**
  * @summary Find or create a 1-to-1 conversation
  */
 export const CreateConversationBody = zod.object({
-  otherUserId: zod.string(),
-});
+  "otherUserId": zod.string()
+})
 
 export const CreateConversationResponse = zod.object({
-  ok: zod.boolean(),
-  data: zod.object({
-    conversationId: zod.string(),
-  }),
-});
+  "ok": zod.boolean(),
+  "data": zod.object({
+  "conversationId": zod.string()
+})
+})
+
 
 /**
  * @summary Get paginated message history for a conversation
  */
 export const GetConversationMessagesParams = zod.object({
-  id: zod.coerce.string(),
-});
+  "id": zod.coerce.string()
+})
 
 export const getConversationMessagesQueryLimitMax = 100;
 
+
+
 export const GetConversationMessagesQueryParams = zod.object({
-  before: zod.coerce
-    .string()
-    .optional()
-    .describe("Cursor — return messages before this message ID"),
-  limit: zod.coerce
-    .number()
-    .min(1)
-    .max(getConversationMessagesQueryLimitMax)
-    .optional(),
-});
+  "before": zod.coerce.string().optional().describe('Cursor — return messages before this message ID'),
+  "limit": zod.coerce.number().min(1).max(getConversationMessagesQueryLimitMax).optional()
+})
 
 export const GetConversationMessagesResponse = zod.object({
-  ok: zod.boolean(),
-  data: zod.array(
-    zod.object({
-      id: zod.string(),
-      conversationId: zod.string(),
-      senderId: zod.string(),
-      body: zod.string(),
-      createdAt: zod.string(),
-      sender: zod.object({
-        id: zod.string(),
-        username: zod.string(),
-        firstName: zod.string().nullish(),
-        lastName: zod.string().nullish(),
-        initials: zod.string(),
-        displayName: zod.string(),
-      }),
-    }),
-  ),
-});
+  "ok": zod.boolean(),
+  "data": zod.array(zod.object({
+  "id": zod.string(),
+  "conversationId": zod.string(),
+  "senderId": zod.string(),
+  "body": zod.string(),
+  "createdAt": zod.string(),
+  "sender": zod.object({
+  "id": zod.string(),
+  "username": zod.string(),
+  "firstName": zod.string().nullish(),
+  "lastName": zod.string().nullish(),
+  "initials": zod.string(),
+  "displayName": zod.string()
+})
+}))
+})
+
 
 /**
  * @summary Send a message to a conversation
  */
 export const SendMessageParams = zod.object({
-  id: zod.coerce.string(),
-});
+  "id": zod.coerce.string()
+})
 
 export const sendMessageBodyBodyMax = 4000;
 
+
+
 export const SendMessageBody = zod.object({
-  body: zod.string().min(1).max(sendMessageBodyBodyMax),
-});
+  "body": zod.string().min(1).max(sendMessageBodyBodyMax)
+})
+
 
 /**
  * @summary Mark conversation as read up to a given message
  */
 export const MarkConversationReadParams = zod.object({
-  id: zod.coerce.string(),
-});
+  "id": zod.coerce.string()
+})
 
 export const MarkConversationReadBody = zod.object({
-  lastMessageId: zod.string(),
-});
+  "lastMessageId": zod.string()
+})
+
 
 /**
  * @summary Register a new user account (base role only; 14-day trial starts)
@@ -2904,650 +2342,514 @@ export const MarkConversationReadBody = zod.object({
 export const registerUserBodyUsernameMin = 3;
 export const registerUserBodyUsernameMax = 12;
 
-export const registerUserBodyUsernameRegExp = new RegExp(
-  "^[a-zA-Z0-9_]{3,12}$",
-);
 
-export const RegisterUserBody = zod
-  .object({
-    username: zod
-      .string()
-      .min(registerUserBodyUsernameMin)
-      .max(registerUserBodyUsernameMax)
-      .regex(registerUserBodyUsernameRegExp)
-      .describe(
-        "3–12 characters, letters\/numbers\/underscore only. Unique case-insensitively.",
-      ),
-    password: zod.string(),
-    email: zod.string().nullish(),
-    phone: zod.string().nullish(),
-    firstName: zod.string().nullish(),
-    lastName: zod.string().nullish(),
-    userType: zod.enum(["lab", "provider"]).nullish(),
-    practiceName: zod.string().nullish(),
-    doctorName: zod.string().nullish(),
-    createOrganization: zod
-      .boolean()
-      .nullish()
-      .describe(
-        "When true, also creates the user's lab organization and an owner membership.",
-      ),
-    clientType: zod.enum(["web", "mobile", "desktop"]).nullish(),
-    wantsUpdates: zod.boolean().nullish(),
-  })
-  .describe(
-    "New-account registration. The global role is always the base user role; account\/platform numbers are allocated server-side and never grant privilege.",
-  );
+export const registerUserBodyUsernameRegExp = new RegExp('^[a-zA-Z0-9_]{3,12}$');
 
-export const RegisterUserResponse = zod
-  .object({
-    success: zod.boolean(),
-    accessToken: zod.string().nullish(),
-    refreshToken: zod.string().nullish(),
-    user: zod
-      .object({
-        id: zod.string(),
-        username: zod.string().nullish(),
-        email: zod.string().nullish(),
-        phone: zod.string().nullish(),
-        firstName: zod.string().nullish(),
-        lastName: zod.string().nullish(),
-        initials: zod.string().nullish(),
-        userType: zod.string().nullish(),
-        role: zod.string().nullish(),
-        licenseNumber: zod.string().nullish(),
-        practiceName: zod.string().nullish(),
-        doctorName: zod.string().nullish(),
-        practiceAddress: zod.string().nullish(),
-        practicePhone: zod.string().nullish(),
-        phoneContactName: zod.string().nullish(),
-        accountNumber: zod.string().nullish(),
-        platformAccountNumber: zod
-          .string()
-          .nullish()
-          .describe(
-            "Immutable platform-wide account number. Canonical format is `<TYPE>-<YEAR>-<SEQUENCE>-<PHONE>` (e.g. `L-2026-3-5551234567`); legacy accounts use the older `<seq><YY><F><L>` format.",
-          ),
-        emailVerifiedAt: zod.coerce
-          .date()
-          .nullish()
-          .describe(
-            "When the user's email was verified, or null if unverified.",
-          ),
-        phoneVerifiedAt: zod.coerce
-          .date()
-          .nullish()
-          .describe(
-            "When the user's phone was verified, or null if unverified.",
-          ),
-        twoFactorChannel: zod
-          .enum(["sms", "email"])
-          .nullish()
-          .describe("Preferred second-factor \/ verification channel."),
-        wantsUpdates: zod.boolean().nullish(),
-        workStatus: zod.string().nullish(),
-        profilePhotoUrl: zod.string().nullish(),
-      })
-      .describe(
-        "User fields safe to return to clients (no password\/secret material).",
-      )
-      .nullish(),
-    message: zod.string().nullish(),
-    organization: zod.record(zod.string(), zod.unknown()).nullish(),
-    pendingJoinRequest: zod.record(zod.string(), zod.unknown()).nullish(),
-    requiresTwoFactor: zod.boolean().nullish(),
-    pendingToken: zod.string().nullish(),
-  })
-  .describe(
-    "Bare (non-enveloped) auth response. Tokens are present only for non-web (bearer) clients; web clients receive httpOnly cookies instead.",
-  );
+
+export const RegisterUserBody = zod.object({
+  "username": zod.string().min(registerUserBodyUsernameMin).max(registerUserBodyUsernameMax).regex(registerUserBodyUsernameRegExp).describe('3–12 characters, letters\/numbers\/underscore only. Unique case-insensitively.'),
+  "password": zod.string(),
+  "email": zod.string().nullish(),
+  "phone": zod.string().nullish(),
+  "firstName": zod.string().nullish(),
+  "lastName": zod.string().nullish(),
+  "userType": zod.enum(['lab', 'provider']).nullish(),
+  "practiceName": zod.string().nullish(),
+  "doctorName": zod.string().nullish(),
+  "createOrganization": zod.boolean().nullish().describe('When true, also creates the user\'s lab organization and an owner membership.'),
+  "clientType": zod.enum(['web', 'mobile', 'desktop']).nullish(),
+  "wantsUpdates": zod.boolean().nullish()
+}).describe('New-account registration. The global role is always the base user role; account\/platform numbers are allocated server-side and never grant privilege.')
+
+export const RegisterUserResponse = zod.object({
+  "success": zod.boolean(),
+  "accessToken": zod.string().nullish(),
+  "refreshToken": zod.string().nullish(),
+  "user": zod.object({
+  "id": zod.string(),
+  "username": zod.string().nullish(),
+  "email": zod.string().nullish(),
+  "phone": zod.string().nullish(),
+  "firstName": zod.string().nullish(),
+  "lastName": zod.string().nullish(),
+  "initials": zod.string().nullish(),
+  "userType": zod.string().nullish(),
+  "role": zod.string().nullish(),
+  "licenseNumber": zod.string().nullish(),
+  "practiceName": zod.string().nullish(),
+  "doctorName": zod.string().nullish(),
+  "practiceAddress": zod.string().nullish(),
+  "practicePhone": zod.string().nullish(),
+  "phoneContactName": zod.string().nullish(),
+  "accountNumber": zod.string().nullish(),
+  "platformAccountNumber": zod.string().nullish().describe('Immutable platform-wide account number. Canonical format is `<TYPE>-<YEAR>-<SEQUENCE>-<PHONE>` (e.g. `L-2026-3-5551234567`); legacy accounts use the older `<seq><YY><F><L>` format.'),
+  "emailVerifiedAt": zod.coerce.date().nullish().describe('When the user\'s email was verified, or null if unverified.'),
+  "phoneVerifiedAt": zod.coerce.date().nullish().describe('When the user\'s phone was verified, or null if unverified.'),
+  "twoFactorChannel": zod.enum(['sms', 'email']).nullish().describe('Preferred second-factor \/ verification channel.'),
+  "wantsUpdates": zod.boolean().nullish(),
+  "workStatus": zod.string().nullish(),
+  "profilePhotoUrl": zod.string().nullish()
+}).describe('User fields safe to return to clients (no password\/secret material).').nullish(),
+  "message": zod.string().nullish(),
+  "organization": zod.record(zod.string(), zod.unknown()).nullish(),
+  "pendingJoinRequest": zod.record(zod.string(), zod.unknown()).nullish(),
+  "requiresTwoFactor": zod.boolean().nullish(),
+  "pendingToken": zod.string().nullish()
+}).describe('Bare (non-enveloped) auth response. Tokens are present only for non-web (bearer) clients; web clients receive httpOnly cookies instead.')
+
 
 /**
  * @summary Authenticate with an identifier (username, email, or account number) and password
  */
-export const LoginUserBody = zod
-  .object({
-    username: zod.string().nullish(),
-    identifier: zod.string().nullish(),
-    password: zod.string(),
-    deviceName: zod.string().nullish(),
-    clientType: zod.enum(["web", "mobile", "desktop"]).nullish(),
-    deviceTrustToken: zod.string().nullish(),
-  })
-  .describe(
-    "Provide either username or identifier (identifier matches username, email, or platform account number — case-insensitive).",
-  );
+export const LoginUserBody = zod.object({
+  "username": zod.string().nullish(),
+  "identifier": zod.string().nullish(),
+  "password": zod.string(),
+  "deviceName": zod.string().nullish(),
+  "clientType": zod.enum(['web', 'mobile', 'desktop']).nullish(),
+  "deviceTrustToken": zod.string().nullish()
+}).describe('Provide either username or identifier (identifier matches username, email, or platform account number — case-insensitive).')
 
-export const LoginUserResponse = zod
-  .object({
-    success: zod.boolean().nullish(),
-    accessToken: zod.string().nullish(),
-    refreshToken: zod.string().nullish(),
-    user: zod
-      .object({
-        id: zod.string(),
-        username: zod.string().nullish(),
-        email: zod.string().nullish(),
-        phone: zod.string().nullish(),
-        firstName: zod.string().nullish(),
-        lastName: zod.string().nullish(),
-        initials: zod.string().nullish(),
-        userType: zod.string().nullish(),
-        role: zod.string().nullish(),
-        licenseNumber: zod.string().nullish(),
-        practiceName: zod.string().nullish(),
-        doctorName: zod.string().nullish(),
-        practiceAddress: zod.string().nullish(),
-        practicePhone: zod.string().nullish(),
-        phoneContactName: zod.string().nullish(),
-        accountNumber: zod.string().nullish(),
-        platformAccountNumber: zod
-          .string()
-          .nullish()
-          .describe(
-            "Immutable platform-wide account number. Canonical format is `<TYPE>-<YEAR>-<SEQUENCE>-<PHONE>` (e.g. `L-2026-3-5551234567`); legacy accounts use the older `<seq><YY><F><L>` format.",
-          ),
-        emailVerifiedAt: zod.coerce
-          .date()
-          .nullish()
-          .describe(
-            "When the user's email was verified, or null if unverified.",
-          ),
-        phoneVerifiedAt: zod.coerce
-          .date()
-          .nullish()
-          .describe(
-            "When the user's phone was verified, or null if unverified.",
-          ),
-        twoFactorChannel: zod
-          .enum(["sms", "email"])
-          .nullish()
-          .describe("Preferred second-factor \/ verification channel."),
-        wantsUpdates: zod.boolean().nullish(),
-        workStatus: zod.string().nullish(),
-        profilePhotoUrl: zod.string().nullish(),
-      })
-      .describe(
-        "User fields safe to return to clients (no password\/secret material).",
-      )
-      .nullish(),
-    message: zod.string().nullish(),
-    organization: zod.record(zod.string(), zod.unknown()).nullish(),
-    pendingJoinRequest: zod.record(zod.string(), zod.unknown()).nullish(),
-    requiresTwoFactor: zod.boolean().nullish(),
-    pendingToken: zod.string().nullish(),
-  })
-  .describe(
-    "Either a completed login (success + optional tokens) or a 2FA challenge (requiresTwoFactor + pendingToken).",
-  );
+export const LoginUserResponse = zod.object({
+  "success": zod.boolean().nullish(),
+  "accessToken": zod.string().nullish(),
+  "refreshToken": zod.string().nullish(),
+  "user": zod.object({
+  "id": zod.string(),
+  "username": zod.string().nullish(),
+  "email": zod.string().nullish(),
+  "phone": zod.string().nullish(),
+  "firstName": zod.string().nullish(),
+  "lastName": zod.string().nullish(),
+  "initials": zod.string().nullish(),
+  "userType": zod.string().nullish(),
+  "role": zod.string().nullish(),
+  "licenseNumber": zod.string().nullish(),
+  "practiceName": zod.string().nullish(),
+  "doctorName": zod.string().nullish(),
+  "practiceAddress": zod.string().nullish(),
+  "practicePhone": zod.string().nullish(),
+  "phoneContactName": zod.string().nullish(),
+  "accountNumber": zod.string().nullish(),
+  "platformAccountNumber": zod.string().nullish().describe('Immutable platform-wide account number. Canonical format is `<TYPE>-<YEAR>-<SEQUENCE>-<PHONE>` (e.g. `L-2026-3-5551234567`); legacy accounts use the older `<seq><YY><F><L>` format.'),
+  "emailVerifiedAt": zod.coerce.date().nullish().describe('When the user\'s email was verified, or null if unverified.'),
+  "phoneVerifiedAt": zod.coerce.date().nullish().describe('When the user\'s phone was verified, or null if unverified.'),
+  "twoFactorChannel": zod.enum(['sms', 'email']).nullish().describe('Preferred second-factor \/ verification channel.'),
+  "wantsUpdates": zod.boolean().nullish(),
+  "workStatus": zod.string().nullish(),
+  "profilePhotoUrl": zod.string().nullish()
+}).describe('User fields safe to return to clients (no password\/secret material).').nullish(),
+  "message": zod.string().nullish(),
+  "organization": zod.record(zod.string(), zod.unknown()).nullish(),
+  "pendingJoinRequest": zod.record(zod.string(), zod.unknown()).nullish(),
+  "requiresTwoFactor": zod.boolean().nullish(),
+  "pendingToken": zod.string().nullish()
+}).describe('Either a completed login (success + optional tokens) or a 2FA challenge (requiresTwoFactor + pendingToken).')
+
 
 /**
  * @summary Rotate the refresh token and issue a new access token (reuse detection)
  */
-export const RefreshSessionBody = zod
-  .object({
-    refreshToken: zod.string().nullish(),
-  })
-  .describe(
-    "Refresh token is optional in the body — web clients send it via httpOnly cookie.",
-  );
+export const RefreshSessionBody = zod.object({
+  "refreshToken": zod.string().nullish()
+}).describe('Refresh token is optional in the body — web clients send it via httpOnly cookie.')
 
-export const RefreshSessionResponse = zod
-  .object({
-    ok: zod.boolean(),
-    data: zod.object({
-      accessToken: zod.string(),
-      refreshToken: zod.string().optional(),
-    }),
-  })
-  .describe(
-    "Enveloped token-rotation response (ok + data). Tokens are present only for bearer clients.",
-  );
+export const RefreshSessionResponse = zod.object({
+  "ok": zod.boolean(),
+  "data": zod.object({
+  "accessToken": zod.string(),
+  "refreshToken": zod.string().optional()
+})
+}).describe('Enveloped token-rotation response (ok + data). Tokens are present only for bearer clients.')
+
 
 /**
  * @summary Revoke the current session
  */
 export const LogoutUserResponse = zod.object({
-  success: zod.boolean(),
-});
+  "success": zod.boolean()
+})
+
 
 /**
  * @summary Get the authenticated user and the organizations they belong to
  */
 export const GetCurrentUserResponse = zod.object({
-  success: zod.boolean(),
-  user: zod
-    .object({
-      id: zod.string(),
-      username: zod.string().nullish(),
-      email: zod.string().nullish(),
-      phone: zod.string().nullish(),
-      firstName: zod.string().nullish(),
-      lastName: zod.string().nullish(),
-      initials: zod.string().nullish(),
-      userType: zod.string().nullish(),
-      role: zod.string().nullish(),
-      licenseNumber: zod.string().nullish(),
-      practiceName: zod.string().nullish(),
-      doctorName: zod.string().nullish(),
-      practiceAddress: zod.string().nullish(),
-      practicePhone: zod.string().nullish(),
-      phoneContactName: zod.string().nullish(),
-      accountNumber: zod.string().nullish(),
-      platformAccountNumber: zod
-        .string()
-        .nullish()
-        .describe(
-          "Immutable platform-wide account number. Canonical format is `<TYPE>-<YEAR>-<SEQUENCE>-<PHONE>` (e.g. `L-2026-3-5551234567`); legacy accounts use the older `<seq><YY><F><L>` format.",
-        ),
-      emailVerifiedAt: zod.coerce
-        .date()
-        .nullish()
-        .describe("When the user's email was verified, or null if unverified."),
-      phoneVerifiedAt: zod.coerce
-        .date()
-        .nullish()
-        .describe("When the user's phone was verified, or null if unverified."),
-      twoFactorChannel: zod
-        .enum(["sms", "email"])
-        .nullish()
-        .describe("Preferred second-factor \/ verification channel."),
-      wantsUpdates: zod.boolean().nullish(),
-      workStatus: zod.string().nullish(),
-      profilePhotoUrl: zod.string().nullish(),
-    })
-    .describe(
-      "User fields safe to return to clients (no password\/secret material).",
-    )
-    .nullish(),
-  memberships: zod.array(
-    zod.object({
-      id: zod.string(),
-      role: zod.string().nullish(),
-      status: zod.string().nullish(),
-      organizationId: zod.string().nullish(),
-      organization: zod.record(zod.string(), zod.unknown()).nullish(),
-    }),
-  ),
-});
+  "success": zod.boolean(),
+  "user": zod.object({
+  "id": zod.string(),
+  "username": zod.string().nullish(),
+  "email": zod.string().nullish(),
+  "phone": zod.string().nullish(),
+  "firstName": zod.string().nullish(),
+  "lastName": zod.string().nullish(),
+  "initials": zod.string().nullish(),
+  "userType": zod.string().nullish(),
+  "role": zod.string().nullish(),
+  "licenseNumber": zod.string().nullish(),
+  "practiceName": zod.string().nullish(),
+  "doctorName": zod.string().nullish(),
+  "practiceAddress": zod.string().nullish(),
+  "practicePhone": zod.string().nullish(),
+  "phoneContactName": zod.string().nullish(),
+  "accountNumber": zod.string().nullish(),
+  "platformAccountNumber": zod.string().nullish().describe('Immutable platform-wide account number. Canonical format is `<TYPE>-<YEAR>-<SEQUENCE>-<PHONE>` (e.g. `L-2026-3-5551234567`); legacy accounts use the older `<seq><YY><F><L>` format.'),
+  "emailVerifiedAt": zod.coerce.date().nullish().describe('When the user\'s email was verified, or null if unverified.'),
+  "phoneVerifiedAt": zod.coerce.date().nullish().describe('When the user\'s phone was verified, or null if unverified.'),
+  "twoFactorChannel": zod.enum(['sms', 'email']).nullish().describe('Preferred second-factor \/ verification channel.'),
+  "wantsUpdates": zod.boolean().nullish(),
+  "workStatus": zod.string().nullish(),
+  "profilePhotoUrl": zod.string().nullish()
+}).describe('User fields safe to return to clients (no password\/secret material).').nullish(),
+  "memberships": zod.array(zod.object({
+  "id": zod.string(),
+  "role": zod.string().nullish(),
+  "status": zod.string().nullish(),
+  "organizationId": zod.string().nullish(),
+  "organization": zod.record(zod.string(), zod.unknown()).nullish()
+}))
+})
+
 
 /**
  * @summary List active sessions for the authenticated user
  */
 export const ListSessionsResponse = zod.object({
-  success: zod.boolean(),
-  sessions: zod.array(
-    zod.object({
-      id: zod.string(),
-      deviceName: zod.string().nullish(),
-      ipAddress: zod.string().nullish(),
-      userAgent: zod.string().nullish(),
-      createdAt: zod.string().nullish(),
-      expiresAt: zod.string(),
-      current: zod.boolean(),
-      isSuspicious: zod.boolean(),
-    }),
-  ),
-});
+  "success": zod.boolean(),
+  "sessions": zod.array(zod.object({
+  "id": zod.string(),
+  "deviceName": zod.string().nullish(),
+  "ipAddress": zod.string().nullish(),
+  "userAgent": zod.string().nullish(),
+  "createdAt": zod.string().nullish(),
+  "expiresAt": zod.string(),
+  "current": zod.boolean(),
+  "isSuspicious": zod.boolean()
+}))
+})
+
 
 /**
  * @summary Revoke a specific session by id
  */
 export const RevokeSessionParams = zod.object({
-  id: zod.coerce.string(),
-});
+  "id": zod.coerce.string()
+})
 
 export const RevokeSessionResponse = zod.object({
-  success: zod.boolean(),
-});
+  "success": zod.boolean()
+})
+
 
 /**
  * @summary Send a one-time email verification code
  */
 export const SendEmailVerificationCodeBody = zod.object({
-  email: zod.string(),
-});
+  "email": zod.string()
+})
 
 export const SendEmailVerificationCodeResponse = zod.object({
-  success: zod.boolean(),
-  demoCode: zod
-    .string()
-    .nullish()
-    .describe(
-      "Only returned in development when the email\/SMS provider is unconfigured. Never present in production.",
-    ),
-});
+  "success": zod.boolean(),
+  "demoCode": zod.string().nullish().describe('Only returned in development when the email\/SMS provider is unconfigured. Never present in production.')
+})
+
 
 /**
  * @summary Verify a one-time email verification code
  */
 export const VerifyEmailCodeBody = zod.object({
-  email: zod.string(),
-  code: zod.string(),
-});
+  "email": zod.string(),
+  "code": zod.string()
+})
 
 export const VerifyEmailCodeResponse = zod.object({
-  success: zod.boolean(),
-  verified: zod.boolean(),
-});
+  "success": zod.boolean(),
+  "verified": zod.boolean()
+})
+
 
 /**
  * @summary Send a one-time SMS verification code
  */
 export const SendPhoneVerificationCodeBody = zod.object({
-  phone: zod.string(),
-});
+  "phone": zod.string()
+})
 
 export const SendPhoneVerificationCodeResponse = zod.object({
-  success: zod.boolean(),
-  demoCode: zod
-    .string()
-    .nullish()
-    .describe(
-      "Only returned in development when the email\/SMS provider is unconfigured. Never present in production.",
-    ),
-});
+  "success": zod.boolean(),
+  "demoCode": zod.string().nullish().describe('Only returned in development when the email\/SMS provider is unconfigured. Never present in production.')
+})
+
 
 /**
  * @summary Verify a one-time SMS verification code
  */
 export const VerifyPhoneCodeBody = zod.object({
-  phone: zod.string(),
-  code: zod.string(),
-});
+  "phone": zod.string(),
+  "code": zod.string()
+})
 
 export const VerifyPhoneCodeResponse = zod.object({
-  success: zod.boolean(),
-  verified: zod.boolean(),
-});
+  "success": zod.boolean(),
+  "verified": zod.boolean()
+})
+
 
 /**
  * @summary Create a lab or provider organization
  */
 export const CreateOrganizationBody = zod.object({
-  type: zod.enum(["lab", "provider"]),
-  name: zod.string(),
-  displayName: zod.string().nullish(),
-  billingEmail: zod.string().nullish(),
-  phone: zod.string().nullish(),
-  addressLine1: zod.string().nullish(),
-  addressLine2: zod.string().nullish(),
-  city: zod.string().nullish(),
-  state: zod.string().nullish(),
-  zip: zod.string().nullish(),
-  isActive: zod.boolean().nullish(),
-  statementEmailOptOut: zod.boolean().nullish(),
-  defaultCaseDueDays: zod.number().nullish(),
-  licenseNumber: zod
-    .string()
-    .nullish()
-    .describe(
-      "Lab license \/ registration number. Required when creating a lab; ignored on provider orgs.",
-    ),
-  doctorName: zod
-    .string()
-    .nullish()
-    .describe(
-      "Provider orgs only — feeds account-number derivation; not persisted on the org row.",
-    ),
-  accountNumber: zod
-    .string()
-    .nullish()
-    .describe(
-      "Optional caller override; must be unique within the parent lab.",
-    ),
-  parentLabOrganizationId: zod
-    .string()
-    .nullish()
-    .describe(
-      "Provider orgs only; falls back to the caller's primary lab membership.",
-    ),
-});
+  "type": zod.enum(['lab', 'provider']),
+  "name": zod.string(),
+  "displayName": zod.string().nullish(),
+  "billingEmail": zod.string().nullish(),
+  "phone": zod.string().nullish(),
+  "addressLine1": zod.string().nullish(),
+  "addressLine2": zod.string().nullish(),
+  "city": zod.string().nullish(),
+  "state": zod.string().nullish(),
+  "zip": zod.string().nullish(),
+  "isActive": zod.boolean().nullish(),
+  "statementEmailOptOut": zod.boolean().nullish(),
+  "defaultCaseDueDays": zod.number().nullish(),
+  "licenseNumber": zod.string().nullish().describe('Lab license \/ registration number. Required when creating a lab; ignored on provider orgs.'),
+  "doctorName": zod.string().nullish().describe('Provider orgs only — feeds account-number derivation; not persisted on the org row.'),
+  "accountNumber": zod.string().nullish().describe('Optional caller override; must be unique within the parent lab.'),
+  "parentLabOrganizationId": zod.string().nullish().describe('Provider orgs only; falls back to the caller\'s primary lab membership.')
+})
+
 
 /**
  * @summary Get an organization the caller can access
  */
 export const GetOrganizationParams = zod.object({
-  organizationId: zod.coerce.string(),
-});
+  "organizationId": zod.coerce.string()
+})
 
 export const GetOrganizationResponse = zod.object({
-  ok: zod.boolean(),
-  data: zod
-    .object({
-      id: zod.string(),
-      type: zod.enum(["lab", "provider"]).optional(),
-      name: zod.string().nullish(),
-      displayName: zod.string().nullish(),
-      parentLabOrganizationId: zod.string().nullish(),
-      accountNumber: zod.string().nullish(),
-      platformAccountNumber: zod.string().nullish(),
-      licenseNumber: zod.string().nullish(),
-      isActive: zod.boolean().nullish(),
-    })
-    .describe(
-      "Organization row (lab or provider). Shape mirrors the organizations table; extra fields may be present.",
-    ),
-});
+  "ok": zod.boolean(),
+  "data": zod.object({
+  "id": zod.string(),
+  "type": zod.enum(['lab', 'provider']).optional(),
+  "name": zod.string().nullish(),
+  "displayName": zod.string().nullish(),
+  "parentLabOrganizationId": zod.string().nullish(),
+  "accountNumber": zod.string().nullish(),
+  "platformAccountNumber": zod.string().nullish(),
+  "licenseNumber": zod.string().nullish(),
+  "isActive": zod.boolean().nullish()
+}).describe('Organization row (lab or provider). Shape mirrors the organizations table; extra fields may be present.')
+})
+
 
 /**
  * @summary Update an organization (admin only)
  */
 export const UpdateOrganizationParams = zod.object({
-  organizationId: zod.coerce.string(),
-});
+  "organizationId": zod.coerce.string()
+})
 
-export const UpdateOrganizationBody = zod
-  .object({
-    name: zod.string().nullish(),
-    displayName: zod.string().nullish(),
-    billingEmail: zod.string().nullish(),
-    phone: zod.string().nullish(),
-    addressLine1: zod.string().nullish(),
-    addressLine2: zod.string().nullish(),
-    city: zod.string().nullish(),
-    state: zod.string().nullish(),
-    zip: zod.string().nullish(),
-    isActive: zod.boolean().nullish(),
-    statementEmailOptOut: zod.boolean().nullish(),
-    defaultCaseDueDays: zod.number().nullish(),
-    licenseNumber: zod.string().nullish(),
-    accountNumber: zod.string().nullish(),
-  })
-  .describe("Partial update. Type and parent lab cannot be changed.");
+export const UpdateOrganizationBody = zod.object({
+  "name": zod.string().nullish(),
+  "displayName": zod.string().nullish(),
+  "billingEmail": zod.string().nullish(),
+  "phone": zod.string().nullish(),
+  "addressLine1": zod.string().nullish(),
+  "addressLine2": zod.string().nullish(),
+  "city": zod.string().nullish(),
+  "state": zod.string().nullish(),
+  "zip": zod.string().nullish(),
+  "isActive": zod.boolean().nullish(),
+  "statementEmailOptOut": zod.boolean().nullish(),
+  "defaultCaseDueDays": zod.number().nullish(),
+  "licenseNumber": zod.string().nullish(),
+  "accountNumber": zod.string().nullish()
+}).describe('Partial update. Type and parent lab cannot be changed.')
 
 export const UpdateOrganizationResponse = zod.object({
-  ok: zod.boolean(),
-  data: zod
-    .object({
-      id: zod.string(),
-      type: zod.enum(["lab", "provider"]).optional(),
-      name: zod.string().nullish(),
-      displayName: zod.string().nullish(),
-      parentLabOrganizationId: zod.string().nullish(),
-      accountNumber: zod.string().nullish(),
-      platformAccountNumber: zod.string().nullish(),
-      licenseNumber: zod.string().nullish(),
-      isActive: zod.boolean().nullish(),
-    })
-    .describe(
-      "Organization row (lab or provider). Shape mirrors the organizations table; extra fields may be present.",
-    ),
-});
+  "ok": zod.boolean(),
+  "data": zod.object({
+  "id": zod.string(),
+  "type": zod.enum(['lab', 'provider']).optional(),
+  "name": zod.string().nullish(),
+  "displayName": zod.string().nullish(),
+  "parentLabOrganizationId": zod.string().nullish(),
+  "accountNumber": zod.string().nullish(),
+  "platformAccountNumber": zod.string().nullish(),
+  "licenseNumber": zod.string().nullish(),
+  "isActive": zod.boolean().nullish()
+}).describe('Organization row (lab or provider). Shape mirrors the organizations table; extra fields may be present.')
+})
+
 
 /**
  * @summary Invite a user to an organization (admin only). Invite messages carry no PHI.
  */
 export const CreateInvitationParams = zod.object({
-  organizationId: zod.coerce.string(),
-});
+  "organizationId": zod.coerce.string()
+})
 
 export const createInvitationBodyExpiresInDaysMax = 30;
 
+
+
 export const CreateInvitationBody = zod.object({
-  email: zod.string(),
-  phone: zod.string().nullish(),
-  roleToAssign: zod.enum(["owner", "admin", "user", "billing", "read_only"]),
-  expiresInDays: zod
-    .number()
-    .min(1)
-    .max(createInvitationBodyExpiresInDaysMax)
-    .nullish(),
-});
+  "email": zod.string(),
+  "phone": zod.string().nullish(),
+  "roleToAssign": zod.enum(['owner', 'admin', 'user', 'billing', 'read_only']),
+  "expiresInDays": zod.number().min(1).max(createInvitationBodyExpiresInDaysMax).nullish()
+})
+
 
 /**
  * @summary List invitations for an organization (admin only)
  */
 export const ListInvitationsParams = zod.object({
-  organizationId: zod.coerce.string(),
-});
+  "organizationId": zod.coerce.string()
+})
 
 export const ListInvitationsResponse = zod.object({
-  ok: zod.boolean(),
-  data: zod.array(
-    zod.object({
-      id: zod.string(),
-      organizationId: zod.string().nullish(),
-      labId: zod.string().nullish(),
-      email: zod.string().nullish(),
-      phone: zod.string().nullish(),
-      roleToAssign: zod.string().nullish(),
-      status: zod.string().nullish(),
-      token: zod.string().nullish(),
-      expiresAt: zod.string().nullish(),
-    }),
-  ),
-});
+  "ok": zod.boolean(),
+  "data": zod.array(zod.object({
+  "id": zod.string(),
+  "organizationId": zod.string().nullish(),
+  "labId": zod.string().nullish(),
+  "email": zod.string().nullish(),
+  "phone": zod.string().nullish(),
+  "roleToAssign": zod.string().nullish(),
+  "status": zod.string().nullish(),
+  "token": zod.string().nullish(),
+  "expiresAt": zod.string().nullish()
+}))
+})
+
 
 /**
  * @summary List pending invitations addressed to the authenticated user
  */
 export const ListMyPendingInvitationsResponse = zod.object({
-  ok: zod.boolean(),
-  data: zod.array(
-    zod.object({
-      id: zod.string(),
-      organizationId: zod.string().nullish(),
-      labId: zod.string().nullish(),
-      email: zod.string().nullish(),
-      phone: zod.string().nullish(),
-      roleToAssign: zod.string().nullish(),
-      status: zod.string().nullish(),
-      token: zod.string().nullish(),
-      expiresAt: zod.string().nullish(),
-    }),
-  ),
-});
+  "ok": zod.boolean(),
+  "data": zod.array(zod.object({
+  "id": zod.string(),
+  "organizationId": zod.string().nullish(),
+  "labId": zod.string().nullish(),
+  "email": zod.string().nullish(),
+  "phone": zod.string().nullish(),
+  "roleToAssign": zod.string().nullish(),
+  "status": zod.string().nullish(),
+  "token": zod.string().nullish(),
+  "expiresAt": zod.string().nullish()
+}))
+})
+
 
 /**
  * @summary Accept an invitation by token (the caller's email must match the invite)
  */
 export const AcceptInvitationParams = zod.object({
-  token: zod.coerce.string(),
-});
+  "token": zod.coerce.string()
+})
 
 export const AcceptInvitationResponse = zod.object({
-  ok: zod.boolean(),
-  data: zod.object({
-    accepted: zod.boolean(),
-  }),
-});
+  "ok": zod.boolean(),
+  "data": zod.object({
+  "accepted": zod.boolean()
+})
+})
+
 
 /**
  * @summary Decline an invitation
  */
 export const DeclineInvitationParams = zod.object({
-  inviteId: zod.coerce.string(),
-});
+  "inviteId": zod.coerce.string()
+})
 
-export const DeclineInvitationResponse = zod
-  .object({
-    ok: zod.boolean(),
-    data: zod.record(zod.string(), zod.unknown()).optional(),
-  })
-  .describe("Generic enveloped success response (ok + data).");
+export const DeclineInvitationResponse = zod.object({
+  "ok": zod.boolean(),
+  "data": zod.record(zod.string(), zod.unknown()).optional()
+}).describe('Generic enveloped success response (ok + data).')
+
 
 /**
  * @summary Cancel/revoke a pending invitation (admin only)
  */
 export const RevokeInvitationParams = zod.object({
-  inviteId: zod.coerce.string(),
-});
+  "inviteId": zod.coerce.string()
+})
 
-export const RevokeInvitationResponse = zod
-  .object({
-    ok: zod.boolean(),
-    data: zod.record(zod.string(), zod.unknown()).optional(),
-  })
-  .describe("Generic enveloped success response (ok + data).");
+export const RevokeInvitationResponse = zod.object({
+  "ok": zod.boolean(),
+  "data": zod.record(zod.string(), zod.unknown()).optional()
+}).describe('Generic enveloped success response (ok + data).')
+
 
 /**
  * @summary Update a membership's role or status (admin only; role ceiling enforced)
  */
 export const UpdateMembershipParams = zod.object({
-  membershipId: zod.coerce.string(),
-});
+  "membershipId": zod.coerce.string()
+})
 
 export const UpdateMembershipBody = zod.object({
-  role: zod.enum(["owner", "admin", "user", "billing", "read_only"]).optional(),
-  status: zod.enum(["active", "pending", "invited", "suspended"]).optional(),
-});
+  "role": zod.enum(['owner', 'admin', 'user', 'billing', 'read_only']).optional(),
+  "status": zod.enum(['active', 'pending', 'invited', 'suspended']).optional()
+})
 
 export const UpdateMembershipResponse = zod.object({
-  ok: zod.boolean(),
-  data: zod.object({
-    id: zod.string(),
-    labId: zod.string().nullish(),
-    userId: zod.string().nullish(),
-    role: zod.string().nullish(),
-    status: zod.string().nullish(),
-  }),
-});
+  "ok": zod.boolean(),
+  "data": zod.object({
+  "id": zod.string(),
+  "labId": zod.string().nullish(),
+  "userId": zod.string().nullish(),
+  "role": zod.string().nullish(),
+  "status": zod.string().nullish()
+})
+})
+
 
 /**
  * @summary Remove a membership (admin only)
  */
 export const RemoveMembershipParams = zod.object({
-  membershipId: zod.coerce.string(),
-});
+  "membershipId": zod.coerce.string()
+})
 
-export const RemoveMembershipResponse = zod
-  .object({
-    ok: zod.boolean(),
-    data: zod.record(zod.string(), zod.unknown()).optional(),
-  })
-  .describe("Generic enveloped success response (ok + data).");
+export const RemoveMembershipResponse = zod.object({
+  "ok": zod.boolean(),
+  "data": zod.record(zod.string(), zod.unknown()).optional()
+}).describe('Generic enveloped success response (ok + data).')
+
 
 /**
  * @summary List audit-log entries for an organization (admin only). Contract for Phase 2 implementation.
  */
 export const listAuditLogsQueryLimitMax = 200;
 
+
+
 export const ListAuditLogsQueryParams = zod.object({
-  organizationId: zod.coerce.string(),
-  limit: zod.coerce.number().min(1).max(listAuditLogsQueryLimitMax).optional(),
-  before: zod
-    .date()
-    .optional()
-    .describe("ISO timestamp cursor — return entries created before this time"),
-});
+  "organizationId": zod.coerce.string(),
+  "limit": zod.coerce.number().min(1).max(listAuditLogsQueryLimitMax).optional(),
+  "before": zod.date().optional().describe('ISO timestamp cursor — return entries created before this time')
+})
 
 export const ListAuditLogsResponse = zod.object({
-  ok: zod.boolean(),
-  data: zod.array(
-    zod.object({
-      id: zod.string(),
-      userId: zod.string().nullish(),
-      organizationId: zod.string().nullish(),
-      action: zod.string(),
-      entityType: zod.string(),
-      entityId: zod.string().nullish(),
-      ipAddress: zod.string().nullish(),
-      userAgent: zod.string().nullish(),
-      beforeJson: zod.unknown().nullish(),
-      afterJson: zod.unknown().nullish(),
-      metadataJson: zod.unknown().nullish(),
-      createdAt: zod.string().nullish(),
-    }),
-  ),
-});
+  "ok": zod.boolean(),
+  "data": zod.array(zod.object({
+  "id": zod.string(),
+  "userId": zod.string().nullish(),
+  "organizationId": zod.string().nullish(),
+  "action": zod.string(),
+  "entityType": zod.string(),
+  "entityId": zod.string().nullish(),
+  "ipAddress": zod.string().nullish(),
+  "userAgent": zod.string().nullish(),
+  "beforeJson": zod.unknown().nullish(),
+  "afterJson": zod.unknown().nullish(),
+  "metadataJson": zod.unknown().nullish(),
+  "createdAt": zod.string().nullish()
+}))
+})
+
+
