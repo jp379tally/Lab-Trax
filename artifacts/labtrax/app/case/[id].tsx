@@ -14,7 +14,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   useCase,
   useCases,
@@ -1132,6 +1132,7 @@ function OverviewSection({
   const [form, setForm] = useState<OverviewForm>(() => formFromCase(c));
   const [picker, setPicker] = useState<"dueDate" | "expectedDeliveryDate" | "locate" | null>(null);
   const update = useUpdateCase();
+  const qc = useQueryClient();
 
   // ── Print-label prompt (shown after a barcode is assigned via the edit form) ─
   const [printModalVisible, setPrintModalVisible] = useState(false);
@@ -1196,7 +1197,10 @@ function OverviewSection({
         released ? "Case located successfully. Barcode released." : "Case located successfully.",
       );
       setLocateTarget(null);
-      await onSaved();
+      await Promise.all([
+        onSaved(),
+        qc.invalidateQueries({ queryKey: ["cases"] }),
+      ]);
       setTimeout(() => setLocateMsg(null), 3000);
     } catch (e) {
       Alert.alert("Couldn't locate case", errorMessage(e));
@@ -1222,14 +1226,23 @@ function OverviewSection({
       return;
     }
     try {
-      await update.mutateAsync({ caseId, data: payload });
-      await onSaved();
+      const result = await update.mutateAsync({ caseId, data: payload });
+      await Promise.all([
+        onSaved(),
+        qc.invalidateQueries({ queryKey: ["cases"] }),
+      ]);
       setPicker(null);
       setEditing(false);
-      // If a non-empty barcode was assigned (new or changed), prompt to print
-      const newBarcode = payload.casePanBarcode;
-      if (newBarcode && newBarcode.trim()) {
-        setPendingPrintBarcode(newBarcode.trim());
+      // If a non-empty barcode was assigned (new or changed), prefer the value
+      // returned by the server (inside the { data: { casePanBarcode } } envelope)
+      // so the print prompt reflects any server-side normalisation; fall back to
+      // the payload value if the response doesn't carry the field.
+      const resultData = result?.data as Record<string, unknown> | undefined;
+      const savedBarcode =
+        (typeof resultData?.casePanBarcode === "string" ? resultData.casePanBarcode : undefined) ??
+        payload.casePanBarcode;
+      if (savedBarcode && savedBarcode.trim()) {
+        setPendingPrintBarcode(savedBarcode.trim());
         setPrintModalVisible(true);
       }
     } catch (e) {
