@@ -29,6 +29,9 @@ export interface CanonicalInvoice {
   items?: CanonicalInvoiceLineItem[];
   payments?: CanonicalInvoicePayment[];
   notes?: string | null;
+  frozen?: boolean;
+  caseDeletedAt?: string | null;
+  caseDeletedNote?: string | null;
   [key: string]: unknown;
 }
 

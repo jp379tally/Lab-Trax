@@ -101,7 +101,7 @@ maybe("frozen-invoice (db integration)", () => {
     caseId = rid("case");
     await db.insert(cases).values({
       id: caseId,
-      caseNumber: "FRZ-001",
+      caseNumber: rid("FRZ"),
       labOrganizationId: labOrgId,
       providerOrganizationId: providerOrgId,
       doctorName: "Dr. Test",
@@ -114,7 +114,7 @@ maybe("frozen-invoice (db integration)", () => {
     invoiceId = rid("inv");
     await db.insert(invoices).values({
       id: invoiceId,
-      invoiceNumber: "FRZ-INV-001",
+      invoiceNumber: rid("FRZ-INV"),
       caseId,
       labOrganizationId: labOrgId,
       providerOrganizationId: providerOrgId,
@@ -130,7 +130,7 @@ maybe("frozen-invoice (db integration)", () => {
     unlinkedInvoiceId = rid("inv2");
     await db.insert(invoices).values({
       id: unlinkedInvoiceId,
-      invoiceNumber: "FRZ-INV-002",
+      invoiceNumber: rid("FRZ-UNL"),
       caseId: null,
       labOrganizationId: labOrgId,
       providerOrganizationId: providerOrgId,

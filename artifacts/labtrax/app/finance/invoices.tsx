@@ -41,8 +41,8 @@ export default function InvoicesScreen() {
       keyExtractor={(i) => i.id}
       emptyIcon="document-text-outline"
       emptyTitle="No invoices"
-      emptyBody="Invoices will appear here once they’re created."
-      errorTitle="Couldn’t load invoices"
+      emptyBody="Invoices will appear here once they're created."
+      errorTitle="Couldn't load invoices"
       renderItem={(i) => (
         <Card
           style={styles.row}
@@ -59,7 +59,14 @@ export default function InvoicesScreen() {
           </View>
           <View style={styles.right}>
             <Text style={styles.amount}>{formatMoney(i.balanceDue ?? i.total)}</Text>
-            <StatusBadge label={titleCase(i.status ?? "—")} variant={invoiceVariant(i.status)} size="sm" />
+            <View style={styles.badges}>
+              <StatusBadge label={titleCase(i.status ?? "—")} variant={invoiceVariant(i.status)} size="sm" />
+              {i.frozen && (
+                <View style={[styles.frozenBadge, { backgroundColor: colors.warningLight }]}>
+                  <Text style={[styles.frozenText, { color: colors.warning }]}>CASE DELETED</Text>
+                </View>
+              )}
+            </View>
           </View>
         </Card>
       )}
@@ -75,5 +82,16 @@ function makeStyles(c: ThemeColors) {
     meta: { ...Typography.caption, color: c.textSecondary },
     right: { alignItems: "flex-end", gap: Spacing.xs },
     amount: { ...Typography.bodySemibold, color: c.text },
+    badges: { flexDirection: "row", alignItems: "center", gap: Spacing.xs, flexWrap: "wrap", justifyContent: "flex-end" },
+    frozenBadge: {
+      paddingHorizontal: 6,
+      paddingVertical: 2,
+      borderRadius: 99,
+    },
+    frozenText: {
+      fontSize: 10,
+      fontFamily: "Inter_600SemiBold",
+      letterSpacing: 0.4,
+    },
   });
 }

@@ -74,6 +74,7 @@ const STATUS_FILTERS = [
   { value: "partially_paid", label: "Partial" },
   { value: "paid", label: "Paid" },
   { value: "void", label: "Void" },
+  { value: "frozen", label: "Frozen" },
 ];
 
 const EDITABLE_STATUSES = [
@@ -145,7 +146,7 @@ export default function InvoicesPage() {
   const queryString = useMemo(() => {
     const sp = new URLSearchParams();
     if (openOnly) sp.set("status", "open");
-    else if (status && status !== "all") sp.set("status", status);
+    else if (status && status !== "all" && status !== "frozen") sp.set("status", status);
     if (practiceId) sp.set("practiceId", practiceId);
     if (aiOnly) sp.set("aiOnly", "true");
     if (overdueBucket) sp.set("overdueBucket", overdueBucket);
@@ -215,6 +216,8 @@ export default function InvoicesPage() {
     const list = rows.filter((i) => {
       if (openOnly) {
         if (i.status !== "open" && i.status !== "partially_paid") return false;
+      } else if (status === "frozen") {
+        if (!i.frozen) return false;
       } else if (status !== "all" && i.status !== status) {
         return false;
       }
@@ -576,7 +579,17 @@ export default function InvoicesPage() {
                   <td className="py-3 text-muted-foreground">
                     {formatDate(i.dueAt ?? i.dueDate)}
                   </td>
-                  <td className="py-3"><StatusBadge status={i.status} /></td>
+                  <td className="py-3">
+                    <span className="inline-flex items-center flex-wrap gap-1.5">
+                      <StatusBadge status={i.status} />
+                      {i.frozen && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium rounded-full uppercase tracking-wide bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-400 border border-amber-300/60 dark:border-amber-700/40">
+                          <Lock size={9} />
+                          Case Deleted
+                        </span>
+                      )}
+                    </span>
+                  </td>
                   <td className="py-3 text-right tabular-nums font-medium">
                     {formatMoney(i.total)}
                   </td>
