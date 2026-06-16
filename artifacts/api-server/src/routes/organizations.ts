@@ -85,7 +85,14 @@ const createOrgSchema = z.object({
   type: z.enum(["lab", "provider"]),
   name: z.string().min(1),
   displayName: z.string().optional(),
-  billingEmail: z.string().email().optional(),
+  // Accept a blank string (cleared field in the edit form) and normalize it to
+  // null. Editing a practice that has no billing email sends `billingEmail: ""`,
+  // which would otherwise fail `.email()` and surface as a generic
+  // "Invalid request." error.
+  billingEmail: z
+    .union([z.literal(""), z.string().email()])
+    .transform((v) => (v === "" ? null : v))
+    .optional(),
   phone: z.string().optional(),
   addressLine1: z.string().optional(),
   addressLine2: z.string().optional(),

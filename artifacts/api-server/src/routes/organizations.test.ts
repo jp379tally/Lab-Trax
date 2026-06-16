@@ -303,6 +303,49 @@ maybe("Organizations CRUD (db integration)", () => {
     expect(patch.body.data.displayName).toBe("Updated Display Name");
   });
 
+  it("PATCH /api/organizations/:id clears billingEmail when sent as empty string", async () => {
+    const { access } = await makeSession(ownerId);
+    const name = rid("PatchBlankEmail");
+
+    const create = await request(appMod.default)
+      .post("/api/organizations")
+      .set("Authorization", `Bearer ${access}`)
+      .send(labBody(name));
+    expect(create.status).toBe(201);
+    const orgId = create.body.data.id;
+    createdOrgIds.push(orgId);
+
+    // The desktop edit form posts the whole record back, including an empty
+    // billingEmail when the practice has no billing email. This must not fail
+    // with "Invalid request." — it should clear the field instead.
+    const patch = await request(appMod.default)
+      .patch(`/api/organizations/${orgId}`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({ displayName: "Heartland Dental Family Dentistry", billingEmail: "" });
+    expect(patch.status).toBe(200);
+    expect(patch.body.data.displayName).toBe("Heartland Dental Family Dentistry");
+    expect(patch.body.data.billingEmail).toBeNull();
+  });
+
+  it("PATCH /api/organizations/:id rejects a malformed billingEmail", async () => {
+    const { access } = await makeSession(ownerId);
+    const name = rid("PatchBadEmail");
+
+    const create = await request(appMod.default)
+      .post("/api/organizations")
+      .set("Authorization", `Bearer ${access}`)
+      .send(labBody(name));
+    expect(create.status).toBe(201);
+    const orgId = create.body.data.id;
+    createdOrgIds.push(orgId);
+
+    const patch = await request(appMod.default)
+      .patch(`/api/organizations/${orgId}`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({ billingEmail: "not-an-email" });
+    expect(patch.status).toBe(400);
+  });
+
   // ── GET /api/organizations/:id/members ────────────────────────────────────
 
   it("GET /api/organizations/:id/members returns member list including owner", async () => {

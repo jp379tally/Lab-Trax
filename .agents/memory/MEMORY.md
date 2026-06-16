@@ -47,6 +47,7 @@
 - [Background commands die on return](background-commands-die-on-return.md) — nohup/backgrounded bash is SIGKILLed on tool-call return; run long jobs (api-server vitest ~2min) via a workflow, not `&`.
 - [LabTrax mobile manage-screen gating](labtrax-manage-screen-gating.md) — Pricing/Reports admin-only, Lists billing (item-label edit admin); gate on server RBAC not desktop isAdmin; non-eligible roles blocked not read-only.
 - [expo-sensors lazy import](expo-sensors-lazy-import.md) — requireNativeModule runs at module load time; static import crashes on navigation; must dynamic-import inside the function that needs it.
+- [Edit-form blank-string validation](edit-form-blank-string-validation.md) — edit forms PATCH the whole record incl. ""; optional Zod fields with .email()/format validators must accept "" or they 400 as generic "Invalid request.".
 - [Mobile create-case required fields](mobile-create-case-required-fields.md) — create needs providerOrganizationId (DB notNull) + doctorName.min(1); no placeholder org, so "unlinked"/skip paths always 400 — gate submit on both.
 - [LabTrax Desktop PWA stale clients](labtrax-desktop-pwa-stale-clients.md) — injectManifest+autoUpdate needs manual skipWaiting/clientsClaim in sw.ts or republished UI never reaches returning users (waiting SW serves old precache).
 - [api-server vitest hermeticity](api-server-test-hermeticity.md) — LABTRAX_ENABLE_DEMO_SEEDS=true breaks mocked-db suites at app-init; createRateLimit no-ops under VITEST; both fixed in vitest.config/rate-limit.ts.
