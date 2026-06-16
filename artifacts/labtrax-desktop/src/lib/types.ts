@@ -290,6 +290,8 @@ export interface Invoice {
   caseDeletedAt?: string | null;
   caseDeletedByUserId?: string | null;
   caseDeletedNote?: string | null;
+  linkedCaseIsDeleted?: boolean | null;
+  linkedCaseNumber?: string | null;
 }
 
 export interface InvoiceAttachment {

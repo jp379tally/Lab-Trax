@@ -23,6 +23,7 @@ import {
   MoreHorizontal,
   Plus,
   Printer,
+  RotateCcw,
   ScrollText,
   Search,
   Send,
@@ -947,6 +948,53 @@ function serializeInvoiceForm(f: {
   });
 }
 
+function RestoreCaseButton({
+  caseId,
+  onSuccess,
+}: {
+  caseId: string;
+  onSuccess: () => void;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const restoreMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ restored: boolean }>(`/cases/${caseId}/restore`, {
+        method: "POST",
+      }),
+    onSuccess: () => {
+      setError(null);
+      onSuccess();
+    },
+    onError: (err: unknown) => {
+      const msg =
+        err instanceof ApiError
+          ? err.message
+          : "Failed to restore case. Please try again.";
+      setError(msg);
+    },
+  });
+  return (
+    <span className="inline-flex flex-col gap-0.5">
+      <button
+        type="button"
+        onClick={() => restoreMutation.mutate()}
+        disabled={restoreMutation.isPending}
+        className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded border border-amber-500 hover:bg-amber-100 dark:hover:bg-amber-900/40 text-amber-800 dark:text-amber-300 disabled:opacity-50"
+      >
+        {restoreMutation.isPending ? (
+          <Loader2 size={11} className="animate-spin" />
+        ) : (
+          <RotateCcw size={11} />
+        )}
+        Restore case
+      </button>
+      {error && (
+        <span className="text-xs text-destructive">{error}</span>
+      )}
+    </span>
+  );
+}
+
 export function InvoiceEditor({
   invoice,
   doctorNames,
@@ -965,6 +1013,8 @@ export function InvoiceEditor({
     user?.role === "owner" ||
     user?.role === "admin" ||
     user?.role === "billing";
+  // POST /cases/:caseId/restore requires ADMIN_ROLES (owner | admin), not billing
+  const canRestoreCase = user?.role === "owner" || user?.role === "admin";
 
   // Column widths for the line-items table (Item, Tooth #, Desc, Qty, Unit price, Total)
   const COL_DEFAULTS = [176, 112, 220, 64, 112, 96] as const;
@@ -2072,14 +2122,52 @@ export function InvoiceEditor({
           )}
 
           {invoice.frozen && (
-            <div className="flex items-center gap-2 px-3 py-2 rounded-md border border-amber-400/60 bg-amber-50 dark:bg-amber-950/30 text-sm">
-              <Lock size={14} className="text-amber-600 dark:text-amber-400 shrink-0" />
-              <span className="font-medium text-amber-800 dark:text-amber-300">
-                {invoice.caseDeletedNote ?? "Case Deleted"}
-              </span>
-              {invoice.caseDeletedAt && (
-                <span className="text-muted-foreground">
-                  · {new Date(invoice.caseDeletedAt).toLocaleDateString()}
+            <div className="flex flex-col gap-1.5 px-3 py-2.5 rounded-md border border-amber-400/60 bg-amber-50 dark:bg-amber-950/30 text-sm">
+              <div className="flex items-center gap-2 flex-wrap">
+                <Lock size={14} className="text-amber-600 dark:text-amber-400 shrink-0" />
+                <span className="font-medium text-amber-800 dark:text-amber-300">
+                  {invoice.caseDeletedNote ?? "Case Deleted"}
+                  {(detailQuery.data?.linkedCaseNumber ?? invoice.linkedCaseNumber) && (
+                    <> &mdash; Case {detailQuery.data?.linkedCaseNumber ?? invoice.linkedCaseNumber}</>
+                  )}
+                </span>
+                {invoice.caseDeletedAt && (
+                  <span className="text-muted-foreground text-xs">
+                    · {new Date(invoice.caseDeletedAt).toLocaleDateString()}
+                  </span>
+                )}
+                {invoice.caseId && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setLocation(`/cases?caseId=${encodeURIComponent(invoice.caseId!)}`)
+                    }
+                    className="ml-auto inline-flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400 underline underline-offset-2 hover:no-underline"
+                  >
+                    <ExternalLink size={11} />
+                    View case
+                  </button>
+                )}
+              </div>
+              {(detailQuery.data?.linkedCaseIsDeleted ?? invoice.linkedCaseIsDeleted) === true && (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs text-amber-700 dark:text-amber-400">
+                    The linked case is still deleted — billing is paused.
+                  </span>
+                  {canRestoreCase && invoice.caseId && (
+                    <RestoreCaseButton
+                      caseId={invoice.caseId}
+                      onSuccess={() => {
+                        queryClient.invalidateQueries({ queryKey: ["invoices"] });
+                        queryClient.invalidateQueries({ queryKey: ["invoice", invoice.id] });
+                      }}
+                    />
+                  )}
+                </div>
+              )}
+              {(detailQuery.data?.linkedCaseIsDeleted ?? invoice.linkedCaseIsDeleted) === false && (
+                <span className="text-xs text-amber-700 dark:text-amber-400">
+                  The linked case appears to have been restored, but this invoice is still frozen. Please contact support.
                 </span>
               )}
             </div>

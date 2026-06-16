@@ -90,6 +90,10 @@ type InvoiceRecord = {
   labOrganizationId?: string | null;
   frozen?: boolean | null;
   caseDeletedNote?: string | null;
+  caseDeletedAt?: string | null;
+  caseId?: string | null;
+  linkedCaseIsDeleted?: boolean | null;
+  linkedCaseNumber?: string | null;
   items?: RawLineItem[] | null;
   lineItems?: RawLineItem[] | null;
   displayMetadata?: Record<string, unknown> | null;
@@ -414,11 +418,35 @@ export default function InvoiceEditorScreen() {
             {/* ── Frozen banner ── */}
             {invoice.frozen && (
               <View style={styles.frozenBanner} testID="invoice-editor-frozen-banner">
-                <Ionicons name="lock-closed" size={16} color="#92400e" />
-                <Text style={styles.frozenBannerText}>
-                  {invoice.caseDeletedNote ?? "Invoice is frozen — the linked case was deleted."}
-                  {" "}This invoice cannot be edited.
-                </Text>
+                <Ionicons name="lock-closed" size={16} color="#92400e" style={{ marginTop: 2 }} />
+                <View style={{ flex: 1, gap: 6 }}>
+                  <Text style={styles.frozenBannerText}>
+                    {invoice.caseDeletedNote ?? "Invoice is frozen — the linked case was deleted."}
+                    {invoice.linkedCaseNumber ? ` — Case ${invoice.linkedCaseNumber}` : ""}
+                    {invoice.caseDeletedAt
+                      ? ` · ${new Date(invoice.caseDeletedAt).toLocaleDateString()}`
+                      : ""}
+                    {" "}This invoice cannot be edited.
+                  </Text>
+                  {invoice.caseId && (
+                    <Pressable
+                      onPress={() => router.push(`/case/${invoice.caseId}` as any)}
+                      hitSlop={8}
+                    >
+                      <Text style={styles.frozenBannerLink}>View linked case →</Text>
+                    </Pressable>
+                  )}
+                  {invoice.linkedCaseIsDeleted === true && (
+                    <Text style={styles.frozenBannerSubtext}>
+                      The linked case is still deleted — billing is paused. A lab admin can restore the case to resume billing.
+                    </Text>
+                  )}
+                  {invoice.linkedCaseIsDeleted === false && (
+                    <Text style={styles.frozenBannerSubtext}>
+                      The linked case appears to have been restored but this invoice is still frozen. Please contact support.
+                    </Text>
+                  )}
+                </View>
               </View>
             )}
             {/* ── Details ── */}
@@ -868,7 +896,13 @@ function makeStyles(colors: ThemeColors) {
       borderColor: "#d97706",
       backgroundColor: "#fffbeb",
     },
-    frozenBannerText: { flex: 1, fontSize: 14, color: "#92400e", lineHeight: 20 },
+    frozenBannerText: { fontSize: 14, color: "#92400e", lineHeight: 20 },
+    frozenBannerLink: {
+      fontSize: 13,
+      color: "#b45309",
+      textDecorationLine: "underline",
+    },
+    frozenBannerSubtext: { fontSize: 13, color: "#92400e", lineHeight: 18 },
   });
 }
 

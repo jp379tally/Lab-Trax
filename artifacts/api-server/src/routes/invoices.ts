@@ -2375,6 +2375,8 @@ router.get(
       )
       .where(eq(bankTransactionInvoices.invoiceId, invoice.id));
     let caseCompletedAt: string | null = null;
+    let linkedCaseIsDeleted: boolean | null = null;
+    let linkedCaseNumber: string | null = null;
     if (invoice.caseId) {
       const lc = await db.query.labCases.findFirst({
         where: eq(labCases.id, invoice.caseId),
@@ -2393,6 +2395,14 @@ router.get(
         } catch {
           /* no-op */
         }
+      }
+      // Look up canonical case for frozen-invoice status metadata.
+      const linkedCase = await db.query.cases.findFirst({
+        where: eq(cases.id, invoice.caseId),
+      }).catch(() => null);
+      if (linkedCase) {
+        linkedCaseIsDeleted = linkedCase.deletedAt !== null;
+        linkedCaseNumber = linkedCase.caseNumber;
       }
     }
     const practiceOrg = invoice.providerOrganizationId
@@ -2423,6 +2433,8 @@ router.get(
       caseCompletedAt,
       practiceEmail: practiceOrg?.billingEmail ?? null,
       practicePhone: practiceOrg?.phone ?? null,
+      linkedCaseIsDeleted,
+      linkedCaseNumber,
     });
   })
 );
