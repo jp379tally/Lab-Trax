@@ -341,6 +341,7 @@ Protected sub-behaviors:
 - **Backup codes are single-use** — a challenge with a valid backup code succeeds once; a 10-character backup code (or any non-6-digit input) must **not** throw `TokenLengthError` / 500 — it falls through to the backup-code branch or returns a clean 422 (`isValidTotp` wrapper in `two-factor.ts`).
 - **Trusted "remember this device"** — a challenge with `trustDevice:true` issues a `deviceTrustToken`; a later login presenting that token skips the 2FA challenge and issues a full session immediately. A **missing**, **forged**, or **expired** device-trust token must still force the challenge (`requiresTwoFactor` + `pendingToken`, no tokens leaked). This is a 2FA-bypass surface, so the negative paths are as load-bearing as the positive one.
 - **Disable** — `DELETE /2fa` on a valid TOTP disables 2FA and login no longer challenges.
+- **Disable forgets trusted devices** — disabling 2FA (`DELETE /2fa`) must purge **all** of the user's `trusted_devices` rows. A device-trust token issued before the disable cannot survive a disable/re-enable cycle: after re-enabling 2FA, presenting that stale token still forces the challenge (`requiresTwoFactor` + `pendingToken`, no tokens leaked). This is a security-critical cleanup — a stale trust token must never become a permanent 2FA bypass.
 
 ---
 

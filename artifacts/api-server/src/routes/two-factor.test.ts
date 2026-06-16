@@ -15,6 +15,9 @@
  *  - POST /api/auth/2fa/challenge — invalid pendingToken 401; wrong code 422;
  *    valid TOTP issues bearer tokens; a backup code also works (single-use).
  *  - DELETE /api/auth/2fa — valid TOTP disables 2FA; status returns to false.
+ *  - DELETE /api/auth/2fa — disabling 2FA forgets ALL trusted devices: the
+ *    `trusted_devices` rows are purged and a previously-issued device-trust
+ *    token cannot survive a disable/re-enable cycle (still forces a challenge).
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
@@ -305,6 +308,79 @@ maybe("Two-factor authentication (db integration)", () => {
     expect(typeof r.body.pendingToken).toBe("string");
     expect(r.body.accessToken).toBeUndefined();
     expect(r.body.refreshToken).toBeUndefined();
+  });
+
+  it("disabling 2FA forgets trusted devices so a stale token can't survive a disable/re-enable cycle", async () => {
+    const { db, trustedDevices } = dbMod as any;
+
+    // 1. Trust this device via the challenge endpoint.
+    const login = await request(appMod.default)
+      .post("/api/auth/login")
+      .send({ username, password, clientType: "mobile" });
+    const challenge = await request(appMod.default)
+      .post("/api/auth/2fa/challenge")
+      .send({
+        pendingToken: login.body.pendingToken,
+        code: generateSync({ secret }),
+        clientType: "mobile",
+        trustDevice: true,
+        deviceName: "Soon-to-be-forgotten Device",
+      });
+    expect(challenge.status).toBe(200);
+    const staleToken = challenge.body.data.deviceTrustToken;
+    expect(typeof staleToken).toBe("string");
+
+    // Sanity: the freshly-trusted device skips the 2FA challenge.
+    const trustedLogin = await request(appMod.default)
+      .post("/api/auth/login")
+      .send({ username, password, clientType: "mobile", deviceTrustToken: staleToken });
+    expect(trustedLogin.body.requiresTwoFactor).toBeFalsy();
+    expect(typeof trustedLogin.body.accessToken).toBe("string");
+
+    // There is at least one trusted-device row for this user before the disable.
+    const before = await db
+      .select()
+      .from(trustedDevices)
+      .where(eq(trustedDevices.userId, userId));
+    expect(before.length).toBeGreaterThan(0);
+
+    // 2. Disable 2FA — this must purge ALL trusted devices.
+    const access = await makeSession(userId);
+    const disable = await request(appMod.default)
+      .delete("/api/auth/2fa")
+      .set("Authorization", `Bearer ${access}`)
+      .send({ code: generateSync({ secret }) });
+    expect(disable.status).toBe(200);
+
+    // 3. No trusted_devices rows remain for this user.
+    const after = await db
+      .select()
+      .from(trustedDevices)
+      .where(eq(trustedDevices.userId, userId));
+    expect(after.length).toBe(0);
+
+    // 4. Re-enable 2FA with a fresh secret (start a new disable/re-enable cycle).
+    const setup = await request(appMod.default)
+      .post("/api/auth/2fa/setup")
+      .set("Authorization", `Bearer ${access}`);
+    expect(setup.status).toBe(200);
+    secret = setup.body.data.secret;
+    const confirm = await request(appMod.default)
+      .post("/api/auth/2fa/confirm")
+      .set("Authorization", `Bearer ${access}`)
+      .send({ code: generateSync({ secret }) });
+    expect(confirm.status).toBe(200);
+    backupCodes = confirm.body.data.backupCodes;
+
+    // 5. The stale trust token must NOT survive the cycle — login still
+    // forces the 2FA challenge and leaks no session tokens.
+    const staleLogin = await request(appMod.default)
+      .post("/api/auth/login")
+      .send({ username, password, clientType: "mobile", deviceTrustToken: staleToken });
+    expect(staleLogin.body.requiresTwoFactor).toBe(true);
+    expect(typeof staleLogin.body.pendingToken).toBe("string");
+    expect(staleLogin.body.accessToken).toBeUndefined();
+    expect(staleLogin.body.refreshToken).toBeUndefined();
   });
 
   it("DELETE / disables 2FA on a valid TOTP and login no longer challenges", async () => {
