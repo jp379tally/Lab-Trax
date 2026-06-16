@@ -222,4 +222,14 @@ maybe("frozen-invoice (db integration)", () => {
 
     expect(res.body.message ?? res.body.error).toMatch(/frozen/i);
   });
+
+  it("PATCH on a frozen invoice returns 409", async () => {
+    const res = await request(appMod.default)
+      .patch(`/api/invoices/${invoiceId}`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ notes: "Attempt to edit frozen invoice" })
+      .expect(409);
+
+    expect(res.body.message ?? res.body.error).toMatch(/frozen/i);
+  });
 });

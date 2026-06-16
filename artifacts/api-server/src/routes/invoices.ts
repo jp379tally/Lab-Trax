@@ -2436,6 +2436,10 @@ router.patch(
       BILLING_ROLES
     );
 
+    if ((invoice as any).frozen) {
+      throw new HttpError(409, "Invoice is frozen — the linked case was deleted.");
+    }
+
     const input = z
       .object({
         status: z

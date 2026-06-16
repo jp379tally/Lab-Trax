@@ -88,6 +88,8 @@ type InvoiceRecord = {
   invoiceNumber?: string | null;
   status?: string | null;
   labOrganizationId?: string | null;
+  frozen?: boolean | null;
+  caseDeletedNote?: string | null;
   items?: RawLineItem[] | null;
   lineItems?: RawLineItem[] | null;
   displayMetadata?: Record<string, unknown> | null;
@@ -360,7 +362,7 @@ export default function InvoiceEditorScreen() {
           onPress={handleSave}
           hitSlop={12}
           style={styles.headerButton}
-          disabled={saving || loading || !invoice}
+          disabled={saving || loading || !invoice || !!invoice.frozen}
           accessibilityRole="button"
           accessibilityLabel="Save invoice"
           testID="invoice-editor-save"
@@ -409,6 +411,16 @@ export default function InvoiceEditorScreen() {
             contentContainerStyle={styles.bodyContent}
             keyboardShouldPersistTaps="handled"
           >
+            {/* ── Frozen banner ── */}
+            {invoice.frozen && (
+              <View style={styles.frozenBanner} testID="invoice-editor-frozen-banner">
+                <Ionicons name="lock-closed" size={16} color="#92400e" />
+                <Text style={styles.frozenBannerText}>
+                  {invoice.caseDeletedNote ?? "Invoice is frozen — the linked case was deleted."}
+                  {" "}This invoice cannot be edited.
+                </Text>
+              </View>
+            )}
             {/* ── Details ── */}
             <View style={styles.card}>
               <Text style={styles.cardHeading}>Details</Text>
@@ -846,6 +858,17 @@ function makeStyles(colors: ThemeColors) {
       backgroundColor: colors.tint,
     },
     errorButtonText: { color: colors.textInverse, fontWeight: "600", fontSize: 15 },
+    frozenBanner: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: 8,
+      padding: 12,
+      borderRadius: 12,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: "#d97706",
+      backgroundColor: "#fffbeb",
+    },
+    frozenBannerText: { flex: 1, fontSize: 14, color: "#92400e", lineHeight: 20 },
   });
 }
 

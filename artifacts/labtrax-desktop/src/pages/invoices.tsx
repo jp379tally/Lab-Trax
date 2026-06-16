@@ -1847,7 +1847,8 @@ export function InvoiceEditor({
                 setError(null);
                 saveMutation.mutate();
               }}
-              disabled={saveMutation.isPending || detailQuery.isLoading}
+              disabled={saveMutation.isPending || detailQuery.isLoading || !!invoice.frozen}
+              title={invoice.frozen ? "Invoice is frozen — the linked case was deleted" : undefined}
               className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
             >
               {saveMutation.isPending ? "Saving…" : "Save changes"}
