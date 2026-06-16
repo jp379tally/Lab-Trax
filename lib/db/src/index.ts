@@ -40,6 +40,13 @@ export const pool = new Pool({
   // connection before it cascades into pool starvation.  30 s is well
   // above p99 for any intentional query in this codebase.
   statement_timeout: 30_000,
+  // Optionally cap the pool size via env var.  Production leaves this unset
+  // (defaults to pg's built-in limit of 10).  The test vitest configs set
+  // DB_POOL_MAX=5 so that two concurrent test workflows stay within the DB's
+  // max_connections: 2 workflows × 2 workers × 5 connections = 20 total.
+  ...(process.env.DB_POOL_MAX
+    ? { max: parseInt(process.env.DB_POOL_MAX, 10) }
+    : {}),
 });
 
 // Without this handler, any error on an idle client (e.g. the database

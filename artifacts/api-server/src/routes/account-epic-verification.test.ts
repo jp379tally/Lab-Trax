@@ -42,7 +42,10 @@ const maybe = SHOULD_RUN ? describe : describe.skip;
 // DB-integration tests that hit send/verify endpoints (the send path may do a
 // real email/SMS attempt with MX-lookup latency). Under full-suite contention
 // the default 5s budget is too tight, so give these headroom to avoid flakes.
-vi.setConfig({ testTimeout: 30000, hookTimeout: 30000 });
+// Per-file timeouts must stay at or above the global hookTimeout (90 s) so
+// two concurrent test workflows (api-server-tests + regression-tests) can
+// both wait out DB-pool contention without timing out.
+vi.setConfig({ testTimeout: 60000, hookTimeout: 90000 });
 
 function rid(prefix: string) {
   return `${prefix}_${randomBytes(8).toString("hex")}`;

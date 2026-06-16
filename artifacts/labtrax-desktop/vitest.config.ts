@@ -21,5 +21,15 @@ export default defineConfig({
     // `/** @vitest-environment jsdom */` docblock at the top of each file.
     environment: "node",
     setupFiles: ["./src/__tests__/setup.ts"],
+    // Cap parallel forks to avoid OOM worker crashes when desktop-full-test
+    // fires alongside api-server-tests and regression-tests at merge time.
+    // Each jsdom fork (React renderer tests) is heavy (~150–200 MB).  Two
+    // concurrent workers keep peak RSS well within the container limit while
+    // still running most of the suite in parallel.  Worker startup failures
+    // ("Timeout waiting for worker to respond") disappear once fork count is
+    // bounded.
+    pool: "forks",
+    maxWorkers: 2,
+    minWorkers: 1,
   },
 });

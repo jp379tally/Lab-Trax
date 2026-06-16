@@ -46,7 +46,11 @@ const maybe = SHOULD_RUN ? describe : describe.skip;
 // verification tests) a single test fires 4–5 sequential HTTP round-trips and
 // can exceed vitest's default 5s budget, which then cascades into the ordered
 // tests that depend on the captured secret/backup codes. Give them headroom.
-vi.setConfig({ testTimeout: 30000, hookTimeout: 30000 });
+// Per-file timeouts must stay at or above the global hookTimeout (90 s) so
+// two concurrent test workflows (api-server-tests + regression-tests) can
+// both wait out DB-pool contention without timing out.  The original 30 s
+// cap caused beforeAll hook failures when the pool was temporarily saturated.
+vi.setConfig({ testTimeout: 60000, hookTimeout: 90000 });
 
 function rid(prefix: string) {
   return `${prefix}_${randomBytes(8).toString("hex")}`;
