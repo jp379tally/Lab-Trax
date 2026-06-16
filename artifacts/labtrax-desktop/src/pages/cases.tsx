@@ -1141,7 +1141,7 @@ export default function CasesPage() {
 
   const bulkReassignMutation = useMutation({
     mutationFn: (body: { caseIds: string[]; providerOrganizationId: string }) =>
-      apiFetch<{ updatedCount: number }>("/cases/bulk-reassign", {
+      apiFetch<{ updatedCount: number; skippedLegacyCount?: number }>("/cases/bulk-reassign", {
         method: "POST",
         body: JSON.stringify(body),
       }),
@@ -1150,7 +1150,13 @@ export default function CasesPage() {
       setSelectedIds(new Set());
       setShowReassignModal(false);
       setReassignTargetId("");
-      setBulkToast(`${result.updatedCount} case${result.updatedCount !== 1 ? "s" : ""} reassigned.`);
+      const { updatedCount, skippedLegacyCount = 0 } = result;
+      const base = `${updatedCount} case${updatedCount !== 1 ? "s" : ""} reassigned.`;
+      setBulkToast(
+        skippedLegacyCount > 0
+          ? `${base} (${skippedLegacyCount} legacy case${skippedLegacyCount !== 1 ? "s" : ""} skipped)`
+          : base
+      );
     },
     onError: (e: Error) => {
       setBulkToastError(e.message);
@@ -1159,7 +1165,7 @@ export default function CasesPage() {
 
   const bulkStatusMutation = useMutation({
     mutationFn: (body: { caseIds: string[]; status: string }) =>
-      apiFetch<{ updatedCount: number }>("/cases/bulk-status", {
+      apiFetch<{ updatedCount: number; skippedLegacyCount?: number }>("/cases/bulk-status", {
         method: "POST",
         body: JSON.stringify(body),
       }),
@@ -1169,7 +1175,13 @@ export default function CasesPage() {
       setShowBulkStatusModal(false);
       setBulkStatusValue("");
       const label = STATUS_FILTERS.find((s) => s.value === bulkStatusValue)?.label ?? bulkStatusValue;
-      setBulkToast(`${result.updatedCount} case${result.updatedCount !== 1 ? "s" : ""} marked as ${label}.`);
+      const { updatedCount, skippedLegacyCount = 0 } = result;
+      const base = `${updatedCount} case${updatedCount !== 1 ? "s" : ""} marked as ${label}.`;
+      setBulkToast(
+        skippedLegacyCount > 0
+          ? `${base} (${skippedLegacyCount} legacy case${skippedLegacyCount !== 1 ? "s" : ""} skipped)`
+          : base
+      );
     },
     onError: (e: Error) => {
       setBulkToastError(e.message);

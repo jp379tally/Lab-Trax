@@ -1955,18 +1955,35 @@ router.post(
     // Deduplicate submitted IDs so count checks and updates are not skewed.
     const uniqueCaseIds = Array.from(new Set(input.caseIds));
 
-    // Determine which lab org the caller belongs to by looking up the first
-    // case in the batch. All cases must belong to the same lab.
-    const firstCase = await db.query.cases.findFirst({
-      where: and(eq(cases.id, uniqueCaseIds[0]!), notDeleted(cases)),
-    });
-    if (!firstCase) {
+    // The desktop case list merges canonical `cases` rows with legacy mobile
+    // `lab_cases` rows. Query both tables across the full id set so a lab
+    // whose cases were all created in the mobile app does not 404.
+    const [canonicalMatches, legacyMatches] = await Promise.all([
+      db
+        .select({ id: cases.id, labOrganizationId: cases.labOrganizationId, caseNumber: cases.caseNumber })
+        .from(cases)
+        .where(and(inArray(cases.id, uniqueCaseIds), notDeleted(cases))),
+      db
+        .select({ id: labCases.id, organizationId: labCases.organizationId })
+        .from(labCases)
+        .where(and(inArray(labCases.id, uniqueCaseIds), isNull(labCases.deletedAt))),
+    ]);
+
+    if (canonicalMatches.length === 0 && legacyMatches.length === 0) {
       throw new HttpError(404, "No matching cases found.");
     }
-    const labOrganizationId = firstCase.labOrganizationId;
 
-    // Require the caller to be a lab member.
-    const membership = await requireMembership(userId, labOrganizationId);
+    // Derive lab org from whichever table matched first.
+    const labOrganizationId =
+      canonicalMatches[0]?.labOrganizationId ??
+      legacyMatches[0]?.organizationId ??
+      null;
+    if (!labOrganizationId) {
+      throw new HttpError(422, "Case has no associated organization.");
+    }
+
+    // Require admin/owner role — reassigning cases is a privileged action.
+    const membership = await requireAnyRole(userId, labOrganizationId, ADMIN_ROLES);
     const actorInitials = String((membership as any).initials ?? (membership as any).role ?? "?");
 
     // Validate the target provider org exists, is a provider type, and
@@ -1988,33 +2005,28 @@ router.post(
       throw new HttpError(403, "Target practice does not belong to your lab.");
     }
 
-    // Load all requested cases and verify they all belong to the same lab.
-    const casesToUpdate = await db
-      .select({ id: cases.id, labOrganizationId: cases.labOrganizationId, caseNumber: cases.caseNumber })
-      .from(cases)
-      .where(and(inArray(cases.id, uniqueCaseIds), notDeleted(cases)));
-
-    const unauthorizedIds = casesToUpdate
-      .filter((c) => c.labOrganizationId !== labOrganizationId)
-      .map((c) => c.id);
+    // Refuse the whole batch if any matched case belongs to another lab.
+    const unauthorizedIds = [
+      ...canonicalMatches
+        .filter((c) => c.labOrganizationId !== labOrganizationId)
+        .map((c) => c.id),
+      ...legacyMatches
+        .filter((c) => c.organizationId !== labOrganizationId)
+        .map((c) => c.id),
+    ];
     if (unauthorizedIds.length > 0) {
       throw new HttpError(403, "Some cases do not belong to your lab.");
     }
 
-    // Missing IDs means the client passed IDs that don't exist.
-    if (casesToUpdate.length !== uniqueCaseIds.length) {
-      const foundIds = new Set(casesToUpdate.map((c) => c.id));
-      const missing = uniqueCaseIds.filter((id) => !foundIds.has(id));
-      if (missing.length > 0) {
-        throw new HttpError(404, `Cases not found: ${missing.slice(0, 5).join(", ")}`);
-      }
+    // Legacy cases do not carry a providerOrganizationId column — skip them
+    // with a count rather than erroring. Only canonical cases are updated.
+    const skippedLegacyCount = legacyMatches.length;
+
+    if (canonicalMatches.length === 0) {
+      return ok(res, { updatedCount: 0, skippedLegacyCount });
     }
 
-    if (casesToUpdate.length === 0) {
-      return ok(res, { updatedCount: 0 });
-    }
-
-    const ids = casesToUpdate.map((c) => c.id);
+    const ids = canonicalMatches.map((c) => c.id);
 
     // Chunk the IDs into bounded batches so each SQL IN clause is bounded and
     // avoids long-running transactions on large batches (up to 500 IDs).
@@ -2041,14 +2053,15 @@ router.post(
       entityId: labOrganizationId,
       metadataJson: {
         caseIds: ids,
-        caseNumbers: casesToUpdate.map((c) => c.caseNumber),
+        caseNumbers: canonicalMatches.map((c) => c.caseNumber),
         targetProviderOrganizationId: input.providerOrganizationId,
         targetProviderName: (targetProvider as any).displayName || targetProvider.name,
         count: ids.length,
+        skippedLegacyCount,
       },
     });
 
-    return ok(res, { updatedCount: ids.length });
+    return ok(res, { updatedCount: ids.length, skippedLegacyCount });
   })
 );
 
@@ -2083,41 +2096,56 @@ router.post(
 
     const uniqueCaseIds = Array.from(new Set(input.caseIds));
 
-    const firstCase = await db.query.cases.findFirst({
-      where: and(eq(cases.id, uniqueCaseIds[0]!), notDeleted(cases)),
-    });
-    if (!firstCase) {
+    // Query both canonical and legacy tables across the full id set so that
+    // labs whose cases were all created in the mobile app do not 404.
+    const [canonicalMatches, legacyMatches] = await Promise.all([
+      db
+        .select({ id: cases.id, labOrganizationId: cases.labOrganizationId, caseNumber: cases.caseNumber })
+        .from(cases)
+        .where(and(inArray(cases.id, uniqueCaseIds), notDeleted(cases))),
+      db
+        .select({ id: labCases.id, organizationId: labCases.organizationId })
+        .from(labCases)
+        .where(and(inArray(labCases.id, uniqueCaseIds), isNull(labCases.deletedAt))),
+    ]);
+
+    if (canonicalMatches.length === 0 && legacyMatches.length === 0) {
       throw new HttpError(404, "No matching cases found.");
     }
-    const labOrganizationId = firstCase.labOrganizationId;
+
+    // Derive lab org from whichever table matched first.
+    const labOrganizationId =
+      canonicalMatches[0]?.labOrganizationId ??
+      legacyMatches[0]?.organizationId ??
+      null;
+    if (!labOrganizationId) {
+      throw new HttpError(422, "Case has no associated organization.");
+    }
 
     await requireMembership(userId, labOrganizationId);
 
-    const casesToUpdate = await db
-      .select({ id: cases.id, labOrganizationId: cases.labOrganizationId, caseNumber: cases.caseNumber })
-      .from(cases)
-      .where(and(inArray(cases.id, uniqueCaseIds), notDeleted(cases)));
-
-    const unauthorizedIds = casesToUpdate
-      .filter((c) => c.labOrganizationId !== labOrganizationId)
-      .map((c) => c.id);
+    // Refuse the whole batch if any matched case belongs to another lab.
+    const unauthorizedIds = [
+      ...canonicalMatches
+        .filter((c) => c.labOrganizationId !== labOrganizationId)
+        .map((c) => c.id),
+      ...legacyMatches
+        .filter((c) => c.organizationId !== labOrganizationId)
+        .map((c) => c.id),
+    ];
     if (unauthorizedIds.length > 0) {
       throw new HttpError(403, "Some cases do not belong to your lab.");
     }
 
-    if (casesToUpdate.length !== uniqueCaseIds.length) {
-      const foundIds = new Set(casesToUpdate.map((c) => c.id));
-      const missing = uniqueCaseIds.filter((id) => !foundIds.has(id));
-      if (missing.length > 0) {
-        throw new HttpError(404, `Cases not found: ${missing.slice(0, 5).join(", ")}`);
-      }
+    // Legacy cases store status in a JSON blob; skip them with a count rather
+    // than erroring. Only canonical cases are updated via the status column.
+    const skippedLegacyCount = legacyMatches.length;
+
+    if (canonicalMatches.length === 0) {
+      return ok(res, { updatedCount: 0, skippedLegacyCount });
     }
 
-    if (casesToUpdate.length === 0) {
-      return ok(res, { updatedCount: 0 });
-    }
-
-    const ids = casesToUpdate.map((c) => c.id);
+    const ids = canonicalMatches.map((c) => c.id);
 
     await db
       .update(cases)
@@ -2132,13 +2160,14 @@ router.post(
       entityId: labOrganizationId,
       metadataJson: {
         caseIds: ids,
-        caseNumbers: casesToUpdate.map((c) => c.caseNumber),
+        caseNumbers: canonicalMatches.map((c) => c.caseNumber),
         status: input.status,
         count: ids.length,
+        skippedLegacyCount,
       },
     });
 
-    return ok(res, { updatedCount: ids.length });
+    return ok(res, { updatedCount: ids.length, skippedLegacyCount });
   })
 );
 
