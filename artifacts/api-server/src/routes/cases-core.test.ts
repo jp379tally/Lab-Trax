@@ -279,6 +279,42 @@ maybe("Cases core lifecycle (db integration)", () => {
     expect(patch.body.data?.status ?? patch.body.status).toBe("in_design");
   });
 
+  // ── PATCH casePanBarcode: null regression guard ───────────────────────────
+
+  it("PATCH /api/cases/:caseId with casePanBarcode: null returns 200 (not 400)", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const caseNumber = rid("BRC");
+
+    const create = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber,
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Barcode",
+        patientLastName: "Test",
+        doctorName: "Dr. Barcode",
+        status: "received",
+        casePanBarcode: "INIT-BARCODE",
+      });
+    expect(create.status).toBe(201);
+    const caseId = create.body.data.id;
+    createdCaseIds.push(caseId);
+
+    const patch = await request(appMod.default)
+      .patch(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        patientFirstName: "Barcode",
+        patientLastName: "Test",
+        doctorName: "Dr. Barcode",
+        priority: "normal",
+        casePanBarcode: null,
+      });
+    expect(patch.status).toBe(200);
+  });
+
   // ── Cross-lab scoping ──────────────────────────────────────────────────────
 
   it("GET /api/cases/:id returns 404 for a user not in the lab", async () => {

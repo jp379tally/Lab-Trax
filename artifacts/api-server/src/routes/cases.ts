@@ -94,6 +94,43 @@ function _bigramSimilarity(a: string, b: string): number {
   return union === 0 ? 0 : inter / union;
 }
 
+/**
+ * Given a lab org ID and a practice name string extracted by AI from an Rx,
+ * returns the ID of the best-matching provider organization in the lab whose
+ * name has bigram similarity >= 0.5 with `practiceName`, or null if none
+ * qualifies. Doctor-name matching always takes priority over this; callers
+ * should only invoke this when suggestedProviderOrgId is still null.
+ */
+async function _findProviderOrgByPracticeName(
+  labOrganizationId: string,
+  practiceName: string
+): Promise<string | null> {
+  const trimmed = practiceName.trim();
+  if (!trimmed) return null;
+
+  const providerOrgs = await db
+    .select({ id: organizations.id, name: organizations.name })
+    .from(organizations)
+    .where(
+      and(
+        eq(organizations.type, "provider"),
+        eq(organizations.parentLabOrganizationId, labOrganizationId),
+        notDeleted(organizations)
+      )
+    );
+
+  let bestSim = 0;
+  let bestId: string | null = null;
+  for (const org of providerOrgs) {
+    const sim = _bigramSimilarity(trimmed, org.name);
+    if (sim >= 0.5 && sim > bestSim) {
+      bestSim = sim;
+      bestId = org.id;
+    }
+  }
+  return bestId;
+}
+
 const router = Router();
 router.use(requireAuth);
 router.use(requireVerifiedAccount);
@@ -4284,8 +4321,8 @@ const updateCaseSchema = z.object({
   expectedDeliveryDate: z.union([z.string(), z.null()]).optional(),
   clearDeliveryDateProposal: z.boolean().optional(),
   casePanBarcode: z
-    .string()
-    .transform((v) => v.trim())
+    .union([z.string(), z.null()])
+    .transform((v) => (v === null ? null : v.trim()))
     .optional(),
 });
 
@@ -6169,6 +6206,16 @@ router.post(
       }
     }
 
+    // ── Practice-name fallback: match extracted practiceName to a provider org ──
+    // When doctor-name similarity produced no org suggestion, try matching the
+    // AI-extracted practice name directly against provider organizations.
+    if (!suggestedProviderOrgId && extracted.practiceName?.trim()) {
+      suggestedProviderOrgId = await _findProviderOrgByPracticeName(
+        body.labOrganizationId,
+        extracted.practiceName
+      );
+    }
+
     // ── Per-lab opt-in: auto-link the AI-suggested practice on creation ──
     // When the lab has enabled the "auto-link AI-suggested practice" toggle
     // AND the similarity match returned a non-empty suggestion that differs
@@ -7104,6 +7151,16 @@ router.post(
         suggestedDoctorName = bestMatch.doctorName;
         suggestedProviderOrgId = bestMatch.providerOrganizationId;
       }
+    }
+
+    // ── Practice-name fallback: match extracted practiceName to a provider org ──
+    // When doctor-name similarity produced no org suggestion, try matching the
+    // AI-extracted practice name directly against provider organizations.
+    if (!suggestedProviderOrgId && extracted.practiceName?.trim()) {
+      suggestedProviderOrgId = await _findProviderOrgByPracticeName(
+        body.labOrganizationId,
+        extracted.practiceName
+      );
     }
 
     let dueDate: Date | null = null;
