@@ -2510,6 +2510,24 @@ export function CaseDrawer({
   });
   const hasAdvancedTemplate = !!advancedTemplateQuery.data?.isCustom;
 
+  interface LabLocation { value: string; label: string }
+  const locationsQuery = useQuery<LabLocation[]>({
+    enabled: !!labCase.labOrganizationId,
+    queryKey: ["locations", labCase.labOrganizationId, "active"],
+    queryFn: async () => {
+      try {
+        const rows = await apiFetch<Array<{ code: string; name: string }>>(
+          `/locations?organizationId=${labCase.labOrganizationId}&activeOnly=true`
+        );
+        if (!Array.isArray(rows) || rows.length === 0) return [];
+        return rows.map((r) => ({ value: r.code, label: r.name }));
+      } catch {
+        return [];
+      }
+    },
+    staleTime: 60_000,
+  });
+
   const [editMode, setEditMode] = useState(false);
   const barcodeScanInputRef = useRef<HTMLInputElement>(null);
   const [barcodeEditMode, setBarcodeEditMode] = useState(false);
@@ -3673,7 +3691,11 @@ export function CaseDrawer({
   const restorationCount = data?.restorations?.length ?? 0;
   const noteCount = data?.notes?.length ?? 0;
   const fileCount = data?.attachments?.length ?? 0;
-  const ROUTE_STATUSES = STATUS_FILTERS.filter((s) => s.value !== "all");
+  const apiLocations = locationsQuery.data;
+  const ROUTE_STATUSES =
+    apiLocations && apiLocations.length > 0
+      ? apiLocations
+      : STATUS_FILTERS.filter((s) => s.value !== "all");
 
   const tabs: Array<{ id: CaseTab; label: string; count?: number }> = [
     { id: "lab-slip", label: "Lab Slip" },

@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: locations
+    description: Case location (station) operations (LabTrax)
   - name: ai
     description: AI assistant operations (LabTrax)
   - name: cases
@@ -62,6 +64,90 @@ paths:
                 $ref: "#/components/schemas/SuccessResult"
         "401":
           description: Not authenticated
+  /locations:
+    get:
+      operationId: getLocations
+      tags: [locations]
+      summary: List lab locations for an org (seeds built-in stations on first call)
+      parameters:
+        - in: query
+          name: organizationId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: activeOnly
+          schema: { type: boolean }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LabLocationListResult"
+    post:
+      operationId: createLocation
+      tags: [locations]
+      summary: Create a lab location
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateLocationInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LabLocationResult"
+  /locations/{id}:
+    patch:
+      operationId: updateLocation
+      tags: [locations]
+      summary: Update a lab location
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateLocationInput"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LabLocationResult"
+    delete:
+      operationId: deleteLocation
+      tags: [locations]
+      summary: Delete a lab location
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, data]
+                properties:
+                  ok: { type: boolean }
+                  data:
+                    type: object
+                    required: [deleted]
+                    properties:
+                      deleted: { type: boolean }
   /ai-chat:
     post:
       operationId: postAiChat
@@ -4849,4 +4935,48 @@ components:
       properties:
         reply:
           type: string
+    LabLocation:
+      type: object
+      required: [id, organizationId, name, code, isActive, sortOrder, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        organizationId: { type: string }
+        name: { type: string }
+        code: { type: string }
+        isActive: { type: boolean }
+        sortOrder: { type: integer }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    LabLocationListResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/LabLocation"
+    LabLocationResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          $ref: "#/components/schemas/LabLocation"
+    CreateLocationInput:
+      type: object
+      required: [organizationId, name, code]
+      properties:
+        organizationId: { type: string }
+        name: { type: string }
+        code: { type: string }
+        isActive: { type: boolean }
+        sortOrder: { type: integer }
+    UpdateLocationInput:
+      type: object
+      properties:
+        name: { type: string }
+        code: { type: string }
+        isActive: { type: boolean }
+        sortOrder: { type: integer }
 

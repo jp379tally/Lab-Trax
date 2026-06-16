@@ -29,6 +29,83 @@ export const DeleteAiChatHistoryResponse = zod.object({
 });
 
 /**
+ * @summary List lab locations for an org (seeds built-in stations on first call)
+ */
+export const GetLocationsQueryParams = zod.object({
+  organizationId: zod.coerce.string(),
+  activeOnly: zod.coerce.boolean().optional(),
+});
+
+export const GetLocationsResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.array(
+    zod.object({
+      id: zod.string(),
+      organizationId: zod.string(),
+      name: zod.string(),
+      code: zod.string(),
+      isActive: zod.boolean(),
+      sortOrder: zod.number(),
+      createdAt: zod.coerce.date(),
+      updatedAt: zod.coerce.date(),
+    }),
+  ),
+});
+
+/**
+ * @summary Create a lab location
+ */
+export const CreateLocationBody = zod.object({
+  organizationId: zod.string(),
+  name: zod.string(),
+  code: zod.string(),
+  isActive: zod.boolean().optional(),
+  sortOrder: zod.number().optional(),
+});
+
+/**
+ * @summary Update a lab location
+ */
+export const UpdateLocationParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const UpdateLocationBody = zod.object({
+  name: zod.string().optional(),
+  code: zod.string().optional(),
+  isActive: zod.boolean().optional(),
+  sortOrder: zod.number().optional(),
+});
+
+export const UpdateLocationResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.object({
+    id: zod.string(),
+    organizationId: zod.string(),
+    name: zod.string(),
+    code: zod.string(),
+    isActive: zod.boolean(),
+    sortOrder: zod.number(),
+    createdAt: zod.coerce.date(),
+    updatedAt: zod.coerce.date(),
+  }),
+});
+
+/**
+ * @summary Delete a lab location
+ */
+export const DeleteLocationParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const DeleteLocationResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.object({
+    deleted: zod.boolean(),
+  }),
+});
+
+/**
  * @summary Send a message to the context-aware AI assistant
  */
 export const postAiChatBodyMessagesItemContentMax = 2000;

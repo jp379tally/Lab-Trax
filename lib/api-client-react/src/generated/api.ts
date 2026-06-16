@@ -52,9 +52,11 @@ import type {
   CreateConversationInput,
   CreateConversationResult,
   CreateInvitationInput,
+  CreateLocationInput,
   CreateOrganizationInput,
   CreateVendorInput,
   CurrentUserResult,
+  DeleteLocation200,
   DeletedResult,
   DisableBackupSchedule200,
   DisableTwoFactor200,
@@ -73,6 +75,7 @@ import type {
   GetConversationMessagesParams,
   GetItemLabelsParams,
   GetIteroImportHistoryParams,
+  GetLocationsParams,
   GetPatientSimilarityParams,
   GetRxPracticeAliasParams,
   HealthStatus,
@@ -89,6 +92,8 @@ import type {
   IteroImportResult,
   IteroZipBatchImportResult,
   IteroZipImportResult,
+  LabLocationListResult,
+  LabLocationResult,
   LabProviderList,
   ListAuditLogsParams,
   ListCasesParams,
@@ -150,6 +155,7 @@ import type {
   UpdateCaseRestorationInput,
   UpdateCategoryInput,
   UpdateInvoiceInput,
+  UpdateLocationInput,
   UpdateMembershipInput,
   UpdateOrganizationInput,
   UpdateOrganizationLogoPlacements200,
@@ -328,6 +334,357 @@ export const useDeleteAiChatHistory = <
   TContext
 > => {
   return useMutation(getDeleteAiChatHistoryMutationOptions(options));
+};
+
+/**
+ * @summary List lab locations for an org (seeds built-in stations on first call)
+ */
+export const getGetLocationsUrl = (params: GetLocationsParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/locations?${stringifiedParams}`
+    : `/api/locations`;
+};
+
+export const getLocations = async (
+  params: GetLocationsParams,
+  options?: RequestInit,
+): Promise<LabLocationListResult> => {
+  return customFetch<LabLocationListResult>(getGetLocationsUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetLocationsQueryKey = (params?: GetLocationsParams) => {
+  return [`/api/locations`, ...(params ? [params] : [])] as const;
+};
+
+export const getGetLocationsQueryOptions = <
+  TData = Awaited<ReturnType<typeof getLocations>>,
+  TError = ErrorType<unknown>,
+>(
+  params: GetLocationsParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getLocations>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetLocationsQueryKey(params);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getLocations>>> = ({
+    signal,
+  }) => getLocations(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getLocations>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetLocationsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getLocations>>
+>;
+export type GetLocationsQueryError = ErrorType<unknown>;
+
+/**
+ * @summary List lab locations for an org (seeds built-in stations on first call)
+ */
+
+export function useGetLocations<
+  TData = Awaited<ReturnType<typeof getLocations>>,
+  TError = ErrorType<unknown>,
+>(
+  params: GetLocationsParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getLocations>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetLocationsQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Create a lab location
+ */
+export const getCreateLocationUrl = () => {
+  return `/api/locations`;
+};
+
+export const createLocation = async (
+  createLocationInput: CreateLocationInput,
+  options?: RequestInit,
+): Promise<LabLocationResult> => {
+  return customFetch<LabLocationResult>(getCreateLocationUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(createLocationInput),
+  });
+};
+
+export const getCreateLocationMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createLocation>>,
+    TError,
+    { data: BodyType<CreateLocationInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof createLocation>>,
+  TError,
+  { data: BodyType<CreateLocationInput> },
+  TContext
+> => {
+  const mutationKey = ["createLocation"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof createLocation>>,
+    { data: BodyType<CreateLocationInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return createLocation(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type CreateLocationMutationResult = NonNullable<
+  Awaited<ReturnType<typeof createLocation>>
+>;
+export type CreateLocationMutationBody = BodyType<CreateLocationInput>;
+export type CreateLocationMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Create a lab location
+ */
+export const useCreateLocation = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createLocation>>,
+    TError,
+    { data: BodyType<CreateLocationInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof createLocation>>,
+  TError,
+  { data: BodyType<CreateLocationInput> },
+  TContext
+> => {
+  return useMutation(getCreateLocationMutationOptions(options));
+};
+
+/**
+ * @summary Update a lab location
+ */
+export const getUpdateLocationUrl = (id: string) => {
+  return `/api/locations/${id}`;
+};
+
+export const updateLocation = async (
+  id: string,
+  updateLocationInput: UpdateLocationInput,
+  options?: RequestInit,
+): Promise<LabLocationResult> => {
+  return customFetch<LabLocationResult>(getUpdateLocationUrl(id), {
+    ...options,
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(updateLocationInput),
+  });
+};
+
+export const getUpdateLocationMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateLocation>>,
+    TError,
+    { id: string; data: BodyType<UpdateLocationInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof updateLocation>>,
+  TError,
+  { id: string; data: BodyType<UpdateLocationInput> },
+  TContext
+> => {
+  const mutationKey = ["updateLocation"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof updateLocation>>,
+    { id: string; data: BodyType<UpdateLocationInput> }
+  > = (props) => {
+    const { id, data } = props ?? {};
+
+    return updateLocation(id, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UpdateLocationMutationResult = NonNullable<
+  Awaited<ReturnType<typeof updateLocation>>
+>;
+export type UpdateLocationMutationBody = BodyType<UpdateLocationInput>;
+export type UpdateLocationMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Update a lab location
+ */
+export const useUpdateLocation = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateLocation>>,
+    TError,
+    { id: string; data: BodyType<UpdateLocationInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof updateLocation>>,
+  TError,
+  { id: string; data: BodyType<UpdateLocationInput> },
+  TContext
+> => {
+  return useMutation(getUpdateLocationMutationOptions(options));
+};
+
+/**
+ * @summary Delete a lab location
+ */
+export const getDeleteLocationUrl = (id: string) => {
+  return `/api/locations/${id}`;
+};
+
+export const deleteLocation = async (
+  id: string,
+  options?: RequestInit,
+): Promise<DeleteLocation200> => {
+  return customFetch<DeleteLocation200>(getDeleteLocationUrl(id), {
+    ...options,
+    method: "DELETE",
+  });
+};
+
+export const getDeleteLocationMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof deleteLocation>>,
+    TError,
+    { id: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof deleteLocation>>,
+  TError,
+  { id: string },
+  TContext
+> => {
+  const mutationKey = ["deleteLocation"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof deleteLocation>>,
+    { id: string }
+  > = (props) => {
+    const { id } = props ?? {};
+
+    return deleteLocation(id, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type DeleteLocationMutationResult = NonNullable<
+  Awaited<ReturnType<typeof deleteLocation>>
+>;
+
+export type DeleteLocationMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Delete a lab location
+ */
+export const useDeleteLocation = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof deleteLocation>>,
+    TError,
+    { id: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof deleteLocation>>,
+  TError,
+  { id: string },
+  TContext
+> => {
+  return useMutation(getDeleteLocationMutationOptions(options));
 };
 
 /**

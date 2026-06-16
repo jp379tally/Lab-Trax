@@ -21,12 +21,22 @@ import {
 import { useTheme } from "@/lib/theme-context";
 import { Radius, Spacing, Typography } from "@/constants/tokens";
 import { CASE_STATIONS } from "@/lib/case-stations";
+import { useMe, editableLabMemberships } from "@/lib/auth-me";
+import { getJson } from "@/lib/read-api";
 
 type Props = {
   locatingCase: CanonicalCase | null;
   onDismiss: () => void;
   onLocated: (caseId: string) => void;
 };
+
+interface LabLocation {
+  id: string;
+  name: string;
+  code: string;
+  isActive: boolean;
+  sortOrder: number;
+}
 
 function patientDisplayName(c: CanonicalCase): string {
   const name = `${c.patientFirstName ?? ""} ${c.patientLastName ?? ""}`.trim();
@@ -39,13 +49,29 @@ export function LocateCaseSheet({ locatingCase, onDismiss, onLocated }: Props) {
 
   const [locateTarget, setLocateTarget] = useState<string | null>(null);
   const [locating, setLocating] = useState(false);
+  const [apiLocations, setApiLocations] = useState<LabLocation[] | null>(null);
 
   const updateCase = useUpdateCase();
   const casesQuery = useCases();
+  const meQuery = useMe();
+  const orgId = editableLabMemberships(meQuery.data)[0]?.organizationId ?? null;
 
   useEffect(() => {
     setLocateTarget(null);
   }, [locatingCase?.id]);
+
+  useEffect(() => {
+    if (!orgId || !locatingCase) return;
+    let cancelled = false;
+    getJson<LabLocation[]>(`/api/locations?organizationId=${orgId}&activeOnly=true`)
+      .then((rows) => {
+        if (!cancelled) setApiLocations(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setApiLocations(null);
+      });
+    return () => { cancelled = true; };
+  }, [orgId, locatingCase?.id]);
 
   async function confirmLocate() {
     if (!locatingCase || !locateTarget) return;
@@ -75,9 +101,15 @@ export function LocateCaseSheet({ locatingCase, onDismiss, onLocated }: Props) {
     onDismiss();
   }
 
-  const stations = CASE_STATIONS.filter(
-    (s) => s.value !== (locatingCase?.status ?? "").toLowerCase(),
-  );
+  const currentStatus = (locatingCase?.status ?? "").toLowerCase();
+
+  const stations: { value: string; label: string }[] =
+    apiLocations !== null
+      ? apiLocations
+          .filter((loc) => loc.code.toLowerCase() !== currentStatus)
+          .sort((a, b) => a.sortOrder - b.sortOrder)
+          .map((loc) => ({ value: loc.code.toLowerCase(), label: loc.name }))
+      : CASE_STATIONS.filter((s) => s.value !== currentStatus);
 
   return (
     <Modal

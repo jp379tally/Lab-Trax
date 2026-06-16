@@ -143,6 +143,7 @@ import invoiceRoutes from "./invoices";
 import accountLinksRoutes, { smsInboundRouter } from "./account-links";
 import financeRoutes, { generateForOrganization, runVendorLinkBackfill } from "./finance";
 import listsRoutes from "./lists";
+import locationsRoutes from "./locations";
 import pricingRoutes from "./pricing";
 import statementRoutes from "./statements";
 import billingRoutes from "./billing";
@@ -1365,6 +1366,7 @@ export async function registerRoutes(): Promise<IRouter> {
 
   router.use("/finance", financeRoutes);
   router.use("/lists", listsRoutes);
+  router.use("/locations", locationsRoutes);
   router.use("/pricing", pricingRoutes);
   router.use("/lab-orgs", statementRoutes);
   router.use("/billing", billingRoutes);

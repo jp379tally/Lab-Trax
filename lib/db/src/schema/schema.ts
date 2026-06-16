@@ -817,30 +817,6 @@ export const caseLocations = pgTable("case_locations", {
   notes: text("notes"),
 });
 
-export const labLocations = pgTable(
-  "lab_locations",
-  {
-    id: varchar("id")
-      .primaryKey()
-      .default(sql`gen_random_uuid()`),
-    labOrganizationId: varchar("lab_organization_id")
-      .notNull()
-      .references(() => organizations.id, { onDelete: "cascade" }),
-    code: text("code").notNull(),
-    name: text("name").notNull(),
-    description: text("description"),
-    sortOrder: integer("sort_order").notNull().default(0),
-    createdAt: createdAt(),
-    updatedAt: updatedAt(),
-  },
-  (table) => ({
-    orgIdx: index("lab_locations_org_idx").on(table.labOrganizationId),
-    orgCodeUniq: uniqueIndex("lab_locations_org_code_uniq").on(
-      table.labOrganizationId,
-      table.code,
-    ),
-  }),
-);
 
 export const caseSubmissionQueue = pgTable("case_submission_queue", {
   id: varchar("id")
@@ -2200,6 +2176,37 @@ export const aiChatHistory = pgTable(
   }),
 );
 
+/**
+ * Per-organization case location (station) list. Allows labs to customize
+ * the "Locate Case" picker beyond the 14 hard-coded CASE_STATIONS defaults.
+ * On first GET for an org with no rows, the API seeds from CASE_STATIONS.
+ * sortOrder determines display ordering (ascending); ties broken by createdAt.
+ */
+export const labLocations = pgTable(
+  "lab_locations",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    organizationId: varchar("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    code: text("code").notNull(),
+    isActive: boolean("is_active").default(true).notNull(),
+    sortOrder: integer("sort_order").default(0).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => ({
+    orgIdx: index("lab_locations_org_idx").on(table.organizationId),
+    orgCodeUnique: uniqueIndex("lab_locations_org_code_unique").on(
+      table.organizationId,
+      table.code,
+    ),
+  }),
+);
+
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 export type LabCaseRow = typeof labCases.$inferSelect;
@@ -2210,3 +2217,4 @@ export type Conversation = typeof conversations.$inferSelect;
 export type ConversationParticipant = typeof conversationParticipants.$inferSelect;
 export type Message = typeof messages.$inferSelect;
 export type AiChatHistoryRow = typeof aiChatHistory.$inferSelect;
+export type LabLocation = typeof labLocations.$inferSelect;

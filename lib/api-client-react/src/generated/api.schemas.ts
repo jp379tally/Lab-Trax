@@ -1978,6 +1978,56 @@ export interface AiChatResult {
   reply: string;
 }
 
+export interface LabLocation {
+  id: string;
+  organizationId: string;
+  name: string;
+  code: string;
+  isActive: boolean;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LabLocationListResult {
+  ok: boolean;
+  data: LabLocation[];
+}
+
+export interface LabLocationResult {
+  ok: boolean;
+  data: LabLocation;
+}
+
+export interface CreateLocationInput {
+  organizationId: string;
+  name: string;
+  code: string;
+  isActive?: boolean;
+  sortOrder?: number;
+}
+
+export interface UpdateLocationInput {
+  name?: string;
+  code?: string;
+  isActive?: boolean;
+  sortOrder?: number;
+}
+
+export type GetLocationsParams = {
+  organizationId: string;
+  activeOnly?: boolean;
+};
+
+export type DeleteLocation200Data = {
+  deleted: boolean;
+};
+
+export type DeleteLocation200 = {
+  ok: boolean;
+  data: DeleteLocation200Data;
+};
+
 export type DisableTwoFactor200Data = {
   disabled?: boolean;
 };
