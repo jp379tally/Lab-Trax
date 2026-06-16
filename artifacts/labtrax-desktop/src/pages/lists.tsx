@@ -498,6 +498,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
         )
       );
       invalidateLocations();
+      toast.success("Order saved");
     } catch {
       toast.error("Failed to save new order");
       invalidateLocations();
