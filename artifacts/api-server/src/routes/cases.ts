@@ -6399,10 +6399,35 @@ router.post(
 
     // Resolve any AI-derived restoration rows BEFORE the transaction so the
     // pricing lookups don't hold open the dedup-claim transaction.
-    const teethList = (extracted.teeth || "")
+
+    // Build tooth list from the top-level teeth string first, then fall back
+    // to aggregating tooth numbers from the per-group restorations array. The
+    // AI sometimes populates restorations[].teeth but leaves the top-level
+    // teeth field empty, especially for Crown & Bridge cases.
+    let teethList = (extracted.teeth || "")
       .split(/[,\s]+/)
       .map((t) => t.trim())
       .filter(Boolean);
+
+    if (teethList.length === 0 && extracted.restorations && extracted.restorations.length > 0) {
+      const fromRest: string[] = [];
+      for (const r of extracted.restorations) {
+        for (const seg of (r.teeth || "").split(",")) {
+          const trimmed = seg.trim();
+          // Expand bridge spans like "8-10" → "8","9","10"
+          const rangeMatch = trimmed.match(/^(\d+)-(\d+)$/);
+          if (rangeMatch) {
+            const lo = parseInt(rangeMatch[1], 10);
+            const hi = parseInt(rangeMatch[2], 10);
+            for (let i = lo; i <= hi && i - lo <= 32; i++) fromRest.push(String(i));
+          } else if (/^\d+$/.test(trimmed)) {
+            fromRest.push(trimmed);
+          }
+        }
+      }
+      teethList = [...new Set(fromRest)];
+    }
+
     let prebuiltRestorations: Array<{
       toothNumber: string;
       restorationType: string;
@@ -6414,16 +6439,20 @@ router.post(
       priceSourceName: string | null;
       priceKey: string | null;
     }> = [];
+
     // Bucket the AI-extracted caseType into one of the four restorative
     // categories the Overview Rx summary recognizes (Crown & Bridge /
     // Removable / Appliance / Other). This guards against the model
     // returning legacy granular values like "Crown" or "Full Denture".
+    // Fall back to "Other" when caseType is absent but clinical data exists,
+    // so the Lab Slip Rx Summary always shows something useful.
     const normalizedCaseType = extracted.caseType
       ? normalizeIteroCaseType(extracted.caseType)
-      : null;
+      : (teethList.length > 0 || extracted.material || extracted.shade ? "Other" : null);
     if (normalizedCaseType) {
       extracted.caseType = normalizedCaseType;
     }
+
     if (teethList.length > 0 && normalizedCaseType) {
       prebuiltRestorations = await Promise.all(
         teethList.map(async (toothNumber) => {
@@ -6449,6 +6478,21 @@ router.post(
           };
         })
       );
+    } else if (normalizedCaseType || extracted.material || extracted.shade) {
+      // No specific teeth identified but we have Rx clinical info — create a
+      // single summary restoration so the Lab Slip shows type/material/shade.
+      // Matches the fallback behaviour in the general Rx-analysis path.
+      prebuiltRestorations = [{
+        toothNumber: "",
+        restorationType: normalizedCaseType ?? "Other",
+        material: extracted.material ?? null,
+        shade: normalizeIteroShade(extracted.shade),
+        unitPrice: "0.00",
+        priceSource: null,
+        priceSourceId: null,
+        priceSourceName: null,
+        priceKey: null,
+      }];
     }
 
     const user = (req as any).user;
@@ -6526,6 +6570,7 @@ router.post(
           aiImportSource: "itero",
           externalPatientId: body.iteroOrderId,
           rxNotes: extracted.notes?.trim() || null,
+          shade: normalizeIteroShade(extracted.shade),
           suggestedDoctorName,
           // When the per-lab "auto-link suggested practice" setting fired,
           // the suggestion has been applied — null it out so the review
@@ -7338,21 +7383,46 @@ router.post(
 
     const caseNumber = await generateIteroCaseNumber(body.labOrganizationId);
 
-    const normalizedCaseType = extracted.caseType
-      ? normalizeIteroCaseType(extracted.caseType)
-      : (body.caseTypeHint ? normalizeIteroCaseType(body.caseTypeHint) : null);
-    if (normalizedCaseType) {
-      extracted.caseType = normalizedCaseType;
-    }
     // Fall back to hint values when AI didn't extract them.
     if (!extracted.shade && body.shadeHint) extracted.shade = body.shadeHint;
     if (!extracted.material && body.materialHint) extracted.material = body.materialHint;
 
+    // Build tooth list from top-level teeth, fall back to restorations array.
     const teethStr = extracted.teeth?.trim() || body.toothIndicesHint?.trim() || "";
-    const teethList = teethStr
+    let teethList = teethStr
       .split(/[,\s]+/)
       .map((t) => t.trim())
       .filter(Boolean);
+
+    if (teethList.length === 0 && extracted.restorations && extracted.restorations.length > 0) {
+      const fromRest: string[] = [];
+      for (const r of extracted.restorations) {
+        for (const seg of (r.teeth || "").split(",")) {
+          const trimmed = seg.trim();
+          const rangeMatch = trimmed.match(/^(\d+)-(\d+)$/);
+          if (rangeMatch) {
+            const lo = parseInt(rangeMatch[1], 10);
+            const hi = parseInt(rangeMatch[2], 10);
+            for (let i = lo; i <= hi && i - lo <= 32; i++) fromRest.push(String(i));
+          } else if (/^\d+$/.test(trimmed)) {
+            fromRest.push(trimmed);
+          }
+        }
+      }
+      teethList = [...new Set(fromRest)];
+    }
+
+    // Bucket caseType; fall back to "Other" when clinical data exists but
+    // no caseType was extracted (and no hint was provided).
+    const normalizedCaseType = extracted.caseType
+      ? normalizeIteroCaseType(extracted.caseType)
+      : (body.caseTypeHint
+          ? normalizeIteroCaseType(body.caseTypeHint)
+          : (teethList.length > 0 || extracted.material || extracted.shade ? "Other" : null));
+    if (normalizedCaseType) {
+      extracted.caseType = normalizedCaseType;
+    }
+
     let prebuiltRestorations: Array<{
       toothNumber: string;
       restorationType: string;
@@ -7389,6 +7459,18 @@ router.post(
           };
         })
       );
+    } else if (normalizedCaseType || extracted.material || extracted.shade) {
+      prebuiltRestorations = [{
+        toothNumber: "",
+        restorationType: normalizedCaseType ?? "Other",
+        material: extracted.material ?? null,
+        shade: normalizeIteroShade(extracted.shade),
+        unitPrice: "0.00",
+        priceSource: null,
+        priceSourceId: null,
+        priceSourceName: null,
+        priceKey: null,
+      }];
     }
 
     const user = (req as any).user;
@@ -7456,6 +7538,7 @@ router.post(
           aiImportSource: "itero",
           externalPatientId: iteroOrderId,
           rxNotes: extracted.notes?.trim() || null,
+          shade: normalizeIteroShade(extracted.shade),
           ...({ suggestedDoctorName, suggestedProviderOrgId } as any),
         })
         .returning();
@@ -8014,10 +8097,32 @@ async function processOneIteroZipFile(
   }
 
   const caseNumber = await generateIteroCaseNumber(body.labOrganizationId);
-  const normalizedCaseType = extracted.caseType ? normalizeIteroCaseType(extracted.caseType) : null;
+
+  // Build tooth list; fall back to aggregating from the restorations array.
+  let teethList = (extracted.teeth || "").split(/[,\s]+/).map((t) => t.trim()).filter(Boolean);
+  if (teethList.length === 0 && extracted.restorations && extracted.restorations.length > 0) {
+    const fromRest: string[] = [];
+    for (const r of extracted.restorations) {
+      for (const seg of (r.teeth || "").split(",")) {
+        const trimmed = seg.trim();
+        const rangeMatch = trimmed.match(/^(\d+)-(\d+)$/);
+        if (rangeMatch) {
+          const lo = parseInt(rangeMatch[1], 10);
+          const hi = parseInt(rangeMatch[2], 10);
+          for (let i = lo; i <= hi && i - lo <= 32; i++) fromRest.push(String(i));
+        } else if (/^\d+$/.test(trimmed)) {
+          fromRest.push(trimmed);
+        }
+      }
+    }
+    teethList = [...new Set(fromRest)];
+  }
+
+  const normalizedCaseType = extracted.caseType
+    ? normalizeIteroCaseType(extracted.caseType)
+    : (teethList.length > 0 || extracted.material || extracted.shade ? "Other" : null);
   if (normalizedCaseType) extracted.caseType = normalizedCaseType;
 
-  const teethList = (extracted.teeth || "").split(/[,\s]+/).map((t) => t.trim()).filter(Boolean);
   let prebuiltRestorations: Array<{
     toothNumber: string; restorationType: string; material: string | null; shade: string | null;
     unitPrice: string; priceSource: string | null; priceSourceId: string | null; priceSourceName: string | null; priceKey: string | null;
@@ -8034,6 +8139,14 @@ async function processOneIteroZipFile(
         priceSourceId: fallback?.sourceId ?? null, priceSourceName: fallback?.sourceName ?? null, priceKey: fallback?.key ?? null,
       };
     }));
+  } else if (normalizedCaseType || extracted.material || extracted.shade) {
+    prebuiltRestorations = [{
+      toothNumber: "",
+      restorationType: normalizedCaseType ?? "Other",
+      material: extracted.material ?? null,
+      shade: normalizeIteroShade(extracted.shade),
+      unitPrice: "0.00", priceSource: null, priceSourceId: null, priceSourceName: null, priceKey: null,
+    }];
   }
 
   // Atomic transaction
@@ -8074,6 +8187,7 @@ async function processOneIteroZipFile(
       createdByUserId: userId, needsAiReview: true, aiImportSource: "itero",
       externalPatientId: iteroOrderId,
       rxNotes: extracted.notes?.trim() || null,
+      shade: normalizeIteroShade(extracted.shade),
       ...({
         suggestedDoctorName,
         // Clear the suggestion field once it's been auto-applied so the
