@@ -46,6 +46,7 @@ import type {
   CaseAttachment,
   CaseEvent,
   CaseRestoration,
+  CaseStatus,
   Invoice,
   LabCase,
   Organization,
@@ -1946,6 +1947,9 @@ export default function CasesPage() {
               setLocation(`/cases${newSearch ? `?${newSearch}` : ""}`);
             }
           }}
+          onCaseLocated={(newStatus) =>
+            setSelected((prev) => (prev ? { ...prev, status: newStatus } : null))
+          }
           doctorNames={distinctDoctorNames}
           patientLastNames={distinctPatientLastNames}
           onOpenCaseId={async (id) => {
@@ -2451,12 +2455,14 @@ export function CaseDrawer({
   doctorNames = [],
   patientLastNames = [],
   onOpenCaseId,
+  onCaseLocated,
 }: {
   labCase: LabCase;
   onClose: () => void;
   doctorNames?: string[];
   patientLastNames?: string[];
   onOpenCaseId?: (id: string) => void;
+  onCaseLocated?: (newStatus: CaseStatus) => void;
 }) {
   const qc = useQueryClient();
   const { user } = useAuth();
@@ -2918,7 +2924,7 @@ export function CaseDrawer({
   });
 
   const routeMutation = useMutation({
-    mutationFn: (status: string) =>
+    mutationFn: (status: CaseStatus) =>
       apiFetch(`/cases/${labCase.id}`, {
         method: "PATCH",
         body: JSON.stringify({ status }),
@@ -2927,6 +2933,7 @@ export function CaseDrawer({
       const prevBarcode = data?.casePanBarcode ?? labCase.casePanBarcode;
       qc.invalidateQueries({ queryKey: ["cases"] });
       qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+      onCaseLocated?.(status);
       setRouteStatus("");
       setRouteError(null);
       const msg =
@@ -4661,7 +4668,7 @@ export function CaseDrawer({
                   <button
                     type="button"
                     disabled={!routeStatus || routeMutation.isPending}
-                    onClick={() => routeMutation.mutate(routeStatus)}
+                    onClick={() => routeMutation.mutate(routeStatus as CaseStatus)}
                     className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
                   >
                     {routeMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : "Locate"}
