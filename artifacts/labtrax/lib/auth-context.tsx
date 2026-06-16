@@ -71,7 +71,7 @@ const BIOMETRIC_USER_KEY = "@drivesync_biometric_user";
 const TRUSTED_DEVICE_KEY = "@labtrax_trusted_device_v1";
 const REMEMBER_ME_KEY = "@labtrax_remember_me";
 
-const INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000;
+const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000;
 
 type SessionStore = {
   getItem: (key: string) => string | null;
@@ -179,6 +179,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [currentPassword, setCurrentPassword] = useState<string | null>(null);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const inactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const logoutRef = useRef<() => void>(() => {});
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const reconnectTrackerRef = useRef(createReconnectingTracker((v) => setIsReconnecting(v)));
 
@@ -203,7 +204,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       clearTimeout(inactivityTimerRef.current);
     }
     inactivityTimerRef.current = setTimeout(() => {
-      setIsLocked(true);
+      void logoutRef.current();
     }, INACTIVITY_TIMEOUT_MS);
   }, []);
 
@@ -221,7 +222,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (appStateRef.current.match(/active/) && nextState.match(/inactive|background/)) {
         if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
         inactivityTimerRef.current = setTimeout(() => {
-          setIsLocked(true);
+          void logoutRef.current();
         }, INACTIVITY_TIMEOUT_MS);
       } else if (nextState === "active" && !isLocked) {
         resetInactivityTimer();
@@ -612,6 +613,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return { success: false, error: `Connection error: ${e?.message || "Network request failed"}. Server: ${apiUrl}` };
     }
   }
+
+  logoutRef.current = () => { void logout(); };
 
   async function logout() {
     // Both the server-side logout call and the audit log must complete (or

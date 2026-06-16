@@ -164,6 +164,11 @@ function getNotificationDestination(notif: Notification): string | null {
 
 const POLL_INTERVAL_MS = 60_000;
 
+const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+const IDLE_LOGOUT_FLAG = "labtrax_idle_logout_v1";
+
+const IDLE_EVENTS = ["mousemove", "mousedown", "keydown", "touchstart"] as const;
+
 export function AppLayout({ children }: Props) {
   const [location, setLocation] = useLocation();
   const { user, logout } = useAuth();
@@ -242,6 +247,27 @@ export function AppLayout({ children }: Props) {
     "Guest";
 
   const role = user?.role === "admin" ? "Admin" : user?.role === "user" ? "User" : "Member";
+
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const resetIdleTimer = useCallback(() => {
+    if (idleTimerRef.current !== null) clearTimeout(idleTimerRef.current);
+    idleTimerRef.current = setTimeout(() => {
+      try { sessionStorage.setItem(IDLE_LOGOUT_FLAG, "1"); } catch {}
+      void logout();
+    }, IDLE_TIMEOUT_MS);
+  }, [logout]);
+
+  useEffect(() => {
+    if (!user) return;
+    resetIdleTimer();
+    const handler = () => resetIdleTimer();
+    for (const evt of IDLE_EVENTS) window.addEventListener(evt, handler, { passive: true });
+    return () => {
+      for (const evt of IDLE_EVENTS) window.removeEventListener(evt, handler);
+      if (idleTimerRef.current !== null) clearTimeout(idleTimerRef.current);
+    };
+  }, [user, resetIdleTimer]);
 
   const fetchUnreadCount = useCallback(async () => {
     if (!user) return;

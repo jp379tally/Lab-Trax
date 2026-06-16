@@ -1,9 +1,11 @@
-import { useState, type FormEvent } from "react";
+import { useState, useEffect, type FormEvent } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { ApiError, TwoFactorRequiredError, getApiOrigin, getRememberMe, saveRememberMe } from "@/lib/api";
 import { describeAuthRestoreStatus } from "@/lib/auth-restore-status";
 import { Logo } from "@/components/Logo";
 import SignupWizard from "@/components/SignupWizard";
+
+const IDLE_LOGOUT_FLAG = "labtrax_idle_logout_v1";
 
 export default function LoginPage() {
   const {
@@ -19,6 +21,16 @@ export default function LoginPage() {
   const [rememberMe, setRememberMe] = useState(() => getRememberMe());
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [showIdleNotice, setShowIdleNotice] = useState(false);
+
+  useEffect(() => {
+    try {
+      if (sessionStorage.getItem(IDLE_LOGOUT_FLAG)) {
+        sessionStorage.removeItem(IDLE_LOGOUT_FLAG);
+        setShowIdleNotice(true);
+      }
+    } catch {}
+  }, []);
 
   // Two-factor auth challenge state
   const [pendingToken, setPendingToken] = useState<string | null>(null);
@@ -207,6 +219,23 @@ export default function LoginPage() {
                   Welcome back. Use your LabTrax account to continue.
                 </p>
               </div>
+              {showIdleNotice && (
+                <div
+                  role="alert"
+                  data-testid="idle-logout-notice"
+                  className="mb-4 text-sm text-blue-900 bg-blue-50 border border-blue-200 px-3 py-2 rounded-md flex items-start gap-2"
+                >
+                  <span className="flex-1">You were signed out due to inactivity.</span>
+                  <button
+                    type="button"
+                    onClick={() => setShowIdleNotice(false)}
+                    aria-label="Dismiss"
+                    className="text-blue-900/70 hover:text-blue-900"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
               {showRestoreToast && restoreNotice && (
                 <div
                   role="alert"
