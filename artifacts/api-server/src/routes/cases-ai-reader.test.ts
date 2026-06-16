@@ -27,6 +27,11 @@ import * as os from "node:os";
 
 const TEST_MEDIA_DIR = path.join(os.tmpdir(), "labtrax-test-media-ai");
 
+// Hoist the spy so it is available inside vi.mock's factory.
+const { mockWriteCaseMediaToObjectStorage } = vi.hoisted(() => ({
+  mockWriteCaseMediaToObjectStorage: vi.fn().mockResolvedValue(true),
+}));
+
 vi.mock("../lib/backup.js", () => ({
   restartScheduledBackupJob: vi.fn().mockResolvedValue(undefined),
 }));
@@ -36,6 +41,14 @@ vi.mock("../lib/case-media.js", () => ({
   startDailyOrphanedMediaCleanup: vi.fn(),
   caseMediaDir: path.join(require("os").tmpdir(), "labtrax-test-media-ai"),
   extractMediaFileName: () => null,
+}));
+// Spy on the object-storage mirror so tests can assert it is called without
+// requiring a live GCS sidecar.
+vi.mock("../lib/case-media-object-storage.js", () => ({
+  writeCaseMediaToObjectStorage: mockWriteCaseMediaToObjectStorage,
+  openCaseMediaObjectStream: vi.fn().mockResolvedValue(null),
+  caseMediaObjectStorageAvailable: vi.fn().mockReturnValue(true),
+  deleteCaseMediaFromObjectStorage: vi.fn().mockResolvedValue(false),
 }));
 
 const SHOULD_RUN = !!process.env["DATABASE_URL"];
@@ -290,6 +303,47 @@ maybe("Cases AI reader endpoints (db integration)", () => {
 
     expect(row.needsAiReview).toBe(true);
     expect(row.aiImportSource).toBe("itero");
+
+    await cleanCase(r.body.data.caseId);
+    try { fs.unlinkSync(rxFile); } catch { /* ignore */ }
+  });
+
+  it("POST /api/cases/import-from-itero-rx: mirrors Rx PDF to object storage after successful import", async () => {
+    // Regression guard: the single-file iTero poller route was missing the
+    // object-storage mirror that the ZIP import paths already had, causing
+    // attached Rx PDFs to 404 after any server restart.  This test verifies
+    // writeCaseMediaToObjectStorage is called for every successful import.
+    mockWriteCaseMediaToObjectStorage.mockClear();
+
+    const orderId = rid("order");
+    const rxFile = makeTempRxFile();
+
+    const r = await request(appMod.default)
+      .post("/api/cases/import-from-itero-rx")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .attach("file", rxFile, "iTero_Rx_999.pdf")
+      .field("iteroOrderId", orderId)
+      .field("labOrganizationId", labOrgId)
+      .field("providerOrganizationId", providerOrgId);
+
+    expect(r.status).toBe(201);
+
+    // The mirror runs fire-and-forget after the response is sent.
+    // Poll up to 2 s so CI on slow machines doesn't flake.
+    for (let i = 0; i < 20; i++) {
+      await new Promise((res) => setTimeout(res, 100));
+      if (mockWriteCaseMediaToObjectStorage.mock.calls.length > 0) break;
+    }
+
+    expect(
+      mockWriteCaseMediaToObjectStorage,
+      "writeCaseMediaToObjectStorage must be called once per successful iTero import",
+    ).toHaveBeenCalledOnce();
+
+    const [filename, _buf, contentType] =
+      mockWriteCaseMediaToObjectStorage.mock.calls[0]!;
+    expect(String(filename)).toMatch(/\.pdf$/i);
+    expect(String(contentType)).toMatch(/pdf/i);
 
     await cleanCase(r.body.data.caseId);
     try { fs.unlinkSync(rxFile); } catch { /* ignore */ }

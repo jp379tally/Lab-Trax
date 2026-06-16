@@ -187,6 +187,7 @@ Protected sub-behaviors:
 - **400 for bad input** — truncated payloads return `IMAGE_TOO_SMALL`; HEIC images return an explicit HEIC error; missing image body returns 400.
 - **Model chain resilience** — if the lead model fails, the endpoint falls through the chain; if every model fails, it returns 500. The current-gen model must never send `temperature` (gpt-5+ rejects it). Nullable fields must use `anyOf` in the JSON schema, not the array-union shorthand.
 - **iTero import creates case with AI review flag** — `POST /api/cases/import-from-itero-rx` creates a case with `needsAiReview: true` and `aiImportSource: 'itero'` even when AI is not configured (stub path). Non-members get 403; missing `labOrganizationId` gets 400.
+- **iTero Rx PDF mirrored to object storage** — every successful `import-from-itero-rx` call must fire `writeCaseMediaToObjectStorage` for the uploaded Rx PDF so the file survives server restarts and re-deployments. The ZIP import paths had this mirror; the single-file poller route was missing it (filed as a 404 regression on TestFlight). Guarded by `cases-ai-reader.test.ts` — "mirrors Rx PDF to object storage after successful import".
 - **iTero dedup is idempotent** — a duplicate `iteroOrderId` for the same lab returns the existing case, not a second row.
 - **AI review acknowledgement** — `PATCH /api/cases/:id/ai-review` clears `needsAiReview`; non-members get 403; already-reviewed cases are idempotent.
 

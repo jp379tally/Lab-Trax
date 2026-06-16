@@ -65,3 +65,4 @@
 - [otplib verifySync throws](otplib-verifysync-throws.md) — 2FA backup/malformed codes 500 the challenge route; verifySync throws on non-6-digit input — always wrap in isValidTotp().
 - [Blanket useQuery mock breaks multi-query screens](blanket-usequery-mock-multiquery-screen.md) — mockReturnValue feeds one shape to every useQuery; list-query siblings crash on .map; mock by queryKey instead.
 - [Desktop apiFetch unwraps {ok,data}](desktop-apifetch-unwrap.md) — read r.X not r.data.X; r.data.X is a silent undefined that can make a whole gated panel "exist but never render".
+- [iTero Rx object-storage mirror](itero-rx-object-storage-mirror.md) — single-file poller route was missing writeCaseMediaToObjectStorage; all multer-write paths must mirror to object storage or files 404 after restart.

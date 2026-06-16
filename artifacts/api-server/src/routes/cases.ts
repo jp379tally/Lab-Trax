@@ -6930,6 +6930,22 @@ router.post(
       },
     });
 
+    // Mirror the uploaded Rx file to object storage so it survives server
+    // restarts and re-deployments. Best-effort — never blocks the response.
+    if (req.file?.path && req.file?.filename) {
+      fs.promises.readFile(req.file.path)
+        .then((buf) =>
+          writeCaseMediaToObjectStorage(
+            req.file!.filename,
+            buf,
+            req.file!.mimetype || "application/pdf",
+          )
+        )
+        .catch((err: unknown) => {
+          req.log?.warn({ err }, "iTero Rx: failed to mirror file to object storage");
+        });
+    }
+
     // Write notifications to lab admin(s) about the new iTero-imported case.
     // This is best-effort — never blocks the response.
     try {
