@@ -2074,6 +2074,7 @@ router.get(
         balanceDue: invoices.balanceDue,
         total: invoices.total,
         status: invoices.status,
+        frozen: invoices.frozen,
       })
       .from(invoices)
       .where(
@@ -2082,7 +2083,7 @@ router.get(
           sql`${invoices.deletedAt} IS NULL`,
           lte(issued, asOfEnd),
         ),
-      )) as Array<{ balanceDue: string; total: string; status: string }>;
+      )) as Array<{ balanceDue: string; total: string; status: string; frozen: boolean }>;
     let accountsReceivable = 0;
     let customerCredits = 0;
     let cumulativeRevenue = 0;
@@ -2090,6 +2091,7 @@ router.get(
       if (r.status === "void") continue;
       cumulativeRevenue += Number(r.total || 0);
       if (r.status === "paid") continue;
+      if (r.frozen) continue;
       const due = Number(r.balanceDue || 0);
       if (due >= 0) accountsReceivable += due;
       else customerCredits += -due;

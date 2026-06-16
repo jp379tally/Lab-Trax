@@ -1644,6 +1644,7 @@ router.get(
       };
       const [minD, maxD] = bucketDays(overdueBucket);
       enriched = enriched.filter((r: any) => {
+        if (r.frozen) return false;
         if (Number(r.balanceDue ?? 0) <= 0) return false;
         const due = r.dueAt ? new Date(r.dueAt).getTime() : null;
         if (!due || Number.isNaN(due)) return false;
@@ -1696,7 +1697,10 @@ router.get(
     const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
     const open = rows.filter(
       (r: any) =>
-        r.status !== "void" && r.status !== "paid" && Number(r.balanceDue) > 0,
+        !r.frozen &&
+        r.status !== "void" &&
+        r.status !== "paid" &&
+        Number(r.balanceDue) > 0,
     );
     const buckets = { current: 0, d30: 0, d60: 0, d90: 0, d90plus: 0 };
     for (const r of open) {
