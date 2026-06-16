@@ -1,9 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   Image,
   Keyboard,
+  KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
@@ -93,6 +94,10 @@ function errorMessage(e: unknown): string {
   return "Something went wrong. Please try again.";
 }
 
+function normalizeDoctorForCompare(name: string): string {
+  return name.trim().replace(/^dr\.?\s+/i, "").toLowerCase();
+}
+
 // ─── Similarity hit type ──────────────────────────────────────────────────────
 
 interface SimilarityHit {
@@ -179,6 +184,14 @@ export default function AiReaderExtractedScreen() {
   const [duplicateTruncated, setDuplicateTruncated] = useState(false);
   const [duplicateTotalFound, setDuplicateTotalFound] = useState(0);
 
+  // ── Scroll ref (keyboard avoidance) ──
+  const scrollViewRef = useRef<ScrollView>(null);
+
+  // ── Unknown doctor banner + add-doctor confirmation modal ──
+  const [unknownDoctorDismissed, setUnknownDoctorDismissed] = useState(false);
+  const [addDoctorModalVisible, setAddDoctorModalVisible] = useState(false);
+  const [addDoctorNameInput, setAddDoctorNameInput] = useState("");
+
   // ── Confidence tooltip ──
   const [confidenceTooltipVisible, setConfidenceTooltipVisible] = useState(false);
 
@@ -246,6 +259,28 @@ export default function AiReaderExtractedScreen() {
     () => providers.find((p) => p.id === providerOrgId) ?? null,
     [providers, providerOrgId],
   );
+  // Fetch known doctor names for the selected practice (non-admin endpoint).
+  // Used to show an inline banner when the AI extracted an unrecognised doctor.
+  const knownDoctorNamesQuery = useQuery({
+    queryKey: ["known-doctor-names", selectedLabId, providerOrgId],
+    queryFn: async () => {
+      const url =
+        `/api/doctors/known-names?labOrganizationId=${encodeURIComponent(selectedLabId ?? "")}` +
+        `&providerOrganizationId=${encodeURIComponent(providerOrgId ?? "")}`;
+      const res = await resilientFetch(url);
+      if (!res.ok) throw new Error(`known-names ${res.status}`);
+      const body = (await res.json()) as { data?: { names?: string[] } };
+      return (body?.data?.names ?? []) as string[];
+    },
+    enabled: !!selectedLabId && !!providerOrgId,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Reset banner dismissal whenever the selected practice changes.
+  useEffect(() => {
+    setUnknownDoctorDismissed(false);
+  }, [providerOrgId]);
+
   const filteredProviders = useMemo(() => {
     const q = pickerFilter.trim().toLowerCase();
     if (!q) return providers;
@@ -614,6 +649,24 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
     : "low";
   const firstPageUri = session.pages[0]?.uri ?? null;
   const providerResolved = !!providerOrgId;
+
+  // Show a banner when the AI-extracted doctor isn't found in this practice's
+  // case history. Hidden when: no practice selected, no doctor name, still
+  // loading, query failed, or already dismissed.
+  const showUnknownDoctorBanner = useMemo(() => {
+    if (unknownDoctorDismissed) return false;
+    if (!providerOrgId) return false;
+    const trimmed = doctorName.trim();
+    if (!trimmed) return false;
+    if (!knownDoctorNamesQuery.isSuccess) return false;
+    const known = knownDoctorNamesQuery.data ?? [];
+    // When no known doctors exist for this practice (new or case-less practice),
+    // any extracted name is "not on file" — still worth flagging.
+    if (known.length === 0) return true;
+    const normalized = normalizeDoctorForCompare(trimmed);
+    return !known.some((n) => normalizeDoctorForCompare(n) === normalized);
+  }, [unknownDoctorDismissed, providerOrgId, doctorName, knownDoctorNamesQuery.isSuccess, knownDoctorNamesQuery.data]);
+
   const practiceLabel =
     selectedProvider?.displayName ||
     selectedProvider?.name ||
@@ -621,7 +674,10 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
     "Linked practice";
 
   return (
-    <View style={[styles.screen, { paddingTop: insets.top }]}>
+    <KeyboardAvoidingView
+      style={[styles.screen, { paddingTop: insets.top }]}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+    >
       {/* Header */}
       <View style={styles.header}>
         <Pressable onPress={goBack} hitSlop={8} style={styles.backBtn}>
@@ -635,9 +691,11 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
       </View>
 
       <ScrollView
+        ref={scrollViewRef}
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
+        automaticallyAdjustKeyboardInsets
       >
         {/* Scan preview + confidence badge */}
         {(firstPageUri || confidenceTier !== "none") && (
@@ -806,6 +864,28 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
             placeholderTextColor={colors.textTertiary}
             autoCorrect={false}
           />
+
+          {/* Unknown doctor banner */}
+          {showUnknownDoctorBanner && (
+            <View style={[styles.warnBanner, { marginTop: Spacing.sm }]}>
+              <Ionicons name="person-add-outline" size={16} color={colors.warningStrong} />
+              <Text style={styles.warnText}>
+                "{doctorName.trim()}" isn't on file for this practice.
+              </Text>
+              <Pressable
+                hitSlop={8}
+                onPress={() => {
+                  setAddDoctorNameInput(doctorName.trim());
+                  setAddDoctorModalVisible(true);
+                }}
+              >
+                <Text style={[styles.addNewText, { fontSize: 13 }]}>Add</Text>
+              </Pressable>
+              <Pressable onPress={() => setUnknownDoctorDismissed(true)} hitSlop={8}>
+                <Ionicons name="close" size={16} color={colors.warningStrong} />
+              </Pressable>
+            </View>
+          )}
         </Section>
 
         {/* Due date + priority */}
@@ -852,6 +932,7 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
             placeholder="e.g. 3, 5, 14"
             placeholderTextColor={colors.textTertiary}
             keyboardType="numbers-and-punctuation"
+            onFocus={() => setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 150)}
           />
         </Section>
 
@@ -874,6 +955,7 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
               onChangeText={setShade}
               placeholder="A2, B1…"
               placeholderTextColor={colors.textTertiary}
+              onFocus={() => setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 150)}
             />
           </View>
         </View>
@@ -956,6 +1038,52 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
               <Text style={styles.newCaseBtnText}>Got it</Text>
             </Pressable>
           </View>
+        </Pressable>
+      </Modal>
+
+      {/* Add doctor to practice confirmation modal */}
+      <Modal visible={addDoctorModalVisible} transparent animationType="fade">
+        <Pressable style={styles.modalOverlay} onPress={() => setAddDoctorModalVisible(false)}>
+          <Pressable style={[styles.modalSheet, { paddingBottom: insets.bottom + Spacing.lg }]}>
+            <View style={styles.modalHandle} />
+            <View style={{ flexDirection: "row", alignItems: "center", gap: Spacing.sm, marginBottom: Spacing.xs }}>
+              <Ionicons name="person-add-outline" size={20} color={colors.tint} />
+              <Text style={styles.modalTitle}>Add doctor to practice</Text>
+            </View>
+            <Text style={[styles.modalBody, { marginBottom: Spacing.sm }]}>
+              Adding to: {practiceLabel}
+            </Text>
+            <Text style={[styles.sectionLabel, { marginBottom: Spacing.xs }]}>Doctor name</Text>
+            <TextInput
+              style={[styles.input, { marginBottom: Spacing.lg }]}
+              value={addDoctorNameInput}
+              onChangeText={setAddDoctorNameInput}
+              placeholder="e.g. Dr. Jane Smith"
+              placeholderTextColor={colors.textTertiary}
+              autoCorrect={false}
+              autoCapitalize="words"
+            />
+            <View style={{ flexDirection: "row", gap: Spacing.sm }}>
+              <Pressable
+                style={[styles.newCaseBtn, { flex: 1, backgroundColor: colors.backgroundSolid }]}
+                onPress={() => setAddDoctorModalVisible(false)}
+              >
+                <Text style={[styles.newCaseBtnText, { color: colors.textSecondary }]}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.newCaseBtn, { flex: 1 }]}
+                onPress={() => {
+                  if (addDoctorNameInput.trim()) {
+                    setDoctorName(addDoctorNameInput.trim());
+                  }
+                  setAddDoctorModalVisible(false);
+                  setUnknownDoctorDismissed(true);
+                }}
+              >
+                <Text style={styles.newCaseBtnText}>Add doctor</Text>
+              </Pressable>
+            </View>
+          </Pressable>
         </Pressable>
       </Modal>
 
@@ -1186,7 +1314,7 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
           </View>
         </View>
       </Modal>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 

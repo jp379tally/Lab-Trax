@@ -36,7 +36,7 @@ import {
   pricingOverrides,
 } from "@workspace/db";
 import { HttpError, ok } from "../lib/http";
-import { ADMIN_ROLES, requireAnyRole } from "../lib/rbac";
+import { ADMIN_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
 import { notDeleted } from "../lib/soft-delete";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
@@ -735,6 +735,45 @@ router.post(
       sourceDoctorName: before.doctorName,
       sourceProviderOrganizationId: before.providerOrganizationId ?? null,
     });
+  })
+);
+
+// Return distinct doctor names seen in cases for a lab, optionally filtered
+// to a specific provider org. Used by mobile Review Extraction to detect
+// unknown doctors. Requires active lab membership (not admin-only).
+router.get(
+  "/known-names",
+  asyncHandler(async (req, res) => {
+    const labId = String(req.query.labOrganizationId ?? "");
+    if (!labId) throw new HttpError(400, "labOrganizationId is required.");
+    const userId = (req as any).auth.userId as string;
+    await requireMembership(userId, labId);
+
+    const providerOrgId = req.query.providerOrganizationId
+      ? String(req.query.providerOrganizationId).trim()
+      : null;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const conds: any[] = [
+      eq(cases.labOrganizationId, labId),
+      notDeleted(cases),
+      sql`${cases.doctorName} is not null and trim(${cases.doctorName}) <> ''`,
+    ];
+    if (providerOrgId) {
+      conds.push(eq(cases.providerOrganizationId, providerOrgId));
+    }
+
+    const rows = await db
+      .selectDistinct({ doctorName: cases.doctorName })
+      .from(cases)
+      .where(and(...conds))
+      .limit(200);
+
+    const names = rows
+      .map((r) => r.doctorName)
+      .filter((n): n is string => !!n && n.trim().length > 0);
+
+    return ok(res, { names });
   })
 );
 

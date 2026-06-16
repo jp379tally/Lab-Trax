@@ -3698,12 +3698,13 @@ export async function registerRoutes(): Promise<IRouter> {
 Important rules:
 - HANDWRITING: Many dental prescriptions are fully or partially handwritten. Examine every area of the image carefully, including margins, boxes, check marks, and stamps. Do not skip fields just because they are handwritten or hard to read — make your best effort to decipher handwritten text.
 - Read ALL pages if multiple images are provided
-- For tooth numbers, use Universal Numbering System (1-32). Accept handwritten tooth numbers, circled teeth on diagrams, and tooth charts.
+- TOOTH CHART: For tooth numbers, use Universal Numbering System (1-32). When a tooth chart or tooth diagram is present, look for circled, marked, checked, or highlighted tooth positions and map them to Universal numbers — give the chart higher weight than any adjacent freehand number if there is a conflict. Also accept handwritten tooth numbers written outside any chart.
 - If you see FDI notation, convert to Universal
 - Only set isRush to true if explicitly marked as rush/urgent/STAT — including handwritten "rush" notes or red stamps
 - For caseType, match to the closest category listed above. Accept handwritten abbreviations (e.g. "PFM", "Zirc", "E.max", "BU", "CB", "FPD", "RPD")
 - Extract the shade exactly as written on the prescription, including handwritten shade values
-- MATERIAL: Common handwritten abbreviations — "PFM" = PFM, "Zirc" or "Zr" = Zirconia, "GC" or "Gold" = Gold, "Emax" or "E.max" = E max
+- MATERIAL: Common handwritten abbreviations — "PFM" = PFM, "Zirc", "Zr", "Brux", "Bruxzir", "BZR", or "bruxism" = Zirconia (full-contour strong zirconia for bruxism patients), "GC" or "Gold" = Gold, "Emax" or "E.max" = E max
+- SHADE FALLBACK: If the shade field is blank or not clearly marked, scan the handwritten notes/comments area for common shade values (A1–D4, BL1–BL4, OM1–OM4, T, NW, etc.) and record the first recognisable shade found there.
 - NAME FORMAT: If a patient name or doctor name contains a comma (e.g. "Kidder, Daniel"), it is Last, First format. Swap to First Last and remove the comma.
 - CONFIDENCE: set "confidence" to a number from 0 to 1 reflecting your overall certainty that the extracted fields are correct (1 = fully legible and certain; below 0.5 = blurry, partial, or mostly illegible). Be honest — the app uses this to decide whether a live-camera read is good enough to keep.
 - Return ONLY the JSON object, no other text`;
