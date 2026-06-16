@@ -418,7 +418,7 @@ function SummaryTab({
                       : m.revenue.toFixed(0)}
                   </div>
                   <div
-                    className="w-full bg-primary/20 hover:bg-primary/30 rounded-t-md transition-colors"
+                    className="w-full bg-primary/70 hover:bg-primary/90 rounded-t-md transition-colors"
                     style={{
                       height: `${Math.max(2, (m.revenue / maxRevenue) * 100)}%`,
                     }}
