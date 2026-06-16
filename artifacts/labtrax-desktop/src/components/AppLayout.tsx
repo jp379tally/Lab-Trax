@@ -25,7 +25,6 @@ import {
   LogOut,
   MonitorDown,
   Receipt,
-  Search,
   Settings,
   Sparkles,
   Tag,
@@ -439,17 +438,7 @@ export function AppLayout({ children }: Props) {
       {/* Main */}
       <div className="flex-1 flex flex-col min-w-0">
         <header className="h-[60px] shrink-0 border-b border-border bg-card flex items-center gap-4 px-6">
-          <div className="flex-1 max-w-xl relative">
-            <Search
-              size={16}
-              className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
-            />
-            <input
-              type="search"
-              placeholder="Search cases, invoices, doctors…"
-              className="w-full h-9 pl-9 pr-3 rounded-md bg-secondary text-sm placeholder:text-muted-foreground/70 border border-transparent focus:bg-card focus:border-border focus:outline-none"
-            />
-          </div>
+          <div className="flex-1" />
           <div className="relative">
             <button
               type="button"
