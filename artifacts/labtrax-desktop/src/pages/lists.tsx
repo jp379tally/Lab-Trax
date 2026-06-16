@@ -68,15 +68,6 @@ interface Category {
   isArchived: boolean;
 }
 
-interface Location {
-  id: string;
-  labOrganizationId: string;
-  code: string;
-  name: string;
-  description: string | null;
-  sortOrder: number;
-}
-
 const TYPE_TABS: { key: VendorType; label: string }[] = [
   { key: "vendor", label: "Vendors" },
   { key: "employee", label: "Employees" },
@@ -111,9 +102,10 @@ type Tab = VendorType | "categories" | "locations";
 
 interface Location {
   id: string;
-  organizationId: string;
+  labOrganizationId: string;
   name: string;
   code: string;
+  description: string | null;
   isActive: boolean;
   sortOrder: number;
 }
@@ -481,6 +473,21 @@ function ListsContent({ organizationId }: { organizationId: string }) {
     },
   });
 
+  const toggleLocationActiveMut = useMutation({
+    mutationFn: ({ id, isActive }: { id: string; isActive: boolean }) =>
+      apiFetch(`/locations/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ isActive }),
+      }),
+    onSuccess: (_data, vars) => {
+      invalidateLocations();
+      toast.success(vars.isActive ? "Location activated" : "Location deactivated");
+    },
+    onError: () => {
+      toast.error("Failed to update location");
+    },
+  });
+
   async function handleLocationReorder(ordered: Location[]) {
     const original = [...allLocations].sort((a, b) => a.sortOrder - b.sortOrder);
     const changed = ordered.filter((loc, i) => {
@@ -767,6 +774,10 @@ function ListsContent({ organizationId }: { organizationId: string }) {
             onEdit={openEditLocation}
             onDelete={(loc) => setConfirmDeleteLocation(loc)}
             onReorder={handleLocationReorder}
+            onToggleActive={(loc) =>
+              toggleLocationActiveMut.mutate({ id: loc.id, isActive: !loc.isActive })
+            }
+            toggleActivePendingId={toggleLocationActiveMut.isPending ? toggleLocationActiveMut.variables?.id : undefined}
           />
         ) : isCategoriesTab ? (
           <CategoriesTable
@@ -1353,6 +1364,8 @@ function LocationsTable({
   onEdit,
   onDelete,
   onReorder,
+  onToggleActive,
+  toggleActivePendingId,
 }: {
   locations: Location[];
   isLoading: boolean;
@@ -1360,6 +1373,8 @@ function LocationsTable({
   onEdit: (loc: Location) => void;
   onDelete: (loc: Location) => void;
   onReorder: (ordered: Location[]) => void;
+  onToggleActive: (loc: Location) => void;
+  toggleActivePendingId?: string;
 }) {
   const isDraggable = !search.trim();
 
@@ -1462,19 +1477,28 @@ function LocationsTable({
                   <GripVertical size={14} />
                 </td>
               )}
-              <td className="px-4 py-2.5 font-medium">
-                {loc.name}
-                {!loc.isActive && (
-                  <span className="ml-2 text-[10px] uppercase tracking-wide text-muted-foreground font-normal">
-                    inactive
-                  </span>
-                )}
-              </td>
+              <td className="px-4 py-2.5 font-medium">{loc.name}</td>
               <td className="px-3 py-2.5 font-mono text-xs text-muted-foreground">{loc.code}</td>
               <td className="px-3 py-2.5 text-center">
-                <span
-                  className={`inline-block h-2 w-2 rounded-full ${loc.isActive ? "bg-emerald-500" : "bg-muted-foreground/30"}`}
-                />
+                {toggleActivePendingId === loc.id ? (
+                  <Loader2 size={13} className="animate-spin text-muted-foreground inline-block" />
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => onToggleActive(loc)}
+                    aria-label={loc.isActive ? "Deactivate location" : "Activate location"}
+                    title={loc.isActive ? "Click to deactivate" : "Click to activate"}
+                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                      loc.isActive ? "bg-primary" : "bg-muted"
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform ${
+                        loc.isActive ? "translate-x-4" : "translate-x-1"
+                      }`}
+                    />
+                  </button>
+                )}
               </td>
               <td className="px-2 py-2.5 text-right">
                 <div className="flex items-center justify-end gap-1">
