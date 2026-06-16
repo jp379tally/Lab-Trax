@@ -36,6 +36,7 @@ vi.mock("../lib/case-media.js", () => ({
   startDailyOrphanedMediaCleanup: vi.fn(),
   caseMediaDir: path.join(require("os").tmpdir(), "labtrax-test-media-status"),
   extractMediaFileName: () => null,
+  extractMediaFilenamesFromText: () => [],
 }));
 
 const SHOULD_RUN = !!process.env["DATABASE_URL"];

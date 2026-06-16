@@ -27,6 +27,7 @@ vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));
 vi.mock("../lib/statements.js", () => ({ startStatementScheduler: vi.fn() }));
 vi.mock("../lib/case-media.js", () => ({
   startDailyOrphanedMediaCleanup: vi.fn(),
+  extractMediaFilenamesFromText: () => [],
 }));
 
 const SHOULD_RUN = !!process.env["DATABASE_URL"];
