@@ -9,4 +9,14 @@
 /**
  * Invoice row with line items and totals
  */
-export type InvoiceDetailResultData = { [key: string]: unknown };
+export type InvoiceDetailResultData = {
+  /** True when the invoice is permanently frozen because the linked case was deleted. */
+  frozen?: boolean;
+  /** Timestamp of case deletion that triggered the freeze. */
+  caseDeletedAt?: Date | null;
+  /** User ID of the actor who deleted the linked case. */
+  caseDeletedByUserId?: string | null;
+  /** Permanent note stamped on freeze, e.g. 'Case Deleted by JW'. */
+  caseDeletedNote?: string | null;
+  [key: string]: unknown;
+};

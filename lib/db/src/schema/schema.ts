@@ -890,6 +890,13 @@ export const invoices = pgTable(
     voidReason: text("void_reason"),
     voidKind: text("void_kind"),
     sourceInvoiceId: varchar("source_invoice_id"),
+    frozen: boolean("frozen").default(false).notNull(),
+    caseDeletedAt: timestamp("case_deleted_at", { withTimezone: true }),
+    caseDeletedByUserId: varchar("case_deleted_by_user_id").references(
+      () => users.id,
+      { onDelete: "set null" },
+    ),
+    caseDeletedNote: text("case_deleted_note"),
     createdByUserId: varchar("created_by_user_id")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),

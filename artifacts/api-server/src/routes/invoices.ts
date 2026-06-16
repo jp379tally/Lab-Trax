@@ -3297,6 +3297,9 @@ router.post(
   asyncHandler(async (req, res) => {
     const callerId = (req as any).auth.userId as string;
     const invoice = await loadInvoiceWithAccess(callerId, req.params.invoiceId, true);
+    if ((invoice as any).frozen) {
+      throw new HttpError(409, "Invoice is frozen — the linked case was deleted.");
+    }
     if (invoice.status === "void") {
       throw new HttpError(409, "Invoice is already voided.");
     }
@@ -3360,6 +3363,9 @@ router.post(
   asyncHandler(async (req, res) => {
     const callerId = (req as any).auth.userId as string;
     const invoice = await loadInvoiceWithAccess(callerId, req.params.invoiceId, true);
+    if ((invoice as any).frozen) {
+      throw new HttpError(409, "Invoice is frozen — the linked case was deleted.");
+    }
     if (invoice.status === "void" || invoice.status === "paid") {
       throw new HttpError(
         409,

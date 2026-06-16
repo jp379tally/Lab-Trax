@@ -4574,15 +4574,85 @@ router.delete(
       ADMIN_ROLES
     );
 
+    const deletingUserId = (req as any).auth.userId as string;
+
     await softDeleteById({
       table: cases,
       id: found.id,
-      actorUserId: (req as any).auth.userId,
+      actorUserId: deletingUserId,
       req,
       organizationId: found.labOrganizationId,
       entityType: "case",
       beforeJson: found,
     });
+
+    // Cascade-freeze every linked invoice so the billing record is preserved
+    // permanently but can no longer be voided, deleted, or written off.
+    const linkedInvoices = await db
+      .select()
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.caseId, found.id),
+          isNull(invoices.deletedAt),
+        ),
+      );
+
+    if (linkedInvoices.length > 0) {
+      // Derive initials from the deleting user's profile. Fall back to the
+      // initials field stored on the user row, then to "?" when nothing is set.
+      const actorUser = await db.query.users.findFirst({
+        where: eq(users.id, deletingUserId),
+      });
+      const derivedInitials = (() => {
+        const first = String(actorUser?.firstName ?? "").trim();
+        const last = String(actorUser?.lastName ?? "").trim();
+        if (first && last) return `${first[0]}${last[0]}`.toUpperCase();
+        if (actorUser?.initials) return actorUser.initials.toUpperCase();
+        return "?";
+      })();
+      const freezeNote = `Case Deleted by ${derivedInitials}`;
+      const freezeAt = new Date();
+
+      await db
+        .update(invoices)
+        .set({
+          frozen: true,
+          balanceDue: "0.00",
+          caseDeletedAt: freezeAt,
+          caseDeletedByUserId: deletingUserId,
+          caseDeletedNote: freezeNote,
+          updatedByUserId: deletingUserId,
+        } as any)
+        .where(
+          and(
+            inArray(
+              invoices.id,
+              linkedInvoices.map((inv) => inv.id),
+            ),
+            isNull(invoices.deletedAt),
+          ),
+        );
+
+      // Write one audit log entry per invoice.
+      for (const inv of linkedInvoices) {
+        await writeAuditLog({
+          req,
+          userId: deletingUserId,
+          organizationId: found.labOrganizationId,
+          action: "invoice_frozen_case_deleted",
+          entityType: "invoice",
+          entityId: inv.id,
+          beforeJson: inv,
+          metadataJson: {
+            caseId: found.id,
+            caseNumber: found.caseNumber,
+            frozenNote: freezeNote,
+          },
+        });
+      }
+    }
+
     return ok(res, { deleted: true });
   })
 );

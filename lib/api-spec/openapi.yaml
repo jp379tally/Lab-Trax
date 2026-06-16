@@ -3453,6 +3453,23 @@ components:
           type: object
           description: Invoice row with line items and totals
           additionalProperties: true
+          properties:
+            frozen:
+              type: boolean
+              description: True when the invoice is permanently frozen because the linked case was deleted.
+            caseDeletedAt:
+              type: string
+              format: date-time
+              nullable: true
+              description: Timestamp of case deletion that triggered the freeze.
+            caseDeletedByUserId:
+              type: string
+              nullable: true
+              description: User ID of the actor who deleted the linked case.
+            caseDeletedNote:
+              type: string
+              nullable: true
+              description: "Permanent note stamped on freeze, e.g. 'Case Deleted by JW'."
     UpdateInvoiceInput:
       type: object
       properties:

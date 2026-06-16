@@ -18,6 +18,7 @@ import {
   Eye,
   FileText,
   Loader2,
+  Lock,
   Mail,
   MoreHorizontal,
   Plus,
@@ -1980,9 +1981,11 @@ export function InvoiceEditor({
                       setVoidDialog("writeoff");
                     }}
                     disabled={
+                      invoice.frozen ||
                       invoice.status === "paid" || invoice.status === "void"
                     }
-                    className="w-full text-left px-3 py-1.5 hover:bg-secondary inline-flex items-center gap-2 disabled:opacity-50"
+                    title={invoice.frozen ? "Invoice is frozen — the linked case was deleted" : undefined}
+                    className="w-full text-left px-3 py-1.5 hover:bg-secondary inline-flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <CheckCircle2 size={14} /> Write off balance
                   </button>
@@ -1992,8 +1995,9 @@ export function InvoiceEditor({
                       setMoreOpen(false);
                       setVoidDialog("void");
                     }}
-                    disabled={invoice.status === "void"}
-                    className="w-full text-left px-3 py-1.5 hover:bg-secondary inline-flex items-center gap-2 text-destructive disabled:opacity-50"
+                    disabled={invoice.frozen || invoice.status === "void"}
+                    title={invoice.frozen ? "Invoice is frozen — the linked case was deleted" : undefined}
+                    className="w-full text-left px-3 py-1.5 hover:bg-secondary inline-flex items-center gap-2 text-destructive disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <Ban size={14} /> Void invoice
                   </button>
@@ -2047,6 +2051,20 @@ export function InvoiceEditor({
               >
                 Mark reviewed
               </button>
+            </div>
+          )}
+
+          {invoice.frozen && (
+            <div className="flex items-center gap-2 px-3 py-2 rounded-md border border-amber-400/60 bg-amber-50 dark:bg-amber-950/30 text-sm">
+              <Lock size={14} className="text-amber-600 dark:text-amber-400 shrink-0" />
+              <span className="font-medium text-amber-800 dark:text-amber-300">
+                {invoice.caseDeletedNote ?? "Case Deleted"}
+              </span>
+              {invoice.caseDeletedAt && (
+                <span className="text-muted-foreground">
+                  · {new Date(invoice.caseDeletedAt).toLocaleDateString()}
+                </span>
+              )}
             </div>
           )}
 

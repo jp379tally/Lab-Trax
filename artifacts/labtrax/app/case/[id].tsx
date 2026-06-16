@@ -2664,6 +2664,9 @@ function InvoiceSection({
     dueAt?: string | null;
     items?: InvoiceLineItem[];
     lineItems?: InvoiceLineItem[];
+    frozen?: boolean;
+    caseDeletedAt?: string | null;
+    caseDeletedNote?: string | null;
   } | null;
   loading: boolean;
   canEdit: boolean;
@@ -2853,7 +2856,29 @@ function InvoiceSection({
         <FieldRow label="Due" value={formatDate(invoice.dueAt)} styles={styles} />
         <FieldRow label="Total" value={money(invoice.total)} styles={styles} />
         <FieldRow label="Balance" value={money(invoice.balanceDue)} styles={styles} />
-        {canEdit && invoiceId ? (
+        {invoice.frozen ? (
+          <View style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 6,
+            marginTop: 8,
+            paddingHorizontal: 10,
+            paddingVertical: 8,
+            borderRadius: 8,
+            borderWidth: 1,
+            borderColor: "#f59e0b",
+            backgroundColor: "#fffbeb",
+          }}>
+            <Ionicons name="lock-closed-outline" size={14} color="#92400e" />
+            <Text style={{ fontSize: 13, color: "#92400e", fontWeight: "600", flexShrink: 1 }}>
+              {invoice.caseDeletedNote ?? "Case Deleted"}
+              {invoice.caseDeletedAt
+                ? `  ·  ${new Date(invoice.caseDeletedAt).toLocaleDateString()}`
+                : ""}
+            </Text>
+          </View>
+        ) : null}
+        {canEdit && !invoice.frozen && invoiceId ? (
           <View style={styles.invoiceActions}>
             <Pressable
               style={[styles.btnSecondary, styles.invoiceActionBtn]}

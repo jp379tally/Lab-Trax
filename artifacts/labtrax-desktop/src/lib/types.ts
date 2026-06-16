@@ -286,6 +286,10 @@ export interface Invoice {
   sourceInvoiceId?: string | null;
   caseCompletedAt?: string | null;
   layoutPresetId?: string | null;
+  frozen?: boolean;
+  caseDeletedAt?: string | null;
+  caseDeletedByUserId?: string | null;
+  caseDeletedNote?: string | null;
 }
 
 export interface InvoiceAttachment {
