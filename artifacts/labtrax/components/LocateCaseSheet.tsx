@@ -21,8 +21,9 @@ import {
 import { useTheme } from "@/lib/theme-context";
 import { Radius, Spacing, Typography } from "@/constants/tokens";
 import { CASE_STATIONS } from "@/lib/case-stations";
-import { useMe, editableLabMemberships } from "@/lib/auth-me";
+import { useMe, editableLabMemberships, canAdminAnyLab } from "@/lib/auth-me";
 import { getJson } from "@/lib/read-api";
+import { router } from "expo-router";
 
 type Props = {
   locatingCase: CanonicalCase | null;
@@ -55,6 +56,7 @@ export function LocateCaseSheet({ locatingCase, onDismiss, onLocated }: Props) {
   const casesQuery = useCases();
   const meQuery = useMe();
   const orgId = editableLabMemberships(meQuery.data)[0]?.organizationId ?? null;
+  const isAdmin = canAdminAnyLab(meQuery.data);
 
   useEffect(() => {
     setLocateTarget(null);
@@ -136,16 +138,31 @@ export function LocateCaseSheet({ locatingCase, onDismiss, onLocated }: Props) {
           <View style={[styles.handle, { backgroundColor: colors.border }]} />
 
           {/* Header */}
-          <View style={styles.header}>
-            <Text style={[styles.title, { color: colors.text }]}>Locate Case</Text>
-            {locatingCase ? (
-              <Text
-                style={[styles.subtitle, { color: colors.textSecondary }]}
-                numberOfLines={1}
+          <View style={styles.headerRow}>
+            <View style={styles.headerText}>
+              <Text style={[styles.title, { color: colors.text }]}>Locate Case</Text>
+              {locatingCase ? (
+                <Text
+                  style={[styles.subtitle, { color: colors.textSecondary }]}
+                  numberOfLines={1}
+                >
+                  {patientDisplayName(locatingCase)}
+                  {locatingCase.caseNumber ? `  ·  #${locatingCase.caseNumber}` : ""}
+                </Text>
+              ) : null}
+            </View>
+            {isAdmin ? (
+              <Pressable
+                style={[styles.editOrderBtn, { backgroundColor: colors.surfaceAlt }]}
+                onPress={() => {
+                  dismiss();
+                  router.push("/manage/locations" as never);
+                }}
+                hitSlop={8}
+                testID="locate-sheet-edit-order"
               >
-                {patientDisplayName(locatingCase)}
-                {locatingCase.caseNumber ? `  ·  #${locatingCase.caseNumber}` : ""}
-              </Text>
+                <Ionicons name="reorder-three-outline" size={20} color={colors.tint} />
+              </Pressable>
             ) : null}
           </View>
 
@@ -269,8 +286,21 @@ const styles = StyleSheet.create({
     alignSelf: "center",
     marginBottom: Spacing.xs,
   },
-  header: {
+  headerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+  },
+  headerText: {
+    flex: 1,
     gap: 2,
+  },
+  editOrderBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: Radius.sm,
+    alignItems: "center",
+    justifyContent: "center",
   },
   title: {
     ...Typography.h2,
