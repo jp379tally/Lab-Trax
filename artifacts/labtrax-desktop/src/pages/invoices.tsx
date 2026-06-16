@@ -1816,9 +1816,11 @@ export function InvoiceEditor({
         {/* Drag handle on the left edge */}
         <div
           onMouseDown={onResizeMouseDown}
-          className="absolute left-0 top-0 h-full w-1.5 cursor-col-resize z-20 hover:bg-primary/30 active:bg-primary/50 transition-colors"
-          title="Drag to resize"
-        />
+          className="group absolute left-0 top-0 h-full w-3 cursor-col-resize z-20"
+          title="Drag to resize panel width"
+        >
+          <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-0.5 bg-transparent group-hover:bg-primary/50 group-active:bg-primary transition-colors duration-100" />
+        </div>
         <header className="sticky top-0 z-10 bg-card border-b border-border px-6 py-4 flex items-start gap-3">
           <div className="shrink-0">
             <div className="text-xs text-muted-foreground">Invoice</div>
