@@ -583,9 +583,12 @@ export default function InvoicesPage() {
                     <span className="inline-flex items-center flex-wrap gap-1.5">
                       <StatusBadge status={i.status} />
                       {i.frozen && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium rounded-full uppercase tracking-wide bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-400 border border-amber-300/60 dark:border-amber-700/40">
+                        <span
+                          title="Invoice is frozen — the linked case was deleted"
+                          className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium rounded-full uppercase tracking-wide bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-400 border border-amber-300/60 dark:border-amber-700/40"
+                        >
                           <Lock size={9} />
-                          Case Deleted
+                          Frozen
                         </span>
                       )}
                     </span>

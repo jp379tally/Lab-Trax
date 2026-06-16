@@ -62,8 +62,12 @@ export default function InvoicesScreen() {
             <View style={styles.badges}>
               <StatusBadge label={titleCase(i.status ?? "—")} variant={invoiceVariant(i.status)} size="sm" />
               {i.frozen && (
-                <View style={[styles.frozenBadge, { backgroundColor: colors.warningLight }]}>
-                  <Text style={[styles.frozenText, { color: colors.warning }]}>CASE DELETED</Text>
+                <View
+                  style={[styles.frozenBadge, { backgroundColor: colors.warningLight }]}
+                  accessibilityLabel="Frozen"
+                  accessibilityHint="Invoice is frozen — the linked case was deleted"
+                >
+                  <Text style={[styles.frozenText, { color: colors.warning }]}>FROZEN</Text>
                 </View>
               )}
             </View>
