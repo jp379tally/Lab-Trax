@@ -48,6 +48,25 @@ const LAB_USER_WITH_ACTIVE_LAB = {
   isError: false,
 } as const;
 
+// The screen renders several `useQuery` consumers (meQuery, clusterQuery,
+// invitesQuery). A blanket `mockReturnValue` would feed the me-response shape
+// to every one of them — including `PendingInvitesCard`, whose `invitesQuery`
+// expects an array (`invites.map`). Mock per query key so each consumer gets a
+// shape it can handle; the `meValue` under test drives the me-query only.
+function applyUseQueryMock(meValue: unknown) {
+  vi.mocked(useQuery).mockImplementation((options: any) => {
+    const key = options?.queryKey ?? [];
+    const head = Array.isArray(key) ? key[0] : key;
+    if (head === "pending-invites") {
+      return { data: [], isLoading: false, isError: false } as any;
+    }
+    if (head === "org-clusters") {
+      return { data: undefined, isLoading: false, isError: false } as any;
+    }
+    return meValue as any;
+  });
+}
+
 afterEach(() => {
   cleanup();
   resetMockAppState();
@@ -58,7 +77,7 @@ afterEach(() => {
 
 describe("OrganizationsScreen — Create lab button visibility", () => {
   it("shows the Create lab button when userType is lab and no active lab membership", () => {
-    vi.mocked(useQuery).mockReturnValue(LAB_USER_NO_MEMBERSHIP as any);
+    applyUseQueryMock(LAB_USER_NO_MEMBERSHIP);
     const { getByTestId } = render(<OrganizationsScreen />, {
       wrapper: makeWrapper(),
     });
@@ -66,7 +85,7 @@ describe("OrganizationsScreen — Create lab button visibility", () => {
   });
 
   it("hides the Create lab button when userType is provider (not lab)", () => {
-    vi.mocked(useQuery).mockReturnValue(PROVIDER_USER_NO_MEMBERSHIP as any);
+    applyUseQueryMock(PROVIDER_USER_NO_MEMBERSHIP);
     const { queryByTestId } = render(<OrganizationsScreen />, {
       wrapper: makeWrapper(),
     });
@@ -74,7 +93,7 @@ describe("OrganizationsScreen — Create lab button visibility", () => {
   });
 
   it("hides the Create lab button when the user already has an active lab membership", () => {
-    vi.mocked(useQuery).mockReturnValue(LAB_USER_WITH_ACTIVE_LAB as any);
+    applyUseQueryMock(LAB_USER_WITH_ACTIVE_LAB);
     const { queryByTestId } = render(<OrganizationsScreen />, {
       wrapper: makeWrapper(),
     });
@@ -84,7 +103,7 @@ describe("OrganizationsScreen — Create lab button visibility", () => {
 
 describe("OrganizationsScreen — CreateLabSheet required-field guard", () => {
   beforeEach(() => {
-    vi.mocked(useQuery).mockReturnValue(LAB_USER_NO_MEMBERSHIP as any);
+    applyUseQueryMock(LAB_USER_NO_MEMBERSHIP);
   });
 
   it("shows an inline error and does not POST when all required fields are empty", async () => {
@@ -127,7 +146,7 @@ describe("OrganizationsScreen — CreateLabSheet required-field guard", () => {
 
 describe("OrganizationsScreen — CreateLabSheet server error surfacing", () => {
   beforeEach(() => {
-    vi.mocked(useQuery).mockReturnValue(LAB_USER_NO_MEMBERSHIP as any);
+    applyUseQueryMock(LAB_USER_NO_MEMBERSHIP);
   });
 
   it("surfaces a LAB_NAME_TAKEN error inline after a 409 from /api/organizations", async () => {

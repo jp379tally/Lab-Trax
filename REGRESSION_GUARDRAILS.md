@@ -298,6 +298,140 @@ Protected sub-behaviors:
 
 ---
 
+# Account Epic Protected Workflows (Platform Parity)
+
+These ten workflows protect the cross-platform account, authentication, and tenancy surfaces shared by web, desktop, and mobile clients (Account Epic Phases 1–6). Desktop/web is the source of truth; mobile must not diverge. All gates are **API integration** or **contract** tests on `@workspace/api-server`, since the server is the single enforcement point for every client.
+
+## Protected Workflow: User Signup & Username Rules
+
+Registration is the entry point for every tenant. The rules below must hold identically regardless of which client submits the request.
+
+Protected sub-behaviors:
+
+- **Valid registration succeeds** — a well-formed payload returns 200 with an access token and a user record.
+- **Username constraints enforced** — 3–12 characters, allowed character set only, case-insensitive uniqueness (duplicate → 409).
+- **Duplicate email rejected** — a second registration with an existing email returns 409.
+- **Lab-org registration requires lab fields** — registering while creating a lab org without the required lab fields returns 400 `LAB_FIELDS_REQUIRED`.
+- **No email enumeration on forgot-password** — `forgot-password` returns 200 even for an unknown email.
+
+---
+
+## Protected Workflow: Login & Session Issuance
+
+Login must issue properly-scoped sessions and accept the documented identifiers.
+
+Protected sub-behaviors:
+
+- **Valid credentials issue access + refresh tokens** (200); wrong password and unknown username both return 401.
+- **`identifier` accepts username, email, or platform account number** (case-insensitive) and authenticates.
+- **Refresh rotates tokens** — a valid refresh token returns a new access token; the old refresh token is rejected after rotation; an invalid refresh token returns 401.
+- **Logout revokes the server-side session** — a subsequent refresh with the revoked session returns 401.
+
+---
+
+## Protected Workflow: Two-Factor Authentication (TOTP + Backup Codes)
+
+The 2FA challenge is a high-risk auth surface shared by all clients. A wrong or malformed code must never crash the server, and backup codes must be single-use.
+
+Protected sub-behaviors:
+
+- **Setup/confirm lifecycle** — `/2fa/setup` requires auth and returns a TOTP secret; `/2fa/confirm` rejects a wrong code (422) and enables 2FA on a valid TOTP; `/2fa/status` reflects the enabled state.
+- **Login gates on 2FA** — when 2FA is enabled, login returns `requiresTwoFactor` + a `pendingToken` and issues **no** session.
+- **Challenge correctness** — an invalid `pendingToken` returns 401; a wrong code returns 422; a valid TOTP issues bearer tokens.
+- **Backup codes are single-use** — a challenge with a valid backup code succeeds once; a 10-character backup code (or any non-6-digit input) must **not** throw `TokenLengthError` / 500 — it falls through to the backup-code branch or returns a clean 422 (`isValidTotp` wrapper in `two-factor.ts`).
+- **Disable** — `DELETE /2fa` on a valid TOTP disables 2FA and login no longer challenges.
+
+---
+
+## Protected Workflow: Email & Phone Verification Codes
+
+Verification gates PHI access and stamps the verified-at columns relied on across clients.
+
+Protected sub-behaviors:
+
+- **Send endpoints validate a target** — `/send-email-code` and `/send-phone-code` return 400 without a target, 200 with one.
+- **Verify is single-use and channel-correct** — `/verify-email-code` and `/verify-phone-code` reject a wrong code (`verified: false`), accept the correct code once (`verified: true`), and a consumed code cannot be replayed.
+- **Verification stamps state + audit** — a successful email/phone verification sets `users.emailVerifiedAt` / `users.phoneVerifiedAt` and writes an `email_verified` / `phone_verified` audit entry.
+
+---
+
+## Protected Workflow: Cross-Lab Platform Account Numbers
+
+Every provider/org gets a platform-wide canonical account number, and unverified canonical accounts are gated from PHI.
+
+Protected sub-behaviors:
+
+- **Canonical number allocation** — a lab user is assigned a canonical account number with the phone segment; a provider is assigned a `P`-type number (no phone segment when absent).
+- **Unverified-PHI gate** — a canonical but unverified account is blocked from a PHI route (403) and allowed only after verification.
+- **Legacy grandfathering** — a user with a non-canonical (legacy) account number bypasses the verification gate.
+
+---
+
+## Protected Workflow: Lab (Organization) Creation
+
+Lab creation establishes the tenant boundary; only lab accounts may create labs, and the creator becomes the owner.
+
+Protected sub-behaviors:
+
+- **Creation succeeds and is owned** — a lab account creates a lab (201) and becomes an **active owner**; an `organization_created` audit entry is recorded and `licenseNumber` persists.
+- **Unauthenticated creation rejected** (401).
+- **Required fields enforced** — missing lab fields → 400 `LAB_FIELDS_REQUIRED`.
+- **Duplicate lab name rejected** (case-insensitive) → 409 `LAB_NAME_TAKEN`.
+- **Provider accounts cannot create labs** → 403 `LAB_USER_REQUIRED`.
+- **Org type preserved** — a provider org type is reflected verbatim in the response.
+
+---
+
+## Protected Workflow: Organization Invitations
+
+Invitations cross the tenant boundary and must be scoped, single-purpose, and reversible by the right parties.
+
+Protected sub-behaviors:
+
+- **Create / list / cancel** — `POST /:id/invites` creates a pending invite; the list endpoint shows it; cancel marks it revoked.
+- **Accept creates membership** — `POST /invites/:token/accept` creates a membership for the email-matched user.
+- **Decline** — the invitee can decline a pending invite.
+
+---
+
+## Protected Workflow: Role Assignment & Privilege Bounds
+
+Role changes are an elevation-of-privilege surface; only admins may change roles, and the role enum bounds what can be assigned.
+
+Protected sub-behaviors:
+
+- **Admin can change a member's role** via `PATCH /memberships/:id`.
+- **Non-admin (user role) cannot change any role** → 403.
+- **Membership removal is admin-gated** — an admin can remove another member; a non-admin cannot (403).
+- **Role assignment is bounded by the role enum** — out-of-enum roles are rejected at the contract layer (see API contract workflow).
+
+---
+
+## Protected Workflow: Provider Portal Signup & Case Isolation
+
+The provider portal is a cross-tenant read surface; providers must see only their own assigned cases, with no IDOR escape.
+
+Protected sub-behaviors:
+
+- **Provider signup** issues a `P-` account number and a provider org.
+- **Per-provider isolation** — each provider sees only their own assigned cases; a lab user gets an empty provider list; unauthenticated `GET /api/cases/provider` → 401; bare `/api/cases` excludes other providers' cases.
+- **No IDOR via `?organizationId`** — a provider cannot read another provider org or the lab org by id; they can read only their own org and their own case detail; reading another provider's case detail is denied.
+
+---
+
+## Protected Workflow: Account-Epic API Contract (Zod Schemas)
+
+The shared Zod schemas are the wire contract every client codegens against; drift here silently breaks parity. The schemas must accept valid payloads and reject invalid ones for registration, login, refresh, current-user/session responses, verification, organization/membership, and audit-log shapes.
+
+Protected sub-behaviors:
+
+- **Auth contract** — minimal and full (org-creating) registration accepted; missing password and invalid `userType` rejected; login by username/identifier accepted; empty refresh body allowed (cookie clients); current-user and session-list responses parse.
+- **Verification contract** — email/phone verify require their target + code; a verification result parses.
+- **Organization & membership contract** — create-org requires type + name and rejects an invalid type; invitations require email + `roleToAssign` and reject out-of-enum roles; partial membership updates accepted, out-of-enum membership role rejected.
+- **Audit-log contract** — `organizationId` query accepted and limit bounded; audit-log list response parses.
+
+---
+
 ## Zero-Regression Process
 
 Every code change that touches a protected workflow must follow this process, in order:
@@ -504,6 +638,25 @@ Run command (Phase 2 tests only):
 ```bash
 pnpm --filter @workspace/labtrax run test -- invoice-editor.smoke terminology-parity role-parity open-attachment case-pdf pdf-viewer.smoke authed-media-cache
 pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-canonical-mobile
+```
+
+### Account Epic — Platform Parity (server)
+
+These ten workflows are guarded entirely by `@workspace/api-server` integration and contract tests, since the API server is the single enforcement point for every client.
+
+| Layer | File | What it guards |
+|-------|------|----------------|
+| API integration | `artifacts/api-server/src/routes/auth.test.ts` | **Signup & Username Rules** + **Login & Session Issuance** — valid/duplicate registration, `LAB_FIELDS_REQUIRED`, no forgot-password enumeration; login by username/email/account-number identifier, wrong-password 401, refresh rotation + old-token rejection, logout session revocation |
+| API integration | `artifacts/api-server/src/routes/two-factor.test.ts` | **Two-Factor Authentication** — setup/confirm/status lifecycle, login `requiresTwoFactor` + `pendingToken` (no session), challenge 401/422/200 paths, valid-TOTP bearer issuance, single-use backup code (no `TokenLengthError`/500 on a 10-char code), disable |
+| API integration | `artifacts/api-server/src/routes/account-epic-verification.test.ts` | **Email & Phone Verification Codes** — send-code target validation (400/200), verify wrong/correct/replayed code, single-use consumption, `emailVerifiedAt`/`phoneVerifiedAt` stamps + `email_verified`/`phone_verified` audit |
+| API integration | `artifacts/api-server/src/routes/account-epic-phase2.test.ts` | **Cross-Lab Platform Account Numbers** — canonical number allocation (lab with phone segment, provider `P`-type), unverified-PHI 403 then allow-after-verify, legacy account-number grandfathering; also reinforces username rules |
+| API integration | `artifacts/api-server/src/routes/organizations.test.ts` | **Lab Creation** + **Organization Invitations** + **Role Assignment & Privilege Bounds** — owner-on-create + `organization_created` audit + `licenseNumber` persist, `LAB_FIELDS_REQUIRED`/`LAB_NAME_TAKEN`/`LAB_USER_REQUIRED`, invite create/list/cancel/accept/decline, admin role PATCH, non-admin 403, admin-gated membership removal |
+| API integration | `artifacts/api-server/src/routes/cases-provider-portal.test.ts` | **Provider Portal Signup & Case Isolation** — `P-` provider signup + org, per-provider case isolation, empty provider list for lab users, 401 unauthenticated, no IDOR via `?organizationId`, denied cross-provider case detail |
+| Contract (Zod) | `artifacts/api-server/src/routes/account-epic-contract.test.ts` | **Account-Epic API Contract** — auth/verification/organization/membership/audit-log Zod schemas accept valid payloads and reject invalid `userType`/org type/role-enum/missing-field shapes the clients codegen against |
+
+Run command (Account Epic parity tests only):
+```bash
+pnpm --filter @workspace/api-server run test -- auth two-factor account-epic-verification account-epic-phase2 organizations cases-provider-portal account-epic-contract
 ```
 
 ### Run the full protected suite at once

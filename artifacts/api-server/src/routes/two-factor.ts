@@ -38,6 +38,22 @@ function generateBackupCode(): string {
   return crypto.randomBytes(5).toString("hex").toUpperCase();
 }
 
+/**
+ * otplib's `verifySync` throws (e.g. `TokenLengthError`) when the supplied
+ * token is not a well-formed 6-digit TOTP. User-supplied codes routinely are
+ * not — a backup code is 10 hex chars, and clients may send arbitrary input —
+ * so a raw call turns a wrong code into a 500. This wrapper treats any
+ * malformed/invalid token as simply "not valid" so callers can fall through to
+ * backup-code checks or return a clean 422.
+ */
+function isValidTotp(token: string, secret: string): boolean {
+  try {
+    return verifySync({ token, secret }).valid;
+  } catch {
+    return false;
+  }
+}
+
 router.post(
   "/setup",
   requireAuth,
@@ -84,7 +100,7 @@ router.post(
     }
 
     const secret = decryptTotpSecret(user.twoFactorSecret);
-    const isValid = verifySync({ token: code, secret }).valid;
+    const isValid = isValidTotp(code, secret);
     if (!isValid) {
       throw new HttpError(422, "Invalid verification code. Please check your authenticator app and try again.");
     }
@@ -144,7 +160,7 @@ router.delete(
 
     const trimmedCode = code.replace(/\s/g, "");
     const secret = decryptTotpSecret(user.twoFactorSecret);
-    let verified = verifySync({ token: trimmedCode, secret }).valid;
+    let verified = isValidTotp(trimmedCode, secret);
 
     if (!verified && user.twoFactorBackupCodes) {
       const codes = user.twoFactorBackupCodes as string[];
@@ -210,7 +226,7 @@ router.post(
 
     const trimmedCode = code.replace(/\s/g, "");
     const secret = decryptTotpSecret(user.twoFactorSecret);
-    const isValid = verifySync({ token: trimmedCode, secret }).valid;
+    const isValid = isValidTotp(trimmedCode, secret);
     if (!isValid) {
       throw new HttpError(422, "Invalid verification code. Please check your authenticator app and try again.");
     }
@@ -345,7 +361,7 @@ router.post(
     let verified = false;
 
     const secret = decryptTotpSecret(user.twoFactorSecret);
-    if (verifySync({ token: trimmedCode, secret }).valid) {
+    if (isValidTotp(trimmedCode, secret)) {
       verified = true;
     }
 
