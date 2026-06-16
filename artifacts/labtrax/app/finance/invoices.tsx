@@ -1,14 +1,21 @@
-import React, { useMemo } from "react";
-import { View, Text, StyleSheet } from "react-native";
+import React, { useMemo, useState } from "react";
+import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
 import { router } from "expo-router";
 import { useInvoices, type CanonicalInvoice } from "@workspace/api-client-react";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
-import { Spacing, Typography } from "@/constants/tokens";
+import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
 import { StatusBadge, type BadgeVariant } from "@/components/ui/StatusBadge";
-import { ListScreen } from "@/components/ui/ListScreen";
+import { ListScreen, type ListScreenQuery } from "@/components/ui/ListScreen";
 import { useMe, primaryLabOrgId, primaryProviderOrgId } from "@/lib/auth-me";
 import { titleCase, toNumber, formatMoney, formatDate } from "@/lib/format";
+
+type StatusFilter = "all" | "frozen";
+
+const STATUS_FILTERS: { key: StatusFilter; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "frozen", label: "Frozen" },
+];
 
 function invoiceVariant(status: string | null | undefined): BadgeVariant {
   const s = (status ?? "").toLowerCase();
@@ -22,6 +29,7 @@ function invoiceVariant(status: string | null | undefined): BadgeVariant {
 export default function InvoicesScreen() {
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const me = useMe().data;
   const labOrgId = primaryLabOrgId(me);
   const providerOrgId = primaryProviderOrgId(me);
@@ -31,18 +39,55 @@ export default function InvoicesScreen() {
     ? { practiceId: providerOrgId }
     : undefined;
   const query = useInvoices(params);
-  const count = query.data?.length ?? 0;
+
+  const filteredQuery = useMemo((): ListScreenQuery<CanonicalInvoice> => {
+    if (statusFilter === "frozen") {
+      return { ...query, data: query.data?.filter((i) => i.frozen) };
+    }
+    return query;
+  }, [query, statusFilter]);
+
+  const count = filteredQuery.data?.length ?? 0;
+
+  const filterHeader = (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={styles.filterRow}
+    >
+      {STATUS_FILTERS.map((f) => {
+        const active = f.key === statusFilter;
+        return (
+          <Pressable
+            key={f.key}
+            onPress={() => setStatusFilter(f.key)}
+            style={[styles.filterChip, active && styles.filterChipActive]}
+            testID={`filter-${f.key}`}
+          >
+            <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>
+              {f.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </ScrollView>
+  );
 
   return (
     <ListScreen<CanonicalInvoice>
       title="Invoices"
       subtitle={query.isLoading ? "Loading…" : `${count} invoice${count === 1 ? "" : "s"}`}
-      query={query}
+      query={filteredQuery}
       keyExtractor={(i) => i.id}
       emptyIcon="document-text-outline"
       emptyTitle="No invoices"
-      emptyBody="Invoices will appear here once they're created."
+      emptyBody={
+        statusFilter === "frozen"
+          ? "No frozen invoices found."
+          : "Invoices will appear here once they're created."
+      }
       errorTitle="Couldn't load invoices"
+      ListHeader={filterHeader}
       renderItem={(i) => (
         <Card
           style={styles.row}
@@ -61,7 +106,7 @@ export default function InvoicesScreen() {
             <Text style={styles.amount}>{formatMoney(i.balanceDue ?? i.total)}</Text>
             <View style={styles.badges}>
               <StatusBadge label={titleCase(i.status ?? "—")} variant={invoiceVariant(i.status)} size="sm" />
-              {i.frozen && (
+              {i.frozen ? (
                 <View
                   style={[styles.frozenBadge, { backgroundColor: colors.warningLight }]}
                   accessibilityLabel="Frozen"
@@ -69,7 +114,7 @@ export default function InvoicesScreen() {
                 >
                   <Text style={[styles.frozenText, { color: colors.warning }]}>FROZEN</Text>
                 </View>
-              )}
+              ) : null}
             </View>
           </View>
         </Card>
@@ -80,6 +125,25 @@ export default function InvoicesScreen() {
 
 function makeStyles(c: ThemeColors) {
   return StyleSheet.create({
+    filterRow: {
+      paddingHorizontal: Spacing.lg,
+      paddingBottom: Spacing.md,
+      gap: Spacing.sm,
+    },
+    filterChip: {
+      paddingHorizontal: Spacing.lg,
+      paddingVertical: Spacing.xs + 2,
+      borderRadius: Radius.full,
+      backgroundColor: c.surface,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    filterChipActive: {
+      backgroundColor: c.tintLight,
+      borderColor: c.tint,
+    },
+    filterChipText: { ...Typography.captionSemibold, color: c.textSecondary },
+    filterChipTextActive: { color: c.tint },
     row: { flexDirection: "row", alignItems: "center", gap: Spacing.md },
     main: { flex: 1, gap: 2 },
     name: { ...Typography.bodySemibold, color: c.text },
