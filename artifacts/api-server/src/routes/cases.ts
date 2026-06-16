@@ -4361,6 +4361,7 @@ const updateCaseSchema = z.object({
     .union([z.string(), z.null()])
     .transform((v) => (v === null ? null : v.trim()))
     .optional(),
+  rxNotes: z.union([z.string(), z.null()]).optional(),
 });
 
 router.patch(
@@ -4529,6 +4530,7 @@ router.patch(
       updates.deliveryDateProposalDate = null;
       updates.deliveryDateProposalNote = null;
     }
+    if (input.rxNotes !== undefined) updates.rxNotes = input.rxNotes ?? null;
 
     const [updated] = await db
       .update(cases)
@@ -5594,6 +5596,7 @@ router.patch(
     const input = z
       .object({
         toothNumber: z.string().min(1).optional(),
+        restorationType: z.string().optional(),
         material: z.string().optional(),
         shade: z.string().optional(),
         notes: z.string().optional(),
@@ -5604,6 +5607,7 @@ router.patch(
 
     const patchFields: any = {};
     if (input.toothNumber !== undefined) patchFields.toothNumber = input.toothNumber;
+    if (input.restorationType !== undefined) patchFields.restorationType = input.restorationType || null;
     if (input.material !== undefined) patchFields.material = input.material || null;
     if (input.shade !== undefined) patchFields.shade = input.shade || null;
     if (input.notes !== undefined) patchFields.notes = input.notes || null;

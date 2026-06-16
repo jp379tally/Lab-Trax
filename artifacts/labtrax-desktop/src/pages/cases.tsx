@@ -2550,6 +2550,7 @@ export function CaseDrawer({
       : "",
     priority: (labCase.priority || "normal") as "normal" | "rush",
     casePanBarcode: labCase.casePanBarcode || "",
+    rxNotes: (labCase.caseNotes ?? "").trim(),
   });
   const [editError, setEditError] = useState<string | null>(null);
   const [editNoteText, setEditNoteText] = useState("");
@@ -2649,12 +2650,20 @@ export function CaseDrawer({
     dueDate: string;
     priority: "normal" | "rush";
     casePanBarcode: string;
+    rxNotes: string;
   };
 
   const [pendingCreates, setPendingCreates] = useState<PendingCreate[]>([]);
   const [pendingDeletes, setPendingDeletes] = useState<Set<string>>(new Set());
   const [pendingUpdates, setPendingUpdates] = useState<PendingUpdate[]>([]);
   const [pendingCaseEdit, setPendingCaseEdit] = useState<PendingCaseEdit | null>(null);
+  const [pendingRxSummaryEdit, setPendingRxSummaryEdit] = useState<{
+    type: string; material: string; shade: string; teeth: string;
+  } | null>(null);
+  const [editRxType, setEditRxType] = useState("Other");
+  const [editRxMaterial, setEditRxMaterial] = useState("");
+  const [editRxShade, setEditRxShade] = useState("");
+  const [editRxTeeth, setEditRxTeeth] = useState("");
   // Optimistic state for missing-tooth auto-saves (applied immediately, cleared
   // after the server round-trip + cache refetch complete so there's no flicker).
   const [optimisticMissingAdds, setOptimisticMissingAdds] = useState<Set<string>>(new Set());
@@ -3307,13 +3316,15 @@ export function CaseDrawer({
     pendingCreates.length > 0 ||
     pendingDeletes.size > 0 ||
     pendingUpdates.length > 0 ||
-    pendingCaseEdit !== null;
+    pendingCaseEdit !== null ||
+    pendingRxSummaryEdit !== null;
 
   function handleDiscardChanges() {
     setPendingCreates([]);
     setPendingDeletes(new Set());
     setPendingUpdates([]);
     setPendingCaseEdit(null);
+    setPendingRxSummaryEdit(null);
     setSaveError(null);
     qc.invalidateQueries({ queryKey: ["case", labCase.id] });
   }
@@ -3357,6 +3368,7 @@ export function CaseDrawer({
     // makes retries safe: only items that haven't been saved yet remain in
     // pending state after a partial failure.
     const snapshotCaseEdit = pendingCaseEdit;
+    const snapshotRxSummaryEdit = pendingRxSummaryEdit;
     const snapshotDeletes = Array.from(pendingDeletes);
     const snapshotUpdates = [...pendingUpdates];
     const snapshotCreates = [...pendingCreates];
@@ -3379,6 +3391,7 @@ export function CaseDrawer({
           priority: snapshotCaseEdit.priority,
           ...(snapshotCaseEdit.dueDate ? { dueDate: snapshotCaseEdit.dueDate } : {}),
           casePanBarcode: snapshotCaseEdit.casePanBarcode || null,
+          rxNotes: snapshotCaseEdit.rxNotes.trim() || null,
         };
         if (snapshotCaseEdit.providerOrganizationId) {
           patchBody.providerOrganizationId = snapshotCaseEdit.providerOrganizationId;
@@ -3390,7 +3403,45 @@ export function CaseDrawer({
         setPendingCaseEdit(null);
       }
 
-      // 2. Deletes — remove from pending state immediately after each success
+      // 2. Rx Summary restoration replacement (Lab Slip bulk edit). Deletes all
+      //    existing restorations and recreates them from the edited fields so the
+      //    summary accurately reflects what the lab was asked to make. Per-
+      //    restoration edits from the Restorations tab are skipped when this path
+      //    is taken — they would operate on now-deleted IDs.
+      if (snapshotRxSummaryEdit) {
+        const currentRestorations = data?.restorations ?? [];
+        for (const r of currentRestorations) {
+          await apiFetch(`/cases/${labCase.id}/restorations/${r.id}`, { method: "DELETE" });
+        }
+        const teethTokens = snapshotRxSummaryEdit.teeth
+          .split(/[\s,;]+/)
+          .map((t) => t.trim())
+          .filter(Boolean);
+        const rxType = snapshotRxSummaryEdit.type.trim() || "Other";
+        const rxMaterial = snapshotRxSummaryEdit.material.trim() || undefined;
+        const rxShade = snapshotRxSummaryEdit.shade.trim() || undefined;
+        const teethToCreate = teethTokens.length > 0 ? teethTokens : [""];
+        for (const tooth of teethToCreate) {
+          await apiFetch(`/cases/${labCase.id}/restorations`, {
+            method: "POST",
+            body: JSON.stringify({
+              toothNumber: tooth,
+              restorationType: rxType,
+              ...(rxMaterial ? { material: rxMaterial } : {}),
+              ...(rxShade ? { shade: rxShade } : {}),
+              quantity: 1,
+            }),
+          });
+        }
+        setPendingRxSummaryEdit(null);
+        setPendingDeletes(new Set());
+        setPendingUpdates([]);
+        setPendingCreates([]);
+        invalidateAll();
+        return;
+      }
+
+      // 3. Deletes — remove from pending state immediately after each success
       for (const id of snapshotDeletes) {
         await apiFetch(`/cases/${labCase.id}/restorations/${id}`, { method: "DELETE" });
         setPendingDeletes((prev) => {
@@ -3680,7 +3731,14 @@ export function CaseDrawer({
         : "",
       priority: (src.priority || "normal") as "normal" | "rush",
       casePanBarcode: src.casePanBarcode || "",
+      rxNotes: ((src as any).caseNotes ?? "").trim(),
     });
+    const curSummary = deriveRxSummary(data?.restorations);
+    const firstRestoration = data?.restorations?.[0];
+    setEditRxType(firstRestoration?.restorationType ?? curSummary.restorativeType ?? "Other");
+    setEditRxMaterial(curSummary.materials.join(", "));
+    setEditRxShade(curSummary.shades.join(", "));
+    setEditRxTeeth(curSummary.teeth.join(", "));
     setEditError(null);
     setEditMode(true);
   }
@@ -4641,6 +4699,21 @@ export function CaseDrawer({
                         type="button"
                         onClick={() => {
                           setPendingCaseEdit({ ...editForm });
+                          // Stage Rx Summary restoration replacement only when
+                          // the user actually changed type, material, shade, or teeth.
+                          const snappedSummary = deriveRxSummary(data?.restorations);
+                          const origType = data?.restorations?.[0]?.restorationType ?? snappedSummary.restorativeType ?? "Other";
+                          const origMaterial = snappedSummary.materials.join(", ");
+                          const origShade = snappedSummary.shades.join(", ");
+                          const origTeeth = snappedSummary.teeth.join(", ");
+                          if (
+                            editRxType !== origType ||
+                            editRxMaterial.trim() !== origMaterial.trim() ||
+                            editRxShade.trim() !== origShade.trim() ||
+                            editRxTeeth.trim() !== origTeeth.trim()
+                          ) {
+                            setPendingRxSummaryEdit({ type: editRxType, material: editRxMaterial, shade: editRxShade, teeth: editRxTeeth });
+                          }
                           if (editNoteText.trim()) {
                             addNoteMutation.mutate({ text: editNoteText.trim(), shared: false });
                             setEditNoteText("");
@@ -4658,9 +4731,8 @@ export function CaseDrawer({
               </section>
 
               {/* Rx summary — at-a-glance view of what the lab is being asked
-                  to make, derived from the case's restorations. Editing of
-                  restorations and notes still happens in their dedicated
-                  tabs; this section is read-only. */}
+                  to make, derived from the case's restorations. Fields are
+                  editable inline when the Lab Slip is in edit mode. */}
               {(() => {
                 const highlightValue = buildHighlightedToothValue(summary);
                 return (
@@ -4670,50 +4742,112 @@ export function CaseDrawer({
                     </h3>
                     {(
                       <div className="space-y-3">
-                        <div className="grid grid-cols-2 gap-4 text-sm">
-                          <Field
-                            label="Restorative type"
-                            value={summary.restorativeType ?? "Other"}
-                          />
-                          <Field
-                            label={
-                              summary.materials.length > 1
-                                ? "Materials"
-                                : "Material"
-                            }
-                            value={(() => {
-                              const mat =
-                                summary.materials.length > 0
-                                  ? summary.materials.join(", ")
-                                  : "—";
-                              const shade =
-                                summary.shades.length > 0
-                                  ? summary.shades.join(", ")
-                                  : "";
-                              return shade ? `${mat} · ${shade}` : mat;
-                            })()}
-                          />
-
-                          <div className="col-span-2">
+                        {editMode ? (
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Restorative Type</label>
+                              <select
+                                value={editRxType}
+                                onChange={(e) => setEditRxType(e.target.value)}
+                                className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                              >
+                                {RESTORATION_TYPES.map((t) => (
+                                  <option key={t} value={t}>{t}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Material</label>
+                              <input
+                                list="edit-rx-materials"
+                                value={editRxMaterial}
+                                onChange={(e) => setEditRxMaterial(e.target.value)}
+                                placeholder="e.g. Zirconia"
+                                className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                              />
+                              <datalist id="edit-rx-materials">
+                                {MATERIALS.map((m) => <option key={m} value={m} />)}
+                              </datalist>
+                            </div>
+                            <div>
+                              <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Shade</label>
+                              <input
+                                list="edit-rx-shades"
+                                value={editRxShade}
+                                onChange={(e) => setEditRxShade(e.target.value)}
+                                placeholder="e.g. A2"
+                                className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                              />
+                              <datalist id="edit-rx-shades">
+                                {SHADES.map((s) => <option key={s} value={s} />)}
+                              </datalist>
+                            </div>
+                            <div>
+                              <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Tooth Number(s)</label>
+                              <input
+                                value={editRxTeeth}
+                                onChange={(e) => setEditRxTeeth(e.target.value)}
+                                placeholder="e.g. 2, 4, 12"
+                                className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                              />
+                            </div>
+                            <div className="col-span-2">
+                              <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Rx Notes</label>
+                              <textarea
+                                value={editForm.rxNotes}
+                                onChange={(e) => setEditForm((f) => ({ ...f, rxNotes: e.target.value }))}
+                                rows={3}
+                                placeholder="Prescription notes…"
+                                className="mt-1 w-full px-2.5 py-2 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary resize-none"
+                              />
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-2 gap-4 text-sm">
+                            <Field
+                              label="Restorative type"
+                              value={summary.restorativeType ?? "Other"}
+                            />
                             <Field
                               label={
-                                summary.isFullArch
-                                  ? "Tooth coverage"
-                                  : "Tooth number(s)"
+                                summary.materials.length > 1
+                                  ? "Materials"
+                                  : "Material"
                               }
-                              value={formatRxTeethWithShades(
-                                data?.restorations,
-                                formatRxTeethLabel(summary),
-                              )}
+                              value={(() => {
+                                const mat =
+                                  summary.materials.length > 0
+                                    ? summary.materials.join(", ")
+                                    : "—";
+                                const shade =
+                                  summary.shades.length > 0
+                                    ? summary.shades.join(", ")
+                                    : "";
+                                return shade ? `${mat} · ${shade}` : mat;
+                              })()}
                             />
+
+                            <div className="col-span-2">
+                              <Field
+                                label={
+                                  summary.isFullArch
+                                    ? "Tooth coverage"
+                                    : "Tooth number(s)"
+                                }
+                                value={formatRxTeethWithShades(
+                                  data?.restorations,
+                                  formatRxTeethLabel(summary),
+                                )}
+                              />
+                            </div>
+                            <div className="col-span-2">
+                              <Field
+                                label="Rx notes"
+                                value={(pendingCaseEdit?.rxNotes?.trim() ?? data?.caseNotes ?? labCase.caseNotes ?? "").trim() || "—"}
+                              />
+                            </div>
                           </div>
-                          <div className="col-span-2">
-                            <Field
-                              label="Rx notes"
-                              value={(data?.caseNotes ?? labCase.caseNotes ?? "").trim() || "—"}
-                            />
-                          </div>
-                        </div>
+                        )}
                         <div>
                           <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
                             Notes
