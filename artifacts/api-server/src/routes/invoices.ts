@@ -2460,7 +2460,8 @@ router.patch(
           .array(
             z.object({
               id: z.string().optional(),
-              toothNumber: z.coerce.number().int().min(1).max(32).nullable().optional(),
+              toothNumber: z.coerce.number().int().nullable().optional()
+                .transform((v) => (v != null && v >= 1 && v <= 32 ? v : null)),
               toothLabel: z.string().nullable().optional(),
               description: z.string().min(1),
               quantity: z.coerce.number().min(0),
@@ -2470,7 +2471,9 @@ router.patch(
                 .array(
                   z.object({
                     id: z.string().optional(),
-                    toothNumber: z.coerce.number().int().min(1).max(32).nullable().optional(),
+                    toothNumber: z.coerce.number().int().nullable().optional()
+                      .transform((v) => (v != null && v >= 1 && v <= 32 ? v : null)),
+                    toothLabel: z.string().nullable().optional(),
                     description: z.string().min(1),
                     quantity: z.coerce.number().min(0),
                     unitPrice: z.coerce.number().min(0),
@@ -2537,6 +2540,7 @@ router.patch(
           const subValues: Array<{
             invoiceId: string;
             toothNumber: number | null;
+            toothLabel: string | null;
             description: string;
             quantity: number;
             unitPrice: string;
@@ -2551,6 +2555,7 @@ router.patch(
               subValues.push({
                 invoiceId: invoice.id,
                 toothNumber: sub.toothNumber ?? null,
+                toothLabel: sub.toothLabel ?? null,
                 description: sub.description,
                 quantity: Math.max(0, Math.round(Number(sub.quantity))),
                 unitPrice: Number(sub.unitPrice).toFixed(2),
