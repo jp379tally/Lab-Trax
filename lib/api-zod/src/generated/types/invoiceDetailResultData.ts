@@ -18,5 +18,11 @@ export type InvoiceDetailResultData = {
   caseDeletedByUserId?: string | null;
   /** Permanent note stamped on freeze, e.g. 'Case Deleted by JW'. */
   caseDeletedNote?: string | null;
+  /** True if the linked case is still soft-deleted, false if it has since been restored, null if no canonical case record could be found (e.g. legacy invoice with no caseId). Only meaningful when `frozen` is true.
+   */
+  linkedCaseIsDeleted?: boolean | null;
+  /** Case number of the linked canonical case (e.g. "A-1042"). Included on frozen invoices so the banner can display and link directly to the case without a separate fetch.
+   */
+  linkedCaseNumber?: string | null;
   [key: string]: unknown;
 };

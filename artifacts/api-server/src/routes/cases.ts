@@ -2872,6 +2872,88 @@ router.post(
   })
 );
 
+// ---------------------------------------------------------------------------
+// GET /cases/doctor-names
+// Returns a sorted list of distinct non-empty doctor names visible to the
+// caller. Scoped to the caller's authorized orgs. Lightweight — no full
+// case join needed — so the DoctorNamePicker can populate immediately.
+// ---------------------------------------------------------------------------
+router.get(
+  "/doctor-names",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+
+    const directMembershipOrgIds = (
+      await db.query.organizationMemberships.findMany({
+        where: and(
+          eq(organizationMemberships.userId, callerId),
+          eq(organizationMemberships.status, "active"),
+          isNull(organizationMemberships.deletedAt)
+        ),
+      })
+    ).map((m: any) => m.labId as string);
+    const authorizedOrgIds = new Set<string>(directMembershipOrgIds);
+    const callerUser = await db.query.users.findFirst({
+      where: eq(users.id, callerId),
+    });
+    if (callerUser?.userType === "provider") {
+      const { providerOrgIds } =
+        await getProviderOrgIdsForUserAndLinks(callerId);
+      for (const id of providerOrgIds) authorizedOrgIds.add(id);
+    }
+
+    const membershipOrgIds = Array.from(authorizedOrgIds);
+    if (!membershipOrgIds.length) return ok(res, []);
+
+    const [canonicalRows, mobileRows] = await Promise.all([
+      db
+        .selectDistinct({ doctorName: cases.doctorName })
+        .from(cases)
+        .where(
+          and(
+            or(
+              inArray(cases.labOrganizationId, membershipOrgIds),
+              inArray(cases.providerOrganizationId, membershipOrgIds)
+            ),
+            notDeleted(cases),
+            isNotNull(cases.doctorName),
+            ne(cases.doctorName, "")
+          )
+        ),
+      db
+        .select({ caseData: labCases.caseData })
+        .from(labCases)
+        .where(
+          and(
+            isNull(labCases.deletedAt),
+            inArray(labCases.organizationId, membershipOrgIds)
+          )
+        ),
+    ]);
+
+    const nameSet = new Set<string>();
+    for (const row of canonicalRows) {
+      const n = (row.doctorName ?? "").trim();
+      if (n) nameSet.add(n);
+    }
+    for (const mr of mobileRows) {
+      try {
+        const parsed =
+          typeof mr.caseData === "string"
+            ? JSON.parse(mr.caseData)
+            : mr.caseData;
+        const n = String(parsed?.doctorName ?? "").trim();
+        if (n) nameSet.add(n);
+      } catch {
+        // skip malformed rows
+      }
+    }
+
+    const sorted = Array.from(nameSet).sort((a, b) => a.localeCompare(b));
+    return ok(res, sorted);
+  })
+);
+
 router.get(
   "/",
   asyncHandler(async (req, res) => {

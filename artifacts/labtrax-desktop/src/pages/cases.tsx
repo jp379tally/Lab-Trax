@@ -2732,26 +2732,20 @@ export function CaseDrawer({
     return drawerProviderOrgs.find((o) => o.id === pid) ?? null;
   }, [drawerProviderOrgs, data?.providerOrganizationId, labCase.providerOrganizationId]);
 
-  // Doctor-name suggestions for the lab-slip picker. The cases LIST view passes
-  // a precomputed `doctorNames` list, but other entry points (e.g. the
-  // dashboard) render this drawer without one — leaving the picker showing
-  // "No doctors found." Self-fetch the lab's cases and derive distinct doctor
-  // names as a fallback, mirroring the invoice editor. Only runs when the
-  // parent didn't supply names, so the cases page pays no extra request.
-  const selfDoctorCasesQuery = useQuery({
-    queryKey: ["cases"],
-    queryFn: () => apiFetch<LabCase[]>("/cases"),
+  // Dedicated lightweight endpoint for doctor-name suggestions. Always runs so
+  // the picker is populated even when opened from the dashboard (before the
+  // full cases list has loaded). Merges with any names the parent pre-computed.
+  const doctorNamesQuery = useQuery({
+    queryKey: ["case-doctor-names"],
+    queryFn: () => apiFetch<string[]>("/cases/doctor-names"),
     staleTime: 60_000,
-    enabled: doctorNames.length === 0,
   });
   const effectiveDoctorNames = useMemo(() => {
-    if (doctorNames.length > 0) return doctorNames;
-    const names = new Set<string>();
-    for (const c of selfDoctorCasesQuery.data ?? []) {
-      if (c.doctorName?.trim()) names.add(c.doctorName.trim());
-    }
-    return Array.from(names).sort((a, b) => a.localeCompare(b));
-  }, [doctorNames, selfDoctorCasesQuery.data]);
+    const fromQuery = doctorNamesQuery.data ?? [];
+    if (!doctorNames.length) return fromQuery;
+    const merged = new Set([...doctorNames, ...fromQuery]);
+    return Array.from(merged).sort((a, b) => a.localeCompare(b));
+  }, [doctorNames, doctorNamesQuery.data]);
   const [aiPracticePickerOpen, setAiPracticePickerOpen] = useState(false);
   const [aiPracticeError, setAiPracticeError] = useState<string | null>(null);
   const changeAiPracticeMutation = useMutation({

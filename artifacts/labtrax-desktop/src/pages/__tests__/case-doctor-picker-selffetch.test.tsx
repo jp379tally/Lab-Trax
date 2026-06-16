@@ -49,11 +49,24 @@ const labCases: LabCase[] = [
   { ...fakeCase, id: "case-3", doctorName: "Dr. Onfile" } as LabCase,
 ];
 
+// Distinct doctor names extracted from the fake lab cases.
+const fakeDoctorNames = Array.from(
+  new Set(labCases.map((c) => c.doctorName).filter(Boolean)),
+).sort((a, b) => a!.localeCompare(b!)) as string[];
+
 beforeEach(() => {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
+      // Dedicated doctor-names endpoint — must be checked BEFORE the generic
+      // /cases pattern so it returns string[] rather than LabCase[].
+      if (url.includes("/cases/doctor-names")) {
+        return new Response(JSON.stringify(fakeDoctorNames), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
       // Case detail endpoint — return the full case so edit-mode fields populate.
       if (url.includes(`/cases/${fakeCase.id}`) && !url.includes("remake")) {
         return new Response(JSON.stringify(fakeCase), {
@@ -64,13 +77,6 @@ beforeEach(() => {
       // Remake-chain lookup — irrelevant here.
       if (url.includes("remake")) {
         return new Response("[]", {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      // The drawer's self-fetch fallback for doctor names hits the list endpoint.
-      if (url.includes("/cases")) {
-        return new Response(JSON.stringify(labCases), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });

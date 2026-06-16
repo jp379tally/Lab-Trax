@@ -1,4 +1,5 @@
 - [Registering a lab owner for e2e](register-lab-owner-for-e2e.md) — register needs practiceName+createOrganization+userType lab or you get a user with NO membership; every EDIT_ROLES gate then reads "Not available" (looks like a gating bug).
+- [Disabled useQuery still causes test flakiness](disabled-usequery-timing.md) — even enabled:false useQuery registers an observer that adds mount overhead; use queryClient.getQueryData() (non-reactive) when you only need a cache read in a component that must not affect sibling query timing.
 - [EAS iOS non-interactive auth](eas-ios-non-interactive-auth.md) — `--non-interactive` builds need 5 env vars or eas-cli silently prompts and hangs in CI.
 - [EAS iOS build-number collision](eas-ios-build-number-collision.md) — persist the bumped build number after `eas build`, before submit; reverting on a submit-only failure causes a permanent CFBundleVersion collision loop.
 - [EAS submit silent account-level block](eas-submit-account-block.md) — submit ERRORED with error:null+empty logs while ASC API reads all 200 and IPA is unique = pending App Store Connect agreement (account-holder must accept), not a build problem.

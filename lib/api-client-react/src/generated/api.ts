@@ -3887,6 +3887,87 @@ export function useGetIteroImportHistory<
 }
 
 /**
+ * Returns a sorted list of distinct non-empty doctor names from canonical
+cases and mobile lab_cases rows visible to the caller. Scoped to the
+caller's authorized organizations (direct memberships + cross-lab
+linked provider orgs for provider users). Intended for auto-populating
+the Doctor Name picker without fetching the full cases list.
+
+ * @summary Get distinct doctor names across the caller's labs
+ */
+export const getGetCaseDoctorNamesUrl = () => {
+  return `/api/cases/doctor-names`;
+};
+
+export const getCaseDoctorNames = async (
+  options?: RequestInit,
+): Promise<string[]> => {
+  return customFetch<string[]>(getGetCaseDoctorNamesUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetCaseDoctorNamesQueryKey = () => {
+  return [`/api/cases/doctor-names`] as const;
+};
+
+export const getGetCaseDoctorNamesQueryOptions = <
+  TData = Awaited<ReturnType<typeof getCaseDoctorNames>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getCaseDoctorNames>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetCaseDoctorNamesQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getCaseDoctorNames>>
+  > = ({ signal }) => getCaseDoctorNames({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getCaseDoctorNames>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetCaseDoctorNamesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getCaseDoctorNames>>
+>;
+export type GetCaseDoctorNamesQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Get distinct doctor names across the caller's labs
+ */
+
+export function useGetCaseDoctorNames<
+  TData = Awaited<ReturnType<typeof getCaseDoctorNames>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getCaseDoctorNames>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetCaseDoctorNamesQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
  * Lists distinct (doctorName, providerOrganizationId) groups in the
 given lab, ranked by similarity to the optional `q` / `like`
 parameters using normalized name comparison (trim, lowercase,

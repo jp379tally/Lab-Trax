@@ -992,6 +992,26 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/IteroImportHistoryResult"
+  /cases/doctor-names:
+    get:
+      operationId: getCaseDoctorNames
+      tags: [cases]
+      summary: Get distinct doctor names across the caller's labs
+      description: |
+        Returns a sorted list of distinct non-empty doctor names from canonical
+        cases and mobile lab_cases rows visible to the caller. Scoped to the
+        caller's authorized organizations (direct memberships + cross-lab
+        linked provider orgs for provider users). Intended for auto-populating
+        the Doctor Name picker without fetching the full cases list.
+      responses:
+        "200":
+          description: Sorted list of distinct doctor names
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
   /doctors/search:
     get:
       operationId: searchDoctors

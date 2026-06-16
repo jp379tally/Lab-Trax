@@ -162,18 +162,12 @@ export default function InvoicesPage() {
       ),
   });
 
-  const casesQuery = useQuery({
-    queryKey: ["cases"],
-    queryFn: () => apiFetch<LabCase[]>("/cases"),
+  const doctorNamesQuery = useQuery({
+    queryKey: ["case-doctor-names"],
+    queryFn: () => apiFetch<string[]>("/cases/doctor-names"),
     staleTime: 60_000,
   });
-  const distinctDoctorNames = useMemo(() => {
-    const names = new Set<string>();
-    for (const c of casesQuery.data ?? []) {
-      if (c.doctorName?.trim()) names.add(c.doctorName.trim());
-    }
-    return Array.from(names).sort((a, b) => a.localeCompare(b));
-  }, [casesQuery.data]);
+  const distinctDoctorNames = doctorNamesQuery.data ?? [];
 
   const practicesQuery = useQuery({
     queryKey: ["organizations"],
@@ -1123,21 +1117,14 @@ export function InvoiceEditor({
     queryFn: () => apiFetch<Invoice>(`/invoices/${invoice.id}`),
   });
 
-  // Self-fetch doctors when the parent page doesn't provide them.
-  const casesQuery = useQuery({
-    queryKey: ["cases"],
-    queryFn: () => apiFetch<LabCase[]>("/cases"),
-    staleTime: 60_000,
-    enabled: !doctorNames,
-  });
+  // When the parent page hasn't supplied a list (doctorNames === undefined),
+  // read from the React Query cache that InvoicesPage populates via its own
+  // query. Using getQueryData() (non-reactive) avoids creating an extra
+  // observer that can interfere with detailQuery timing.
   const editorDoctorNames = useMemo(() => {
-    if (doctorNames) return doctorNames;
-    const names = new Set<string>();
-    for (const c of casesQuery.data ?? []) {
-      if (c.doctorName?.trim()) names.add(c.doctorName.trim());
-    }
-    return Array.from(names).sort((a, b) => a.localeCompare(b));
-  }, [doctorNames, casesQuery.data]);
+    if (doctorNames !== undefined) return doctorNames;
+    return queryClient.getQueryData<string[]>(["case-doctor-names"]) ?? [];
+  }, [doctorNames, queryClient]);
 
   const practicesQuery = useQuery({
     queryKey: ["organizations"],

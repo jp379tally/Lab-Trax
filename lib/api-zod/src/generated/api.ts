@@ -1415,6 +1415,20 @@ export const GetIteroImportHistoryResponse = zod.object({
 });
 
 /**
+ * Returns a sorted list of distinct non-empty doctor names from canonical
+cases and mobile lab_cases rows visible to the caller. Scoped to the
+caller's authorized organizations (direct memberships + cross-lab
+linked provider orgs for provider users). Intended for auto-populating
+the Doctor Name picker without fetching the full cases list.
+
+ * @summary Get distinct doctor names across the caller's labs
+ */
+export const GetCaseDoctorNamesResponseItem = zod.string();
+export const GetCaseDoctorNamesResponse = zod.array(
+  GetCaseDoctorNamesResponseItem,
+);
+
+/**
  * Lists distinct (doctorName, providerOrganizationId) groups in the
 given lab, ranked by similarity to the optional `q` / `like`
 parameters using normalized name comparison (trim, lowercase,
@@ -2465,6 +2479,18 @@ export const UpdateInvoiceResponse = zod.object({
         .nullish()
         .describe(
           "Permanent note stamped on freeze, e.g. 'Case Deleted by JW'.",
+        ),
+      linkedCaseIsDeleted: zod
+        .boolean()
+        .nullish()
+        .describe(
+          "True if the linked case is still soft-deleted, false if it has since been restored, null if no canonical case record could be found (e.g. legacy invoice with no caseId). Only meaningful when `frozen` is true.\n",
+        ),
+      linkedCaseNumber: zod
+        .string()
+        .nullish()
+        .describe(
+          'Case number of the linked canonical case (e.g. \"A-1042\"). Included on frozen invoices so the banner can display and link directly to the case without a separate fetch.\n',
         ),
     })
     .optional()
