@@ -1,0 +1,331 @@
+/**
+ * Integration tests for POST /api/cases/bulk-delete.
+ *
+ * Regression coverage for the desktop "Delete N cases?" → 404 "No matching
+ * cases found." bug: the desktop case list (GET /cases) merges canonical
+ * `cases` rows with legacy mobile `lab_cases` rows. The old handler resolved
+ * the lab + existence from `uniqueCaseIds[0]` against the canonical table
+ * only, so a lab whose cases were all created in the mobile app (legacy
+ * `lab_cases`) 404'd on every bulk delete and deleted nothing.
+ *
+ * Skipped when DATABASE_URL is not configured (same convention used by
+ * sibling test suites). Each test cleans up its own rows; afterAll sweeps the
+ * rest so the suite is safe to run against a shared dev DB.
+ *
+ * Coverage:
+ *  - Happy path (canonical): cases soft-deleted, deletedCount correct
+ *  - REGRESSION (legacy-only): legacy lab_cases soft-deleted, no 404
+ *  - REGRESSION (mixed, legacy id first): both kinds soft-deleted, no 404
+ *  - 403 when the caller is a member but not an admin/owner
+ *  - 404 when no id matches either table
+ *  - 401 when no auth token is provided
+ */
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { eq, inArray } from "drizzle-orm";
+import { randomBytes, createHash } from "node:crypto";
+import request from "supertest";
+
+vi.mock("../lib/backup.js", () => ({
+  restartScheduledBackupJob: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));
+vi.mock("../lib/statements.js", () => ({ startStatementScheduler: vi.fn() }));
+vi.mock("../lib/case-media.js", () => ({
+  startDailyOrphanedMediaCleanup: vi.fn(),
+}));
+
+const SHOULD_RUN = !!process.env["DATABASE_URL"];
+const maybe = SHOULD_RUN ? describe : describe.skip;
+
+function rid(prefix: string) {
+  return `${prefix}_${randomBytes(8).toString("hex")}`;
+}
+
+maybe("POST /api/cases/bulk-delete (db integration)", () => {
+  let dbMod: typeof import("@workspace/db");
+  let appMod: { default: import("express").Express };
+  let auth: typeof import("../lib/auth.js");
+
+  const labOrgId = rid("lab");
+  const otherLabOrgId = rid("lab2");
+  const practiceId = rid("prov");
+  const adminUserId = rid("uadmin");
+  const staffUserId = rid("ustaff");
+
+  const tokens = { admin: "", staff: "" };
+
+  async function makeSession(userId: string): Promise<string> {
+    const { db, userSessions } = dbMod as any;
+    const sessionId = rid("sess");
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+    const token = auth.signAccessToken(userId, sessionId);
+    const hash = createHash("sha256").update(token).digest("hex");
+    await db.insert(userSessions).values({
+      id: sessionId,
+      userId,
+      tokenHash: hash,
+      expiresAt,
+    });
+    return token;
+  }
+
+  async function insertCanonical(caseNumber: string): Promise<string> {
+    const { db, cases } = dbMod as any;
+    const id = rid("c");
+    await db.insert(cases).values({
+      id,
+      caseNumber,
+      labOrganizationId: labOrgId,
+      providerOrganizationId: practiceId,
+      doctorName: "Dr. Test",
+      patientFirstName: "Pat",
+      patientLastName: "Test",
+      status: "draft",
+      createdByUserId: adminUserId,
+    });
+    return id;
+  }
+
+  async function insertLegacy(): Promise<string> {
+    const { db, labCases } = dbMod as any;
+    const id = rid("legacy");
+    await db.insert(labCases).values({
+      id,
+      ownerId: adminUserId,
+      organizationId: labOrgId,
+      caseData: JSON.stringify({ patientName: "Legacy Pat", status: "RECEIVED" }),
+    });
+    return id;
+  }
+
+  beforeAll(async () => {
+    process.env["JWT_SECRET"] =
+      process.env["JWT_SECRET"] ?? "labtrax-test-secret-bulk-delete";
+    dbMod = await import("@workspace/db");
+    appMod = await import("../app.js");
+    auth = await import("../lib/auth.js");
+
+    const { db, organizations, users, organizationMemberships } = dbMod as any;
+
+    await db.insert(users).values([
+      { id: adminUserId, username: `adm_${adminUserId}`, password: "x" },
+      { id: staffUserId, username: `stf_${staffUserId}`, password: "x" },
+    ]);
+
+    await db.insert(organizations).values([
+      { id: labOrgId, type: "lab", name: "Bulk Delete Test Lab" },
+      { id: otherLabOrgId, type: "lab", name: "Bulk Delete Other Lab" },
+      {
+        id: practiceId,
+        type: "provider",
+        name: "Bulk Delete Test Practice",
+        parentLabOrganizationId: labOrgId,
+      },
+    ]);
+
+    await db.insert(organizationMemberships).values([
+      {
+        id: rid("m"),
+        labId: labOrgId,
+        userId: adminUserId,
+        role: "admin",
+        status: "active",
+      },
+      {
+        id: rid("m"),
+        labId: labOrgId,
+        userId: staffUserId,
+        role: "staff",
+        status: "active",
+      },
+    ]);
+
+    tokens.admin = await makeSession(adminUserId);
+    tokens.staff = await makeSession(staffUserId);
+  }, 60_000);
+
+  afterAll(async () => {
+    if (!SHOULD_RUN) return;
+    const {
+      db,
+      organizations,
+      users,
+      cases,
+      labCases,
+      organizationMemberships,
+      userSessions,
+      auditLogs,
+    } = dbMod as any;
+    await db
+      .delete(auditLogs)
+      .where(inArray(auditLogs.organizationId, [labOrgId, otherLabOrgId]));
+    await db
+      .delete(cases)
+      .where(inArray(cases.labOrganizationId, [labOrgId, otherLabOrgId]));
+    await db
+      .delete(labCases)
+      .where(inArray(labCases.organizationId, [labOrgId, otherLabOrgId]));
+    await db
+      .delete(organizationMemberships)
+      .where(inArray(organizationMemberships.userId, [adminUserId, staffUserId]));
+    await db
+      .delete(userSessions)
+      .where(inArray(userSessions.userId, [adminUserId, staffUserId]));
+    await db
+      .delete(organizations)
+      .where(inArray(organizations.id, [labOrgId, otherLabOrgId, practiceId]));
+    await db.delete(users).where(inArray(users.id, [adminUserId, staffUserId]));
+  });
+
+  it("happy path: soft-deletes canonical cases and returns deletedCount", async () => {
+    const c1 = await insertCanonical(rid("BD1"));
+    const c2 = await insertCanonical(rid("BD2"));
+
+    const r = await request(appMod.default)
+      .post("/api/cases/bulk-delete")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({ caseIds: [c1, c2] });
+
+    expect(r.status).toBe(200);
+    expect(r.body.ok).toBe(true);
+    expect(r.body.data.deletedCount).toBe(2);
+
+    // Soft-delete: rows still exist but deletedAt is set (NOT hard-deleted).
+    const { db, cases } = dbMod as any;
+    const rows = await db
+      .select({ id: cases.id, deletedAt: cases.deletedAt })
+      .from(cases)
+      .where(inArray(cases.id, [c1, c2]));
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.deletedAt).not.toBeNull();
+    }
+  });
+
+  it("REGRESSION: deletes legacy-only selection (no 404)", async () => {
+    const l1 = await insertLegacy();
+    const l2 = await insertLegacy();
+
+    const r = await request(appMod.default)
+      .post("/api/cases/bulk-delete")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({ caseIds: [l1, l2] });
+
+    expect(r.status).toBe(200);
+    expect(r.body.ok).toBe(true);
+    expect(r.body.data.deletedCount).toBe(2);
+
+    // Legacy rows soft-deleted: deletedAt + deletedBy set, not hard-deleted.
+    const { db, labCases } = dbMod as any;
+    const rows = await db
+      .select({
+        id: labCases.id,
+        deletedAt: labCases.deletedAt,
+        deletedBy: labCases.deletedBy,
+      })
+      .from(labCases)
+      .where(inArray(labCases.id, [l1, l2]));
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.deletedAt).not.toBeNull();
+      expect(row.deletedBy).toBeTruthy();
+    }
+  });
+
+  it("REGRESSION: deletes a mixed batch with a legacy id listed first", async () => {
+    // The old handler resolved everything from caseIds[0]; a legacy id first
+    // 404'd the whole batch. Ordering legacy-first guards that exact path.
+    const legacy = await insertLegacy();
+    const canonical = await insertCanonical(rid("MIX"));
+
+    const r = await request(appMod.default)
+      .post("/api/cases/bulk-delete")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({ caseIds: [legacy, canonical] });
+
+    expect(r.status).toBe(200);
+    expect(r.body.ok).toBe(true);
+    expect(r.body.data.deletedCount).toBe(2);
+
+    const { db, cases, labCases } = dbMod as any;
+    const [canonRow] = await db
+      .select({ deletedAt: cases.deletedAt })
+      .from(cases)
+      .where(eq(cases.id, canonical));
+    expect(canonRow.deletedAt).not.toBeNull();
+    const [legacyRow] = await db
+      .select({ deletedAt: labCases.deletedAt })
+      .from(labCases)
+      .where(eq(labCases.id, legacy));
+    expect(legacyRow.deletedAt).not.toBeNull();
+  });
+
+  it("returns 403 when the caller is a member but not an admin/owner", async () => {
+    const c1 = await insertCanonical(rid("NOADMIN"));
+
+    const r = await request(appMod.default)
+      .post("/api/cases/bulk-delete")
+      .set("Authorization", `Bearer ${tokens.staff}`)
+      .send({ caseIds: [c1] });
+
+    expect(r.status).toBe(403);
+
+    // Case must remain undeleted.
+    const { db, cases } = dbMod as any;
+    const [row] = await db
+      .select({ deletedAt: cases.deletedAt })
+      .from(cases)
+      .where(eq(cases.id, c1));
+    expect(row.deletedAt).toBeNull();
+  });
+
+  it("returns 403 for a cross-lab batch and deletes nothing", async () => {
+    // A canonical case in the admin's own lab resolves the target lab; a
+    // legacy case in another lab must abort the whole batch (tenant boundary).
+    const mine = await insertCanonical(rid("MINE"));
+    const { db, cases, labCases } = dbMod as any;
+    const foreign = rid("legacy");
+    await db.insert(labCases).values({
+      id: foreign,
+      ownerId: adminUserId,
+      organizationId: otherLabOrgId,
+      caseData: JSON.stringify({ patientName: "Foreign", status: "RECEIVED" }),
+    });
+
+    const r = await request(appMod.default)
+      .post("/api/cases/bulk-delete")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({ caseIds: [mine, foreign] });
+
+    expect(r.status).toBe(403);
+
+    // Neither row may be deleted.
+    const [mineRow] = await db
+      .select({ deletedAt: cases.deletedAt })
+      .from(cases)
+      .where(eq(cases.id, mine));
+    expect(mineRow.deletedAt).toBeNull();
+    const [foreignRow] = await db
+      .select({ deletedAt: labCases.deletedAt })
+      .from(labCases)
+      .where(eq(labCases.id, foreign));
+    expect(foreignRow.deletedAt).toBeNull();
+  });
+
+  it("returns 404 when no id matches either table", async () => {
+    const r = await request(appMod.default)
+      .post("/api/cases/bulk-delete")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({ caseIds: [rid("ghost")] });
+
+    expect(r.status).toBe(404);
+  });
+
+  it("returns 401 when no auth token is provided", async () => {
+    const r = await request(appMod.default)
+      .post("/api/cases/bulk-delete")
+      .send({ caseIds: [rid("c")] });
+
+    expect(r.status).toBe(401);
+  });
+});

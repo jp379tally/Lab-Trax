@@ -2153,37 +2153,56 @@ router.post(
 
     const uniqueCaseIds = Array.from(new Set(input.caseIds));
 
-    // Resolve the lab org from the first case.
-    const firstCase = await db.query.cases.findFirst({
-      where: and(eq(cases.id, uniqueCaseIds[0]!), notDeleted(cases)),
-    });
-    if (!firstCase) {
+    // The desktop case list (GET /cases) merges canonical `cases` rows with
+    // legacy mobile `lab_cases` rows, whose ids are NOT present in the
+    // canonical table. A "select all" therefore yields a mix of both kinds.
+    // Resolve matches from BOTH tables across the full id set — never from a
+    // single id, which 404s the entire batch the moment the first selected
+    // case happens to be a legacy mobile case (the common failure for labs
+    // whose cases were all created in the mobile app).
+    const [canonicalMatches, legacyMatches] = await Promise.all([
+      db
+        .select({ id: cases.id, labOrganizationId: cases.labOrganizationId, caseNumber: cases.caseNumber })
+        .from(cases)
+        .where(and(inArray(cases.id, uniqueCaseIds), notDeleted(cases))),
+      db
+        .select({ id: labCases.id, organizationId: labCases.organizationId })
+        .from(labCases)
+        .where(and(inArray(labCases.id, uniqueCaseIds), isNull(labCases.deletedAt))),
+    ]);
+
+    if (canonicalMatches.length === 0 && legacyMatches.length === 0) {
       throw new HttpError(404, "No matching cases found.");
     }
-    const labOrganizationId = firstCase.labOrganizationId;
+
+    // Resolve the lab org from whichever table matched first. Every case in
+    // the batch must belong to this single lab (tenant-boundary enforcement).
+    const labOrganizationId =
+      canonicalMatches[0]?.labOrganizationId ??
+      legacyMatches[0]?.organizationId ??
+      null;
+    if (!labOrganizationId) {
+      throw new HttpError(422, "Case has no associated organization.");
+    }
 
     // Admin-only — owners and admins may bulk-delete cases.
     await requireAnyRole(userId, labOrganizationId, ADMIN_ROLES);
 
-    // Load all requested cases and verify they all belong to the same lab.
-    const casesToDelete = await db
-      .select({ id: cases.id, labOrganizationId: cases.labOrganizationId, caseNumber: cases.caseNumber })
-      .from(cases)
-      .where(and(inArray(cases.id, uniqueCaseIds), notDeleted(cases)));
-
-    const unauthorizedIds = casesToDelete
-      .filter((c) => c.labOrganizationId !== labOrganizationId)
-      .map((c) => c.id);
+    // Refuse the whole batch if any matched case belongs to another lab.
+    const unauthorizedIds = [
+      ...canonicalMatches
+        .filter((c) => c.labOrganizationId !== labOrganizationId)
+        .map((c) => c.id),
+      ...legacyMatches
+        .filter((c) => c.organizationId !== labOrganizationId)
+        .map((c) => c.id),
+    ];
     if (unauthorizedIds.length > 0) {
       throw new HttpError(403, "Some cases do not belong to your lab.");
     }
 
-    if (casesToDelete.length === 0) {
-      return ok(res, { deletedCount: 0 });
-    }
-
-    // Soft-delete each case and write individual audit entries.
-    for (const c of casesToDelete) {
+    // Soft-delete canonical cases (one audit entry per case).
+    for (const c of canonicalMatches) {
       await softDeleteById({
         table: cases,
         id: c.id,
@@ -2195,6 +2214,28 @@ router.post(
       });
     }
 
+    // Soft-delete legacy mobile cases (lab_cases). They store their payload in
+    // a JSON blob and are recoverable from Settings → admin case trash. This
+    // mirrors the single-case legacy delete (DELETE /legacy/cases/:caseId).
+    if (legacyMatches.length > 0) {
+      const actor = (req as any).user;
+      const deletedBy = actor?.username || actor?.id || userId || "unknown";
+      await db
+        .update(labCases)
+        .set({ deletedAt: new Date(), deletedBy })
+        .where(
+          and(
+            inArray(
+              labCases.id,
+              legacyMatches.map((c) => c.id),
+            ),
+            isNull(labCases.deletedAt),
+          ),
+        );
+    }
+
+    const deletedCount = canonicalMatches.length + legacyMatches.length;
+
     await writeAuditLog({
       userId,
       organizationId: labOrganizationId,
@@ -2202,13 +2243,18 @@ router.post(
       entityType: "case",
       entityId: labOrganizationId,
       metadataJson: {
-        caseIds: casesToDelete.map((c) => c.id),
-        caseNumbers: casesToDelete.map((c) => c.caseNumber),
-        count: casesToDelete.length,
+        caseIds: [
+          ...canonicalMatches.map((c) => c.id),
+          ...legacyMatches.map((c) => c.id),
+        ],
+        caseNumbers: canonicalMatches.map((c) => c.caseNumber),
+        canonicalCount: canonicalMatches.length,
+        legacyCount: legacyMatches.length,
+        count: deletedCount,
       },
     });
 
-    return ok(res, { deletedCount: casesToDelete.length });
+    return ok(res, { deletedCount });
   })
 );
 
