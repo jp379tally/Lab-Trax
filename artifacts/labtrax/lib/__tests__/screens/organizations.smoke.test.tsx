@@ -205,3 +205,97 @@ describe("OrganizationsScreen — CreateLabSheet server error surfacing", () => 
     });
   });
 });
+
+const PROVIDER_ORG = {
+  id: "prov-1",
+  type: "provider",
+  name: "Downtown Dental",
+  displayName: "Downtown Dental",
+  phone: "555-111-2222",
+  billingEmail: "office@downtown.example",
+  addressLine1: "10 Market St",
+  city: "Austin",
+  state: "TX",
+  zip: "78701",
+};
+
+function providerAdminMe(role: string) {
+  return {
+    data: {
+      user: { id: "u-admin", userType: "lab" },
+      memberships: [
+        {
+          id: "mem-prov",
+          role,
+          status: "active",
+          organizationId: "prov-1",
+          organization: PROVIDER_ORG,
+        },
+      ],
+    },
+    isLoading: false,
+    isError: false,
+  };
+}
+
+describe("OrganizationsScreen — provider practice editing", () => {
+  it("shows an Edit affordance on provider cards for admins and pre-fills contact details", async () => {
+    applyUseQueryMock(providerAdminMe("admin"));
+    const { getByText, getAllByText, getByDisplayValue } = render(
+      <OrganizationsScreen />,
+      { wrapper: makeWrapper() },
+    );
+
+    expect(getByText("Practice details")).toBeTruthy();
+
+    fireEvent.press(getAllByText("Edit")[0]);
+
+    await waitFor(() => {
+      expect(getByText("Edit practice details")).toBeTruthy();
+    });
+    expect(getByDisplayValue("Downtown Dental")).toBeTruthy();
+    expect(getByDisplayValue("555-111-2222")).toBeTruthy();
+    expect(getByDisplayValue("office@downtown.example")).toBeTruthy();
+    expect(getByDisplayValue("10 Market St")).toBeTruthy();
+  });
+
+  it("does not show an Edit affordance for non-admin provider members", () => {
+    applyUseQueryMock(providerAdminMe("user"));
+    const { getByText, queryByText } = render(<OrganizationsScreen />, {
+      wrapper: makeWrapper(),
+    });
+
+    expect(getByText("Practice details")).toBeTruthy();
+    expect(queryByText("Edit")).toBeNull();
+  });
+
+  it("PATCHes /api/organizations/:id and surfaces a 409 name conflict", async () => {
+    applyUseQueryMock(providerAdminMe("owner"));
+    let patchedUrl: string | null = null;
+    setMockFetchHandler((url, init) => {
+      if (url.includes("/api/organizations/prov-1") && init?.method === "PATCH") {
+        patchedUrl = url;
+        return new Response(JSON.stringify({ error: "NAME_TAKEN" }), {
+          status: 409,
+        });
+      }
+      return new Response(JSON.stringify({ data: null }), { status: 200 });
+    });
+
+    const { getByText, getAllByText } = render(<OrganizationsScreen />, {
+      wrapper: makeWrapper(),
+    });
+
+    fireEvent.press(getAllByText("Edit")[0]);
+    await waitFor(() => expect(getByText("Edit practice details")).toBeTruthy());
+
+    fireEvent.press(getByText("Save changes"));
+
+    await waitFor(() => {
+      expect(
+        getByText(/that practice name is already taken/i),
+      ).toBeTruthy();
+    });
+    expect(patchedUrl).toContain("/api/organizations/prov-1");
+  });
+});

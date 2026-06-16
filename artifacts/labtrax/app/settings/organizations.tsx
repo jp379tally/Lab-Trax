@@ -387,10 +387,58 @@ function OrgCard({ m, colors, styles }: { m: OrgMembership; colors: ThemeColors;
         </View>
       )}
 
-      {isAdmin && orgId && org?.type === "lab" && (
+      {type === "provider" && (
+        <View style={[styles.detailsSection, { borderTopColor: colors.border }]}>
+          <View style={styles.detailsSectionHeader}>
+            <Text style={[styles.detailsSectionTitle, { color: colors.textSecondary }]}>Practice details</Text>
+            {isAdmin && (
+              <Pressable
+                style={[styles.editLabBtn, { borderColor: colors.border, backgroundColor: colors.surfaceAlt }]}
+                onPress={() => setEditOpen(true)}
+                hitSlop={8}
+              >
+                <Ionicons name="pencil-outline" size={12} color={colors.textSecondary} />
+                <Text style={[styles.editLabBtnText, { color: colors.textSecondary }]}>Edit</Text>
+              </Pressable>
+            )}
+          </View>
+          {org?.phone ? (
+            <View style={styles.detailRow}>
+              <Text style={[styles.detailLabel, { color: colors.textTertiary }]}>Phone</Text>
+              <Text style={[styles.detailValue, { color: colors.text }]}>{org.phone}</Text>
+            </View>
+          ) : null}
+          {org?.billingEmail ? (
+            <View style={styles.detailRow}>
+              <Text style={[styles.detailLabel, { color: colors.textTertiary }]}>Email</Text>
+              <Text style={[styles.detailValue, { color: colors.text }]}>{org.billingEmail}</Text>
+            </View>
+          ) : null}
+          {(org?.addressLine1 || org?.city || org?.state || org?.zip) ? (
+            <View style={styles.detailRow}>
+              <Text style={[styles.detailLabel, { color: colors.textTertiary }]}>Address</Text>
+              <Text style={[styles.detailValue, { color: colors.text, textAlign: "right", flex: 1 }]}>
+                {[
+                  org?.addressLine1,
+                  org?.addressLine2,
+                  [org?.city, org?.state, org?.zip].filter(Boolean).join(", "),
+                ].filter(Boolean).join("\n")}
+              </Text>
+            </View>
+          ) : null}
+          {!org?.phone && !org?.billingEmail && !org?.addressLine1 && !org?.city && !org?.state && !org?.zip ? (
+            <Text style={[styles.detailLabel, { color: colors.textTertiary }]}>
+              No contact details yet.{isAdmin ? " Tap Edit to add them." : ""}
+            </Text>
+          ) : null}
+        </View>
+      )}
+
+      {isAdmin && orgId && (org?.type === "lab" || org?.type === "provider") && (
         <EditLabSheet
           visible={editOpen}
           orgId={orgId}
+          kind={org?.type === "provider" ? "provider" : "lab"}
           initialValues={{
             name: org?.displayName || org?.name || "",
             license: org?.licenseNumber || "",
@@ -840,6 +888,7 @@ function EditLabSheet({
   onClose,
   colors,
   styles,
+  kind = "lab",
 }: {
   visible: boolean;
   orgId: string;
@@ -857,7 +906,10 @@ function EditLabSheet({
   onClose: () => void;
   colors: ThemeColors;
   styles: ReturnType<typeof makeStyles>;
+  kind?: "lab" | "provider";
 }) {
+  const isLab = kind === "lab";
+  const entityLabel = isLab ? "lab" : "practice";
   const qc = useQueryClient();
   const [name, setName] = useState(initialValues.name);
   const [license, setLicense] = useState(initialValues.license);
@@ -899,7 +951,7 @@ function EditLabSheet({
         body: JSON.stringify({
           name: name.trim(),
           displayName: name.trim(),
-          licenseNumber: license.trim() || undefined,
+          ...(isLab ? { licenseNumber: license.trim() || undefined } : {}),
           phone: phone.trim() || undefined,
           billingEmail: email.trim() || undefined,
           addressLine1: addressLine1.trim() || undefined,
@@ -912,9 +964,9 @@ function EditLabSheet({
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         if (res.status === 409) {
-          throw new Error("That lab name is already taken. Please choose a different name.");
+          throw new Error(`That ${entityLabel} name is already taken. Please choose a different name.`);
         }
-        throw new Error((body as any)?.error || `Failed to update lab (${res.status}).`);
+        throw new Error((body as any)?.error || `Failed to update ${entityLabel} (${res.status}).`);
       }
     },
     onSuccess: () => {
@@ -928,7 +980,7 @@ function EditLabSheet({
 
   function handleSubmit() {
     if (!name.trim()) {
-      setError("Lab name is required.");
+      setError(isLab ? "Lab name is required." : "Practice name is required.");
       return;
     }
     setError(null);
@@ -938,7 +990,7 @@ function EditLabSheet({
   return (
     <FormSheet
       visible={visible}
-      title="Edit lab details"
+      title={isLab ? "Edit lab details" : "Edit practice details"}
       onClose={() => {
         if (editMutation.isPending) return;
         resetToInitial();
@@ -948,8 +1000,10 @@ function EditLabSheet({
       submitting={editMutation.isPending}
       submitLabel="Save changes"
     >
-      <LabField label="Lab name" value={name} onChangeText={setName} placeholder="Acme Dental Lab" colors={colors} styles={styles} autoCapitalize="words" autoFocus />
-      <LabField label="License number" value={license} onChangeText={(t) => setLicense(t.toUpperCase())} placeholder="Lab license number" colors={colors} styles={styles} autoCapitalize="characters" />
+      <LabField label={isLab ? "Lab name" : "Practice name"} value={name} onChangeText={setName} placeholder={isLab ? "Acme Dental Lab" : "Acme Dental Practice"} colors={colors} styles={styles} autoCapitalize="words" autoFocus />
+      {isLab && (
+        <LabField label="License number" value={license} onChangeText={(t) => setLicense(t.toUpperCase())} placeholder="Lab license number" colors={colors} styles={styles} autoCapitalize="characters" />
+      )}
       <LabField label="Phone" value={phone} onChangeText={(t) => setPhone(formatPhone(t))} placeholder="000-000-0000" colors={colors} styles={styles} keyboardType="phone-pad" />
       <LabField label="Billing email" value={email} onChangeText={setEmail} placeholder="lab@example.com" colors={colors} styles={styles} keyboardType="email-address" autoCapitalize="none" />
       <LabField label="Address line 1" value={addressLine1} onChangeText={setAddressLine1} placeholder="123 Main St" colors={colors} styles={styles} autoCapitalize="words" />
