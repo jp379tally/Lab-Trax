@@ -62,6 +62,7 @@ maybe("Two-factor authentication (db integration)", () => {
   // Captured across ordered tests.
   let secret = "";
   let backupCodes: string[] = [];
+  let deviceTrustToken = "";
 
   async function makeSession(uid: string): Promise<string> {
     const { db, userSessions } = dbMod as any;
@@ -212,6 +213,98 @@ maybe("Two-factor authentication (db integration)", () => {
       .post("/api/auth/2fa/challenge")
       .send({ pendingToken: login2.body.pendingToken, code, clientType: "mobile" });
     expect(reuse.status).toBe(422);
+  });
+
+  // ---------------------------------------------------------------------
+  // Trusted "remember this device" path — security guardrail.
+  //
+  // The challenge endpoint can issue a device-trust token (trustDevice:true)
+  // that lets a returning client skip the second factor on /login. Because
+  // this bypasses 2FA, the positive path (a valid token skips the challenge)
+  // and the negative paths (missing / forged / expired token still force the
+  // challenge) must be locked down so a future change can't silently weaken
+  // login security.
+  // ---------------------------------------------------------------------
+
+  it("challenge with trustDevice issues a device-trust token", async () => {
+    const login = await request(appMod.default)
+      .post("/api/auth/login")
+      .send({ username, password, clientType: "mobile" });
+    const r = await request(appMod.default)
+      .post("/api/auth/2fa/challenge")
+      .send({
+        pendingToken: login.body.pendingToken,
+        code: generateSync({ secret }),
+        clientType: "mobile",
+        trustDevice: true,
+        deviceName: "Trusted Test Device",
+      });
+    expect(r.status).toBe(200);
+    expect(r.body.data.success).toBe(true);
+    expect(typeof r.body.data.deviceTrustToken).toBe("string");
+    expect(r.body.data.deviceTrustToken.length).toBeGreaterThan(0);
+    deviceTrustToken = r.body.data.deviceTrustToken;
+  });
+
+  it("login with a valid device-trust token skips the 2FA challenge", async () => {
+    const r = await request(appMod.default)
+      .post("/api/auth/login")
+      .send({ username, password, clientType: "mobile", deviceTrustToken });
+    expect(r.status).toBe(200);
+    // No second factor required — a full session is issued immediately.
+    expect(r.body.requiresTwoFactor).toBeFalsy();
+    expect(r.body.pendingToken).toBeUndefined();
+    expect(typeof r.body.accessToken).toBe("string");
+    expect(typeof r.body.refreshToken).toBe("string");
+  });
+
+  it("login WITHOUT a device-trust token still forces the 2FA challenge", async () => {
+    const r = await request(appMod.default)
+      .post("/api/auth/login")
+      .send({ username, password, clientType: "mobile" });
+    expect(r.status).toBe(200);
+    expect(r.body.requiresTwoFactor).toBe(true);
+    expect(typeof r.body.pendingToken).toBe("string");
+    // No tokens leak before the second factor is satisfied.
+    expect(r.body.accessToken).toBeUndefined();
+    expect(r.body.refreshToken).toBeUndefined();
+  });
+
+  it("login with a forged device-trust token still forces the 2FA challenge", async () => {
+    const r = await request(appMod.default)
+      .post("/api/auth/login")
+      .send({
+        username,
+        password,
+        clientType: "mobile",
+        deviceTrustToken: `forged_${randomBytes(24).toString("hex")}`,
+      });
+    expect(r.status).toBe(200);
+    expect(r.body.requiresTwoFactor).toBe(true);
+    expect(typeof r.body.pendingToken).toBe("string");
+    expect(r.body.accessToken).toBeUndefined();
+    expect(r.body.refreshToken).toBeUndefined();
+  });
+
+  it("login with an EXPIRED device-trust token still forces the 2FA challenge", async () => {
+    const { db, trustedDevices } = dbMod as any;
+    // Seed a trusted-device row for this user whose token has already expired.
+    const expiredPlain = cryptoLib.randomToken(32);
+    await db.insert(trustedDevices).values({
+      userId,
+      tokenHash: cryptoLib.sha256(expiredPlain),
+      deviceName: "Expired Device",
+      expiresAt: new Date(Date.now() - 60_000),
+    });
+
+    const r = await request(appMod.default)
+      .post("/api/auth/login")
+      .send({ username, password, clientType: "mobile", deviceTrustToken: expiredPlain });
+    expect(r.status).toBe(200);
+    expect(r.body.requiresTwoFactor).toBe(true);
+    expect(typeof r.body.pendingToken).toBe("string");
+    expect(r.body.accessToken).toBeUndefined();
+    expect(r.body.refreshToken).toBeUndefined();
   });
 
   it("DELETE / disables 2FA on a valid TOTP and login no longer challenges", async () => {
