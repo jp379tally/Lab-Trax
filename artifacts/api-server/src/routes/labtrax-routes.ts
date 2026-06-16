@@ -23,7 +23,7 @@ import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThreshol
 import { writeCaseMediaToObjectStorage, caseMediaObjectStorageAvailable } from "../lib/case-media-object-storage";
 import multer from "multer";
 import OpenAI, { toFile } from "openai";
-import nodemailer from "nodemailer";
+import { getMailerConfig } from "../lib/mailer";
 import sharp from "sharp";
 import { db } from "@workspace/db";
 import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, caseEvents, caseRestorations, mediaCleanupRuns, systemSettings, installerChangelog, installerUploads, subscriptions, backupRuns, rxPracticeNameAliases, bankTransactions, trustedDevices } from "@workspace/db";
@@ -3398,25 +3398,10 @@ export async function registerRoutes(): Promise<IRouter> {
       userId: (req as any).auth?.userId ?? null,
     });
 
-    const smtpHost = process.env.SMTP_HOST;
-    const smtpUser = process.env.SMTP_USER;
-    const smtpPass = process.env.SMTP_PASS;
-    const smtpPort = process.env.SMTP_PORT;
-    const smtpFrom = process.env.SMTP_FROM || smtpUser || "noreply@labtrax.com";
-
-    if (smtpHost && smtpUser && smtpPass) {
-      try {
-        const transporter = nodemailer.createTransport({
-          host: smtpHost,
-          port: parseInt(smtpPort || "587"),
-          secure: (smtpPort || "587") === "465",
-          auth: { user: smtpUser, pass: smtpPass },
-        });
-        await transporter.sendMail({
-          from: smtpFrom,
-          to: email.trim(),
-          subject: "LabTrax - Email Verification Code",
-          html: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+    const result = await sendMail({
+      to: email.trim(),
+      subject: "LabTrax - Email Verification Code",
+      html: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
             <div style="background: #4A6CF7; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
               <h2 style="margin: 0;">LabTrax</h2>
               <p style="margin: 4px 0 0; opacity: 0.85;">Email Verification</p>
@@ -3429,17 +3414,22 @@ export async function registerRoutes(): Promise<IRouter> {
               <p style="color: #666; font-size: 13px;">This code expires in 10 minutes.</p>
             </div>
           </div>`,
-        });
-      } catch (err: any) {
-        console.error(`[EMAIL VERIFICATION] Failed:`, err?.message || err);
-        return res.status(500).json({ error: "Failed to send verification code." });
-      }
-    } else {
-      console.log(`[EMAIL VERIFICATION] SMTP not configured. Dev mode only — code masked for security.`);
+    });
+    // A skipped send (SMTP unconfigured, the test runner, or a reserved/
+    // undeliverable test domain like @test.local) is not an error — only a
+    // genuine delivery failure should surface as a 500 so the client can retry.
+    if (
+      !result.sent &&
+      result.reason &&
+      !["smtp_not_configured", "reserved_domain", "undeliverable_domain", "disabled_in_test"].includes(result.reason)
+    ) {
+      req.log?.error?.({ reason: result.reason }, "[EMAIL VERIFICATION] send failed");
+      return res.status(500).json({ error: "Failed to send verification code." });
     }
 
+    const smtpConfigured = !!getMailerConfig();
     const isDev = process.env.NODE_ENV === "development";
-    return res.json({ success: true, message: "Verification code sent.", ...(isDev && (!smtpHost || !smtpUser || !smtpPass) ? { demoCode: code } : {}) });
+    return res.json({ success: true, message: "Verification code sent.", ...(isDev && !smtpConfigured ? { demoCode: code } : {}) });
   });
 
   router.post("/verify-email-code", optionalAuth, async (req, res) => {
@@ -3485,34 +3475,21 @@ export async function registerRoutes(): Promise<IRouter> {
       const protocol = domain.includes("localhost") ? "http" : "https";
       const resetLink = `${protocol}://${domain}/reset-password?token=${token}`;
 
-      const smtpHost = process.env.SMTP_HOST;
-      const smtpUser = process.env.SMTP_USER;
-      const smtpPass = process.env.SMTP_PASS;
-      const smtpPort = process.env.SMTP_PORT;
-      const smtpFrom = process.env.SMTP_FROM || smtpUser || "noreply@labtrax.com";
-
-      if (smtpHost && smtpUser && smtpPass) {
-        const transporter = nodemailer.createTransport({
-          host: smtpHost, port: parseInt(smtpPort || "587"),
-          secure: (smtpPort || "587") === "465", auth: { user: smtpUser, pass: smtpPass },
-        });
-        await transporter.sendMail({
-          from: smtpFrom, to: user.email!,
-          subject: "LabTrax - Password Reset",
-          html: `<div style="font-family: Arial; max-width: 600px; margin: 0 auto;">
+      await sendMail({
+        to: user.email!,
+        subject: "LabTrax - Password Reset",
+        html: `<div style="font-family: Arial; max-width: 600px; margin: 0 auto;">
             <div style="background: #4A6CF7; color: white; padding: 20px; border-radius: 8px 8px 0 0;"><h2 style="margin:0;">LabTrax</h2><p style="margin:4px 0 0; opacity:0.85;">Password Reset</p></div>
             <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
               <p>Hi ${user.username},</p><p>Click below to reset your password:</p>
               <p style="text-align: center; margin: 24px 0;"><a href="${resetLink}" style="display: inline-block; background: #4A6CF7; color: white; padding: 12px 32px; border-radius: 8px; text-decoration: none; font-weight: bold;">Reset Password</a></p>
               <p style="color: #666; font-size: 13px;">Expires in 30 minutes. Username: <strong>${user.username}</strong></p>
             </div></div>`,
-        });
-      } else {
-        console.log(`[EMAIL] SMTP not configured. Reset link generated for ${user.email} — token masked for security.`);
-      }
+      });
 
+      const smtpConfigured = !!getMailerConfig();
       const isDev = process.env.NODE_ENV === "development";
-      return res.json({ success: true, message: "If an account with that email exists, a password reset link has been sent.", ...(isDev && (!smtpHost || !smtpUser || !smtpPass) ? { demoResetLink: resetLink } : {}) });
+      return res.json({ success: true, message: "If an account with that email exists, a password reset link has been sent.", ...(isDev && !smtpConfigured ? { demoResetLink: resetLink } : {}) });
     } catch (error: any) {
       console.error("Forgot password error:", error?.message || error);
       return res.status(500).json({ error: "Failed to process request." });
@@ -3527,29 +3504,15 @@ export async function registerRoutes(): Promise<IRouter> {
       const user = allUsers.find(u => u.email?.toLowerCase() === email.trim().toLowerCase());
       if (!user) return res.json({ success: true, message: "If an account with that email exists, your username has been sent." });
 
-      const smtpHost = process.env.SMTP_HOST;
-      const smtpUser = process.env.SMTP_USER;
-      const smtpPass = process.env.SMTP_PASS;
-      const smtpPort = process.env.SMTP_PORT;
-      const smtpFrom = process.env.SMTP_FROM || smtpUser || "noreply@labtrax.com";
-
-      if (smtpHost && smtpUser && smtpPass) {
-        const transporter = nodemailer.createTransport({
-          host: smtpHost, port: parseInt(smtpPort || "587"),
-          secure: (smtpPort || "587") === "465", auth: { user: smtpUser, pass: smtpPass },
-        });
-        await transporter.sendMail({
-          from: smtpFrom, to: user.email!,
-          subject: "LabTrax - Username Recovery",
-          html: `<div style="font-family: Arial; max-width: 600px; margin: 0 auto;">
+      await sendMail({
+        to: user.email!,
+        subject: "LabTrax - Username Recovery",
+        html: `<div style="font-family: Arial; max-width: 600px; margin: 0 auto;">
             <div style="background: #4A6CF7; color: white; padding: 20px; border-radius: 8px 8px 0 0;"><h2 style="margin:0;">LabTrax</h2><p style="margin:4px 0 0; opacity:0.85;">Username Recovery</p></div>
             <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
               <p>Your username is: <strong>${user.username}</strong></p>
             </div></div>`,
-        });
-      } else {
-        console.log(`[EMAIL] SMTP not configured. Username reminder generated for ${user.email} — masked for security.`);
-      }
+      });
       return res.json({ success: true, message: "If an account with that email exists, your username has been sent." });
     } catch (error: any) {
       return res.status(500).json({ error: "Failed to process request." });

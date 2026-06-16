@@ -14,6 +14,32 @@ const mxCache = new Map<string, { ok: boolean; ts: number }>();
 const MX_TTL_MS = 60 * 60 * 1000;
 const MX_NEG_TTL_MS = 10 * 60 * 1000;
 
+// RFC 2606 / 6761 / 6762 reserved + documentation domains that can never receive
+// real mail. Dispatching verification or recovery codes to these (e.g. the
+// `@test.local` fixtures used throughout the suite) produces a flood of bounce
+// non-delivery notices back to the SMTP_FROM inbox, so we never send to them.
+const RESERVED_EMAIL_TLDS = new Set([
+  "local",
+  "test",
+  "example",
+  "invalid",
+  "localhost",
+]);
+const RESERVED_EMAIL_DOMAINS = new Set([
+  "example.com",
+  "example.net",
+  "example.org",
+]);
+
+function isReservedEmailDomain(email: string): boolean {
+  const m = EMAIL_RE.exec(email.trim());
+  if (!m) return true;
+  const domain = m[1].toLowerCase();
+  if (RESERVED_EMAIL_DOMAINS.has(domain)) return true;
+  const tld = domain.split(".").pop() ?? "";
+  return RESERVED_EMAIL_TLDS.has(tld);
+}
+
 async function hasDeliverableDomain(email: string): Promise<boolean> {
   const m = EMAIL_RE.exec(email.trim());
   if (!m) return false;
@@ -62,6 +88,12 @@ export interface SendMailResult {
 }
 
 export async function sendMail(opts: SendMailOptions): Promise<SendMailResult> {
+  // Never dispatch real mail from the test runner. The suite exercises the
+  // verification/recovery endpoints with fixture addresses; without this guard a
+  // configured SMTP in the environment turns every test run into real bounce spam.
+  if (process.env.VITEST) {
+    return { sent: false, reason: "disabled_in_test" };
+  }
   const cfg = getMailerConfig();
   if (!cfg) {
     logger.warn(
@@ -69,6 +101,13 @@ export async function sendMail(opts: SendMailOptions): Promise<SendMailResult> {
       "[mail] SMTP not configured; skipping send"
     );
     return { sent: false, reason: "smtp_not_configured" };
+  }
+  if (isReservedEmailDomain(opts.to)) {
+    logger.warn(
+      { to: opts.to, subject: opts.subject },
+      "[mail] recipient is a reserved/undeliverable test domain; skipping send"
+    );
+    return { sent: false, reason: "reserved_domain" };
   }
   if (!(await hasDeliverableDomain(opts.to))) {
     logger.warn(
