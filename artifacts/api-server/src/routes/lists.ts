@@ -20,7 +20,7 @@ router.get(
     const { organizationId } = orgIdQuery.parse(req.query);
     await requireAnyRole(uid(req), organizationId, ADMIN_ROLES);
     const rows = await db.query.labLocations.findMany({
-      where: eq(labLocations.organizationId, organizationId),
+      where: eq(labLocations.labOrganizationId, organizationId),
       orderBy: [asc(labLocations.sortOrder), asc(labLocations.name)],
     });
     return ok(res, rows);
@@ -43,7 +43,7 @@ router.post(
     const code = input.code.trim().toUpperCase();
     const existing = await db.query.labLocations.findFirst({
       where: (t, { and, eq: deq }) =>
-        and(deq(t.organizationId, input.organizationId), deq(t.code, code)),
+        and(deq(t.labOrganizationId, input.organizationId), deq(t.code, code)),
     });
     if (existing) {
       throw new HttpError(409, `A location with code "${code}" already exists.`);
@@ -51,7 +51,7 @@ router.post(
     const [row] = await db
       .insert(labLocations)
       .values({
-        organizationId: input.organizationId,
+        labOrganizationId: input.organizationId,
         code,
         name: input.name.trim(),
         sortOrder: input.sortOrder ?? 0,
@@ -69,7 +69,7 @@ router.patch(
       where: eq(labLocations.id, String(req.params["id"])),
     });
     if (!loc) throw new HttpError(404, "Location not found.");
-    await requireAnyRole(uid(req), loc.organizationId, ADMIN_ROLES);
+    await requireAnyRole(uid(req), loc.labOrganizationId, ADMIN_ROLES);
     const input = z
       .object({
         code: z.string().min(1).max(20).optional(),
@@ -83,7 +83,7 @@ router.patch(
       if (newCode !== loc.code) {
         const clash = await db.query.labLocations.findFirst({
           where: (t, { and, eq: deq }) =>
-            and(deq(t.organizationId, loc.organizationId), deq(t.code, newCode)),
+            and(deq(t.labOrganizationId, loc.labOrganizationId), deq(t.code, newCode)),
         });
         if (clash) {
           throw new HttpError(409, `A location with code "${newCode}" already exists.`);
@@ -113,7 +113,7 @@ router.delete(
       where: eq(labLocations.id, String(req.params["id"])),
     });
     if (!loc) throw new HttpError(404, "Location not found.");
-    await requireAnyRole(uid(req), loc.organizationId, ADMIN_ROLES);
+    await requireAnyRole(uid(req), loc.labOrganizationId, ADMIN_ROLES);
     await db.delete(labLocations).where(eq(labLocations.id, loc.id));
     return ok(res, { deleted: true });
   })

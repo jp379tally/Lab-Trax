@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { and, asc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
-import { labLocations, organizations, organizationMemberships } from "@workspace/db";
+import { labLocations, organizationMemberships } from "@workspace/db";
 import { HttpError, ok } from "../lib/http";
 import { ADMIN_ROLES, requireAnyRole } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
@@ -54,14 +54,14 @@ router.get(
     const allRows = await db
       .select()
       .from(labLocations)
-      .where(eq(labLocations.organizationId, organizationId))
+      .where(eq(labLocations.labOrganizationId, organizationId))
       .orderBy(asc(labLocations.sortOrder), asc(labLocations.createdAt));
 
     let rows = allRows;
 
     if (allRows.length === 0) {
       const seedValues = BUILT_IN_STATIONS.map((s, i) => ({
-        organizationId,
+        labOrganizationId: organizationId,
         name: s.name,
         code: s.code,
         isActive: true,
@@ -75,7 +75,7 @@ router.get(
       rows = inserted.length > 0 ? inserted : await db
         .select()
         .from(labLocations)
-        .where(eq(labLocations.organizationId, organizationId))
+        .where(eq(labLocations.labOrganizationId, organizationId))
         .orderBy(asc(labLocations.sortOrder), asc(labLocations.createdAt));
     }
 
@@ -106,7 +106,7 @@ router.post(
     const [created] = await db
       .insert(labLocations)
       .values({
-        organizationId: body.organizationId,
+        labOrganizationId: body.organizationId,
         name: body.name.trim(),
         code: body.code.trim(),
         isActive: body.isActive,
@@ -129,7 +129,7 @@ router.patch(
     });
     if (!existing) throw new HttpError(404, "Location not found.");
 
-    await requireAnyRole(userId, existing.organizationId, ADMIN_ROLES);
+    await requireAnyRole(userId, existing.labOrganizationId, ADMIN_ROLES);
 
     const body = z
       .object({
@@ -167,7 +167,7 @@ router.delete(
     });
     if (!existing) throw new HttpError(404, "Location not found.");
 
-    await requireAnyRole(userId, existing.organizationId, ADMIN_ROLES);
+    await requireAnyRole(userId, existing.labOrganizationId, ADMIN_ROLES);
 
     await db.delete(labLocations).where(eq(labLocations.id, id));
 

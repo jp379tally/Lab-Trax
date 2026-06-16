@@ -2188,20 +2188,21 @@ export const labLocations = pgTable(
     id: varchar("id")
       .primaryKey()
       .default(sql`gen_random_uuid()`),
-    organizationId: varchar("organization_id")
+    labOrganizationId: varchar("lab_organization_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     code: text("code").notNull(),
+    description: text("description"),
     isActive: boolean("is_active").default(true).notNull(),
     sortOrder: integer("sort_order").default(0).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (table) => ({
-    orgIdx: index("lab_locations_org_idx").on(table.organizationId),
-    orgCodeUnique: uniqueIndex("lab_locations_org_code_unique").on(
-      table.organizationId,
+    orgIdx: index("lab_locations_org_idx").on(table.labOrganizationId),
+    orgCodeUnique: uniqueIndex("lab_locations_org_code_uniq").on(
+      table.labOrganizationId,
       table.code,
     ),
   }),
