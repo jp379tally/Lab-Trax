@@ -464,14 +464,12 @@ maybe("Case creation → invoice invariants (db integration)", () => {
 
     const list: any[] = r.body.data ?? r.body;
     const forThisCase = list.filter(
-      (inv: any) =>
-        inv.invoiceNumber === `INV-${caseNumber}` ||
-        inv.invoiceNumber === `M-${caseNumber}`
+      (inv: any) => inv.invoiceNumber === `INV-${caseNumber}`
     );
 
     expect(
       forThisCase,
-      "expected exactly one invoice (INV-) for the mobile case, not a duplicate M- row"
+      "expected exactly one invoice (INV-) for the mobile case, no duplicate or M- row"
     ).toHaveLength(1);
     expect(forThisCase[0].invoiceNumber).toBe(`INV-${caseNumber}`);
   });

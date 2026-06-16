@@ -1307,6 +1307,46 @@ router.post(
       );
     }
 
+    // For freshly created invoices, synthesize a line item from the mobile
+    // blob's price so the desktop editor shows a line item that matches the
+    // total (instead of opening an empty invoice with a $0 total).
+    if (legacyInvoice) {
+      const blobPrice = Number(parsedBlob.price ?? 0);
+      if (Number.isFinite(blobPrice) && blobPrice > 0) {
+        const desc = parsedBlob.caseType
+          ? String(parsedBlob.caseType)
+          : parsedBlob.patientName
+            ? `Case for ${String(parsedBlob.patientName)}`
+            : "Dental restoration";
+        const lineTotalStr = calculateLineTotal(1, String(blobPrice));
+        await db.insert(invoiceLineItems).values({
+          invoiceId: targetLegacyInvoice.id,
+          toothNumber: null,
+          description: desc,
+          quantity: 1,
+          unitPrice: String(blobPrice),
+          lineTotal: lineTotalStr,
+          sortOrder: 0,
+        });
+        const [updatedLegacy] = await db
+          .update(invoices)
+          .set({
+            subtotal: lineTotalStr,
+            total: lineTotalStr,
+            balanceDue: lineTotalStr,
+            issuedAt: new Date(),
+            status: "open" as const,
+            dueAt: invoiceDueDate(new Date()),
+            updatedByUserId: userId,
+          })
+          .where(eq(invoices.id, targetLegacyInvoice.id))
+          .returning();
+        if (updatedLegacy) {
+          return ok(res, updatedLegacy, 201);
+        }
+      }
+    }
+
     return ok(res, targetLegacyInvoice, legacyInvoice ? 201 : 200);
   })
 );
@@ -1757,8 +1797,8 @@ function toMobileInvoice(lc: any, parsed: any, localInvoiceId: string) {
   const total = Number.isFinite(price) ? price.toFixed(2) : "0.00";
   const caseNumber = String(parsed.caseNumber ?? "");
   const invoiceNumber = caseNumber
-    ? `M-${caseNumber}`
-    : `M-${localInvoiceId.slice(-8)}`;
+    ? `INV-${caseNumber}`
+    : `INV-${localInvoiceId.slice(-8)}`;
   return {
     id: `mobile:${localInvoiceId}`,
     invoiceNumber,
@@ -2289,6 +2329,17 @@ router.get(
       where: eq(invoiceLineItems.invoiceId, invoice.id),
       orderBy: [invoiceLineItems.sortOrder],
     });
+    if (items.length === 0 && Number(invoice.total) !== 0) {
+      req.log.warn(
+        {
+          invoiceId: invoice.id,
+          invoiceNumber: invoice.invoiceNumber,
+          total: invoice.total,
+          labOrganizationId: invoice.labOrganizationId,
+        },
+        "invoice_items_empty_nonzero_total: invoice has no line items but a non-zero total; possible mobile-origin creation gap"
+      );
+    }
     const paymentRows = await db.query.payments.findMany({
       where: eq(payments.invoiceId, invoice.id),
       orderBy: [desc(payments.paidAt)],
