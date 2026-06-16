@@ -28,6 +28,18 @@ args = "regression-tests"
 task = "workflow.run"
 args = "EAS iOS Build + Submit"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "desktop-notif-test"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "desktop-full-test"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "typecheck-all"
+
 [[workflows.workflow]]
 name = "api-server-tests"
 author = "agent"
@@ -60,6 +72,39 @@ args = "bash scripts/eas-ios-build.sh"
 
 [workflows.workflow.metadata]
 outputType = "console"
+
+[[workflows.workflow]]
+name = "desktop-notif-test"
+author = "agent"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/labtrax-desktop run test -- --reporter=verbose src/__tests__/notification-case-navigation.test.tsx"
+
+[[workflows.workflow]]
+name = "desktop-full-test"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/labtrax-desktop run test"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "typecheck-all"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm run typecheck"
+
+[workflows.workflow.metadata]
+isValidation = true
 
 [agent]
 stack = "PNPM_WORKSPACE"

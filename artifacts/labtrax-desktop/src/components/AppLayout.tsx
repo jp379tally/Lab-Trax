@@ -139,7 +139,7 @@ const SECURITY_REASONS = new Set([
   "suspicious_signin",
 ]);
 
-function getNotificationDestination(notif: Notification): string | null {
+export function getNotificationDestination(notif: Notification): string | null {
   const data = notif.dataJson as Record<string, unknown> | null | undefined;
 
   if (

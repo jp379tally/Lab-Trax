@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useAiPanel } from "@/lib/ai-panel-context";
 import { useColumnWidths } from "@/hooks/useColumnWidths";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -1082,6 +1082,7 @@ function readIteroActiveBatch(): { batchId: string; caseIds: string[]; importedA
 
 export default function CasesPage() {
   const [, setLocation] = useLocation();
+  const urlSearch = useSearch();
   const { user } = useAuth();
   const isPageAdmin = user?.role === "admin" || user?.role === "owner";
 
@@ -1117,7 +1118,7 @@ export default function CasesPage() {
   const [iteroActiveBatch, setIteroActiveBatch] = useState<{ batchId: string; caseIds: string[]; importedAt: string; label: string } | null>(null);
   const pageRef = useRef<HTMLDivElement>(null);
   const scrollRestoredRef = useRef(false);
-  const deepLinkOpenedRef = useRef(false);
+  const lastProcessedCaseIdRef = useRef<string | null>(null);
 
   const qc = useQueryClient();
 
@@ -1286,12 +1287,15 @@ export default function CasesPage() {
   }
 
   // Deep-link: if the URL contains ?caseId=<id>, auto-open that case in the drawer.
+  // Uses useSearch() so the effect re-fires whenever the query string changes, even
+  // when the component stays mounted (e.g. notification "View" click while on /cases).
+  // lastProcessedCaseIdRef prevents re-opening the same case on unrelated re-renders.
   useEffect(() => {
-    if (deepLinkOpenedRef.current) return;
-    const params = new URLSearchParams(window.location.search);
+    const params = new URLSearchParams(urlSearch);
     const targetId = params.get("caseId");
     if (!targetId || isLoading) return;
-    deepLinkOpenedRef.current = true;
+    if (targetId === lastProcessedCaseIdRef.current) return;
+    lastProcessedCaseIdRef.current = targetId;
     const found = data?.find((c) => c.id === targetId);
     if (found) {
       setSelected(found);
@@ -1300,7 +1304,7 @@ export default function CasesPage() {
         .then((fresh) => setSelected(fresh))
         .catch(() => {/* case not found or inaccessible */});
     }
-  }, [data, isLoading]);
+  }, [urlSearch, data, isLoading]);
 
   useEffect(() => {
     const batch = readIteroActiveBatch();

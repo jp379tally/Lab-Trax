@@ -773,3 +773,28 @@ A workflow becomes protected when the user explicitly confirms it is working and
 4. **The workflow is now protected** — from this point forward, every code change that touches this workflow must follow the Zero-Regression Process above.
 
 When in doubt about whether a behavior is protected, treat it as protected.
+
+---
+
+## Protected Workflow: Desktop Notification → Case Navigation
+
+Clicking **View** on a notification that carries a `caseId` (iTero import notifications and `alert`-type notifications) must always open the correct case drawer in the Cases page, regardless of whether the user is already on `/cases` or navigating from another page.
+
+Protected sub-behaviors:
+
+- **Initial deep-link on mount** — when CasesPage mounts with `?caseId=<id>` in the URL (e.g. navigating from a notification "View" click on a different page), the case drawer opens for the identified case within the same render cycle after data loads.
+- **Same-page URL change re-opens drawer** — when the user is already on `/cases` and clicks "View" on a second notification (or any action that changes only the query string via `setLocation("/cases?caseId=X")`), the drawer opens for the new case without requiring a page remount. This was the primary regression: the old `[data, isLoading]` dependency array did not re-fire when only the search string changed.
+- **Second notification replaces first** — clicking "View" on a different case while a drawer is already open replaces it with the newly linked case (no stale-ref lock-out).
+- **Correct destination from `getNotificationDestination`** — `case_imported_from_itero` notifications and `alert` notifications with a `caseId` in `dataJson` both route to `/cases?caseId=<encodeURIComponent(id)>`. Notification types without a `caseId` (security alerts, etc.) are not affected.
+
+Root causes fixed:
+
+1. `deepLinkOpenedRef` was a one-shot boolean (`useRef(false)` set to `true` on first use) — replaced with `lastProcessedCaseIdRef` that tracks the last *processed* caseId, so a new caseId always triggers the drawer but the same caseId does not re-open.
+2. The `useEffect` depended on `[data, isLoading]` — the search string (`useSearch()`) was added to the dependency array so the effect re-fires on any URL query change even when the component stays mounted.
+
+Automated gate: `pnpm --filter @workspace/labtrax-desktop run test` — file `src/__tests__/notification-case-navigation.test.tsx`
+
+| Test layer | Coverage |
+|-----------|---------|
+| Static — `src/__tests__/notification-case-navigation.test.tsx` | Asserts `useSearch` is imported, `search` is in the effect deps, the one-shot boolean guard is gone, `lastProcessedCaseIdRef` is used |
+| Runtime — `src/__tests__/notification-case-navigation.test.tsx` | `getNotificationDestination` maps all notification types correctly; CasesPage calls `apiFetch('/cases/abc')` on initial mount with `?caseId=abc` and after same-page URL navigation to `?caseId=abc` |
