@@ -114,7 +114,7 @@ maybe("Locations (db integration)", () => {
       users,
     } = dbMod as any;
 
-    await db.delete(labLocations).where(eq(labLocations.organizationId, labOrgId));
+    await db.delete(labLocations).where(eq(labLocations.labOrganizationId, labOrgId));
     await db.delete(userSessions).where(inArray(userSessions.userId, [adminId, nonAdminId]));
     await db.delete(organizationMemberships).where(
       inArray(organizationMemberships.userId, [adminId, nonAdminId]),
@@ -206,7 +206,7 @@ maybe("Locations (db integration)", () => {
     expect(r.body.data).toBeDefined();
     expect(r.body.data.name).toBe(name);
     expect(r.body.data.code).toBe(code);
-    expect(r.body.data.organizationId).toBe(labOrgId);
+    expect(r.body.data.labOrganizationId).toBe(labOrgId);
     expect(r.body.data.isActive).toBe(true);
     expect(r.body.data.sortOrder).toBe(99);
   });
