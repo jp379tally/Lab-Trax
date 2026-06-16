@@ -68,6 +68,27 @@ interface Category {
   isArchived: boolean;
 }
 
+interface Location {
+  id: string;
+  labOrganizationId: string;
+  code: string;
+  name: string;
+  description: string | null;
+  sortOrder: number;
+}
+
+interface LocationForm {
+  code: string;
+  name: string;
+  description: string;
+}
+
+const emptyLocationForm = (): LocationForm => ({
+  code: "",
+  name: "",
+  description: "",
+});
+
 const TYPE_TABS: { key: VendorType; label: string }[] = [
   { key: "vendor", label: "Vendors" },
   { key: "employee", label: "Employees" },
@@ -98,7 +119,7 @@ const KIND_LABEL: Record<string, string> = {
   transfer: "Transfer",
 };
 
-type Tab = VendorType | "categories";
+type Tab = VendorType | "categories" | "locations";
 
 interface VendorForm {
   name: string;
@@ -187,6 +208,9 @@ function ListsContent({ organizationId }: { organizationId: string }) {
   const [showDrawer, setShowDrawer] = useState(false);
   const [drawerVendor, setDrawerVendor] = useState<Vendor | null>(null);
   const [drawerCategory, setDrawerCategory] = useState<Category | null>(null);
+  const [drawerLocation, setDrawerLocation] = useState<Location | null>(null);
+  const [locationForm, setLocationForm] = useState<LocationForm>(emptyLocationForm());
+  const [confirmDeleteLocation, setConfirmDeleteLocation] = useState<Location | null>(null);
   const [vendorForm, setVendorForm] = useState<VendorForm>(emptyVendorForm("vendor"));
   const [categoryForm, setCategoryForm] = useState<CategoryForm>(emptyCategoryForm());
   const [txnsVendor, setTxnsVendor] = useState<Vendor | null>(null);
@@ -210,8 +234,16 @@ function ListsContent({ organizationId }: { organizationId: string }) {
     enabled: !!organizationId,
   });
 
+  const locationsQuery = useQuery({
+    queryKey: ["lists", "locations", organizationId],
+    queryFn: () =>
+      apiFetch<Location[]>(`/lists/locations?organizationId=${organizationId}`),
+    enabled: !!organizationId,
+  });
+
   const allVendors = vendorsQuery.data ?? [];
   const allCategories = catsQuery.data ?? [];
+  const allLocations = locationsQuery.data ?? [];
 
   // Support deep-linking to a specific vendor via ?vendor=<id>
   // (e.g. from the recurring rules list badge).
@@ -237,6 +269,9 @@ function ListsContent({ organizationId }: { organizationId: string }) {
   }
   function invalidateCategories() {
     qc.invalidateQueries({ queryKey: ["finance", "categories", organizationId] });
+  }
+  function invalidateLocations() {
+    qc.invalidateQueries({ queryKey: ["lists", "locations", organizationId] });
   }
 
   const createVendorMut = useMutation({
@@ -380,6 +415,62 @@ function ListsContent({ organizationId }: { organizationId: string }) {
     },
   });
 
+  const createLocationMut = useMutation({
+    mutationFn: (form: LocationForm) =>
+      apiFetch("/lists/locations", {
+        method: "POST",
+        body: JSON.stringify({
+          organizationId,
+          code: form.code.trim(),
+          name: form.name.trim(),
+          description: form.description.trim() || null,
+        }),
+      }),
+    onSuccess: () => {
+      closeDrawer();
+      invalidateLocations();
+    },
+    onError: (err) => {
+      toast.error("Failed to create location", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    },
+  });
+
+  const updateLocationMut = useMutation({
+    mutationFn: ({ id, form }: { id: string; form: LocationForm }) =>
+      apiFetch(`/lists/locations/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          code: form.code.trim(),
+          name: form.name.trim(),
+          description: form.description.trim() || null,
+        }),
+      }),
+    onSuccess: () => {
+      closeDrawer();
+      invalidateLocations();
+    },
+    onError: (err) => {
+      toast.error("Failed to update location", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    },
+  });
+
+  const deleteLocationMut = useMutation({
+    mutationFn: (loc: Location) =>
+      apiFetch(`/lists/locations/${loc.id}`, { method: "DELETE" }),
+    onSuccess: (_data, loc) => {
+      setConfirmDeleteLocation(null);
+      invalidateLocations();
+      toast.success(`"${loc.name}" deleted`);
+    },
+    onError: () => {
+      toast.error("Failed to delete location");
+    },
+  });
+
   function openAddVendor(type: VendorType) {
     setDrawerVendor(null);
     setDrawerCategory(null);
@@ -411,6 +502,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
   function openAddCategory() {
     setDrawerVendor(null);
     setDrawerCategory(null);
+    setDrawerLocation(null);
     setCategoryForm(emptyCategoryForm());
     setShowDrawer(true);
   }
@@ -418,6 +510,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
   function openEditCategory(c: Category) {
     setDrawerVendor(null);
     setDrawerCategory(c);
+    setDrawerLocation(null);
     setCategoryForm({
       name: c.name,
       kind: c.kind as CategoryForm["kind"],
@@ -428,13 +521,35 @@ function ListsContent({ organizationId }: { organizationId: string }) {
     setShowDrawer(true);
   }
 
+  function openAddLocation() {
+    setDrawerVendor(null);
+    setDrawerCategory(null);
+    setDrawerLocation(null);
+    setLocationForm(emptyLocationForm());
+    setShowDrawer(true);
+  }
+
+  function openEditLocation(loc: Location) {
+    setDrawerVendor(null);
+    setDrawerCategory(null);
+    setDrawerLocation(loc);
+    setLocationForm({
+      code: loc.code,
+      name: loc.name,
+      description: loc.description ?? "",
+    });
+    setShowDrawer(true);
+  }
+
   function closeDrawer() {
     setShowDrawer(false);
     setDrawerVendor(null);
     setDrawerCategory(null);
+    setDrawerLocation(null);
   }
 
   const isCategoriesTab = activeTab === "categories";
+  const isLocationsTab = activeTab === "locations";
 
   const filteredVendors = allVendors
     .filter((v) => v.vendorType === (activeTab as VendorType))
@@ -454,16 +569,26 @@ function ListsContent({ organizationId }: { organizationId: string }) {
       c.kind.toLowerCase().includes(search.toLowerCase())
   );
 
+  const filteredLocations = allLocations.filter(
+    (l) =>
+      !search.trim() ||
+      l.name.toLowerCase().includes(search.toLowerCase()) ||
+      l.code.toLowerCase().includes(search.toLowerCase()) ||
+      (l.description ?? "").toLowerCase().includes(search.toLowerCase())
+  );
+
   const tabCounts = {
     vendor: allVendors.filter((v) => v.vendorType === "vendor").length,
     employee: allVendors.filter((v) => v.vendorType === "employee").length,
     item: allVendors.filter((v) => v.vendorType === "item").length,
     categories: allCategories.length,
+    locations: allLocations.length,
   };
 
   const allTabs: { key: Tab; label: string }[] = [
     ...TYPE_TABS,
     { key: "categories", label: "Categories" },
+    { key: "locations", label: "Locations" },
   ];
 
   function handleTabChange(tab: Tab) {
@@ -474,6 +599,10 @@ function ListsContent({ organizationId }: { organizationId: string }) {
 
   const isVendorPending = createVendorMut.isPending || updateVendorMut.isPending;
   const isCatPending = createCatMut.isPending || updateCatMut.isPending;
+  const isLocPending = createLocationMut.isPending || updateLocationMut.isPending;
+  const locError =
+    (createLocationMut.error instanceof Error ? createLocationMut.error.message : null) ||
+    (updateLocationMut.error instanceof Error ? updateLocationMut.error.message : null);
   const vendorError =
     (createVendorMut.error instanceof Error ? createVendorMut.error.message : null) ||
     (updateVendorMut.error instanceof Error ? updateVendorMut.error.message : null);
@@ -511,7 +640,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Lists</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Manage vendors, employees, billable items, and transaction categories used across the register.
+          Manage vendors, employees, billable items, transaction categories, and lab locations used across the register.
         </p>
       </div>
 
@@ -556,12 +685,12 @@ function ListsContent({ organizationId }: { organizationId: string }) {
               type="search"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder={`Search ${isCategoriesTab ? "categories" : TYPE_LABEL[activeTab as VendorType].toLowerCase() + "s"}…`}
+              placeholder={`Search ${isCategoriesTab ? "categories" : isLocationsTab ? "locations" : TYPE_LABEL[activeTab as VendorType].toLowerCase() + "s"}…`}
               className="w-full h-9 pl-8 pr-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
             />
           </div>
           <div className="flex-1" />
-          {!isCategoriesTab && (
+          {!isCategoriesTab && !isLocationsTab && (
             <>
               <button
                 type="button"
@@ -590,12 +719,14 @@ function ListsContent({ organizationId }: { organizationId: string }) {
             onClick={() =>
               isCategoriesTab
                 ? openAddCategory()
+                : isLocationsTab
+                ? openAddLocation()
                 : openAddVendor(activeTab as VendorType)
             }
             className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-1.5"
           >
             <Plus size={14} />
-            Add {isCategoriesTab ? "Category" : TYPE_LABEL[activeTab as VendorType]}
+            Add {isCategoriesTab ? "Category" : isLocationsTab ? "Location" : TYPE_LABEL[activeTab as VendorType]}
           </button>
         </div>
 
@@ -605,6 +736,14 @@ function ListsContent({ organizationId }: { organizationId: string }) {
             isLoading={catsQuery.isLoading}
             search={search}
             onEdit={openEditCategory}
+          />
+        ) : isLocationsTab ? (
+          <LocationsTable
+            locations={filteredLocations}
+            isLoading={locationsQuery.isLoading}
+            search={search}
+            onEdit={openEditLocation}
+            onDelete={(l) => setConfirmDeleteLocation(l)}
           />
         ) : (
           <VendorsTable
@@ -726,6 +865,48 @@ function ListsContent({ organizationId }: { organizationId: string }) {
         </>
       )}
 
+      {confirmDeleteLocation && (
+        <>
+          <div
+            className="fixed inset-0 z-50 bg-foreground/30"
+            onClick={() => setConfirmDeleteLocation(null)}
+          />
+          <div className="fixed z-50 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[380px] bg-card border border-border rounded-xl shadow-2xl flex flex-col">
+            <div className="px-5 pt-5 pb-4">
+              <h3 className="text-sm font-semibold mb-1">Delete Location?</h3>
+              <p className="text-sm text-muted-foreground">
+                <span className="font-medium text-foreground">"{confirmDeleteLocation.name}"</span>{" "}
+                will be permanently removed from the locations list. Cases already marked at this
+                location are not affected. This cannot be undone.
+              </p>
+            </div>
+            <div className="flex justify-end gap-2 px-5 pb-4">
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteLocation(null)}
+                disabled={deleteLocationMut.isPending}
+                className="h-9 px-4 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80 disabled:opacity-60"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => deleteLocationMut.mutate(confirmDeleteLocation)}
+                disabled={deleteLocationMut.isPending}
+                className="h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-semibold hover:bg-destructive/90 disabled:opacity-60 inline-flex items-center gap-1.5"
+              >
+                {deleteLocationMut.isPending ? (
+                  <Loader2 size={13} className="animate-spin" />
+                ) : (
+                  <Trash2 size={13} />
+                )}
+                Delete
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
       {showDrawer && (
         <>
           <div
@@ -735,10 +916,10 @@ function ListsContent({ organizationId }: { organizationId: string }) {
           <div className="fixed right-0 top-0 bottom-0 w-[420px] z-50 bg-card border-l border-border shadow-2xl flex flex-col">
             <header className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
               <h2 className="text-sm font-semibold">
-                {isCategoriesTab
-                  ? drawerCategory
-                    ? "Edit Category"
-                    : "New Category"
+                {isLocationsTab
+                  ? drawerLocation ? "Edit Location" : "New Location"
+                  : isCategoriesTab
+                  ? drawerCategory ? "Edit Category" : "New Category"
                   : drawerVendor
                   ? `Edit ${TYPE_LABEL[vendorForm.vendorType]}`
                   : `New ${TYPE_LABEL[vendorForm.vendorType]}`}
@@ -753,14 +934,16 @@ function ListsContent({ organizationId }: { organizationId: string }) {
             </header>
 
             <div className="flex-1 overflow-y-auto px-5 py-4">
-              {!isCategoriesTab && drawerVendor && (
+              {!isCategoriesTab && !isLocationsTab && drawerVendor && (
                 <VendorTransactionSummary
                   organizationId={organizationId}
                   vendor={drawerVendor}
                   onViewAll={() => setTxnsVendor(drawerVendor)}
                 />
               )}
-              {isCategoriesTab ? (
+              {isLocationsTab ? (
+                <LocationFormFields form={locationForm} onChange={setLocationForm} error={locError} />
+              ) : isCategoriesTab ? (
                 <CategoryFormFields form={categoryForm} onChange={setCategoryForm} error={catError} />
               ) : (
                 <VendorFormFields
@@ -783,7 +966,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
               >
                 Cancel
               </button>
-              {!isCategoriesTab && drawerVendor && (
+              {!isCategoriesTab && !isLocationsTab && drawerVendor && (
                 <button
                   type="button"
                   onClick={() =>
@@ -796,7 +979,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
                   Save changes
                 </button>
               )}
-              {!isCategoriesTab && !drawerVendor && (
+              {!isCategoriesTab && !isLocationsTab && !drawerVendor && (
                 <button
                   type="button"
                   onClick={() => createVendorMut.mutate(vendorForm)}
@@ -805,6 +988,30 @@ function ListsContent({ organizationId }: { organizationId: string }) {
                 >
                   {isVendorPending && <Loader2 size={13} className="animate-spin" />}
                   Add {TYPE_LABEL[vendorForm.vendorType]}
+                </button>
+              )}
+              {isLocationsTab && drawerLocation && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    updateLocationMut.mutate({ id: drawerLocation.id, form: locationForm })
+                  }
+                  disabled={!locationForm.code.trim() || !locationForm.name.trim() || isLocPending}
+                  className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
+                >
+                  {isLocPending && <Loader2 size={13} className="animate-spin" />}
+                  Save changes
+                </button>
+              )}
+              {isLocationsTab && !drawerLocation && (
+                <button
+                  type="button"
+                  onClick={() => createLocationMut.mutate(locationForm)}
+                  disabled={!locationForm.code.trim() || !locationForm.name.trim() || isLocPending}
+                  className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
+                >
+                  {isLocPending && <Loader2 size={13} className="animate-spin" />}
+                  Add Location
                 </button>
               )}
               {isCategoriesTab && drawerCategory && (
@@ -984,6 +1191,100 @@ function VendorsTable({
                     <Trash2 size={13} />
                   </button>
                 )}
+              </div>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function LocationsTable({
+  locations,
+  isLoading,
+  search,
+  onEdit,
+  onDelete,
+}: {
+  locations: Location[];
+  isLoading: boolean;
+  search: string;
+  onEdit: (l: Location) => void;
+  onDelete: (l: Location) => void;
+}) {
+  type LocKey = keyof Pick<Location, "code" | "name" | "description">;
+  const [sortKey, setSortKey] = useState<LocKey>("name");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+
+  function handleSort(key: string) {
+    if (key === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSortKey(key as LocKey); setSortDir("asc"); }
+  }
+
+  const sorted = [...locations].sort((a, b) => {
+    const av = String(a[sortKey] ?? "").toLowerCase();
+    const bv = String(b[sortKey] ?? "").toLowerCase();
+    return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
+  });
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-12 text-muted-foreground">
+        <Loader2 size={16} className="animate-spin mr-2" />
+        Loading…
+      </div>
+    );
+  }
+  if (locations.length === 0) {
+    return (
+      <div className="py-12 text-center text-sm text-muted-foreground">
+        {search.trim()
+          ? "No results match your search."
+          : `No locations yet. Click "Add Location" to create one.`}
+      </div>
+    );
+  }
+  return (
+    <table className="w-full text-sm">
+      <thead className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
+        <tr>
+          <SortTh label="Code" sortKey="code" active={sortKey === "code"} dir={sortDir} onClick={handleSort} className="px-4 w-28" />
+          <SortTh label="Name" sortKey="name" active={sortKey === "name"} dir={sortDir} onClick={handleSort} className="px-4" />
+          <SortTh label="Description" sortKey="description" active={sortKey === "description"} dir={sortDir} onClick={handleSort} />
+          <th className="px-2 py-2 w-16" />
+        </tr>
+      </thead>
+      <tbody>
+        {sorted.map((loc) => (
+          <tr key={loc.id} className="border-t border-border hover:bg-secondary/20">
+            <td className="px-4 py-2.5">
+              <span className="font-mono text-xs bg-secondary px-1.5 py-0.5 rounded">
+                {loc.code}
+              </span>
+            </td>
+            <td className="px-4 py-2.5 font-medium">{loc.name}</td>
+            <td className="px-3 py-2.5 text-muted-foreground text-xs truncate max-w-[260px]">
+              {loc.description || "—"}
+            </td>
+            <td className="px-2 py-2.5 text-right">
+              <div className="flex items-center justify-end gap-1">
+                <button
+                  type="button"
+                  onClick={() => onEdit(loc)}
+                  className="h-7 w-7 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground"
+                  aria-label="Edit"
+                >
+                  <Pencil size={13} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onDelete(loc)}
+                  className="h-7 w-7 rounded-md hover:bg-destructive/10 flex items-center justify-center text-muted-foreground hover:text-destructive"
+                  aria-label="Delete"
+                >
+                  <Trash2 size={13} />
+                </button>
               </div>
             </td>
           </tr>
@@ -1578,6 +1879,62 @@ function VendorTransactionsModal({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function LocationFormFields({
+  form,
+  onChange,
+  error,
+}: {
+  form: LocationForm;
+  onChange: (f: LocationForm) => void;
+  error: string | null;
+}) {
+  return (
+    <div className="space-y-4">
+      <div>
+        <label className="block text-xs font-medium mb-1">
+          Code <span className="text-destructive">*</span>
+        </label>
+        <input
+          type="text"
+          value={form.code}
+          onChange={(e) => onChange({ ...form, code: e.target.value })}
+          placeholder="e.g. LAB-A, STATION-1"
+          maxLength={20}
+          className="w-full h-9 px-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
+        />
+        <p className="text-[11px] text-muted-foreground mt-1">
+          Short unique identifier used in the "Locate Case" picker.
+        </p>
+      </div>
+      <div>
+        <label className="block text-xs font-medium mb-1">
+          Name <span className="text-destructive">*</span>
+        </label>
+        <input
+          type="text"
+          value={form.name}
+          onChange={(e) => onChange({ ...form, name: e.target.value })}
+          placeholder="e.g. Wax Lab, Porcelain Station"
+          className="w-full h-9 px-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
+        />
+      </div>
+      <div>
+        <label className="block text-xs font-medium mb-1">Description</label>
+        <textarea
+          value={form.description}
+          onChange={(e) => onChange({ ...form, description: e.target.value })}
+          placeholder="Optional — describe this location or station"
+          rows={3}
+          className="w-full px-3 py-2 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary resize-none"
+        />
+      </div>
+      {error && (
+        <p className="text-xs text-destructive">{error}</p>
+      )}
     </div>
   );
 }

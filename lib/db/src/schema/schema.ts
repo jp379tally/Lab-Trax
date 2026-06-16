@@ -817,6 +817,31 @@ export const caseLocations = pgTable("case_locations", {
   notes: text("notes"),
 });
 
+export const labLocations = pgTable(
+  "lab_locations",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    labOrganizationId: varchar("lab_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    code: text("code").notNull(),
+    name: text("name").notNull(),
+    description: text("description"),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => ({
+    orgIdx: index("lab_locations_org_idx").on(table.labOrganizationId),
+    orgCodeUniq: uniqueIndex("lab_locations_org_code_uniq").on(
+      table.labOrganizationId,
+      table.code,
+    ),
+  }),
+);
+
 export const caseSubmissionQueue = pgTable("case_submission_queue", {
   id: varchar("id")
     .primaryKey()
