@@ -2454,7 +2454,7 @@ export function CaseDrawer({
   const fileDragCounterRef = useRef(0);
 
   const [activeTab, setActiveTab] = useState<CaseTab>("lab-slip");
-  const [historySortOrder, setHistorySortOrder] = useState<"asc" | "desc">("asc");
+  const [historySortOrder, setHistorySortOrder] = useState<"asc" | "desc">("desc");
   const [remakeChainExpanded, setRemakeChainExpanded] = useState(true);
   const [viewingInvoice, setViewingInvoice] = useState<Invoice | null>(null);
   const [lightbox, setLightbox] = useState<
@@ -5503,7 +5503,7 @@ export function CaseDrawer({
               })()}
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
-                  Activity Log
+                  Case History
                 </h3>
                 <div className="flex items-center gap-1.5">
                   <button

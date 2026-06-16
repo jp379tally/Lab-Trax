@@ -404,3 +404,165 @@ maybe("Two-factor authentication (db integration)", () => {
     expect(login.body.requiresTwoFactor).toBeFalsy();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Remembered-devices "sign out" management — list + revoke.
+//
+// The Settings UI on desktop and mobile lists a user's remembered (trusted)
+// devices and lets them sign one out. These are the API guarantees that UI
+// depends on, and the security guarantees that keep one user from touching
+// another user's devices:
+//   - GET /api/auth/2fa/trusted-devices returns ONLY the caller's own
+//     non-expired devices (no cross-user leakage, expired rows hidden).
+//   - DELETE /api/auth/2fa/trusted-devices/:id revokes the caller's own
+//     device, and returns 404 (without deleting) for an id that belongs to
+//     another user — so a stolen/guessed id can't sign out someone else.
+//   - Both endpoints require authentication.
+// ---------------------------------------------------------------------------
+
+maybe("Remembered devices — list & revoke (db integration)", () => {
+  let dbMod: typeof import("@workspace/db");
+  let appMod: { default: import("express").Express };
+  let authLib: typeof import("../lib/auth.js");
+  let cryptoLib: typeof import("../lib/crypto.js");
+
+  const userAId = rid("u2fa_a");
+  const userBId = rid("u2fa_b");
+
+  async function makeSession(uid: string): Promise<string> {
+    const { db, userSessions } = dbMod as any;
+    const sessionId = rid("sess");
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const refresh = authLib.signRefreshToken(uid, sessionId);
+    const hash = createHash("sha256").update(refresh).digest("hex");
+    await db.insert(userSessions).values({ id: sessionId, userId: uid, tokenHash: hash, expiresAt });
+    return authLib.signAccessToken(uid, sessionId);
+  }
+
+  async function seedDevice(
+    uid: string,
+    opts: { deviceName: string; expiresAt: Date },
+  ): Promise<string> {
+    const { db, trustedDevices } = dbMod as any;
+    const [row] = await db
+      .insert(trustedDevices)
+      .values({
+        userId: uid,
+        tokenHash: cryptoLib.sha256(cryptoLib.randomToken(32)),
+        deviceName: opts.deviceName,
+        expiresAt: opts.expiresAt,
+      })
+      .returning({ id: trustedDevices.id });
+    return row.id as string;
+  }
+
+  beforeAll(async () => {
+    process.env["JWT_SECRET"] = process.env["JWT_SECRET"] ?? "labtrax-test-secret-2fa";
+    dbMod = await import("@workspace/db");
+    appMod = await import("../app.js");
+    authLib = await import("../lib/auth.js");
+    cryptoLib = await import("../lib/crypto.js");
+
+    const { db, users } = dbMod as any;
+    for (const uid of [userAId, userBId]) {
+      await db.insert(users).values({
+        id: uid,
+        username: `tfa_dev_${randomBytes(3).toString("hex")}`,
+        password: await cryptoLib.hashPassword("TestPass1!"),
+        email: `${uid}@test.local`,
+        isActive: true,
+      });
+    }
+  });
+
+  afterAll(async () => {
+    if (!SHOULD_RUN) return;
+    const { db, auditLogs, userSessions, trustedDevices, users } = dbMod as any;
+    const ids = [userAId, userBId];
+    await db.delete(auditLogs).where(inArray(auditLogs.userId, ids));
+    await db.delete(trustedDevices).where(inArray(trustedDevices.userId, ids));
+    await db.delete(userSessions).where(inArray(userSessions.userId, ids));
+    await db.delete(users).where(inArray(users.id, ids));
+  });
+
+  const future = () => new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+  const past = () => new Date(Date.now() - 60_000);
+
+  it("GET /trusted-devices requires auth (401 unauthenticated)", async () => {
+    const r = await request(appMod.default).get("/api/auth/2fa/trusted-devices");
+    expect(r.status).toBe(401);
+  });
+
+  it("DELETE /trusted-devices/:id requires auth (401 unauthenticated)", async () => {
+    const r = await request(appMod.default).delete("/api/auth/2fa/trusted-devices/anything");
+    expect(r.status).toBe(401);
+  });
+
+  it("GET /trusted-devices returns only the caller's non-expired devices", async () => {
+    const activeA1 = await seedDevice(userAId, { deviceName: "A laptop", expiresAt: future() });
+    const activeA2 = await seedDevice(userAId, { deviceName: "A phone", expiresAt: future() });
+    const expiredA = await seedDevice(userAId, { deviceName: "A old", expiresAt: past() });
+    const activeB = await seedDevice(userBId, { deviceName: "B phone", expiresAt: future() });
+
+    const access = await makeSession(userAId);
+    const r = await request(appMod.default)
+      .get("/api/auth/2fa/trusted-devices")
+      .set("Authorization", `Bearer ${access}`);
+    expect(r.status).toBe(200);
+
+    const devices = r.body.data.devices as Array<{ id: string }>;
+    const ids = devices.map((d) => d.id);
+    // Both of A's active devices are present.
+    expect(ids).toContain(activeA1);
+    expect(ids).toContain(activeA2);
+    // A's expired device is hidden, and B's device never leaks to A.
+    expect(ids).not.toContain(expiredA);
+    expect(ids).not.toContain(activeB);
+    // Exactly the two active rows for A.
+    expect(ids).toHaveLength(2);
+  });
+
+  it("DELETE /trusted-devices/:id revokes the caller's own device", async () => {
+    const deviceId = await seedDevice(userAId, { deviceName: "A tablet", expiresAt: future() });
+
+    const access = await makeSession(userAId);
+    const del = await request(appMod.default)
+      .delete(`/api/auth/2fa/trusted-devices/${deviceId}`)
+      .set("Authorization", `Bearer ${access}`);
+    expect(del.status).toBe(200);
+    expect(del.body.data.success).toBe(true);
+
+    // It no longer appears in the caller's list.
+    const list = await request(appMod.default)
+      .get("/api/auth/2fa/trusted-devices")
+      .set("Authorization", `Bearer ${access}`);
+    const ids = (list.body.data.devices as Array<{ id: string }>).map((d) => d.id);
+    expect(ids).not.toContain(deviceId);
+
+    // And the row is actually gone from the DB.
+    const { db, trustedDevices } = dbMod as any;
+    const remaining = await db
+      .select({ id: trustedDevices.id })
+      .from(trustedDevices)
+      .where(eq(trustedDevices.id, deviceId));
+    expect(remaining).toHaveLength(0);
+  });
+
+  it("DELETE /trusted-devices/:id returns 404 for another user's device and leaves it intact", async () => {
+    const bDeviceId = await seedDevice(userBId, { deviceName: "B laptop", expiresAt: future() });
+
+    const accessA = await makeSession(userAId);
+    const del = await request(appMod.default)
+      .delete(`/api/auth/2fa/trusted-devices/${bDeviceId}`)
+      .set("Authorization", `Bearer ${accessA}`);
+    expect(del.status).toBe(404);
+
+    // B's device must still exist — A cannot sign out B's device.
+    const { db, trustedDevices } = dbMod as any;
+    const remaining = await db
+      .select({ id: trustedDevices.id })
+      .from(trustedDevices)
+      .where(eq(trustedDevices.id, bDeviceId));
+    expect(remaining).toHaveLength(1);
+  });
+});

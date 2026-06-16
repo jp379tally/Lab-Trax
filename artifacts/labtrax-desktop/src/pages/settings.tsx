@@ -1320,7 +1320,7 @@ interface TrustedDeviceRow {
   expiresAt: string;
 }
 
-function TrustedDevicesSection() {
+export function TrustedDevicesSection() {
   const queryClient = useQueryClient();
   const [revokeError, setRevokeError] = useState<string | null>(null);
 
