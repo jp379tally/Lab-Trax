@@ -2508,6 +2508,11 @@ export function CaseDrawer({
 
   const [editMode, setEditMode] = useState(false);
   const barcodeScanInputRef = useRef<HTMLInputElement>(null);
+  const [barcodeEditMode, setBarcodeEditMode] = useState(false);
+  const [barcodeEditValue, setBarcodeEditValue] = useState("");
+  const [optimisticBarcode, setOptimisticBarcode] = useState<string | null>(null);
+  const [barcodeError, setBarcodeError] = useState<string | null>(null);
+  const barcodeInlineInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (!editMode) return;
     const id = setTimeout(() => barcodeScanInputRef.current?.focus(), 50);
@@ -2922,6 +2927,37 @@ export function CaseDrawer({
     },
     onError: (e: Error) => setEditError(e.message),
   });
+
+  const barcodeMutation = useMutation({
+    mutationFn: (value: string) =>
+      apiFetch(`/cases/${labCase.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ casePanBarcode: value || null }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["cases"] });
+      qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+      setOptimisticBarcode(null);
+      setBarcodeError(null);
+    },
+    onError: (e: Error) => {
+      setOptimisticBarcode(null);
+      setBarcodeError(e.message || "Failed to save barcode");
+    },
+  });
+
+  function commitBarcodeEdit() {
+    const trimmed = barcodeEditValue.trim();
+    setBarcodeEditMode(false);
+    setBarcodeError(null);
+    const effectiveCurrent =
+      optimisticBarcode !== null
+        ? optimisticBarcode
+        : (data?.casePanBarcode ?? labCase.casePanBarcode ?? "");
+    if (trimmed === effectiveCurrent) return;
+    setOptimisticBarcode(trimmed);
+    barcodeMutation.mutate(trimmed);
+  }
 
   const routeMutation = useMutation({
     mutationFn: (status: CaseStatus) =>
@@ -4340,10 +4376,86 @@ export function CaseDrawer({
                       <Field label="Notes" value={notesPreview} />
                     </div>
                     <div className="col-span-2">
-                      <Field
-                        label="Case pan barcode"
-                        value={data?.casePanBarcode ?? labCase.casePanBarcode ?? "—"}
-                      />
+                      <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium mb-0.5">
+                        Case pan barcode
+                      </div>
+                      {barcodeEditMode ? (
+                        <div className="flex items-center gap-1 mt-0.5">
+                          <div className="relative flex-1">
+                            <Barcode
+                              size={13}
+                              className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
+                            />
+                            <input
+                              ref={barcodeInlineInputRef}
+                              value={barcodeEditValue}
+                              onChange={(e) => setBarcodeEditValue(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") { e.preventDefault(); commitBarcodeEdit(); }
+                                if (e.key === "Escape") { setBarcodeEditMode(false); }
+                              }}
+                              placeholder="Scan or type barcode… (blank to clear)"
+                              className="w-full h-7 pl-7 pr-2.5 rounded-md bg-secondary text-sm font-mono border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                              autoComplete="off"
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => commitBarcodeEdit()}
+                            className="h-7 w-7 rounded flex items-center justify-center text-primary hover:bg-primary/10 transition-colors shrink-0"
+                            title="Save barcode"
+                          >
+                            <Check size={13} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setBarcodeEditMode(false)}
+                            className="h-7 w-7 rounded flex items-center justify-center text-muted-foreground hover:bg-secondary transition-colors shrink-0"
+                            title="Cancel"
+                          >
+                            <X size={13} />
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={barcodeMutation.isPending}
+                          onClick={() => {
+                            if (barcodeMutation.isPending) return;
+                            const current =
+                              optimisticBarcode !== null
+                                ? optimisticBarcode
+                                : (data?.casePanBarcode ?? labCase.casePanBarcode ?? "");
+                            setBarcodeEditValue(current);
+                            setBarcodeEditMode(true);
+                            setBarcodeError(null);
+                            setTimeout(() => barcodeInlineInputRef.current?.focus(), 30);
+                          }}
+                          className="group flex items-center gap-1.5 text-sm font-mono mt-0.5 text-left w-full transition-colors min-h-[1.5rem] disabled:opacity-60 disabled:cursor-wait"
+                          title={barcodeMutation.isPending ? "Saving…" : "Click to edit barcode"}
+                        >
+                          <span className={
+                            (optimisticBarcode !== null ? optimisticBarcode : (data?.casePanBarcode ?? labCase.casePanBarcode))
+                              ? "text-foreground"
+                              : "text-muted-foreground"
+                          }>
+                            {optimisticBarcode !== null
+                              ? (optimisticBarcode || "—")
+                              : (data?.casePanBarcode ?? labCase.casePanBarcode ?? "—")}
+                          </span>
+                          {barcodeMutation.isPending ? (
+                            <Loader2 size={11} className="text-muted-foreground animate-spin shrink-0" />
+                          ) : (
+                            <Pencil
+                              size={11}
+                              className="text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                            />
+                          )}
+                        </button>
+                      )}
+                      {barcodeError && (
+                        <p className="text-xs text-destructive mt-1">{barcodeError}</p>
+                      )}
                     </div>
                   </div>
                 ) : (
