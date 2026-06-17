@@ -445,6 +445,14 @@ export default function DashboardScreen() {
             <Ionicons name="chatbubble-ellipses-outline" size={18} color={colors.tint} />
           </Pressable>
           <Pressable
+            style={styles.arrangeBtn}
+            onPress={() => router.push("/batch-locate" as never)}
+            testID="dashboard-batch-locate-btn"
+            hitSlop={8}
+          >
+            <Ionicons name="layers-outline" size={18} color={colors.tint} />
+          </Pressable>
+          <Pressable
             style={styles.aiReaderBtn}
             onPress={() => router.push("/ai-reader/capture?new=1" as never)}
             testID="dashboard-ai-reader-btn"
