@@ -697,6 +697,239 @@ function DatePickerModal({
   );
 }
 
+// ─── 3-step case deletion modal (mobile) ─────────────────────────────────────
+// Step 1 ("pin")     — admin PIN entry → POST /api/cases/delete-initiate
+// Step 2 ("confirm") — "Are you sure?" gate before consuming the OTP
+// Step 3 ("otp")     — 6-digit SMS code → POST /api/cases/bulk-delete
+function CaseDeleteMobileModal({
+  caseId,
+  visible,
+  onClose,
+  onSuccess,
+  styles,
+  colors,
+}: {
+  caseId: string;
+  visible: boolean;
+  onClose: () => void;
+  onSuccess: () => void;
+  styles: ReturnType<typeof makeStyles>;
+  colors: ThemeColors;
+}) {
+  const [step, setStep] = useState<"pin" | "confirm" | "otp">("pin");
+  const [pin, setPin] = useState("");
+  const [otp, setOtp] = useState("");
+  const [deleteSessionToken, setDeleteSessionToken] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [isPending, setIsPending] = useState(false);
+  const [secondsLeft, setSecondsLeft] = useState(600);
+
+  useEffect(() => {
+    if (visible) {
+      setStep("pin");
+      setPin("");
+      setOtp("");
+      setDeleteSessionToken(null);
+      setError(null);
+      setIsPending(false);
+      setSecondsLeft(600);
+    }
+  }, [visible]);
+
+  useEffect(() => {
+    if (step !== "otp") return;
+    const intervalId = setInterval(() => setSecondsLeft((s) => Math.max(0, s - 1)), 1000);
+    return () => clearInterval(intervalId);
+  }, [step]);
+
+  const mm = String(Math.floor(secondsLeft / 60)).padStart(2, "0");
+  const ss = String(secondsLeft % 60).padStart(2, "0");
+
+  async function submitPin() {
+    if (!pin.trim() || isPending) return;
+    setIsPending(true);
+    setError(null);
+    try {
+      const res = await resilientFetch("/api/cases/delete-initiate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ adminPin: pin.trim(), caseIds: [caseId] }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error ?? "Incorrect PIN.");
+      setDeleteSessionToken(data.data.deleteSessionToken);
+      setStep("confirm");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Incorrect PIN.");
+    } finally {
+      setIsPending(false);
+    }
+  }
+
+  async function submitOtp() {
+    if (!otp.trim() || !deleteSessionToken || isPending) return;
+    setIsPending(true);
+    setError(null);
+    try {
+      const res = await resilientFetch("/api/cases/bulk-delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ caseIds: [caseId], deleteSessionToken, smsOtpCode: otp.trim() }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data?.error ?? "Incorrect code or session expired.");
+      }
+      onSuccess();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Incorrect code or session expired.");
+    } finally {
+      setIsPending(false);
+    }
+  }
+
+  async function resendCode() {
+    if (!pin || isPending) return;
+    setIsPending(true);
+    setError(null);
+    try {
+      const res = await resilientFetch("/api/cases/delete-initiate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ adminPin: pin.trim(), caseIds: [caseId] }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error ?? "Could not resend code.");
+      setDeleteSessionToken(data.data.deleteSessionToken);
+      setOtp("");
+      setSecondsLeft(600);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Could not resend code.");
+    } finally {
+      setIsPending(false);
+    }
+  }
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable
+        style={styles.sheetBackdrop}
+        onPress={isPending ? undefined : onClose}
+      >
+        <Pressable style={[styles.sheet, { gap: Spacing.sm }]} onPress={() => undefined}>
+          {step === "pin" && (
+            <>
+              <Text style={styles.sheetTitle}>Delete Case</Text>
+              <Text style={[styles.editLabel, { color: colors.textSecondary, textAlign: "center" }]}>
+                Enter the admin PIN. A verification code will be sent to the lab owner's phone.
+              </Text>
+              <TextInput
+                style={[styles.input, { textAlign: "center" }]}
+                value={pin}
+                onChangeText={setPin}
+                placeholder="Admin PIN"
+                placeholderTextColor={colors.textTertiary}
+                secureTextEntry
+                autoFocus
+                onSubmitEditing={() => void submitPin()}
+                editable={!isPending}
+              />
+              {error ? (
+                <Text style={[styles.editLabel, { color: colors.error, textAlign: "center" }]}>{error}</Text>
+              ) : null}
+              <View style={{ flexDirection: "row", gap: Spacing.sm, marginTop: Spacing.xs }}>
+                <Pressable style={[styles.sheetCancel, { flex: 1 }]} onPress={onClose} disabled={isPending}>
+                  <Text style={styles.sheetCancelText}>Cancel</Text>
+                </Pressable>
+                <Pressable
+                  style={[
+                    styles.labelPrintBtn,
+                    { flex: 1, backgroundColor: colors.error, opacity: isPending || !pin.trim() ? 0.6 : 1 },
+                  ]}
+                  onPress={() => void submitPin()}
+                  disabled={isPending || !pin.trim()}
+                >
+                  {isPending ? <ActivityIndicator size="small" color="#fff" style={{ marginRight: 4 }} /> : null}
+                  <Text style={styles.labelPrintBtnText}>Next</Text>
+                </Pressable>
+              </View>
+            </>
+          )}
+          {step === "confirm" && (
+            <>
+              <Text style={styles.sheetTitle}>Confirm Deletion</Text>
+              <Text style={[styles.editLabel, { color: colors.textSecondary, textAlign: "center" }]}>
+                This will permanently delete this case. A code will be sent to the lab owner's phone. This cannot be undone.
+              </Text>
+              <View style={{ flexDirection: "row", gap: Spacing.sm, marginTop: Spacing.xs }}>
+                <Pressable style={[styles.sheetCancel, { flex: 1 }]} onPress={onClose}>
+                  <Text style={styles.sheetCancelText}>Cancel</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.labelPrintBtn, { flex: 1, backgroundColor: colors.error }]}
+                  onPress={() => { setStep("otp"); setSecondsLeft(600); }}
+                >
+                  <Text style={styles.labelPrintBtnText}>Yes, send code</Text>
+                </Pressable>
+              </View>
+            </>
+          )}
+          {step === "otp" && (
+            <>
+              <Text style={styles.sheetTitle}>Enter SMS Code</Text>
+              <Text style={[styles.editLabel, { color: colors.textSecondary, textAlign: "center" }]}>
+                {"A 6-digit code was sent to the lab owner's phone.\nExpires in "}
+                <Text style={{ color: secondsLeft === 0 ? colors.error : colors.textSecondary }}>
+                  {secondsLeft === 0 ? "expired" : `${mm}:${ss}`}
+                </Text>
+                .
+              </Text>
+              <TextInput
+                style={[styles.input, { textAlign: "center", letterSpacing: 8, fontVariant: ["tabular-nums"] as any }]}
+                value={otp}
+                onChangeText={(t) => setOtp(t.replace(/\D/g, "").slice(0, 6))}
+                placeholder="000000"
+                placeholderTextColor={colors.textTertiary}
+                keyboardType="number-pad"
+                maxLength={6}
+                autoFocus
+                onSubmitEditing={() => void submitOtp()}
+                editable={!isPending}
+              />
+              {error ? (
+                <Text style={[styles.editLabel, { color: colors.error, textAlign: "center" }]}>{error}</Text>
+              ) : null}
+              <Pressable onPress={() => void resendCode()} disabled={isPending}>
+                <Text style={[styles.editLabel, { color: colors.tint, textAlign: "center" }]}>Resend code</Text>
+              </Pressable>
+              <View style={{ flexDirection: "row", gap: Spacing.sm, marginTop: Spacing.xs }}>
+                <Pressable style={[styles.sheetCancel, { flex: 1 }]} onPress={onClose} disabled={isPending}>
+                  <Text style={styles.sheetCancelText}>Cancel</Text>
+                </Pressable>
+                <Pressable
+                  style={[
+                    styles.labelPrintBtn,
+                    {
+                      flex: 1,
+                      backgroundColor: colors.error,
+                      opacity: isPending || otp.length < 6 || secondsLeft === 0 ? 0.6 : 1,
+                    },
+                  ]}
+                  onPress={() => void submitOtp()}
+                  disabled={isPending || otp.length < 6 || secondsLeft === 0}
+                >
+                  {isPending ? <ActivityIndicator size="small" color="#fff" style={{ marginRight: 4 }} /> : null}
+                  <Text style={styles.labelPrintBtnText}>Delete</Text>
+                </Pressable>
+              </View>
+            </>
+          )}
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const insets = useSafeAreaInsets();
@@ -718,9 +951,23 @@ export default function CaseDetailScreen() {
   const invoiceQuery = useInvoice(primaryInvoiceId);
   const invoice = invoiceQuery.data ?? invoiceList[0] ?? null;
 
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const qc = useQueryClient();
+
   const meQuery = useMe();
   const caseOrgId = c?.organizationId ?? c?.labOrganizationId ?? null;
   const canEdit = canEditOrg(meQuery.data, caseOrgId);
+
+  // Admin/owner-only: can initiate the 3-step case deletion flow.
+  const isAdminOfCase = useMemo(() => {
+    const memberships = (meQuery.data as any)?.memberships ?? [];
+    return memberships.some(
+      (m: any) =>
+        (m.labId === caseOrgId || m.organizationId === caseOrgId) &&
+        (m.role === "admin" || m.role === "owner") &&
+        m.status === "active",
+    );
+  }, [meQuery.data, caseOrgId]);
 
   // Lab name for PDF headers: resolve the viewer's membership org that owns this case.
   const labName = useMemo(() => {
@@ -906,6 +1153,17 @@ export default function CaseDetailScreen() {
         colors={colors}
         right={
           <View style={styles.headerRightGroup}>
+            {isAdminOfCase && (
+              <Pressable
+                onPress={() => setShowDeleteModal(true)}
+                hitSlop={8}
+                style={styles.headerIconBtn}
+                testID="case-delete-btn"
+                accessibilityLabel="Delete case"
+              >
+                <Ionicons name="trash-outline" size={20} color={colors.error} />
+              </Pressable>
+            )}
             {active === "history" ? (
               <Pressable
                 onPress={handlePrintHistory}
@@ -1061,6 +1319,20 @@ export default function CaseDetailScreen() {
           </View>
         </Pressable>
       </Modal>
+
+      {/* 3-step deletion security flow — admin/owner only */}
+      <CaseDeleteMobileModal
+        caseId={id}
+        visible={showDeleteModal}
+        onClose={() => setShowDeleteModal(false)}
+        onSuccess={() => {
+          setShowDeleteModal(false);
+          qc.invalidateQueries({ queryKey: ["cases"] });
+          router.back();
+        }}
+        styles={styles}
+        colors={colors}
+      />
     </View>
   );
 }

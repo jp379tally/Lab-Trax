@@ -89,3 +89,33 @@ export function verifyPendingTwoFactorToken(token: string): PendingTwoFactorPayl
   }
   return payload;
 }
+
+const DELETE_SESSION_TOKEN_TTL = "10m";
+
+export type DeleteSessionPayload = {
+  caseIds: string[];
+  labOrgId: string;
+  actorId: string;
+  ownerPhoneTarget: string;
+  type: "case-delete-session";
+  exp?: number;
+};
+
+export function signDeleteSessionToken(payload: {
+  caseIds: string[];
+  labOrgId: string;
+  actorId: string;
+  ownerPhoneTarget: string;
+}): string {
+  return jwt.sign({ ...payload, type: "case-delete-session" }, RESOLVED_JWT_SECRET, {
+    expiresIn: DELETE_SESSION_TOKEN_TTL,
+  });
+}
+
+export function verifyDeleteSessionToken(token: string): DeleteSessionPayload {
+  const payload = jwt.verify(token, RESOLVED_JWT_SECRET) as DeleteSessionPayload;
+  if (payload.type !== "case-delete-session") {
+    throw new Error("Invalid token type: expected case-delete-session token");
+  }
+  return payload;
+}

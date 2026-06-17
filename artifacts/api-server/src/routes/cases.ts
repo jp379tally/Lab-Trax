@@ -62,6 +62,13 @@ import {
   getProviderOrgIdsForUserAndLinks,
   getLinkedProviderOrgsForProviderOrg,
 } from "../lib/cross-lab-doctor";
+import { signDeleteSessionToken, verifyDeleteSessionToken } from "../lib/auth.js";
+import {
+  createVerificationCode,
+  normalizePhoneTarget,
+  verifyCode,
+} from "../lib/verification.js";
+import { normalizePhoneE164 } from "../lib/account-link-sms.js";
 
 // ---------------------------------------------------------------------------
 // Bigram similarity helpers — used for AI-extracted doctor name suggestions.
@@ -2245,10 +2252,199 @@ router.get(
   })
 );
 
+// ─── Case delete security flow ────────────────────────────────────────────────
+// Step 1: POST /cases/delete-initiate — validates admin PIN, finds lab owner,
+//   sends a 6-digit OTP via SMS, and returns a signed 10-min session token.
+// Step 2: POST /cases/bulk-delete   — verifies the session token + OTP, then
+//   soft-deletes the cases. Without a valid token+OTP the endpoint returns 403.
+
+// Rate-limiter: max 3 initiate attempts per 15 min per org (in-process, keyed by orgId).
+const _deleteInitiateStore = new Map<string, { count: number; resetAt: number }>();
+
+function _checkDeleteInitiateRateLimit(orgId: string): boolean {
+  const now = Date.now();
+  const WINDOW_MS = 15 * 60 * 1000;
+  const MAX = 3;
+  const entry = _deleteInitiateStore.get(orgId) ?? { count: 0, resetAt: now + WINDOW_MS };
+  if (entry.resetAt < now) {
+    entry.count = 0;
+    entry.resetAt = now + WINDOW_MS;
+  }
+  entry.count++;
+  _deleteInitiateStore.set(orgId, entry);
+  return entry.count <= MAX;
+}
+
+async function _sendCaseDeleteSms(toPhone: string, code: string): Promise<void> {
+  const sid = process.env["TWILIO_ACCOUNT_SID"];
+  const authToken = process.env["TWILIO_AUTH_TOKEN"];
+  const from = process.env["TWILIO_PHONE_NUMBER"];
+  if (!sid || !authToken || !from) {
+    if (process.env["NODE_ENV"] !== "production") {
+      console.warn(`[DEV] Case-delete OTP for ${toPhone}: ${code}`);
+      return;
+    }
+    throw new HttpError(500, "SMS is not configured. Case deletion cannot be confirmed via SMS.");
+  }
+  const toE164 = normalizePhoneE164(toPhone);
+  if (!toE164) {
+    throw new HttpError(400, `Invalid phone number on file: ${toPhone}. Please update the owner's profile.`);
+  }
+  const url = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`;
+  const smsbody = new URLSearchParams({
+    From: from,
+    To: toE164,
+    Body: `LabTrax security code: ${code}. Used to confirm case deletion. Expires in 10 minutes. If you did not request this, contact your lab immediately.`,
+  });
+  const r = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${Buffer.from(`${sid}:${authToken}`).toString("base64")}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: smsbody,
+  });
+  if (!r.ok) {
+    const data = (await r.json().catch(() => ({}))) as any;
+    throw new HttpError(500, `Failed to send SMS: ${data.message ?? r.statusText}`);
+  }
+}
+
+const deleteInitiateSchema = z.object({
+  adminPin: z.string().min(1),
+  caseIds: z.array(z.string().min(1)).min(1).max(200),
+});
+
+router.post(
+  "/delete-initiate",
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId as string;
+    const input = deleteInitiateSchema.parse(req.body);
+    const uniqueCaseIds = Array.from(new Set(input.caseIds));
+
+    // Resolve lab org from the case IDs (mirrors bulk-delete logic).
+    const [canonicalMatches, legacyMatches] = await Promise.all([
+      db
+        .select({ id: cases.id, labOrganizationId: cases.labOrganizationId })
+        .from(cases)
+        .where(and(inArray(cases.id, uniqueCaseIds), notDeleted(cases))),
+      db
+        .select({ id: labCases.id, organizationId: labCases.organizationId })
+        .from(labCases)
+        .where(and(inArray(labCases.id, uniqueCaseIds), isNull(labCases.deletedAt))),
+    ]);
+
+    if (canonicalMatches.length === 0 && legacyMatches.length === 0) {
+      throw new HttpError(404, "No matching cases found.");
+    }
+
+    const labOrganizationId =
+      canonicalMatches[0]?.labOrganizationId ??
+      legacyMatches[0]?.organizationId ??
+      null;
+    if (!labOrganizationId) {
+      throw new HttpError(422, "Case has no associated organization.");
+    }
+
+    // Admin-only gate.
+    await requireAnyRole(userId, labOrganizationId, ADMIN_ROLES);
+
+    // Rate limit: max 3 initiate attempts per 15 min per org.
+    if (!_checkDeleteInitiateRateLimit(labOrganizationId)) {
+      await writeAuditLog({
+        req,
+        userId,
+        organizationId: labOrganizationId,
+        action: "case_delete_initiate_rate_limited",
+        entityType: "case",
+        entityId: labOrganizationId,
+        metadataJson: { caseIds: uniqueCaseIds },
+      });
+      throw new HttpError(429, "Too many deletion attempts. Please wait 15 minutes before trying again.");
+    }
+
+    // Validate admin PIN (trimmed, case-insensitive).
+    const envPin = (process.env["PLATFORM_ADMIN_PIN"] ?? "").trim();
+    if (!envPin) {
+      throw new HttpError(503, "Admin PIN is not configured. Contact your system administrator.");
+    }
+    if (input.adminPin.trim().toLowerCase() !== envPin.toLowerCase()) {
+      await writeAuditLog({
+        req,
+        userId,
+        organizationId: labOrganizationId,
+        action: "case_delete_wrong_pin",
+        entityType: "case",
+        entityId: labOrganizationId,
+        metadataJson: { caseIds: uniqueCaseIds },
+      });
+      throw new HttpError(401, "Incorrect admin PIN.");
+    }
+
+    // Find lab owner: prefer "owner" role, fall back to "admin".
+    const ownerMembership = await db.query.organizationMemberships.findFirst({
+      where: and(
+        eq(organizationMemberships.labId, labOrganizationId),
+        inArray(organizationMemberships.role, ["owner", "admin"]),
+        eq(organizationMemberships.status, "active"),
+        isNull(organizationMemberships.deletedAt),
+      ),
+      orderBy: sql`CASE ${organizationMemberships.role} WHEN 'owner' THEN 0 ELSE 1 END`,
+    });
+    if (!ownerMembership) {
+      throw new HttpError(400, "No owner or admin found for this lab.");
+    }
+
+    const ownerUser = await db.query.users.findFirst({
+      where: eq(users.id, ownerMembership.userId),
+    });
+    if (!ownerUser?.phone || !ownerUser.phoneVerifiedAt) {
+      throw new HttpError(
+        400,
+        "The lab owner has no verified phone number. Please verify the owner's phone in their profile before deleting cases.",
+      );
+    }
+
+    // Prefixed target keeps case-delete OTPs isolated from regular phone
+    // verification codes so an in-flight signup/login flow is never interrupted.
+    const ownerPhoneTarget = `case-delete:${normalizePhoneTarget(ownerUser.phone)}`;
+
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    await createVerificationCode({
+      channel: "sms",
+      target: ownerPhoneTarget,
+      code,
+      userId: ownerUser.id,
+    });
+    await _sendCaseDeleteSms(ownerUser.phone, code);
+
+    const deleteSessionToken = signDeleteSessionToken({
+      caseIds: uniqueCaseIds,
+      labOrgId: labOrganizationId,
+      actorId: userId,
+      ownerPhoneTarget,
+    });
+
+    await writeAuditLog({
+      req,
+      userId,
+      organizationId: labOrganizationId,
+      action: "case_delete_initiated",
+      entityType: "case",
+      entityId: labOrganizationId,
+      metadataJson: { caseIds: uniqueCaseIds, ownerUserId: ownerUser.id },
+    });
+
+    return ok(res, { deleteSessionToken });
+  })
+);
+
 // ─── Bulk delete (admin only, soft-delete) ────────────────────────────────────
 
 const bulkDeleteSchema = z.object({
   caseIds: z.array(z.string().min(1)).min(1).max(200),
+  deleteSessionToken: z.string().optional(),
+  smsOtpCode: z.string().optional(),
 });
 
 router.post(
@@ -2293,6 +2489,41 @@ router.post(
 
     // Admin-only — owners and admins may bulk-delete cases.
     await requireAnyRole(userId, labOrganizationId, ADMIN_ROLES);
+
+    // ── Security gate: require delete-session token + SMS OTP ──────────────
+    // Callers must first complete POST /cases/delete-initiate (validates
+    // admin PIN and sends an SMS OTP to the lab owner). Without a valid
+    // token + OTP we refuse the deletion regardless of admin status.
+    if (!input.deleteSessionToken || !input.smsOtpCode) {
+      throw new HttpError(
+        403,
+        "Case deletion requires admin PIN verification and SMS confirmation. Please use the case deletion flow.",
+      );
+    }
+
+    let tokenPayload: import("../lib/auth.js").DeleteSessionPayload;
+    try {
+      tokenPayload = verifyDeleteSessionToken(input.deleteSessionToken);
+    } catch {
+      throw new HttpError(
+        401,
+        "Deletion session has expired or is invalid. Please start the deletion flow again.",
+      );
+    }
+
+    if (tokenPayload.labOrgId !== labOrganizationId) {
+      throw new HttpError(403, "Deletion session does not match this organization.");
+    }
+
+    const otpResult = await verifyCode({
+      channel: "sms",
+      target: tokenPayload.ownerPhoneTarget,
+      code: input.smsOtpCode,
+    });
+    if (!otpResult.verified) {
+      throw new HttpError(400, otpResult.error ?? "Invalid or expired SMS code.");
+    }
+    // ── End security gate ──────────────────────────────────────────────────
 
     // Refuse the whole batch if any matched case belongs to another lab.
     const unauthorizedIds = [
@@ -5098,7 +5329,6 @@ router.post(
           "The provider organization has no phone number on file. Please add a phone number to the provider's profile.",
         );
       }
-      const { normalizePhoneE164 } = await import("../lib/account-link-sms.js");
       const phoneE164 = normalizePhoneE164(providerOrg.phone);
       if (!phoneE164) {
         throw new HttpError(

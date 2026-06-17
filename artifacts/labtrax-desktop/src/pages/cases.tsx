@@ -1080,6 +1080,222 @@ function readIteroActiveBatch(): { batchId: string; caseIds: string[]; importedA
   return null;
 }
 
+// ─── 3-step case deletion modal ───────────────────────────────────────────────
+// Step 1 ("pin")     — caller enters admin PIN; /cases/delete-initiate is hit,
+//                       server validates PIN, sends OTP to lab owner, returns token.
+// Step 2 ("confirm") — "Are you sure?" confirmation before consuming the OTP.
+// Step 3 ("otp")     — caller enters SMS code; /cases/bulk-delete is hit with
+//                       token + OTP, server verifies both and soft-deletes.
+function CaseDeleteModal({
+  caseIds,
+  onClose,
+  onSuccess,
+}: {
+  caseIds: string[];
+  onClose: () => void;
+  onSuccess: (deletedCount: number) => void;
+}) {
+  const [step, setStep] = useState<"pin" | "confirm" | "otp">("pin");
+  const [pin, setPin] = useState("");
+  const [otp, setOtp] = useState("");
+  const [deleteSessionToken, setDeleteSessionToken] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [isPending, setIsPending] = useState(false);
+  const [secondsLeft, setSecondsLeft] = useState(600);
+
+  useEffect(() => {
+    if (step !== "otp") return;
+    const id = setInterval(() => setSecondsLeft((s) => Math.max(0, s - 1)), 1000);
+    return () => clearInterval(id);
+  }, [step]);
+
+  const label = `${caseIds.length} case${caseIds.length !== 1 ? "s" : ""}`;
+  const mm = String(Math.floor(secondsLeft / 60)).padStart(2, "0");
+  const ss = String(secondsLeft % 60).padStart(2, "0");
+
+  async function submitPin() {
+    if (!pin.trim() || isPending) return;
+    setIsPending(true);
+    setError(null);
+    try {
+      const r = await apiFetch<{ deleteSessionToken: string }>("/cases/delete-initiate", {
+        method: "POST",
+        body: JSON.stringify({ adminPin: pin.trim(), caseIds }),
+      });
+      setDeleteSessionToken(r.deleteSessionToken);
+      setStep("confirm");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Incorrect PIN.");
+    } finally {
+      setIsPending(false);
+    }
+  }
+
+  async function submitOtp() {
+    if (!otp.trim() || !deleteSessionToken || isPending) return;
+    setIsPending(true);
+    setError(null);
+    try {
+      const r = await apiFetch<{ deletedCount: number }>("/cases/bulk-delete", {
+        method: "POST",
+        body: JSON.stringify({ caseIds, deleteSessionToken, smsOtpCode: otp.trim() }),
+      });
+      onSuccess(r.deletedCount);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Incorrect code or session expired.");
+    } finally {
+      setIsPending(false);
+    }
+  }
+
+  async function resendCode() {
+    if (!pin || isPending) return;
+    setIsPending(true);
+    setError(null);
+    try {
+      const r = await apiFetch<{ deleteSessionToken: string }>("/cases/delete-initiate", {
+        method: "POST",
+        body: JSON.stringify({ adminPin: pin.trim(), caseIds }),
+      });
+      setDeleteSessionToken(r.deleteSessionToken);
+      setOtp("");
+      setSecondsLeft(600);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Could not resend code.");
+    } finally {
+      setIsPending(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+      <div
+        className="bg-card border border-border rounded-2xl shadow-2xl w-full max-w-sm mx-4"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Delete cases"
+      >
+        {step === "pin" && (
+          <>
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+              <h2 className="text-base font-semibold text-destructive">Delete {label}</h2>
+              <button type="button" onClick={onClose} disabled={isPending} className="text-muted-foreground hover:text-foreground transition-colors" aria-label="Close">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="px-6 py-5 space-y-4">
+              <p className="text-sm text-muted-foreground">Enter the admin PIN to begin. A verification code will be sent to the lab owner's phone.</p>
+              <div className="space-y-1.5">
+                <label htmlFor="cdm-pin" className="text-xs font-medium text-muted-foreground">Admin PIN</label>
+                <input
+                  id="cdm-pin"
+                  type="password"
+                  autoFocus
+                  value={pin}
+                  onChange={(e) => setPin(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") void submitPin(); }}
+                  placeholder="••••••"
+                  className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                  disabled={isPending}
+                />
+              </div>
+              {error && <p className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md">{error}</p>}
+            </div>
+            <div className="flex gap-3 px-6 pb-5">
+              <button type="button" onClick={onClose} disabled={isPending} className="flex-1 h-9 rounded-lg bg-secondary text-sm font-medium text-muted-foreground hover:text-foreground">Cancel</button>
+              <button type="button" onClick={() => void submitPin()} disabled={isPending || !pin.trim()} className="flex-1 h-9 rounded-lg bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 disabled:opacity-60 inline-flex items-center justify-center gap-1.5">
+                {isPending && <Loader2 size={13} className="animate-spin" />}
+                Next
+              </button>
+            </div>
+          </>
+        )}
+        {step === "confirm" && (
+          <>
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+              <h2 className="text-base font-semibold text-destructive">Confirm deletion</h2>
+              <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors" aria-label="Close">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="px-6 py-5 space-y-3">
+              <div className="flex items-start gap-3">
+                <div className="h-9 w-9 rounded-full bg-destructive/15 flex items-center justify-center shrink-0">
+                  <AlertTriangle size={17} className="text-destructive" />
+                </div>
+                <div>
+                  <p className="text-sm font-medium">Delete {label}?</p>
+                  <p className="text-sm text-muted-foreground mt-1">This will permanently remove {label} from the lab. An SMS code will be sent to the lab owner to confirm. This cannot be undone.</p>
+                </div>
+              </div>
+            </div>
+            <div className="flex gap-3 px-6 pb-5">
+              <button type="button" onClick={onClose} className="flex-1 h-9 rounded-lg bg-secondary text-sm font-medium text-muted-foreground hover:text-foreground">Cancel</button>
+              <button
+                type="button"
+                onClick={() => { setStep("otp"); setSecondsLeft(600); }}
+                className="flex-1 h-9 rounded-lg bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 inline-flex items-center justify-center gap-1.5"
+              >
+                Yes, send code
+              </button>
+            </div>
+          </>
+        )}
+        {step === "otp" && (
+          <>
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+              <h2 className="text-base font-semibold text-destructive">Enter SMS code</h2>
+              <button type="button" onClick={onClose} disabled={isPending} className="text-muted-foreground hover:text-foreground transition-colors" aria-label="Close">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="px-6 py-5 space-y-4">
+              <p className="text-sm text-muted-foreground">A 6-digit code was sent to the lab owner's phone. Enter it to confirm deletion of {label}.</p>
+              <div className="space-y-1.5">
+                <label htmlFor="cdm-otp" className="text-xs font-medium text-muted-foreground">
+                  SMS code{" "}
+                  <span className={secondsLeft === 0 ? "text-destructive" : "text-muted-foreground"}>
+                    ({secondsLeft === 0 ? "expired" : `${mm}:${ss}`})
+                  </span>
+                </label>
+                <input
+                  id="cdm-otp"
+                  type="text"
+                  autoFocus
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={otp}
+                  onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                  onKeyDown={(e) => { if (e.key === "Enter") void submitOtp(); }}
+                  placeholder="123456"
+                  className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 tracking-widest text-center font-mono"
+                  disabled={isPending}
+                />
+              </div>
+              {error && <p className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md">{error}</p>}
+              <button type="button" onClick={() => void resendCode()} disabled={isPending} className="text-xs text-primary hover:underline disabled:opacity-50">
+                Resend code
+              </button>
+            </div>
+            <div className="flex gap-3 px-6 pb-5">
+              <button type="button" onClick={onClose} disabled={isPending} className="flex-1 h-9 rounded-lg bg-secondary text-sm font-medium text-muted-foreground hover:text-foreground">Cancel</button>
+              <button
+                type="button"
+                onClick={() => void submitOtp()}
+                disabled={isPending || otp.length < 6 || secondsLeft === 0}
+                className="flex-1 h-9 rounded-lg bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 disabled:opacity-60 inline-flex items-center justify-center gap-1.5"
+              >
+                {isPending && <Loader2 size={13} className="animate-spin" />}
+                Delete {label}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function CasesPage() {
   const [, setLocation] = useLocation();
   const urlSearch = useSearch();
@@ -1184,23 +1400,6 @@ export default function CasesPage() {
           ? `${base} (${skippedLegacyCount} legacy case${skippedLegacyCount !== 1 ? "s" : ""} skipped)`
           : base
       );
-    },
-    onError: (e: Error) => {
-      setBulkToastError(e.message);
-    },
-  });
-
-  const bulkDeleteMutation = useMutation({
-    mutationFn: (body: { caseIds: string[] }) =>
-      apiFetch<{ deletedCount: number }>("/cases/bulk-delete", {
-        method: "POST",
-        body: JSON.stringify(body),
-      }),
-    onSuccess: (result) => {
-      qc.invalidateQueries({ queryKey: ["cases"] });
-      setSelectedIds(new Set());
-      setShowBulkDeleteModal(false);
-      setBulkToast(`${result.deletedCount} case${result.deletedCount !== 1 ? "s" : ""} deleted.`);
     },
     onError: (e: Error) => {
       setBulkToastError(e.message);
@@ -2124,62 +2323,16 @@ export default function CasesPage() {
       )}
 
       {showBulkDeleteModal && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div
-            className="bg-card border border-border rounded-2xl shadow-2xl w-full max-w-sm mx-4"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Delete cases"
-          >
-            <div className="flex items-center justify-between px-6 py-4 border-b border-border">
-              <h2 className="text-base font-semibold text-destructive">Delete {selectedIds.size} case{selectedIds.size !== 1 ? "s" : ""}?</h2>
-              <button
-                type="button"
-                onClick={() => setShowBulkDeleteModal(false)}
-                disabled={bulkDeleteMutation.isPending}
-                className="text-muted-foreground hover:text-foreground transition-colors"
-                aria-label="Close"
-              >
-                <X size={18} />
-              </button>
-            </div>
-            <div className="px-6 py-5 space-y-3">
-              <p className="text-sm text-muted-foreground">
-                This will permanently remove{" "}
-                <span className="font-medium text-foreground">{selectedIds.size} case{selectedIds.size !== 1 ? "s" : ""}</span>{" "}
-                from the lab. This action cannot be undone.
-              </p>
-              {bulkDeleteMutation.isError && (
-                <p className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md">
-                  {bulkDeleteMutation.error instanceof Error
-                    ? bulkDeleteMutation.error.message
-                    : "An error occurred."}
-                </p>
-              )}
-            </div>
-            <div className="flex gap-3 px-6 pb-5">
-              <button
-                type="button"
-                onClick={() => setShowBulkDeleteModal(false)}
-                disabled={bulkDeleteMutation.isPending}
-                className="flex-1 h-9 rounded-lg bg-secondary text-sm font-medium text-muted-foreground hover:text-foreground"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={bulkDeleteMutation.isPending}
-                onClick={() => {
-                  bulkDeleteMutation.mutate({ caseIds: Array.from(selectedIds) });
-                }}
-                className="flex-1 h-9 rounded-lg bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 disabled:opacity-60 inline-flex items-center justify-center gap-1.5"
-              >
-                {bulkDeleteMutation.isPending && <Loader2 size={13} className="animate-spin" />}
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
+        <CaseDeleteModal
+          caseIds={Array.from(selectedIds)}
+          onClose={() => setShowBulkDeleteModal(false)}
+          onSuccess={(deletedCount) => {
+            qc.invalidateQueries({ queryKey: ["cases"] });
+            setSelectedIds(new Set());
+            setShowBulkDeleteModal(false);
+            setBulkToast(`${deletedCount} case${deletedCount !== 1 ? "s" : ""} deleted.`);
+          }}
+        />
       )}
 
       {bulkToast && (
@@ -3614,22 +3767,6 @@ export function CaseDrawer({
       setToothDialogError(null);
     }
   }
-
-  const [deleteError, setDeleteError] = useState<string | null>(null);
-  const deleteCaseMutation = useMutation({
-    mutationFn: () =>
-      apiFetch(`/cases/${labCase.id}`, { method: "DELETE" }),
-    onMutate: () => setDeleteError(null),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["cases"] });
-      qc.invalidateQueries({ queryKey: ["case", labCase.id] });
-      setConfirmDeleteCase(false);
-      onClose();
-    },
-    onError: (e: Error) => {
-      setDeleteError(e?.message || "Could not delete case.");
-    },
-  });
 
   async function uploadFiles(files: File[]) {
     if (files.length === 0) return;
@@ -6151,60 +6288,18 @@ export function CaseDrawer({
         />
       )}
 
-      {/* Delete case confirmation */}
+      {/* Delete case — 3-step security flow */}
       {confirmDeleteCase && (
-        <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-foreground/40"
-          onClick={() => {
-            if (deleteCaseMutation.isPending) return;
+        <CaseDeleteModal
+          caseIds={[labCase.id]}
+          onClose={() => setConfirmDeleteCase(false)}
+          onSuccess={() => {
+            qc.invalidateQueries({ queryKey: ["cases"] });
+            qc.invalidateQueries({ queryKey: ["case", labCase.id] });
             setConfirmDeleteCase(false);
-            setDeleteError(null);
+            onClose();
           }}
-        >
-          <div
-            className="bg-card rounded-xl border border-border p-6 max-w-sm mx-4 space-y-4 shadow-xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-start gap-3">
-              <div className="h-9 w-9 rounded-full bg-destructive/15 flex items-center justify-center shrink-0">
-                <AlertTriangle size={17} className="text-destructive" />
-              </div>
-              <div>
-                <h3 className="font-semibold">Delete case {labCase.caseNumber}?</h3>
-                <p className="text-sm text-muted-foreground mt-1">
-                  This will permanently delete the case and all its restorations, notes, and attachments. This cannot be undone.
-                </p>
-              </div>
-            </div>
-            {deleteError && (
-              <div className="text-xs text-destructive bg-destructive/10 border border-destructive/30 rounded-md px-3 py-2">
-                {deleteError}
-              </div>
-            )}
-            <div className="flex gap-2 pt-1">
-              <button
-                type="button"
-                onClick={() => {
-                  setConfirmDeleteCase(false);
-                  setDeleteError(null);
-                }}
-                disabled={deleteCaseMutation.isPending}
-                className="flex-1 h-9 rounded-md bg-secondary text-sm font-medium text-muted-foreground hover:text-foreground disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => deleteCaseMutation.mutate()}
-                disabled={deleteCaseMutation.isPending}
-                className="flex-1 h-9 rounded-md bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 disabled:opacity-60 inline-flex items-center justify-center gap-1.5"
-              >
-                {deleteCaseMutation.isPending && <Loader2 size={14} className="animate-spin" />}
-                Delete permanently
-              </button>
-            </div>
-          </div>
-        </div>
+        />
       )}
 
       {/* Tooth chart action dialog */}

@@ -34,6 +34,15 @@ vi.mock("../lib/case-media.js", () => ({
   startDailyOrphanedMediaCleanup: vi.fn(),
 }));
 
+// Verification module is mocked so tests bypass the OTP DB table and real SMS.
+// verifyCode always returns verified:true, letting the happy-path tests complete
+// the 3-step flow without seeding a real verification_codes row.
+vi.mock("../lib/verification.js", () => ({
+  createVerificationCode: vi.fn().mockResolvedValue(undefined),
+  verifyCode: vi.fn().mockResolvedValue({ verified: true }),
+  normalizePhoneTarget: (p: string) => p.replace(/\D/g, ""),
+}));
+
 const SHOULD_RUN = !!process.env["DATABASE_URL"];
 const maybe = SHOULD_RUN ? describe : describe.skip;
 
@@ -98,9 +107,28 @@ maybe("POST /api/cases/bulk-delete (db integration)", () => {
     return id;
   }
 
+  // Helper: completes the full 3-step security flow (delete-initiate → bulk-delete).
+  // Uses the mocked verifyCode path, so any 6-digit OTP is accepted.
+  async function deleteViaFlow(
+    caseIds: string[],
+    adminToken: string,
+  ): Promise<request.Response> {
+    const init = await request(appMod.default)
+      .post("/api/cases/delete-initiate")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ adminPin: "testpin123", caseIds });
+    expect(init.status, `delete-initiate failed: ${JSON.stringify(init.body)}`).toBe(200);
+    const { deleteSessionToken } = init.body.data;
+    return request(appMod.default)
+      .post("/api/cases/bulk-delete")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ caseIds, deleteSessionToken, smsOtpCode: "123456" });
+  }
+
   beforeAll(async () => {
     process.env["JWT_SECRET"] =
       process.env["JWT_SECRET"] ?? "labtrax-test-secret-bulk-delete";
+    process.env["PLATFORM_ADMIN_PIN"] = "testpin123";
     dbMod = await import("@workspace/db");
     appMod = await import("../app.js");
     auth = await import("../lib/auth.js");
@@ -108,7 +136,13 @@ maybe("POST /api/cases/bulk-delete (db integration)", () => {
     const { db, organizations, users, organizationMemberships } = dbMod as any;
 
     await db.insert(users).values([
-      { id: adminUserId, username: `adm_${adminUserId}`, password: "x" },
+      {
+        id: adminUserId,
+        username: `adm_${adminUserId}`,
+        password: "x",
+        phone: "5550001234",
+        phoneVerifiedAt: new Date(),
+      },
       { id: staffUserId, username: `stf_${staffUserId}`, password: "x" },
     ]);
 
@@ -181,10 +215,7 @@ maybe("POST /api/cases/bulk-delete (db integration)", () => {
     const c1 = await insertCanonical(rid("BD1"));
     const c2 = await insertCanonical(rid("BD2"));
 
-    const r = await request(appMod.default)
-      .post("/api/cases/bulk-delete")
-      .set("Authorization", `Bearer ${tokens.admin}`)
-      .send({ caseIds: [c1, c2] });
+    const r = await deleteViaFlow([c1, c2], tokens.admin);
 
     expect(r.status).toBe(200);
     expect(r.body.ok).toBe(true);
@@ -206,10 +237,7 @@ maybe("POST /api/cases/bulk-delete (db integration)", () => {
     const l1 = await insertLegacy();
     const l2 = await insertLegacy();
 
-    const r = await request(appMod.default)
-      .post("/api/cases/bulk-delete")
-      .set("Authorization", `Bearer ${tokens.admin}`)
-      .send({ caseIds: [l1, l2] });
+    const r = await deleteViaFlow([l1, l2], tokens.admin);
 
     expect(r.status).toBe(200);
     expect(r.body.ok).toBe(true);
@@ -238,10 +266,7 @@ maybe("POST /api/cases/bulk-delete (db integration)", () => {
     const legacy = await insertLegacy();
     const canonical = await insertCanonical(rid("MIX"));
 
-    const r = await request(appMod.default)
-      .post("/api/cases/bulk-delete")
-      .set("Authorization", `Bearer ${tokens.admin}`)
-      .send({ caseIds: [legacy, canonical] });
+    const r = await deleteViaFlow([legacy, canonical], tokens.admin);
 
     expect(r.status).toBe(200);
     expect(r.body.ok).toBe(true);
