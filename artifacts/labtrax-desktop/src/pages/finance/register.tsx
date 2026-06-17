@@ -140,11 +140,11 @@ function RegisterTable({
     return groups;
   }, [txnsQuery.data]);
 
-  const clearMut = useMutation({
-    mutationFn: ({ id, cleared }: { id: string; cleared: boolean }) =>
-      apiFetch(`/finance/transactions/${id}/clear`, {
-        method: "POST",
-        body: JSON.stringify({ cleared }),
+  const clearingStatusMut = useMutation({
+    mutationFn: ({ id, cleared, reconciled }: { id: string; cleared: boolean; reconciled: boolean }) =>
+      apiFetch(`/finance/transactions/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ cleared, reconciled }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["finance"] }),
   });
@@ -550,24 +550,36 @@ function RegisterTable({
                         <td className="py-2.5 px-3 text-right tabular-nums">
                           {debit > 0 ? formatMoney(debit) : ""}
                         </td>
-                        {/* ✓ — combined cleared checkbox + reconciled badge; read-only for UF */}
+                        {/* ✓ — click-to-cycle: none → C (cleared) → R (reconciled) → none */}
                         <td
-                          className="py-2.5 text-center"
+                          className={`py-2.5 text-center${isVoid || isUF ? "" : " cursor-pointer"}`}
+                          title={
+                            isVoid || isUF
+                              ? undefined
+                              : r.reconciled
+                              ? "Reconciled — click to clear"
+                              : r.cleared
+                              ? "Cleared — click to mark reconciled"
+                              : "Uncleared — click to mark cleared"
+                          }
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (isVoid || r.reconciled || isUF) return;
-                            clearMut.mutate({ id: r.id, cleared: !r.cleared });
+                            if (isVoid || isUF) return;
+                            if (r.reconciled) {
+                              clearingStatusMut.mutate({ id: r.id, cleared: false, reconciled: false });
+                            } else if (r.cleared) {
+                              clearingStatusMut.mutate({ id: r.id, cleared: true, reconciled: true });
+                            } else {
+                              clearingStatusMut.mutate({ id: r.id, cleared: true, reconciled: false });
+                            }
                           }}
                         >
                           {r.reconciled ? (
-                            <span className="inline-flex items-center justify-center h-4 w-4 rounded-full bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-[10px] font-bold">R</span>
+                            <span className="inline-flex items-center justify-center h-4 w-4 rounded-full bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-[10px] font-bold select-none">R</span>
+                          ) : r.cleared ? (
+                            <span className="inline-flex items-center justify-center h-4 w-4 rounded-full bg-sky-500/20 text-sky-600 dark:text-sky-400 text-[10px] font-bold select-none">C</span>
                           ) : (
-                            <input
-                              type="checkbox"
-                              checked={r.cleared}
-                              readOnly
-                              className="h-3.5 w-3.5 cursor-pointer"
-                            />
+                            <span className="inline-flex items-center justify-center h-4 w-4 rounded-full text-muted-foreground/40 text-[10px] select-none">–</span>
                           )}
                         </td>
                         {/* Deposit (credit) */}

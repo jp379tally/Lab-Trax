@@ -598,6 +598,7 @@ const txnSchema = z.object({
   payment: z.coerce.number().min(0).default(0),
   deposit: z.coerce.number().min(0).default(0),
   cleared: z.boolean().optional(),
+  reconciled: z.boolean().optional(),
   status: z.enum(["posted", "projected", "void"]).default("posted"),
   invoiceIds: z.array(z.string().min(1)).optional(),
 });
@@ -714,8 +715,12 @@ router.patch(
     });
     if (!txn) throw new HttpError(404, "Transaction not found.");
     await requireAnyRole(uid(req), txn.labOrganizationId, BILLING_ROLES);
-    if (txn.reconciled) throw new HttpError(400, "Reconciled entries cannot be edited.");
     const input = txnSchema.partial().parse(req.body);
+    const isClearingStatusOnly =
+      Object.keys(req.body as object).every((k) => k === "cleared" || k === "reconciled");
+    if (txn.reconciled && !isClearingStatusOnly) {
+      throw new HttpError(400, "Reconciled entries cannot be edited.");
+    }
     if (input.vendorId) {
       await assertVendorBelongsToOrg(input.vendorId, txn.labOrganizationId);
     }
@@ -738,6 +743,13 @@ router.patch(
     if (input.cleared !== undefined) {
       updates.cleared = input.cleared;
       updates.clearedAt = input.cleared ? new Date() : null;
+    }
+    if (input.reconciled !== undefined) {
+      updates.reconciled = input.reconciled;
+      if (input.reconciled) {
+        updates.cleared = true;
+        updates.clearedAt = txn.clearedAt ?? new Date();
+      }
     }
     const [row] = await db
       .update(bankTransactions)
