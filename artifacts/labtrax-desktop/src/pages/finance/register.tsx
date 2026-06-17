@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeftRight, Ban, CheckCircle2, Download, Loader2, Plus, Repeat, Search, Trash2, Upload, X } from "lucide-react";
+import { ArrowLeftRight, Ban, CheckCircle2, Download, Loader2, Plus, Repeat, Scale, Search, Trash2, Upload, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { FinanceShell } from "@/components/finance/FinanceShell";
 import { TYPE_BADGE_CLASS, TYPE_LABEL, useVendors, VendorCombobox } from "@/components/finance/VendorCombobox";
@@ -76,6 +76,7 @@ function RegisterTable({
   }, [accountId, organizationId]);
   const [importing, setImporting] = useState(false);
   const [transferring, setTransferring] = useState(false);
+  const [reconOpen, setReconOpen] = useState(false);
   const [recurringFor, setRecurringFor] = useState<BankTransaction | null>(null);
 
   const account = accounts.find((a) => a.id === accountId);
@@ -297,6 +298,15 @@ function RegisterTable({
           >
             <ArrowLeftRight size={14} /> New transfer
           </button>
+          {!isUF && (
+            <button
+              type="button"
+              onClick={() => setReconOpen(true)}
+              className="h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80 inline-flex items-center gap-1.5"
+            >
+              <Scale size={14} /> Reconcile
+            </button>
+          )}
           <button
             type="button"
             onClick={() => !isUF && setShowInlineRows(true)}
@@ -749,6 +759,389 @@ function RegisterTable({
           }}
         />
       )}
+
+      {reconOpen && account && (
+        <ReconcileDialog
+          accountId={accountId}
+          account={account}
+          onClose={() => setReconOpen(false)}
+          onComplete={() => {
+            setReconOpen(false);
+            qc.invalidateQueries({ queryKey: ["finance"] });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────── Reconciliation worksheet ────────────────────────
+
+function ReconcileDialog({
+  accountId,
+  account,
+  onClose,
+  onComplete,
+}: {
+  accountId: string;
+  account: BankAccount;
+  onClose: () => void;
+  onComplete: () => void;
+}) {
+  const [step, setStep] = useState<"setup" | "worksheet">("setup");
+
+  // Step 1 inputs
+  const today = new Date().toISOString().slice(0, 10);
+  const [statementDate, setStatementDate] = useState(today);
+  const [endingBalanceStr, setEndingBalanceStr] = useState("");
+  const [setupError, setSetupError] = useState<string | null>(null);
+
+  // Worksheet state
+  const [candidates, setCandidates] = useState<BankTransaction[]>([]);
+  const [startingBalance, setStartingBalance] = useState(0);
+  const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
+  const [loadingCandidates, setLoadingCandidates] = useState(false);
+  const [finishing, setFinishing] = useState(false);
+  const [finishError, setFinishError] = useState<string | null>(null);
+
+  const endingBalance = parseFloat(endingBalanceStr) || 0;
+
+  async function loadCandidates() {
+    const parsed = parseFloat(endingBalanceStr);
+    if (!statementDate) {
+      setSetupError("Enter a statement ending date.");
+      return;
+    }
+    if (isNaN(parsed)) {
+      setSetupError("Enter a valid statement ending balance.");
+      return;
+    }
+    setSetupError(null);
+    setLoadingCandidates(true);
+    try {
+      const sp = new URLSearchParams({
+        bankAccountId: accountId,
+        statementDate: new Date(statementDate).toISOString(),
+      });
+      const data = await apiFetch<{ startingBalance: string; candidates: BankTransaction[] }>(
+        `/finance/reconciliation/candidates?${sp}`
+      );
+      setStartingBalance(Number(data.startingBalance));
+      setCandidates(data.candidates);
+      setCheckedIds(new Set(data.candidates.filter((c) => c.cleared).map((c) => c.id)));
+      setStep("worksheet");
+    } catch (e: any) {
+      setSetupError(e?.message || "Failed to load transactions.");
+    } finally {
+      setLoadingCandidates(false);
+    }
+  }
+
+  function toggleId(id: string) {
+    setCheckedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAll() {
+    if (checkedIds.size === candidates.length) {
+      setCheckedIds(new Set());
+    } else {
+      setCheckedIds(new Set(candidates.map((c) => c.id)));
+    }
+  }
+
+  // Running totals
+  const clearedSum = candidates
+    .filter((c) => checkedIds.has(c.id))
+    .reduce((s, c) => s + Number(c.netAmount), 0);
+  const difference = +(startingBalance + clearedSum - endingBalance).toFixed(2);
+  const balanced = Math.abs(difference) < 0.005;
+
+  async function finish() {
+    setFinishing(true);
+    setFinishError(null);
+    try {
+      await apiFetch("/finance/reconciliation/finish", {
+        method: "POST",
+        body: JSON.stringify({
+          bankAccountId: accountId,
+          statementDate: new Date(statementDate).toISOString(),
+          endingBalance,
+          transactionIds: Array.from(checkedIds),
+        }),
+      });
+      onComplete();
+    } catch (e: any) {
+      setFinishError(e?.message || "Failed to finish reconciliation.");
+    } finally {
+      setFinishing(false);
+    }
+  }
+
+  const inputCls = "h-9 px-2.5 rounded-md bg-background border border-input text-sm w-full";
+
+  // Payments (debits < 0 netAmount) and deposits (credits > 0 netAmount)
+  const payments = candidates.filter((c) => Number(c.netAmount) < 0);
+  const deposits = candidates.filter((c) => Number(c.netAmount) >= 0);
+  const paymentSum = payments
+    .filter((c) => checkedIds.has(c.id))
+    .reduce((s, c) => s + Math.abs(Number(c.netAmount)), 0);
+  const depositSum = deposits
+    .filter((c) => checkedIds.has(c.id))
+    .reduce((s, c) => s + Number(c.netAmount), 0);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-stretch bg-foreground/40">
+      <div className="flex flex-col w-full max-w-4xl mx-auto my-6 bg-card border border-border rounded-xl shadow-2xl overflow-hidden">
+        {/* Header */}
+        <header className="shrink-0 bg-card border-b border-border px-6 py-4 flex items-center gap-3">
+          <Scale size={18} className="text-primary shrink-0" />
+          <div>
+            <h2 className="text-base font-semibold leading-none">Reconcile account</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">{account.name}{account.last4 ? ` ··${account.last4}` : ""}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="ml-auto h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"
+            aria-label="Close"
+          >
+            <X size={15} />
+          </button>
+        </header>
+
+        {step === "setup" ? (
+          /* ── Step 1: Enter statement info ── */
+          <div className="flex-1 flex items-center justify-center p-8">
+            <div className="w-full max-w-sm space-y-5">
+              <div>
+                <p className="text-sm text-muted-foreground mb-4">
+                  Enter the ending date and balance from your bank statement. LabTrax will show you
+                  all unreconciled transactions through that date so you can check them off.
+                </p>
+              </div>
+              <div>
+                <label className="block text-xs font-medium mb-1.5">Statement ending date</label>
+                <input
+                  type="date"
+                  value={statementDate}
+                  onChange={(e) => setStatementDate(e.target.value)}
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium mb-1.5">Statement ending balance</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={endingBalanceStr}
+                  onChange={(e) => setEndingBalanceStr(e.target.value)}
+                  placeholder="0.00"
+                  className={`${inputCls} text-right tabular-nums`}
+                  onKeyDown={(e) => { if (e.key === "Enter") void loadCandidates(); }}
+                  autoFocus
+                />
+              </div>
+              {setupError && (
+                <p className="text-xs text-destructive">{setupError}</p>
+              )}
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="h-9 px-4 rounded-md text-sm hover:bg-secondary"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={loadingCandidates}
+                  onClick={() => void loadCandidates()}
+                  className="h-9 px-5 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-2"
+                >
+                  {loadingCandidates && <Loader2 size={13} className="animate-spin" />}
+                  Start reconciling
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          /* ── Step 2: Worksheet ── */
+          <>
+            {/* Running-total summary bar */}
+            <div className="shrink-0 bg-muted/40 border-b border-border px-6 py-3 flex flex-wrap gap-6 items-center text-sm">
+              <div className="flex flex-col min-w-[110px]">
+                <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Starting balance</span>
+                <span className="tabular-nums font-semibold">{formatMoney(startingBalance)}</span>
+              </div>
+              <span className="text-muted-foreground text-lg leading-none">+</span>
+              <div className="flex flex-col min-w-[130px]">
+                <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Cleared (net)</span>
+                <span className="tabular-nums font-semibold">{formatMoney(clearedSum)}</span>
+              </div>
+              <span className="text-muted-foreground text-base leading-none">=</span>
+              <div className="flex flex-col min-w-[130px]">
+                <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Cleared balance</span>
+                <span className="tabular-nums font-semibold">{formatMoney(startingBalance + clearedSum)}</span>
+              </div>
+              <div className="flex flex-col min-w-[130px]">
+                <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Statement balance</span>
+                <span className="tabular-nums font-semibold text-primary">{formatMoney(endingBalance)}</span>
+              </div>
+              <div className="flex flex-col min-w-[110px]">
+                <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Difference</span>
+                <span
+                  className={`tabular-nums font-bold text-base ${
+                    balanced
+                      ? "text-emerald-600 dark:text-emerald-400"
+                      : "text-amber-600 dark:text-amber-400"
+                  }`}
+                >
+                  {balanced ? "✓ Balanced" : formatMoney(difference)}
+                </span>
+              </div>
+              <div className="ml-auto flex gap-2 shrink-0 items-center text-[11px] text-muted-foreground">
+                <span className="inline-flex items-center gap-1">
+                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-sky-500/20 text-sky-600 dark:text-sky-400 text-[10px] font-bold">C</span>
+                  Deposits: {formatMoney(depositSum)}
+                </span>
+                <span className="text-border">|</span>
+                <span className="inline-flex items-center gap-1">
+                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-rose-500/20 text-rose-600 dark:text-rose-400 text-[10px] font-bold">C</span>
+                  Payments: {formatMoney(paymentSum)}
+                </span>
+              </div>
+            </div>
+
+            {/* Transaction list */}
+            <div className="flex-1 overflow-y-auto">
+              {candidates.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-20 text-center text-muted-foreground gap-2">
+                  <Scale size={32} className="opacity-30" />
+                  <p className="text-sm font-medium">No unreconciled transactions</p>
+                  <p className="text-xs">There are no posted, unreconciled transactions on or before {statementDate}.</p>
+                </div>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-secondary text-[11px] uppercase tracking-wide text-muted-foreground border-b border-border">
+                      <th className="px-4 py-2 text-left w-10">
+                        <input
+                          type="checkbox"
+                          title="Toggle all"
+                          checked={checkedIds.size === candidates.length && candidates.length > 0}
+                          onChange={toggleAll}
+                          className="cursor-pointer"
+                        />
+                      </th>
+                      <th className="px-3 py-2 text-left w-28">Date</th>
+                      <th className="px-3 py-2 text-left">Payee / Memo</th>
+                      <th className="px-3 py-2 text-right w-28">Payment</th>
+                      <th className="px-3 py-2 text-right w-28">Deposit</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {candidates.map((txn) => {
+                      const checked = checkedIds.has(txn.id);
+                      const debit = Number(txn.debitAmount);
+                      const credit = Number(txn.creditAmount);
+                      return (
+                        <tr
+                          key={txn.id}
+                          onClick={() => toggleId(txn.id)}
+                          className={`border-t border-border/30 cursor-pointer transition-colors ${
+                            checked
+                              ? "bg-sky-50/60 dark:bg-sky-950/30 hover:bg-sky-100/60 dark:hover:bg-sky-900/30"
+                              : "hover:bg-secondary/30"
+                          }`}
+                        >
+                          <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleId(txn.id)}
+                              className="cursor-pointer"
+                            />
+                          </td>
+                          <td className="px-3 py-2.5 text-muted-foreground tabular-nums text-xs">
+                            {formatDate(txn.txnDate)}
+                          </td>
+                          <td className="px-3 py-2.5">
+                            <div className="min-w-0">
+                              {txn.payee ? (
+                                <span className="font-medium truncate block">{txn.payee}</span>
+                              ) : (
+                                <span className="text-muted-foreground italic text-xs">No payee</span>
+                              )}
+                              {txn.memo && (
+                                <span className="text-[11px] text-muted-foreground block truncate">
+                                  {txn.memo}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums">
+                            {debit > 0 ? (
+                              <span className="text-foreground">{formatMoney(debit)}</span>
+                            ) : ""}
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums">
+                            {credit > 0 ? (
+                              <span className="text-emerald-600 dark:text-emerald-400">{formatMoney(credit)}</span>
+                            ) : ""}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            {/* Footer */}
+            <footer className="shrink-0 bg-card border-t border-border px-6 py-3 flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => { setStep("setup"); setFinishError(null); }}
+                className="h-9 px-3 rounded-md text-sm hover:bg-secondary"
+              >
+                ← Back
+              </button>
+              <div className="flex-1" />
+              {finishError && (
+                <p className="text-xs text-destructive max-w-xs text-right">{finishError}</p>
+              )}
+              <button
+                type="button"
+                onClick={onClose}
+                className="h-9 px-4 rounded-md text-sm hover:bg-secondary"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={!balanced || finishing || checkedIds.size === 0}
+                onClick={() => void finish()}
+                title={
+                  !balanced
+                    ? `Difference must be zero before finishing (${formatMoney(difference)} remaining)`
+                    : checkedIds.size === 0
+                    ? "Check at least one transaction to finish"
+                    : undefined
+                }
+                className="h-9 px-5 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2"
+              >
+                {finishing && <Loader2 size={13} className="animate-spin" />}
+                Finish reconciliation
+              </button>
+            </footer>
+          </>
+        )}
+      </div>
     </div>
   );
 }
