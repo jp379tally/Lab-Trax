@@ -3032,8 +3032,9 @@ export async function runVendorLinkBackfill(
 // Undeposited Funds workflow
 // ---------------------------------------------------------------------------
 
-// GET /finance/undeposited-funds?organizationId=
-// Returns transactions in the Undeposited Funds account, enriched with invoice info.
+// GET /finance/undeposited-funds?organizationId=&summary=1
+// With ?summary=1 returns { count, total } for sidebar badge use.
+// Without summary, returns transactions enriched with invoice info.
 router.get(
   "/undeposited-funds",
   asyncHandler(async (req, res) => {
@@ -3041,13 +3042,15 @@ router.get(
     if (!orgId) throw new HttpError(400, "organizationId is required.");
     await requireAnyRole(uid(req), orgId, BILLING_ROLES);
 
+    const isSummary = req.query.summary === "1";
+
     const ufAccount = await db.query.bankAccounts.findFirst({
       where: and(
         eq(bankAccounts.labOrganizationId, orgId),
         eq(bankAccounts.accountType, "undeposited_funds")
       ),
     });
-    if (!ufAccount) return ok(res, []);
+    if (!ufAccount) return ok(res, isSummary ? { count: 0, total: 0 } : []);
 
     const txns = await db.query.bankTransactions.findMany({
       where: and(
@@ -3057,6 +3060,15 @@ router.get(
       ),
       orderBy: [desc(bankTransactions.txnDate)],
     });
+
+    if (isSummary) {
+      const count = txns.length;
+      const total = txns.reduce(
+        (sum: number, t: any) => sum + parseFloat(t.creditAmount ?? "0"),
+        0
+      );
+      return ok(res, { count, total });
+    }
 
     if (!txns.length) return ok(res, []);
 

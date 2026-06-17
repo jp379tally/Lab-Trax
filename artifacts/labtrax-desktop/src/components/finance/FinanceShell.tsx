@@ -16,7 +16,7 @@ import { formatMoney } from "@/lib/format";
 const ALL_TABS = [
   { path: "/finance/register", label: "Register", billingOnly: false },
   { path: "/finance/receive-payments", label: "Receive Payments", billingOnly: true },
-  { path: "/finance/make-deposits", label: "Make Deposits", billingOnly: true },
+  { path: "/finance/make-deposits", label: "Make Deposits", billingOnly: true, showUndepositedBadge: true },
   { path: "/finance/reconcile", label: "Reconcile", billingOnly: false },
   { path: "/finance/cash-flow", label: "Cash Flow", billingOnly: false },
   { path: "/finance/recurring", label: "Recurring", billingOnly: false },
@@ -51,6 +51,17 @@ export function FinanceShell({ children, requireAccount }: Props) {
   const accounts = useBankAccounts(orgId);
   const [accountId, setAccountId] = useSelectedAccount(orgId);
   const [showManage, setShowManage] = useState(false);
+
+  const undepositedSummary = useQuery({
+    queryKey: ["finance", "undeposited-summary", orgId],
+    queryFn: () =>
+      apiFetch<{ count: number; total: number }>(
+        `/finance/undeposited-funds?organizationId=${orgId}&summary=1`
+      ),
+    enabled: !!orgId && billingAllowed,
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+  });
 
   return (
     <div className="px-8 py-7">
@@ -101,17 +112,29 @@ export function FinanceShell({ children, requireAccount }: Props) {
         <nav className="flex gap-1 -mb-px">
           {TABS.map((t) => {
             const active = location.startsWith(t.path);
+            const pendingCount =
+              t.showUndepositedBadge ? (undepositedSummary.data?.count ?? 0) : 0;
+            const pendingTotal =
+              t.showUndepositedBadge ? (undepositedSummary.data?.total ?? 0) : 0;
             return (
               <Link
                 key={t.path}
                 href={t.path}
-                className={`px-3.5 py-2 text-sm font-medium border-b-2 transition-colors ${
+                className={`px-3.5 py-2 text-sm font-medium border-b-2 transition-colors inline-flex items-center gap-1.5 ${
                   active
                     ? "border-primary text-foreground"
                     : "border-transparent text-muted-foreground hover:text-foreground"
                 }`}
               >
                 {t.label}
+                {pendingCount > 0 && (
+                  <span
+                    className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold leading-none bg-amber-100 text-amber-800 dark:bg-amber-900/60 dark:text-amber-300 tabular-nums"
+                    title={`${pendingCount} payment${pendingCount !== 1 ? "s" : ""} pending deposit`}
+                  >
+                    {formatMoney(pendingTotal)}
+                  </span>
+                )}
               </Link>
             );
           })}
