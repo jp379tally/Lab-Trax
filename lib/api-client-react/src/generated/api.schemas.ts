@@ -2052,6 +2052,10 @@ export interface CreateVocabularyInput {
   labOrganizationId: string;
 }
 
+export interface UpdateVocabularyInput {
+  value: string;
+}
+
 export type GetLocationsParams = {
   organizationId: string;
   activeOnly?: boolean;
@@ -2070,6 +2074,15 @@ export const GetVocabularyKind = {
   shade: "shade",
   restoration_type: "restoration_type",
 } as const;
+
+export type DeleteVocabularyItem200Data = {
+  deleted: boolean;
+};
+
+export type DeleteVocabularyItem200 = {
+  ok: boolean;
+  data: DeleteVocabularyItem200Data;
+};
 
 export type DeleteLocation200Data = {
   deleted: boolean;

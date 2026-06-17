@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import { and, asc, eq, ilike } from "drizzle-orm";
+import { and, asc, eq, ilike, ne } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import { labVocabulary, organizationMemberships } from "@workspace/db";
@@ -59,6 +59,14 @@ async function requireLabMembership(userId: string, labOrganizationId: string) {
     ),
   });
   if (!mem) throw new HttpError(403, "You are not a member of this organization.");
+  return mem;
+}
+
+async function requireLabAdmin(userId: string, labOrganizationId: string) {
+  const mem = await requireLabMembership(userId, labOrganizationId);
+  if (mem.role !== "admin" && mem.role !== "owner") {
+    throw new HttpError(403, "Admin role required.");
+  }
   return mem;
 }
 
@@ -175,6 +183,89 @@ router.post(
       value: inserted.value,
       isDefault: false,
     }, 201);
+  }),
+);
+
+const UpdateVocabularyInputSchema = z.object({
+  value: z.string().min(1).max(200),
+});
+
+router.patch(
+  "/:id",
+  asyncHandler(async (req: Request, res: Response) => {
+    const id = String(req.params["id"] ?? "");
+    if (!id) throw new HttpError(400, "id is required.");
+
+    const parsed = UpdateVocabularyInputSchema.safeParse(req.body);
+    if (!parsed.success) throw new HttpError(400, "Invalid request.");
+
+    const trimmedValue = parsed.data.value.trim();
+    if (!trimmedValue) throw new HttpError(400, "value must not be blank.");
+
+    const userId = (req as any).auth.userId as string;
+
+    const existing = await db.query.labVocabulary.findFirst({
+      where: eq(labVocabulary.id, id),
+    });
+    if (!existing) throw new HttpError(404, "Vocabulary item not found.");
+
+    await requireLabAdmin(userId, existing.labOrganizationId);
+
+    // Reject if the new value matches a default (case-insensitive)
+    const defaults = VOCAB_DEFAULTS[existing.kind] ?? [];
+    const defaultMatch = defaults.find(
+      (d) => d.toLowerCase() === trimmedValue.toLowerCase(),
+    );
+    if (defaultMatch) {
+      throw new HttpError(409, "That value already exists as a built-in default.");
+    }
+
+    // Reject if another custom item already has that value (case-insensitive)
+    const collision = await db.query.labVocabulary.findFirst({
+      where: and(
+        eq(labVocabulary.labOrganizationId, existing.labOrganizationId),
+        eq(labVocabulary.kind, existing.kind),
+        ilike(labVocabulary.value, trimmedValue),
+        ne(labVocabulary.id, id),
+      ),
+    });
+    if (collision) {
+      throw new HttpError(409, "A vocabulary item with that value already exists.");
+    }
+
+    const [updated] = await db
+      .update(labVocabulary)
+      .set({ value: trimmedValue })
+      .where(eq(labVocabulary.id, id))
+      .returning();
+
+    return ok(res, {
+      id: updated.id,
+      kind: updated.kind,
+      value: updated.value,
+      isDefault: false,
+    });
+  }),
+);
+
+router.delete(
+  "/:id",
+  asyncHandler(async (req: Request, res: Response) => {
+    const id = String(req.params["id"] ?? "");
+    if (!id) throw new HttpError(400, "id is required.");
+
+    const userId = (req as any).auth.userId as string;
+
+    const existing = await db.query.labVocabulary.findFirst({
+      where: eq(labVocabulary.id, id),
+    });
+    if (!existing) throw new HttpError(404, "Vocabulary item not found.");
+
+    await requireLabAdmin(userId, existing.labOrganizationId);
+
+    await db.delete(labVocabulary).where(eq(labVocabulary.id, id));
+
+    return ok(res, { deleted: true });
   }),
 );
 

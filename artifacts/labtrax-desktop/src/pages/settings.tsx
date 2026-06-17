@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Building2, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, FileDown, Github, History, KeyRound, LayoutList, Loader2, LogOut, Monitor, Package, Pencil, Play, RotateCcw, RefreshCcw, Search, ShieldCheck, Smartphone, Sparkles, Trash2, Upload, User as UserIcon, UserMinus, UserPlus, Wrench, X } from "lucide-react";
+import { AlertTriangle, BookOpen, Building2, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, FileDown, Github, History, KeyRound, LayoutList, Loader2, LogOut, Monitor, Package, Pencil, Play, RotateCcw, RefreshCcw, Search, ShieldCheck, Smartphone, Sparkles, Trash2, Upload, User as UserIcon, UserMinus, UserPlus, Wrench, X } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -54,9 +54,9 @@ interface AdminUser {
   lastLoginAt?: string | null;
 }
 
-type TabKey = "profile" | "password" | "two-factor" | "sessions" | "organizations" | "users" | "backup" | "desktop" | "mobile" | "itero" | "platform-admin" | "subscriptions" | "notifications" | "templates" | "statement-layout" | "correspondence-layout" | "invoice-layout" | "deleted-cases" | "deletion-audit";
+type TabKey = "profile" | "password" | "two-factor" | "sessions" | "organizations" | "users" | "backup" | "desktop" | "mobile" | "itero" | "platform-admin" | "subscriptions" | "notifications" | "templates" | "statement-layout" | "correspondence-layout" | "invoice-layout" | "deleted-cases" | "deletion-audit" | "vocabulary";
 
-const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "two-factor", "sessions", "organizations", "users", "backup", "desktop", "mobile", "itero", "platform-admin", "subscriptions", "notifications", "templates", "statement-layout", "correspondence-layout", "invoice-layout", "deleted-cases", "deletion-audit"];
+const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "two-factor", "sessions", "organizations", "users", "backup", "desktop", "mobile", "itero", "platform-admin", "subscriptions", "notifications", "templates", "statement-layout", "correspondence-layout", "invoice-layout", "deleted-cases", "deletion-audit", "vocabulary"];
 
 function readInitialTab(): TabKey {
   if (typeof window === "undefined") return "profile";
@@ -85,6 +85,7 @@ export default function SettingsPage() {
     { key: "backup", label: "Backup", icon: ShieldCheck, show: isAdmin },
     { key: "deleted-cases", label: "Deleted Cases", icon: Trash2, show: isAdmin },
     { key: "deletion-audit", label: "Deletion Audit Log", icon: History, show: isAdmin },
+    { key: "vocabulary", label: "Vocabulary", icon: BookOpen, show: isAdmin },
     { key: "desktop", label: "Desktop app", icon: Download, show: true },
     { key: "templates", label: "Templates", icon: LayoutList, show: isAdmin },
     { key: "invoice-layout", label: "Invoice layout", icon: LayoutList, show: isAdmin, parentKey: "templates" },
@@ -195,6 +196,7 @@ export default function SettingsPage() {
           {tab === "notifications" && <NotificationsPanel isAdmin={isAdmin} />}
           {tab === "deleted-cases" && isAdmin && <DeletedCasesPanel />}
           {tab === "deletion-audit" && isAdmin && <DeletionAuditPanel />}
+          {tab === "vocabulary" && isAdmin && <VocabularyPanel />}
         </div>
       </div>
     </div>
@@ -9137,6 +9139,275 @@ function DeletionAuditPanel() {
             </div>
           )}
         </>
+      )}
+    </PanelShell>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// VocabularyPanel — manage custom vocabulary items per lab
+// ---------------------------------------------------------------------------
+
+const VOCAB_KIND_LABELS: Record<string, string> = {
+  material: "Materials",
+  shade: "Shades",
+  restoration_type: "Restoration Types",
+};
+const VOCAB_KINDS = ["material", "shade", "restoration_type"] as const;
+type VocabKind = (typeof VOCAB_KINDS)[number];
+
+interface VocabItem {
+  id: string;
+  kind: string;
+  value: string;
+  isDefault: boolean;
+}
+
+function VocabularyPanel() {
+  const qc = useQueryClient();
+
+  const meQuery = useQuery<MeResponse>({
+    queryKey: ["auth", "me"],
+    queryFn: () => apiFetch("/auth/me"),
+    staleTime: 60_000,
+  });
+
+  const adminLabs = useMemo(() => {
+    return (meQuery.data?.memberships ?? []).filter(
+      (m) =>
+        m.organization?.type === "lab" &&
+        m.status === "active" &&
+        (m.role === "admin" || m.role === "owner"),
+    );
+  }, [meQuery.data]);
+
+  const [selectedLabId, setSelectedLabId] = useState<string | null>(null);
+  const effectiveLabId = selectedLabId ?? adminLabs[0]?.organizationId ?? null;
+
+  // One query per kind
+  const queryForKind = (kind: VocabKind) =>
+    ({
+      enabled: !!effectiveLabId,
+      queryKey: ["vocabulary", kind, effectiveLabId],
+      queryFn: () =>
+        apiFetch<VocabItem[]>(
+          `/vocabulary?kind=${kind}&labOrganizationId=${encodeURIComponent(effectiveLabId!)}`,
+        ),
+      staleTime: 30_000,
+    }) as const;
+
+  const materialQ = useQuery(queryForKind("material"));
+  const shadeQ = useQuery(queryForKind("shade"));
+  const restTypeQ = useQuery(queryForKind("restoration_type"));
+
+  const queriesByKind: Record<VocabKind, typeof materialQ> = {
+    material: materialQ,
+    shade: shadeQ,
+    restoration_type: restTypeQ,
+  };
+
+  // Editing state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const [editError, setEditError] = useState<string | null>(null);
+  const [savingId, setSavingId] = useState<string | null>(null);
+
+  // Delete confirm
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  function startEdit(item: VocabItem) {
+    setEditingId(item.id);
+    setEditValue(item.value);
+    setEditError(null);
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setEditValue("");
+    setEditError(null);
+  }
+
+  async function saveEdit(item: VocabItem) {
+    const trimmed = editValue.trim();
+    if (!trimmed) {
+      setEditError("Value must not be blank.");
+      return;
+    }
+    setSavingId(item.id);
+    setEditError(null);
+    try {
+      await apiFetch(`/vocabulary/${encodeURIComponent(item.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ value: trimmed }),
+      });
+      await qc.invalidateQueries({ queryKey: ["vocabulary", item.kind, effectiveLabId] });
+      setEditingId(null);
+    } catch (err: unknown) {
+      setEditError(err instanceof Error ? err.message : "Could not rename item.");
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  async function confirmDelete(item: VocabItem) {
+    setDeletingId(item.id);
+    setDeleteError(null);
+    try {
+      await apiFetch(`/vocabulary/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+      await qc.invalidateQueries({ queryKey: ["vocabulary", item.kind, effectiveLabId] });
+    } catch (err: unknown) {
+      setDeleteError(err instanceof Error ? err.message : "Could not delete item.");
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  const isLoading = materialQ.isLoading || shadeQ.isLoading || restTypeQ.isLoading;
+
+  return (
+    <PanelShell
+      title="Vocabulary"
+      subtitle="Manage the custom materials, shades, and restoration types your lab has added. Built-in defaults cannot be edited or removed."
+    >
+      {adminLabs.length > 1 && (
+        <div className="mb-2">
+          <select
+            value={effectiveLabId ?? ""}
+            onChange={(e) => setSelectedLabId(e.target.value || null)}
+            className="h-9 px-3 rounded-md bg-secondary text-sm border border-border focus:outline-none"
+          >
+            {adminLabs.map((m) => (
+              <option key={m.organizationId} value={m.organizationId}>
+                {m.organization?.name ?? m.organizationId}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {!effectiveLabId && !meQuery.isLoading && (
+        <p className="text-sm text-muted-foreground text-center py-10">No lab available.</p>
+      )}
+
+      {isLoading && effectiveLabId && (
+        <div className="flex items-center gap-2 text-muted-foreground text-sm py-8 justify-center">
+          <Loader2 size={14} className="animate-spin" />
+          Loading…
+        </div>
+      )}
+
+      {deleteError && (
+        <Alert tone="danger">{deleteError}</Alert>
+      )}
+
+      {!isLoading && effectiveLabId && (
+        <div className="space-y-6">
+          {VOCAB_KINDS.map((kind) => {
+            const q = queriesByKind[kind];
+            const items = (q.data ?? []).filter((it) => !it.isDefault);
+
+            return (
+              <div key={kind}>
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                  {VOCAB_KIND_LABELS[kind]}
+                </h3>
+                {q.isError && (
+                  <p className="text-sm text-destructive py-2">Failed to load.</p>
+                )}
+                {!q.isError && items.length === 0 && (
+                  <p className="text-sm text-muted-foreground py-2 italic">
+                    No custom items — defaults only.
+                  </p>
+                )}
+                {!q.isError && items.length > 0 && (
+                  <div className="border border-border rounded-md overflow-hidden">
+                    {items.map((item, i) => {
+                      const isEditing = editingId === item.id;
+                      const isSaving = savingId === item.id;
+                      const isBeingDeleted = deletingId === item.id;
+
+                      return (
+                        <div
+                          key={item.id}
+                          className={`flex items-center gap-2 px-3 py-2 ${
+                            i > 0 ? "border-t border-border" : ""
+                          } ${i % 2 === 0 ? "" : "bg-secondary/20"}`}
+                        >
+                          {isEditing ? (
+                            <>
+                              <input
+                                autoFocus
+                                type="text"
+                                value={editValue}
+                                onChange={(e) => {
+                                  setEditValue(e.target.value);
+                                  setEditError(null);
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") void saveEdit(item);
+                                  if (e.key === "Escape") cancelEdit();
+                                }}
+                                disabled={isSaving}
+                                className="flex-1 h-7 px-2 rounded bg-background border border-border text-sm focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-60"
+                              />
+                              {editError && (
+                                <span className="text-xs text-destructive shrink-0">{editError}</span>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => void saveEdit(item)}
+                                disabled={isSaving}
+                                className="inline-flex items-center gap-1 h-7 px-2 rounded bg-primary text-primary-foreground text-xs font-medium disabled:opacity-60 hover:bg-primary/90"
+                              >
+                                {isSaving ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}
+                                Save
+                              </button>
+                              <button
+                                type="button"
+                                onClick={cancelEdit}
+                                disabled={isSaving}
+                                className="inline-flex items-center h-7 px-2 rounded bg-secondary text-xs font-medium hover:bg-secondary/80 disabled:opacity-60"
+                              >
+                                <X size={11} />
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <span className="flex-1 text-sm truncate">{item.value}</span>
+                              <button
+                                type="button"
+                                onClick={() => startEdit(item)}
+                                disabled={isBeingDeleted || !!editingId}
+                                title="Rename"
+                                className="text-muted-foreground hover:text-foreground disabled:opacity-40 p-1 rounded"
+                              >
+                                <Pencil size={13} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void confirmDelete(item)}
+                                disabled={isBeingDeleted || !!editingId}
+                                title="Delete"
+                                className="text-muted-foreground hover:text-destructive disabled:opacity-40 p-1 rounded"
+                              >
+                                {isBeingDeleted ? (
+                                  <Loader2 size={13} className="animate-spin" />
+                                ) : (
+                                  <Trash2 size={13} />
+                                )}
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       )}
     </PanelShell>
   );

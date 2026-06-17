@@ -103,6 +103,41 @@ export const CreateVocabularyItemResponse = zod.object({
 });
 
 /**
+ * @summary Rename a custom vocabulary item (admin only)
+ */
+export const UpdateVocabularyItemParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const UpdateVocabularyItemBody = zod.object({
+  value: zod.string(),
+});
+
+export const UpdateVocabularyItemResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.object({
+    id: zod.string(),
+    kind: zod.string(),
+    value: zod.string(),
+    isDefault: zod.boolean(),
+  }),
+});
+
+/**
+ * @summary Delete a custom vocabulary item (admin only)
+ */
+export const DeleteVocabularyItemParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const DeleteVocabularyItemResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.object({
+    deleted: zod.boolean(),
+  }),
+});
+
+/**
  * @summary Update a lab location
  */
 export const UpdateLocationParams = zod.object({

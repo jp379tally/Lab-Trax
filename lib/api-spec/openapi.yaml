@@ -149,6 +149,59 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/VocabularyItemResult"
+  /vocabulary/{id}:
+    patch:
+      operationId: updateVocabularyItem
+      tags: [vocabulary]
+      summary: Rename a custom vocabulary item (admin only)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateVocabularyInput"
+      responses:
+        "200":
+          description: Updated item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VocabularyItemResult"
+        "404":
+          description: Not found
+        "409":
+          description: Conflict (duplicate value)
+    delete:
+      operationId: deleteVocabularyItem
+      tags: [vocabulary]
+      summary: Delete a custom vocabulary item (admin only)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, data]
+                properties:
+                  ok: { type: boolean }
+                  data:
+                    type: object
+                    required: [deleted]
+                    properties:
+                      deleted: { type: boolean }
+        "404":
+          description: Not found
   /locations/{id}:
     patch:
       operationId: updateLocation
@@ -5138,4 +5191,9 @@ components:
           enum: [material, shade, restoration_type]
         value: { type: string }
         labOrganizationId: { type: string }
+    UpdateVocabularyInput:
+      type: object
+      required: [value]
+      properties:
+        value: { type: string }
 

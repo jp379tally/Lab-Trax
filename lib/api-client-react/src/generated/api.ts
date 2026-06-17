@@ -58,6 +58,7 @@ import type {
   CreateVocabularyInput,
   CurrentUserResult,
   DeleteLocation200,
+  DeleteVocabularyItem200,
   DeletedResult,
   DisableBackupSchedule200,
   DisableTwoFactor200,
@@ -166,6 +167,7 @@ import type {
   UpdateOrganizationLogoPlacements200,
   UpdateOrganizationLogoPlacementsBody,
   UpdateVendorInput,
+  UpdateVocabularyInput,
   VendorEmployeeImportInput,
   VendorImportResult,
   VendorListResult,
@@ -701,6 +703,177 @@ export const useCreateVocabularyItem = <
   TContext
 > => {
   return useMutation(getCreateVocabularyItemMutationOptions(options));
+};
+
+/**
+ * @summary Rename a custom vocabulary item (admin only)
+ */
+export const getUpdateVocabularyItemUrl = (id: string) => {
+  return `/api/vocabulary/${id}`;
+};
+
+export const updateVocabularyItem = async (
+  id: string,
+  updateVocabularyInput: UpdateVocabularyInput,
+  options?: RequestInit,
+): Promise<VocabularyItemResult> => {
+  return customFetch<VocabularyItemResult>(getUpdateVocabularyItemUrl(id), {
+    ...options,
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(updateVocabularyInput),
+  });
+};
+
+export const getUpdateVocabularyItemMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateVocabularyItem>>,
+    TError,
+    { id: string; data: BodyType<UpdateVocabularyInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof updateVocabularyItem>>,
+  TError,
+  { id: string; data: BodyType<UpdateVocabularyInput> },
+  TContext
+> => {
+  const mutationKey = ["updateVocabularyItem"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof updateVocabularyItem>>,
+    { id: string; data: BodyType<UpdateVocabularyInput> }
+  > = (props) => {
+    const { id, data } = props ?? {};
+
+    return updateVocabularyItem(id, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UpdateVocabularyItemMutationResult = NonNullable<
+  Awaited<ReturnType<typeof updateVocabularyItem>>
+>;
+export type UpdateVocabularyItemMutationBody = BodyType<UpdateVocabularyInput>;
+export type UpdateVocabularyItemMutationError = ErrorType<void>;
+
+/**
+ * @summary Rename a custom vocabulary item (admin only)
+ */
+export const useUpdateVocabularyItem = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateVocabularyItem>>,
+    TError,
+    { id: string; data: BodyType<UpdateVocabularyInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof updateVocabularyItem>>,
+  TError,
+  { id: string; data: BodyType<UpdateVocabularyInput> },
+  TContext
+> => {
+  return useMutation(getUpdateVocabularyItemMutationOptions(options));
+};
+
+/**
+ * @summary Delete a custom vocabulary item (admin only)
+ */
+export const getDeleteVocabularyItemUrl = (id: string) => {
+  return `/api/vocabulary/${id}`;
+};
+
+export const deleteVocabularyItem = async (
+  id: string,
+  options?: RequestInit,
+): Promise<DeleteVocabularyItem200> => {
+  return customFetch<DeleteVocabularyItem200>(getDeleteVocabularyItemUrl(id), {
+    ...options,
+    method: "DELETE",
+  });
+};
+
+export const getDeleteVocabularyItemMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof deleteVocabularyItem>>,
+    TError,
+    { id: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof deleteVocabularyItem>>,
+  TError,
+  { id: string },
+  TContext
+> => {
+  const mutationKey = ["deleteVocabularyItem"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof deleteVocabularyItem>>,
+    { id: string }
+  > = (props) => {
+    const { id } = props ?? {};
+
+    return deleteVocabularyItem(id, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type DeleteVocabularyItemMutationResult = NonNullable<
+  Awaited<ReturnType<typeof deleteVocabularyItem>>
+>;
+
+export type DeleteVocabularyItemMutationError = ErrorType<void>;
+
+/**
+ * @summary Delete a custom vocabulary item (admin only)
+ */
+export const useDeleteVocabularyItem = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof deleteVocabularyItem>>,
+    TError,
+    { id: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof deleteVocabularyItem>>,
+  TError,
+  { id: string },
+  TContext
+> => {
+  return useMutation(getDeleteVocabularyItemMutationOptions(options));
 };
 
 /**
