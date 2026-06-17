@@ -1,8 +1,8 @@
 import { Router, type Request, type Response } from "express";
-import { and, asc, eq, ilike, ne } from "drizzle-orm";
+import { and, asc, count, eq, ilike, ne } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
-import { labVocabulary, organizationMemberships } from "@workspace/db";
+import { cases, caseRestorations, labVocabulary, organizationMemberships } from "@workspace/db";
 import { HttpError, ok } from "../lib/http";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
@@ -263,9 +263,40 @@ router.delete(
 
     await requireLabAdmin(userId, existing.labOrganizationId);
 
+    // Count how many case restorations in this lab reference this vocabulary value.
+    const kindToCol = {
+      material: caseRestorations.material,
+      shade: caseRestorations.shade,
+      restoration_type: caseRestorations.restorationType,
+    } as const;
+
+    const col = kindToCol[existing.kind as keyof typeof kindToCol];
+    const [usageRow] = await db
+      .select({ usageCount: count() })
+      .from(caseRestorations)
+      .innerJoin(cases, eq(caseRestorations.caseId, cases.id))
+      .where(
+        and(
+          eq(cases.labOrganizationId, existing.labOrganizationId),
+          ilike(col, existing.value),
+        ),
+      );
+
+    const usageCount = usageRow?.usageCount ?? 0;
+    const force = req.query["force"] === "true";
+
+    if (usageCount > 0 && !force) {
+      res.status(409).json({
+        ok: false,
+        error: `This term is used in ${usageCount} case restoration(s). Pass force=true to delete anyway.`,
+        usageCount,
+      });
+      return;
+    }
+
     await db.delete(labVocabulary).where(eq(labVocabulary.id, id));
 
-    return ok(res, { deleted: true });
+    return ok(res, { deleted: true, usageCount });
   }),
 );
 

@@ -9215,6 +9215,7 @@ function VocabularyPanel() {
   // Delete confirm
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<{ item: VocabItem; usageCount: number } | null>(null);
 
   function startEdit(item: VocabItem) {
     setEditingId(item.id);
@@ -9250,11 +9251,33 @@ function VocabularyPanel() {
     }
   }
 
-  async function confirmDelete(item: VocabItem) {
+  async function initiateDelete(item: VocabItem) {
     setDeletingId(item.id);
     setDeleteError(null);
     try {
       await apiFetch(`/vocabulary/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+      await qc.invalidateQueries({ queryKey: ["vocabulary", item.kind, effectiveLabId] });
+    } catch (err: unknown) {
+      if (err instanceof ApiError && err.status === 409) {
+        const body = err.body as { usageCount?: number } | null;
+        const usageCount = typeof body?.usageCount === "number" ? body.usageCount : 1;
+        setPendingDelete({ item, usageCount });
+      } else {
+        setDeleteError(err instanceof Error ? err.message : "Could not delete item.");
+      }
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  async function forceDelete() {
+    if (!pendingDelete) return;
+    const { item } = pendingDelete;
+    setPendingDelete(null);
+    setDeletingId(item.id);
+    setDeleteError(null);
+    try {
+      await apiFetch(`/vocabulary/${encodeURIComponent(item.id)}?force=true`, { method: "DELETE" });
       await qc.invalidateQueries({ queryKey: ["vocabulary", item.kind, effectiveLabId] });
     } catch (err: unknown) {
       setDeleteError(err instanceof Error ? err.message : "Could not delete item.");
@@ -9386,7 +9409,7 @@ function VocabularyPanel() {
                               </button>
                               <button
                                 type="button"
-                                onClick={() => void confirmDelete(item)}
+                                onClick={() => void initiateDelete(item)}
                                 disabled={isBeingDeleted || !!editingId}
                                 title="Delete"
                                 className="text-muted-foreground hover:text-destructive disabled:opacity-40 p-1 rounded"
@@ -9409,6 +9432,26 @@ function VocabularyPanel() {
           })}
         </div>
       )}
+
+      <AlertDialog open={!!pendingDelete} onOpenChange={(open) => { if (!open) setPendingDelete(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete "{pendingDelete?.item.value}"?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This term is used in {pendingDelete?.usageCount} existing case{pendingDelete?.usageCount === 1 ? "" : "s"}. Cases will keep their current text, but the term will no longer appear in the suggestions list.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => void forceDelete()}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete anyway
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </PanelShell>
   );
 }
