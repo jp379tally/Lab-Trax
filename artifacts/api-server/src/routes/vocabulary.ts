@@ -1,8 +1,8 @@
 import { Router, type Request, type Response } from "express";
-import { and, asc, count, eq, ilike, ne } from "drizzle-orm";
+import { and, asc, count, eq, ilike, isNull, ne } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
-import { cases, caseRestorations, labVocabulary, organizationMemberships } from "@workspace/db";
+import { cases, caseRestorations, labCases, labVocabulary, organizationMemberships } from "@workspace/db";
 import { HttpError, ok } from "../lib/http";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
@@ -282,7 +282,51 @@ router.delete(
         ),
       );
 
-    const usageCount = usageRow?.usageCount ?? 0;
+    const canonicalUsageCount = usageRow?.usageCount ?? 0;
+
+    // Legacy mobile cases store their restorations as a JSON blob in
+    // `lab_cases.caseData` and have no `case_restorations` rows, so the
+    // canonical count above misses them. Scan the blob for the same field.
+    const legacyFieldByKind = {
+      material: "material",
+      shade: "shade",
+      restoration_type: "restorationType",
+    } as const;
+    const legacyField = legacyFieldByKind[existing.kind as keyof typeof legacyFieldByKind];
+    const targetValue = existing.value.toLowerCase();
+
+    const legacyRows = await db
+      .select({ caseData: labCases.caseData })
+      .from(labCases)
+      .where(
+        and(
+          eq(labCases.organizationId, existing.labOrganizationId),
+          isNull(labCases.deletedAt),
+        ),
+      );
+
+    let legacyUsageCount = 0;
+    for (const row of legacyRows) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(row.caseData);
+      } catch {
+        continue;
+      }
+      const restorations = (parsed as { restorations?: unknown })?.restorations;
+      if (!Array.isArray(restorations)) continue;
+      for (const r of restorations) {
+        const fieldValue = (r as Record<string, unknown> | null)?.[legacyField];
+        if (
+          typeof fieldValue === "string" &&
+          fieldValue.toLowerCase() === targetValue
+        ) {
+          legacyUsageCount += 1;
+        }
+      }
+    }
+
+    const usageCount = canonicalUsageCount + legacyUsageCount;
     const force = req.query["force"] === "true";
 
     if (usageCount > 0 && !force) {

@@ -441,5 +441,54 @@ maybe("Vocabulary (db integration)", () => {
 
       expect(res.status).toBe(404);
     });
+
+    it("counts legacy mobile cases that reference the term in caseData", async () => {
+      const value = `LegacyMat_${rid("lm")}`;
+      const { db, labCases } = dbMod;
+
+      const legacyCaseId = rid("lc");
+      await db.insert(labCases).values({
+        id: legacyCaseId,
+        ownerId: adminId,
+        organizationId: labOrgId,
+        caseData: JSON.stringify({
+          id: legacyCaseId,
+          ownerId: adminId,
+          restorations: [
+            { toothNumber: "8", restorationType: "Crown", material: value, shade: "A2" },
+            // Case-insensitive match should also count.
+            { toothNumber: "9", restorationType: "Crown", material: value.toLowerCase(), shade: "A2" },
+          ],
+        }),
+      });
+
+      const createRes = await request(appMod.default)
+        .post("/api/vocabulary")
+        .set("Authorization", `Bearer ${accessToken}`)
+        .send({ kind: "material", value, labOrganizationId: labOrgId });
+      expect(createRes.status).toBe(201);
+      const id = createRes.body.data.id as string;
+
+      // Without force, deletion is blocked and the count reflects legacy usage.
+      const blockedRes = await request(appMod.default)
+        .delete(`/api/vocabulary/${id}`)
+        .set("Authorization", `Bearer ${accessToken}`);
+      expect(blockedRes.status).toBe(409);
+      expect(blockedRes.body.usageCount).toBe(2);
+
+      // Soft-deleted legacy cases are not counted.
+      await db
+        .update(labCases)
+        .set({ deletedAt: new Date() })
+        .where(eq(labCases.id, legacyCaseId));
+
+      const allowedRes = await request(appMod.default)
+        .delete(`/api/vocabulary/${id}`)
+        .set("Authorization", `Bearer ${accessToken}`);
+      expect(allowedRes.status).toBe(200);
+      expect(allowedRes.body.data.usageCount).toBe(0);
+
+      await db.delete(labCases).where(eq(labCases.id, legacyCaseId));
+    });
   });
 });
