@@ -792,6 +792,7 @@ export const caseAttachments = pgTable("case_attachments", {
   storageKey: text("storage_key").notNull(),
   fileType: text("file_type").notNull(),
   visibility: text("visibility").default("shared_with_provider").notNull(),
+  note: text("note"),
   createdAt: createdAt(),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
   deletedByUserId: varchar("deleted_by_user_id").references(() => users.id, {

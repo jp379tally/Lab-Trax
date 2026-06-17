@@ -4426,6 +4426,7 @@ router.post(
           visibility: z
             .enum(["internal_lab_only", "shared_with_provider"] as const)
             .default("shared_with_provider"),
+          note: z.string().max(1000).optional(),
         })
         .parse(req.body);
 
@@ -4439,6 +4440,7 @@ router.post(
           storageKey: legacyInput.storageKey,
           fileType: legacyInput.fileType,
           visibility: legacyInput.visibility,
+          note: legacyInput.note ?? null,
         })
         .returning();
 
@@ -4520,6 +4522,7 @@ router.post(
         visibility: z
           .enum(["internal_lab_only", "shared_with_provider"] as const)
           .default("shared_with_provider"),
+        note: z.string().max(1000).optional(),
       })
       .parse(req.body);
 
@@ -4533,6 +4536,7 @@ router.post(
         storageKey: input.storageKey,
         fileType: input.fileType,
         visibility: input.visibility,
+        note: input.note ?? null,
       })
       .returning();
 

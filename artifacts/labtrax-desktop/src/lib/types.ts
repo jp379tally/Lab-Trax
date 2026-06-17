@@ -175,6 +175,7 @@ export interface CaseAttachment {
   storageKey: string;
   fileType: string;
   visibility?: string | null;
+  note?: string | null;
   createdAt?: string | null;
   uploaderName?: string | null;
 }

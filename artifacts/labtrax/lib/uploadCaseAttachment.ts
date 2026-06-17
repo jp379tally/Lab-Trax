@@ -17,6 +17,8 @@ export interface UploadCaseAttachmentParams {
   fileName: string;
   mimeType: string;
   visibility?: AttachmentVisibility;
+  /** Optional note saved alongside the attachment record. */
+  note?: string;
   /** Reports overall progress (0..1) across both upload + register steps. */
   onProgress?: (fraction: number) => void;
 }
@@ -37,7 +39,7 @@ export type UploadCaseAttachmentResult =
 export async function uploadCaseAttachment(
   params: UploadCaseAttachmentParams,
 ): Promise<UploadCaseAttachmentResult> {
-  const { caseId, fileUri, fileName, mimeType, visibility, onProgress } = params;
+  const { caseId, fileUri, fileName, mimeType, visibility, note, onProgress } = params;
 
   // Step 1 — binary upload. Reserve the final 5% of the bar for the register
   // call so a row never reads 100% before the case actually references it.
@@ -74,6 +76,7 @@ export async function uploadCaseAttachment(
           fileName,
           fileType: mimeType,
           ...(visibility ? { visibility } : {}),
+          ...(note ? { note } : {}),
         }),
       },
     );

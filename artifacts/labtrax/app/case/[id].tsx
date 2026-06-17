@@ -2508,7 +2508,7 @@ function FilesSection({
   colors,
 }: {
   caseId: string;
-  attachments: { id: string; fileName?: string | null; fileType?: string | null; uploaderName?: string | null; createdAt?: string | null }[];
+  attachments: { id: string; fileName?: string | null; fileType?: string | null; uploaderName?: string | null; createdAt?: string | null; note?: string | null }[];
   loading: boolean;
   onOpenImage: (url: string) => void;
   canEdit: boolean;
@@ -2528,11 +2528,15 @@ function FilesSection({
     fileName: string;
     mimeType: string;
     fileUri: string;
+    note?: string;
     progress: number;
     status: "uploading" | "error" | "done";
     error?: string;
   }
   const [uploads, setUploads] = useState<UploadJob[]>([]);
+  const [pendingFiles, setPendingFiles] = useState<{ uri: string; name: string; mimeType: string }[]>([]);
+  const [noteText, setNoteText] = useState("");
+  const [noteModalVisible, setNoteModalVisible] = useState(false);
 
   function updateJob(key: string, patch: Partial<UploadJob>) {
     setUploads((prev) => prev.map((j) => (j.key === key ? { ...j, ...patch } : j)));
@@ -2546,6 +2550,7 @@ function FilesSection({
         fileUri: job.fileUri,
         fileName: job.fileName,
         mimeType: job.mimeType,
+        note: job.note,
         onProgress: (f) => updateJob(job.key, { progress: f }),
       });
       if (result.ok) {
@@ -2565,13 +2570,15 @@ function FilesSection({
     }
   }
 
-  function startJobs(files: { uri: string; name: string; mimeType: string }[]) {
+  function startJobs(files: { uri: string; name: string; mimeType: string }[], note?: string) {
     if (files.length === 0) return;
+    const trimmedNote = note?.trim() || undefined;
     const jobs: UploadJob[] = files.map((f, i) => ({
       key: `${Date.now()}-${i}-${Math.random().toString(36).slice(2, 7)}`,
       fileName: f.name,
       mimeType: f.mimeType,
       fileUri: f.uri,
+      note: trimmedNote,
       progress: 0,
       status: "uploading",
     }));
@@ -2585,6 +2592,21 @@ function FilesSection({
     })();
   }
 
+  function queueWithNoteSheet(files: { uri: string; name: string; mimeType: string }[]) {
+    if (files.length === 0) return;
+    setPendingFiles(files);
+    setNoteText("");
+    setNoteModalVisible(true);
+  }
+
+  function handleNoteConfirm(note?: string) {
+    setNoteModalVisible(false);
+    const files = pendingFiles;
+    setPendingFiles([]);
+    setNoteText("");
+    startJobs(files, note);
+  }
+
   async function pickFromCamera() {
     try {
       const perm = await ImagePicker.requestCameraPermissionsAsync();
@@ -2594,7 +2616,7 @@ function FilesSection({
       }
       const res = await ImagePicker.launchCameraAsync({ quality: 0.85, mediaTypes: ["images"] });
       if (res.canceled) return;
-      startJobs(
+      queueWithNoteSheet(
         res.assets.map((a) => ({
           uri: a.uri,
           name: a.fileName || `photo-${Date.now()}.jpg`,
@@ -2619,7 +2641,7 @@ function FilesSection({
         mediaTypes: ["images"],
       });
       if (res.canceled) return;
-      startJobs(
+      queueWithNoteSheet(
         res.assets.map((a, i) => ({
           uri: a.uri,
           name: a.fileName || `photo-${Date.now()}-${i}.jpg`,
@@ -2635,7 +2657,7 @@ function FilesSection({
     try {
       const res = await DocumentPicker.getDocumentAsync({ multiple: true, copyToCacheDirectory: true });
       if (res.canceled) return;
-      startJobs(
+      queueWithNoteSheet(
         res.assets.map((a, i) => ({
           uri: a.uri,
           name: a.name || `file-${Date.now()}-${i}`,
@@ -2738,6 +2760,88 @@ function FilesSection({
 
   return (
     <View style={styles.sectionGap}>
+      <Modal
+        visible={noteModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => handleNoteConfirm(undefined)}
+      >
+        <Pressable
+          style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.45)" /* hex-allow: semi-transparent overlay */ }}
+          onPress={() => handleNoteConfirm(undefined)}
+        >
+          <View style={{ flex: 1 }} />
+        </Pressable>
+        <View
+          style={{
+            backgroundColor: colors.surface,
+            borderTopLeftRadius: Radius.lg,
+            borderTopRightRadius: Radius.lg,
+            padding: Spacing.xl,
+            gap: Spacing.md,
+          }}
+        >
+          <Text style={{ ...Typography.h2, color: colors.text }}>Add a note</Text>
+          <Text style={{ ...Typography.caption, color: colors.textTertiary }}>
+            {pendingFiles.length === 1
+              ? "Optional — saved with the file."
+              : `Optional — saved with all ${pendingFiles.length} files.`}
+          </Text>
+          <TextInput
+            value={noteText}
+            onChangeText={setNoteText}
+            placeholder="e.g. before prep, shade reference, patient concern…"
+            placeholderTextColor={colors.textTertiary}
+            multiline
+            numberOfLines={3}
+            maxLength={1000}
+            autoFocus
+            style={{
+              ...Typography.body,
+              color: colors.text,
+              borderWidth: 1,
+              borderColor: colors.border,
+              borderRadius: Radius.md,
+              padding: Spacing.md,
+              minHeight: 80,
+              textAlignVertical: "top",
+            }}
+            testID="attachment-note-input"
+          />
+          <View style={{ flexDirection: "row", gap: Spacing.sm }}>
+            <Pressable
+              onPress={() => handleNoteConfirm(undefined)}
+              style={{
+                flex: 1,
+                paddingVertical: Spacing.md,
+                borderRadius: Radius.md,
+                borderWidth: 1,
+                borderColor: colors.border,
+                alignItems: "center",
+              }}
+              testID="attachment-note-skip"
+            >
+              <Text style={{ ...Typography.bodySemibold, color: colors.textSecondary }}>Skip</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => handleNoteConfirm(noteText)}
+              style={{
+                flex: 2,
+                paddingVertical: Spacing.md,
+                borderRadius: Radius.md,
+                backgroundColor: colors.tint,
+                alignItems: "center",
+              }}
+              testID="attachment-note-upload"
+            >
+              <Text style={{ ...Typography.bodySemibold, color: "#fff" /* hex-allow: white text on tint button */ }}>
+                Upload
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
       {canEdit ? (
         <Pressable
           onPress={openAddSheet}
@@ -2839,28 +2943,37 @@ function FilesSection({
             const url = attachmentFileUrl(caseId, a.id);
             const isDeleting = deletingId === a.id;
             return (
-              <Pressable
-                key={a.id}
-                style={styles.thumb}
-                onPress={() => onOpenImage(url)}
-                testID={`img-open-${a.id}`}
-              >
-                <AuthedImage url={url} style={styles.thumbImage} contentFit="cover" />
-                {canEdit ? (
-                  <Pressable
-                    style={styles.thumbTrashBtn}
-                    onPress={() => handleDeleteAttachment(a)}
-                    hitSlop={4}
-                    testID={`img-delete-${a.id}`}
+              <View key={a.id} style={styles.thumb}>
+                <Pressable
+                  style={{ flex: 1 }}
+                  onPress={() => onOpenImage(url)}
+                  testID={`img-open-${a.id}`}
+                >
+                  <AuthedImage url={url} style={styles.thumbImage} contentFit="cover" />
+                  {canEdit ? (
+                    <Pressable
+                      style={styles.thumbTrashBtn}
+                      onPress={() => handleDeleteAttachment(a)}
+                      hitSlop={4}
+                      testID={`img-delete-${a.id}`}
+                    >
+                      {isDeleting ? (
+                        <ActivityIndicator color="#fff" /* hex-allow: white spinner on photo thumbnail overlay */ size="small" />
+                      ) : (
+                        <Ionicons name="trash-outline" size={14} color="#fff" /* hex-allow: white icon on photo thumbnail overlay */ />
+                      )}
+                    </Pressable>
+                  ) : null}
+                </Pressable>
+                {a.note ? (
+                  <Text
+                    style={{ ...Typography.caption, color: colors.textSecondary, marginTop: 4, paddingHorizontal: 2 }}
+                    numberOfLines={2}
                   >
-                    {isDeleting ? (
-                      <ActivityIndicator color="#fff" /* hex-allow: white spinner on photo thumbnail overlay */ size="small" />
-                    ) : (
-                      <Ionicons name="trash-outline" size={14} color="#fff" /* hex-allow: white icon on photo thumbnail overlay */ />
-                    )}
-                  </Pressable>
+                    {a.note}
+                  </Text>
                 ) : null}
-              </Pressable>
+              </View>
             );
           })}
         </View>
@@ -2881,6 +2994,11 @@ function FilesSection({
                   {a.uploaderName ? `${a.uploaderName} · ` : ""}
                   {formatDate(a.createdAt)}
                 </Text>
+                {a.note ? (
+                  <Text style={{ ...Typography.caption, color: colors.textSecondary, marginTop: 2 }} numberOfLines={2}>
+                    {a.note}
+                  </Text>
+                ) : null}
               </View>
               {isDeleting ? (
                 <ActivityIndicator color={colors.warning} />

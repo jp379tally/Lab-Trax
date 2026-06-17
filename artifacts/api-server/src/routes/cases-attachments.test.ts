@@ -310,6 +310,73 @@ maybe(
       }
     );
 
+    it(
+      "persists and returns an optional note attached to the file",
+      async () => {
+        const app = appMod.default;
+        const { db, caseAttachments } = dbMod as any;
+
+        const fileName = "shade-note.jpg";
+        const storageKey = `/uploads/case-media/${fileName}`;
+        const fileType = "image/jpeg";
+        const note = "Before-prep photo — check shade A2 match.";
+
+        const postRes = await request(app)
+          .post(`/api/cases/${legacyCaseId}/attachments`)
+          .set("Authorization", `Bearer ${tokens.member}`)
+          .send({ storageKey, fileName, fileType, note });
+
+        expect(postRes.status).toBe(201);
+        const attachmentId = postRes.body.data?.id;
+        expect(attachmentId).toBeTruthy();
+        // POST response includes the note
+        expect(postRes.body.data.note).toBe(note);
+
+        // DB row must store the note
+        const row = await db.query.caseAttachments.findFirst({
+          where: eq(caseAttachments.id, attachmentId),
+        });
+        expect(row).toBeDefined();
+        expect(row.note).toBe(note);
+
+        // GET list must return the note
+        const getRes = await request(app)
+          .get(`/api/cases/${legacyCaseId}/attachments`)
+          .set("Authorization", `Bearer ${tokens.member}`);
+
+        expect(getRes.status).toBe(200);
+        const list: any[] = getRes.body.data ?? getRes.body;
+        const found = (Array.isArray(list) ? list : []).find(
+          (a: any) => a.id === attachmentId
+        );
+        expect(found).toBeDefined();
+        expect(found.note).toBe(note);
+      }
+    );
+
+    it(
+      "persists null note when no note is supplied",
+      async () => {
+        const app = appMod.default;
+        const { db, caseAttachments } = dbMod as any;
+
+        const fileName = "no-note.pdf";
+        const storageKey = `/uploads/case-media/${fileName}`;
+
+        const postRes = await request(app)
+          .post(`/api/cases/${legacyCaseId}/attachments`)
+          .set("Authorization", `Bearer ${tokens.member}`)
+          .send({ storageKey, fileName, fileType: "application/pdf" });
+
+        expect(postRes.status).toBe(201);
+        const row = await db.query.caseAttachments.findFirst({
+          where: eq(caseAttachments.id, postRes.body.data?.id),
+        });
+        expect(row).toBeDefined();
+        expect(row.note).toBeNull();
+      }
+    );
+
     it("returns 404 when the caseId does not exist in lab_cases or cases", async () => {
       const app = appMod.default;
       const res = await request(app)

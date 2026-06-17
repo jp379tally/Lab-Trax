@@ -6999,6 +6999,9 @@ function AttachmentRow({
           {attachment.uploaderName ? ` · ${attachment.uploaderName}` : ""}
           {attachment.createdAt ? ` · ${relativeTime(attachment.createdAt)}` : ""}
         </div>
+        {attachment.note ? (
+          <div className="text-xs text-muted-foreground mt-1 italic">{attachment.note}</div>
+        ) : null}
       </div>
     </>
   );
