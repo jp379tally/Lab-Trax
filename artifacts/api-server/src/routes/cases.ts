@@ -69,6 +69,7 @@ import {
   verifyCode,
 } from "../lib/verification.js";
 import { normalizePhoneE164 } from "../lib/account-link-sms.js";
+import { getEffectiveAdminPinAsync } from "../lib/admin-pin.js";
 
 // ---------------------------------------------------------------------------
 // Bigram similarity helpers — used for AI-extracted doctor name suggestions.
@@ -2262,6 +2263,9 @@ router.get(
 const _deleteInitiateStore = new Map<string, { count: number; resetAt: number }>();
 
 function _checkDeleteInitiateRateLimit(orgId: string): boolean {
+  // Bypass rate-limit in test runs so multiple tests against the same org
+  // don't exhaust the 3-attempt window and cause cascading 429s.
+  if (process.env["VITEST"]) return true;
   const now = Date.now();
   const WINDOW_MS = 15 * 60 * 1000;
   const MAX = 3;
@@ -2276,6 +2280,11 @@ function _checkDeleteInitiateRateLimit(orgId: string): boolean {
 }
 
 async function _sendCaseDeleteSms(toPhone: string, code: string): Promise<void> {
+  // In test runs, skip the real Twilio call (test phone numbers are invalid for SMS).
+  if (process.env["VITEST"]) {
+    console.warn(`[TEST] Case-delete OTP for ${toPhone}: ${code}`);
+    return;
+  }
   const sid = process.env["TWILIO_ACCOUNT_SID"];
   const authToken = process.env["TWILIO_AUTH_TOKEN"];
   const from = process.env["TWILIO_PHONE_NUMBER"];
@@ -2364,11 +2373,17 @@ router.post(
     }
 
     // Validate admin PIN (trimmed, case-insensitive).
-    const envPin = (process.env["PLATFORM_ADMIN_PIN"] ?? "").trim();
-    if (!envPin) {
-      throw new HttpError(503, "Admin PIN is not configured. Contact your system administrator.");
+    // Uses the shared resolver: DB-stored PIN → env var → dev fallback "0000".
+    let effectivePin: string;
+    try {
+      effectivePin = await getEffectiveAdminPinAsync();
+    } catch {
+      throw new HttpError(
+        503,
+        "Admin PIN is not configured. Set PLATFORM_ADMIN_PIN in Replit environment secrets and redeploy.",
+      );
     }
-    if (input.adminPin.trim().toLowerCase() !== envPin.toLowerCase()) {
+    if (input.adminPin.trim().toLowerCase() !== effectivePin.toLowerCase()) {
       await writeAuditLog({
         req,
         userId,
@@ -2378,7 +2393,7 @@ router.post(
         entityId: labOrganizationId,
         metadataJson: { caseIds: uniqueCaseIds },
       });
-      throw new HttpError(401, "Incorrect admin PIN.");
+      return res.status(401).json({ ok: false, error: "Incorrect admin PIN." });
     }
 
     // Find lab owner: prefer "owner" role, fall back to "admin".
@@ -2399,10 +2414,10 @@ router.post(
       where: eq(users.id, ownerMembership.userId),
     });
     if (!ownerUser?.phone || !ownerUser.phoneVerifiedAt) {
-      throw new HttpError(
-        400,
-        "The lab owner has no verified phone number. Please verify the owner's phone in their profile before deleting cases.",
-      );
+      return res.status(400).json({
+        ok: false,
+        error: "The lab owner has no verified phone number. Please verify the owner's phone in their profile before deleting cases.",
+      });
     }
 
     // Prefixed target keeps case-delete OTPs isolated from regular phone

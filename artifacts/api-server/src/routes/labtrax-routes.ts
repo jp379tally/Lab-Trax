@@ -1,4 +1,12 @@
 import express, { Router, type IRouter } from "express";
+import {
+  SETTING_ADMIN_PIN,
+  loadAdminPinCache,
+  getEffectiveAdminPin,
+  isAdminPinDefault,
+  isAdminPinConfiguredAsync,
+  setDbAdminPin,
+} from "../lib/admin-pin";
 import { normalizePhoneE164 } from "../lib/account-link-sms";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -181,53 +189,10 @@ function generateCode(): string {
 }
 
 // ─── Admin PIN cache ─────────────────────────────────────────────────────────
-// The admin PIN is stored in system_settings (key "admin_pin"). When absent,
-// the effective PIN defaults to "0000". This module-level cache lets the sync
-// isPlatformAdmin() check use the DB value without blocking.
-const SETTING_ADMIN_PIN = "admin_pin";
+// Shared module — see src/lib/admin-pin.ts for the implementation.
+
 const SETTING_ADMIN_PIN_RESET_CODE = "admin_pin_reset_code";
 const SETTING_ADMIN_PIN_RESET_EXPIRES = "admin_pin_reset_expires";
-
-let _dbAdminPin: string | null = null; // null = no custom PIN → use env/default
-let _dbAdminPinLoaded = false;
-
-async function loadAdminPinCache(): Promise<void> {
-  const rows = await db
-    .select()
-    .from(systemSettings)
-    .where(eq(systemSettings.key, SETTING_ADMIN_PIN))
-    .limit(1);
-  _dbAdminPin = rows[0]?.value ?? null;
-  _dbAdminPinLoaded = true;
-}
-
-function getEffectiveAdminPin(): string {
-  if (_dbAdminPin) return _dbAdminPin;
-  const envPin = process.env.PLATFORM_ADMIN_PIN;
-  if (envPin && envPin !== "0000") return envPin;
-  if (process.env.NODE_ENV === "production") {
-    // Belt-and-suspenders: index.ts should have already blocked startup
-    // if PLATFORM_ADMIN_PIN was missing or set to "0000". If this line is
-    // somehow reached, fail loudly rather than silently accept "0000".
-    throw new Error(
-      "PLATFORM_ADMIN_PIN is not configured for production. " +
-      "Set it in Replit environment secrets and redeploy.",
-    );
-  }
-  // Development only: allow "0000" with a clear warning.
-  console.warn(
-    "[dev] PLATFORM_ADMIN_PIN is not set. Falling back to '0000' in development. " +
-    "You must set PLATFORM_ADMIN_PIN in Replit secrets before publishing.",
-  );
-  return "0000";
-}
-
-function isAdminPinDefault(): boolean {
-  if (_dbAdminPin) return false;
-  const envPin = process.env.PLATFORM_ADMIN_PIN;
-  if (envPin && envPin !== "0000") return false;
-  return true;
-}
 
 async function sendAdminPinResetSms(phone: string, code: string): Promise<void> {
   const sid = process.env.TWILIO_ACCOUNT_SID;
@@ -619,7 +584,7 @@ export async function registerRoutes(): Promise<IRouter> {
   router.get("/admin/pin/status", requireAuth, async (req, res) => {
     const reqUser = (req as any).user;
     if (!reqUser || reqUser.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-    if (!_dbAdminPinLoaded) await loadAdminPinCache();
+    await loadAdminPinCache();
     return res.json({ isDefault: isAdminPinDefault() });
   });
 
@@ -633,7 +598,7 @@ export async function registerRoutes(): Promise<IRouter> {
     if (!/^\d{4}$/.test(newPin)) {
       return res.status(400).json({ error: "New PIN must be exactly 4 digits" });
     }
-    if (!_dbAdminPinLoaded) await loadAdminPinCache();
+    await loadAdminPinCache();
     if (currentPin !== getEffectiveAdminPin()) {
       return res.status(403).json({ error: "Current PIN is incorrect" });
     }
@@ -644,7 +609,7 @@ export async function registerRoutes(): Promise<IRouter> {
       .insert(systemSettings)
       .values({ key: SETTING_ADMIN_PIN, value: newPin, updatedAt: new Date() })
       .onConflictDoUpdate({ target: systemSettings.key, set: { value: newPin, updatedAt: new Date() } });
-    _dbAdminPin = newPin;
+    setDbAdminPin(newPin);
     return res.json({ ok: true });
   });
 
@@ -703,8 +668,21 @@ export async function registerRoutes(): Promise<IRouter> {
     }
     // Reset PIN to default (null = 0000) and clear reset tokens.
     await db.delete(systemSettings).where(inArray(systemSettings.key, [SETTING_ADMIN_PIN, SETTING_ADMIN_PIN_RESET_CODE, SETTING_ADMIN_PIN_RESET_EXPIRES]));
-    _dbAdminPin = null;
+    setDbAdminPin(null);
     return res.json({ ok: true });
+  });
+
+  // ── Security config — used by clients to check PIN state before case deletion
+  router.get("/admin/security/config", requireAuth, async (req, res) => {
+    try {
+      const reqUser = (req as any).user;
+      if (!reqUser || reqUser.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+      const adminPinConfigured = await isAdminPinConfiguredAsync();
+      const adminPinIsDefault = isAdminPinDefault();
+      return res.json({ ok: true, adminPinConfigured, adminPinIsDefault });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to get security config." });
+    }
   });
 
   fs.mkdirSync(casMediaDir, { recursive: true });

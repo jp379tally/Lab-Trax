@@ -1103,6 +1103,16 @@ function CaseDeleteModal({
   const [isPending, setIsPending] = useState(false);
   const [secondsLeft, setSecondsLeft] = useState(600);
 
+  const securityConfigQuery = useQuery({
+    queryKey: ["admin-security-config"],
+    queryFn: () =>
+      apiFetch<{ ok: boolean; adminPinConfigured: boolean; adminPinIsDefault: boolean }>(
+        "/admin/security/config",
+      ),
+    staleTime: 60_000,
+    retry: 1,
+  });
+
   useEffect(() => {
     if (step !== "otp") return;
     const id = setInterval(() => setSecondsLeft((s) => Math.max(0, s - 1)), 1000);
@@ -1184,6 +1194,39 @@ function CaseDeleteModal({
               </button>
             </div>
             <div className="px-6 py-5 space-y-4">
+              {securityConfigQuery.data && !securityConfigQuery.data.adminPinConfigured && (
+                <div className="flex items-start gap-2.5 rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3.5 py-3 text-amber-800 dark:text-amber-300">
+                  <AlertTriangle size={15} className="shrink-0 mt-0.5" />
+                  <div className="space-y-1 text-xs leading-relaxed">
+                    <p className="font-medium">Admin PIN not configured</p>
+                    <p>
+                      <code className="font-mono">PLATFORM_ADMIN_PIN</code> is not set on this server.
+                      Case deletion requires a PIN.{" "}
+                      <a
+                        href="/settings?tab=platform-admin"
+                        className="underline hover:no-underline"
+                        onClick={onClose}
+                      >
+                        Go to Settings → Platform Admin
+                      </a>{" "}
+                      to configure it, or set the env var and redeploy.
+                    </p>
+                  </div>
+                </div>
+              )}
+              {securityConfigQuery.data?.adminPinConfigured && securityConfigQuery.data.adminPinIsDefault && (
+                <div className="flex items-start gap-2.5 rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3.5 py-3 text-amber-800 dark:text-amber-300">
+                  <AlertTriangle size={15} className="shrink-0 mt-0.5" />
+                  <div className="space-y-1 text-xs leading-relaxed">
+                    <p className="font-medium">Using default PIN (development only)</p>
+                    <p>
+                      The admin PIN is currently the insecure default. Set{" "}
+                      <code className="font-mono">PLATFORM_ADMIN_PIN</code> before publishing to
+                      production.
+                    </p>
+                  </div>
+                </div>
+              )}
               <p className="text-sm text-muted-foreground">Enter the admin PIN to begin. A verification code will be sent to the lab owner's phone.</p>
               <div className="space-y-1.5">
                 <label htmlFor="cdm-pin" className="text-xs font-medium text-muted-foreground">Admin PIN</label>

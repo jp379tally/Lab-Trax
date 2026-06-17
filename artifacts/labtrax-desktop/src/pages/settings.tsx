@@ -7631,6 +7631,63 @@ type PlatformAdminAPI = {
 };
 type ElectronWindow = Window & { electronAPI?: { showFolderDialog?: () => Promise<string | null>; showOpenDialog?: (opts: { title?: string; filters?: Array<{ name: string; extensions: string[] }>; properties?: string[] }) => Promise<string[] | null>; relaunch?: () => void; openExternal?: (url: string) => Promise<boolean>; saveBackupToFolder?: (buffer: Uint8Array, fileName: string, folderPath: string) => Promise<{ ok: boolean; path?: string; error?: string }>; itero?: IteroAPI; platformAdmin?: PlatformAdminAPI } };
 
+function CaseDeletionPinStatus({
+  securityConfigQuery,
+}: {
+  securityConfigQuery: ReturnType<typeof useQuery<{ ok: boolean; adminPinConfigured: boolean; adminPinIsDefault: boolean }>>;
+}) {
+  const data = securityConfigQuery.data;
+  if (!data) return null;
+
+  if (!data.adminPinConfigured) {
+    return (
+      <div className="rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3.5 py-3 text-xs">
+        <div className="flex items-start gap-2">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+          <div className="space-y-1 text-amber-800 dark:text-amber-300">
+            <p className="font-medium">Case deletion PIN not configured</p>
+            <p className="leading-relaxed">
+              <code className="font-mono">PLATFORM_ADMIN_PIN</code> is not set on this server.
+              Admins will be unable to delete cases until it is configured.
+              Add it to your Replit environment secrets and redeploy, or set a custom PIN via{" "}
+              <a href="/settings?tab=platform-admin" className="underline hover:no-underline">
+                Settings → Platform Admin
+              </a>
+              .
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (data.adminPinIsDefault) {
+    return (
+      <div className="rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3.5 py-3 text-xs">
+        <div className="flex items-start gap-2">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+          <div className="space-y-1 text-amber-800 dark:text-amber-300">
+            <p className="font-medium">Case deletion PIN is the insecure default</p>
+            <p className="leading-relaxed">
+              The admin PIN is set to the default value used in development. Set a unique{" "}
+              <code className="font-mono">PLATFORM_ADMIN_PIN</code> in Replit environment secrets
+              before publishing to production. The server will refuse to start with the default PIN
+              in production.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2 rounded-md border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-950/30 px-3.5 py-2.5 text-xs text-green-800 dark:text-green-300">
+      <ShieldCheck size={13} className="shrink-0" />
+      <span>Case deletion PIN is configured.</span>
+    </div>
+  );
+}
+
 function PlatformAdminPanel() {
   const electron = typeof window !== "undefined" ? (window as ElectronWindow).electronAPI : null;
   const platformAdmin = electron?.platformAdmin;
@@ -7640,6 +7697,16 @@ function PlatformAdminPanel() {
   const [showSecret, setShowSecret] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
+
+  const securityConfigQuery = useQuery({
+    queryKey: ["admin-security-config"],
+    queryFn: () =>
+      apiFetch<{ ok: boolean; adminPinConfigured: boolean; adminPinIsDefault: boolean }>(
+        "/admin/security/config",
+      ),
+    staleTime: 60_000,
+    retry: 1,
+  });
 
   useEffect(() => {
     if (!platformAdmin) return;
@@ -7695,6 +7762,7 @@ function PlatformAdminPanel() {
           ) : (
             <PlatformAdminSetupNotice />
           )}
+          <CaseDeletionPinStatus securityConfigQuery={securityConfigQuery} />
           <p className="text-xs text-muted-foreground">
             In the LabTrax Desktop app, the{" "}
             <code className="font-mono">PLATFORM_ADMIN_SECRET</code> is saved to
@@ -7825,6 +7893,15 @@ function PlatformAdminPanel() {
           </div>
           <p className="text-xs text-muted-foreground pt-2">
             The encrypted blob lives next to the app's other settings (under <code className="font-mono">userData/platform-admin-secret.bin</code>). Signing out clears the in-memory copy but keeps the on-disk blob, so the next sign-in still works.
+          </p>
+        </section>
+
+        <section className="space-y-2 border-t border-border pt-4">
+          <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">Case deletion PIN</h3>
+          <CaseDeletionPinStatus securityConfigQuery={securityConfigQuery} />
+          <p className="text-xs text-muted-foreground">
+            Case deletion requires a separate admin PIN (<code className="font-mono">PLATFORM_ADMIN_PIN</code>).
+            This is distinct from the platform admin secret above.
           </p>
         </section>
       </div>
