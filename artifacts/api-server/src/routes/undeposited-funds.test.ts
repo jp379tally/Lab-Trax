@@ -412,11 +412,14 @@ maybe("Undeposited Funds workflow (db integration)", () => {
     });
     expect(ufAcc).toBeDefined();
 
-    // Insert a stale transaction dated 45 days ago
+    // Insert a stale transaction dated 45 days ago. txnDate is a timestamp
+    // column, so it must be a Date — passing a date-only string crashes
+    // drizzle's PgTimestamp mapper (value.toISOString is not a function).
     const staleTxnId = rid("txn_stale");
-    const staleDate = new Date(Date.now() - 45 * 86_400_000).toISOString().slice(0, 10);
+    const staleDate = new Date(Date.now() - 45 * 86_400_000);
     await db.insert(bankTransactions).values({
       id: staleTxnId,
+      labOrganizationId: labOrgId,
       bankAccountId: ufAcc.id,
       txnDate: staleDate,
       status: "posted",
