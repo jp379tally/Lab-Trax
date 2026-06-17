@@ -43,6 +43,17 @@ vi.mock("@/lib/format", () => ({
   formatPhone: (p: string) => p,
 }));
 
+vi.mock("@/components/DoctorNamePicker", () => ({
+  DoctorNamePicker: ({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) => (
+    <input
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder ?? "Select doctor…"}
+      data-testid="doctor-name-picker"
+    />
+  ),
+}));
+
 // PDF conversion depends on pdfjs-dist + canvas — mock both.
 vi.mock("pdfjs-dist", () => ({
   getDocument: () => ({
@@ -191,11 +202,12 @@ function triggerFileInput(container: HTMLElement, files: File[]) {
 describe("DashboardDropZone — AI analyze path", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Default stubs for the two background queries.
+    // Default stubs for the background queries.
     mockApiFetch.mockImplementation((path: string) => {
       if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
       if (path === "/organizations")
         return Promise.resolve([{ id: "lab1", type: "lab", name: "Test Lab" }]);
+      if (path === "/cases/doctor-names") return Promise.resolve([]);
       return Promise.reject(new Error(`Unexpected apiFetch: ${path}`));
     });
     _mockDataUrl = "data:image/jpeg;base64,/9j/fakeJpegData==";
@@ -221,6 +233,7 @@ describe("DashboardDropZone — AI analyze path", () => {
       if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
       if (path === "/organizations")
         return Promise.resolve([{ id: "lab1", type: "lab", name: "Test Lab" }]);
+      if (path === "/cases/doctor-names") return Promise.resolve([]);
       if (path === "/analyze-prescription")
         return Promise.resolve(VALID_RX_RESPONSE);
       return Promise.reject(new Error(`Unexpected: ${path}`));
@@ -252,6 +265,7 @@ describe("DashboardDropZone — AI analyze path", () => {
       if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
       if (path === "/organizations")
         return Promise.resolve([{ id: "lab1", type: "lab", name: "Test Lab" }]);
+      if (path === "/cases/doctor-names") return Promise.resolve([]);
       if (path === "/analyze-prescription") {
         try { capturedBody = JSON.parse(opts?.body ?? "{}"); } catch {}
         return Promise.resolve(VALID_RX_RESPONSE);
@@ -284,6 +298,7 @@ describe("DashboardDropZone — AI analyze path", () => {
       if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
       if (path === "/organizations")
         return Promise.resolve([{ id: "lab1", type: "lab", name: "Test Lab" }]);
+      if (path === "/cases/doctor-names") return Promise.resolve([]);
       if (path === "/analyze-prescription") {
         analyzeCalled = true;
         return Promise.resolve(VALID_RX_RESPONSE);
@@ -309,6 +324,7 @@ describe("DashboardDropZone — AI analyze path", () => {
       if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
       if (path === "/organizations")
         return Promise.resolve([{ id: "lab1", type: "lab", name: "Test Lab" }]);
+      if (path === "/cases/doctor-names") return Promise.resolve([]);
       if (path === "/analyze-prescription")
         return Promise.resolve(VALID_RX_RESPONSE);
       return Promise.reject(new Error(`Unexpected: ${path}`));
@@ -338,6 +354,7 @@ describe("DashboardDropZone — AI analyze path", () => {
     mockApiFetch.mockImplementation((path: string) => {
       if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
       if (path === "/organizations") return Promise.resolve([]);
+      if (path === "/cases/doctor-names") return Promise.resolve([]);
       if (path === "/analyze-prescription")
         return Promise.resolve({
           success: false,
@@ -368,6 +385,7 @@ describe("DashboardDropZone — AI analyze path", () => {
     mockApiFetch.mockImplementation((path: string) => {
       if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
       if (path === "/organizations") return Promise.resolve([]);
+      if (path === "/cases/doctor-names") return Promise.resolve([]);
       if (path === "/analyze-prescription")
         return Promise.reject(new Error("Internal Server Error"));
       return Promise.reject(new Error(`Unexpected: ${path}`));
@@ -393,6 +411,7 @@ describe("DashboardDropZone — AI analyze path", () => {
     mockApiFetch.mockImplementation((path: string) => {
       if (path === "/legacy/cases") return Promise.resolve({ cases: [] });
       if (path === "/organizations") return Promise.resolve([]);
+      if (path === "/cases/doctor-names") return Promise.resolve([]);
       if (path === "/analyze-prescription")
         return Promise.resolve({ success: false });
       return Promise.reject(new Error(`Unexpected: ${path}`));

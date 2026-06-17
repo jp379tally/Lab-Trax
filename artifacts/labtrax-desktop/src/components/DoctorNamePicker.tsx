@@ -6,6 +6,8 @@ interface DoctorNamePickerProps {
   onChange: (name: string) => void;
   doctorNames?: string[];
   placeholder?: string;
+  /** "sm" renders h-8 trigger to match compact input rows; default is h-9 */
+  size?: "sm" | "default";
 }
 
 export function DoctorNamePicker({
@@ -13,7 +15,10 @@ export function DoctorNamePicker({
   onChange,
   doctorNames,
   placeholder = "Select doctor…",
+  size = "default",
 }: DoctorNamePickerProps) {
+  const triggerH = size === "sm" ? "h-8" : "h-9";
+  const customInputH = size === "sm" ? "h-8" : "h-9";
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [isCustom, setIsCustom] = useState(false);
@@ -51,7 +56,7 @@ export function DoctorNamePicker({
             value={value}
             onChange={(e) => onChange(e.target.value)}
             placeholder="Enter doctor name…"
-            className="flex-1 h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+            className={`flex-1 ${customInputH} px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary`}
           />
           <button
             type="button"
@@ -70,7 +75,7 @@ export function DoctorNamePicker({
           <button
             type="button"
             onClick={() => setOpen((o) => !o)}
-            className="w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary text-left flex items-center justify-between gap-2"
+            className={`w-full ${triggerH} px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary text-left flex items-center justify-between gap-2`}
           >
             <span className={value ? "" : "text-muted-foreground"}>
               {value || placeholder}

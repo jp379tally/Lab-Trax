@@ -60,6 +60,10 @@ vi.mock("jszip", () => ({
   },
 }));
 
+vi.mock("@/components/DoctorNamePicker", () => ({
+  DoctorNamePicker: () => null,
+}));
+
 import { DashboardDropZone } from "@/components/DashboardDropZone";
 
 const PRESCRIPTION_TEST_USER = {
@@ -119,6 +123,7 @@ describe("DashboardDropZone — /analyze-prescription call behavior (runtime)", 
     mockApiFetch.mockImplementation(async (endpointPath: string) => {
       if (endpointPath === "/legacy/cases") return { cases: [] };
       if (endpointPath === "/organizations") return [];
+      if (endpointPath === "/cases/doctor-names") return [];
       if (endpointPath === "/analyze-prescription") {
         return {
           doctorName: "Dr. Runtime",

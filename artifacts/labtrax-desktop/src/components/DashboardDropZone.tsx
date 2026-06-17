@@ -22,6 +22,7 @@ import { uploadMediaFile } from "@/lib/upload-media-file";
 import type { MediaUploadResult } from "@/lib/upload-media-file";
 import { useAuth } from "@/lib/auth-context";
 import { formatPhone } from "@/lib/format";
+import { DoctorNamePicker } from "./DoctorNamePicker";
 
 
 interface LegacyCaseLite {
@@ -508,6 +509,13 @@ export function DashboardDropZone() {
     queryKey: ["organizations"],
     queryFn: () => apiFetch<OrgLite[]>("/organizations"),
   });
+  const doctorNamesQuery = useQuery({
+    queryKey: ["case-doctor-names"],
+    queryFn: () => apiFetch<string[]>("/cases/doctor-names"),
+    staleTime: 60_000,
+    initialData: () => qc.getQueryData<string[]>(["case-doctor-names"]),
+  });
+  const dropZoneDoctorNames = doctorNamesQuery.data ?? [];
 
   const legacy = legacyQuery.data?.cases ?? [];
   const labOrgs = useMemo(
@@ -1974,13 +1982,12 @@ export function DashboardDropZone() {
           </div>
         )}
         <div className="grid grid-cols-2 gap-2">
-          <input
-            className={inputCls}
-            placeholder="Doctor"
+          <DoctorNamePicker
             value={r.doctorName || ""}
-            onChange={(e) =>
-              setRxDraft({ ...r, doctorName: e.target.value })
-            }
+            onChange={(name) => setRxDraft({ ...r, doctorName: name })}
+            doctorNames={dropZoneDoctorNames}
+            placeholder="Doctor"
+            size="sm"
           />
           <input
             className={inputCls}
