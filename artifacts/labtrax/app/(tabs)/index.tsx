@@ -18,7 +18,8 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { CameraView, useCameraPermissions } from "expo-camera";
+import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
+import * as Haptics from "expo-haptics";
 import {
   useCases,
   type CanonicalCase,
@@ -37,9 +38,17 @@ import { StatusBadge, type BadgeVariant } from "@/components/ui/StatusBadge";
 import { CASE_STATIONS } from "@/lib/case-stations";
 import { resilientFetch } from "@/lib/query-client";
 import { extractLookupCase } from "@/lib/barcode-lookup";
+import { pickBestBarcode, guideBoxFromLayout } from "@/lib/barcode-guide-box";
 import { useMe, primaryLabOrgId } from "@/lib/auth-me";
 
 type DueFilter = "all" | "today" | "tomorrow" | "custom";
+
+interface ScanMatch {
+  barcode: string;
+  patientName: string;
+  caseNumber: string | null;
+  caseId: string;
+}
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function patientName(c: CanonicalCase): string {
@@ -130,6 +139,15 @@ export default function CasesListScreen() {
   const [scanSearching, setScanSearching] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [scanScanned, setScanScanned] = useState(false);
+  const [scanMatch, setScanMatch] = useState<ScanMatch | null>(null);
+  const [scanTarget, setScanTarget] = useState<BarcodeScanningResult | null>(null);
+  const cameraViewSize = useRef<{ width: number; height: number } | null>(null);
+  // Ref mirrors scanScanned so timer callbacks read the live value without stale closures.
+  const scanLockedRef = useRef(false);
+  // Accumulate all barcodes detected in a ~120ms frame window so pickBestBarcode
+  // can choose the in-box barcode closest to center across the whole frame.
+  const barcodeAccumRef = useRef<BarcodeScanningResult[]>([]);
+  const barcodeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
   function openScanModal() {
@@ -137,6 +155,14 @@ export default function CasesListScreen() {
     setManualBarcode("");
     setScanError(null);
     setScanScanned(false);
+    scanLockedRef.current = false;
+    setScanMatch(null);
+    setScanTarget(null);
+    barcodeAccumRef.current = [];
+    if (barcodeDebounceRef.current) {
+      clearTimeout(barcodeDebounceRef.current);
+      barcodeDebounceRef.current = null;
+    }
     setShowScanModal(true);
   }
 
@@ -144,7 +170,15 @@ export default function CasesListScreen() {
     setShowScanModal(false);
     setScanError(null);
     setScanScanned(false);
+    scanLockedRef.current = false;
+    setScanMatch(null);
+    setScanTarget(null);
     setManualBarcode("");
+    barcodeAccumRef.current = [];
+    if (barcodeDebounceRef.current) {
+      clearTimeout(barcodeDebounceRef.current);
+      barcodeDebounceRef.current = null;
+    }
   }
 
   async function lookupBarcode(code: string) {
@@ -175,6 +209,7 @@ export default function CasesListScreen() {
       setScanError("Lab not found. Please sign out and sign back in, then try again.");
       setScanSearching(false);
       setScanScanned(false);
+      scanLockedRef.current = false;
       return;
     }
 
@@ -192,40 +227,99 @@ export default function CasesListScreen() {
       if (res.status === 404) {
         setScanError("No case found for that pan.");
         setScanScanned(false);
+        scanLockedRef.current = false;
+        setScanTarget(null);
         return;
       }
 
       if (!res.ok) {
         setScanError("Something went wrong. Please try again.");
         setScanScanned(false);
+        scanLockedRef.current = false;
+        setScanTarget(null);
         return;
       }
 
       const body = await res.json();
-      const caseId = extractLookupCase(body)?.id;
+      const found = extractLookupCase(body);
+      const caseId = found?.id;
       if (!caseId) {
         setScanError("No case found for that pan.");
         setScanScanned(false);
+        scanLockedRef.current = false;
+        setScanTarget(null);
         return;
       }
 
-      closeScanModal();
-      router.push(`/case/${caseId}` as never);
+      const matchPatientName = [
+        `${found.patientFirstName ?? ""}`,
+        `${found.patientLastName ?? ""}`,
+      ]
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .join(" ") || "Unnamed patient";
+
+      setScanMatch({
+        barcode: trimmed,
+        patientName: matchPatientName,
+        caseNumber: found.caseNumber ?? null,
+        caseId,
+      });
+
+      setTimeout(() => {
+        closeScanModal();
+        router.push(`/case/${caseId}` as never);
+      }, 900);
     } catch {
       setScanError("Network error. Please try again.");
       setScanScanned(false);
+      scanLockedRef.current = false;
+      setScanTarget(null);
     } finally {
       setScanSearching(false);
     }
   }
 
+  // Keep a stable ref so the debounce timer always calls the latest lookupBarcode
+  // without needing it as a dependency (which would recreate the callback each render).
+  const lookupBarcodeRef = useRef(lookupBarcode);
+  lookupBarcodeRef.current = lookupBarcode;
+
   const handleCameraBarcode = useCallback(
-    ({ data }: { data: string }) => {
-      if (scanScanned || scanSearching || !data?.trim()) return;
-      setScanScanned(true);
-      lookupBarcode(data.trim());
+    (event: BarcodeScanningResult) => {
+      if (scanLockedRef.current || !event.data?.trim()) return;
+
+      // Accumulate all barcodes arriving in this ~120ms scan cycle so
+      // pickBestBarcode can compare all in-frame candidates at once.
+      barcodeAccumRef.current.push(event);
+      if (barcodeDebounceRef.current) clearTimeout(barcodeDebounceRef.current);
+
+      barcodeDebounceRef.current = setTimeout(() => {
+        barcodeDebounceRef.current = null;
+        if (scanLockedRef.current) {
+          barcodeAccumRef.current = [];
+          return;
+        }
+
+        const candidates = barcodeAccumRef.current.splice(0);
+        if (candidates.length === 0) return;
+
+        // Strict gate: reject until the camera view has been laid out.
+        const viewSize = cameraViewSize.current;
+        if (!viewSize) return;
+
+        const box = guideBoxFromLayout(viewSize.width, viewSize.height, 0.12, 0.28, 0.12, 0.44);
+        const best = pickBestBarcode(candidates, box);
+        if (!best || !best.data.trim()) return;
+
+        scanLockedRef.current = true;
+        setScanScanned(true);
+        setScanTarget(best);
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+        lookupBarcodeRef.current(best.data.trim());
+      }, 120);
     },
-    [scanScanned, scanSearching],
+    [],
   );
 
   async function handleManualBarcode() {
@@ -1014,7 +1108,13 @@ export default function CasesListScreen() {
                 </Pressable>
               </View>
             ) : (
-              <View style={styles.scanCameraWrap}>
+              <View
+                style={styles.scanCameraWrap}
+                onLayout={(e) => {
+                  const { width, height } = e.nativeEvent.layout;
+                  cameraViewSize.current = { width, height };
+                }}
+              >
                 {!scanScanned && (
                   <CameraView
                     style={StyleSheet.absoluteFill}
@@ -1032,16 +1132,45 @@ export default function CasesListScreen() {
                   <View style={styles.scanCornerBL} />
                   <View style={styles.scanCornerBR} />
                 </View>
-                {/* Searching overlay */}
-                {scanSearching && (
+                {/* Targeted-barcode bounds highlight — visible while lookup is in flight */}
+                {scanTarget?.bounds && !scanMatch ? (
+                  <View
+                    pointerEvents="none"
+                    style={{
+                      position: "absolute",
+                      left: scanTarget.bounds.origin.x,
+                      top: scanTarget.bounds.origin.y,
+                      width: scanTarget.bounds.size.width,
+                      height: scanTarget.bounds.size.height,
+                      borderWidth: 2,
+                      borderColor: "#4ade80",
+                      borderRadius: 4,
+                    }}
+                  />
+                ) : null}
+                {/* Match result overlay — shown briefly after a successful scan */}
+                {scanMatch ? (
+                  <View style={styles.scanMatchOverlay} pointerEvents="none">
+                    <View style={styles.scanMatchCard}>
+                      <Ionicons name="checkmark-circle" size={28} color="#4ade80" />
+                      <Text style={styles.scanMatchPatient} numberOfLines={1}>
+                        {scanMatch.patientName}
+                      </Text>
+                      {scanMatch.caseNumber ? (
+                        <Text style={styles.scanMatchMeta}>#{scanMatch.caseNumber}</Text>
+                      ) : null}
+                      <Text style={styles.scanMatchBarcode}>{scanMatch.barcode}</Text>
+                    </View>
+                  </View>
+                ) : scanSearching ? (
                   <View style={styles.scanSearchingOverlay}>
                     <ActivityIndicator color="#fff" size="large" />
                     <Text style={styles.scanSearchingText}>Looking up case…</Text>
                   </View>
-                )}
+                ) : null}
                 {/* Hint */}
                 <View style={styles.scanHintWrap} pointerEvents="none">
-                  <Text style={styles.scanHintText}>Point at a pan barcode</Text>
+                  <Text style={styles.scanHintText}>Center the barcode in the box</Text>
                 </View>
                 {/* Error banner on top of camera */}
                 {scanError ? (
@@ -1450,6 +1579,27 @@ function makeStyles(c: ThemeColors) {
       gap: Spacing.md,
     },
     scanSearchingText: { ...Typography.bodySemibold, color: "#fff" },
+    scanMatchOverlay: {
+      ...StyleSheet.absoluteFillObject,
+      backgroundColor: "rgba(0,0,0,0.72)",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: Spacing.xl,
+    },
+    scanMatchCard: {
+      alignItems: "center",
+      gap: Spacing.sm,
+      backgroundColor: "rgba(255,255,255,0.08)",
+      borderRadius: Radius.xl,
+      paddingHorizontal: Spacing.xl,
+      paddingVertical: Spacing.lg,
+      borderWidth: 1,
+      borderColor: "rgba(255,255,255,0.18)",
+      minWidth: 220,
+    },
+    scanMatchPatient: { ...Typography.h3, color: "#fff", textAlign: "center" },
+    scanMatchMeta: { ...Typography.bodySemibold, color: "rgba(255,255,255,0.75)", textAlign: "center" },
+    scanMatchBarcode: { ...Typography.captionMedium, color: "rgba(255,255,255,0.5)", fontVariant: ["tabular-nums"] as any },
     scanHintWrap: {
       position: "absolute",
       bottom: Spacing.xl,

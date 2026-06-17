@@ -11,7 +11,8 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { CameraView, useCameraPermissions } from "expo-camera";
+import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
+import * as Haptics from "expo-haptics";
 import {
   useUpdateCase,
   useCases,
@@ -21,6 +22,7 @@ import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { resilientFetch } from "@/lib/query-client";
 import { extractLookupCase } from "@/lib/barcode-lookup";
+import { pickBestBarcode, guideBoxFromLayout } from "@/lib/barcode-guide-box";
 import { CASE_STATIONS } from "@/lib/case-stations";
 import { useMe, primaryLabOrgId, editableLabMemberships } from "@/lib/auth-me";
 import { getJson } from "@/lib/read-api";
@@ -119,6 +121,13 @@ export default function BatchLocateScreen() {
 
   // Scanning state
   const seenBarcodes = useRef<Set<string>>(new Set());
+  const cameraViewSize = useRef<{ width: number; height: number } | null>(null);
+  // Mirrors lookingUp so the debounce timer reads the live value without stale closures.
+  const lookingUpRef = useRef(false);
+  // Accumulate barcodes over a ~120ms frame window so pickBestBarcode can select
+  // the in-box candidate closest to center across the full frame.
+  const barcodeAccumRef = useRef<BarcodeScanningResult[]>([]);
+  const barcodeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [scannedCases, setScannedCases] = useState<ScannedCase[]>([]);
   const [scanNotice, setScanNotice] = useState<ScanNotice>(null);
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -182,58 +191,85 @@ export default function BatchLocateScreen() {
   }
 
   const handleBarcodeScanned = useCallback(
-    async ({ data }: { data: string }) => {
-      const trimmed = (data ?? "").trim();
-      if (!trimmed || lookingUp) return;
+    (event: BarcodeScanningResult) => {
+      if (lookingUpRef.current || !event.data?.trim()) return;
 
-      if (isDuplicateScan(seenBarcodes.current, trimmed)) {
-        showNotice("duplicate", trimmed);
-        return;
-      }
+      // Accumulate all barcodes in this ~120ms scan cycle so pickBestBarcode
+      // can compare all in-frame candidates at once.
+      barcodeAccumRef.current.push(event);
+      if (barcodeDebounceRef.current) clearTimeout(barcodeDebounceRef.current);
 
-      const labOrganizationId = primaryLabOrgId(meQuery.data) ?? "";
-      if (!labOrganizationId) return;
+      barcodeDebounceRef.current = setTimeout(() => {
+        barcodeDebounceRef.current = null;
+        if (lookingUpRef.current) {
+          barcodeAccumRef.current = [];
+          return;
+        }
 
-      setLookingUp(true);
-      try {
+        const candidates = barcodeAccumRef.current.splice(0);
+        if (candidates.length === 0) return;
+
+        // Strict gate: reject until the camera view has been laid out.
+        const viewSize = cameraViewSize.current;
+        if (!viewSize) return;
+
+        const box = guideBoxFromLayout(viewSize.width, viewSize.height, 0.2, 0.2, 0.2, 0.6);
+        const best = pickBestBarcode(candidates, box);
+        if (!best || !best.data.trim()) return;
+
+        const trimmed = best.data.trim();
+
+        if (isDuplicateScan(seenBarcodes.current, trimmed)) {
+          showNotice("duplicate", trimmed);
+          return;
+        }
+
+        const labOrganizationId = primaryLabOrgId(meQuery.data) ?? "";
+        if (!labOrganizationId) return;
+
+        lookingUpRef.current = true;
+        setLookingUp(true);
+
         const qs = new URLSearchParams({ labOrganizationId });
-        const res = await resilientFetch(
-          `/api/cases/barcode/${encodeURIComponent(trimmed)}?${qs.toString()}`,
-        );
-
-        if (!res.ok) {
-          showNotice("not_found", trimmed);
-          return;
-        }
-
-        const body = await res.json();
-        const c = extractLookupCase(body);
-        if (!c?.id) {
-          showNotice("not_found", trimmed);
-          return;
-        }
-
-        seenBarcodes.current.add(trimmed);
-        const patientName =
-          [`${c.patientFirstName ?? ""}`, `${c.patientLastName ?? ""}`]
-            .map((s) => s.trim())
-            .filter(Boolean)
-            .join(" ") || "Unnamed patient";
-
-        setScannedCases((prev) =>
-          prependScannedCase(prev, {
-            barcode: trimmed,
-            caseId: c.id!,
-            patientName,
-            caseNumber: c.caseNumber ?? null,
-            currentLocation: c.status ?? null,
-          }),
-        );
-      } finally {
-        setLookingUp(false);
-      }
+        resilientFetch(`/api/cases/barcode/${encodeURIComponent(trimmed)}?${qs.toString()}`)
+          .then(async (res) => {
+            if (!res.ok) {
+              showNotice("not_found", trimmed);
+              return;
+            }
+            const body = await res.json();
+            const c = extractLookupCase(body);
+            if (!c?.id) {
+              showNotice("not_found", trimmed);
+              return;
+            }
+            seenBarcodes.current.add(trimmed);
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+            const patientName =
+              [`${c.patientFirstName ?? ""}`, `${c.patientLastName ?? ""}`]
+                .map((s) => s.trim())
+                .filter(Boolean)
+                .join(" ") || "Unnamed patient";
+            setScannedCases((prev) =>
+              prependScannedCase(prev, {
+                barcode: trimmed,
+                caseId: c.id!,
+                patientName,
+                caseNumber: c.caseNumber ?? null,
+                currentLocation: c.status ?? null,
+              }),
+            );
+          })
+          .catch(() => {
+            showNotice("not_found", trimmed);
+          })
+          .finally(() => {
+            lookingUpRef.current = false;
+            setLookingUp(false);
+          });
+      }, 120);
     },
-    [lookingUp, meQuery.data],
+    [meQuery.data],
   );
 
   async function executeBatchMove(cases: ScannedCase[], station: { value: string; label: string }) {
@@ -334,7 +370,13 @@ export default function BatchLocateScreen() {
             </Pressable>
           </View>
         ) : (
-          <View style={styles.scannerArea}>
+          <View
+            style={styles.scannerArea}
+            onLayout={(e) => {
+              const { width, height } = e.nativeEvent.layout;
+              cameraViewSize.current = { width, height };
+            }}
+          >
             <CameraView
               style={StyleSheet.absoluteFill}
               facing="back"
@@ -391,7 +433,11 @@ export default function BatchLocateScreen() {
             ) : null}
 
             <View style={styles.scanHint} pointerEvents="none">
-              <Text style={styles.scanHintText}>Point at the case pan barcode</Text>
+              <Text style={styles.scanHintText}>
+                {scannedCases.length === 0
+                  ? "Center the barcode in the box"
+                  : `${scannedCases.length} scanned — center next barcode`}
+              </Text>
             </View>
           </View>
         )}
