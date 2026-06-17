@@ -7,6 +7,8 @@
  * Coverage:
  *  - POST /api/cases — lab member can create a case; non-member gets 403
  *  - POST /api/cases — required fields missing returns 400
+ *  - POST /api/cases — `notes` body field is saved to cases.rxNotes (lab slip field)
+ *  - POST /api/cases — `dueDate` body field is stored in the cases row
  *  - POST /api/cases/import-from-itero-rx — missing labOrganizationId → 400
  *  - POST /api/cases/import-from-itero-rx — caller not a lab member → 403
  *  - POST /api/cases/import-from-itero-rx — creates case with needsAiReview:true
@@ -509,6 +511,76 @@ maybe("Cases AI reader endpoints (db integration)", () => {
     expect(invoice.labOrganizationId).toBe(labOrgId);
     expect(invoice.providerOrganizationId).toBe(providerOrgId);
 
+    await cleanCase(caseId);
+  });
+
+  // ── POST /api/cases: AI intake field carry-through ───────────────────────
+
+  it("POST /api/cases: notes field is saved to cases.rxNotes column (lab slip source)", async () => {
+    // Regression guard: the dashboard drop-zone AI intake sends `notes` in the
+    // POST body. Before this fix, notes only went into the case_notes table;
+    // the lab slip reads labCase.caseNotes which maps to cases.rxNotes, so the
+    // Rx Notes section always showed "—". Now rxNotes is populated directly.
+    const notesText = "Patient grinds at night — use extra-strength ceramic";
+    const r = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({
+        caseNumber: rid("CN"),
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Rx",
+        patientLastName: "NotesTest",
+        doctorName: "Dr. Notes",
+        status: "received",
+        notes: notesText,
+      });
+
+    expect(r.status).toBe(201);
+    const caseId = r.body.data.id;
+
+    const { db, cases } = dbMod as any;
+    const [row] = await db
+      .select({ rxNotes: cases.rxNotes })
+      .from(cases)
+      .where(eq(cases.id, caseId));
+
+    expect(row.rxNotes).toBe(notesText);
+    await cleanCase(caseId);
+  });
+
+  it("POST /api/cases: dueDate field is persisted in the cases row", async () => {
+    // Regression guard: verifies the AI-extracted (or calendar-picker) dueDate
+    // reaches the cases.due_date column so it appears on the lab slip.
+    const r = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({
+        caseNumber: rid("CN"),
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Due",
+        patientLastName: "DateTest",
+        doctorName: "Dr. Date",
+        status: "received",
+        dueDate: "2026-09-15",
+      });
+
+    expect(r.status).toBe(201);
+    const caseId = r.body.data.id;
+
+    const { db, cases } = dbMod as any;
+    const [row] = await db
+      .select({ dueDate: cases.dueDate })
+      .from(cases)
+      .where(eq(cases.id, caseId));
+
+    // Drizzle returns the dueDate column as a JS Date object; normalize to ISO before comparing.
+    const dueDateIso =
+      row.dueDate instanceof Date
+        ? row.dueDate.toISOString()
+        : String(row.dueDate);
+    expect(dueDateIso).toMatch(/^2026-09-15/);
     await cleanCase(caseId);
   });
 

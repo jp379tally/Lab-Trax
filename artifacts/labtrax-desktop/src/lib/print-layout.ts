@@ -40,7 +40,7 @@ export const RX_FIELDS: PrintLayoutField[] = [
 export const DEFAULT_PRINT_LAYOUT_CONFIG: PrintLayoutConfig = {
   fields: [...DETAILS_FIELDS, ...RX_FIELDS],
   showNotes: true,
-  showToothChart: true,
+  showToothChart: false,
 };
 
 const STORAGE_KEY = "labtrax_print_layout_v1";
@@ -82,7 +82,7 @@ export function loadPrintLayoutConfig(): PrintLayoutConfig {
     return {
       fields: merged,
       showNotes: typeof parsed.showNotes === "boolean" ? parsed.showNotes : true,
-      showToothChart: typeof parsed.showToothChart === "boolean" ? parsed.showToothChart : true,
+      showToothChart: typeof parsed.showToothChart === "boolean" ? parsed.showToothChart : false,
     };
   } catch {
     return DEFAULT_PRINT_LAYOUT_CONFIG;

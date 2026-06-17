@@ -1242,9 +1242,9 @@ ${detailRows}
   rxSection += `<div class="lt-ov-grid">\n${rxRows}\n</div>`;
 
   // ── Tooth chart ────────────────────────────────────────────────────────────
-  const chartSection = layout.showToothChart
-    ? `<div class="lt-ov-section">Tooth Chart</div>${buildToothChart(highlighted)}`
-    : "";
+  // Tooth chart is intentionally omitted from the lab slip to keep the printed
+  // output clean; tooth numbers already appear in the Rx Summary grid above.
+  const chartSection = "";
 
   // ── Notes ──────────────────────────────────────────────────────────────────
   let notesSection = "";

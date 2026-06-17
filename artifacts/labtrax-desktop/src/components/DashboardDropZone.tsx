@@ -53,6 +53,25 @@ interface ExtractedRx {
   practicePhone?: string | null;
 }
 
+/**
+ * Convert an AI-extracted due date string (MM/DD/YYYY, M/D/YY, or already
+ * YYYY-MM-DD) into the YYYY-MM-DD format required by <input type="date">.
+ * Returns "" when the string is empty or unparseable so the picker starts
+ * empty rather than showing a stale non-date string.
+ */
+function normalizeDueDateForInput(raw: string | null | undefined): string {
+  if (!raw || !raw.trim()) return "";
+  const trimmed = raw.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+  const mdy = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (mdy) {
+    const [, mo, dy, yr] = mdy;
+    const fullYr = yr.length <= 2 ? `20${yr.padStart(2, "0")}` : yr;
+    return `${fullYr}-${mo.padStart(2, "0")}-${dy.padStart(2, "0")}`;
+  }
+  return "";
+}
+
 interface NewPracticeDraft {
   name: string;
   phone: string;
@@ -799,7 +818,7 @@ export function DashboardDropZone() {
           toothIndices: rx.toothIndices ?? "",
           shade: rx.shade ?? "",
           material: rx.material ?? "",
-          dueDate: rx.dueDate ?? "",
+          dueDate: normalizeDueDateForInput(rx.dueDate),
           isRush: !!rx.isRush,
           notes: rx.notes ?? "",
           practiceName: rx.practiceName ?? "",
@@ -2020,8 +2039,8 @@ export function DashboardDropZone() {
             onChange={(e) => setRxDraft({ ...r, shade: e.target.value })}
           />
           <input
+            type="date"
             className={inputCls}
-            placeholder="Due date"
             value={r.dueDate || ""}
             onChange={(e) =>
               setRxDraft({ ...r, dueDate: e.target.value })

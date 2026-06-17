@@ -2502,6 +2502,7 @@ router.post(
             : null,
           casePanBarcode: input.casePanBarcode ?? null,
           shade: input.shade ?? null,
+          rxNotes: input.notes?.trim() || null,
         })
         .returning();
 
