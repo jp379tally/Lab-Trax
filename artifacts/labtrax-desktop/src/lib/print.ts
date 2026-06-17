@@ -519,7 +519,10 @@ export function printCaseCard(
     summary.materials.length > 0
       ? summary.materials.join(", ")
       : labCase.restorationMaterials ?? "";
-  const shadeLabel = summary.shades.join(", ");
+  // Fall back to the case-level shade when no restoration rows carry a shade.
+  const shadeLabel = summary.shades.length > 0
+    ? summary.shades.join(", ")
+    : (labCase.shade ?? "");
   const teethBase =
     summary.teeth.length > 0 || summary.isFullArch
       ? formatRxTeethLabel(summary)
@@ -933,7 +936,10 @@ export async function printCaseCardAdvanced(
     summary.materials.length > 0
       ? summary.materials.join(", ")
       : labCase.restorationMaterials ?? "";
-  const shadeLabel = summary.shades.join(", ");
+  // Fall back to the case-level shade when no restoration rows carry a shade.
+  const shadeLabel = summary.shades.length > 0
+    ? summary.shades.join(", ")
+    : (labCase.shade ?? "");
   const teethBase =
     summary.teeth.length > 0 || summary.isFullArch
       ? formatRxTeethLabel(summary)
@@ -1209,7 +1215,8 @@ export function printCaseOverview(
     casePanBarcode:  { key: "Case Pan Barcode", value: labCase.casePanBarcode ?? "" },
     restorativeType: { key: "Restorative Type", value: summary.restorativeType ?? "Other" },
     material:        { key: summary.materials.length > 1 ? "Materials" : "Material", value: summary.materials.length > 0 ? summary.materials.join(", ") : "—" },
-    shade:           { key: summary.shades.length > 1 ? "Shades" : "Shade",          value: summary.shades.length > 0 ? summary.shades.join(", ") : "—" },
+    // Fall back to the case-level shade when no restoration rows carry one.
+    shade:           { key: summary.shades.length > 1 ? "Shades" : "Shade",          value: summary.shades.length > 0 ? summary.shades.join(", ") : (labCase.shade ? labCase.shade : "—") },
     toothNumbers:    { key: teethKey,           value: teethLabel || "—" },
     rxNotes:         { key: "Rx Notes",         value: (labCase.caseNotes ?? "").trim() || "—" },
   };

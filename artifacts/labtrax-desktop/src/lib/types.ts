@@ -70,6 +70,12 @@ export interface LabCase {
   /** Free-text general notes entered on the case. */
   caseNotes?: string | null;
   /**
+   * Top-level shade value for the case, written by the AI intake and iTero
+   * import paths. Used as a fallback in Lab Slip rendering when no restoration
+   * rows carry a shade.
+   */
+  shade?: string | null;
+  /**
    * Contact details from the provider organization record, populated on
    * GET /cases/:id so the advanced print renderer can display the Doctor Info
    * block without an extra round-trip.

@@ -1455,6 +1455,10 @@ export function DashboardDropZone() {
           .split(/[,\s]+/)
           .map((t) => t.trim())
           .filter(Boolean);
+        // When the AI extracted no tooth indices but did extract material,
+        // shade, or restorative type, create a single stub restoration so
+        // that data is not silently dropped. The server accepts an empty
+        // toothNumber for exactly this case (mirrors the iTero import path).
         const restorations =
           teethList.length > 0
             ? teethList.map((toothNumber) => ({
@@ -1465,7 +1469,16 @@ export function DashboardDropZone() {
                 quantity: 1,
                 unitPrice: 0,
               }))
-            : undefined;
+            : (r.material || r.shade || r.caseType)
+              ? [{
+                  toothNumber: "",
+                  restorationType: (r.caseType || "Other").trim() || "Other",
+                  ...(r.material ? { material: r.material } : {}),
+                  ...(r.shade ? { shade: r.shade } : {}),
+                  quantity: 1,
+                  unitPrice: 0,
+                }]
+              : undefined;
 
         const caseNumberPromise: Promise<string> =
           apiFetch<{ caseNumber: string }>(
@@ -1492,6 +1505,9 @@ export function DashboardDropZone() {
             ...(restorations ? { restorations } : {}),
             ...(r.notes && r.notes.trim() ? { notes: r.notes.trim() } : {}),
             ...(rxBarcode.trim() ? { casePanBarcode: rxBarcode.trim() } : {}),
+            // Always carry the top-level shade to the case row so it is
+            // available for display even before restoration rows are confirmed.
+            ...(r.shade ? { shade: r.shade } : {}),
           }),
         });
 
@@ -1589,6 +1605,10 @@ export function DashboardDropZone() {
         .split(/[,\s]+/)
         .map((t) => t.trim())
         .filter(Boolean);
+      // When the AI extracted no tooth indices but did extract material,
+      // shade, or restorative type, create a single stub restoration so
+      // that data is not silently dropped. The server accepts an empty
+      // toothNumber for exactly this case (mirrors the iTero import path).
       const restorations =
         teethList.length > 0
           ? teethList.map((toothNumber) => ({
@@ -1599,7 +1619,16 @@ export function DashboardDropZone() {
               quantity: 1,
               unitPrice: 0,
             }))
-          : undefined;
+          : (r.material || r.shade || r.caseType)
+            ? [{
+                toothNumber: "",
+                restorationType: (r.caseType || "Other").trim() || "Other",
+                ...(r.material ? { material: r.material } : {}),
+                ...(r.shade ? { shade: r.shade } : {}),
+                quantity: 1,
+                unitPrice: 0,
+              }]
+            : undefined;
 
       // Start both concurrently.
       const caseNumberPromise: Promise<string> = remake
@@ -1636,6 +1665,9 @@ export function DashboardDropZone() {
             ...(restorations ? { restorations } : {}),
             ...(r.notes && r.notes.trim() ? { notes: r.notes.trim() } : {}),
             ...(rxBarcode.trim() ? { casePanBarcode: rxBarcode.trim() } : {}),
+            // Always carry the top-level shade to the case row so it is
+            // available for display even before restoration rows are confirmed.
+            ...(r.shade ? { shade: r.shade } : {}),
             ...(remake ?? {}),
           }),
         },

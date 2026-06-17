@@ -1413,7 +1413,10 @@ const createCaseSchema = z.object({
   restorations: z
     .array(
       z.object({
-        toothNumber: z.string().min(1),
+        // Empty toothNumber is allowed for stub restorations created when
+        // the AI extracts material/shade/type but no specific tooth indices
+        // (mirrors the iTero import fallback at ~line 6950).
+        toothNumber: z.string(),
         restorationType: z.string().min(1),
         material: z.string().optional(),
         shade: z.string().optional(),
