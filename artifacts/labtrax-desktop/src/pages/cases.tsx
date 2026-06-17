@@ -1695,6 +1695,14 @@ export default function CasesPage() {
     return Array.from(names).sort((a, b) => a.localeCompare(b));
   }, [data]);
 
+  const distinctPatientFirstNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const c of data ?? []) {
+      if (c.patientFirstName?.trim()) names.add(c.patientFirstName.trim());
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [data]);
+
   function toggleSort(key: SortKey) {
     if (sortKey === key) {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -2199,6 +2207,7 @@ export default function CasesPage() {
           }
           doctorNames={distinctDoctorNames}
           patientLastNames={distinctPatientLastNames}
+          patientFirstNames={distinctPatientFirstNames}
           onOpenCaseId={async (id) => {
             const found = data?.find((c) => c.id === id);
             if (found) {
@@ -2655,6 +2664,7 @@ export function CaseDrawer({
   onClose,
   doctorNames = [],
   patientLastNames = [],
+  patientFirstNames = [],
   onOpenCaseId,
   onCaseLocated,
 }: {
@@ -2662,6 +2672,7 @@ export function CaseDrawer({
   onClose: () => void;
   doctorNames?: string[];
   patientLastNames?: string[];
+  patientFirstNames?: string[];
   onOpenCaseId?: (id: string) => void;
   onCaseLocated?: (newStatus: CaseStatus) => void;
 }) {
@@ -4793,14 +4804,18 @@ export function CaseDrawer({
                         <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
                           First Name
                         </label>
-                        <input
-                          value={editForm.patientFirstName}
-                          onChange={(e) => {
-                            setEditForm((f) => ({ ...f, patientFirstName: e.target.value }));
-                            setEditError(null);
-                          }}
-                          className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
-                        />
+                        <div className="mt-1">
+                          <FieldCombobox
+                            value={editForm.patientFirstName}
+                            suggestions={patientFirstNames}
+                            onChange={(v) => {
+                              setEditForm((f) => ({ ...f, patientFirstName: v }));
+                              setEditError(null);
+                            }}
+                            placeholder="Patient first name"
+                            inputClassName="h-9 focus:ring-primary focus:border-primary"
+                          />
+                        </div>
                       </div>
                       <div>
                         <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
