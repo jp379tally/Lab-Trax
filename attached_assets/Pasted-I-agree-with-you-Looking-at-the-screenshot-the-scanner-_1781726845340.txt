@@ -1,0 +1,248 @@
+I agree with you. Looking at the screenshot, the scanner is behaving like a **full-camera barcode detector**, not a **targeted barcode locator**.
+
+Right now the scanner is reading any barcode visible anywhere in the camera frame. That's why you're getting inconsistent behavior when multiple barcodes are on the page.
+
+### What should change
+
+## 1. Restrict scanning to the guide box
+
+The white square/rectangle should not just be visual.
+
+The scanner should:
+
+* Calculate the bounds of the guide box.
+* Ignore any barcode whose bounding box is not fully inside that region.
+* Only process barcodes that intersect the scan window.
+
+Expected behavior:
+
+```text
+Inside square = eligible
+
+Outside square = ignored
+```
+
+In your screenshot:
+
+```text
+0002 = ignore
+0004 = scan
+next barcode = ignore
+```
+
+depending on which barcode is centered inside the guide box.
+
+---
+
+## 2. Single-barcode mode
+
+Current behavior appears to be:
+
+```text
+Detect all barcodes
+Take first result
+```
+
+You want:
+
+```text
+Detect all barcodes
+Filter to scan window
+Choose closest barcode to center
+Lock scanner
+Process result
+Wait for confirmation
+Allow next scan
+```
+
+This prevents:
+
+* Double scans
+* Jumping between barcodes
+* Wrong case selection
+
+---
+
+## 3. Scan lock / debounce
+
+After a successful read:
+
+```text
+0004 scanned
+```
+
+scanner should immediately:
+
+* Freeze detection for 1–2 seconds
+* Highlight scanned barcode
+* Vibrate once
+* Show patient name
+* Show case number
+
+Example:
+
+```text
+✓ 0004
+Park Brittle
+Case 26-51
+```
+
+Then continue scanning only after:
+
+```text
+Locate
+Next Scan
+```
+
+or timeout.
+
+---
+
+## 4. Visual HUD improvements
+
+Current HUD:
+
+```text
+Point at a pan barcode
+```
+
+Recommended HUD:
+
+```text
+Scanned: 3
+
+0001 - Kathy Kuester
+0002 - Erik Steffen
+0004 - Park Brittle
+```
+
+For batch mode.
+
+For single mode:
+
+```text
+Ready to Scan
+
+Center barcode inside box
+```
+
+When detected:
+
+```text
+Barcode: 0004
+Patient: Park Brittle
+```
+
+---
+
+## 5. Batch Locate Mode
+
+Since you've already requested batch locating, I'd separate the workflows:
+
+### Single Locate
+
+Dashboard → Locate Case
+
+```text
+One barcode at a time
+```
+
+Uses scan lock.
+
+---
+
+### Batch Locate
+
+Dashboard → Batch Locate
+
+```text
+Read multiple barcodes
+```
+
+Tracks:
+
+```text
+Scanned Count: 12
+
+0001 Kathy Kuester
+0002 Erik Steffen
+0004 Park Brittle
+...
+```
+
+Rules:
+
+* No duplicate barcode reads
+* Ignore already-scanned barcode
+* Vibrate once per new barcode
+* Show running count
+
+---
+
+## 6. Manual barcode assignment compatibility
+
+You also requested:
+
+```text
+0001
+0002
+0003
+...
+0500
+```
+
+assigned manually during intake.
+
+The lookup must be:
+
+```text
+barcode_value -> case
+```
+
+not
+
+```text
+barcode_image -> case
+```
+
+Meaning:
+
+```text
+0001
+```
+
+typed manually on desktop
+
+must equal
+
+```text
+0001
+```
+
+scanned on mobile.
+
+The scanner should read the numeric value and query the case tied to that exact barcode.
+
+---
+
+### Replit task summary
+
+**Barcode Scanner Accuracy & Batch Locate Improvements**
+
+**Done looks like:**
+
+* Scanner only reads barcodes whose bounding box is inside the scan window.
+* Scanner ignores barcodes outside the guide rectangle.
+* Single Locate mode reads only one barcode at a time.
+* Successful scans are locked/debounced for 1–2 seconds.
+* Duplicate scans are ignored.
+* Batch Locate mode supports multiple scans.
+* Batch mode displays:
+
+  * count of scanned barcodes
+  * barcode numbers
+  * patient names
+* Manual desktop barcode assignments (0001–0500) resolve correctly when scanned on mobile.
+* Visual HUD clearly indicates which barcode is being targeted and scanned.
+
+That will make the scanner behave more like a production warehouse/lab scanner instead of a generic camera barcode reader.

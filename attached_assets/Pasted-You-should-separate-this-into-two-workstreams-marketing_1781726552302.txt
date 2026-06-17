@@ -1,0 +1,231 @@
+You should separate this into two workstreams: **marketing/onboarding** and **billing/subscriptions**.
+
+# Task — New User Onboarding, Trial, and Subscription Flow
+
+## What & Why
+
+LabTrax is changing rapidly. New users need to understand:
+
+* The platform is actively evolving.
+* New features and improvements are released frequently.
+* Their first month is free.
+* After the trial ends, billing begins automatically (or they are prompted to subscribe, depending on your final billing model).
+* Subscription payments must be tied directly to your LabTrax account so revenue flows to SDR/LabTrax and not into a disconnected payment system.
+
+---
+
+## Done Looks Like
+
+### Landing Page / Signup Messaging
+
+Before account creation, users see:
+
+> Welcome to LabTrax.
+>
+> LabTrax is currently undergoing rapid development and enhancement. New features, workflow improvements, bug fixes, and performance updates are released regularly.
+>
+> By joining now, you'll receive immediate access to the latest improvements and upcoming releases.
+>
+> Your first 30 days are completely free.
+
+Additional callout:
+
+> Expect continuous updates as we expand the provider portal, AI workflows, mobile companion app, production tracking, and automation features.
+
+---
+
+## Free Trial System
+
+Every new account receives:
+
+```text
+Trial Length: 30 Days
+Cost: $0
+Features: Full Access
+```
+
+Store:
+
+```text
+trialStartDate
+trialEndDate
+trialStatus
+```
+
+Example:
+
+```text
+trialStartDate: 2026-06-17
+trialEndDate: 2026-07-17
+trialStatus: active
+```
+
+---
+
+## Trial Notifications
+
+### 7 Days Remaining
+
+Display banner:
+
+> Your free trial expires in 7 days.
+
+### 3 Days Remaining
+
+Display banner:
+
+> Your trial expires in 3 days. Add billing information to avoid interruption.
+
+### Day 0
+
+If no active subscription:
+
+```text
+Subscription Required
+```
+
+with:
+
+```text
+Upgrade Now
+```
+
+button.
+
+---
+
+# Subscription & Billing Integration
+
+## Ownership Requirement
+
+Payments must belong to:
+
+```text
+SDR / LabTrax
+```
+
+not Replit.
+
+Replit is only hosting the application.
+
+Revenue should flow into your own payment processor account.
+
+Recommended:
+
+```text
+Stripe
+```
+
+or equivalent subscription platform.
+
+---
+
+## Subscription Records
+
+Store:
+
+```text
+customerId
+subscriptionId
+subscriptionStatus
+planType
+billingCycle
+nextBillingDate
+```
+
+Example:
+
+```text
+customerId: cus_xxxxx
+subscriptionId: sub_xxxxx
+subscriptionStatus: active
+planType: Lab
+billingCycle: monthly
+```
+
+---
+
+## Subscription Plans
+
+Example structure:
+
+### Lab Plan
+
+```text
+Monthly
+Annual
+```
+
+### Provider Plan
+
+```text
+Monthly
+Annual
+```
+
+Future:
+
+```text
+Enterprise
+Multi-location
+Corporate
+```
+
+---
+
+## Billing Admin Screen
+
+Owners/Admins can view:
+
+```text
+Current Plan
+Trial Status
+Next Billing Date
+Payment Method
+Invoices
+Subscription History
+```
+
+and:
+
+```text
+Upgrade
+Downgrade
+Cancel
+```
+
+---
+
+# User Dashboard Banner
+
+During trial:
+
+```text
+30-Day Free Trial Active
+XX Days Remaining
+```
+
+After activation:
+
+```text
+Subscription Active
+Next Billing Date: MM/DD/YYYY
+```
+
+---
+
+# Future-Proof Messaging
+
+Add a section on signup:
+
+> LabTrax is an actively developed platform. New features and improvements are released frequently. Your feedback directly influences future development.
+
+This sets expectations correctly and turns the rapid pace of development into a selling point rather than a surprise.
+
+---
+
+One thing I would add: don't tell users they should expect **daily** updates. Internally you may deploy daily, but from a customer perspective it's better to promise:
+
+> "Frequent feature updates and continuous improvements"
+
+and then exceed expectations. Promising daily updates can create support expectations if a week goes by without a visible release.

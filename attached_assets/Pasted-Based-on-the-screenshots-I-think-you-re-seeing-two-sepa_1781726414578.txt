@@ -1,0 +1,230 @@
+Based on the screenshots, I think you're seeing **two separate permission-model problems**.
+
+### Problem 1: You can't manage roles properly inside SDR1
+
+In the SDR1 dialog, I can see:
+
+* SDR1
+* Your role = Owner
+* Members:
+
+  * JOHN PHILLIPS (Owner)
+  * ForrestE (User)
+  * ADLTEST (User)
+
+You currently only have **Remove** buttons. There is no:
+
+* Promote to Admin
+* Demote from Admin
+* Change role
+* Suspend user
+* Reactivate user
+* Transfer ownership
+* Permission matrix
+
+For a lab owner, that's incomplete.
+
+### What should exist
+
+For every member of SDR1:
+
+| Permission           | Owner | Admin    |
+| -------------------- | ----- | -------- |
+| Invite users         | ✓     | ✓        |
+| Remove users         | ✓     | ✓        |
+| Change user role     | ✓     | ✓        |
+| Manage providers     | ✓     | ✓        |
+| Manage cases         | ✓     | ✓        |
+| Manage invoices      | ✓     | Optional |
+| Manage subscriptions | ✓     | No       |
+| Transfer ownership   | ✓     | No       |
+| Delete organization  | ✓     | No       |
+
+Each member row should have:
+
+```
+[Role Dropdown]
+Owner | Admin | Billing | Technician | User | Read Only
+```
+
+and changing the dropdown should immediately update permissions.
+
+---
+
+# Problem 2: You appear as Owner of a bunch of dental practices
+
+This is the bigger bug.
+
+In the Organizations screen I can see entries like:
+
+* CWD Dental Group-Kerry Forest Pkwy
+* Brittney K Craig DMD
+* Family Dentistry at SouthWood
+* Heartland Dental
+* etc.
+
+and every one says:
+
+```
+Owner
+```
+
+That makes no sense if SDR1 is your only organization.
+
+### What is probably happening
+
+LabTrax currently appears to be treating provider organizations as if they are organizations you belong to.
+
+There should be a distinction between:
+
+### Organizations I belong to
+
+Examples:
+
+* SDR1
+
+These are organizations where:
+
+* I have membership
+* I have a role
+* I can administer users
+
+### Organizations referenced by cases
+
+Examples:
+
+* Brittney K Craig DMD
+* CWD Dental Group
+* Family Dentistry at SouthWood
+
+These are provider records.
+
+You should NOT automatically become:
+
+* Owner
+* Admin
+* Member
+
+of every provider record simply because a case references that provider.
+
+---
+
+# What I would have Replit build
+
+## Task: Organization Membership Cleanup
+
+### Done looks like
+
+The Organizations page shows only organizations where the logged-in user has an actual membership.
+
+For your account that should currently be:
+
+```
+SDR1
+```
+
+unless you intentionally joined additional organizations.
+
+Provider organizations should appear under:
+
+```
+Contacts
+Providers
+Practices
+```
+
+not under Organizations.
+
+### Membership model
+
+Add explicit tables:
+
+```
+organizations
+organization_members
+organization_invitations
+```
+
+A user only sees an organization if a membership exists.
+
+### Roles
+
+Support:
+
+```
+Owner
+Admin
+Billing
+Technician
+User
+Read Only
+```
+
+### Organization Detail
+
+Owners/Admins can:
+
+* Invite users
+* Change roles
+* Remove users
+* Resend invitations
+* View pending invitations
+
+### Invitation Flow
+
+```
+Invite User
+Email
+Role
+Send
+```
+
+User receives email.
+
+User accepts.
+
+Membership created.
+
+Role assigned.
+
+Notification sent back to inviter.
+
+---
+
+# Acceptance test
+
+For your account:
+
+### Organizations screen
+
+Should show:
+
+```
+SDR1
+```
+
+### Contacts / Providers screen
+
+Should show:
+
+```
+CWD Dental Group
+Brittney K Craig DMD
+Family Dentistry at SouthWood
+Heartland Dental
+...
+```
+
+### SDR1
+
+Should allow:
+
+* Change ForrestE role
+* Change ADLTEST role
+* Promote to Admin
+* Demote to User
+* Remove user
+
+without database edits.
+
+That's the behavior I'd expect from the screenshots you've shown. Right now the UI appears to be mixing **provider organizations** and **organizations you actually belong to**, which is why you're seeing yourself as "Owner" of entities that should simply be provider records.
