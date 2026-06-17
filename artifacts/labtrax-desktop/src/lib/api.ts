@@ -969,6 +969,50 @@ export async function deleteUploadSession(sessionId: string): Promise<void> {
   }
 }
 
+// --- Restore upload session (chunked, platform-admin auth) -----------------
+// Mirrors createUploadSession / sendUploadChunk but targets the
+// /admin/backup/restore-session endpoint so that large backup files
+// (40–80 MB) can be sent through the Replit proxy without hitting the
+// ~20 MB single-shot limit.
+
+export async function createRestoreUploadSession(params: {
+  fileName: string;
+  fileSize: number;
+}): Promise<{ sessionId: string; uploadedBytes: number; fileSize: number }> {
+  return apiFetch("/admin/backup/restore-session", {
+    method: "POST",
+    body: JSON.stringify({ fileName: params.fileName, fileSize: params.fileSize }),
+  });
+}
+
+export async function sendRestoreUploadChunk(
+  sessionId: string,
+  blob: Blob,
+  offset: number,
+  opts: SendChunkOptions = {},
+): Promise<ChunkUploadResult> {
+  const path = `/admin/backup/restore-session/${encodeURIComponent(sessionId)}`;
+  const url = apiUrl(path);
+  const platformAdminCred = await getPlatformAdminSecretForRequest();
+
+  let result = await sendChunkXhr(url, blob, offset, opts, platformAdminCred);
+  if (!result.ok && result.status === 401 && _tokens?.refreshToken) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) {
+      result = await sendChunkXhr(url, blob, offset, opts, platformAdminCred);
+    } else {
+      throw new ApiError("Your session has expired. Please sign in again.", 401);
+    }
+  }
+
+  if (!result.ok) {
+    const err = new ApiError(result.message, result.status);
+    (err as ApiError & { uploadedBytes?: number }).uploadedBytes = result.uploadedBytes;
+    throw err;
+  }
+  return result.data;
+}
+
 export async function sendUploadChunk(
   sessionId: string,
   blob: Blob,

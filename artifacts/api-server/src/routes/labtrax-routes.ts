@@ -6881,6 +6881,236 @@ Important rules:
     },
   );
 
+  // ── Admin Backup: restore — resumable upload session ─────────────────────
+  // Mirrors the /media/upload-session pattern but uses platform-admin auth
+  // and on finalize triggers executeRestore() in background (same as the
+  // single-shot route above). Solves the proxy ~20 MB hard limit for large
+  // backups: each chunk stays at/under MAX_RESUMABLE_CHUNK_BYTES.
+
+  const restoreSessionsDir = path.join(os.tmpdir(), "labtrax-restore-sessions");
+
+  interface RestoreSessionMeta {
+    sessionId: string;
+    fileSize: number;
+    fileName: string;
+    createdAt: number;
+  }
+
+  function restoreSessionPaths(id: string) {
+    return {
+      metaPath: path.resolve(restoreSessionsDir, `${id}.json`),
+      partPath: path.resolve(restoreSessionsDir, `${id}.part`),
+    };
+  }
+
+  function readRestoreSessionMeta(id: string): RestoreSessionMeta | null {
+    if (!isSafeSessionId(id)) return null;
+    try {
+      const { metaPath } = restoreSessionPaths(id);
+      const raw = fs.readFileSync(metaPath, "utf8");
+      const parsed = JSON.parse(raw);
+      if (
+        parsed &&
+        typeof parsed.sessionId === "string" &&
+        typeof parsed.fileSize === "number" &&
+        typeof parsed.fileName === "string"
+      ) {
+        return parsed as RestoreSessionMeta;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  function getRestoreSessionOffset(id: string): number {
+    try {
+      const { partPath } = restoreSessionPaths(id);
+      return fs.statSync(partPath).size;
+    } catch {
+      return 0;
+    }
+  }
+
+  function destroyRestoreSession(id: string): void {
+    const { metaPath, partPath } = restoreSessionPaths(id);
+    try { fs.unlinkSync(metaPath); } catch { /* ignore */ }
+    try { fs.unlinkSync(partPath); } catch { /* ignore */ }
+  }
+
+  router.post("/admin/backup/restore-session", platformAdminUserOrSecret, (req: any, res: any) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    // Reject concurrent restores before accepting any bytes.
+    const currentState = getRestoreState();
+    if (currentState.phase !== "idle" && currentState.phase !== "done" && currentState.phase !== "error") {
+      return res.status(409).json({ error: "A restore is already in progress.", phase: currentState.phase });
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const fileName = typeof body.fileName === "string" ? body.fileName.trim() : "";
+    const fileSize = typeof body.fileSize === "number" ? body.fileSize : NaN;
+    if (!fileName) {
+      return res.status(400).json({ error: "fileName is required" });
+    }
+    if (!Number.isFinite(fileSize) || fileSize <= 0) {
+      return res.status(400).json({ error: "fileSize must be a positive number" });
+    }
+    if (fileSize > 2 * 1024 * 1024 * 1024) {
+      return res.status(413).json({ error: "File exceeds maximum restore size (2 GB)" });
+    }
+    const sessionId = randomBytes(16).toString("hex");
+    const meta: RestoreSessionMeta = { sessionId, fileSize, fileName, createdAt: Date.now() };
+    try {
+      fs.mkdirSync(restoreSessionsDir, { recursive: true });
+      const { metaPath, partPath } = restoreSessionPaths(sessionId);
+      fs.writeFileSync(metaPath, JSON.stringify(meta));
+      fs.writeFileSync(partPath, "");
+    } catch (error: any) {
+      req.log?.error({ err: error?.message }, "[restore-session] Failed to create session");
+      return res.status(500).json({ error: "Could not create restore session" });
+    }
+    return res.status(201).json({ sessionId, uploadedBytes: 0, fileSize });
+  });
+
+  router.get("/admin/backup/restore-session/:id", platformAdminUserOrSecret, (req: any, res: any) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    const sessionId = req.params.id as string;
+    const meta = readRestoreSessionMeta(sessionId);
+    if (!meta) {
+      return res.status(404).json({ error: "Restore session not found" });
+    }
+    return res.json({
+      sessionId: meta.sessionId,
+      uploadedBytes: getRestoreSessionOffset(sessionId),
+      fileSize: meta.fileSize,
+      fileName: meta.fileName,
+    });
+  });
+
+  router.patch("/admin/backup/restore-session/:id", platformAdminUserOrSecret, (req: any, res: any) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    const sessionId = req.params.id as string;
+    const meta = readRestoreSessionMeta(sessionId);
+    if (!meta) {
+      return res.status(404).json({ error: "Restore session not found" });
+    }
+    const offsetHeader = req.header("upload-offset");
+    const offset = Number(offsetHeader);
+    if (!Number.isFinite(offset) || offset < 0) {
+      return res.status(400).json({ error: "Upload-Offset header is required" });
+    }
+    const currentOffset = getRestoreSessionOffset(sessionId);
+    if (offset !== currentOffset) {
+      return res.status(409).json({
+        error: "Upload-Offset does not match server state",
+        uploadedBytes: currentOffset,
+        fileSize: meta.fileSize,
+      });
+    }
+    const declaredLength = Number(req.header("content-length"));
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_RESUMABLE_CHUNK_BYTES) {
+      return res.status(413).json({ error: "Chunk exceeds maximum size" });
+    }
+    if (Number.isFinite(declaredLength) && currentOffset + declaredLength > meta.fileSize) {
+      return res.status(400).json({ error: "Chunk would exceed declared file size" });
+    }
+
+    const { partPath } = restoreSessionPaths(sessionId);
+    const writeStream = fs.createWriteStream(partPath, { flags: "a" });
+    let bytesInThisChunk = 0;
+    let aborted = false;
+
+    req.on("data", (chunk: Buffer) => {
+      bytesInThisChunk += chunk.length;
+      if (currentOffset + bytesInThisChunk > meta.fileSize) {
+        aborted = true;
+        writeStream.destroy();
+        try { req.destroy(); } catch { /* ignore */ }
+      }
+    });
+
+    const handleError = (err: any) => {
+      if (res.headersSent) return;
+      req.log?.error({ err: err?.message }, "[restore-session] Chunk write error");
+      res.status(500).json({
+        error: "Failed to persist chunk",
+        uploadedBytes: getRestoreSessionOffset(sessionId),
+      });
+    };
+
+    writeStream.on("error", handleError);
+    req.on("error", handleError);
+
+    writeStream.on("finish", () => {
+      void (async () => {
+        if (aborted) {
+          if (!res.headersSent) {
+            res.status(400).json({
+              error: "Chunk would exceed declared file size",
+              uploadedBytes: getRestoreSessionOffset(sessionId),
+            });
+          }
+          return;
+        }
+        const newOffset = getRestoreSessionOffset(sessionId);
+        if (newOffset >= meta.fileSize) {
+          // All bytes received — re-check concurrent restore guard.
+          const state = getRestoreState();
+          if (state.phase !== "idle" && state.phase !== "done" && state.phase !== "error") {
+            destroyRestoreSession(sessionId);
+            if (!res.headersSent) {
+              res.status(409).json({ error: "A restore is already in progress.", phase: state.phase });
+            }
+            return;
+          }
+          let encryptedBuffer: Buffer;
+          try {
+            encryptedBuffer = fs.readFileSync(partPath);
+          } catch (err: any) {
+            req.log?.error({ err: err?.message }, "[restore-session] Failed to read assembled file");
+            destroyRestoreSession(sessionId);
+            if (!res.headersSent) {
+              res.status(500).json({ error: "Failed to read assembled backup file" });
+            }
+            return;
+          }
+          destroyRestoreSession(sessionId);
+          const reqUser = req.user;
+          const triggeredBy = `restore:${reqUser?.username || "admin"}`;
+          if (!res.headersSent) {
+            res.status(202).json({ ok: true, phase: "decrypting", message: "Restore started.", complete: true });
+          }
+          (async () => {
+            try {
+              await executeRestore(encryptedBuffer, triggeredBy);
+            } catch (err: unknown) {
+              req.log?.error(
+                { err: err instanceof Error ? err.message : String(err) },
+                "[restore-session] Restore pipeline failed",
+              );
+            }
+          })().catch(() => { /* handled above */ });
+        } else {
+          if (!res.headersSent) {
+            res.json({
+              ok: true,
+              uploadedBytes: newOffset,
+              fileSize: meta.fileSize,
+              complete: false,
+            });
+          }
+        }
+      })();
+    });
+
+    req.pipe(writeStream);
+  });
+
   // ── Admin Backup: history retention settings (PUT) ────────────────────────
   router.put("/admin/backup/history-retention", platformAdminUserOrSecret, async (req, res) => {
     if (!isPlatformAdmin(req)) {

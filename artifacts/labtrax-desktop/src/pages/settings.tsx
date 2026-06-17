@@ -19,7 +19,7 @@ import {
   SheetTitle,
   SheetDescription,
 } from "@/components/ui/sheet";
-import { apiFetch, apiFetchArrayBuffer, apiUploadWithProgress, ApiError, notifySessionCleared, getApiOrigin } from "@/lib/api";
+import { apiFetch, apiFetchArrayBuffer, apiUploadWithProgress, ApiError, notifySessionCleared, getApiOrigin, createRestoreUploadSession, sendRestoreUploadChunk } from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
 import { AuthedImage } from "@/components/AuthedMedia";
 import {
@@ -4125,13 +4125,23 @@ function RestoreSection({
       properties: ["openFile"],
     });
     if (!filePaths || filePaths.length === 0) return;
-    // Electron gives us a path; build a File-like object using fetch
-    const resp = await fetch(`file://${filePaths[0]}`).catch(() => null);
-    if (resp) {
-      const blob = await resp.blob();
-      const file = new File([blob], filePaths[0].split("/").pop() ?? "backup.zip.enc");
-      setSelectedFile(file);
+    const filePath = filePaths[0];
+    // Read the file via IPC — renderer security policy blocks file:// reads.
+    if (!electron?.readLocalFile) {
+      setRestoreError("File reading is not supported in this version of LabTrax Desktop. Please update the app.");
+      return;
     }
+    const result = await electron.readLocalFile(filePath);
+    if (!result.ok || !result.buffer) {
+      setRestoreError(result.error || "Could not read the selected file.");
+      return;
+    }
+    const name = filePath.replace(/\\/g, "/").split("/").pop() ?? "backup.zip.enc";
+    // Copy into a new Uint8Array to ensure a concrete ArrayBuffer (the IPC
+    // channel may return a Uint8Array backed by a SharedArrayBuffer, which
+    // File() doesn't accept in strict TS targets).
+    const file = new File([new Uint8Array(result.buffer)], name, { type: "application/octet-stream" });
+    setSelectedFile(file);
   }
 
   function handleNativeFileChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -4150,18 +4160,31 @@ function RestoreSection({
   }
 
   async function runRestore() {
+    if (!selectedFile) return;
     setShowConfirm(false);
     setRestorePhase("uploading");
     setRestoreMessage("Uploading backup file…");
     setRestoreError(null);
     setRestoreSuccess(false);
-    startPolling();
+    const CHUNK_SIZE = 1 * 1024 * 1024; // 1 MB — proven safe through the Replit proxy
     try {
-      if (selectedFile) {
-        const fd = new FormData();
-        fd.append("file", selectedFile, selectedFile.name);
-        await apiFetch("/admin/backup/restore", { method: "POST", body: fd, headers: {} as any });
+      // Create a restore upload session on the server.
+      const session = await createRestoreUploadSession({
+        fileName: selectedFile.name,
+        fileSize: selectedFile.size,
+      });
+      const { sessionId } = session;
+      // Upload the file in 1 MB chunks.
+      let offset = 0;
+      while (offset < selectedFile.size) {
+        const chunk = selectedFile.slice(offset, offset + CHUNK_SIZE);
+        const result = await sendRestoreUploadChunk(sessionId, chunk, offset);
+        offset = result.uploadedBytes;
+        if (result.complete) break;
       }
+      // Final chunk sent — server has received the file and started the restore
+      // pipeline asynchronously (202). Begin polling for progress.
+      startPolling();
     } catch (err: unknown) {
       stopPolling();
       const msg = err instanceof Error ? err.message : "Restore failed.";
@@ -7633,7 +7656,7 @@ type PlatformAdminAPI = {
   testSecret: (payload: string | { apiBaseUrl: string }) => Promise<PlatformAdminTestResult>;
   onChanged: (cb: (s: PlatformAdminStatus) => void) => () => void;
 };
-type ElectronWindow = Window & { electronAPI?: { showFolderDialog?: () => Promise<string | null>; showOpenDialog?: (opts: { title?: string; filters?: Array<{ name: string; extensions: string[] }>; properties?: string[] }) => Promise<string[] | null>; relaunch?: () => void; openExternal?: (url: string) => Promise<boolean>; saveBackupToFolder?: (buffer: Uint8Array, fileName: string, folderPath: string) => Promise<{ ok: boolean; path?: string; error?: string }>; itero?: IteroAPI; platformAdmin?: PlatformAdminAPI } };
+type ElectronWindow = Window & { electronAPI?: { showFolderDialog?: () => Promise<string | null>; showOpenDialog?: (opts: { title?: string; filters?: Array<{ name: string; extensions: string[] }>; properties?: string[] }) => Promise<string[] | null>; readLocalFile?: (path: string) => Promise<{ ok: boolean; buffer?: Uint8Array; error?: string }>; relaunch?: () => void; openExternal?: (url: string) => Promise<boolean>; saveBackupToFolder?: (buffer: Uint8Array, fileName: string, folderPath: string) => Promise<{ ok: boolean; path?: string; error?: string }>; itero?: IteroAPI; platformAdmin?: PlatformAdminAPI } };
 
 function CaseDeletionPinStatus({
   securityConfigQuery,

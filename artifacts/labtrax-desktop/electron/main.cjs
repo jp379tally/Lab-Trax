@@ -429,6 +429,18 @@ ipcMain.handle("dialog:showOpenDialog", async (_event, opts) => {
   return result.canceled ? null : result.filePaths;
 });
 
+ipcMain.handle("dialog:read-file", async (_event, filePath) => {
+  if (typeof filePath !== "string" || !filePath) {
+    return { ok: false, error: "Invalid file path." };
+  }
+  try {
+    const buffer = fs.readFileSync(filePath);
+    return { ok: true, buffer };
+  } catch (err) {
+    return { ok: false, error: err && err.message ? String(err.message) : "Failed to read file." };
+  }
+});
+
 ipcMain.handle("shell:open-external", async (_event, url) => {
   if (typeof url !== "string") return false;
   try {
