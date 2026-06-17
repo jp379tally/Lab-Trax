@@ -76,6 +76,7 @@ export default function NewCaseScreen() {
 
   const [restorations, setRestorations] = useState<RestorationDraft[]>([blankRestoration()]);
   const [dueDate, setDueDate] = useState("");
+  const [dueDateCapped, setDueDateCapped] = useState(false);
   const [priority, setPriority] = useState<"normal" | "rush">("normal");
   const [notes, setNotes] = useState("");
 
@@ -88,6 +89,24 @@ export default function NewCaseScreen() {
   useEffect(() => {
     if (!selectedLabId && labs.length > 0) setSelectedLabId(labs[0].organizationId);
   }, [labs, selectedLabId]);
+
+  function applyDueDateCap(raw: string): string {
+    if (!raw) { setDueDateCapped(false); return raw; }
+    const lab = labs.find((m) => m.organizationId === selectedLabId)?.organization;
+    const days = lab?.defaultCaseDueDays as number | null | undefined;
+    const cap = (lab as any)?.capCaseDueToDefault as boolean | null | undefined;
+    if (cap && days) {
+      const maxDate = new Date();
+      maxDate.setDate(maxDate.getDate() + days);
+      const maxStr = maxDate.toISOString().slice(0, 10);
+      if (raw > maxStr) {
+        setDueDateCapped(true);
+        return maxStr;
+      }
+    }
+    setDueDateCapped(false);
+    return raw;
+  }
 
   // Auto case number for the chosen lab (kept editable; user edits win).
   const nextNumberQuery = useQuery({
@@ -481,10 +500,15 @@ export default function NewCaseScreen() {
         <Field label="Due Date" styles={styles}>
           <DateField
             value={dueDate}
-            onChange={setDueDate}
+            onChange={(v) => setDueDate(applyDueDateCap(v))}
             placeholder="Select a due date"
             testID="new-case-due-date"
           />
+          {dueDateCapped && (
+            <Text style={{ fontSize: 11, color: "#d97706", marginTop: 4 }}>
+              Capped to lab's turnaround ({(labs.find((m) => m.organizationId === selectedLabId)?.organization?.defaultCaseDueDays as number | null | undefined) ?? "?"}d)
+            </Text>
+          )}
         </Field>
 
         {/* Priority */}

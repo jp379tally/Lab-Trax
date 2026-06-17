@@ -43,6 +43,7 @@ interface OrgMembership {
     billingEmail?: string | null;
     duplicateSuggestionThreshold?: number | null;
     defaultCaseDueDays?: number | null;
+    capCaseDueToDefault?: boolean | null;
     logoUrl?: string | null;
     logoplacements?: string[] | null;
     logoPdfSize?: string | null;
@@ -146,6 +147,10 @@ function OrgCard({ m, colors, styles }: { m: OrgMembership; colors: ThemeColors;
     org?.defaultCaseDueDays != null ? String(org.defaultCaseDueDays) : ""
   );
   const [dueDaysSaved, setDueDaysSaved] = useState(false);
+  const [capEnabled, setCapEnabled] = useState<boolean>(
+    !!(org as any)?.capCaseDueToDefault
+  );
+  const [capSaved, setCapSaved] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [logoUploading, setLogoUploading] = useState(false);
   const logoXhrRef = useRef<XMLHttpRequest | null>(null);
@@ -247,6 +252,27 @@ function OrgCard({ m, colors, styles }: { m: OrgMembership; colors: ThemeColors;
       setTimeout(() => setDueDaysSaved(false), 2000);
     },
     onError: (err: Error) => Alert.alert("Could not save default due date", err.message),
+  });
+
+  const capMutation = useMutation({
+    mutationFn: async (value: boolean) => {
+      if (!orgId) throw new Error("Unknown org ID.");
+      const res = await resilientFetch(`/api/organizations/${orgId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ capCaseDueToDefault: value }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error((e as any)?.error || `Failed (${res.status})`);
+      }
+    },
+    onSuccess: () => {
+      setCapSaved(true);
+      qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
+      setTimeout(() => setCapSaved(false), 2000);
+    },
+    onError: (err: Error) => Alert.alert("Could not save cap setting", err.message),
   });
 
   async function pickLogo() {
@@ -697,6 +723,56 @@ function OrgCard({ m, colors, styles }: { m: OrgMembership; colors: ThemeColors;
               disabled={dueDaysMutation.isPending}
             >
               <Text style={styles.dupSaveBtnText}>{dueDaysMutation.isPending ? "Saving…" : "Save"}</Text>
+            </Pressable>
+          </View>
+
+          {/* Cap toggle */}
+          <View style={[styles.stepRow, { marginTop: 12, alignItems: "center" }]}>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.dupTitle, { color: colors.text, fontSize: 13 }]}>
+                Never set a case due date later than my turnaround
+              </Text>
+              {!org?.defaultCaseDueDays && (
+                <Text style={[styles.dupSub, { color: colors.warning, marginTop: 2 }]}>
+                  Set a default due days above to enable.
+                </Text>
+              )}
+              {capSaved && (
+                <Text style={[styles.dupSub, { color: colors.success, marginTop: 2 }]}>Saved</Text>
+              )}
+            </View>
+            <Pressable
+              onPress={() => {
+                if (!org?.defaultCaseDueDays) {
+                  Alert.alert("Set a turnaround first", "Enter a default due days value above before enabling this cap.");
+                  return;
+                }
+                const next = !capEnabled;
+                setCapEnabled(next);
+                capMutation.mutate(next);
+              }}
+              disabled={capMutation.isPending}
+              style={[
+                {
+                  width: 44,
+                  height: 26,
+                  borderRadius: 13,
+                  padding: 3,
+                  justifyContent: "center",
+                  backgroundColor: capEnabled ? colors.tint : colors.border,
+                },
+                capMutation.isPending && { opacity: 0.6 },
+              ]}
+            >
+              <View
+                style={{
+                  width: 20,
+                  height: 20,
+                  borderRadius: 10,
+                  backgroundColor: "#fff",
+                  alignSelf: capEnabled ? "flex-end" : "flex-start",
+                }}
+              />
             </Pressable>
           </View>
         </View>

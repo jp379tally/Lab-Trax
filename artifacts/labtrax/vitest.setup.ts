@@ -469,14 +469,18 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-query")>();
   return {
     ...actual,
-    useQuery: vi.fn(() => ({
-      data:
-        mockAppOverrides.current.meMemberships !== undefined
-          ? { memberships: mockAppOverrides.current.meMemberships }
-          : undefined,
-      isLoading: false,
-      isError: false,
-    })),
+    useQuery: vi.fn((options?: { queryKey?: unknown[] }) => {
+      const key = Array.isArray(options?.queryKey) ? options.queryKey[0] : null;
+      const isMeQuery = key === "auth-me";
+      return {
+        data:
+          isMeQuery && mockAppOverrides.current.meMemberships !== undefined
+            ? { memberships: mockAppOverrides.current.meMemberships }
+            : undefined,
+        isLoading: false,
+        isError: false,
+      };
+    }),
     useQueryClient: vi.fn(() => ({
       invalidateQueries: vi.fn(async () => undefined),
       setQueryData: vi.fn(),

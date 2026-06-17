@@ -15,7 +15,15 @@ about the me-query.
 `opts.queryKey[0]` so list queries return arrays and the me-query returns the
 shape under test. See `organizations.smoke.test.tsx` `applyUseQueryMock`.
 
+The global `vitest.setup.ts` `useQuery` mock was also fixed the same way:
+it now checks `queryKey[0] === "auth-me"` before returning the memberships
+shape, so vocabulary queries (`["vocabulary","material",…]`) receive
+`undefined` (not `{ memberships: [] }`) and their `?? []` fallback produces
+a proper array.
+
 **Why to remember:** adding a new `useQuery` to a screen can silently break
 unrelated smoke tests that used a blanket `mockReturnValue`. When a screen-level
 smoke test fails with `.map is not a function` / `.filter is not a function`
 after an unrelated change, suspect the blanket mock before the component.
+The fix must be applied in the global `vitest.setup.ts` mock, not just in
+per-file `applyUseQueryMock` helpers.

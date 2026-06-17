@@ -578,6 +578,24 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.labOrganizationId]);
 
+  const [dueDateCapped, setDueDateCapped] = useState(false);
+
+  function handleDueDateChange(raw: string) {
+    const lab = labOrgs.find((o) => o.id === form.labOrganizationId);
+    if (raw && lab?.capCaseDueToDefault && lab?.defaultCaseDueDays) {
+      const maxDate = new Date();
+      maxDate.setDate(maxDate.getDate() + lab.defaultCaseDueDays);
+      const maxStr = maxDate.toISOString().slice(0, 10);
+      if (raw > maxStr) {
+        set("dueDate", maxStr);
+        setDueDateCapped(true);
+        return;
+      }
+    }
+    setDueDateCapped(false);
+    set("dueDate", raw);
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!form.labOrganizationId)
@@ -756,8 +774,13 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
                 type="date"
                 className="w-full h-9 px-3 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
                 value={form.dueDate}
-                onChange={(e) => set("dueDate", e.target.value)}
+                onChange={(e) => handleDueDateChange(e.target.value)}
               />
+              {dueDateCapped && (
+                <p className="text-[11px] text-amber-600 mt-1">
+                  Capped to lab's turnaround ({labOrgs.find((o) => o.id === form.labOrganizationId)?.defaultCaseDueDays}d)
+                </p>
+              )}
             </div>
 
             <div className="col-span-2">

@@ -150,6 +150,7 @@ export default function AiReaderExtractedScreen() {
   const [patientFirst, setPatientFirst] = useState(patientSplit.first);
   const [patientLast, setPatientLast] = useState(patientSplit.last);
   const [dueDate, setDueDate] = useState(parseDueDateMDY(extracted?.dueDate));
+  const [dueDateCapped, setDueDateCapped] = useState(false);
   const [priority, setPriority] = useState<"normal" | "rush">(extracted?.isRush ? "rush" : "normal");
   const [notes, setNotes] = useState(extracted?.notes ?? "");
   const [shade, setShade] = useState(extracted?.shade ?? "");
@@ -223,6 +224,42 @@ export default function AiReaderExtractedScreen() {
   useEffect(() => {
     if (!caseNumberEdited && nextNumberQuery.data) setCaseNumber(nextNumberQuery.data);
   }, [nextNumberQuery.data, caseNumberEdited]);
+
+  // Apply due-date cap whenever the selected lab changes (or on first mount
+  // after labs resolve). If the AI extracted a date beyond the turnaround
+  // and the cap is on, snap it down and show a note.
+  useEffect(() => {
+    if (!selectedLabId) return;
+    const lab = labs.find((m) => m.organizationId === selectedLabId)?.organization;
+    const days = lab?.defaultCaseDueDays as number | null | undefined;
+    const cap = (lab as any)?.capCaseDueToDefault as boolean | null | undefined;
+    if (!cap || !days || !dueDate) return;
+    const maxDate = new Date();
+    maxDate.setDate(maxDate.getDate() + days);
+    const maxStr = maxDate.toISOString().slice(0, 10);
+    if (dueDate > maxStr) {
+      setDueDate(maxStr);
+      setDueDateCapped(true);
+    }
+  // Run whenever selected lab changes; intentionally omit dueDate so we
+  // don't re-fire on every keystroke.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedLabId, labs]);
+
+  function applyExtractedDueDateCap(raw: string): string {
+    if (!raw) { setDueDateCapped(false); return raw; }
+    const lab = labs.find((m) => m.organizationId === selectedLabId)?.organization;
+    const days = lab?.defaultCaseDueDays as number | null | undefined;
+    const cap = (lab as any)?.capCaseDueToDefault as boolean | null | undefined;
+    if (cap && days) {
+      const maxDate = new Date();
+      maxDate.setDate(maxDate.getDate() + days);
+      const maxStr = maxDate.toISOString().slice(0, 10);
+      if (raw > maxStr) { setDueDateCapped(true); return maxStr; }
+    }
+    setDueDateCapped(false);
+    return raw;
+  }
 
   // Resolve practice alias on mount
   useEffect(() => {
@@ -892,9 +929,14 @@ ${pages.map((p) => `<div class="page"><img src="data:image/jpeg;base64,${p.base6
         <Section label="Due Date" styles={styles} colors={colors}>
           <DateField
             value={dueDate}
-            onChange={setDueDate}
+            onChange={(v) => setDueDate(applyExtractedDueDateCap(v))}
             placeholder="YYYY-MM-DD"
           />
+          {dueDateCapped && (
+            <Text style={{ fontSize: 11, color: "#d97706", marginTop: 4 }}>
+              Capped to lab's turnaround ({(labs.find((m) => m.organizationId === selectedLabId)?.organization?.defaultCaseDueDays as number | null | undefined) ?? "?"}d)
+            </Text>
+          )}
         </Section>
 
         <Section label="Priority" styles={styles} colors={colors}>

@@ -105,6 +105,9 @@ const createOrgSchema = z.object({
   // Default days after received-date to set as the due date for new cases.
   // Null clears the override (no default applied). Lab orgs only.
   defaultCaseDueDays: z.number().int().min(1).max(365).nullable().optional(),
+  // When true, new case due dates are capped at (received date + defaultCaseDueDays).
+  // Dates sooner than the turnaround are kept as-is (treated as rush). Lab orgs only.
+  capCaseDueToDefault: z.boolean().nullable().optional(),
   // Lab license / registration number (Account epic Phase 3). Required when
   // creating a lab environment; ignored on provider orgs.
   licenseNumber: z.string().optional(),

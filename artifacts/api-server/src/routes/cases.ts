@@ -32,6 +32,7 @@ import { randomBytes } from "node:crypto";
 import OpenAI, { toFile } from "openai";
 import AdmZip from "adm-zip";
 import { writeAuditLog } from "../lib/audit";
+import { resolveCaseDueDate } from "../lib/case-due-date";
 import { calculateLineTotal, sumMoney } from "../lib/case";
 import { syncInvoiceFromRestorations, buildGroupedLineItemsForInvoice } from "../lib/invoice-sync";
 import { invoiceDueDate } from "../lib/invoice-due-date";
@@ -2852,22 +2853,21 @@ router.post(
       );
     }
 
-    // If the caller didn't supply a due date, fall back to the lab's default
-    // window (defaultCaseDueDays days after today). The client-side pre-fill
-    // in the new-case form covers the normal path; this server-side fallback
-    // catches mobile creates and iTero auto-imports that never send dueDate.
-    let resolvedDueDate: Date | null = input.dueDate ? new Date(input.dueDate) : null;
-    if (!resolvedDueDate) {
-      const labOrg = await db.query.organizations.findFirst({
-        where: eq(organizations.id, input.labOrganizationId),
-        columns: { defaultCaseDueDays: true },
-      });
-      if (labOrg?.defaultCaseDueDays) {
-        const d = new Date();
-        d.setDate(d.getDate() + labOrg.defaultCaseDueDays);
-        resolvedDueDate = d;
-      }
-    }
+    // Resolve case due date. When the cap toggle is on, any supplied date
+    // beyond (today + defaultCaseDueDays) is trimmed to the turnaround.
+    // When no date is supplied the turnaround is used as a fallback (existing
+    // behaviour). This is also the enforcement path for iTero auto-imports.
+    const suppliedDueDate: Date | null = input.dueDate ? new Date(input.dueDate) : null;
+    const dueDateLabOrg = await db.query.organizations.findFirst({
+      where: eq(organizations.id, input.labOrganizationId),
+      columns: { defaultCaseDueDays: true, capCaseDueToDefault: true },
+    });
+    const resolvedDueDate = resolveCaseDueDate(
+      suppliedDueDate,
+      new Date(),
+      dueDateLabOrg?.defaultCaseDueDays,
+      dueDateLabOrg?.capCaseDueToDefault,
+    );
 
     // For remake cases, compute the next letter suffix (B, C, D, …) inside
     // a transaction so the count + insert are atomic. The UNIQUE constraint
@@ -6863,11 +6863,19 @@ router.post(
       autoLinkedFromAi = true;
     }
 
-    let dueDate: Date | null = null;
-    if (extracted.dueDate) {
-      const parsed = new Date(extracted.dueDate);
-      if (!Number.isNaN(parsed.getTime())) dueDate = parsed;
-    }
+    const iteroAutoSuppliedDate: Date | null = extracted.dueDate
+      ? (Number.isNaN(new Date(extracted.dueDate).getTime()) ? null : new Date(extracted.dueDate))
+      : null;
+    const iteroAutoLabOrg = await db.query.organizations.findFirst({
+      where: eq(organizations.id, body.labOrganizationId),
+      columns: { defaultCaseDueDays: true, capCaseDueToDefault: true },
+    });
+    const dueDate = resolveCaseDueDate(
+      iteroAutoSuppliedDate,
+      new Date(),
+      iteroAutoLabOrg?.defaultCaseDueDays,
+      iteroAutoLabOrg?.capCaseDueToDefault,
+    );
 
     // Resolve any AI-derived restoration rows BEFORE the transaction so the
     // pricing lookups don't hold open the dedup-claim transaction.
@@ -7854,20 +7862,30 @@ router.post(
       );
     }
 
-    let dueDate: Date | null = null;
+    let iteroZipSuppliedDate: Date | null = null;
     if (extracted.dueDate) {
       const parsed = new Date(extracted.dueDate);
-      if (!Number.isNaN(parsed.getTime())) dueDate = parsed;
+      if (!Number.isNaN(parsed.getTime())) iteroZipSuppliedDate = parsed;
     }
-    if (!dueDate && body.dueDateHint) {
+    if (!iteroZipSuppliedDate && body.dueDateHint) {
       // Parse MM/DD/YYYY (from client AI) or ISO formats.
       const hint = body.dueDateHint.trim();
       const mmddyyyy = hint.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
       const parsedHint = mmddyyyy
         ? new Date(`${mmddyyyy[3]}-${mmddyyyy[1]!.padStart(2, "0")}-${mmddyyyy[2]!.padStart(2, "0")}`)
         : new Date(hint);
-      if (!Number.isNaN(parsedHint.getTime())) dueDate = parsedHint;
+      if (!Number.isNaN(parsedHint.getTime())) iteroZipSuppliedDate = parsedHint;
     }
+    const iteroZipLabOrg = await db.query.organizations.findFirst({
+      where: eq(organizations.id, body.labOrganizationId),
+      columns: { defaultCaseDueDays: true, capCaseDueToDefault: true },
+    });
+    const dueDate = resolveCaseDueDate(
+      iteroZipSuppliedDate,
+      new Date(),
+      iteroZipLabOrg?.defaultCaseDueDays,
+      iteroZipLabOrg?.capCaseDueToDefault,
+    );
 
     const caseNumber = await generateIteroCaseNumber(body.labOrganizationId);
 

@@ -3240,6 +3240,7 @@ components:
         isActive: { type: boolean, nullable: true }
         statementEmailOptOut: { type: boolean, nullable: true }
         defaultCaseDueDays: { type: integer, nullable: true }
+        capCaseDueToDefault: { type: boolean, nullable: true }
         licenseNumber:
           type: string
           nullable: true
@@ -3273,6 +3274,7 @@ components:
         isActive: { type: boolean, nullable: true }
         statementEmailOptOut: { type: boolean, nullable: true }
         defaultCaseDueDays: { type: integer, nullable: true }
+        capCaseDueToDefault: { type: boolean, nullable: true }
         licenseNumber: { type: string, nullable: true }
         accountNumber: { type: string, nullable: true }
     Organization:
@@ -3289,6 +3291,8 @@ components:
         accountNumber: { type: string, nullable: true }
         platformAccountNumber: { type: string, nullable: true }
         licenseNumber: { type: string, nullable: true }
+        defaultCaseDueDays: { type: integer, nullable: true }
+        capCaseDueToDefault: { type: boolean, nullable: true }
         isActive: { type: boolean, nullable: true }
       required: [id]
     OrganizationResult:

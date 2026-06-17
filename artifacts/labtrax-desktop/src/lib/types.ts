@@ -393,6 +393,7 @@ export interface Organization {
   duplicateSuggestionThreshold?: string | number | null;
   trustedDeviceTtlDays?: number | null;
   defaultCaseDueDays?: number | null;
+  capCaseDueToDefault?: boolean | null;
   licenseNumber?: string | null;
 }
 

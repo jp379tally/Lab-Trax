@@ -273,6 +273,11 @@ export const organizations = pgTable(
     // should be set. Null = no default (field left blank on new cases).
     // Only meaningful on type="lab" rows.
     defaultCaseDueDays: integer("default_case_due_days"),
+    // When true, new case due dates are capped so they never exceed
+    // (received date + defaultCaseDueDays). Dates sooner than the
+    // turnaround are kept as-is (treated as rush). Null / false = off
+    // (existing behaviour). Only meaningful on type="lab" rows.
+    capCaseDueToDefault: boolean("cap_case_due_to_default"),
     // Lab license / registration number captured at lab-environment creation
     // (Account epic Phase 3). Required for type="lab" rows created through the
     // canonical create-lab flow; null on provider orgs and legacy lab rows.

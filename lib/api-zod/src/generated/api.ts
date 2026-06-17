@@ -3537,6 +3537,7 @@ export const CreateOrganizationBody = zod.object({
   isActive: zod.boolean().nullish(),
   statementEmailOptOut: zod.boolean().nullish(),
   defaultCaseDueDays: zod.number().nullish(),
+  capCaseDueToDefault: zod.boolean().nullish(),
   licenseNumber: zod
     .string()
     .nullish()
@@ -3582,6 +3583,8 @@ export const GetOrganizationResponse = zod.object({
       accountNumber: zod.string().nullish(),
       platformAccountNumber: zod.string().nullish(),
       licenseNumber: zod.string().nullish(),
+      defaultCaseDueDays: zod.number().nullish(),
+      capCaseDueToDefault: zod.boolean().nullish(),
       isActive: zod.boolean().nullish(),
     })
     .describe(
@@ -3610,6 +3613,7 @@ export const UpdateOrganizationBody = zod
     isActive: zod.boolean().nullish(),
     statementEmailOptOut: zod.boolean().nullish(),
     defaultCaseDueDays: zod.number().nullish(),
+    capCaseDueToDefault: zod.boolean().nullish(),
     licenseNumber: zod.string().nullish(),
     accountNumber: zod.string().nullish(),
   })
@@ -3627,6 +3631,8 @@ export const UpdateOrganizationResponse = zod.object({
       accountNumber: zod.string().nullish(),
       platformAccountNumber: zod.string().nullish(),
       licenseNumber: zod.string().nullish(),
+      defaultCaseDueDays: zod.number().nullish(),
+      capCaseDueToDefault: zod.boolean().nullish(),
       isActive: zod.boolean().nullish(),
     })
     .describe(

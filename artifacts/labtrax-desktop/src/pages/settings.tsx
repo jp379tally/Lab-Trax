@@ -2149,6 +2149,7 @@ function OrganizationsPanel() {
                   <DuplicateThresholdRow lab={selectedOrg} />
                   <TrustedDeviceTtlRow lab={selectedOrg} />
                   <DefaultCaseDueDaysRow lab={selectedOrg} />
+                  <CapCaseDueToggleRow lab={selectedOrg} />
                 </div>
               )}
 
@@ -3031,6 +3032,79 @@ function DefaultCaseDueDaysRow({ lab }: { lab: Organization }) {
 
       {!parsedValid && inputVal.trim() !== "" && (
         <p className="text-[11px] text-destructive">Enter a number between 1 and 365.</p>
+      )}
+      {saveError && (
+        <div className="mt-1">
+          <Alert tone="danger">{saveError}</Alert>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CapCaseDueToggleRow({ lab }: { lab: Organization }) {
+  const queryClient = useQueryClient();
+  const [enabled, setEnabled] = useState<boolean>(lab.capCaseDueToDefault ?? false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [savedFlag, setSavedFlag] = useState(false);
+
+  useEffect(() => {
+    setEnabled(lab.capCaseDueToDefault ?? false);
+  }, [lab.capCaseDueToDefault]);
+
+  const saveMutation = useMutation({
+    mutationFn: (value: boolean) =>
+      apiFetch(`/organizations/${lab.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ capCaseDueToDefault: value }),
+      }),
+    onSuccess: () => {
+      setSaveError(null);
+      setSavedFlag(true);
+      setTimeout(() => setSavedFlag(false), 2000);
+      queryClient.invalidateQueries({ queryKey: ["organizations"] });
+    },
+    onError: (err: Error) => setSaveError(err.message || "Failed to save."),
+  });
+
+  function toggle() {
+    const next = !enabled;
+    setEnabled(next);
+    saveMutation.mutate(next);
+  }
+
+  const hasTurnaround = !!lab.defaultCaseDueDays;
+
+  return (
+    <div className="rounded-md border border-border bg-background p-3 space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-xs font-semibold">Cap case due dates to turnaround</div>
+          <div className="text-[11px] text-muted-foreground max-w-sm">
+            Never set a case due date later than my turnaround. Sooner dates are kept as rush.
+            {!hasTurnaround && (
+              <span className="text-amber-600"> Set a default due date above to enable.</span>
+            )}
+          </div>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={enabled}
+          onClick={toggle}
+          disabled={saveMutation.isPending || !hasTurnaround}
+          className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:opacity-50 ${enabled ? "bg-primary" : "bg-input"}`}
+        >
+          <span
+            className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${enabled ? "translate-x-4" : "translate-x-0"}`}
+          />
+        </button>
+      </div>
+      {savedFlag && (
+        <span className="text-[11px] text-success inline-flex items-center gap-1">
+          <Check size={11} />
+          Saved
+        </span>
       )}
       {saveError && (
         <div className="mt-1">

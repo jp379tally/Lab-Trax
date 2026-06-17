@@ -19,6 +19,8 @@ export interface Organization {
   accountNumber?: string | null;
   platformAccountNumber?: string | null;
   licenseNumber?: string | null;
+  defaultCaseDueDays?: number | null;
+  capCaseDueToDefault?: boolean | null;
   isActive?: boolean | null;
   [key: string]: unknown;
 }
