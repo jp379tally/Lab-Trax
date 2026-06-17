@@ -54,9 +54,9 @@ interface AdminUser {
   lastLoginAt?: string | null;
 }
 
-type TabKey = "profile" | "password" | "two-factor" | "sessions" | "organizations" | "users" | "backup" | "desktop" | "mobile" | "itero" | "platform-admin" | "subscriptions" | "notifications" | "templates" | "statement-layout" | "correspondence-layout" | "invoice-layout" | "deleted-cases";
+type TabKey = "profile" | "password" | "two-factor" | "sessions" | "organizations" | "users" | "backup" | "desktop" | "mobile" | "itero" | "platform-admin" | "subscriptions" | "notifications" | "templates" | "statement-layout" | "correspondence-layout" | "invoice-layout" | "deleted-cases" | "deletion-audit";
 
-const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "two-factor", "sessions", "organizations", "users", "backup", "desktop", "mobile", "itero", "platform-admin", "subscriptions", "notifications", "templates", "statement-layout", "correspondence-layout", "invoice-layout", "deleted-cases"];
+const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "two-factor", "sessions", "organizations", "users", "backup", "desktop", "mobile", "itero", "platform-admin", "subscriptions", "notifications", "templates", "statement-layout", "correspondence-layout", "invoice-layout", "deleted-cases", "deletion-audit"];
 
 function readInitialTab(): TabKey {
   if (typeof window === "undefined") return "profile";
@@ -84,6 +84,7 @@ export default function SettingsPage() {
     { key: "users", label: "Users", icon: ShieldCheck, show: isAdmin },
     { key: "backup", label: "Backup", icon: ShieldCheck, show: isAdmin },
     { key: "deleted-cases", label: "Deleted Cases", icon: Trash2, show: isAdmin },
+    { key: "deletion-audit", label: "Deletion Audit Log", icon: History, show: isAdmin },
     { key: "desktop", label: "Desktop app", icon: Download, show: true },
     { key: "templates", label: "Templates", icon: LayoutList, show: isAdmin },
     { key: "invoice-layout", label: "Invoice layout", icon: LayoutList, show: isAdmin, parentKey: "templates" },
@@ -193,6 +194,7 @@ export default function SettingsPage() {
           {tab === "subscriptions" && isAdmin && <SubscriptionsPanel />}
           {tab === "notifications" && <NotificationsPanel isAdmin={isAdmin} />}
           {tab === "deleted-cases" && isAdmin && <DeletedCasesPanel />}
+          {tab === "deletion-audit" && isAdmin && <DeletionAuditPanel />}
         </div>
       </div>
     </div>
@@ -8932,7 +8934,12 @@ function DeletedCasesPanel() {
                       className={i % 2 === 0 ? "" : "bg-secondary/20"}
                     >
                       <td className="px-3 py-2.5 font-medium text-foreground whitespace-nowrap">
-                        {c.caseNumber}
+                        <div className="flex items-center gap-1.5">
+                          <span>{c.caseNumber}</span>
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300 uppercase tracking-wide">
+                            Deleted
+                          </span>
+                        </div>
                       </td>
                       <td className="py-2.5 text-foreground pr-4">
                         {c.patientFirstName} {c.patientLastName}
@@ -8962,6 +8969,169 @@ function DeletedCasesPanel() {
                       </td>
                     </tr>
                   ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </PanelShell>
+  );
+}
+
+interface DeletionAuditEntry {
+  id: string;
+  action: string;
+  actorName: string;
+  caseCount: number;
+  caseIds: string[];
+  createdAt: string | null;
+}
+
+const DELETION_ACTION_LABELS: Record<string, { label: string; color: string }> = {
+  case_delete_initiated: { label: "Delete initiated", color: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300" },
+  case_delete_wrong_pin: { label: "Wrong PIN", color: "bg-destructive/10 text-destructive" },
+  case_delete_initiate_rate_limited: { label: "Rate limited", color: "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300" },
+  case_soft_deleted: { label: "Deleted", color: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300" },
+};
+
+function DeletionAuditPanel() {
+  const meQuery = useQuery<MeResponse>({
+    queryKey: ["auth", "me"],
+    queryFn: () => apiFetch("/auth/me"),
+    staleTime: 60_000,
+  });
+
+  const adminLabs = useMemo(() => {
+    return (meQuery.data?.memberships ?? []).filter(
+      (m) =>
+        m.organization?.type === "lab" &&
+        m.status === "active" &&
+        (m.role === "admin" || m.role === "owner"),
+    );
+  }, [meQuery.data]);
+
+  const [selectedLabId, setSelectedLabId] = useState<string | null>(null);
+  const effectiveLabId = selectedLabId ?? adminLabs[0]?.organizationId ?? null;
+
+  const auditQuery = useQuery<{ entries: DeletionAuditEntry[] }>({
+    enabled: !!effectiveLabId,
+    queryKey: ["cases", "deletion-audit-log", effectiveLabId],
+    queryFn: () =>
+      apiFetch(`/cases/deletion-audit-log?labOrganizationId=${encodeURIComponent(effectiveLabId!)}&limit=100`),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
+
+  const entries = auditQuery.data?.entries ?? [];
+
+  return (
+    <PanelShell
+      title="Deletion Audit Log"
+      subtitle="A record of who deleted cases, when, and any failed PIN attempts. Updates every 60 seconds."
+    >
+      <div className="flex items-center justify-between mb-2">
+        {adminLabs.length > 1 && (
+          <select
+            value={effectiveLabId ?? ""}
+            onChange={(e) => setSelectedLabId(e.target.value || null)}
+            className="h-9 px-3 rounded-md bg-secondary text-sm border border-border focus:outline-none"
+          >
+            {adminLabs.map((m) => (
+              <option key={m.organizationId} value={m.organizationId}>
+                {m.organization?.name ?? m.organizationId}
+              </option>
+            ))}
+          </select>
+        )}
+        {adminLabs.length <= 1 && <span />}
+        <button
+          type="button"
+          onClick={() => auditQuery.refetch()}
+          disabled={auditQuery.isFetching}
+          className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-secondary text-xs font-medium hover:bg-secondary/80 disabled:opacity-60"
+        >
+          {auditQuery.isFetching ? (
+            <Loader2 size={11} className="animate-spin" />
+          ) : (
+            <RefreshCcw size={11} />
+          )}
+          Refresh
+        </button>
+      </div>
+
+      {auditQuery.isLoading && (
+        <div className="flex items-center gap-2 text-muted-foreground text-sm py-8 justify-center">
+          <Loader2 size={14} className="animate-spin" />
+          Loading…
+        </div>
+      )}
+
+      {auditQuery.isError && (
+        <div className="text-sm text-destructive py-6 text-center">
+          Failed to load audit log.
+        </div>
+      )}
+
+      {!effectiveLabId && !auditQuery.isLoading && (
+        <div className="text-sm text-muted-foreground text-center py-10">
+          No lab selected.
+        </div>
+      )}
+
+      {!auditQuery.isLoading && !auditQuery.isError && effectiveLabId && (
+        <>
+          {entries.length === 0 ? (
+            <div className="text-sm text-muted-foreground text-center py-10">
+              No case deletion events recorded yet.
+            </div>
+          ) : (
+            <div className="border border-border rounded-md overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
+                    <th className="text-left font-medium px-3 py-2">Event</th>
+                    <th className="text-left font-medium py-2">Actor</th>
+                    <th className="text-left font-medium py-2">Cases</th>
+                    <th className="text-left font-medium py-2 pr-3">When</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {entries.map((entry, i) => {
+                    const def = DELETION_ACTION_LABELS[entry.action] ?? {
+                      label: entry.action,
+                      color: "bg-secondary text-muted-foreground",
+                    };
+                    return (
+                      <tr
+                        key={entry.id}
+                        className={i % 2 === 0 ? "" : "bg-secondary/20"}
+                      >
+                        <td className="px-3 py-2.5">
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium ${def.color}`}>
+                            {def.label}
+                          </span>
+                        </td>
+                        <td className="py-2.5 text-foreground pr-4 whitespace-nowrap">
+                          {entry.actorName}
+                        </td>
+                        <td className="py-2.5 text-muted-foreground pr-4">
+                          {entry.caseCount > 0 ? (
+                            <span title={entry.caseIds.join(", ")}>
+                              {entry.caseCount} {entry.caseCount === 1 ? "case" : "cases"}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground/50">—</span>
+                          )}
+                        </td>
+                        <td className="py-2.5 text-muted-foreground text-xs whitespace-nowrap pr-3">
+                          {entry.createdAt
+                            ? new Date(entry.createdAt).toLocaleString()
+                            : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

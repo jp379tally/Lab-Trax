@@ -6,6 +6,7 @@ import { and, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-
 import { z } from "zod";
 import { db } from "@workspace/db";
 import {
+  auditLogs,
   caseAttachments,
   caseEvents,
   caseLocations,
@@ -2250,6 +2251,75 @@ router.get(
       .orderBy(desc(cases.deletedAt));
 
     return ok(res, { cases: deleted });
+  })
+);
+
+// ─── Deletion audit log (admin only) ─────────────────────────────────────────
+// Returns audit log entries for case-deletion-related actions so admins can
+// see who deleted what, when, and whether failed PIN attempts occurred.
+
+const DELETION_AUDIT_ACTIONS = [
+  "case_delete_initiated",
+  "case_delete_wrong_pin",
+  "case_delete_initiate_rate_limited",
+  "case_soft_deleted",
+] as const;
+
+router.get(
+  "/deletion-audit-log",
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId as string;
+    const labOrganizationId = String(req.query.labOrganizationId ?? "").trim();
+    if (!labOrganizationId) {
+      throw new HttpError(400, "labOrganizationId is required.");
+    }
+    await requireAnyRole(userId, labOrganizationId, ADMIN_ROLES);
+
+    const limit = Math.min(Number(req.query.limit ?? 100), 500);
+
+    const entries = await db
+      .select({
+        id: auditLogs.id,
+        action: auditLogs.action,
+        actorUserId: auditLogs.userId,
+        actorUsername: users.username,
+        actorFirstName: users.firstName,
+        actorLastName: users.lastName,
+        metadataJson: auditLogs.metadataJson,
+        createdAt: auditLogs.createdAt,
+      })
+      .from(auditLogs)
+      .leftJoin(users, eq(auditLogs.userId, users.id))
+      .where(
+        and(
+          eq(auditLogs.organizationId, labOrganizationId),
+          inArray(auditLogs.action, [...DELETION_AUDIT_ACTIONS]),
+        ),
+      )
+      .orderBy(desc(auditLogs.createdAt))
+      .limit(limit);
+
+    const mapped = entries.map((e) => {
+      const meta = (e.metadataJson ?? {}) as Record<string, unknown>;
+      const caseIds: string[] = Array.isArray(meta["caseIds"])
+        ? (meta["caseIds"] as string[])
+        : [];
+      const actorName =
+        [e.actorFirstName, e.actorLastName].filter(Boolean).join(" ").trim() ||
+        e.actorUsername ||
+        e.actorUserId ||
+        "Unknown";
+      return {
+        id: e.id,
+        action: e.action,
+        actorName,
+        caseCount: caseIds.length,
+        caseIds,
+        createdAt: e.createdAt,
+      };
+    });
+
+    return ok(res, { entries: mapped });
   })
 );
 
