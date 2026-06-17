@@ -55,6 +55,7 @@ import type {
   CreateLocationInput,
   CreateOrganizationInput,
   CreateVendorInput,
+  CreateVocabularyInput,
   CurrentUserResult,
   DeleteLocation200,
   DeletedResult,
@@ -78,6 +79,7 @@ import type {
   GetLocationsParams,
   GetPatientSimilarityParams,
   GetRxPracticeAliasParams,
+  GetVocabularyParams,
   HealthStatus,
   ImportCaseFromIteroRxBody,
   ImportCaseFromIteroZipBody,
@@ -172,6 +174,8 @@ import type {
   VerificationVerifyResult,
   VerifyEmailCodeInput,
   VerifyPhoneCodeInput,
+  VocabularyItemResult,
+  VocabularyListResult,
 } from "./api.schemas";
 
 import { customFetch } from "../custom-fetch";
@@ -517,6 +521,186 @@ export const useCreateLocation = <
   TContext
 > => {
   return useMutation(getCreateLocationMutationOptions(options));
+};
+
+/**
+ * @summary List vocabulary items for a lab org (defaults + custom)
+ */
+export const getGetVocabularyUrl = (params: GetVocabularyParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/vocabulary?${stringifiedParams}`
+    : `/api/vocabulary`;
+};
+
+export const getVocabulary = async (
+  params: GetVocabularyParams,
+  options?: RequestInit,
+): Promise<VocabularyListResult> => {
+  return customFetch<VocabularyListResult>(getGetVocabularyUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetVocabularyQueryKey = (params?: GetVocabularyParams) => {
+  return [`/api/vocabulary`, ...(params ? [params] : [])] as const;
+};
+
+export const getGetVocabularyQueryOptions = <
+  TData = Awaited<ReturnType<typeof getVocabulary>>,
+  TError = ErrorType<unknown>,
+>(
+  params: GetVocabularyParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getVocabulary>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetVocabularyQueryKey(params);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getVocabulary>>> = ({
+    signal,
+  }) => getVocabulary(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getVocabulary>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetVocabularyQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getVocabulary>>
+>;
+export type GetVocabularyQueryError = ErrorType<unknown>;
+
+/**
+ * @summary List vocabulary items for a lab org (defaults + custom)
+ */
+
+export function useGetVocabulary<
+  TData = Awaited<ReturnType<typeof getVocabulary>>,
+  TError = ErrorType<unknown>,
+>(
+  params: GetVocabularyParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getVocabulary>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetVocabularyQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Add a custom vocabulary item (deduped case-insensitively)
+ */
+export const getCreateVocabularyItemUrl = () => {
+  return `/api/vocabulary`;
+};
+
+export const createVocabularyItem = async (
+  createVocabularyInput: CreateVocabularyInput,
+  options?: RequestInit,
+): Promise<VocabularyItemResult> => {
+  return customFetch<VocabularyItemResult>(getCreateVocabularyItemUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(createVocabularyInput),
+  });
+};
+
+export const getCreateVocabularyItemMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createVocabularyItem>>,
+    TError,
+    { data: BodyType<CreateVocabularyInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof createVocabularyItem>>,
+  TError,
+  { data: BodyType<CreateVocabularyInput> },
+  TContext
+> => {
+  const mutationKey = ["createVocabularyItem"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof createVocabularyItem>>,
+    { data: BodyType<CreateVocabularyInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return createVocabularyItem(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type CreateVocabularyItemMutationResult = NonNullable<
+  Awaited<ReturnType<typeof createVocabularyItem>>
+>;
+export type CreateVocabularyItemMutationBody = BodyType<CreateVocabularyInput>;
+export type CreateVocabularyItemMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Add a custom vocabulary item (deduped case-insensitively)
+ */
+export const useCreateVocabularyItem = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createVocabularyItem>>,
+    TError,
+    { data: BodyType<CreateVocabularyInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof createVocabularyItem>>,
+  TError,
+  { data: BodyType<CreateVocabularyInput> },
+  TContext
+> => {
+  return useMutation(getCreateVocabularyItemMutationOptions(options));
 };
 
 /**

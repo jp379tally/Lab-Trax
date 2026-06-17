@@ -64,6 +64,45 @@ export const CreateLocationBody = zod.object({
 });
 
 /**
+ * @summary List vocabulary items for a lab org (defaults + custom)
+ */
+export const GetVocabularyQueryParams = zod.object({
+  kind: zod.enum(["material", "shade", "restoration_type"]),
+  labOrganizationId: zod.coerce.string(),
+});
+
+export const GetVocabularyResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.array(
+    zod.object({
+      id: zod.string(),
+      kind: zod.string(),
+      value: zod.string(),
+      isDefault: zod.boolean(),
+    }),
+  ),
+});
+
+/**
+ * @summary Add a custom vocabulary item (deduped case-insensitively)
+ */
+export const CreateVocabularyItemBody = zod.object({
+  kind: zod.enum(["material", "shade", "restoration_type"]),
+  value: zod.string(),
+  labOrganizationId: zod.string(),
+});
+
+export const CreateVocabularyItemResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.object({
+    id: zod.string(),
+    kind: zod.string(),
+    value: zod.string(),
+    isDefault: zod.boolean(),
+  }),
+});
+
+/**
  * @summary Update a lab location
  */
 export const UpdateLocationParams = zod.object({

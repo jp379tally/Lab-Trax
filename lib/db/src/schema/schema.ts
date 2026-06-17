@@ -2215,6 +2215,43 @@ export const labLocations = pgTable(
   }),
 );
 
+/**
+ * Per-lab managed vocabulary for restoration-specific fields (material,
+ * shade, restoration_type). Labs start with a built-in default list served
+ * by the API; custom additions saved here extend that list for all users in
+ * the same lab. Case-insensitive dedup is enforced at the application layer
+ * (SELECT before INSERT) rather than via a DB functional index.
+ */
+export const labVocabulary = pgTable(
+  "lab_vocabulary",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    labOrganizationId: varchar("lab_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(), // 'material' | 'shade' | 'restoration_type'
+    value: text("value").notNull(),
+    createdByUserId: varchar("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => ({
+    orgKindIdx: index("lab_vocabulary_org_kind_idx").on(
+      table.labOrganizationId,
+      table.kind,
+    ),
+    orgKindValueUnique: uniqueIndex("lab_vocabulary_org_kind_value_uniq").on(
+      table.labOrganizationId,
+      table.kind,
+      table.value,
+    ),
+  }),
+);
+
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 export type LabCaseRow = typeof labCases.$inferSelect;
@@ -2226,3 +2263,4 @@ export type ConversationParticipant = typeof conversationParticipants.$inferSele
 export type Message = typeof messages.$inferSelect;
 export type AiChatHistoryRow = typeof aiChatHistory.$inferSelect;
 export type LabLocation = typeof labLocations.$inferSelect;
+export type LabVocabularyRow = typeof labVocabulary.$inferSelect;

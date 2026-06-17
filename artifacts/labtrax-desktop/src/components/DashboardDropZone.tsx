@@ -23,6 +23,7 @@ import type { MediaUploadResult } from "@/lib/upload-media-file";
 import { useAuth } from "@/lib/auth-context";
 import { formatPhone } from "@/lib/format";
 import { DoctorNamePicker } from "./DoctorNamePicker";
+import { FieldCombobox } from "./FieldCombobox";
 
 
 interface LegacyCaseLite {
@@ -546,6 +547,59 @@ export function DashboardDropZone() {
     [orgsQuery.data],
   );
   const labOrg = labOrgs[0] ?? null;
+
+  const materialVocabQuery = useQuery({
+    queryKey: ["vocabulary", "material", labOrg?.id],
+    queryFn: () =>
+      apiFetch<Array<{ id: string; value: string; isDefault: boolean }>>(
+        `/vocabulary?kind=material&labOrganizationId=${encodeURIComponent(labOrg!.id)}`,
+      ),
+    enabled: !!labOrg?.id,
+    staleTime: 120_000,
+  });
+  const dropZoneMaterialSuggestions = (materialVocabQuery.data ?? []).map((v) => v.value);
+
+  const shadeVocabQuery = useQuery({
+    queryKey: ["vocabulary", "shade", labOrg?.id],
+    queryFn: () =>
+      apiFetch<Array<{ id: string; value: string; isDefault: boolean }>>(
+        `/vocabulary?kind=shade&labOrganizationId=${encodeURIComponent(labOrg!.id)}`,
+      ),
+    enabled: !!labOrg?.id,
+    staleTime: 120_000,
+  });
+  const dropZoneShadeSuggestions = (shadeVocabQuery.data ?? []).map((v) => v.value);
+
+  const restorationTypeVocabQuery = useQuery({
+    queryKey: ["vocabulary", "restoration_type", labOrg?.id],
+    queryFn: () =>
+      apiFetch<Array<{ id: string; value: string; isDefault: boolean }>>(
+        `/vocabulary?kind=restoration_type&labOrganizationId=${encodeURIComponent(labOrg!.id)}`,
+      ),
+    enabled: !!labOrg?.id,
+    staleTime: 120_000,
+  });
+  const dropZoneRestorationTypeSuggestions = (restorationTypeVocabQuery.data ?? []).map((v) => v.value);
+
+  async function dropZoneCreateVocabItem(
+    kind: "material" | "shade" | "restoration_type",
+    value: string,
+  ): Promise<string | null> {
+    if (!labOrg?.id) return null;
+    try {
+      const result = await apiFetch<{ id: string; value: string; isDefault: boolean }>(
+        "/vocabulary",
+        {
+          method: "POST",
+          body: JSON.stringify({ kind, value, labOrganizationId: labOrg.id }),
+        },
+      );
+      qc.invalidateQueries({ queryKey: ["vocabulary", kind, labOrg.id] });
+      return result.value;
+    } catch {
+      return null;
+    }
+  }
 
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   // Multi-file AI ingestion queue. When 2+ AI-readable files are dropped at
@@ -2029,19 +2083,32 @@ export function DashboardDropZone() {
               setRxDraft({ ...r, toothIndices: e.target.value })
             }
           />
-          <input
-            className={inputCls}
-            placeholder="Material"
-            value={r.material || ""}
-            onChange={(e) =>
-              setRxDraft({ ...r, material: e.target.value })
-            }
+          <FieldCombobox
+            value={r.caseType || ""}
+            suggestions={dropZoneRestorationTypeSuggestions}
+            onChange={(t) => setRxDraft({ ...r, caseType: t })}
+            onCreate={(v) => dropZoneCreateVocabItem("restoration_type", v)}
+            placeholder="Restoration type"
+            addNewLabel="Add restoration type"
+            size="sm"
           />
-          <input
-            className={inputCls}
-            placeholder="Shade"
+          <FieldCombobox
+            value={r.material || ""}
+            suggestions={dropZoneMaterialSuggestions}
+            onChange={(m) => setRxDraft({ ...r, material: m })}
+            onCreate={(v) => dropZoneCreateVocabItem("material", v)}
+            placeholder="Material"
+            addNewLabel="Add material"
+            size="sm"
+          />
+          <FieldCombobox
             value={r.shade || ""}
-            onChange={(e) => setRxDraft({ ...r, shade: e.target.value })}
+            suggestions={dropZoneShadeSuggestions}
+            onChange={(s) => setRxDraft({ ...r, shade: s })}
+            onCreate={(v) => dropZoneCreateVocabItem("shade", v)}
+            placeholder="Shade"
+            addNewLabel="Add shade"
+            size="sm"
           />
           <label htmlFor="rx-due-date" className="flex flex-col gap-0.5">
             <span className="text-xs text-muted-foreground px-0.5">

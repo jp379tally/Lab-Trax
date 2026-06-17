@@ -2020,10 +2020,56 @@ export interface UpdateLocationInput {
   sortOrder?: number;
 }
 
+export interface VocabularyItem {
+  id: string;
+  kind: string;
+  value: string;
+  isDefault: boolean;
+}
+
+export interface VocabularyListResult {
+  ok: boolean;
+  data: VocabularyItem[];
+}
+
+export interface VocabularyItemResult {
+  ok: boolean;
+  data: VocabularyItem;
+}
+
+export type CreateVocabularyInputKind =
+  (typeof CreateVocabularyInputKind)[keyof typeof CreateVocabularyInputKind];
+
+export const CreateVocabularyInputKind = {
+  material: "material",
+  shade: "shade",
+  restoration_type: "restoration_type",
+} as const;
+
+export interface CreateVocabularyInput {
+  kind: CreateVocabularyInputKind;
+  value: string;
+  labOrganizationId: string;
+}
+
 export type GetLocationsParams = {
   organizationId: string;
   activeOnly?: boolean;
 };
+
+export type GetVocabularyParams = {
+  kind: GetVocabularyKind;
+  labOrganizationId: string;
+};
+
+export type GetVocabularyKind =
+  (typeof GetVocabularyKind)[keyof typeof GetVocabularyKind];
+
+export const GetVocabularyKind = {
+  material: "material",
+  shade: "shade",
+  restoration_type: "restoration_type",
+} as const;
 
 export type DeleteLocation200Data = {
   deleted: boolean;

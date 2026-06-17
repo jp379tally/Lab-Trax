@@ -40,6 +40,7 @@ import QRCodeSVG from "react-qr-code";
 import { apiFetch, getAccessToken, getApiOrigin } from "@/lib/api";
 import { uploadMediaFile } from "@/lib/upload-media-file";
 import { DoctorNamePicker } from "@/components/DoctorNamePicker";
+import { FieldCombobox } from "@/components/FieldCombobox";
 import { setNavBlocker } from "@/lib/nav-guard";
 import { AuthedImage, AuthedVideo, isSameApiOrigin } from "@/components/AuthedMedia";
 import type {
@@ -2798,6 +2799,67 @@ export function CaseDrawer({
   });
   const billableItems = billableItemsQuery.data ?? [];
 
+  const materialVocabQuery = useQuery({
+    queryKey: ["vocabulary", "material", labCase.labOrganizationId],
+    queryFn: () =>
+      apiFetch<Array<{ id: string; value: string; isDefault: boolean }>>(
+        `/vocabulary?kind=material&labOrganizationId=${encodeURIComponent(labCase.labOrganizationId)}`,
+      ),
+    enabled: !!labCase.labOrganizationId,
+    staleTime: 120_000,
+  });
+  const materialSuggestions = (materialVocabQuery.data ?? []).map((v) => v.value);
+
+  const shadeVocabQuery = useQuery({
+    queryKey: ["vocabulary", "shade", labCase.labOrganizationId],
+    queryFn: () =>
+      apiFetch<Array<{ id: string; value: string; isDefault: boolean }>>(
+        `/vocabulary?kind=shade&labOrganizationId=${encodeURIComponent(labCase.labOrganizationId)}`,
+      ),
+    enabled: !!labCase.labOrganizationId,
+    staleTime: 120_000,
+  });
+  const shadeSuggestions = (shadeVocabQuery.data ?? []).map((v) => v.value);
+
+  const restorationTypeVocabQuery = useQuery({
+    queryKey: ["vocabulary", "restoration_type", labCase.labOrganizationId],
+    queryFn: () =>
+      apiFetch<Array<{ id: string; value: string; isDefault: boolean }>>(
+        `/vocabulary?kind=restoration_type&labOrganizationId=${encodeURIComponent(labCase.labOrganizationId)}`,
+      ),
+    enabled: !!labCase.labOrganizationId,
+    staleTime: 120_000,
+  });
+  const restorationTypeSuggestions = (() => {
+    const fromVocab = (restorationTypeVocabQuery.data ?? []).map((v) => v.value);
+    const extra = billableItems
+      .map((it) => it.name)
+      .filter(
+        (n) => !fromVocab.some((s) => s.toLowerCase() === n.toLowerCase()),
+      );
+    return [...fromVocab, ...extra];
+  })();
+
+  async function createVocabItem(
+    kind: "material" | "shade" | "restoration_type",
+    value: string,
+  ): Promise<string | null> {
+    if (!labCase.labOrganizationId) return null;
+    try {
+      const result = await apiFetch<{ id: string; value: string; isDefault: boolean }>(
+        "/vocabulary",
+        {
+          method: "POST",
+          body: JSON.stringify({ kind, value, labOrganizationId: labCase.labOrganizationId }),
+        },
+      );
+      qc.invalidateQueries({ queryKey: ["vocabulary", kind, labCase.labOrganizationId] });
+      return result.value;
+    } catch {
+      return null;
+    }
+  }
+
   function lookupBillablePrice(name: string): string {
     if (!name) return "";
     const match = billableItems.find(
@@ -4920,41 +4982,45 @@ export function CaseDrawer({
                           <div className="grid grid-cols-2 gap-3">
                             <div>
                               <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Restorative Type</label>
-                              <select
-                                value={editRxType}
-                                onChange={(e) => setEditRxType(e.target.value)}
-                                className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
-                              >
-                                {RESTORATION_TYPES.map((t) => (
-                                  <option key={t} value={t}>{t}</option>
-                                ))}
-                              </select>
+                              <div className="mt-1">
+                                <FieldCombobox
+                                  value={editRxType}
+                                  suggestions={restorationTypeSuggestions}
+                                  onChange={setEditRxType}
+                                  onCreate={(v) => createVocabItem("restoration_type", v)}
+                                  placeholder="Select type…"
+                                  addNewLabel="Add restoration type"
+                                  inputClassName="h-9 focus:ring-primary focus:border-primary"
+                                />
+                              </div>
                             </div>
                             <div>
                               <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Material</label>
-                              <input
-                                list="edit-rx-materials"
-                                value={editRxMaterial}
-                                onChange={(e) => setEditRxMaterial(e.target.value)}
-                                placeholder="e.g. Zirconia"
-                                className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
-                              />
-                              <datalist id="edit-rx-materials">
-                                {MATERIALS.map((m) => <option key={m} value={m} />)}
-                              </datalist>
+                              <div className="mt-1">
+                                <FieldCombobox
+                                  value={editRxMaterial}
+                                  suggestions={materialSuggestions}
+                                  onChange={setEditRxMaterial}
+                                  onCreate={(v) => createVocabItem("material", v)}
+                                  placeholder="e.g. Zirconia"
+                                  addNewLabel="Add material"
+                                  inputClassName="h-9 focus:ring-primary focus:border-primary"
+                                />
+                              </div>
                             </div>
                             <div>
                               <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Shade</label>
-                              <input
-                                list="edit-rx-shades"
-                                value={editRxShade}
-                                onChange={(e) => setEditRxShade(e.target.value)}
-                                placeholder="e.g. A2"
-                                className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
-                              />
-                              <datalist id="edit-rx-shades">
-                                {SHADES.map((s) => <option key={s} value={s} />)}
-                              </datalist>
+                              <div className="mt-1">
+                                <FieldCombobox
+                                  value={editRxShade}
+                                  suggestions={shadeSuggestions}
+                                  onChange={setEditRxShade}
+                                  onCreate={(v) => createVocabItem("shade", v)}
+                                  placeholder="e.g. A2"
+                                  addNewLabel="Add shade"
+                                  inputClassName="h-9 focus:ring-primary focus:border-primary"
+                                />
+                              </div>
                             </div>
                             <div>
                               <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Tooth Number(s)</label>
@@ -5272,77 +5338,54 @@ export function CaseDrawer({
                     <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
                       Restoration Type *
                     </label>
-                    <select
-                      value={restForm.restorationType}
-                      onChange={(e) => {
-                        const type = e.target.value;
-                        const price = lookupBillablePrice(type);
-                        setRestForm((f) => ({
-                          ...f,
-                          restorationType: type,
-                          unitPrice: price || f.unitPrice,
-                        }));
-                      }}
-                      className="mt-1 w-full h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary"
-                    >
-                      <option value="">Select type…</option>
-                      {RESTORATION_TYPES.map((t) => (
-                        <option key={t} value={t}>{t}</option>
-                      ))}
-                      {billableItems
-                        .filter(
-                          (it) =>
-                            !RESTORATION_TYPES.some(
-                              (rt) => rt.toLowerCase() === it.name.toLowerCase(),
-                            ),
-                        )
-                        .map((it) => (
-                          <option key={it.id} value={it.name}>
-                            {it.unitPrice != null
-                              ? `${it.name} — $${Number(it.unitPrice).toFixed(2)}`
-                              : it.name}
-                          </option>
-                        ))}
-                    </select>
-                    {restForm.restorationType === "Other" && (
-                      <input
-                        placeholder="Describe restoration type…"
-                        value={restForm.customType}
-                        onChange={(e) => setRestForm((f) => ({ ...f, customType: e.target.value }))}
-                        className="mt-2 w-full h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary"
+                    <div className="mt-1">
+                      <FieldCombobox
+                        value={restForm.restorationType}
+                        suggestions={restorationTypeSuggestions}
+                        onChange={(type) => {
+                          const price = lookupBillablePrice(type);
+                          setRestForm((f) => ({
+                            ...f,
+                            restorationType: type,
+                            unitPrice: price || f.unitPrice,
+                          }));
+                        }}
+                        onCreate={(v) => createVocabItem("restoration_type", v)}
+                        placeholder="Select type…"
+                        addNewLabel="Add restoration type"
                       />
-                    )}
+                    </div>
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
                         Material
                       </label>
-                      <select
-                        value={restForm.material}
-                        onChange={(e) => setRestForm((f) => ({ ...f, material: e.target.value }))}
-                        className="mt-1 w-full h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary"
-                      >
-                        <option value="">Select material…</option>
-                        {MATERIALS.map((m) => (
-                          <option key={m} value={m}>{m}</option>
-                        ))}
-                      </select>
+                      <div className="mt-1">
+                        <FieldCombobox
+                          value={restForm.material}
+                          suggestions={materialSuggestions}
+                          onChange={(m) => setRestForm((f) => ({ ...f, material: m }))}
+                          onCreate={(v) => createVocabItem("material", v)}
+                          placeholder="Select material…"
+                          addNewLabel="Add material"
+                        />
+                      </div>
                     </div>
                     <div>
                       <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
                         Shade
                       </label>
-                      <select
-                        value={restForm.shade}
-                        onChange={(e) => setRestForm((f) => ({ ...f, shade: e.target.value }))}
-                        className="mt-1 w-full h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary"
-                      >
-                        <option value="">None</option>
-                        {SHADES.map((s) => (
-                          <option key={s} value={s}>{s}</option>
-                        ))}
-                      </select>
+                      <div className="mt-1">
+                        <FieldCombobox
+                          value={restForm.shade}
+                          suggestions={shadeSuggestions}
+                          onChange={(s) => setRestForm((f) => ({ ...f, shade: s }))}
+                          onCreate={(v) => createVocabItem("shade", v)}
+                          placeholder="None"
+                          addNewLabel="Add shade"
+                        />
+                      </div>
                     </div>
                   </div>
                   <div>

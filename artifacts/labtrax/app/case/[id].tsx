@@ -1242,6 +1242,7 @@ export default function CaseDetailScreen() {
             highlighted={highlightedTeeth}
             teethLabel={formatRxTeethLabel(rxSummary)}
             caseId={c.id}
+            labOrganizationId={c.labOrganizationId ?? c.organizationId ?? null}
             canEdit={canEdit}
             onSaved={() => caseQuery.refetch()}
             styles={styles}
@@ -2155,6 +2156,7 @@ function RestorationsSection({
   highlighted,
   teethLabel,
   caseId,
+  labOrganizationId,
   canEdit,
   onSaved,
   styles,
@@ -2164,6 +2166,7 @@ function RestorationsSection({
   highlighted: Set<string>;
   teethLabel: string;
   caseId: string;
+  labOrganizationId?: string | null;
   canEdit: boolean;
   onSaved: () => void | Promise<unknown>;
   styles: Styles;
@@ -2174,6 +2177,36 @@ function RestorationsSection({
   const updateRestoration = useUpdateCaseRestoration();
   const [activeTooth, setActiveTooth] = useState<string | null>(null);
   const [sheetError, setSheetError] = useState<string | null>(null);
+
+  // Vocabulary: fetch lab-specific materials and shades for the ToothActionSheet.
+  const labOrgIdForVocab = labOrganizationId ?? null;
+  type VocabItem = { id: string; value: string; isDefault: boolean };
+  const materialVocabQuery = useQuery({
+    queryKey: ["vocabulary", "material", labOrgIdForVocab],
+    queryFn: async () => {
+      const res = await resilientFetch(
+        `/api/vocabulary?kind=material&labOrganizationId=${encodeURIComponent(labOrgIdForVocab!)}`,
+      );
+      const body = (await res.json()) as { data: VocabItem[] };
+      return body.data ?? [];
+    },
+    enabled: !!labOrgIdForVocab,
+    staleTime: 120_000,
+  });
+  const shadeVocabQuery = useQuery({
+    queryKey: ["vocabulary", "shade", labOrgIdForVocab],
+    queryFn: async () => {
+      const res = await resilientFetch(
+        `/api/vocabulary?kind=shade&labOrganizationId=${encodeURIComponent(labOrgIdForVocab!)}`,
+      );
+      const body = (await res.json()) as { data: VocabItem[] };
+      return body.data ?? [];
+    },
+    enabled: !!labOrgIdForVocab,
+    staleTime: 120_000,
+  });
+  const vocabMaterials = (materialVocabQuery.data ?? []).map((v) => v.value);
+  const vocabShades = (shadeVocabQuery.data ?? []).map((v) => v.value);
   const crownTeeth = useMemo(() => {
     const set = new Set<string>();
     for (const r of restorations) {
@@ -2314,6 +2347,8 @@ function RestorationsSection({
         setSheetError(null);
       }}
       onConfirm={handleToothAction}
+      vocabularyMaterials={vocabMaterials.length > 0 ? vocabMaterials : undefined}
+      vocabularyShades={vocabShades.length > 0 ? vocabShades : undefined}
     />
   ) : null;
 

@@ -15,7 +15,7 @@ import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import type { ToothId } from "@/lib/rx-summary";
 
-const CROWN_MATERIALS = [
+const DEFAULT_CROWN_MATERIALS = [
   "Zirconia",
   "PFM",
   "E.max",
@@ -25,16 +25,16 @@ const CROWN_MATERIALS = [
   "Metal",
   "PMMA",
   "Other",
-] as const;
+];
 
-const VITA_SHADES = [
+const DEFAULT_VITA_SHADES = [
   "A1", "A2", "A3", "A3.5", "A4",
   "B1", "B2", "B3", "B4",
   "C1", "C2", "C3", "C4",
   "D2", "D3", "D4",
   "OM1", "OM2", "OM3",
   "1M1", "1M2", "1M3",
-] as const;
+];
 
 export type ToothActionPayload =
   | {
@@ -73,6 +73,10 @@ interface Props {
   error?: string | null;
   onClose: () => void;
   onConfirm: (payload: ToothActionPayload) => void;
+  /** Lab-specific vocabulary for materials (merged with built-in defaults). */
+  vocabularyMaterials?: string[];
+  /** Lab-specific vocabulary for shades (merged with built-in defaults). */
+  vocabularyShades?: string[];
 }
 
 /**
@@ -91,6 +95,8 @@ export function ToothActionSheet({
   error,
   onClose,
   onConfirm,
+  vocabularyMaterials,
+  vocabularyShades,
 }: Props) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -101,6 +107,29 @@ export function ToothActionSheet({
   const [shade, setShade] = useState("");
   const [customShade, setCustomShade] = useState("");
   const [isCustomShade, setIsCustomShade] = useState(false);
+
+  // Merge lab vocabulary with built-in defaults, deduping case-insensitively.
+  const mergedMaterials = useMemo(() => {
+    const base = [...DEFAULT_CROWN_MATERIALS];
+    if (vocabularyMaterials) {
+      const baseLower = new Set(base.map((m) => m.toLowerCase()));
+      for (const m of vocabularyMaterials) {
+        if (!baseLower.has(m.toLowerCase())) base.push(m);
+      }
+    }
+    return base;
+  }, [vocabularyMaterials]);
+
+  const mergedShades = useMemo(() => {
+    const base = [...DEFAULT_VITA_SHADES];
+    if (vocabularyShades) {
+      const baseLower = new Set(base.map((s) => s.toLowerCase()));
+      for (const s of vocabularyShades) {
+        if (!baseLower.has(s.toLowerCase())) base.push(s);
+      }
+    }
+    return base;
+  }, [vocabularyShades]);
 
   function resetWizard() {
     setMaterial("");
@@ -326,7 +355,7 @@ export function ToothActionSheet({
               <>
                 <Text style={styles.prompt}>Select a material for the crown on tooth {toothId}:</Text>
                 <View style={styles.optionWrap}>
-                  {CROWN_MATERIALS.map((m) => {
+                  {mergedMaterials.map((m) => {
                     const on = material === m;
                     return (
                       <Pressable
@@ -359,7 +388,7 @@ export function ToothActionSheet({
                   Choose a new material for tooth {toothId}:
                 </Text>
                 <View style={styles.optionWrap}>
-                  {CROWN_MATERIALS.map((m) => {
+                  {mergedMaterials.map((m) => {
                     const on = material === m;
                     return (
                       <Pressable
@@ -395,6 +424,7 @@ export function ToothActionSheet({
                 submitting={submitting}
                 colors={colors}
                 styles={styles}
+                shades={mergedShades}
                 onShadeSelect={(s) => { setShade(s); setIsCustomShade(false); setCustomShade(""); }}
                 onCustomShadeToggle={() => { setIsCustomShade(true); setShade(""); }}
                 onCustomShadeChange={setCustomShade}
@@ -415,6 +445,7 @@ export function ToothActionSheet({
                 submitting={submitting}
                 colors={colors}
                 styles={styles}
+                shades={mergedShades}
                 onShadeSelect={(s) => { setShade(s); setIsCustomShade(false); setCustomShade(""); }}
                 onCustomShadeToggle={() => { setIsCustomShade(true); setShade(""); }}
                 onCustomShadeChange={setCustomShade}
@@ -441,6 +472,7 @@ interface ShadeStepProps {
   submitting: boolean;
   colors: ThemeColors;
   styles: ReturnType<typeof makeStyles>;
+  shades: string[];
   onShadeSelect: (s: string) => void;
   onCustomShadeToggle: () => void;
   onCustomShadeChange: (v: string) => void;
@@ -457,6 +489,7 @@ function ShadeStep({
   submitting,
   colors,
   styles,
+  shades,
   onShadeSelect,
   onCustomShadeToggle,
   onCustomShadeChange,
@@ -471,7 +504,7 @@ function ShadeStep({
         Select a shade <Text style={styles.muted}>(optional)</Text>:
       </Text>
       <View style={styles.optionWrap}>
-        {VITA_SHADES.map((s) => {
+        {shades.map((s) => {
           const on = !isCustomShade && shade === s;
           return (
             <Pressable

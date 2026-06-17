@@ -12,6 +12,8 @@ tags:
     description: Health operations
   - name: locations
     description: Case location (station) operations (LabTrax)
+  - name: vocabulary
+    description: Lab vocabulary (material, shade, restoration type) operations (LabTrax)
   - name: ai
     description: AI assistant operations (LabTrax)
   - name: cases
@@ -101,6 +103,52 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LabLocationResult"
+  /vocabulary:
+    get:
+      operationId: getVocabulary
+      tags: [vocabulary]
+      summary: List vocabulary items for a lab org (defaults + custom)
+      parameters:
+        - in: query
+          name: kind
+          required: true
+          schema:
+            type: string
+            enum: [material, shade, restoration_type]
+        - in: query
+          name: labOrganizationId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VocabularyListResult"
+    post:
+      operationId: createVocabularyItem
+      tags: [vocabulary]
+      summary: Add a custom vocabulary item (deduped case-insensitively)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateVocabularyInput"
+      responses:
+        "200":
+          description: Existing item (default or prior custom)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VocabularyItemResult"
+        "201":
+          description: Newly created item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VocabularyItemResult"
   /locations/{id}:
     patch:
       operationId: updateLocation
@@ -5057,4 +5105,37 @@ components:
         code: { type: string }
         isActive: { type: boolean }
         sortOrder: { type: integer }
+    VocabularyItem:
+      type: object
+      required: [id, kind, value, isDefault]
+      properties:
+        id: { type: string }
+        kind: { type: string }
+        value: { type: string }
+        isDefault: { type: boolean }
+    VocabularyListResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/VocabularyItem"
+    VocabularyItemResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          $ref: "#/components/schemas/VocabularyItem"
+    CreateVocabularyInput:
+      type: object
+      required: [kind, value, labOrganizationId]
+      properties:
+        kind:
+          type: string
+          enum: [material, shade, restoration_type]
+        value: { type: string }
+        labOrganizationId: { type: string }
 
