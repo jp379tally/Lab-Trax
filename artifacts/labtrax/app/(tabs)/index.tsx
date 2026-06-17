@@ -36,6 +36,7 @@ import {
 import { StatusBadge, type BadgeVariant } from "@/components/ui/StatusBadge";
 import { CASE_STATIONS } from "@/lib/case-stations";
 import { resilientFetch } from "@/lib/query-client";
+import { extractLookupCase } from "@/lib/barcode-lookup";
 import { useMe, primaryLabOrgId } from "@/lib/auth-me";
 
 type DueFilter = "all" | "today" | "tomorrow" | "custom";
@@ -200,8 +201,8 @@ export default function CasesListScreen() {
         return;
       }
 
-      const body = (await res.json()) as { case?: { id?: string } };
-      const caseId = body?.case?.id;
+      const body = await res.json();
+      const caseId = extractLookupCase(body)?.id;
       if (!caseId) {
         setScanError("No case found for that pan.");
         setScanScanned(false);

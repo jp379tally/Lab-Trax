@@ -20,6 +20,7 @@ import {
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { resilientFetch } from "@/lib/query-client";
+import { extractLookupCase } from "@/lib/barcode-lookup";
 import { CASE_STATIONS } from "@/lib/case-stations";
 import { useMe, primaryLabOrgId, editableLabMemberships } from "@/lib/auth-me";
 import { getJson } from "@/lib/read-api";
@@ -205,16 +206,8 @@ export default function BatchLocateScreen() {
           return;
         }
 
-        const body = (await res.json()) as {
-          case?: {
-            id?: string;
-            patientFirstName?: string | null;
-            patientLastName?: string | null;
-            caseNumber?: string | null;
-            status?: string | null;
-          };
-        };
-        const c = body?.case;
+        const body = await res.json();
+        const c = extractLookupCase(body);
         if (!c?.id) {
           showNotice("not_found", trimmed);
           return;

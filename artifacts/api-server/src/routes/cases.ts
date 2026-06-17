@@ -3870,8 +3870,85 @@ router.get(
       ),
     });
 
-    if (!found) throw new HttpError(404, "No case found with that barcode.");
-    return ok(res, { case: found });
+    if (found) return ok(res, { case: found });
+
+    // Fall back to legacy mobile cases (`lab_cases`). Their barcode lives in
+    // `case_data.assignedBarcode`, which the cases list surfaces as
+    // `casePanBarcode` — but this precise-lookup route previously only checked
+    // canonical `cases`, so scanning (or manually entering) a barcode that
+    // belongs to a mobile-created case always 404'd even though the case is
+    // plainly visible in the list.
+    //
+    // The `LIKE` clause is only a prefilter to avoid loading every legacy blob
+    // for the org; the authoritative match is the exact-string comparison in
+    // JS below. (Over-matching from any stray LIKE wildcard in `code` is
+    // harmless — the exact compare filters it out — and the prefilter can never
+    // under-match an app-written JSON blob.)
+    const barcodeNeedle = `%"assignedBarcode":${JSON.stringify(code)}%`;
+    const legacyCandidates = await db
+      .select()
+      .from(labCases)
+      .where(
+        and(
+          isNull(labCases.deletedAt),
+          eq(labCases.organizationId, labOrganizationId),
+          sql`${labCases.caseData} LIKE ${barcodeNeedle}`,
+        ),
+      );
+
+    for (const mr of legacyCandidates) {
+      let parsed: any;
+      try {
+        parsed = typeof mr.caseData === "string" ? JSON.parse(mr.caseData) : mr.caseData;
+      } catch {
+        continue; // skip malformed rows
+      }
+      if (!parsed || typeof parsed !== "object") continue;
+      if (String(parsed.assignedBarcode ?? "") !== code) continue;
+
+      // Mirror the legacy → unified mapping used by the cases list so all
+      // callers (mobile scan/batch-locate, desktop scanner) get a consistent
+      // shape with a navigable `id`.
+      const patientName = String(parsed.patientName ?? "");
+      const spaceIdx = patientName.indexOf(" ");
+      const firstName = spaceIdx >= 0 ? patientName.slice(0, spaceIdx) : patientName;
+      const lastName = spaceIdx >= 0 ? patientName.slice(spaceIdx + 1) : "";
+      const rawStatus = String(parsed.status ?? "INTAKE").toUpperCase();
+      const desktopStatus = MOBILE_TO_DESKTOP_STATUS[rawStatus] ?? "received";
+      const createdAt = parsed.createdAt
+        ? new Date(Number(parsed.createdAt)).toISOString()
+        : new Date().toISOString();
+      const updatedAt = parsed.updatedAt
+        ? new Date(Number(parsed.updatedAt)).toISOString()
+        : createdAt;
+
+      return ok(res, {
+        case: {
+          id: mr.id,
+          caseNumber: String(parsed.caseNumber ?? ""),
+          labOrganizationId: mr.organizationId ?? null,
+          providerOrganizationId: null,
+          patientFirstName: firstName,
+          patientLastName: lastName,
+          doctorName: String(parsed.doctorName ?? ""),
+          status: desktopStatus,
+          priority: parsed.isRush ? "rush" : "normal",
+          dueDate: parsed.dueDate ?? null,
+          createdByUserId: mr.ownerId,
+          createdAt,
+          updatedAt,
+          restorationCount: 0,
+          restorationTypes: parsed.caseType ?? null,
+          restorationMaterials: parsed.material ?? null,
+          teeth: parsed.toothIndices ?? null,
+          totalPrice: parsed.price != null ? String(parsed.price) : "0.00",
+          casePanBarcode: parsed.assignedBarcode ?? null,
+          _source: "mobile",
+        },
+      });
+    }
+
+    throw new HttpError(404, "No case found with that barcode.");
   }),
 );
 

@@ -67,3 +67,4 @@
 - [Desktop apiFetch unwraps {ok,data}](desktop-apifetch-unwrap.md) — read r.X not r.data.X; r.data.X is a silent undefined that can make a whole gated panel "exist but never render".
 - [iTero Rx object-storage mirror](itero-rx-object-storage-mirror.md) — single-file poller route was missing writeCaseMediaToObjectStorage; all multer-write paths must mirror to object storage or files 404 after restart.
 - [Case-delete invoice freeze](case-delete-invoice-freeze.md) — deleting a case must KEEP its invoice (frozen=true, balanceDue 0), never delete it; applies to BOTH single-delete and bulk-delete ("delete all" uses bulk); freeze must be tenant-scoped + idempotent.
+- [Mobile resilientFetch raw envelope](mobile-resilientfetch-envelope.md) — resilientFetch is pass-through; raw callers must read body.data.X (server ok() wraps {ok,data}); reading body.X is a silent undefined that looks like a "not found" miss.

@@ -95,6 +95,37 @@ maybe("Cases search and tenant isolation (db integration)", () => {
     return id;
   }
 
+  // Legacy mobile cases live in `lab_cases` and store their barcode inside the
+  // `case_data` JSON blob under `assignedBarcode` (surfaced as `casePanBarcode`
+  // in the unified list shape).
+  const legacyCaseIds: string[] = [];
+  async function insertLegacyCase(opts: {
+    assignedBarcode: string;
+    labId?: string;
+    patientName?: string;
+    caseNumber?: string;
+    status?: string;
+  }) {
+    const { db, labCases } = dbMod as any;
+    const id = rid("lc");
+    const caseData = JSON.stringify({
+      patientName: opts.patientName ?? "Bera Brown",
+      caseNumber: opts.caseNumber ?? "26-2",
+      doctorName: "Dr. Mobile",
+      status: opts.status ?? "DESIGN",
+      assignedBarcode: opts.assignedBarcode,
+      createdAt: Date.now(),
+    });
+    await db.insert(labCases).values({
+      id,
+      organizationId: opts.labId ?? labOrgId,
+      ownerId: labAdminUserId,
+      caseData,
+    });
+    legacyCaseIds.push(id);
+    return id;
+  }
+
   beforeAll(async () => {
     fs.mkdirSync(TEST_MEDIA_DIR, { recursive: true });
     process.env["JWT_SECRET"] =
@@ -132,11 +163,15 @@ maybe("Cases search and tenant isolation (db integration)", () => {
       organizations,
       users,
       cases,
+      labCases,
       organizationMemberships,
       userSessions,
       auditLogs,
       invoices,
     } = dbMod as any;
+    if (legacyCaseIds.length) {
+      await db.delete(labCases).where(inArray(labCases.id, legacyCaseIds));
+    }
     // invoices.labOrganizationId is onDelete:restrict — must delete before orgs.
     await db.delete(auditLogs).where(
       inArray(auditLogs.organizationId, [labOrgId, otherLabOrgId])
@@ -315,6 +350,44 @@ maybe("Cases search and tenant isolation (db integration)", () => {
 
     const { db, cases } = dbMod as any;
     await db.delete(cases).where(eq(cases.id, caseId));
+  });
+
+  it("GET /api/cases/barcode/:code: finds a legacy mobile case by its assignedBarcode", async () => {
+    // Regression: a mobile-created case (lab_cases) stores its barcode in
+    // case_data.assignedBarcode. The lookup route previously only checked the
+    // canonical `cases` table, so scanning/entering such a barcode 404'd even
+    // though the case is visible in the list.
+    const barcode = "0002";
+    const legacyId = await insertLegacyCase({
+      assignedBarcode: barcode,
+      patientName: "Bera Brown",
+      caseNumber: "26-2",
+      status: "DESIGN",
+    });
+
+    const r = await request(appMod.default)
+      .get(`/api/cases/barcode/${barcode}`)
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({ labOrganizationId: labOrgId });
+
+    expect(r.status).toBe(200);
+    expect(r.body.data.case.id).toBe(legacyId);
+    expect(r.body.data.case.casePanBarcode).toBe(barcode);
+    expect(r.body.data.case.patientFirstName).toBe("Bera");
+    expect(r.body.data.case.patientLastName).toBe("Brown");
+    expect(r.body.data.case.status).toBe("in_design");
+  });
+
+  it("GET /api/cases/barcode/:code: does not return a legacy case from a different lab", async () => {
+    const barcode = `XLLEG${randomBytes(4).toString("hex").toUpperCase()}`;
+    await insertLegacyCase({ assignedBarcode: barcode, labId: otherLabOrgId });
+
+    const r = await request(appMod.default)
+      .get(`/api/cases/barcode/${barcode}`)
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({ labOrganizationId: labOrgId });
+
+    expect(r.status).toBe(404);
   });
 
   it("GET /api/cases/barcode/:code: returns 404 when no case has that barcode", async () => {
