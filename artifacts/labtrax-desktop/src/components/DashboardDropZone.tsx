@@ -605,6 +605,7 @@ export function DashboardDropZone() {
   // an AI-read Rx. Lab defaults to the only lab the user belongs to.
   const [rxLabOrgId, setRxLabOrgId] = useState<string>("");
   const [rxProviderOrgId, setRxProviderOrgId] = useState<string>("");
+  const [rxBarcode, setRxBarcode] = useState<string>("");
   const [rxPracticeError, setRxPracticeError] = useState(false);
   useEffect(() => {
     if (phase.kind !== "rxConfirm") setRxPracticeError(false);
@@ -771,6 +772,7 @@ export function DashboardDropZone() {
     async (file: File) => {
       setRxProviderOrgId("");
       setRxDraft({});
+      setRxBarcode("");
       setRxProviderSearch("");
       clearManualRemake();
       setPhase({ kind: "analyzing", fileName: file.name });
@@ -1000,6 +1002,7 @@ export function DashboardDropZone() {
     setZipSource(null);
     setPhase({ kind: "idle" });
     setRxPracticeError(false);
+    setRxBarcode("");
     clearManualRemake();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clearIdleResetTimer]);
@@ -1434,6 +1437,7 @@ export function DashboardDropZone() {
             ...(r.dueDate ? { dueDate: r.dueDate } : {}),
             ...(restorations ? { restorations } : {}),
             ...(r.notes && r.notes.trim() ? { notes: r.notes.trim() } : {}),
+            ...(rxBarcode.trim() ? { casePanBarcode: rxBarcode.trim() } : {}),
           }),
         });
 
@@ -1577,6 +1581,7 @@ export function DashboardDropZone() {
             ...(r.dueDate ? { dueDate: r.dueDate } : {}),
             ...(restorations ? { restorations } : {}),
             ...(r.notes && r.notes.trim() ? { notes: r.notes.trim() } : {}),
+            ...(rxBarcode.trim() ? { casePanBarcode: rxBarcode.trim() } : {}),
             ...(remake ?? {}),
           }),
         },
@@ -2064,6 +2069,18 @@ export function DashboardDropZone() {
             placeholder="Notes"
             value={r.notes || ""}
             onChange={(e) => setRxDraft({ ...r, notes: e.target.value })}
+          />
+          <input
+            className={inputCls + " col-span-2 font-mono"}
+            type="text"
+            inputMode="numeric"
+            placeholder="Case pan barcode (optional)"
+            value={rxBarcode}
+            onChange={(e) => {
+              const v = e.target.value.replace(/[^0-9]/g, "");
+              setRxBarcode(v);
+            }}
+            aria-label="Case pan barcode"
           />
         </div>
         <div className="flex items-center gap-3">

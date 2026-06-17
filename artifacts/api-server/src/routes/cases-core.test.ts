@@ -315,6 +315,83 @@ maybe("Cases core lifecycle (db integration)", () => {
     expect(patch.status).toBe(200);
   });
 
+  // ── casePanBarcode: leading-zero preservation + detail + barcode lookup ───
+
+  it("POST /api/cases with casePanBarcode stores leading zeros exactly", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const caseNumber = rid("LZ");
+
+    const create = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber,
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Barcode",
+        patientLastName: "LeadingZero",
+        doctorName: "Dr. Zero",
+        casePanBarcode: "00125",
+      });
+
+    expect(create.status).toBe(201);
+    const caseId = create.body.data.id;
+    createdCaseIds.push(caseId);
+
+    // Barcode must be returned verbatim in case detail.
+    const get = await request(appMod.default)
+      .get(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${access}`);
+    expect(get.status).toBe(200);
+    expect(get.body.data.casePanBarcode).toBe("00125");
+  });
+
+  it("GET /api/cases/barcode/:code returns the case with that barcode", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const caseNumber = rid("BLC");
+    const barcode = `00001${rid("b")}`;
+
+    const create = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber,
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Barcode",
+        patientLastName: "Lookup",
+        doctorName: "Dr. Lookup",
+        casePanBarcode: barcode,
+      });
+    expect(create.status).toBe(201);
+    const caseId = create.body.data.id;
+    createdCaseIds.push(caseId);
+    // Verify the barcode was persisted during creation.
+    expect(create.body.data.casePanBarcode).toBe(barcode);
+
+    const lookup = await request(appMod.default)
+      .get(`/api/cases/barcode/${encodeURIComponent(barcode)}?labOrganizationId=${labOrgId}`)
+      .set("Authorization", `Bearer ${access}`);
+    // Emit actual body to aid debugging if assertions fail.
+    if (lookup.status !== 200) {
+      // eslint-disable-next-line no-console
+      console.error("Barcode lookup unexpected status:", lookup.status, JSON.stringify(lookup.body));
+    }
+    expect(lookup.status).toBe(200);
+    // Endpoint returns ok(res, { case: found }) → { ok: true, data: { case: {...} } }
+    expect(lookup.body?.data?.case?.id).toBe(caseId);
+    expect(lookup.body?.data?.case?.casePanBarcode).toBe(barcode);
+  });
+
+  it("GET /api/cases/barcode/:code returns 404 when no case matches", async () => {
+    const { access } = await makeSession(labOwnerId);
+
+    const r = await request(appMod.default)
+      .get(`/api/cases/barcode/99999999999999?labOrganizationId=${labOrgId}`)
+      .set("Authorization", `Bearer ${access}`);
+    expect(r.status).toBe(404);
+  });
+
   // ── Cross-lab scoping ──────────────────────────────────────────────────────
 
   it("GET /api/cases/:id returns 404 for a user not in the lab", async () => {
