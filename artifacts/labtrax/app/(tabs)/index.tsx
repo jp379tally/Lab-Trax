@@ -251,21 +251,65 @@ export default function CasesListScreen() {
   // Draft selections while the modal is open
   const [locationDraft, setLocationDraft] = useState<string[]>([]);
 
-  // ── Long-press locate
-  // Guard: after a long-press fires, the subsequent pressOut→onPress must not navigate.
-  const longPressActiveRef = useRef(false);
+  // ── Long-press locate (single) + multi-select mode
+  // Guard: after a long-press fires, the subsequent pressOut→onPress (on that
+  // same card) must not navigate or toggle. Store the ID of the long-pressed
+  // item so we only absorb the onPress for that specific card, not others.
+  const longPressActiveRef = useRef<string | null>(null);
 
   const [locatingCase, setLocatingCase] = useState<CanonicalCase | null>(null);
   const [locateSuccessId, setLocateSuccessId] = useState<string | null>(null);
 
+  // Multi-select state
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [showBulkLocateSheet, setShowBulkLocateSheet] = useState(false);
+  const [bulkLocateSuccessIds, setBulkLocateSuccessIds] = useState<Set<string>>(new Set());
+
+  function exitSelectionMode() {
+    longPressActiveRef.current = null;
+    setSelectionMode(false);
+    setSelectedIds(new Set());
+    setShowBulkLocateSheet(false);
+  }
+
+  function toggleSelection(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      if (next.size === 0) {
+        setSelectionMode(false);
+      }
+      return next;
+    });
+  }
+
   function dismissLocate() {
-    longPressActiveRef.current = false;
+    longPressActiveRef.current = null;
     setLocatingCase(null);
   }
 
   function handleLocated(caseId: string) {
     setLocateSuccessId(caseId);
     setTimeout(() => setLocateSuccessId(null), 2500);
+  }
+
+  function handleBulkLocated(succeededIds: string[], failedIds: string[]) {
+    setShowBulkLocateSheet(false);
+    if (succeededIds.length > 0) {
+      // At least one case moved — exit selection mode and flash badges.
+      exitSelectionMode();
+      const successSet = new Set(succeededIds);
+      setBulkLocateSuccessIds(successSet);
+      setTimeout(() => setBulkLocateSuccessIds(new Set()), 2500);
+    } else if (failedIds.length > 0) {
+      // All PATCHes failed — stay in selection mode so the user can retry
+      // without having to re-select their cases.
+    }
   }
 
   // ── Share-intent inbox
@@ -411,28 +455,45 @@ export default function CasesListScreen() {
   const activeFilters =
     dueFilter !== "all" || locationFilter.length > 0;
 
+  // Derived: the CanonicalCase objects for the currently selected IDs
+  const selectedCases = useMemo(
+    () => filtered.filter((c) => selectedIds.has(c.id)),
+    [filtered, selectedIds]
+  );
+
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
-      {/* Header */}
-      <View style={styles.header}>
-        <View style={styles.headerText}>
-          <Text style={styles.title}>Cases</Text>
-          <Text style={styles.subtitle}>
-            {casesQuery.isLoading
-              ? "Loading…"
-              : `${filtered.length} case${filtered.length === 1 ? "" : "s"}${activeFilters ? " (filtered)" : ""}`}
+      {/* Header — swaps to selection header when selectionMode is active */}
+      {selectionMode ? (
+        <View style={styles.header}>
+          <Pressable onPress={exitSelectionMode} hitSlop={8} testID="selection-cancel-btn">
+            <Ionicons name="close" size={22} color={colors.text} />
+          </Pressable>
+          <Text style={[styles.title, { flex: 1, marginLeft: Spacing.sm }]}>
+            {selectedIds.size} selected
           </Text>
         </View>
-        <Pressable
-          style={styles.newBtn}
-          onPress={() => router.push("/new-case" as never)}
-          testID="new-case-button"
-        >
-          <Ionicons name="add" size={18} color={colors.textInverse} />
-          <Text style={styles.newBtnText}>New</Text>
-        </Pressable>
-      </View>
+      ) : (
+        <View style={styles.header}>
+          <View style={styles.headerText}>
+            <Text style={styles.title}>Cases</Text>
+            <Text style={styles.subtitle}>
+              {casesQuery.isLoading
+                ? "Loading…"
+                : `${filtered.length} case${filtered.length === 1 ? "" : "s"}${activeFilters ? " (filtered)" : ""}`}
+            </Text>
+          </View>
+          <Pressable
+            style={styles.newBtn}
+            onPress={() => router.push("/new-case" as never)}
+            testID="new-case-button"
+          >
+            <Ionicons name="add" size={18} color={colors.textInverse} />
+            <Text style={styles.newBtnText}>New</Text>
+          </Pressable>
+        </View>
+      )}
 
       {/* Share-intent banner */}
       {pendingShared.length > 0 ? (
@@ -592,54 +653,89 @@ export default function CasesListScreen() {
         <FlatList
           data={filtered}
           keyExtractor={(c) => c.id}
-          renderItem={({ item }) => (
-            <Pressable
-              onPress={() => {
-                if (longPressActiveRef.current) {
-                  longPressActiveRef.current = false;
-                  return;
-                }
-                router.push(`/case/${item.id}` as never);
-              }}
-              onLongPress={() => {
-                longPressActiveRef.current = true;
-                setLocatingCase(item);
-              }}
-              delayLongPress={400}
-              testID={`case-row-${item.id}`}
-              style={({ pressed }) => pressed ? styles.rowPressed : undefined}
-            >
-              <Card style={styles.row}>
-                <View style={styles.rowMain}>
-                  <Text style={styles.rowName} numberOfLines={1}>
-                    {patientName(item)}
-                  </Text>
-                  <Text style={styles.rowMeta} numberOfLines={1}>
-                    {item.caseNumber ? `#${item.caseNumber}` : "No case #"}
-                    {item.doctorName ? `  ·  ${item.doctorName}` : ""}
-                  </Text>
-                  {item.casePanBarcode ? (
-                    <View style={styles.panRow}>
-                      <Ionicons name="barcode-outline" size={12} color={colors.textTertiary} />
-                      <Text style={styles.panText} numberOfLines={1}>{item.casePanBarcode}</Text>
+          renderItem={({ item }) => {
+            const isSelected = selectedIds.has(item.id);
+            const isLocateSuccess = locateSuccessId === item.id || bulkLocateSuccessIds.has(item.id);
+            return (
+              <Pressable
+                onPress={() => {
+                  // Guard must come first: long-press fires onLongPress then
+                  // immediately fires onPress on finger-lift for the SAME card.
+                  // Only absorb the follow-up press on the card that was
+                  // long-pressed — pressing a different card must still toggle.
+                  if (longPressActiveRef.current === item.id) {
+                    longPressActiveRef.current = null;
+                    return;
+                  }
+                  if (selectionMode) {
+                    toggleSelection(item.id);
+                    return;
+                  }
+                  router.push(`/case/${item.id}` as never);
+                }}
+                onLongPress={() => {
+                  if (selectionMode) {
+                    toggleSelection(item.id);
+                    return;
+                  }
+                  longPressActiveRef.current = item.id;
+                  setSelectionMode(true);
+                  setSelectedIds(new Set([item.id]));
+                }}
+                delayLongPress={400}
+                testID={`case-card-${item.id}`}
+                style={({ pressed }) => [
+                  isSelected && { backgroundColor: colors.tint + "10" },
+                  pressed ? styles.rowPressed : undefined,
+                ]}
+              >
+                <Card
+                  style={[
+                    styles.row,
+                    isSelected && { borderWidth: 1.5, borderColor: colors.tint + "60" },
+                  ]}
+                >
+                  {selectionMode ? (
+                    <View style={[
+                      styles.checkbox,
+                      isSelected
+                        ? { backgroundColor: colors.tint, borderColor: colors.tint }
+                        : { borderColor: colors.border, backgroundColor: "transparent" },
+                    ]}>
+                      {isSelected && <Ionicons name="checkmark" size={13} color="#fff" />}
                     </View>
                   ) : null}
-                  <Text style={styles.rowDue}>Due {formatDate(item.dueDate)}</Text>
-                </View>
-                <View style={styles.rowRight}>
-                  <StatusBadge label={titleCase(item.status ?? "—")} variant={statusVariant(item.status)} />
-                  {locateSuccessId === item.id ? (
-                    <View style={styles.locatedBadge}>
-                      <Ionicons name="checkmark-circle" size={14} color={colors.tint} />
-                      <Text style={[styles.locatedBadgeText, { color: colors.tint }]}>Located</Text>
-                    </View>
-                  ) : (
-                    <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
-                  )}
-                </View>
-              </Card>
-            </Pressable>
-          )}
+                  <View style={styles.rowMain}>
+                    <Text style={styles.rowName} numberOfLines={1}>
+                      {patientName(item)}
+                    </Text>
+                    <Text style={styles.rowMeta} numberOfLines={1}>
+                      {item.caseNumber ? `#${item.caseNumber}` : "No case #"}
+                      {item.doctorName ? `  ·  ${item.doctorName}` : ""}
+                    </Text>
+                    {item.casePanBarcode ? (
+                      <View style={styles.panRow}>
+                        <Ionicons name="barcode-outline" size={12} color={colors.textTertiary} />
+                        <Text style={styles.panText} numberOfLines={1}>{item.casePanBarcode}</Text>
+                      </View>
+                    ) : null}
+                    <Text style={styles.rowDue}>Due {formatDate(item.dueDate)}</Text>
+                  </View>
+                  <View style={styles.rowRight}>
+                    <StatusBadge label={titleCase(item.status ?? "—")} variant={statusVariant(item.status)} />
+                    {isLocateSuccess ? (
+                      <View style={styles.locatedBadge}>
+                        <Ionicons name="checkmark-circle" size={14} color={colors.tint} />
+                        <Text style={[styles.locatedBadgeText, { color: colors.tint }]}>Located</Text>
+                      </View>
+                    ) : selectionMode ? null : (
+                      <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+                    )}
+                  </View>
+                </Card>
+              </Pressable>
+            );
+          }}
           contentContainerStyle={styles.listContent}
           keyboardShouldPersistTaps="handled"
           refreshControl={
@@ -807,12 +903,53 @@ export default function CasesListScreen() {
         </View>
       </Modal>
 
-      {/* ══ Long-press Locate Sheet ══════════════════════════════════════════ */}
+      {/* ══ Single long-press Locate Sheet ══════════════════════════════════ */}
       <LocateCaseSheet
         locatingCase={locatingCase}
         onDismiss={dismissLocate}
         onLocated={handleLocated}
       />
+
+      {/* ══ Bulk Locate Sheet (multi-select) ════════════════════════════════ */}
+      <LocateCaseSheet
+        locatingCases={showBulkLocateSheet ? selectedCases : []}
+        onDismiss={() => setShowBulkLocateSheet(false)}
+        onBulkLocated={handleBulkLocated}
+      />
+
+      {/* ══ Multi-select action bar ══════════════════════════════════════════ */}
+      {selectionMode ? (
+        <View
+          style={[
+            styles.selectionBar,
+            { paddingBottom: Math.max(insets.bottom, Spacing.md), backgroundColor: colors.surface },
+          ]}
+          testID="selection-action-bar"
+        >
+          <Pressable
+            style={[styles.selectionCancelBtn, { borderColor: colors.border, backgroundColor: colors.surfaceAlt }]}
+            onPress={exitSelectionMode}
+          >
+            <Text style={[styles.selectionCancelBtnText, { color: colors.textSecondary }]}>Cancel</Text>
+          </Pressable>
+          <Pressable
+            style={[
+              styles.selectionLocateBtn,
+              { backgroundColor: selectedIds.size > 0 ? colors.tint : colors.border },
+            ]}
+            onPress={() => {
+              if (selectedIds.size > 0) setShowBulkLocateSheet(true);
+            }}
+            disabled={selectedIds.size === 0}
+            testID="bulk-locate-btn"
+          >
+            <Ionicons name="location-outline" size={17} color={colors.textInverse} />
+            <Text style={[styles.selectionLocateBtnText, { color: colors.textInverse }]}>
+              Locate{selectedIds.size > 0 ? ` (${selectedIds.size})` : ""}
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
 
       {/* ══ Barcode Scan Modal ═══════════════════════════════════════════════ */}
       <Modal
@@ -1174,6 +1311,46 @@ function makeStyles(c: ThemeColors) {
 
     // Long-press row feedback
     rowPressed: { opacity: 0.7 },
+
+    // Selection mode checkbox
+    checkbox: {
+      width: 22,
+      height: 22,
+      borderRadius: 11,
+      borderWidth: 2,
+      alignItems: "center",
+      justifyContent: "center",
+      marginRight: 2,
+      flexShrink: 0,
+    },
+
+    // Multi-select bottom action bar
+    selectionBar: {
+      flexDirection: "row",
+      gap: Spacing.sm,
+      paddingHorizontal: Spacing.lg,
+      paddingTop: Spacing.md,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: c.border,
+    },
+    selectionCancelBtn: {
+      flex: 1,
+      alignItems: "center",
+      paddingVertical: Spacing.md,
+      borderRadius: Radius.md,
+      borderWidth: 1,
+    },
+    selectionCancelBtnText: { ...Typography.bodySemibold },
+    selectionLocateBtn: {
+      flex: 2,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: Spacing.xs,
+      paddingVertical: Spacing.md,
+      borderRadius: Radius.md,
+    },
+    selectionLocateBtnText: { ...Typography.bodySemibold },
 
     // Locate success inline badge
     locatedBadge: {

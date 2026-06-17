@@ -25,11 +25,23 @@ import { useMe, editableLabMemberships, canAdminAnyLab } from "@/lib/auth-me";
 import { getJson } from "@/lib/read-api";
 import { router } from "expo-router";
 
-type Props = {
+type SingleProps = {
   locatingCase: CanonicalCase | null;
   onDismiss: () => void;
   onLocated: (caseId: string) => void;
+  locatingCases?: undefined;
+  onBulkLocated?: undefined;
 };
+
+type BulkProps = {
+  locatingCase?: undefined;
+  onDismiss: () => void;
+  onLocated?: undefined;
+  locatingCases: CanonicalCase[];
+  onBulkLocated: (succeededIds: string[], failedIds: string[]) => void;
+};
+
+type Props = SingleProps | BulkProps;
 
 interface LabLocation {
   id: string;
@@ -44,7 +56,10 @@ function patientDisplayName(c: CanonicalCase): string {
   return name || "Unnamed patient";
 }
 
-export function LocateCaseSheet({ locatingCase, onDismiss, onLocated }: Props) {
+export function LocateCaseSheet(props: Props) {
+  const { onDismiss } = props;
+  const isBulk = props.locatingCases !== undefined;
+
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
 
@@ -58,12 +73,24 @@ export function LocateCaseSheet({ locatingCase, onDismiss, onLocated }: Props) {
   const orgId = editableLabMemberships(meQuery.data)[0]?.organizationId ?? null;
   const isAdmin = canAdminAnyLab(meQuery.data);
 
-  useEffect(() => {
-    setLocateTarget(null);
-  }, [locatingCase?.id]);
+  const isVisible = isBulk
+    ? props.locatingCases.length > 0
+    : props.locatingCase !== null;
+
+  const singleCaseId = !isBulk ? props.locatingCase?.id : undefined;
 
   useEffect(() => {
-    if (!orgId || !locatingCase) return;
+    setLocateTarget(null);
+  }, [singleCaseId, isBulk]);
+
+  // Also clear the selection whenever the sheet closes so that reopening it
+  // never shows a pre-selected station from a previous session.
+  useEffect(() => {
+    if (!isVisible) setLocateTarget(null);
+  }, [isVisible]);
+
+  useEffect(() => {
+    if (!orgId || !isVisible) return;
     let cancelled = false;
     getJson<LabLocation[]>(`/api/locations?organizationId=${orgId}&activeOnly=true`)
       .then((rows) => {
@@ -73,10 +100,52 @@ export function LocateCaseSheet({ locatingCase, onDismiss, onLocated }: Props) {
         if (!cancelled) setApiLocations(null);
       });
     return () => { cancelled = true; };
-  }, [orgId, locatingCase?.id]);
+  }, [orgId, isVisible]);
 
   async function confirmLocate() {
-    if (!locatingCase || !locateTarget) return;
+    if (!locateTarget) return;
+
+    if (isBulk) {
+      const cases = props.locatingCases;
+      if (cases.length === 0) return;
+      setLocating(true);
+      try {
+        const results = await Promise.allSettled(
+          cases.map((c) =>
+            updateCase.mutateAsync({
+              caseId: c.id,
+              data: { status: locateTarget as UpdateCaseInputStatus },
+            })
+          )
+        );
+        const succeededIds: string[] = [];
+        const failedIds: string[] = [];
+        results.forEach((r, i) => {
+          if (r.status === "fulfilled") {
+            succeededIds.push(cases[i]!.id);
+          } else {
+            failedIds.push(cases[i]!.id);
+          }
+        });
+        onDismiss();
+        await casesQuery.refetch();
+        props.onBulkLocated(succeededIds, failedIds);
+        if (failedIds.length > 0) {
+          Alert.alert(
+            "Partial success",
+            `${succeededIds.length} case${succeededIds.length === 1 ? "" : "s"} located. ${failedIds.length} failed — please try again for those.`
+          );
+        }
+      } catch {
+        Alert.alert("Couldn't locate cases", "Please try again.");
+      } finally {
+        setLocating(false);
+      }
+      return;
+    }
+
+    const locatingCase = props.locatingCase;
+    if (!locatingCase) return;
     setLocating(true);
     try {
       await updateCase.mutateAsync({
@@ -86,7 +155,7 @@ export function LocateCaseSheet({ locatingCase, onDismiss, onLocated }: Props) {
       const successId = locatingCase.id;
       onDismiss();
       await casesQuery.refetch();
-      onLocated(successId);
+      props.onLocated(successId);
     } catch (e) {
       Alert.alert(
         "Couldn't locate case",
@@ -103,19 +172,31 @@ export function LocateCaseSheet({ locatingCase, onDismiss, onLocated }: Props) {
     onDismiss();
   }
 
-  const currentStatus = (locatingCase?.status ?? "").toLowerCase();
+  const currentStatus = !isBulk
+    ? (props.locatingCase?.status ?? "").toLowerCase()
+    : null;
 
   const stations: { value: string; label: string }[] =
     apiLocations !== null
       ? apiLocations
-          .filter((loc) => loc.code.toLowerCase() !== currentStatus)
+          .filter((loc) => isBulk || loc.code.toLowerCase() !== currentStatus)
           .sort((a, b) => a.sortOrder - b.sortOrder)
           .map((loc) => ({ value: loc.code.toLowerCase(), label: loc.name }))
-      : CASE_STATIONS.filter((s) => s.value !== currentStatus);
+      : CASE_STATIONS.filter((s) => isBulk || s.value !== currentStatus);
+
+  const headerTitle = isBulk
+    ? `Locate ${props.locatingCases.length} Case${props.locatingCases.length === 1 ? "" : "s"}`
+    : "Locate Case";
+
+  const headerSubtitle = isBulk
+    ? `${props.locatingCases.length} case${props.locatingCases.length === 1 ? "" : "s"} selected`
+    : props.locatingCase
+    ? `${patientDisplayName(props.locatingCase)}${props.locatingCase.caseNumber ? `  ·  #${props.locatingCase.caseNumber}` : ""}`
+    : null;
 
   return (
     <Modal
-      visible={locatingCase !== null}
+      visible={isVisible}
       transparent
       animationType="slide"
       onRequestClose={dismiss}
@@ -125,7 +206,9 @@ export function LocateCaseSheet({ locatingCase, onDismiss, onLocated }: Props) {
       </TouchableWithoutFeedback>
 
       <View style={styles.sheet}>
-        <View
+        {/* Guard: only render sheet body when visible to avoid duplicate testIDs
+            when multiple LocateCaseSheet instances coexist in the tree. */}
+        {!isVisible ? null : <View
           style={[
             styles.sheetInner,
             {
@@ -140,18 +223,17 @@ export function LocateCaseSheet({ locatingCase, onDismiss, onLocated }: Props) {
           {/* Header */}
           <View style={styles.headerRow}>
             <View style={styles.headerText}>
-              <Text style={[styles.title, { color: colors.text }]}>Locate Case</Text>
-              {locatingCase ? (
+              <Text style={[styles.title, { color: colors.text }]}>{headerTitle}</Text>
+              {headerSubtitle ? (
                 <Text
                   style={[styles.subtitle, { color: colors.textSecondary }]}
                   numberOfLines={1}
                 >
-                  {patientDisplayName(locatingCase)}
-                  {locatingCase.caseNumber ? `  ·  #${locatingCase.caseNumber}` : ""}
+                  {headerSubtitle}
                 </Text>
               ) : null}
             </View>
-            {isAdmin ? (
+            {isAdmin && !isBulk ? (
               <Pressable
                 style={[styles.editOrderBtn, { backgroundColor: colors.surfaceAlt }]}
                 onPress={() => {
@@ -253,7 +335,7 @@ export function LocateCaseSheet({ locatingCase, onDismiss, onLocated }: Props) {
               )}
             </Pressable>
           </View>
-        </View>
+        </View>}
       </View>
     </Modal>
   );

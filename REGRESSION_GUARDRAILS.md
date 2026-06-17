@@ -8,9 +8,9 @@ When the user confirms that a feature or workflow is working, that behavior beco
 
 The mobile app (`artifacts/labtrax`) reached beta quality after Task #1493 (Mobile UI and Workflow Parity With Desktop). The 18 workflows below are confirmed working in TestFlight and are **permanently protected**. No future change — feature addition, UI refactor, API change, pricing change, invoice change, media change, or cleanup — may be merged or built if it breaks any of these workflows.
 
-### The 21 Protected Workflows
+### The 22 Protected Workflows
 
-Workflows 1–18 were confirmed in TestFlight after Task #1493 (Mobile UI Parity). Workflows 19–21 were added in Task #1503 (AI Reader Intake). **All 21 must pass before any build is approved.**
+Workflows 1–18 were confirmed in TestFlight after Task #1493 (Mobile UI Parity). Workflows 19–21 were added in Task #1503 (AI Reader Intake). Workflow 22 was added for bulk locate. **All 22 must pass before any build is approved.**
 
 | # | Workflow | Automated Gate | Real-Device Required |
 |---|----------|---------------|---------------------|
@@ -35,6 +35,7 @@ Workflows 1–18 were confirmed in TestFlight after Task #1493 (Mobile UI Parity
 | 19 | **AI Reader camera capture → review → AI extraction** | `ai-reader.smoke.test.ts` (store + helpers) | **Yes** — camera permission, live capture, base64 round-trip |
 | 20 | **AI Reader provider resolution + duplicate detection + case creation** | `ai-reader.smoke.test.ts` (name/date helpers, codegen guard) | **Yes** — doctor search, practice alias, similarity modal, case PATCH |
 | 21 | **AI Reader barcode assign + label print** | `ai-reader.smoke.test.ts` | **Yes** — CameraView barcode scan, manual entry, `expo-print` share sheet |
+| 22 | **Mobile bulk locate — multi-select + bulk PATCH** | `cases.smoke.test.tsx` (multi-select suite, 6 tests) | **Yes** — long-press activates mode, tapping selects/deselects, Locate opens sheet, PATCH all selected, history events, selection clears on success |
 
 > **Tooth chart (workflow #9):** An automated structural test will be added when the arch-layout implementation is finalized. Until then this workflow is covered exclusively by the TestFlight checklist below.
 
