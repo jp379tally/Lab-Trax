@@ -1,0 +1,127 @@
+High-priority regression: AI intake data is not carrying through to Lab Slip / Invoice / Case Detail.
+
+I personally confirmed the AI intake extracted the correct prescription information, but after creating the case, critical fields disappeared or changed on the Lab Slip.
+
+Example from current case:
+
+* Patient: Park Brittle
+* Case: 26-51
+* AI intake confirmed fields correctly
+* After case creation, Lab Slip shows:
+
+  * Due date: —
+  * Tooth #: —
+  * Shade: —
+  * Material: —
+  * Restorative type: Other
+  * Notes: No notes
+
+This is wrong.
+
+If the AI reads the prescription and the prescription says:
+
+* due date = July 2
+* tooth # = 19
+* shade = A2
+* material = zirconia
+* restoration = crown
+
+then the created case, Lab Slip, Invoice, Case Detail, and Mobile Case Detail must all show that same information.
+
+## Required rule
+
+The Lab Slip and Invoice must derive from the same canonical case/restoration data created from the AI intake review.
+
+There must not be separate field mappings where:
+
+* AI intake shows one thing
+* created case stores something else
+* Lab Slip reads from a different/empty field
+* Invoice reads from a different/empty field
+
+## Required investigation
+
+Trace the full AI intake pipeline:
+
+1. AI analysis result payload.
+2. Review screen state.
+3. User-confirmed values before submit.
+4. Case creation payload.
+5. Restoration creation payload.
+6. Case record after creation.
+7. Restoration records after creation.
+8. Lab Slip render data source.
+9. Invoice generation data source.
+10. Mobile case detail data source.
+
+Identify exactly where these fields are dropped or remapped:
+
+* due date
+* tooth number
+* shade
+* material
+* restorative type
+* notes / special instructions
+* case pan barcode
+
+## Required fix
+
+When a case is created from AI intake:
+
+* due date must save to canonical case due date
+* tooth number must save to canonical restoration/tooth fields
+* shade must save to canonical restoration/case shade fields
+* material must save to canonical restoration material field
+* restorative type must save to canonical restoration type field
+* special instructions / notes must save to canonical case notes / Rx notes field used by Lab Slip
+* barcode must save to canonical case pan barcode field if entered
+
+Then:
+
+* Lab Slip must render those fields from canonical data
+* Invoice must render/generate from those fields
+* Desktop case detail must show those fields
+* Mobile case detail must show those fields
+
+## Tests required
+
+Add regression tests proving:
+
+1. AI intake due date survives case creation and appears on Lab Slip.
+2. AI intake tooth number survives case creation and appears on Lab Slip.
+3. AI intake shade survives case creation and appears on Lab Slip.
+4. AI intake material survives case creation and appears on Lab Slip.
+5. AI intake restorative type survives case creation and appears on Lab Slip.
+6. AI intake notes/special instructions survive case creation and appear on Lab Slip.
+7. Invoice generated from AI-created case uses the same restoration/tooth/material/shade data.
+8. Mobile case detail displays the same values after refresh.
+9. No duplicate invoice is created.
+10. No local-only/mobile-only fields are used.
+
+## Acceptance
+
+Use a real or fixture prescription where AI extracts:
+
+* due date
+* tooth number
+* shade
+* material
+* restorative type
+* notes
+
+Create the case.
+
+Confirm:
+
+* Lab Slip shows all fields correctly
+* Invoice shows all fields correctly
+* Desktop Case Detail shows all fields correctly
+* Mobile Case Detail shows all fields correctly
+* Case History records the created/attached prescription
+* No field is blank unless the AI intake/review screen was actually blank
+
+Do not start new AI Reader enhancements until this carry-through regression is fixed.
+
+Checkpoint:
+
+“AI Intake Data Carry-Through to Lab Slip and Invoice”

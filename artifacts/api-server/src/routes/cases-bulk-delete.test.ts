@@ -107,6 +107,26 @@ maybe("POST /api/cases/bulk-delete (db integration)", () => {
     return id;
   }
 
+  async function insertInvoice(
+    caseId: string,
+    opts?: { total?: string; balanceDue?: string },
+  ): Promise<string> {
+    const { db, invoices } = dbMod as any;
+    const id = rid("inv");
+    await db.insert(invoices).values({
+      id,
+      invoiceNumber: rid("INV"),
+      caseId,
+      labOrganizationId: labOrgId,
+      providerOrganizationId: practiceId,
+      status: "open",
+      total: opts?.total ?? "119.00",
+      balanceDue: opts?.balanceDue ?? "119.00",
+      createdByUserId: adminUserId,
+    });
+    return id;
+  }
+
   // Helper: completes the full 3-step security flow (delete-initiate → bulk-delete).
   // Uses the mocked verifyCode path, so any 6-digit OTP is accepted.
   async function deleteViaFlow(
@@ -186,6 +206,7 @@ maybe("POST /api/cases/bulk-delete (db integration)", () => {
       users,
       cases,
       labCases,
+      invoices,
       organizationMemberships,
       userSessions,
       auditLogs,
@@ -193,6 +214,11 @@ maybe("POST /api/cases/bulk-delete (db integration)", () => {
     await db
       .delete(auditLogs)
       .where(inArray(auditLogs.organizationId, [labOrgId, otherLabOrgId]));
+    // Invoices reference cases (set null), orgs + users (restrict) — delete
+    // them before the rows they depend on.
+    await db
+      .delete(invoices)
+      .where(inArray(invoices.labOrganizationId, [labOrgId, otherLabOrgId]));
     await db
       .delete(cases)
       .where(inArray(cases.labOrganizationId, [labOrgId, otherLabOrgId]));
@@ -231,6 +257,77 @@ maybe("POST /api/cases/bulk-delete (db integration)", () => {
     for (const row of rows) {
       expect(row.deletedAt).not.toBeNull();
     }
+  });
+
+  it("freezes linked invoices (zero balance, NOT deleted) when a case is bulk-deleted", async () => {
+    // Regression: bulk-delete previously soft-deleted the case but left its
+    // invoices with live balances. Invoices must be kept and zeroed instead.
+    const c1 = await insertCanonical(rid("INVCASE"));
+    const inv = await insertInvoice(c1, {
+      total: "119.00",
+      balanceDue: "119.00",
+    });
+
+    const r = await deleteViaFlow([c1], tokens.admin);
+    expect(r.status).toBe(200);
+    expect(r.body.data.deletedCount).toBe(1);
+
+    const { db, invoices } = dbMod as any;
+    const [row] = await db
+      .select({
+        id: invoices.id,
+        frozen: invoices.frozen,
+        balanceDue: invoices.balanceDue,
+        total: invoices.total,
+        deletedAt: invoices.deletedAt,
+        caseId: invoices.caseId,
+        caseDeletedAt: invoices.caseDeletedAt,
+      })
+      .from(invoices)
+      .where(eq(invoices.id, inv));
+
+    // Invoice is KEPT (row still present, not soft-deleted)...
+    expect(row).toBeTruthy();
+    expect(row.deletedAt).toBeNull();
+    // ...frozen with a zeroed balance...
+    expect(row.frozen).toBe(true);
+    expect(Number(row.balanceDue)).toBe(0);
+    expect(row.caseDeletedAt).not.toBeNull();
+    // ...while the original total is preserved for the historical record.
+    expect(Number(row.total)).toBe(119);
+    // FK still points at the (now soft-deleted) case — set null only fires on
+    // a hard delete, which never happens for cases.
+    expect(row.caseId).toBe(c1);
+  });
+
+  it("does NOT freeze an invoice owned by a different lab even if it references the deleted case id", async () => {
+    // Defense-in-depth tenant scoping: there is no composite FK tying an
+    // invoice's labOrganizationId to its case's lab, so a cross-lab/imported
+    // invoice row that happens to reference the deleted case id must be left
+    // completely untouched (not frozen, balance preserved).
+    const c1 = await insertCanonical(rid("XLABCASE"));
+    const { db, invoices } = dbMod as any;
+    const foreignInvId = rid("inv");
+    await db.insert(invoices).values({
+      id: foreignInvId,
+      invoiceNumber: rid("INV"),
+      caseId: c1,
+      labOrganizationId: otherLabOrgId,
+      status: "open",
+      total: "200.00",
+      balanceDue: "200.00",
+      createdByUserId: adminUserId,
+    });
+
+    const r = await deleteViaFlow([c1], tokens.admin);
+    expect(r.status).toBe(200);
+
+    const [row] = await db
+      .select({ frozen: invoices.frozen, balanceDue: invoices.balanceDue })
+      .from(invoices)
+      .where(eq(invoices.id, foreignInvId));
+    expect(row.frozen).toBe(false);
+    expect(Number(row.balanceDue)).toBe(200);
   });
 
   it("REGRESSION: deletes legacy-only selection (no 404)", async () => {

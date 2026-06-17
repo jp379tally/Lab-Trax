@@ -2524,6 +2524,111 @@ router.post(
   })
 );
 
+/**
+ * Cascade-freeze every invoice linked to the given (now soft-deleted) cases.
+ *
+ * Invoices are NEVER deleted when their case is deleted — the billing record is
+ * preserved permanently. Instead each linked invoice is frozen and its
+ * balanceDue is zeroed so it stops contributing to open/overdue balances while
+ * remaining fully visible in the invoice list. Restoring the case
+ * (POST /:caseId/restore) reverses this.
+ *
+ * Used by BOTH the single-case delete (DELETE /:caseId) and the bulk delete
+ * (POST /bulk-delete) so the two paths can never drift. Returns the number of
+ * invoices frozen.
+ */
+async function freezeInvoicesForDeletedCases(params: {
+  req: Request;
+  caseIds: string[];
+  labOrganizationId: string;
+  deletingUserId: string;
+  caseNumberById?: Map<string, string | null | undefined>;
+}): Promise<number> {
+  const { req, caseIds, labOrganizationId, deletingUserId, caseNumberById } =
+    params;
+  if (caseIds.length === 0) return 0;
+
+  const linkedInvoices = await db
+    .select()
+    .from(invoices)
+    .where(
+      and(
+        inArray(invoices.caseId, caseIds),
+        // Tenant scoping: only ever touch invoices owned by the deleting lab.
+        // There is no composite FK tying invoices.labOrganizationId to the
+        // case's lab, so a cross-lab/imported row that happens to reference one
+        // of these case ids must not be frozen under the wrong tenant.
+        eq(invoices.labOrganizationId, labOrganizationId),
+        // Idempotency: skip invoices already frozen by a prior case deletion so
+        // we never re-zero a balance or emit a duplicate audit entry. (frozen
+        // is set exclusively by this helper.)
+        eq(invoices.frozen, false),
+        isNull(invoices.deletedAt),
+      ),
+    );
+
+  if (linkedInvoices.length === 0) return 0;
+
+  // Derive initials from the deleting user's profile. Fall back to the initials
+  // field stored on the user row, then to "?" when nothing is set.
+  const actorUser = await db.query.users.findFirst({
+    where: eq(users.id, deletingUserId),
+  });
+  const derivedInitials = (() => {
+    const first = String(actorUser?.firstName ?? "").trim();
+    const last = String(actorUser?.lastName ?? "").trim();
+    if (first && last) return `${first[0]}${last[0]}`.toUpperCase();
+    if (actorUser?.initials) return actorUser.initials.toUpperCase();
+    return "?";
+  })();
+  const freezeNote = `Case Deleted by ${derivedInitials}`;
+  const freezeAt = new Date();
+
+  await db
+    .update(invoices)
+    .set({
+      frozen: true,
+      balanceDue: "0.00",
+      caseDeletedAt: freezeAt,
+      caseDeletedByUserId: deletingUserId,
+      caseDeletedNote: freezeNote,
+      updatedByUserId: deletingUserId,
+    } as any)
+    .where(
+      and(
+        inArray(
+          invoices.id,
+          linkedInvoices.map((inv) => inv.id),
+        ),
+        // Re-assert tenant scoping on the write itself (defense-in-depth).
+        eq(invoices.labOrganizationId, labOrganizationId),
+        isNull(invoices.deletedAt),
+      ),
+    );
+
+  // Write one audit log entry per invoice.
+  for (const inv of linkedInvoices) {
+    await writeAuditLog({
+      req,
+      userId: deletingUserId,
+      organizationId: labOrganizationId,
+      action: "invoice_frozen_case_deleted",
+      entityType: "invoice",
+      entityId: inv.id,
+      beforeJson: inv,
+      metadataJson: {
+        caseId: inv.caseId,
+        caseNumber: inv.caseId
+          ? (caseNumberById?.get(inv.caseId) ?? null)
+          : null,
+        frozenNote: freezeNote,
+      },
+    });
+  }
+
+  return linkedInvoices.length;
+}
+
 // ─── Bulk delete (admin only, soft-delete) ────────────────────────────────────
 
 const bulkDeleteSchema = z.object({
@@ -2635,6 +2740,21 @@ router.post(
         beforeJson: c,
       });
     }
+
+    // Cascade-freeze every invoice linked to the deleted canonical cases so the
+    // billing records are preserved permanently (never deleted) but stop
+    // contributing to open balances. Mirrors the single-case DELETE path —
+    // without this, bulk-deleting cases left their invoices with live balances.
+    // (Legacy lab_cases never carry invoices, so only canonical ids are passed.)
+    await freezeInvoicesForDeletedCases({
+      req,
+      caseIds: canonicalMatches.map((c) => c.id),
+      labOrganizationId,
+      deletingUserId: userId,
+      caseNumberById: new Map(
+        canonicalMatches.map((c) => [c.id, c.caseNumber]),
+      ),
+    });
 
     // Soft-delete legacy mobile cases (lab_cases). They store their payload in
     // a JSON blob and are recoverable from Settings → admin case trash. This
@@ -5126,71 +5246,14 @@ router.delete(
     });
 
     // Cascade-freeze every linked invoice so the billing record is preserved
-    // permanently but can no longer be voided, deleted, or written off.
-    const linkedInvoices = await db
-      .select()
-      .from(invoices)
-      .where(
-        and(
-          eq(invoices.caseId, found.id),
-          isNull(invoices.deletedAt),
-        ),
-      );
-
-    if (linkedInvoices.length > 0) {
-      // Derive initials from the deleting user's profile. Fall back to the
-      // initials field stored on the user row, then to "?" when nothing is set.
-      const actorUser = await db.query.users.findFirst({
-        where: eq(users.id, deletingUserId),
-      });
-      const derivedInitials = (() => {
-        const first = String(actorUser?.firstName ?? "").trim();
-        const last = String(actorUser?.lastName ?? "").trim();
-        if (first && last) return `${first[0]}${last[0]}`.toUpperCase();
-        if (actorUser?.initials) return actorUser.initials.toUpperCase();
-        return "?";
-      })();
-      const freezeNote = `Case Deleted by ${derivedInitials}`;
-      const freezeAt = new Date();
-
-      await db
-        .update(invoices)
-        .set({
-          frozen: true,
-          balanceDue: "0.00",
-          caseDeletedAt: freezeAt,
-          caseDeletedByUserId: deletingUserId,
-          caseDeletedNote: freezeNote,
-          updatedByUserId: deletingUserId,
-        } as any)
-        .where(
-          and(
-            inArray(
-              invoices.id,
-              linkedInvoices.map((inv) => inv.id),
-            ),
-            isNull(invoices.deletedAt),
-          ),
-        );
-
-      // Write one audit log entry per invoice.
-      for (const inv of linkedInvoices) {
-        await writeAuditLog({
-          req,
-          userId: deletingUserId,
-          organizationId: found.labOrganizationId,
-          action: "invoice_frozen_case_deleted",
-          entityType: "invoice",
-          entityId: inv.id,
-          beforeJson: inv,
-          metadataJson: {
-            caseId: found.id,
-            caseNumber: found.caseNumber,
-            frozenNote: freezeNote,
-          },
-        });
-      }
-    }
+    // permanently (never deleted) but stops contributing to open balances.
+    await freezeInvoicesForDeletedCases({
+      req,
+      caseIds: [found.id],
+      labOrganizationId: found.labOrganizationId,
+      deletingUserId,
+      caseNumberById: new Map([[found.id, found.caseNumber]]),
+    });
 
     return ok(res, { deleted: true });
   })
