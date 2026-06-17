@@ -1306,6 +1306,7 @@ export const bankAccounts = pgTable(
       .notNull(),
     currency: text("currency").default("USD").notNull(),
     isArchived: boolean("is_archived").default(false).notNull(),
+    accountType: text("account_type"),
     createdByUserId: varchar("created_by_user_id").references(() => users.id, {
       onDelete: "set null",
     }),

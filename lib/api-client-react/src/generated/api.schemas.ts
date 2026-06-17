@@ -1279,7 +1279,7 @@ export interface ReceivePaymentsInput {
   paymentMethod: ReceivePaymentsInputPaymentMethod;
   referenceNumber?: string | null;
   paymentDate?: string;
-  depositBankAccountId: string;
+  depositBankAccountId?: string;
   memo?: string | null;
   /**
    * @minItems 1

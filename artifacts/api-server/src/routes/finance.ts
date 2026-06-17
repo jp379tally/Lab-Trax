@@ -185,10 +185,9 @@ router.get(
       where: inArray(bankAccounts.labOrganizationId, orgIds),
       orderBy: [asc(bankAccounts.name)],
     });
-    // Lazily create a single default "General Register" when an org has no
-    // bank accounts so any billing-role caller can proceed without an
-    // admin-only POST /accounts. Serialized by row-locking the org row so
-    // concurrent first-load calls cannot race and create duplicates.
+    // Lazily create a single default "General Register" and an "Undeposited
+    // Funds" holding account when an org has no bank accounts. Serialized
+    // by row-locking the org row so concurrent first-load calls cannot race.
     if (!accounts.length && orgId) {
       try {
         await db.transaction(async (tx) => {
@@ -200,13 +199,23 @@ router.get(
             limit: 1,
           });
           if (existing.length) return;
-          await tx.insert(bankAccounts).values({
-            labOrganizationId: orgId,
-            name: "General Register",
-            openingBalance: "0.00",
-            openingDate: new Date(),
-            createdByUserId: uid(req),
-          });
+          await tx.insert(bankAccounts).values([
+            {
+              labOrganizationId: orgId,
+              name: "General Register",
+              openingBalance: "0.00",
+              openingDate: new Date(),
+              createdByUserId: uid(req),
+            },
+            {
+              labOrganizationId: orgId,
+              name: "Undeposited Funds",
+              openingBalance: "0.00",
+              openingDate: new Date(),
+              accountType: "undeposited_funds",
+              createdByUserId: uid(req),
+            },
+          ]);
         });
         accounts = await db.query.bankAccounts.findMany({
           where: inArray(bankAccounts.labOrganizationId, orgIds),
@@ -214,6 +223,41 @@ router.get(
         });
       } catch (err) {
         req.log.warn({ err, orgId }, "default General Register create failed");
+      }
+    }
+    // Ensure every org has an Undeposited Funds account (handles orgs
+    // created before this feature shipped that already have a General Register).
+    if (orgId) {
+      const hasUF = accounts.some((a: any) => a.accountType === "undeposited_funds");
+      if (!hasUF) {
+        try {
+          await db.transaction(async (tx) => {
+            await tx.execute(
+              sql`SELECT id FROM organizations WHERE id = ${orgId} FOR UPDATE`
+            );
+            const existingUF = await tx.query.bankAccounts.findFirst({
+              where: and(
+                eq(bankAccounts.labOrganizationId, orgId),
+                eq(bankAccounts.accountType, "undeposited_funds")
+              ),
+            });
+            if (existingUF) return;
+            await tx.insert(bankAccounts).values({
+              labOrganizationId: orgId,
+              name: "Undeposited Funds",
+              openingBalance: "0.00",
+              openingDate: new Date(),
+              accountType: "undeposited_funds",
+              createdByUserId: uid(req),
+            });
+          });
+          accounts = await db.query.bankAccounts.findMany({
+            where: inArray(bankAccounts.labOrganizationId, orgIds),
+            orderBy: [asc(bankAccounts.name)],
+          });
+        } catch (err) {
+          req.log.warn({ err, orgId }, "Undeposited Funds account create failed");
+        }
       }
     }
     if (!accounts.length) return ok(res, []);
@@ -2971,5 +3015,155 @@ export async function runVendorLinkBackfill(
     totals: { matched: totalMatched, ambiguous: totalAmbiguous, noMatch: totalNoMatch },
   };
 }
+
+// ---------------------------------------------------------------------------
+// Undeposited Funds workflow
+// ---------------------------------------------------------------------------
+
+// GET /finance/undeposited-funds?organizationId=
+// Returns transactions in the Undeposited Funds account, enriched with invoice info.
+router.get(
+  "/undeposited-funds",
+  asyncHandler(async (req, res) => {
+    const orgId = req.query.organizationId as string | undefined;
+    if (!orgId) throw new HttpError(400, "organizationId is required.");
+    await requireAnyRole(uid(req), orgId, BILLING_ROLES);
+
+    const ufAccount = await db.query.bankAccounts.findFirst({
+      where: and(
+        eq(bankAccounts.labOrganizationId, orgId),
+        eq(bankAccounts.accountType, "undeposited_funds")
+      ),
+    });
+    if (!ufAccount) return ok(res, []);
+
+    const txns = await db.query.bankTransactions.findMany({
+      where: and(
+        eq(bankTransactions.bankAccountId, ufAccount.id),
+        eq(bankTransactions.status, "posted"),
+        isNull(bankTransactions.deletedAt)
+      ),
+      orderBy: [desc(bankTransactions.txnDate)],
+    });
+
+    if (!txns.length) return ok(res, []);
+
+    const txnIds = txns.map((t: any) => t.id);
+    const links = await db
+      .select()
+      .from(bankTransactionInvoices)
+      .where(inArray(bankTransactionInvoices.bankTransactionId, txnIds));
+    const invoiceIds = [...new Set(links.map((l: any) => l.invoiceId))];
+    let invMap = new Map<string, any>();
+    if (invoiceIds.length) {
+      const invRows = await db
+        .select({ id: invoices.id, invoiceNumber: invoices.invoiceNumber })
+        .from(invoices)
+        .where(inArray(invoices.id, invoiceIds));
+      for (const r of invRows) invMap.set(r.id, r);
+    }
+    const linksByTxn = new Map<string, string[]>();
+    for (const l of links) {
+      const list = linksByTxn.get(l.bankTransactionId) ?? [];
+      list.push(l.invoiceId);
+      linksByTxn.set(l.bankTransactionId, list);
+    }
+
+    const enriched = txns.map((t: any) => ({
+      ...t,
+      invoiceLinks: (linksByTxn.get(t.id) ?? []).map((id) => ({
+        invoiceId: id,
+        invoiceNumber: invMap.get(id)?.invoiceNumber ?? null,
+      })),
+    }));
+
+    return ok(res, enriched);
+  })
+);
+
+// POST /finance/make-deposits
+// Moves transactions from Undeposited Funds into a real bank account.
+const makeDepositsSchema = z.object({
+  organizationId: z.string().min(1),
+  bankAccountId: z.string().min(1),
+  depositDate: z.string().optional(),
+  transactionIds: z.array(z.string().min(1)).min(1).max(500),
+});
+
+router.post(
+  "/make-deposits",
+  asyncHandler(async (req, res) => {
+    const input = makeDepositsSchema.parse(req.body);
+    await requireAnyRole(uid(req), input.organizationId, BILLING_ROLES);
+
+    const targetAccount = await db.query.bankAccounts.findFirst({
+      where: eq(bankAccounts.id, input.bankAccountId),
+    });
+    if (
+      !targetAccount ||
+      targetAccount.labOrganizationId !== input.organizationId ||
+      targetAccount.isArchived
+    ) {
+      throw new HttpError(400, "Target account not found or archived.");
+    }
+    if (targetAccount.accountType === "undeposited_funds") {
+      throw new HttpError(400, "Cannot deposit into the Undeposited Funds account.");
+    }
+
+    const ufAccount = await db.query.bankAccounts.findFirst({
+      where: and(
+        eq(bankAccounts.labOrganizationId, input.organizationId),
+        eq(bankAccounts.accountType, "undeposited_funds")
+      ),
+    });
+    if (!ufAccount) throw new HttpError(404, "Undeposited Funds account not found.");
+
+    const txns = await db.query.bankTransactions.findMany({
+      where: and(
+        inArray(bankTransactions.id, input.transactionIds),
+        eq(bankTransactions.bankAccountId, ufAccount.id),
+        eq(bankTransactions.status, "posted")
+      ),
+    });
+    if (txns.length !== input.transactionIds.length) {
+      throw new HttpError(
+        400,
+        "One or more transactions were not found in Undeposited Funds."
+      );
+    }
+
+    const depositDate = input.depositDate
+      ? new Date(input.depositDate)
+      : new Date();
+    if (Number.isNaN(depositDate.getTime())) {
+      throw new HttpError(400, "Invalid deposit date.");
+    }
+
+    await db.transaction(async (tx) => {
+      // Move all selected UF transactions to the target account and mark cleared.
+      for (const t of txns) {
+        await tx
+          .update(bankTransactions)
+          .set({
+            bankAccountId: targetAccount.id,
+            txnDate: depositDate,
+            cleared: true,
+            updatedAt: new Date(),
+          })
+          .where(eq(bankTransactions.id, t.id));
+      }
+    });
+
+    const totalAmount = txns.reduce(
+      (s: number, t: any) => s + Number(t.netAmount),
+      0
+    );
+    return ok(res, {
+      moved: txns.length,
+      totalAmount: totalAmount.toFixed(2),
+      bankAccountId: targetAccount.id,
+    });
+  })
+);
 
 export default router;

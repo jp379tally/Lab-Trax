@@ -31,6 +31,7 @@ const ReconcilePage = lazy(() => import("@/pages/finance/reconcile"));
 const CashFlowPage = lazy(() => import("@/pages/finance/cash-flow"));
 const RecurringPage = lazy(() => import("@/pages/finance/recurring"));
 const ReceivePaymentsPage = lazy(() => import("@/pages/finance/receive-payments"));
+const MakeDepositsPage = lazy(() => import("@/pages/finance/make-deposits"));
 const PayeesPage = lazy(() => import("@/pages/finance/payees"));
 const ListsPage = lazy(() => import("@/pages/lists"));
 const DownloadPage = lazy(() => import("@/pages/download"));
@@ -88,6 +89,7 @@ function AppLayoutWithUploads() {
           <Route path="/finance/cash-flow" component={CashFlowPage} />
           <Route path="/finance/recurring" component={RecurringPage} />
           <Route path="/finance/receive-payments" component={ReceivePaymentsGuard} />
+          <Route path="/finance/make-deposits" component={MakeDepositsPage} />
           <Route path="/finance/payees" component={PayeesPage} />
           <Route path="/lists" component={ListsPage} />
           <Route path="/customer-center" component={CustomerCenterPage} />

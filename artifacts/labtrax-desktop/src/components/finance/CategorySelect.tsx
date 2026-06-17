@@ -47,8 +47,10 @@ export function CategorySelect({
   const [open, setOpen] = useState(false);
   const [inputVal, setInputVal] = useState("");
   const [showAdd, setShowAdd] = useState(false);
+  const [activeIndex, setActiveIndex] = useState<number>(-1);
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
 
   const catsQuery = useQuery({
     queryKey: ["finance", "categories", organizationId],
@@ -74,6 +76,11 @@ export function CategorySelect({
         c.kind.toLowerCase().includes(trimmed.toLowerCase())
       )
     : activeCategories;
+
+  // Reset active index when filtered list changes
+  useEffect(() => {
+    setActiveIndex(-1);
+  }, [filtered.length, open]);
 
   function select(id: string, name: string) {
     onChange(id);
@@ -105,6 +112,35 @@ export function CategorySelect({
     if (e.key === "Escape") {
       setOpen(false);
       inputRef.current?.blur();
+      onKeyDown?.(e);
+      return;
+    }
+    if (open && filtered.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        const next = Math.min(activeIndex + 1, filtered.length - 1);
+        setActiveIndex(next);
+        // Scroll item into view
+        const item = listRef.current?.querySelectorAll<HTMLButtonElement>("button[data-cat-item]")[next];
+        item?.scrollIntoView({ block: "nearest" });
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        const next = Math.max(activeIndex - 1, 0);
+        setActiveIndex(next);
+        const item = listRef.current?.querySelectorAll<HTMLButtonElement>("button[data-cat-item]")[next];
+        item?.scrollIntoView({ block: "nearest" });
+        return;
+      }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        if (activeIndex >= 0 && activeIndex < filtered.length) {
+          const c = filtered[activeIndex];
+          select(c.id, c.name);
+        }
+        return;
+      }
     }
     onKeyDown?.(e);
   }
@@ -115,45 +151,6 @@ export function CategorySelect({
     setInputVal(newName);
     setShowAdd(false);
     setOpen(false);
-  }
-
-  function renderGroup(kind: string, items: TransactionCategory[]) {
-    if (!items.length) return null;
-    return (
-      <li key={kind}>
-        <div className="px-3 py-1 text-[10px] uppercase tracking-widest text-muted-foreground font-semibold bg-secondary/40 border-t border-border first:border-t-0">
-          {KIND_LABEL[kind] ?? kind}
-        </div>
-        <ul>
-          {items.map((c) => (
-            <li key={c.id}>
-              <button
-                type="button"
-                tabIndex={0}
-                className="w-full text-left px-3 py-1.5 hover:bg-secondary flex items-center gap-2 min-w-0"
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  select(c.id, c.name);
-                }}
-              >
-                {c.color && (
-                  <span
-                    className="shrink-0 inline-block h-2.5 w-2.5 rounded-full border border-border/50"
-                    style={{ backgroundColor: c.color }}
-                  />
-                )}
-                <span className="font-medium truncate">{c.name}</span>
-                <span
-                  className={`ml-auto shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full ${KIND_BADGE[c.kind] ?? "bg-secondary text-muted-foreground"}`}
-                >
-                  {KIND_LABEL[c.kind] ?? c.kind}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      </li>
-    );
   }
 
   const grouped = !trimmed;
@@ -212,7 +209,7 @@ export function CategorySelect({
         </div>
 
         {open && (
-          <ul className="absolute z-50 left-0 top-[calc(100%+2px)] min-w-[200px] w-full max-h-64 overflow-y-auto bg-card border border-border rounded-md shadow-lg text-sm py-1">
+          <ul ref={listRef} className="absolute z-50 left-0 top-[calc(100%+2px)] min-w-[200px] w-full max-h-64 overflow-y-auto bg-card border border-border rounded-md shadow-lg text-sm py-1">
             {filtered.length === 0 && trimmed && (
               <li className="px-3 py-2 text-xs text-muted-foreground italic">
                 No categories match "{trimmed}"
@@ -220,30 +217,55 @@ export function CategorySelect({
             )}
             {filtered.length > 0 && (
               grouped
-                ? KIND_ORDER.map((kind) =>
-                    renderGroup(kind, filtered.filter((c) => c.kind === kind))
-                  )
-                : filtered.map((c) => (
+                ? (() => {
+                    // Build flat list for index tracking in grouped mode
+                    let flatIdx = 0;
+                    return KIND_ORDER.map((kind) => {
+                      const items = filtered.filter((c) => c.kind === kind);
+                      if (!items.length) return null;
+                      return (
+                        <li key={kind}>
+                          <div className="px-3 py-1 text-[10px] uppercase tracking-widest text-muted-foreground font-semibold bg-secondary/40 border-t border-border first:border-t-0">
+                            {KIND_LABEL[kind] ?? kind}
+                          </div>
+                          <ul>
+                            {items.map((c) => {
+                              const idx = flatIdx++;
+                              return (
+                                <li key={c.id}>
+                                  <button
+                                    type="button"
+                                    data-cat-item
+                                    tabIndex={0}
+                                    className={`w-full text-left px-3 py-1.5 flex items-center gap-2 min-w-0 ${idx === activeIndex ? "bg-primary/10 text-foreground" : "hover:bg-secondary"}`}
+                                    onMouseDown={(e) => { e.preventDefault(); select(c.id, c.name); }}
+                                  >
+                                    {c.color && <span className="shrink-0 inline-block h-2.5 w-2.5 rounded-full border border-border/50" style={{ backgroundColor: c.color }} />}
+                                    <span className="font-medium truncate">{c.name}</span>
+                                    <span className={`ml-auto shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full ${KIND_BADGE[c.kind] ?? "bg-secondary text-muted-foreground"}`}>
+                                      {KIND_LABEL[c.kind] ?? c.kind}
+                                    </span>
+                                  </button>
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        </li>
+                      );
+                    });
+                  })()
+                : filtered.map((c, idx) => (
                     <li key={c.id}>
                       <button
                         type="button"
+                        data-cat-item
                         tabIndex={0}
-                        className="w-full text-left px-3 py-1.5 hover:bg-secondary flex items-center gap-2 min-w-0"
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          select(c.id, c.name);
-                        }}
+                        className={`w-full text-left px-3 py-1.5 flex items-center gap-2 min-w-0 ${idx === activeIndex ? "bg-primary/10 text-foreground" : "hover:bg-secondary"}`}
+                        onMouseDown={(e) => { e.preventDefault(); select(c.id, c.name); }}
                       >
-                        {c.color && (
-                          <span
-                            className="shrink-0 inline-block h-2.5 w-2.5 rounded-full border border-border/50"
-                            style={{ backgroundColor: c.color }}
-                          />
-                        )}
+                        {c.color && <span className="shrink-0 inline-block h-2.5 w-2.5 rounded-full border border-border/50" style={{ backgroundColor: c.color }} />}
                         <span className="font-medium truncate">{c.name}</span>
-                        <span
-                          className={`ml-auto shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full ${KIND_BADGE[c.kind] ?? "bg-secondary text-muted-foreground"}`}
-                        >
+                        <span className={`ml-auto shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full ${KIND_BADGE[c.kind] ?? "bg-secondary text-muted-foreground"}`}>
                           {KIND_LABEL[c.kind] ?? c.kind}
                         </span>
                       </button>

@@ -69,7 +69,6 @@ function ReceivePayments({
       ),
   });
 
-  const usableAccounts = accounts.filter((a) => !a.isArchived);
   const [paymentDate, setPaymentDate] = useState(
     new Date().toISOString().slice(0, 10)
   );
@@ -86,17 +85,10 @@ function ReceivePayments({
   );
   const [referenceNumber, setReferenceNumber] = useState("");
   const [memo, setMemo] = useState("");
-  const [depositBankAccountId, setDepositBankAccountId] = useState<string>("");
   const [totalReceived, setTotalReceived] = useState<string>("");
   const [applications, setApplications] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [doneMsg, setDoneMsg] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!depositBankAccountId && usableAccounts.length) {
-      setDepositBankAccountId(usableAccounts[0].id);
-    }
-  }, [usableAccounts, depositBankAccountId]);
 
   // Reset applied amounts when provider changes
   useEffect(() => {
@@ -148,8 +140,6 @@ function ReceivePayments({
         }))
         .filter((a) => a.amount > 0);
       if (!apps.length) throw new Error("Apply a payment to at least one invoice.");
-      if (!depositBankAccountId)
-        throw new Error("Choose a deposit account before saving.");
       if (overApplied)
         throw new Error(
           "Applied total exceeds the payment amount received. Lower a row or raise the total received."
@@ -161,7 +151,6 @@ function ReceivePayments({
         paymentMethod,
         referenceNumber: referenceNumber.trim() || null,
         memo: memo.trim() || null,
-        depositBankAccountId,
         applications: apps,
       };
       return apiFetch<ReceivePaymentsResultData>("/invoices/receive-payments", {
@@ -171,10 +160,9 @@ function ReceivePayments({
     },
     onSuccess: (r) => {
       const total = r.totalApplied ?? "0";
+      const count = Object.values(applications).filter((v) => Number(v) > 0).length;
       setDoneMsg(
-        `Recorded ${formatMoney(total)} across ${
-          Object.values(applications).filter((v) => Number(v) > 0).length
-        } invoice(s) and posted a combined deposit.`
+        `Recorded ${formatMoney(total)} across ${count} invoice(s). Funds are now in Undeposited Funds — go to Make Deposits to move them to a bank account.`
       );
       setApplications({});
       setTotalReceived("");
@@ -269,24 +257,6 @@ function ReceivePayments({
             </div>
           </div>
           <div>
-            <Label>Deposit to (required)</Label>
-            <select
-              value={depositBankAccountId}
-              onChange={(e) => setDepositBankAccountId(e.target.value)}
-              className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
-            >
-              {!usableAccounts.length && (
-                <option value="">No active accounts — add one first</option>
-              )}
-              {usableAccounts.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                  {a.last4 ? ` ··${a.last4}` : ""}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
             <Label>Memo</Label>
             <input
               type="text"
@@ -332,8 +302,14 @@ function ReceivePayments({
             </div>
           )}
           {doneMsg && (
-            <div className="mt-4 text-sm text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 px-3 py-2 rounded-md">
-              {doneMsg}
+            <div className="mt-4 text-sm text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 px-3 py-2 rounded-md flex flex-wrap items-center gap-2">
+              <span>{doneMsg}</span>
+              <a
+                href="/finance/make-deposits"
+                className="font-semibold underline underline-offset-2 hover:opacity-80 whitespace-nowrap"
+              >
+                Go to Make Deposits →
+              </a>
             </div>
           )}
           <button

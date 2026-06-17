@@ -16,6 +16,7 @@ import { formatMoney } from "@/lib/format";
 const ALL_TABS = [
   { path: "/finance/register", label: "Register", billingOnly: false },
   { path: "/finance/receive-payments", label: "Receive Payments", billingOnly: true },
+  { path: "/finance/make-deposits", label: "Make Deposits", billingOnly: true },
   { path: "/finance/reconcile", label: "Reconcile", billingOnly: false },
   { path: "/finance/cash-flow", label: "Cash Flow", billingOnly: false },
   { path: "/finance/recurring", label: "Recurring", billingOnly: false },

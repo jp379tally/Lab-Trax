@@ -2799,7 +2799,7 @@ export const ReceiveInvoicePaymentsBody = zod.object({
   paymentMethod: zod.enum(["card", "ach", "check", "cash", "other"]),
   referenceNumber: zod.string().nullish(),
   paymentDate: zod.coerce.date().optional(),
-  depositBankAccountId: zod.string(),
+  depositBankAccountId: zod.string().optional(),
   memo: zod.string().nullish(),
   applications: zod
     .array(

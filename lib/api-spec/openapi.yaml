@@ -4283,7 +4283,6 @@ components:
         - labOrganizationId
         - providerOrganizationId
         - paymentMethod
-        - depositBankAccountId
         - applications
       properties:
         labOrganizationId: { type: string }

@@ -22,13 +22,13 @@ type BlankRowValues = {
 
 type BlankRowEntry = { key: number; initialValues?: BlankRowValues };
 
-// 9 resizable columns in body order: Date(0), Type(1)…Deposit(7), then Balance(8) after fixed Clr/Rec
-const FINANCE_COL_DEFAULTS = [90, 90, 80, 160, 130, 180, 100, 100, 110] as const;
-const FINANCE_FIXED_CLR = 48;
-const FINANCE_FIXED_REC = 48;
+// QB-style layout — 7 resizable cols: Date(0) Num(1) Payee(2) Account(3) Payment(4) Deposit(5) Balance(6)
+// DOM order: Date | Num | Payee | Account | Payment | ✓(fixed) | Deposit | Balance | Actions(fixed)
+const FINANCE_COL_DEFAULTS = [90, 70, 160, 150, 100, 100, 110] as const;
+const FINANCE_FIXED_CLR = 40; // combined cleared / reconciled "✓" indicator column
 const FINANCE_FIXED_ACTIONS = 80;
-// Labels for the first 8 resizable columns (before Clr/Rec in body order)
-const FINANCE_PRE_LABELS = ["Date", "Type", "Check #", "Payee", "Category", "Memo", "Payment", "Deposit"] as const;
+// Labels for cols 0-4 (before the fixed ✓ column); Deposit and Balance are rendered separately
+const FINANCE_PRE_LABELS = ["Date", "Num", "Payee", "Account", "Payment"] as const;
 
 export default function RegisterPage() {
   return (
@@ -59,8 +59,7 @@ function RegisterTable({
   const [categoryFilter, setCategoryFilter] = useState<string>("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [editing, setEditing] = useState<BankTransaction | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showInlineRows, setShowInlineRows] = useState(false);
   const [inlineDateGroup, setInlineDateGroup] = useState<string | null>(null);
   const [inlineDateGroupIsPartial, setInlineDateGroupIsPartial] = useState(false);
@@ -80,9 +79,10 @@ function RegisterTable({
   const [recurringFor, setRecurringFor] = useState<BankTransaction | null>(null);
 
   const account = accounts.find((a) => a.id === accountId);
+  const isUF = account?.accountType === "undeposited_funds";
 
   const { widths: colWidths, totalWidth: colTotalWidth, resizingCol, startResize, resetColumn } =
-    useColumnWidths([...FINANCE_COL_DEFAULTS], "labtrax_finance_col_widths_v3");
+    useColumnWidths([...FINANCE_COL_DEFAULTS], "labtrax_finance_col_widths_v4");
 
   const theadRef = useRef<HTMLTableSectionElement>(null);
   const [theadHeight, setTheadHeight] = useState(33);
@@ -299,12 +299,28 @@ function RegisterTable({
           </button>
           <button
             type="button"
-            onClick={() => setShowInlineRows(true)}
-            className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-1.5"
+            onClick={() => !isUF && setShowInlineRows(true)}
+            disabled={isUF}
+            title={isUF ? "Undeposited Funds holds received payments — entries are created automatically via Receive Payments" : undefined}
+            className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <Plus size={14} /> Add entry
           </button>
         </div>
+
+        {isUF && (
+          <div className="mx-0 px-4 py-2.5 bg-sky-50 dark:bg-sky-950/40 border-b border-sky-200 dark:border-sky-800 text-sky-800 dark:text-sky-300 text-xs flex items-center gap-2">
+            <span className="font-semibold">Undeposited Funds</span>
+            <span className="text-sky-600 dark:text-sky-400">—</span>
+            <span>
+              Received payments accumulate here until you run{" "}
+              <a href="/finance/make-deposits" className="underline font-medium hover:text-sky-900 dark:hover:text-sky-100">
+                Make Deposits
+              </a>{" "}
+              to move them to a bank account.
+            </span>
+          </div>
+        )}
 
         <div className="overflow-x-auto overflow-y-auto relative" style={{ maxHeight: "calc(100vh - 22rem)" }}>
           {resizingCol !== null && (
@@ -312,12 +328,11 @@ function RegisterTable({
               className="bg-primary/50 pointer-events-none absolute top-0 bottom-0 z-10"
               style={{
                 left:
-                  resizingCol <= 7
+                  resizingCol <= 4
                     ? colWidths.slice(0, resizingCol + 1).reduce((a, b) => a + b, 0) - 1
-                    : colWidths.slice(0, 8).reduce((a, b) => a + b, 0) +
+                    : colWidths.slice(0, 5).reduce((a, b) => a + b, 0) +
                       FINANCE_FIXED_CLR +
-                      FINANCE_FIXED_REC +
-                      colWidths[8] -
+                      colWidths.slice(5, resizingCol + 1).reduce((a, b) => a + b, 0) -
                       1,
                 width: 2,
               }}
@@ -327,29 +342,29 @@ function RegisterTable({
             className="text-sm"
             style={{
               tableLayout: "fixed",
-              width: colTotalWidth + FINANCE_FIXED_CLR + FINANCE_FIXED_REC + FINANCE_FIXED_ACTIONS,
+              width: colTotalWidth + FINANCE_FIXED_CLR + FINANCE_FIXED_ACTIONS,
               userSelect: "none",
             }}
           >
             <colgroup>
-              {/* cols 0-7: resizable Date→Deposit */}
-              {colWidths.slice(0, 8).map((w, i) => (
+              {/* cols 0-4: Date Num Payee Account Payment */}
+              {colWidths.slice(0, 5).map((w, i) => (
                 <col key={i} style={{ width: w }} />
               ))}
-              {/* col 8: fixed Clr */}
+              {/* fixed ✓ */}
               <col style={{ width: FINANCE_FIXED_CLR }} />
-              {/* col 9: fixed Rec */}
-              <col style={{ width: FINANCE_FIXED_REC }} />
-              {/* col 10: resizable Balance */}
-              <col style={{ width: colWidths[8] }} />
-              {/* col 11: fixed Actions */}
+              {/* col 5: Deposit */}
+              <col style={{ width: colWidths[5] }} />
+              {/* col 6: Balance — hidden for UF */}
+              {!isUF && <col style={{ width: colWidths[6] }} />}
+              {/* fixed Actions */}
               <col style={{ width: FINANCE_FIXED_ACTIONS }} />
             </colgroup>
             <thead ref={theadRef} style={{ position: "sticky", top: 0, zIndex: 20 }}>
               <tr className="bg-secondary text-[11px] uppercase tracking-wide text-muted-foreground">
-                {/* First 8 resizable columns: Date → Deposit */}
+                {/* Cols 0-4: Date Num Payee Account Payment */}
                 {FINANCE_PRE_LABELS.map((label, i) => {
-                  const isRight = i === 6 || i === 7;
+                  const isRight = i === 4; // Payment is right-aligned
                   const isFirst = i === 0;
                   return (
                     <th
@@ -383,18 +398,17 @@ function RegisterTable({
                     </th>
                   );
                 })}
-                {/* Fixed: Clr, Rec */}
-                <th className="text-center font-medium py-2">Clr</th>
-                <th className="text-center font-medium py-2">Rec</th>
-                {/* Resizable: Balance (index 9) */}
+                {/* Fixed: ✓ (cleared + reconciled combined) */}
+                <th className="text-center font-medium py-2">✓</th>
+                {/* Resizable: Deposit (index 5) */}
                 <th
-                  className="font-medium px-4 py-2 relative text-right"
+                  className="font-medium px-3 py-2 relative text-right"
                   style={{ overflow: "hidden" }}
                 >
-                  Balance
+                  Deposit
                   <div
-                    onMouseDown={(e) => startResize(8, e)}
-                    onDoubleClick={() => resetColumn(8)}
+                    onMouseDown={(e) => startResize(5, e)}
+                    onDoubleClick={() => resetColumn(5)}
                     className="group/resize"
                     style={{
                       position: "absolute",
@@ -410,11 +424,42 @@ function RegisterTable({
                     }}
                   >
                     <span
-                      className={`w-0.5 transition-colors duration-100 ${resizingCol === 8 ? "bg-primary" : "bg-border/60 group-hover/resize:bg-primary/50"}`}
+                      className={`w-0.5 transition-colors duration-100 ${resizingCol === 5 ? "bg-primary" : "bg-border/60 group-hover/resize:bg-primary/50"}`}
                       style={{ display: "block", height: "100%" }}
                     />
                   </div>
                 </th>
+                {/* Resizable: Balance (index 6) — hidden for UF */}
+                {!isUF && (
+                  <th
+                    className="font-medium px-4 py-2 relative text-right"
+                    style={{ overflow: "hidden" }}
+                  >
+                    Balance
+                    <div
+                      onMouseDown={(e) => startResize(6, e)}
+                      onDoubleClick={() => resetColumn(6)}
+                      className="group/resize"
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        right: 0,
+                        width: 6,
+                        height: "100%",
+                        cursor: "col-resize",
+                        userSelect: "none",
+                        display: "flex",
+                        alignItems: "stretch",
+                        justifyContent: "flex-end",
+                      }}
+                    >
+                      <span
+                        className={`w-0.5 transition-colors duration-100 ${resizingCol === 6 ? "bg-primary" : "bg-border/60 group-hover/resize:bg-primary/50"}`}
+                        style={{ display: "block", height: "100%" }}
+                      />
+                    </div>
+                  </th>
+                )}
                 {/* Fixed: Actions */}
                 <th className="px-2 py-2" />
               </tr>
@@ -422,7 +467,7 @@ function RegisterTable({
             <tbody>
               {txnsQuery.isLoading && (
                 <tr>
-                  <td colSpan={12} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={isUF ? 8 : 9} className="px-5 py-12 text-center text-muted-foreground">
                     <Loader2 size={16} className="inline animate-spin mr-2" />
                     Loading register…
                   </td>
@@ -430,7 +475,7 @@ function RegisterTable({
               )}
               {txnsQuery.data?.length === 0 && !txnsQuery.isLoading && (
                 <tr>
-                  <td colSpan={12} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={isUF ? 8 : 9} className="px-5 py-12 text-center text-muted-foreground">
                     No transactions match the current filters.
                   </td>
                 </tr>
@@ -439,7 +484,7 @@ function RegisterTable({
                 <Fragment key={date}>
                   <tr className="border-t border-border/60">
                     <td
-                      colSpan={12}
+                      colSpan={isUF ? 8 : 9}
                       className="px-4 py-1 text-[11px] font-semibold text-muted-foreground tracking-wide uppercase select-none bg-muted/80"
                       style={{ position: "sticky", top: theadHeight, zIndex: 10 }}
                     >
@@ -451,11 +496,12 @@ function RegisterTable({
                     const credit = Number(r.creditAmount);
                     const isVoid = r.status === "void";
                     const isProjected = r.status === "projected";
+                    const cols = isUF ? 8 : 9;
                     return (
+                      <Fragment key={r.id}>
                       <tr
-                        key={r.id}
-                        onClick={() => setEditing(r)}
-                        className={`border-t border-border/30 cursor-pointer hover:bg-secondary/30 ${
+                        onClick={() => !isUF && setExpandedId(expandedId === r.id ? null : r.id)}
+                        className={`border-t border-border/30 ${isUF ? "" : "cursor-pointer hover:bg-secondary/30"} ${expandedId === r.id ? "bg-secondary/40" : ""} ${
                           isVoid ? "text-muted-foreground line-through" : ""
                         } ${isProjected ? "italic text-muted-foreground" : ""}`}
                       >
@@ -468,61 +514,78 @@ function RegisterTable({
                             onUpdated={() => qc.invalidateQueries({ queryKey: ["finance"] })}
                           />
                         </td>
-                        <td className="py-2.5 capitalize">{r.type}</td>
-                        <td className="py-2.5 font-mono text-xs">{r.checkNumber || "—"}</td>
-                        <td className="py-2.5">
-                          {r.payee ? (
-                            <span className="flex items-center gap-1.5 min-w-0">
-                              {r.vendorId && vendorTypeById.has(r.vendorId) && (
-                                <span
-                                  className={`shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full ${TYPE_BADGE_CLASS[vendorTypeById.get(r.vendorId)!]}`}
-                                >
-                                  {TYPE_LABEL[vendorTypeById.get(r.vendorId)!]}
-                                </span>
-                              )}
-                              <span className="truncate">{r.payee}</span>
-                            </span>
-                          ) : "—"}
+                        {/* Num — check number, empty for non-check types */}
+                        <td className="py-2.5 px-3 font-mono text-xs text-muted-foreground">
+                          {r.checkNumber || (r.type !== "other" ? <span className="capitalize">{r.type}</span> : "")}
                         </td>
-                        <td className="py-2.5 text-muted-foreground">
-                          {r.categoryId ? catNameById.get(r.categoryId) || "—" : "—"}
+                        {/* Payee — with vendor type badge; memo shown as secondary text */}
+                        <td className="py-2.5 px-3">
+                          <div className="min-w-0">
+                            {r.payee ? (
+                              <span className="flex items-center gap-1.5 min-w-0">
+                                {r.vendorId && vendorTypeById.has(r.vendorId) && (
+                                  <span
+                                    className={`shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full ${TYPE_BADGE_CLASS[vendorTypeById.get(r.vendorId)!]}`}
+                                  >
+                                    {TYPE_LABEL[vendorTypeById.get(r.vendorId)!]}
+                                  </span>
+                                )}
+                                <span className="truncate">{r.payee}</span>
+                              </span>
+                            ) : <span className="text-muted-foreground">—</span>}
+                            {r.memo && (
+                              <div className="text-[11px] text-muted-foreground truncate mt-0.5">{r.memo}</div>
+                            )}
+                          </div>
                         </td>
-                        <td className="py-2.5 text-muted-foreground truncate max-w-[180px]">
-                          {r.memo || ""}
+                        {/* Account (Category) — shows "–split–" when multiple invoice links */}
+                        <td className="py-2.5 px-3 text-muted-foreground">
+                          {(r.invoices?.length ?? 0) > 1
+                            ? <span className="italic text-xs">–split–</span>
+                            : r.categoryId
+                              ? catNameById.get(r.categoryId) || "—"
+                              : "—"}
                         </td>
-                        <td className="py-2.5 text-right tabular-nums">
+                        {/* Payment (debit) */}
+                        <td className="py-2.5 px-3 text-right tabular-nums">
                           {debit > 0 ? formatMoney(debit) : ""}
                         </td>
-                        <td className="py-2.5 text-right tabular-nums text-emerald-600 dark:text-emerald-400">
-                          {credit > 0 ? formatMoney(credit) : ""}
-                        </td>
+                        {/* ✓ — combined cleared checkbox + reconciled badge; read-only for UF */}
                         <td
                           className="py-2.5 text-center"
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (isVoid) return;
+                            if (isVoid || r.reconciled || isUF) return;
                             clearMut.mutate({ id: r.id, cleared: !r.cleared });
                           }}
                         >
-                          <input
-                            type="checkbox"
-                            checked={r.cleared}
-                            readOnly
-                            className="h-3.5 w-3.5 cursor-pointer"
-                          />
+                          {r.reconciled ? (
+                            <span className="inline-flex items-center justify-center h-4 w-4 rounded-full bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-[10px] font-bold">R</span>
+                          ) : (
+                            <input
+                              type="checkbox"
+                              checked={r.cleared}
+                              readOnly
+                              className="h-3.5 w-3.5 cursor-pointer"
+                            />
+                          )}
                         </td>
-                        <td className="py-2.5 text-center text-muted-foreground">
-                          {r.reconciled ? "✓" : ""}
+                        {/* Deposit (credit) */}
+                        <td className="py-2.5 px-3 text-right tabular-nums text-emerald-600 dark:text-emerald-400">
+                          {credit > 0 ? formatMoney(credit) : ""}
                         </td>
-                        <td className="px-4 py-2.5 text-right tabular-nums font-medium">
-                          {formatMoney(r.runningBalance ?? 0)}
-                        </td>
+                        {/* Balance — hidden for UF accounts */}
+                        {!isUF && (
+                          <td className="px-4 py-2.5 text-right tabular-nums font-medium">
+                            {formatMoney(r.runningBalance ?? 0)}
+                          </td>
+                        )}
                         <td
                           className="px-2 py-2.5"
                           onClick={(e) => e.stopPropagation()}
                         >
                           <div className="flex items-center justify-end gap-0.5">
-                            {!isVoid && (
+                            {!isUF && !isVoid && (
                               <button
                                 type="button"
                                 onClick={() => setRecurringFor(r)}
@@ -533,7 +596,7 @@ function RegisterTable({
                                 <Repeat size={12} />
                               </button>
                             )}
-                            {!r.reconciled && !isVoid && (
+                            {!isUF && !r.reconciled && !isVoid && (
                               <button
                                 type="button"
                                 onClick={() => voidMut.mutate(r.id)}
@@ -544,7 +607,7 @@ function RegisterTable({
                                 <Ban size={12} />
                               </button>
                             )}
-                            {!r.reconciled && (
+                            {!isUF && !r.reconciled && (
                               <button
                                 type="button"
                                 onClick={() => {
@@ -561,6 +624,22 @@ function RegisterTable({
                           </div>
                         </td>
                       </tr>
+                      {expandedId === r.id && (
+                        <InlineEditRow
+                          key={`edit-${r.id}`}
+                          organizationId={organizationId}
+                          accountId={accountId}
+                          existing={r}
+                          categories={cats.data || []}
+                          colSpan={cols}
+                          onClose={() => setExpandedId(null)}
+                          onSaved={() => {
+                            setExpandedId(null);
+                            void qc.invalidateQueries({ queryKey: ["finance"] });
+                          }}
+                        />
+                      )}
+                      </Fragment>
                     );
                   })}
                   {inlineDateGroup === date ? (
@@ -584,8 +663,9 @@ function RegisterTable({
                       onPartialChange={setInlineDateGroupIsPartial}
                     />
                   ) : (
+                    !isUF && (
                     <tr className="border-t border-border/30">
-                      <td colSpan={12} className="px-4 py-0">
+                      <td colSpan={8} className="px-4 py-0">
                         <button
                           type="button"
                           disabled={inlineDateGroupIsPartial}
@@ -605,6 +685,7 @@ function RegisterTable({
                         </button>
                       </td>
                     </tr>
+                    )
                   )}
                 </Fragment>
               ))}
@@ -625,19 +706,6 @@ function RegisterTable({
         </div>
       </div>
 
-      {(adding || editing) && (
-        <TxnEditor
-          organizationId={organizationId}
-          accountId={accountId}
-          accounts={accounts}
-          existing={editing}
-          categories={cats.data || []}
-          onClose={() => {
-            setAdding(false);
-            setEditing(null);
-          }}
-        />
-      )}
 
       {importing && (
         <ImportDialog
@@ -1184,6 +1252,7 @@ function BlankRow({
   const rowRef = useRef<HTMLTableRowElement>(null);
   const dateRowRef = useRef<HTMLTableRowElement>(null);
   const [date, setDate] = useState(initialValues?.date ?? new Date().toISOString().slice(0, 10));
+  const [checkNumber, setCheckNumber] = useState("");
   const [payee, setPayee] = useState(initialValues?.payee ?? "");
   const [vendorId, setVendorId] = useState<string | null>(null);
   const [memo, setMemo] = useState(initialValues?.memo ?? "");
@@ -1226,6 +1295,7 @@ function BlankRow({
           bankAccountId: accountId,
           txnDate: new Date(date).toISOString(),
           type: Number(deposit) > 0 ? "deposit" : "other",
+          checkNumber: checkNumber.trim() || null,
           payee: payee.trim(),
           vendorId: vendorId || null,
           memo: memo.trim() || null,
@@ -1278,7 +1348,7 @@ function BlankRow({
     <>
       {showDatePicker && (
         <tr ref={dateRowRef} className="border-t border-border bg-secondary/10">
-          <td colSpan={12} className="px-4 pt-1.5 pb-0">
+          <td colSpan={9} className="px-4 pt-1.5 pb-0">
             <div className="inline-flex items-center gap-2">
               <span className="text-[11px] text-muted-foreground uppercase tracking-wide font-medium">
                 Date
@@ -1300,6 +1370,7 @@ function BlankRow({
         onBlur={handleBlur}
         onKeyDownCapture={onRowKeyDownCapture}
       >
+        {/* Date (col 0) */}
         <td className="px-4 py-1.5">
           {!showDatePicker && (
             <input
@@ -1311,19 +1382,20 @@ function BlankRow({
             />
           )}
         </td>
-        <td className="py-1.5 text-xs text-muted-foreground italic">
-          <span className="inline-flex items-center gap-1">
-            {savedOnce ? "saved" : "new"}
-            {isPartial && (
-              <span
-                className="inline-block h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse"
-                title="Unsaved — fill in date, payee, and an amount to save"
-              />
-            )}
-          </span>
+        {/* Num / Check# (col 1) */}
+        <td className="py-1.5 px-3">
+          <input
+            type="text"
+            value={checkNumber}
+            onChange={(e) => setCheckNumber(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="Num"
+            disabled={savedOnce}
+            className={`${inputCls} font-mono`}
+          />
         </td>
-        <td className="py-1.5"></td>
-        <td className="py-1.5">
+        {/* Payee — VendorCombobox typeahead (col 2) */}
+        <td className="py-1.5 px-3">
           <VendorCombobox
             organizationId={organizationId}
             value={payee}
@@ -1335,7 +1407,8 @@ function BlankRow({
             className={inputCls}
           />
         </td>
-        <td className="py-1.5">
+        {/* Account / Category — CategorySelect typeahead (col 3) */}
+        <td className="py-1.5 px-3">
           <CategorySelect
             organizationId={organizationId}
             value={categoryId}
@@ -1345,18 +1418,8 @@ function BlankRow({
             className={inputCls}
           />
         </td>
-        <td className="py-1.5">
-          <input
-            type="text"
-            value={memo}
-            onChange={(e) => setMemo(e.target.value)}
-            onKeyDown={onKeyDown}
-            placeholder="Memo"
-            disabled={savedOnce}
-            className={inputCls}
-          />
-        </td>
-        <td className="py-1.5">
+        {/* Payment (col 4) */}
+        <td className="py-1.5 px-3">
           <input
             type="number"
             step="0.01"
@@ -1369,7 +1432,17 @@ function BlankRow({
             className={`${inputCls} text-right tabular-nums`}
           />
         </td>
-        <td className="py-1.5">
+        {/* ✓ — partial indicator (fixed col) */}
+        <td className="py-1.5 text-center">
+          {isPartial && (
+            <span
+              className="inline-block h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse"
+              title="Unsaved — fill in date, payee, and an amount to save"
+            />
+          )}
+        </td>
+        {/* Deposit (col 5) */}
+        <td className="py-1.5 px-3">
           <input
             type="number"
             step="0.01"
@@ -1382,9 +1455,11 @@ function BlankRow({
             className={`${inputCls} text-right tabular-nums`}
           />
         </td>
-        <td className="py-1.5"></td>
-        <td className="py-1.5"></td>
-        <td className="px-4 py-1.5"></td>
+        {/* Balance — empty for new rows (col 6) */}
+        <td className="px-4 py-1.5 text-right text-xs text-muted-foreground italic">
+          {savedOnce ? "saved" : ""}
+        </td>
+        {/* Actions (fixed col) */}
         <td className="px-2 py-1.5">
           <div className="flex items-center gap-1">
             {ready && !savedOnce && (
@@ -1428,7 +1503,7 @@ function BlankRow({
       </tr>
       {error && (
         <tr>
-          <td colSpan={12} className="px-4 py-1 text-xs text-destructive">
+          <td colSpan={9} className="px-4 py-1 text-xs text-destructive">
             {error}
           </td>
         </tr>
@@ -1748,6 +1823,146 @@ function SummaryCard({
         {formatMoney(v)}
       </div>
     </div>
+  );
+}
+
+function InlineEditRow({
+  organizationId,
+  accountId,
+  existing,
+  categories,
+  colSpan,
+  onClose,
+  onSaved,
+}: {
+  organizationId: string;
+  accountId: string;
+  existing: BankTransaction;
+  categories: TransactionCategory[];
+  colSpan: number;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const qc = useQueryClient();
+  const [txnDate, setTxnDate] = useState(toInputDate(existing.txnDate));
+  const [checkNumber, setCheckNumber] = useState(existing.checkNumber || "");
+  const [payee, setPayee] = useState(existing.payee || "");
+  const [vendorId, setVendorId] = useState<string | null>(existing.vendorId ?? null);
+  const [memo, setMemo] = useState(existing.memo || "");
+  const [categoryId, setCategoryId] = useState(existing.categoryId || "");
+  const [payment, setPayment] = useState(Number(existing.debitAmount).toString());
+  const [deposit, setDeposit] = useState(Number(existing.creditAmount).toString());
+  const [cleared, setCleared] = useState(existing.cleared ?? false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = useMutation({
+    mutationFn: () =>
+      apiFetch(`/finance/transactions/${existing.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          bankAccountId: accountId,
+          txnDate: new Date(txnDate).toISOString(),
+          checkNumber: checkNumber || null,
+          payee: payee || null,
+          vendorId: vendorId || null,
+          memo: memo || null,
+          categoryId: categoryId || null,
+          payment: Number(payment) || 0,
+          deposit: Number(deposit) || 0,
+          cleared,
+        }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["finance"] });
+      onSaved();
+    },
+    onError: (e: Error) => setError(e.message),
+  });
+
+  const inputCls = "h-7 px-2 rounded bg-background border border-input text-xs w-full";
+
+  return (
+    <tr className="bg-secondary/20 border-t border-border/30">
+      <td colSpan={colSpan} className="px-4 py-2.5">
+        <div className="flex flex-wrap items-end gap-2">
+          {/* Date */}
+          <div className="flex flex-col gap-0.5 min-w-[96px]">
+            <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Date</label>
+            <input type="date" value={txnDate} onChange={(e) => setTxnDate(e.target.value)} className={inputCls} />
+          </div>
+          {/* Num */}
+          <div className="flex flex-col gap-0.5 min-w-[64px]">
+            <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Num</label>
+            <input type="text" value={checkNumber} onChange={(e) => setCheckNumber(e.target.value)} placeholder="—" className={`${inputCls} font-mono`} />
+          </div>
+          {/* Payee */}
+          <div className="flex flex-col gap-0.5 min-w-[140px] flex-1">
+            <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Payee</label>
+            <VendorCombobox
+              organizationId={organizationId}
+              value={payee}
+              onChange={setPayee}
+              onChangeId={setVendorId}
+              onMerged={() => qc.invalidateQueries({ queryKey: ["finance"] })}
+              className={inputCls}
+            />
+          </div>
+          {/* Memo */}
+          <div className="flex flex-col gap-0.5 min-w-[120px] flex-1">
+            <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Memo</label>
+            <input type="text" value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="—" className={inputCls} />
+          </div>
+          {/* Account */}
+          <div className="flex flex-col gap-0.5 min-w-[130px] flex-1">
+            <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Account</label>
+            <CategorySelect
+              organizationId={organizationId}
+              value={categoryId}
+              onChange={setCategoryId}
+              className={inputCls}
+            />
+          </div>
+          {/* Payment */}
+          <div className="flex flex-col gap-0.5 min-w-[80px]">
+            <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Payment</label>
+            <input type="number" step="0.01" min="0" value={payment} onChange={(e) => setPayment(e.target.value)} placeholder="0.00" className={`${inputCls} text-right tabular-nums`} />
+          </div>
+          {/* Deposit */}
+          <div className="flex flex-col gap-0.5 min-w-[80px]">
+            <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Deposit</label>
+            <input type="number" step="0.01" min="0" value={deposit} onChange={(e) => setDeposit(e.target.value)} placeholder="0.00" className={`${inputCls} text-right tabular-nums`} />
+          </div>
+          {/* Cleared */}
+          <div className="flex flex-col gap-0.5 items-center min-w-[40px]">
+            <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">✓</label>
+            <input type="checkbox" checked={cleared} onChange={(e) => setCleared(e.target.checked)} className="h-4 w-4 mt-1" />
+          </div>
+          {/* Actions */}
+          <div className="flex flex-col gap-0.5">
+            <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium invisible">Act</label>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => save.mutate()}
+                disabled={save.isPending}
+                className="h-7 px-2.5 rounded bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 disabled:opacity-50 inline-flex items-center gap-1"
+              >
+                {save.isPending ? <Loader2 size={10} className="animate-spin" /> : <CheckCircle2 size={10} />}
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={onClose}
+                className="h-7 w-7 rounded inline-flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary"
+              >
+                <X size={12} />
+              </button>
+            </div>
+          </div>
+        </div>
+        {error && <div className="mt-1 text-xs text-destructive">{error}</div>}
+      </td>
+    </tr>
   );
 }
 

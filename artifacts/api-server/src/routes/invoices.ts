@@ -1906,9 +1906,9 @@ const receivePaymentsSchema = z.object({
   paymentMethod: z.enum(["card", "ach", "check", "cash", "other"]),
   referenceNumber: z.string().optional().nullable(),
   memo: z.string().optional().nullable(),
-  // Mandatory: every Receive Payments batch posts a single combined deposit
-  // to a real bank account so the register reflects the cash inflow.
-  depositBankAccountId: z.string().min(1),
+  // Optional: when omitted, the payment is held in the org's Undeposited
+  // Funds account until the user runs "Make Deposits".
+  depositBankAccountId: z.string().optional().nullable(),
   applications: z
     .array(
       z.object({
@@ -1945,18 +1945,36 @@ router.post(
       throw new HttpError(400, "Invalid payment date.");
     }
 
-    const depositAccount = await db.query.bankAccounts.findFirst({
-      where: eq(bankAccounts.id, input.depositBankAccountId),
-    });
-    if (
-      !depositAccount ||
-      depositAccount.labOrganizationId !== input.labOrganizationId ||
-      depositAccount.isArchived
-    ) {
-      throw new HttpError(
-        400,
-        "Deposit account must belong to this lab and be active."
-      );
+    // Resolve the deposit account: explicit override → Undeposited Funds.
+    let depositAccount: any;
+    if (input.depositBankAccountId) {
+      depositAccount = await db.query.bankAccounts.findFirst({
+        where: eq(bankAccounts.id, input.depositBankAccountId),
+      });
+      if (
+        !depositAccount ||
+        depositAccount.labOrganizationId !== input.labOrganizationId ||
+        depositAccount.isArchived
+      ) {
+        throw new HttpError(
+          400,
+          "Deposit account must belong to this lab and be active."
+        );
+      }
+    } else {
+      // Auto-route to the org's Undeposited Funds account.
+      depositAccount = await db.query.bankAccounts.findFirst({
+        where: and(
+          eq(bankAccounts.labOrganizationId, input.labOrganizationId),
+          eq(bankAccounts.accountType, "undeposited_funds")
+        ),
+      });
+      if (!depositAccount) {
+        throw new HttpError(
+          422,
+          "No Undeposited Funds account found for this lab. Open the Finance register to create one automatically."
+        );
+      }
     }
 
     const result = await db.transaction(async (tx) => {

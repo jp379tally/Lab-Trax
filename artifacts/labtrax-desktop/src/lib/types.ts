@@ -398,6 +398,7 @@ export interface BankAccount {
   openingBalance: string | number;
   currency: string;
   isArchived: boolean;
+  accountType?: string | null;
   bookBalance?: string | number;
   clearedBalance?: string | number;
   unreconciledBalance?: string | number;
