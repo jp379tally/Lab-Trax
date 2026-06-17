@@ -2038,14 +2038,27 @@ export function DashboardDropZone() {
             value={r.shade || ""}
             onChange={(e) => setRxDraft({ ...r, shade: e.target.value })}
           />
-          <input
-            type="date"
-            className={inputCls}
-            value={r.dueDate || ""}
-            onChange={(e) =>
-              setRxDraft({ ...r, dueDate: e.target.value })
-            }
-          />
+          <label htmlFor="rx-due-date" className="flex flex-col gap-0.5">
+            <span className="text-xs text-muted-foreground px-0.5">
+              Due date
+            </span>
+            <div className="relative">
+              <input
+                id="rx-due-date"
+                type="date"
+                className={`${inputCls} w-full${!r.dueDate ? " [color:transparent]" : ""}`}
+                value={r.dueDate || ""}
+                onChange={(e) =>
+                  setRxDraft({ ...r, dueDate: e.target.value })
+                }
+              />
+              {!r.dueDate && (
+                <span className="pointer-events-none absolute inset-0 flex items-center px-2.5 text-sm text-muted-foreground">
+                  No date set
+                </span>
+              )}
+            </div>
+          </label>
           <textarea
             className={inputCls + " col-span-2 h-16 resize-none py-1.5"}
             placeholder="Notes"
