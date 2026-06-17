@@ -437,6 +437,9 @@ export interface BankTransaction {
   recurringRuleId?: string | null;
   transferGroupId?: string | null;
   createdAt?: string | null;
+  depositedByUserId?: string | null;
+  depositedAt?: string | null;
+  depositedByName?: string | null;
   invoices?: Array<{ invoiceId: string; invoiceNumber: string }>;
 }
 

@@ -1484,6 +1484,11 @@ export const bankTransactions = pgTable(
     createdByUserId: varchar("created_by_user_id").references(() => users.id, {
       onDelete: "set null",
     }),
+    depositedByUserId: varchar("deposited_by_user_id").references(
+      () => users.id,
+      { onDelete: "set null" }
+    ),
+    depositedAt: timestamp("deposited_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),

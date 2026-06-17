@@ -436,7 +436,8 @@ maybe("Undeposited Funds workflow (db integration)", () => {
     expect(Number(totalAmount)).toBeCloseTo(expectedTotal, 2);
     expect(bankAccountId).toBe(realAccountId);
 
-    // Verify rows were moved to the real account in the DB
+    // Verify rows were moved to the real account in the DB and
+    // deposit audit fields were stamped
     const movedTxns = await db
       .select()
       .from(bankTransactions)
@@ -444,6 +445,8 @@ maybe("Undeposited Funds workflow (db integration)", () => {
     for (const t of movedTxns) {
       expect(t.bankAccountId).toBe(realAccountId);
       expect(t.cleared).toBe(true);
+      expect(t.depositedByUserId).toBe(adminUserId);
+      expect(t.depositedAt).toBeInstanceOf(Date);
     }
   });
 

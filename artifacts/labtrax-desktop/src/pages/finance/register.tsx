@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeftRight, Ban, CheckCircle2, Download, Loader2, Plus, Repeat, Scale, Search, Trash2, Upload, X } from "lucide-react";
+import { ArrowLeftRight, Ban, CheckCircle2, Download, Landmark, Loader2, Plus, Repeat, Scale, Search, Trash2, Upload, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { FinanceShell } from "@/components/finance/FinanceShell";
 import { TYPE_BADGE_CLASS, TYPE_LABEL, useVendors, VendorCombobox } from "@/components/finance/VendorCombobox";
@@ -2366,6 +2366,21 @@ function InlineEditRow({
           </div>
         </div>
         {error && <div className="mt-1 text-xs text-destructive">{error}</div>}
+        {existing.depositedAt && (
+          <div className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground bg-sky-50 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-800 rounded px-2.5 py-1.5">
+            <Landmark size={11} className="text-sky-500 shrink-0" />
+            <span>
+              Deposited{" "}
+              {existing.depositedByName ? (
+                <>by <span className="font-medium text-foreground">{existing.depositedByName}</span>{" "}</>
+              ) : null}
+              on{" "}
+              <span className="font-medium text-foreground">
+                {formatDate(existing.depositedAt)}
+              </span>
+            </span>
+          </div>
+        )}
       </td>
     </tr>
   );

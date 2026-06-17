@@ -13,6 +13,7 @@ import {
   reconciliationItems,
   reconciliations,
   transactionCategories,
+  users,
   vendors,
   vendorTypes,
 } from "@workspace/db";
@@ -563,6 +564,26 @@ router.get(
       : [];
     const vendorNameById = new Map(vendorRows.map((v) => [v.id, v.name]));
 
+    const depositorIds = Array.from(
+      new Set(
+        rows
+          .map((r: any) => r.depositedByUserId)
+          .filter(Boolean) as string[]
+      )
+    );
+    const depositorRows = depositorIds.length
+      ? await db
+          .select({
+            id: users.id,
+            username: users.username,
+            firstName: users.firstName,
+            lastName: users.lastName,
+          })
+          .from(users)
+          .where(inArray(users.id, depositorIds))
+      : [];
+    const depositorById = new Map(depositorRows.map((u) => [u.id, u]));
+
     // Compute running balance per-account.
     const running = new Map<string, number>();
     const enriched = rows.map((r: any) => {
@@ -572,11 +593,20 @@ router.get(
       const liveVendorName = r.vendorId
         ? vendorNameById.get(r.vendorId)
         : undefined;
+      const depositor = r.depositedByUserId
+        ? depositorById.get(r.depositedByUserId)
+        : undefined;
+      const depositedByName = depositor
+        ? depositor.firstName && depositor.lastName
+          ? `${depositor.firstName} ${depositor.lastName}`
+          : depositor.username
+        : null;
       return {
         ...r,
         payee: liveVendorName ?? r.payee,
         runningBalance: next.toFixed(2),
         invoices: linksByTxn.get(r.id) ?? [],
+        depositedByName,
       };
     });
     enriched.reverse();
@@ -3163,6 +3193,8 @@ router.post(
       throw new HttpError(400, "Invalid deposit date.");
     }
 
+    const depositorId = uid(req);
+    const depositedAt = new Date();
     await db.transaction(async (tx) => {
       // Move all selected UF transactions to the target account and mark cleared.
       for (const t of txns) {
@@ -3172,6 +3204,8 @@ router.post(
             bankAccountId: targetAccount.id,
             txnDate: depositDate,
             cleared: true,
+            depositedByUserId: depositorId,
+            depositedAt,
             updatedAt: new Date(),
           })
           .where(eq(bankTransactions.id, t.id));
