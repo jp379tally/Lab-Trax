@@ -1,0 +1,416 @@
+Send this to Replit:
+
+Create new epic:
+
+# LabTrax Production Intake Fixes — Barcode, Lab Slip, AI Reader Data, Bulk Locate, and Autocomplete
+
+## What & Why
+
+We have several production workflow issues and missing pieces that need to be fixed before continuing with larger new features.
+
+Some are regressions, some are missing workflow requirements. These must be handled carefully with zero regression.
+
+The main goal is:
+
+When a case is entered from the desktop AI Reader / drag-and-drop intake flow, all critical production data must carry through to the case, lab slip, history, invoice, and mobile/desktop workflows.
+
+No local-only saves.
+No mobile-only workflow divergence.
+No regression to existing mobile beta functionality.
+
+---
+
+## Issue 1 — Assign Case Pan Barcode During Desktop Intake
+
+### Requirement
+
+During the desktop AI Reader / drag-and-drop prescription review step, before submitting the case into production, the user must be able to manually enter the physical case pan barcode.
+
+This field should appear in the same review screen where the user sees:
+
+* shade
+* tooth number
+* doctor/provider
+* material
+* restoration type
+* notes/special instructions
+* due date
+
+### Barcode Format
+
+Barcode values are numeric strings and may start with zeros.
+
+Examples:
+
+* `00001`
+* `00002`
+* `00125`
+
+Important:
+
+* Store barcode as a string, not a number.
+* Preserve leading zeros.
+* Do not trim meaningful leading zeros.
+* Validate allowed characters before saving.
+
+### Acceptance
+
+* User manually enters barcode during AI intake.
+* Case is created.
+* Barcode is saved to the canonical case.
+* Barcode appears on desktop case detail.
+* Barcode appears on mobile case detail.
+* Barcode can later be used for locate/scan workflows.
+* Leading zeros remain intact.
+
+---
+
+## Issue 2 — Mobile Bulk Locate Multiple Cases
+
+### Requirement
+
+On the mobile app, user must be able to select multiple cases like desktop and locate them all at once.
+
+### Workflow
+
+* User selects multiple cases from the mobile cases list.
+* User taps Locate / Move / Update Location.
+* User chooses one location/station from the same desktop location list.
+* All selected cases are updated together.
+* Desktop/web reflects those updates.
+
+### Acceptance
+
+* Select multiple cases on mobile.
+* Choose location.
+* All selected cases update on desktop/web.
+* Case history records the location change where desktop does.
+* Uses canonical API only.
+* No local-only mobile updates.
+
+---
+
+## Issue 3 — Due Date Calendar in Desktop Drag-and-Drop Intake
+
+### Requirement
+
+The desktop drag-and-drop AI intake review screen needs a clickable calendar/date picker for due date selection before putting the case into production.
+
+### Acceptance
+
+* User drags/drops prescription.
+* AI extracts case data.
+* Review screen shows due date field.
+* User can open calendar picker.
+* User selects due date.
+* Created case stores due date.
+* Due date appears on desktop/mobile case detail and lab slip.
+
+---
+
+## Issue 4 — Remove Tooth Chart From Lab Slip
+
+### Requirement
+
+Remove the tooth chart from the lab slip entirely.
+
+The tooth chart still looks inconsistent/bad in the lab slip output and does not match the overview. For now, the lab slip should not print a tooth chart.
+
+### Acceptance
+
+* Lab slip no longer contains the tooth chart.
+* Overview/HUD tooth chart can remain where appropriate.
+* Lab slip remains clean and professional.
+* No blank layout gap where chart was removed.
+* Printed lab slip still includes all critical production data.
+
+---
+
+## Issue 5 — AI Reader Data Must Populate Lab Slip
+
+### Current Problem
+
+When a case is entered through desktop AI Reader / drag-and-drop intake, critical production data is not appearing on the lab slip.
+
+Missing or unreliable fields include:
+
+* material
+* shade
+* restoration type
+* notes/special instructions
+
+This makes the lab slip useless for production because technicians cannot see the required fabrication information.
+
+### Requirement
+
+All data extracted or confirmed in the AI intake review must be saved into canonical case/restoration/notes fields and rendered on the lab slip.
+
+### Fields That Must Carry Through
+
+* patient name
+* doctor/provider
+* tooth number
+* restoration type
+* material
+* shade
+* due date
+* special instructions
+* notes
+* case pan barcode if entered
+* priority if applicable
+
+### Acceptance
+
+1. Drag/drop prescription on desktop.
+2. AI extracts material, shade, restoration type, and notes.
+3. User confirms/edits fields.
+4. Case is put into production.
+5. Print lab slip.
+6. Lab slip shows:
+
+   * material
+   * shade
+   * restoration type
+   * tooth number
+   * notes/special instructions
+   * due date
+   * barcode if entered
+7. Same data appears in desktop case detail.
+8. Same data appears in mobile case detail.
+
+---
+
+## Issue 6 — Notes From AI Intake Must Appear in Case Overview and Lab Slip
+
+### Current Problem
+
+Notes/special instructions from the AI Reader / drag-and-drop intake are not reliably showing on the case overview or lab slip.
+
+### Requirement
+
+Notes from intake must be saved canonically and displayed anywhere desktop shows production notes.
+
+### Acceptance
+
+* AI intake extracts special instructions.
+* User confirms/edits them.
+* Notes appear on case overview.
+* Notes appear on lab slip.
+* Notes appear in mobile case detail.
+* Notes are not stored in a hidden/mobile-only/client-only field.
+
+---
+
+## Issue 7 — Material Autocomplete With Add New
+
+### Requirement
+
+Material fields must support autocomplete.
+
+Example:
+
+* User types `zir`
+* Dropdown suggests `zirconia`
+* User selects it
+
+If the material does not exist:
+
+* show `Add New Material`
+* user can add the new material
+* new material becomes available for future autocomplete
+
+### Applies To
+
+* case overview edit section
+* AI Reader review screen
+* restoration edit forms
+* desktop
+* mobile where the same field exists
+
+### Acceptance
+
+* Typing partial material shows suggestions.
+* Selecting suggestion fills field.
+* Add New creates material option.
+* Newly added material appears in later suggestions.
+* Material saves canonically and appears on lab slip.
+
+---
+
+## Issue 8 — Global Autocomplete / Add New Pattern
+
+### Requirement
+
+The autocomplete pattern should not be limited to materials. Across LabTrax, fields should autocomplete where they represent reusable entities or controlled vocabulary.
+
+Autocomplete + Add New should apply to:
+
+* material
+* shade
+* doctor name
+* practice name
+* provider organization
+* restoration type where applicable
+* other reusable production fields engineering identifies
+
+### Behavior
+
+* User types into field.
+* Dropdown suggests existing values.
+* If no match, show Add New.
+* Add New creates or registers the value canonically.
+* Future users can select it.
+
+### Important
+
+Do not create duplicate doctors/practices/materials if a canonical record already exists.
+
+Use canonical APIs and shared desktop/mobile logic.
+
+---
+
+## Regression Guardrails
+
+Before coding, identify protected workflows that could be affected:
+
+* AI Reader intake
+* desktop drag-and-drop intake
+* case creation
+* lab slip printing
+* overview display
+* notes display
+* mobile case detail
+* mobile/desktop sync
+* invoice creation
+* barcode/locate workflow
+* tooth chart display
+* autocomplete fields
+
+Add/update regression tests before changing logic.
+
+---
+
+## Required Investigation Before Coding
+
+Before implementation, produce a short technical plan answering:
+
+1. Where is case pan barcode stored today, if anywhere?
+2. Which canonical field should store barcode/pan number?
+3. What desktop component renders the AI Reader / drag-and-drop review form?
+4. What fields are saved from that form today?
+5. Why are material/shade/restoration type/notes not reaching the lab slip?
+6. What component renders the lab slip?
+7. What field source does the lab slip currently use?
+8. What API or table stores materials/shades/restoration types?
+9. What autocomplete system already exists, if any?
+10. What canonical API is needed for Add New Material / Add New Shade / Add New Provider?
+11. Which mobile locate workflow should support bulk selection?
+12. Which tests currently protect lab slip and intake?
+
+Do not guess. Ground answers in code.
+
+---
+
+## Implementation Order
+
+### Phase 1 — Lab Slip and AI Intake Data Carry-Through
+
+Fix the most production-critical issue first:
+
+* remove tooth chart from lab slip
+* make material appear on lab slip
+* make shade appear on lab slip
+* make restoration type appear on lab slip
+* make notes/special instructions appear on lab slip
+* add due date calendar to intake review
+* add barcode field to intake review
+
+### Phase 2 — Barcode / Case Pan Canonical Workflow
+
+* define canonical barcode/pan field
+* save barcode during intake
+* display barcode on desktop/mobile
+* use barcode for scan/locate workflows
+* preserve leading zeros
+
+### Phase 3 — Mobile Bulk Locate
+
+* multi-select cases on mobile
+* locate all selected cases
+* use same location/station list as desktop
+* sync immediately to desktop/web
+
+### Phase 4 — Autocomplete + Add New
+
+* material autocomplete
+* shade autocomplete
+* doctor/practice autocomplete
+* add new where allowed
+* prevent duplicates
+
+---
+
+## Tests Required
+
+### Lab Slip Tests
+
+* lab slip excludes tooth chart
+* lab slip includes material
+* lab slip includes shade
+* lab slip includes restoration type
+* lab slip includes special instructions/notes
+* lab slip includes due date
+* lab slip includes barcode when present
+
+### AI Intake Tests
+
+* extracted material saves to canonical case/restoration
+* extracted shade saves
+* extracted restoration type saves
+* extracted notes save
+* due date selected from calendar saves
+* barcode preserves leading zeros
+
+### Barcode Tests
+
+* barcode `00001` saves as `00001`
+* barcode lookup finds the case
+* mobile displays barcode
+* desktop displays barcode
+
+### Mobile Bulk Locate Tests
+
+* select multiple cases
+* update location
+* all cases update server-side
+* desktop reflects updates
+
+### Autocomplete Tests
+
+* material suggestions appear
+* shade suggestions appear
+* doctor/practice suggestions appear
+* Add New works
+* duplicate prevention works
+
+---
+
+## Acceptance Criteria
+
+Accepted when:
+
+1. Desktop AI intake allows barcode entry.
+2. Barcode preserves leading zeros.
+3. Desktop AI intake has due date calendar picker.
+4. Lab slip no longer shows tooth chart.
+5. Lab slip shows material, shade, restoration type, tooth number, notes, due date, and barcode.
+6. Mobile can bulk-locate multiple cases.
+7. Mobile location choices match desktop location/station labels exactly.
+8. Material field autocompletes and supports Add New.
+9. Shade/doctor/practice fields follow the same autocomplete/Add New pattern where applicable.
+10. Desktop and mobile show the same saved case data.
+11. No protected mobile beta workflow regresses.
+
+Checkpoint:
+
+“Production Intake Lab Slip Barcode Autocomplete Fixes”
