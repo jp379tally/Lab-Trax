@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link, useLocation } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Archive, Plus, Settings2, X } from "lucide-react";
@@ -51,6 +51,7 @@ export function FinanceShell({ children, requireAccount }: Props) {
   const accounts = useBankAccounts(orgId);
   const [accountId, setAccountId] = useSelectedAccount(orgId);
   const [showManage, setShowManage] = useState(false);
+  const qc = useQueryClient();
 
   const undepositedSummary = useQuery({
     queryKey: ["finance", "undeposited-summary", orgId],
@@ -59,9 +60,20 @@ export function FinanceShell({ children, requireAccount }: Props) {
         `/finance/undeposited-funds?organizationId=${orgId}&summary=1`
       ),
     enabled: !!orgId && billingAllowed,
-    refetchInterval: 60_000,
-    staleTime: 30_000,
+    refetchInterval: 15_000,
+    staleTime: 10_000,
   });
+
+  useEffect(() => {
+    if (!orgId || !billingAllowed) return;
+    const ch = new BroadcastChannel("labtrax:finance");
+    ch.onmessage = (e: MessageEvent) => {
+      if (e.data === "undeposited-changed") {
+        void qc.invalidateQueries({ queryKey: ["finance", "undeposited-summary", orgId] });
+      }
+    };
+    return () => ch.close();
+  }, [orgId, billingAllowed, qc]);
 
   return (
     <div className="px-8 py-7">

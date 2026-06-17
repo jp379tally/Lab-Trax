@@ -171,6 +171,9 @@ function ReceivePayments({
       qc.invalidateQueries({ queryKey: ["receive-payments"] });
       qc.invalidateQueries({ queryKey: ["invoices"] });
       qc.invalidateQueries({ queryKey: ["finance"] });
+      const ch = new BroadcastChannel("labtrax:finance");
+      ch.postMessage("undeposited-changed");
+      ch.close();
     },
     onError: (e: Error) => setError(e.message),
   });

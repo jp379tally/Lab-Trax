@@ -101,6 +101,9 @@ function MakeDeposits({
       );
       setSelected(new Set());
       void qc.invalidateQueries({ queryKey: ["finance"] });
+      const ch = new BroadcastChannel("labtrax:finance");
+      ch.postMessage("undeposited-changed");
+      ch.close();
       // Navigate to the destination register after a brief moment
       setTimeout(() => {
         navigate(`/finance/register?account=${encodeURIComponent(bankAccountId)}`);
