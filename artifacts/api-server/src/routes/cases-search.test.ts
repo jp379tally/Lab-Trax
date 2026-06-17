@@ -489,4 +489,171 @@ maybe("Cases search and tenant isolation (db integration)", () => {
     const { db, cases } = dbMod as any;
     await db.delete(cases).where(eq(cases.id, otherCase));
   });
+
+  // ── Barcode string-fidelity and uniqueness (canonical barcode) ────────────
+
+  it("POST /api/cases: stores leading-zero barcode '0001' verbatim as the string '0001'", async () => {
+    const caseNumber = rid("BZ");
+    const r = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({
+        caseNumber,
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Zero",
+        patientLastName: "Leading",
+        doctorName: "Dr. Zero",
+        casePanBarcode: "0001",
+      });
+
+    expect(r.status).toBe(201);
+    const created = r.body.data?.case ?? r.body.data;
+    expect(created.casePanBarcode).toBe("0001");
+
+    // Verify the DB stores the string "0001", not the number 1.
+    const { db, cases } = dbMod as any;
+    const row = await db.query.cases.findFirst({
+      where: eq(cases.id, created.id),
+      columns: { casePanBarcode: true },
+    });
+    expect(row?.casePanBarcode).toBe("0001");
+    expect(row?.casePanBarcode).not.toBe("1");
+
+    await db.delete(cases).where(eq(cases.id, created.id));
+  });
+
+  it("GET /api/cases/barcode/0001: resolves to the case whose barcode is '0001'", async () => {
+    const caseId = await insertCase({ caseNumber: rid("BZ2"), panBarcode: "0001" });
+
+    const r = await request(appMod.default)
+      .get("/api/cases/barcode/0001")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({ labOrganizationId: labOrgId });
+
+    expect(r.status).toBe(200);
+    expect(r.body.data.case.id).toBe(caseId);
+    expect(r.body.data.case.casePanBarcode).toBe("0001");
+
+    const { db, cases } = dbMod as any;
+    await db.delete(cases).where(eq(cases.id, caseId));
+  });
+
+  it("GET /api/cases/barcode/1: does NOT match a case whose barcode is '0001' (exact-string match)", async () => {
+    const caseId = await insertCase({ caseNumber: rid("BZ3"), panBarcode: "0001" });
+
+    const r = await request(appMod.default)
+      .get("/api/cases/barcode/1")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .query({ labOrganizationId: labOrgId });
+
+    expect(r.status).toBe(404);
+
+    const { db, cases } = dbMod as any;
+    await db.delete(cases).where(eq(cases.id, caseId));
+  });
+
+  it("PATCH /api/cases/:id: rejects duplicate barcode assignment to a second active case (409)", async () => {
+    const sharedBarcode = `DUP${randomBytes(4).toString("hex").toUpperCase()}`;
+    const case1Id = await insertCase({ caseNumber: rid("DUP"), panBarcode: sharedBarcode });
+    const case2Id = await insertCase({ caseNumber: rid("DUP") });
+
+    const r = await request(appMod.default)
+      .patch(`/api/cases/${case2Id}`)
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({ casePanBarcode: sharedBarcode });
+
+    expect(r.status).toBe(409);
+    expect(r.body.error ?? r.body.message ?? "").toMatch(/already assigned/i);
+
+    const { db, cases } = dbMod as any;
+    await db.delete(cases).where(inArray(cases.id, [case1Id, case2Id]));
+  });
+
+  it("PATCH /api/cases/:id: admin override allows duplicate barcode (allowDuplicateBarcode=true)", async () => {
+    const sharedBarcode = `OVR${randomBytes(4).toString("hex").toUpperCase()}`;
+    const case1Id = await insertCase({ caseNumber: rid("OVR"), panBarcode: sharedBarcode });
+    const case2Id = await insertCase({ caseNumber: rid("OVR") });
+
+    const r = await request(appMod.default)
+      .patch(`/api/cases/${case2Id}`)
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({ casePanBarcode: sharedBarcode, allowDuplicateBarcode: true });
+
+    expect(r.status).toBe(200);
+    expect(r.body.data.case?.casePanBarcode ?? r.body.data?.casePanBarcode).toBe(sharedBarcode);
+
+    const { db, cases } = dbMod as any;
+    await db.delete(cases).where(inArray(cases.id, [case1Id, case2Id]));
+  });
+
+  it("POST /api/cases: rejects duplicate barcode at creation (409)", async () => {
+    const sharedBarcode = `CDUP${randomBytes(4).toString("hex").toUpperCase()}`;
+    const existingId = await insertCase({ caseNumber: rid("CDUP"), panBarcode: sharedBarcode });
+
+    const r = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({
+        caseNumber: rid("CDUP2"),
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "New",
+        patientLastName: "Case",
+        doctorName: "Dr. New",
+        casePanBarcode: sharedBarcode,
+      });
+
+    expect(r.status).toBe(409);
+    expect(r.body.error ?? r.body.message ?? "").toMatch(/already assigned/i);
+
+    const { db, cases } = dbMod as any;
+    await db.delete(cases).where(eq(cases.id, existingId));
+  });
+
+  it("PATCH /api/cases/:id: allows reusing a barcode held by a completed case (not a duplicate)", async () => {
+    const sharedBarcode = `COMP${randomBytes(4).toString("hex").toUpperCase()}`;
+    // Insert an existing case, then mark it complete (barcode should be released).
+    const completedId = await insertCase({ caseNumber: rid("COMP"), panBarcode: sharedBarcode });
+    const { db, cases } = dbMod as any;
+    await db.update(cases).set({ status: "complete", casePanBarcode: sharedBarcode }).where(eq(cases.id, completedId));
+
+    // New active case should be able to take that barcode without conflict.
+    const activeId = await insertCase({ caseNumber: rid("COMP2") });
+    const r = await request(appMod.default)
+      .patch(`/api/cases/${activeId}`)
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({ casePanBarcode: sharedBarcode });
+
+    expect(r.status).toBe(200);
+    expect(r.body.data?.casePanBarcode).toBe(sharedBarcode);
+
+    await db.delete(cases).where(inArray(cases.id, [completedId, activeId]));
+  });
+
+  it("POST /api/cases: allows creating a case with a barcode held by a completed case", async () => {
+    const sharedBarcode = `CCOMP${randomBytes(4).toString("hex").toUpperCase()}`;
+    const completedId = await insertCase({ caseNumber: rid("CCOMP"), panBarcode: sharedBarcode });
+    const { db, cases } = dbMod as any;
+    await db.update(cases).set({ status: "complete", casePanBarcode: sharedBarcode }).where(eq(cases.id, completedId));
+
+    const r = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send({
+        caseNumber: rid("CCOMP2"),
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Re",
+        patientLastName: "Use",
+        doctorName: "Dr. Reuse",
+        casePanBarcode: sharedBarcode,
+      });
+
+    expect(r.status).toBe(201);
+    const created = r.body.data?.case ?? r.body.data;
+    expect(created.casePanBarcode).toBe(sharedBarcode);
+
+    await db.delete(cases).where(inArray(cases.id, [completedId, created.id]));
+  });
 });

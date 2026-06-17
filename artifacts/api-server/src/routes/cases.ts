@@ -57,7 +57,7 @@ import {
   resolveServerPriceWithSource,
   type ResolvedItemRow,
 } from "../lib/pricing";
-import { ADMIN_ROLES, BILLING_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
+import { ADMIN_ROLES, BILLING_ROLES, MembershipRole, requireAnyRole, requireMembership } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth, requireVerifiedAccount } from "../middlewares/auth";
 import {
@@ -1370,6 +1370,38 @@ async function assertCaseAccessWithMemberships(userId: string, caseId: string) {
   return { case: found, labMembership, providerMembership };
 }
 
+/**
+ * Reject a barcode that is already assigned to another active (non-deleted,
+ * non-complete) case in the same lab. Throws HttpError(409) with a message
+ * that names the conflicting case number so the caller can surface it.
+ *
+ * Pass `excludeCaseId` when updating an existing case so the case does not
+ * conflict with itself.
+ */
+async function checkBarcodeUniqueness(
+  barcode: string,
+  labOrganizationId: string,
+  excludeCaseId?: string,
+): Promise<void> {
+  if (!barcode) return;
+  const conflicting = await db.query.cases.findFirst({
+    where: and(
+      eq(cases.labOrganizationId, labOrganizationId),
+      eq(cases.casePanBarcode, barcode),
+      notDeleted(cases),
+      ne(cases.status, "complete"),
+      ...(excludeCaseId ? [ne(cases.id, excludeCaseId)] : []),
+    ),
+    columns: { id: true, caseNumber: true },
+  });
+  if (conflicting) {
+    throw new HttpError(
+      409,
+      `Barcode "${barcode}" is already assigned to case #${conflicting.caseNumber}. A lab admin can pass allowDuplicateBarcode=true to force-assign.`,
+    );
+  }
+}
+
 const ATTACHMENT_VISIBILITIES = [
   "shared_with_provider",
   "internal_lab_only",
@@ -1445,6 +1477,8 @@ const createCaseSchema = z.object({
   // Optional barcode to assign to the case pan at creation time.
   // Empty strings are treated as omitted (no barcode assigned).
   casePanBarcode: z.string().optional().transform((v) => (v && v.trim().length > 0 ? v.trim() : undefined)),
+  // When true (admin only), skip the duplicate-barcode uniqueness check.
+  allowDuplicateBarcode: z.boolean().optional(),
   // Top-level shade extracted from the Rx (stored directly on the case row so
   // it's visible in the overview even when no tooth indices were identified).
   shade: z.string().optional(),
@@ -2829,10 +2863,20 @@ router.post(
     return Promise.race([
       (async () => {
     const input = createCaseSchema.parse(req.body);
-    await requireMembership(
+    const createMembership = await requireMembership(
       (req as any).auth.userId,
       input.labOrganizationId
     );
+
+    // Barcode uniqueness check — reject duplicate barcodes across active cases
+    // in the same lab unless the caller is an admin and explicitly overrides.
+    if (input.casePanBarcode) {
+      if (!input.allowDuplicateBarcode) {
+        await checkBarcodeUniqueness(input.casePanBarcode, input.labOrganizationId);
+      } else if (!ADMIN_ROLES.includes(createMembership.role as MembershipRole)) {
+        throw new HttpError(403, "Only lab admins can override duplicate barcode assignment.");
+      }
+    }
 
     // Validate remake link target. The original may live in either the
     // canonical `cases` table or the legacy `lab_cases` table — Task #331
@@ -4888,6 +4932,8 @@ const updateCaseSchema = z.object({
     .transform((v) => (v === null ? null : v.trim()))
     .optional(),
   rxNotes: z.union([z.string(), z.null()]).optional(),
+  // When true (admin only), skip the duplicate-barcode uniqueness check.
+  allowDuplicateBarcode: z.boolean().optional(),
 });
 
 router.patch(
@@ -4996,7 +5042,7 @@ router.patch(
     }
 
     // Canonical cases table path.
-    await requireMembership(
+    const patchMembership = await requireMembership(
       (req as any).auth.userId,
       found.labOrganizationId
     );
@@ -5046,8 +5092,19 @@ router.patch(
     }
     if (input.bridgeConnectors !== undefined)
       updates.bridgeConnectors = input.bridgeConnectors || null;
-    if (input.casePanBarcode !== undefined)
-      updates.casePanBarcode = input.casePanBarcode || null;
+    if (input.casePanBarcode !== undefined) {
+      // Non-empty barcode being set or changed — enforce uniqueness unless
+      // the caller is a lab admin explicitly overriding the check.
+      const newBarcode = input.casePanBarcode || null;
+      if (newBarcode && newBarcode !== found.casePanBarcode) {
+        if (!input.allowDuplicateBarcode) {
+          await checkBarcodeUniqueness(newBarcode, found.labOrganizationId, found.id);
+        } else if (!ADMIN_ROLES.includes(patchMembership.role as MembershipRole)) {
+          throw new HttpError(403, "Only lab admins can override duplicate barcode assignment.");
+        }
+      }
+      updates.casePanBarcode = newBarcode;
+    }
     if (input.expectedDeliveryDate !== undefined)
       updates.expectedDeliveryDate = input.expectedDeliveryDate
         ? new Date(input.expectedDeliveryDate)

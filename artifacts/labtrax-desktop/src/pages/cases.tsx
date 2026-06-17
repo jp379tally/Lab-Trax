@@ -2786,6 +2786,7 @@ export function CaseDrawer({
   const [barcodeEditValue, setBarcodeEditValue] = useState("");
   const [optimisticBarcode, setOptimisticBarcode] = useState<string | null>(null);
   const [barcodeError, setBarcodeError] = useState<string | null>(null);
+  const [barcodeConflictValue, setBarcodeConflictValue] = useState<string | null>(null);
   const barcodeInlineInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (!editMode) return;
@@ -3267,20 +3268,32 @@ export function CaseDrawer({
   });
 
   const barcodeMutation = useMutation({
-    mutationFn: (value: string) =>
+    mutationFn: ({ value, allowDuplicate }: { value: string; allowDuplicate?: boolean }) =>
       apiFetch(`/cases/${labCase.id}`, {
         method: "PATCH",
-        body: JSON.stringify({ casePanBarcode: value || null }),
+        body: JSON.stringify({
+          casePanBarcode: value || null,
+          ...(allowDuplicate ? { allowDuplicateBarcode: true } : {}),
+        }),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["cases"] });
       qc.invalidateQueries({ queryKey: ["case", labCase.id] });
       setOptimisticBarcode(null);
       setBarcodeError(null);
+      setBarcodeConflictValue(null);
     },
     onError: (e: Error) => {
       setOptimisticBarcode(null);
-      setBarcodeError(e.message || "Failed to save barcode");
+      const msg = e.message || "Failed to save barcode";
+      setBarcodeError(msg);
+      // Store the pending value so an admin can trigger the override.
+      if (msg.includes("already assigned")) {
+        const pending = barcodeEditValue.trim();
+        setBarcodeConflictValue(pending || null);
+      } else {
+        setBarcodeConflictValue(null);
+      }
     },
   });
 
@@ -3288,13 +3301,14 @@ export function CaseDrawer({
     const trimmed = barcodeEditValue.trim();
     setBarcodeEditMode(false);
     setBarcodeError(null);
+    setBarcodeConflictValue(null);
     const effectiveCurrent =
       optimisticBarcode !== null
         ? optimisticBarcode
         : (data?.casePanBarcode ?? labCase.casePanBarcode ?? "");
     if (trimmed === effectiveCurrent) return;
     setOptimisticBarcode(trimmed);
-    barcodeMutation.mutate(trimmed);
+    barcodeMutation.mutate({ value: trimmed });
   }
 
   const routeMutation = useMutation({
@@ -4829,7 +4843,23 @@ export function CaseDrawer({
                         </button>
                       )}
                       {barcodeError && (
-                        <p className="text-xs text-destructive mt-1">{barcodeError}</p>
+                        <div className="mt-1 space-y-1">
+                          <p className="text-xs text-destructive">{barcodeError}</p>
+                          {barcodeConflictValue && (
+                            <button
+                              type="button"
+                              className="text-xs text-muted-foreground underline hover:text-foreground transition-colors"
+                              disabled={barcodeMutation.isPending}
+                              onClick={() => {
+                                setBarcodeError(null);
+                                setOptimisticBarcode(barcodeConflictValue);
+                                barcodeMutation.mutate({ value: barcodeConflictValue, allowDuplicate: true });
+                              }}
+                            >
+                              Force-assign anyway (admin only)
+                            </button>
+                          )}
+                        </div>
                       )}
                     </div>
                   </div>

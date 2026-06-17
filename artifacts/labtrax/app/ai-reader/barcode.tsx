@@ -66,20 +66,47 @@ export default function AiReaderBarcodeScreen() {
     [scanned, assigning, caseId],
   );
 
-  async function assignBarcode(code: string) {
+  async function assignBarcode(code: string, allowDuplicate = false) {
     if (!caseId || !code.trim()) return;
     setAssigning(true);
     try {
       const res = await resilientFetch(`/api/cases/${encodeURIComponent(caseId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ casePanBarcode: code.trim() }),
+        body: JSON.stringify({
+          casePanBarcode: code.trim(),
+          ...(allowDuplicate ? { allowDuplicateBarcode: true } : {}),
+        }),
       });
       if (!res.ok) {
-        const text = await res.text().catch(() => "");
+        let errMsg = "";
+        try {
+          const json = await res.json();
+          errMsg = json?.error ?? json?.message ?? "";
+        } catch {
+          errMsg = await res.text().catch(() => "");
+        }
+        // 409 = barcode already in use on another active case — offer override.
+        if (res.status === 409) {
+          setScanned(false);
+          setAssigning(false);
+          Alert.alert(
+            "Barcode conflict",
+            errMsg || "This barcode is already assigned to another active case.",
+            [
+              { text: "Cancel", style: "cancel" },
+              {
+                text: "Assign anyway (admin only)",
+                style: "destructive",
+                onPress: () => assignBarcode(code, true),
+              },
+            ],
+          );
+          return;
+        }
         Alert.alert(
           "Barcode not saved",
-          `Server responded with ${res.status}${text ? `: ${text}` : ""}. Assign it later from the case detail.`,
+          errMsg || `Server responded with ${res.status}. Assign it later from the case detail.`,
         );
         setScanned(false);
         setAssigning(false);
