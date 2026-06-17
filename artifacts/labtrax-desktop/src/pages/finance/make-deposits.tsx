@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { CheckCircle2, Loader2, Landmark, ArrowRight } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Loader2, Landmark, ArrowRight } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { FinanceShell } from "@/components/finance/FinanceShell";
 import type { BankAccount } from "@/lib/types";
@@ -23,6 +23,8 @@ interface UndepositedTxn {
   payee?: string | null;
   memo?: string | null;
   creditAmount: string;
+  staleDays: number;
+  ageWarning: boolean;
   invoiceLinks?: Array<{ invoiceId: string; invoiceNumber: string | null }>;
 }
 
@@ -56,6 +58,7 @@ function MakeDeposits({
   const [doneMsg, setDoneMsg] = useState<string | null>(null);
 
   const items = ufQuery.data ?? [];
+  const staleItems = useMemo(() => items.filter((t) => t.ageWarning), [items]);
 
   function toggleAll() {
     if (selected.size === items.length) {
@@ -127,6 +130,23 @@ function MakeDeposits({
           Select received payments to move from Undeposited Funds into a bank account.
         </p>
       </div>
+
+      {/* Stale funds warning banner */}
+      {staleItems.length > 0 && (
+        <div className="flex items-start gap-3 bg-amber-500/10 border border-amber-500/30 rounded-xl px-4 py-3">
+          <AlertTriangle size={15} className="text-amber-500 shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-medium text-amber-700 dark:text-amber-400">
+              {staleItems.length === 1
+                ? "1 payment has been sitting in Undeposited Funds for over 30 days."
+                : `${staleItems.length} payments have been sitting in Undeposited Funds for over 30 days.`}
+            </p>
+            <p className="text-xs text-amber-600/80 dark:text-amber-400/70 mt-0.5">
+              Payments left here won't appear on your bank statement. Select them below and click <strong>Make Deposits</strong> to move them.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Controls */}
       <div className="bg-card border border-border rounded-xl p-5 space-y-4">
@@ -242,6 +262,7 @@ function MakeDeposits({
                   />
                 </th>
                 <th className="px-3 py-2 text-left">Date</th>
+                <th className="px-3 py-2 text-left">Age</th>
                 <th className="px-3 py-2 text-left">Payee / Memo</th>
                 <th className="px-3 py-2 text-left">Invoices</th>
                 <th className="px-3 py-2 text-right">Amount</th>
@@ -251,7 +272,11 @@ function MakeDeposits({
               {items.map((txn) => (
                 <tr
                   key={txn.id}
-                  className="border-t border-border/30 hover:bg-secondary/20 cursor-pointer"
+                  className={`border-t cursor-pointer ${
+                    txn.ageWarning
+                      ? "border-amber-300/40 bg-amber-500/5 hover:bg-amber-500/10"
+                      : "border-border/30 hover:bg-secondary/20"
+                  }`}
                   onClick={() => toggle(txn.id)}
                 >
                   <td className="pl-4 pr-2 py-2.5" onClick={(e) => e.stopPropagation()}>
@@ -264,6 +289,16 @@ function MakeDeposits({
                   </td>
                   <td className="px-3 py-2.5 tabular-nums text-xs">
                     {formatDate(txn.txnDate)}
+                  </td>
+                  <td className="px-3 py-2.5 tabular-nums text-xs whitespace-nowrap">
+                    {txn.ageWarning ? (
+                      <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400 font-medium">
+                        <AlertTriangle size={11} />
+                        {txn.staleDays}d
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">{txn.staleDays}d</span>
+                    )}
                   </td>
                   <td className="px-3 py-2.5">
                     <div>
@@ -298,7 +333,7 @@ function MakeDeposits({
             </tbody>
             <tfoot className="border-t border-border bg-secondary/30">
               <tr>
-                <td colSpan={4} className="px-4 py-2 text-xs font-medium text-right text-muted-foreground">
+                <td colSpan={5} className="px-4 py-2 text-xs font-medium text-right text-muted-foreground">
                   Total undeposited
                 </td>
                 <td className="px-3 py-2 text-right tabular-nums font-semibold">

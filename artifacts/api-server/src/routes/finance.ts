@@ -3123,13 +3123,23 @@ router.get(
       linksByTxn.set(l.bankTransactionId, list);
     }
 
-    const enriched = txns.map((t: any) => ({
-      ...t,
-      invoiceLinks: (linksByTxn.get(t.id) ?? []).map((id) => ({
-        invoiceId: id,
-        invoiceNumber: invMap.get(id)?.invoiceNumber ?? null,
-      })),
-    }));
+    const now = Date.now();
+    const MS_PER_DAY = 86_400_000;
+    const STALE_THRESHOLD_DAYS = 30;
+
+    const enriched = txns.map((t: any) => {
+      const txnMs = new Date(t.txnDate).getTime();
+      const staleDays = Math.floor((now - txnMs) / MS_PER_DAY);
+      return {
+        ...t,
+        staleDays,
+        ageWarning: staleDays > STALE_THRESHOLD_DAYS,
+        invoiceLinks: (linksByTxn.get(t.id) ?? []).map((id) => ({
+          invoiceId: id,
+          invoiceNumber: invMap.get(id)?.invoiceNumber ?? null,
+        })),
+      };
+    });
 
     return ok(res, enriched);
   })

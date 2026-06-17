@@ -9,7 +9,7 @@
  * cleaned up in afterAll so the suite can run in the shared CI database.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import request from "supertest";
 import type { Express } from "express";
@@ -398,6 +398,70 @@ maybe("Undeposited Funds workflow (db integration)", () => {
     expect(ufTxn75!.invoiceLinks.length).toBeGreaterThan(0);
     expect(ufTxn75!.invoiceLinks[0]).toHaveProperty("invoiceId");
     expect(ufTxn75!.invoiceLinks[0]).toHaveProperty("invoiceNumber");
+  });
+
+  it("GET /finance/undeposited-funds: includes staleDays and ageWarning fields", async () => {
+    const { db, bankTransactions, bankAccounts } = dbMod as any;
+
+    // Look up the UF account for this lab
+    const ufAcc = await db.query.bankAccounts.findFirst({
+      where: and(
+        eq(bankAccounts.labOrganizationId, labOrgId),
+        eq(bankAccounts.accountType, "undeposited_funds")
+      ),
+    });
+    expect(ufAcc).toBeDefined();
+
+    // Insert a stale transaction dated 45 days ago
+    const staleTxnId = rid("txn_stale");
+    const staleDate = new Date(Date.now() - 45 * 86_400_000).toISOString().slice(0, 10);
+    await db.insert(bankTransactions).values({
+      id: staleTxnId,
+      bankAccountId: ufAcc.id,
+      txnDate: staleDate,
+      status: "posted",
+      creditAmount: "20.00",
+      debitAmount: "0.00",
+      netAmount: "20.00",
+      payee: "Stale test payment",
+    });
+
+    const r = await request(app)
+      .get(`/api/finance/undeposited-funds?organizationId=${labOrgId}`)
+      .set("Authorization", `Bearer ${tokens.admin}`);
+
+    expect(r.status).toBe(200);
+    const data: any[] = r.body.data;
+
+    // Every row must expose staleDays (number) and ageWarning (boolean)
+    for (const t of data) {
+      expect(typeof t.staleDays).toBe("number");
+      expect(t.staleDays).toBeGreaterThanOrEqual(0);
+      expect(typeof t.ageWarning).toBe("boolean");
+    }
+
+    // The stale txn must report ageWarning=true and staleDays > 30
+    const staleTxn = data.find((t: any) => t.id === staleTxnId);
+    expect(staleTxn).toBeDefined();
+    expect(staleTxn!.ageWarning).toBe(true);
+    expect(staleTxn!.staleDays).toBeGreaterThan(30);
+
+    // A recent payment (< 30 days old) must report ageWarning=false
+    const recentTxn = data.find(
+      (t: any) => t.id !== staleTxnId && typeof t.staleDays === "number"
+    );
+    if (recentTxn) {
+      // Only assert if the payment is genuinely recent (within 30 days)
+      if (recentTxn.staleDays <= 30) {
+        expect(recentTxn.ageWarning).toBe(false);
+      }
+    }
+
+    // Clean up the stale test row so subsequent tests don't see it
+    await db
+      .update(bankTransactions)
+      .set({ deletedAt: new Date() })
+      .where(eq(bankTransactions.id, staleTxnId));
   });
 
   // ---------------------------------------------------------------------------
