@@ -40,11 +40,13 @@ export default defineConfig({
     maxWorkers: 2,
     minWorkers: 1,
     // Allow slow beforeAll/afterAll hooks (DB imports, heavy setup) more time.
+    // Allow slow tests (orphan-cleanup scan, heavy DB queries) the same budget.
     // 90 s gives the PG pool enough headroom to recover when two concurrent
     // workflows (api-server-tests + regression-tests) both hit the DB at
     // merge time.  At maxWorkers=2 per workflow the worst-case concurrent
     // connections are 2 × 2 × 5 = 20 (see DB_POOL_MAX below), well within
     // max_connections, but connection setup still takes longer under contention.
     hookTimeout: 90000,
+    testTimeout: 90000,
   },
 });

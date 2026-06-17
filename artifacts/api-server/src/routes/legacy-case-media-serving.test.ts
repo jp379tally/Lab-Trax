@@ -35,6 +35,10 @@ vi.mock("../lib/case-media.js", async (importOriginal) => {
   return { ...actual, startDailyOrphanedMediaCleanup: vi.fn() };
 });
 
+// Match the global hookTimeout so the orphan-cleanup test doesn't time out
+// when api-server-tests and regression-tests run concurrently at merge time.
+vi.setConfig({ testTimeout: 90000, hookTimeout: 90000 });
+
 const SHOULD_RUN = !!process.env["DATABASE_URL"];
 const maybe = SHOULD_RUN ? describe : describe.skip;
 
