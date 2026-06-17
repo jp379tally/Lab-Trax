@@ -4806,20 +4806,18 @@ export function CaseDrawer({
                         <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
                           Last Name
                         </label>
-                        <input
-                          list="edit-patient-last-names"
-                          value={editForm.patientLastName}
-                          onChange={(e) => {
-                            setEditForm((f) => ({ ...f, patientLastName: e.target.value }));
-                            setEditError(null);
-                          }}
-                          className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
-                        />
-                        <datalist id="edit-patient-last-names">
-                          {patientLastNames.map((n) => (
-                            <option key={n} value={n} />
-                          ))}
-                        </datalist>
+                        <div className="mt-1">
+                          <FieldCombobox
+                            value={editForm.patientLastName}
+                            suggestions={patientLastNames}
+                            onChange={(v) => {
+                              setEditForm((f) => ({ ...f, patientLastName: v }));
+                              setEditError(null);
+                            }}
+                            placeholder="Patient last name"
+                            inputClassName="h-9 focus:ring-primary focus:border-primary"
+                          />
+                        </div>
                       </div>
                     </div>
                     <div>
