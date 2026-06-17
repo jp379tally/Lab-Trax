@@ -504,6 +504,27 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
   const labOrgs = orgs.filter((o) => o.type === "lab");
   const providerOrgs = orgs.filter((o) => o.type !== "lab");
 
+  const casesQuery = useQuery({
+    queryKey: ["cases"],
+    queryFn: () => apiFetch<LabCase[]>("/cases"),
+  });
+
+  const distinctPatientFirstNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const c of casesQuery.data ?? []) {
+      if (c.patientFirstName?.trim()) names.add(c.patientFirstName.trim());
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [casesQuery.data]);
+
+  const distinctPatientLastNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const c of casesQuery.data ?? []) {
+      if (c.patientLastName?.trim()) names.add(c.patientLastName.trim());
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [casesQuery.data]);
+
   const [form, setForm] = useState<NewCaseFormData>({
     caseNumber: generateCaseNumber(),
     labOrganizationId: "",
@@ -731,12 +752,12 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
               <label className="block text-xs font-medium text-muted-foreground mb-1">
                 Patient first name
               </label>
-              <input
-                className="w-full h-9 px-3 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+              <FieldCombobox
                 value={form.patientFirstName}
-                onChange={(e) => set("patientFirstName", e.target.value)}
+                suggestions={distinctPatientFirstNames}
+                onChange={(v) => set("patientFirstName", v)}
                 placeholder="First"
-                required
+                inputClassName="h-9 focus:ring-primary focus:border-primary"
               />
             </div>
 
@@ -744,12 +765,12 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
               <label className="block text-xs font-medium text-muted-foreground mb-1">
                 Patient last name
               </label>
-              <input
-                className="w-full h-9 px-3 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+              <FieldCombobox
                 value={form.patientLastName}
-                onChange={(e) => set("patientLastName", e.target.value)}
+                suggestions={distinctPatientLastNames}
+                onChange={(v) => set("patientLastName", v)}
                 placeholder="Last"
-                required
+                inputClassName="h-9 focus:ring-primary focus:border-primary"
               />
             </div>
 
