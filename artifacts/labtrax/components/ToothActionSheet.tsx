@@ -11,9 +11,11 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { useQueryClient } from "@tanstack/react-query";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import type { ToothId } from "@/lib/rx-summary";
+import { resilientFetch } from "@/lib/query-client";
 
 const DEFAULT_CROWN_MATERIALS = [
   "Zirconia",
@@ -77,6 +79,8 @@ interface Props {
   vocabularyMaterials?: string[];
   /** Lab-specific vocabulary for shades (merged with built-in defaults). */
   vocabularyShades?: string[];
+  /** Lab org ID — enables saving new custom materials/shades to the lab's vocabulary. */
+  labOrganizationId?: string;
 }
 
 /**
@@ -97,16 +101,30 @@ export function ToothActionSheet({
   onConfirm,
   vocabularyMaterials,
   vocabularyShades,
+  labOrganizationId,
 }: Props) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const styles = useMemo(() => makeStyles(colors), [colors]);
+  const qc = useQueryClient();
 
   const [step, setStep] = useState<Step>("choose_kind");
   const [material, setMaterial] = useState("");
   const [shade, setShade] = useState("");
   const [customShade, setCustomShade] = useState("");
   const [isCustomShade, setIsCustomShade] = useState(false);
+
+  // Add-new-material state
+  const [isAddingNewMaterial, setIsAddingNewMaterial] = useState(false);
+  const [newMaterialText, setNewMaterialText] = useState("");
+  const [addingMaterialPending, setAddingMaterialPending] = useState(false);
+  const [addMaterialError, setAddMaterialError] = useState<string | null>(null);
+
+  // Add-new-shade state
+  const [isAddingNewShade, setIsAddingNewShade] = useState(false);
+  const [newShadeText, setNewShadeText] = useState("");
+  const [addingShadePending, setAddingShadePending] = useState(false);
+  const [addShadeError, setAddShadeError] = useState<string | null>(null);
 
   // Merge lab vocabulary with built-in defaults, deduping case-insensitively.
   const mergedMaterials = useMemo(() => {
@@ -136,6 +154,20 @@ export function ToothActionSheet({
     setShade("");
     setCustomShade("");
     setIsCustomShade(false);
+    resetAddNewMaterial();
+    resetAddNewShade();
+  }
+
+  function resetAddNewMaterial() {
+    setIsAddingNewMaterial(false);
+    setNewMaterialText("");
+    setAddMaterialError(null);
+  }
+
+  function resetAddNewShade() {
+    setIsAddingNewShade(false);
+    setNewShadeText("");
+    setAddShadeError(null);
   }
 
   useEffect(() => {
@@ -145,6 +177,13 @@ export function ToothActionSheet({
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [toothId, existingLabel]);
+
+  // Reset add-new state when step changes
+  useEffect(() => {
+    resetAddNewMaterial();
+    resetAddNewShade();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
 
   const visible = toothId !== null;
 
@@ -169,6 +208,7 @@ export function ToothActionSheet({
     setShade("");
     setCustomShade("");
     setIsCustomShade(false);
+    resetAddNewShade();
     setStep("choose_shade");
   }
 
@@ -188,6 +228,7 @@ export function ToothActionSheet({
     setShade("");
     setCustomShade("");
     setIsCustomShade(false);
+    resetAddNewShade();
     setStep("change_shade");
   }
 
@@ -200,6 +241,56 @@ export function ToothActionSheet({
       material,
       shade: withShade ? resolvedShade() : undefined,
     });
+  }
+
+  async function handleSaveNewMaterial() {
+    const value = newMaterialText.trim();
+    if (!value || !labOrganizationId) return;
+    setAddingMaterialPending(true);
+    setAddMaterialError(null);
+    try {
+      const res = await resilientFetch("/api/vocabulary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "material", value, labOrganizationId }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as { error?: string }).error ?? "Failed to save");
+      }
+      setMaterial(value);
+      resetAddNewMaterial();
+      qc.invalidateQueries({ queryKey: ["vocabulary", "material", labOrganizationId] });
+    } catch (e) {
+      setAddMaterialError(e instanceof Error ? e.message : "Could not save. Please try again.");
+    } finally {
+      setAddingMaterialPending(false);
+    }
+  }
+
+  async function handleSaveNewShade(onSelect: (s: string) => void) {
+    const value = newShadeText.trim();
+    if (!value || !labOrganizationId) return;
+    setAddingShadePending(true);
+    setAddShadeError(null);
+    try {
+      const res = await resilientFetch("/api/vocabulary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "shade", value, labOrganizationId }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as { error?: string }).error ?? "Failed to save");
+      }
+      onSelect(value);
+      resetAddNewShade();
+      qc.invalidateQueries({ queryKey: ["vocabulary", "shade", labOrganizationId] });
+    } catch (e) {
+      setAddShadeError(e instanceof Error ? e.message : "Could not save. Please try again.");
+    } finally {
+      setAddingShadePending(false);
+    }
   }
 
   const isInChangePath = step === "change_material" || step === "change_shade";
@@ -226,6 +317,51 @@ export function ToothActionSheet({
     step === "change_material" ||
     step === "change_shade" ||
     (step === "choose_kind" && !!existingLabel);
+
+  const canAddVocab = !!labOrganizationId;
+
+  function renderMaterialChips(
+    materials: string[],
+    testIdPrefix: string,
+    onMaterialSelect: (m: string) => void,
+  ) {
+    return (
+      <View style={styles.optionWrap}>
+        {materials.map((m) => {
+          const on = !isAddingNewMaterial && material === m;
+          return (
+            <Pressable
+              key={m}
+              style={[styles.optionChip, on && styles.optionChipOn]}
+              onPress={() => {
+                resetAddNewMaterial();
+                onMaterialSelect(m);
+              }}
+              disabled={submitting || addingMaterialPending}
+              testID={`${testIdPrefix}-${m}`}
+            >
+              <Text style={[styles.optionText, on && styles.optionTextOn]}>{m}</Text>
+            </Pressable>
+          );
+        })}
+        {canAddVocab && (
+          <Pressable
+            style={[styles.optionChip, styles.optionChipAdd, isAddingNewMaterial && styles.optionChipOn]}
+            onPress={() => {
+              setIsAddingNewMaterial(true);
+              setMaterial("");
+            }}
+            disabled={submitting || addingMaterialPending}
+            testID={`${testIdPrefix}-add-new`}
+          >
+            <Text style={[styles.optionText, styles.optionTextAdd, isAddingNewMaterial && styles.optionTextOn]}>
+              + Add new…
+            </Text>
+          </Pressable>
+        )}
+      </View>
+    );
+  }
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -354,26 +490,27 @@ export function ToothActionSheet({
             {step === "choose_material" && (
               <>
                 <Text style={styles.prompt}>Select a material for the crown on tooth {toothId}:</Text>
-                <View style={styles.optionWrap}>
-                  {mergedMaterials.map((m) => {
-                    const on = material === m;
-                    return (
-                      <Pressable
-                        key={m}
-                        style={[styles.optionChip, on && styles.optionChipOn]}
-                        onPress={() => setMaterial(m)}
-                        disabled={submitting}
-                        testID={`tooth-material-${m}`}
-                      >
-                        <Text style={[styles.optionText, on && styles.optionTextOn]}>{m}</Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
+                {renderMaterialChips(mergedMaterials, "tooth-material", setMaterial)}
+                {isAddingNewMaterial && (
+                  <AddNewInput
+                    value={newMaterialText}
+                    placeholder="Type new material…"
+                    pending={addingMaterialPending}
+                    error={addMaterialError}
+                    colors={colors}
+                    styles={styles}
+                    onChangeText={setNewMaterialText}
+                    onCancel={resetAddNewMaterial}
+                    onSave={handleSaveNewMaterial}
+                    inputTestID="tooth-material-new-input"
+                    saveTestID="tooth-material-new-save"
+                    cancelTestID="tooth-material-new-cancel"
+                  />
+                )}
                 <Pressable
-                  style={[styles.primaryBtn, (!material || submitting) && styles.btnDisabled]}
+                  style={[styles.primaryBtn, (!material || submitting || addingMaterialPending) && styles.btnDisabled]}
                   onPress={handleMaterialNext}
-                  disabled={!material || submitting}
+                  disabled={!material || submitting || addingMaterialPending}
                   testID="tooth-material-next"
                 >
                   <Text style={styles.primaryText}>Next — Pick shade</Text>
@@ -387,26 +524,27 @@ export function ToothActionSheet({
                 <Text style={styles.prompt}>
                   Choose a new material for tooth {toothId}:
                 </Text>
-                <View style={styles.optionWrap}>
-                  {mergedMaterials.map((m) => {
-                    const on = material === m;
-                    return (
-                      <Pressable
-                        key={m}
-                        style={[styles.optionChip, on && styles.optionChipOn]}
-                        onPress={() => setMaterial(m)}
-                        disabled={submitting}
-                        testID={`tooth-change-material-${m}`}
-                      >
-                        <Text style={[styles.optionText, on && styles.optionTextOn]}>{m}</Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
+                {renderMaterialChips(mergedMaterials, "tooth-change-material", setMaterial)}
+                {isAddingNewMaterial && (
+                  <AddNewInput
+                    value={newMaterialText}
+                    placeholder="Type new material…"
+                    pending={addingMaterialPending}
+                    error={addMaterialError}
+                    colors={colors}
+                    styles={styles}
+                    onChangeText={setNewMaterialText}
+                    onCancel={resetAddNewMaterial}
+                    onSave={handleSaveNewMaterial}
+                    inputTestID="tooth-change-material-new-input"
+                    saveTestID="tooth-change-material-new-save"
+                    cancelTestID="tooth-change-material-new-cancel"
+                  />
+                )}
                 <Pressable
-                  style={[styles.primaryBtn, (!material || submitting) && styles.btnDisabled]}
+                  style={[styles.primaryBtn, (!material || submitting || addingMaterialPending) && styles.btnDisabled]}
                   onPress={handleChangeMaterialNext}
-                  disabled={!material || submitting}
+                  disabled={!material || submitting || addingMaterialPending}
                   testID="tooth-change-material-next"
                 >
                   <Text style={styles.primaryText}>Next — Pick shade</Text>
@@ -425,9 +563,18 @@ export function ToothActionSheet({
                 colors={colors}
                 styles={styles}
                 shades={mergedShades}
-                onShadeSelect={(s) => { setShade(s); setIsCustomShade(false); setCustomShade(""); }}
-                onCustomShadeToggle={() => { setIsCustomShade(true); setShade(""); }}
+                canAddVocab={canAddVocab}
+                isAddingNewShade={isAddingNewShade}
+                newShadeText={newShadeText}
+                addingShadePending={addingShadePending}
+                addShadeError={addShadeError}
+                onShadeSelect={(s) => { setShade(s); setIsCustomShade(false); setCustomShade(""); resetAddNewShade(); }}
+                onCustomShadeToggle={() => { setIsCustomShade(true); setShade(""); resetAddNewShade(); }}
                 onCustomShadeChange={setCustomShade}
+                onAddNewShadeToggle={() => { setIsAddingNewShade(true); setShade(""); setIsCustomShade(false); setCustomShade(""); }}
+                onNewShadeTextChange={setNewShadeText}
+                onCancelNewShade={resetAddNewShade}
+                onSaveNewShade={() => handleSaveNewShade((s) => { setShade(s); setIsCustomShade(false); setCustomShade(""); })}
                 onSkip={() => handleShadeConfirm(false)}
                 onConfirm={() => handleShadeConfirm(true)}
                 skipTestID="tooth-shade-skip"
@@ -446,9 +593,18 @@ export function ToothActionSheet({
                 colors={colors}
                 styles={styles}
                 shades={mergedShades}
-                onShadeSelect={(s) => { setShade(s); setIsCustomShade(false); setCustomShade(""); }}
-                onCustomShadeToggle={() => { setIsCustomShade(true); setShade(""); }}
+                canAddVocab={canAddVocab}
+                isAddingNewShade={isAddingNewShade}
+                newShadeText={newShadeText}
+                addingShadePending={addingShadePending}
+                addShadeError={addShadeError}
+                onShadeSelect={(s) => { setShade(s); setIsCustomShade(false); setCustomShade(""); resetAddNewShade(); }}
+                onCustomShadeToggle={() => { setIsCustomShade(true); setShade(""); resetAddNewShade(); }}
                 onCustomShadeChange={setCustomShade}
+                onAddNewShadeToggle={() => { setIsAddingNewShade(true); setShade(""); setIsCustomShade(false); setCustomShade(""); }}
+                onNewShadeTextChange={setNewShadeText}
+                onCancelNewShade={resetAddNewShade}
+                onSaveNewShade={() => handleSaveNewShade((s) => { setShade(s); setIsCustomShade(false); setCustomShade(""); })}
                 onSkip={() => handleChangeShadeConfirm(false)}
                 onConfirm={() => handleChangeShadeConfirm(true)}
                 skipTestID="tooth-change-shade-skip"
@@ -464,6 +620,74 @@ export function ToothActionSheet({
   );
 }
 
+interface AddNewInputProps {
+  value: string;
+  placeholder: string;
+  pending: boolean;
+  error: string | null;
+  colors: ThemeColors;
+  styles: ReturnType<typeof makeStyles>;
+  onChangeText: (v: string) => void;
+  onCancel: () => void;
+  onSave: () => void;
+  inputTestID: string;
+  saveTestID: string;
+  cancelTestID: string;
+}
+
+function AddNewInput({
+  value,
+  placeholder,
+  pending,
+  error,
+  colors,
+  styles,
+  onChangeText,
+  onCancel,
+  onSave,
+  inputTestID,
+  saveTestID,
+  cancelTestID,
+}: AddNewInputProps) {
+  return (
+    <View style={styles.addNewWrap}>
+      <TextInput
+        style={styles.input}
+        placeholder={placeholder}
+        placeholderTextColor={colors.textTertiary}
+        value={value}
+        onChangeText={onChangeText}
+        autoFocus
+        editable={!pending}
+        testID={inputTestID}
+      />
+      {error ? <Text style={styles.errorText}>{error}</Text> : null}
+      <View style={styles.addNewRow}>
+        <Pressable
+          style={[styles.secondaryBtn, pending && styles.btnDisabled]}
+          onPress={onCancel}
+          disabled={pending}
+          testID={cancelTestID}
+        >
+          <Text style={styles.secondaryText}>Cancel</Text>
+        </Pressable>
+        <Pressable
+          style={[styles.primaryBtn, styles.flex1, (!value.trim() || pending) && styles.btnDisabled]}
+          onPress={onSave}
+          disabled={!value.trim() || pending}
+          testID={saveTestID}
+        >
+          {pending ? (
+            <ActivityIndicator size="small" color={colors.textInverse} />
+          ) : (
+            <Text style={styles.primaryText}>Save & use</Text>
+          )}
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
 interface ShadeStepProps {
   toothId: string | null;
   shade: string;
@@ -473,9 +697,18 @@ interface ShadeStepProps {
   colors: ThemeColors;
   styles: ReturnType<typeof makeStyles>;
   shades: string[];
+  canAddVocab: boolean;
+  isAddingNewShade: boolean;
+  newShadeText: string;
+  addingShadePending: boolean;
+  addShadeError: string | null;
   onShadeSelect: (s: string) => void;
   onCustomShadeToggle: () => void;
   onCustomShadeChange: (v: string) => void;
+  onAddNewShadeToggle: () => void;
+  onNewShadeTextChange: (v: string) => void;
+  onCancelNewShade: () => void;
+  onSaveNewShade: () => void;
   onSkip: () => void;
   onConfirm: () => void;
   skipTestID: string;
@@ -490,14 +723,24 @@ function ShadeStep({
   colors,
   styles,
   shades,
+  canAddVocab,
+  isAddingNewShade,
+  newShadeText,
+  addingShadePending,
+  addShadeError,
   onShadeSelect,
   onCustomShadeToggle,
   onCustomShadeChange,
+  onAddNewShadeToggle,
+  onNewShadeTextChange,
+  onCancelNewShade,
+  onSaveNewShade,
   onSkip,
   onConfirm,
   skipTestID,
   confirmTestID,
 }: ShadeStepProps) {
+  const anyBusy = submitting || addingShadePending;
   return (
     <>
       <Text style={styles.prompt}>
@@ -505,13 +748,13 @@ function ShadeStep({
       </Text>
       <View style={styles.optionWrap}>
         {shades.map((s) => {
-          const on = !isCustomShade && shade === s;
+          const on = !isCustomShade && !isAddingNewShade && shade === s;
           return (
             <Pressable
               key={s}
               style={[styles.optionChip, on && styles.optionChipOn]}
               onPress={() => onShadeSelect(s)}
-              disabled={submitting}
+              disabled={anyBusy}
               testID={`tooth-shade-${s}`}
             >
               <Text style={[styles.optionText, on && styles.optionTextOn]}>{s}</Text>
@@ -521,11 +764,23 @@ function ShadeStep({
         <Pressable
           style={[styles.optionChip, isCustomShade && styles.optionChipOn]}
           onPress={onCustomShadeToggle}
-          disabled={submitting}
+          disabled={anyBusy}
           testID="tooth-shade-other"
         >
           <Text style={[styles.optionText, isCustomShade && styles.optionTextOn]}>Other</Text>
         </Pressable>
+        {canAddVocab && (
+          <Pressable
+            style={[styles.optionChip, styles.optionChipAdd, isAddingNewShade && styles.optionChipOn]}
+            onPress={onAddNewShadeToggle}
+            disabled={anyBusy}
+            testID="tooth-shade-add-new"
+          >
+            <Text style={[styles.optionText, styles.optionTextAdd, isAddingNewShade && styles.optionTextOn]}>
+              + Add new…
+            </Text>
+          </Pressable>
+        )}
       </View>
       {isCustomShade && (
         <TextInput
@@ -538,11 +793,27 @@ function ShadeStep({
           testID="tooth-shade-custom"
         />
       )}
+      {isAddingNewShade && (
+        <AddNewInput
+          value={newShadeText}
+          placeholder="Type new shade…"
+          pending={addingShadePending}
+          error={addShadeError}
+          colors={colors}
+          styles={styles}
+          onChangeText={onNewShadeTextChange}
+          onCancel={onCancelNewShade}
+          onSave={onSaveNewShade}
+          inputTestID="tooth-shade-new-input"
+          saveTestID="tooth-shade-new-save"
+          cancelTestID="tooth-shade-new-cancel"
+        />
+      )}
       <View style={styles.shadeFooter}>
         <Pressable
-          style={[styles.secondaryBtn, submitting && styles.btnDisabled]}
+          style={[styles.secondaryBtn, anyBusy && styles.btnDisabled]}
           onPress={onSkip}
-          disabled={submitting}
+          disabled={anyBusy}
           testID={skipTestID}
         >
           {submitting ? (
@@ -555,10 +826,10 @@ function ShadeStep({
           style={[
             styles.primaryBtn,
             styles.flex1,
-            (submitting || (isCustomShade ? !customShade.trim() : !shade)) && styles.btnDisabled,
+            (anyBusy || isAddingNewShade || (isCustomShade ? !customShade.trim() : !shade)) && styles.btnDisabled,
           ]}
           onPress={onConfirm}
-          disabled={submitting || (isCustomShade ? !customShade.trim() : !shade)}
+          disabled={anyBusy || isAddingNewShade || (isCustomShade ? !customShade.trim() : !shade)}
           testID={confirmTestID}
         >
           {submitting ? (
@@ -633,8 +904,12 @@ function makeStyles(c: ThemeColors) {
       alignItems: "center",
     },
     optionChipOn: { borderColor: c.tint, backgroundColor: c.surfaceAlt },
+    optionChipAdd: { borderStyle: "dashed", borderColor: c.tint },
     optionText: { ...Typography.bodyMedium, color: c.textSecondary },
     optionTextOn: { color: c.tint },
+    optionTextAdd: { color: c.tint },
+    addNewWrap: { gap: Spacing.sm },
+    addNewRow: { flexDirection: "row", gap: Spacing.sm },
     input: {
       ...Typography.body,
       color: c.text,
@@ -661,16 +936,9 @@ function makeStyles(c: ThemeColors) {
       alignItems: "center",
     },
     secondaryText: { ...Typography.bodySemibold, color: c.textSecondary },
-    shadeFooter: { flexDirection: "row", alignItems: "center", gap: Spacing.md },
+    shadeFooter: { flexDirection: "row", gap: Spacing.sm },
+    errorText: { ...Typography.caption, color: c.error, textAlign: "center" },
     flex1: { flex: 1 },
-    btnDisabled: { opacity: 0.5 },
-    errorText: {
-      ...Typography.caption,
-      color: c.error,
-      backgroundColor: "rgba(220,38,38,0.08)",
-      paddingHorizontal: Spacing.md,
-      paddingVertical: Spacing.sm,
-      borderRadius: Radius.sm,
-    },
+    btnDisabled: { opacity: 0.45 },
   });
 }

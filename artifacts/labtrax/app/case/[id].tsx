@@ -2349,6 +2349,7 @@ function RestorationsSection({
       onConfirm={handleToothAction}
       vocabularyMaterials={vocabMaterials.length > 0 ? vocabMaterials : undefined}
       vocabularyShades={vocabShades.length > 0 ? vocabShades : undefined}
+      labOrganizationId={labOrgIdForVocab ?? undefined}
     />
   ) : null;
 
