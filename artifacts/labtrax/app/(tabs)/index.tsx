@@ -546,17 +546,17 @@ export default function CasesListScreen() {
   }
 
   function handleBulkLocated(succeededIds: string[], failedIds: string[]) {
-    setShowBulkLocateSheet(false);
     if (succeededIds.length > 0) {
-      // At least one case moved — exit selection mode and flash badges.
+      // At least one case moved — close the sheet, exit selection mode,
+      // and flash Located badges on the succeeded rows.
+      setShowBulkLocateSheet(false);
       exitSelectionMode();
       const successSet = new Set(succeededIds);
       setBulkLocateSuccessIds(successSet);
       setTimeout(() => setBulkLocateSuccessIds(new Set()), 2500);
-    } else if (failedIds.length > 0) {
-      // All PATCHes failed — stay in selection mode so the user can retry
-      // without having to re-select their cases.
     }
+    // If all failed (succeededIds empty): leave the sheet open and keep
+    // selection intact so the user can retry without re-selecting cases.
   }
 
   // ── Share-intent inbox

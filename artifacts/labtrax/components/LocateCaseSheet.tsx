@@ -124,19 +124,34 @@ export function LocateCaseSheet(props: Props) {
           if (r.status === "fulfilled") {
             succeededIds.push(cases[i]!.id);
           } else {
+            console.warn(
+              `[Locate] Case ${cases[i]!.id} (station: ${locateTarget}) failed:`,
+              r.reason,
+            );
             failedIds.push(cases[i]!.id);
           }
         });
-        onDismiss();
-        await casesQuery.refetch();
+
+        // Only dismiss when at least one case was located — if all failed,
+        // keep the sheet open so the user can retry without re-tapping.
+        if (succeededIds.length > 0) {
+          onDismiss();
+          await casesQuery.refetch();
+        }
+
         props.onBulkLocated(succeededIds, failedIds);
+
         if (failedIds.length > 0) {
+          const allFailed = succeededIds.length === 0;
           Alert.alert(
-            "Partial success",
-            `${succeededIds.length} case${succeededIds.length === 1 ? "" : "s"} located. ${failedIds.length} failed — please try again for those.`
+            allFailed ? "Locate failed" : "Partial success",
+            allFailed
+              ? `Could not locate ${failedIds.length} case${failedIds.length === 1 ? "" : "s"}. Please check your connection and try again.`
+              : `${succeededIds.length} case${succeededIds.length === 1 ? "" : "s"} located. ${failedIds.length} failed — please try again for those.`
           );
         }
-      } catch {
+      } catch (e) {
+        console.warn("[Locate] Bulk locate unexpected error:", e);
         Alert.alert("Couldn't locate cases", "Please try again.");
       } finally {
         setLocating(false);
