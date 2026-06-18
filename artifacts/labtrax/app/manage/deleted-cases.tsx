@@ -60,6 +60,28 @@ export default function DeletedCasesScreen() {
     return (raw as { cases?: DeletedCase[] }).cases ?? [];
   }, [deletedQuery.data]);
 
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  function enterSelectionMode() {
+    setSelectionMode(true);
+    setSelectedIds(new Set());
+  }
+
+  function exitSelectionMode() {
+    setSelectionMode(false);
+    setSelectedIds(new Set());
+  }
+
+  function toggleSelection(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
   const restoreMutation = useMutation({
     mutationFn: (caseId: string) =>
       sendJson("POST", `/api/cases/${caseId}/restore`),
@@ -68,6 +90,44 @@ export default function DeletedCasesScreen() {
       qc.invalidateQueries({ queryKey: ["cases", "deleted", labOrgId] });
       qc.invalidateQueries({ queryKey: ["invoices"] });
       router.push(`/case/${caseId}`);
+    },
+  });
+
+  const bulkRestoreMutation = useMutation({
+    mutationFn: (caseIds: string[]) =>
+      sendJson("POST", "/api/cases/bulk-restore", {
+        caseIds,
+        labOrganizationId: labOrgId!,
+      }) as Promise<{ restored: string[]; failed: { id: string; reason: string }[] }>,
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: ["cases"] });
+      qc.invalidateQueries({ queryKey: ["cases", "deleted", labOrgId] });
+      qc.invalidateQueries({ queryKey: ["invoices"] });
+      exitSelectionMode();
+      const restoredCount = result.restored?.length ?? 0;
+      const failedItems = result.failed ?? [];
+      if (failedItems.length > 0) {
+        const caseNumberById = new Map(cases.map((c) => [c.id, c.caseNumber]));
+        const lines = failedItems
+          .map((f) => {
+            const caseNum = caseNumberById.get(f.id) ?? f.id;
+            return `• ${caseNum}: ${f.reason}`;
+          })
+          .join("\n");
+        Alert.alert(
+          `${restoredCount} case${restoredCount !== 1 ? "s" : ""} restored`,
+          `${failedItems.length} could not be restored:\n${lines}`,
+        );
+      } else {
+        Alert.alert(
+          "Cases restored",
+          `${restoredCount} case${restoredCount !== 1 ? "s" : ""} have been restored.`,
+        );
+      }
+    },
+    onError: (err: unknown) => {
+      const msg = err instanceof Error ? err.message : "Could not restore cases.";
+      Alert.alert("Restore failed", msg);
     },
   });
 
@@ -96,7 +156,23 @@ export default function DeletedCasesScreen() {
     [restoreMutation],
   );
 
+  function handleBulkRestorePress() {
+    const count = selectedIds.size;
+    Alert.alert(
+      "Restore Cases",
+      `Restore ${count} case${count !== 1 ? "s" : ""}? Any linked frozen invoices will also be unfrozen.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Restore",
+          onPress: () => bulkRestoreMutation.mutate(Array.from(selectedIds)),
+        },
+      ],
+    );
+  }
+
   const isRefreshing = deletedQuery.isFetching && !deletedQuery.isLoading;
+  const isBusy = restoreMutation.isPending || bulkRestoreMutation.isPending;
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
@@ -108,6 +184,17 @@ export default function DeletedCasesScreen() {
           <Text style={styles.title}>Deleted Cases</Text>
           <Text style={styles.subtitle}>Restore soft-deleted cases</Text>
         </View>
+        {selectionMode ? (
+          <Pressable style={styles.headerActionBtn} onPress={exitSelectionMode} disabled={isBusy}>
+            <Text style={styles.headerActionText}>Cancel</Text>
+          </Pressable>
+        ) : (
+          cases.length > 0 && (
+            <Pressable style={styles.headerActionBtn} onPress={enterSelectionMode}>
+              <Text style={styles.headerActionText}>Select</Text>
+            </Pressable>
+          )
+        )}
       </View>
 
       {deletedQuery.isLoading ? (
@@ -126,7 +213,10 @@ export default function DeletedCasesScreen() {
         </View>
       ) : (
         <ScrollView
-          contentContainerStyle={styles.content}
+          contentContainerStyle={[
+            styles.content,
+            selectionMode && selectedIds.size > 0 && styles.contentWithBar,
+          ]}
           refreshControl={
             <RefreshControl
               refreshing={isRefreshing}
@@ -145,37 +235,80 @@ export default function DeletedCasesScreen() {
             </View>
           ) : (
             cases.map((item) => (
-              <Card key={item.id} style={styles.caseCard}>
-                <View style={styles.caseHeader}>
-                  <Text style={styles.caseNumber}>{item.caseNumber}</Text>
-                  <Text style={styles.deletedDate}>
-                    Deleted {formatDate(item.deletedAt)}
-                  </Text>
-                </View>
-                <Text style={styles.patientName}>
-                  {item.patientFirstName} {item.patientLastName}
-                </Text>
-                <Text style={styles.doctorName}>{item.doctorName}</Text>
-                <Pressable
-                  style={[
-                    styles.restoreBtn,
-                    restoreMutation.isPending && styles.btnDisabled,
-                  ]}
-                  onPress={() => handleRestore(item)}
-                  disabled={restoreMutation.isPending}
-                  testID={`restore-case-${item.id}`}
-                >
-                  {restoreMutation.isPending ? (
-                    <ActivityIndicator color="#fff" size="small" />
-                  ) : (
-                    <Ionicons name="refresh-outline" size={15} color="#fff" /* hex-allow: white icon on colored button */ />
-                  )}
-                  <Text style={styles.restoreBtnText}>Restore Case</Text>
-                </Pressable>
-              </Card>
+              <Pressable
+                key={item.id}
+                onPress={selectionMode ? () => toggleSelection(item.id) : undefined}
+              >
+                <Card style={[styles.caseCard, selectionMode && selectedIds.has(item.id) && styles.caseCardSelected]}>
+                  <View style={styles.cardRow}>
+                    <View style={styles.cardContent}>
+                      <View style={styles.caseHeader}>
+                        <Text style={styles.caseNumber}>{item.caseNumber}</Text>
+                        <Text style={styles.deletedDate}>
+                          Deleted {formatDate(item.deletedAt)}
+                        </Text>
+                      </View>
+                      <Text style={styles.patientName}>
+                        {item.patientFirstName} {item.patientLastName}
+                      </Text>
+                      <Text style={styles.doctorName}>{item.doctorName}</Text>
+                      {!selectionMode && (
+                        <Pressable
+                          style={[
+                            styles.restoreBtn,
+                            isBusy && styles.btnDisabled,
+                          ]}
+                          onPress={() => handleRestore(item)}
+                          disabled={isBusy}
+                          testID={`restore-case-${item.id}`}
+                        >
+                          {restoreMutation.isPending ? (
+                            <ActivityIndicator color="#fff" size="small" />
+                          ) : (
+                            <Ionicons name="refresh-outline" size={15} color="#fff" /* hex-allow: white icon on colored button */ />
+                          )}
+                          <Text style={styles.restoreBtnText}>Restore Case</Text>
+                        </Pressable>
+                      )}
+                    </View>
+                    {selectionMode && (
+                      <View style={styles.checkboxContainer}>
+                        <View style={[
+                          styles.checkbox,
+                          { borderColor: colors.tint },
+                          selectedIds.has(item.id) && { backgroundColor: colors.tint },
+                        ]}>
+                          {selectedIds.has(item.id) && (
+                            <Ionicons name="checkmark" size={14} color="#fff" /* hex-allow: white checkmark */ />
+                          )}
+                        </View>
+                      </View>
+                    )}
+                  </View>
+                </Card>
+              </Pressable>
             ))
           )}
         </ScrollView>
+      )}
+
+      {selectionMode && selectedIds.size > 0 && (
+        <View style={[styles.floatingBar, { paddingBottom: insets.bottom + Spacing.sm }]}>
+          <Pressable
+            style={[styles.bulkRestoreBtn, isBusy && styles.btnDisabled]}
+            onPress={handleBulkRestorePress}
+            disabled={isBusy}
+          >
+            {bulkRestoreMutation.isPending ? (
+              <ActivityIndicator color="#fff" size="small" />
+            ) : (
+              <Ionicons name="refresh-outline" size={16} color="#fff" /* hex-allow: white icon on colored button */ />
+            )}
+            <Text style={styles.bulkRestoreBtnText}>
+              Restore {selectedIds.size} case{selectedIds.size !== 1 ? "s" : ""}
+            </Text>
+          </Pressable>
+        </View>
       )}
     </View>
   );
@@ -203,6 +336,11 @@ function makeStyles(c: ThemeColors) {
     headerText: { flex: 1 },
     title: { ...Typography.h1, color: c.text },
     subtitle: { ...Typography.caption, color: c.textSecondary, marginTop: 2 },
+    headerActionBtn: {
+      paddingHorizontal: Spacing.sm,
+      paddingVertical: Spacing.xs,
+    },
+    headerActionText: { ...Typography.bodyMedium, color: c.tint },
     centered: {
       flex: 1,
       alignItems: "center",
@@ -222,6 +360,9 @@ function makeStyles(c: ThemeColors) {
       paddingTop: Spacing.sm,
       gap: Spacing.sm,
     },
+    contentWithBar: {
+      paddingBottom: 80,
+    },
     emptyContainer: {
       alignItems: "center",
       paddingTop: 60,
@@ -235,6 +376,15 @@ function makeStyles(c: ThemeColors) {
       maxWidth: 260,
     },
     caseCard: { gap: Spacing.xs },
+    caseCardSelected: {
+      borderWidth: 2,
+      borderColor: c.tint,
+    },
+    cardRow: {
+      flexDirection: "row",
+      alignItems: "center",
+    },
+    cardContent: { flex: 1, gap: Spacing.xs },
     caseHeader: {
       flexDirection: "row",
       alignItems: "center",
@@ -257,6 +407,43 @@ function makeStyles(c: ThemeColors) {
     },
     btnDisabled: { opacity: 0.6 },
     restoreBtnText: {
+      ...Typography.bodyMedium,
+      color: "#fff", /* hex-allow: white text on tint button */
+    },
+    checkboxContainer: {
+      paddingLeft: Spacing.md,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    checkbox: {
+      width: 22,
+      height: 22,
+      borderRadius: 11,
+      borderWidth: 2,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    floatingBar: {
+      position: "absolute",
+      bottom: 0,
+      left: 0,
+      right: 0,
+      paddingHorizontal: Spacing.lg,
+      paddingTop: Spacing.sm,
+      backgroundColor: c.backgroundSolid,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: c.border,
+    },
+    bulkRestoreBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: Spacing.sm,
+      paddingVertical: Spacing.md,
+      backgroundColor: c.tint,
+      borderRadius: Radius.md,
+    },
+    bulkRestoreBtnText: {
       ...Typography.bodyMedium,
       color: "#fff", /* hex-allow: white text on tint button */
     },

@@ -35,6 +35,8 @@ import type {
   BackupScheduleResult,
   BulkReassignCasesInput,
   BulkReassignCasesResult,
+  BulkRestoreCases200,
+  BulkRestoreCasesBody,
   BulkStatusCasesInput,
   BulkStatusCasesResult,
   CaseAttachmentResult,
@@ -4970,6 +4972,99 @@ export const useUpdateCase = <
   TContext
 > => {
   return useMutation(getUpdateCaseMutationOptions(options));
+};
+
+/**
+ * Restores up to 200 soft-deleted cases in a single call. For each case,
+clears `deleted_at` / `deleted_by_user_id` and unfreezes any linked
+invoices frozen when the case was deleted. Cases that cannot be restored
+(not found, wrong lab, already active) are returned in `failed` rather
+than aborting the whole batch. The caller must be an admin of the
+specified lab.
+
+ * @summary Restore multiple soft-deleted cases and unfreeze linked invoices
+ */
+export const getBulkRestoreCasesUrl = () => {
+  return `/api/cases/bulk-restore`;
+};
+
+export const bulkRestoreCases = async (
+  bulkRestoreCasesBody: BulkRestoreCasesBody,
+  options?: RequestInit,
+): Promise<BulkRestoreCases200> => {
+  return customFetch<BulkRestoreCases200>(getBulkRestoreCasesUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(bulkRestoreCasesBody),
+  });
+};
+
+export const getBulkRestoreCasesMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof bulkRestoreCases>>,
+    TError,
+    { data: BodyType<BulkRestoreCasesBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof bulkRestoreCases>>,
+  TError,
+  { data: BodyType<BulkRestoreCasesBody> },
+  TContext
+> => {
+  const mutationKey = ["bulkRestoreCases"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof bulkRestoreCases>>,
+    { data: BodyType<BulkRestoreCasesBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return bulkRestoreCases(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type BulkRestoreCasesMutationResult = NonNullable<
+  Awaited<ReturnType<typeof bulkRestoreCases>>
+>;
+export type BulkRestoreCasesMutationBody = BodyType<BulkRestoreCasesBody>;
+export type BulkRestoreCasesMutationError = ErrorType<void>;
+
+/**
+ * @summary Restore multiple soft-deleted cases and unfreeze linked invoices
+ */
+export const useBulkRestoreCases = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof bulkRestoreCases>>,
+    TError,
+    { data: BodyType<BulkRestoreCasesBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof bulkRestoreCases>>,
+  TError,
+  { data: BodyType<BulkRestoreCasesBody> },
+  TContext
+> => {
+  return useMutation(getBulkRestoreCasesMutationOptions(options));
 };
 
 /**

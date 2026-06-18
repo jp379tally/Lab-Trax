@@ -9091,6 +9091,8 @@ function DeletedCasesPanel() {
 
   const [restoreError, setRestoreError] = useState<string | null>(null);
   const [restoringId, setRestoringId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkRestoring, setBulkRestoring] = useState(false);
 
   async function handleRestore(caseId: string) {
     setRestoringId(caseId);
@@ -9110,12 +9112,69 @@ function DeletedCasesPanel() {
     }
   }
 
+  async function handleBulkRestore() {
+    if (!effectiveLabId || selectedIds.size === 0) return;
+    setBulkRestoring(true);
+    setRestoreError(null);
+    try {
+      const result = await apiFetch("/cases/bulk-restore", {
+        method: "POST",
+        body: JSON.stringify({ caseIds: Array.from(selectedIds), labOrganizationId: effectiveLabId }),
+      }) as { restored: string[]; failed: { id: string; reason: string }[] };
+      qc.invalidateQueries({ queryKey: ["cases"] });
+      qc.invalidateQueries({ queryKey: ["cases", "deleted", effectiveLabId] });
+      qc.invalidateQueries({ queryKey: ["invoices"] });
+      setSelectedIds(new Set());
+      const restoredCount = result.restored?.length ?? 0;
+      const failedCount = result.failed?.length ?? 0;
+      if (failedCount > 0) {
+        const reasons = (result.failed ?? []).map((f) => f.reason).join("; ");
+        toast({
+          title: `${restoredCount} case${restoredCount !== 1 ? "s" : ""} restored`,
+          description: `${failedCount} could not be restored: ${reasons}`,
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: `${restoredCount} case${restoredCount !== 1 ? "s" : ""} restored`,
+          description: "All selected cases have been restored.",
+        });
+      }
+    } catch (err: unknown) {
+      setRestoreError(
+        err instanceof Error ? err.message : "Could not restore cases.",
+      );
+    } finally {
+      setBulkRestoring(false);
+    }
+  }
+
   const deletedList = useMemo(() => {
     const raw = deletedQuery.data;
     if (!raw) return [];
     if (Array.isArray(raw)) return raw as DeletedCase[];
     return (raw as { cases?: DeletedCase[] }).cases ?? [];
   }, [deletedQuery.data]);
+
+  const allSelected = deletedList.length > 0 && deletedList.every((c) => selectedIds.has(c.id));
+  const someSelected = selectedIds.size > 0;
+
+  function toggleSelectAll() {
+    if (allSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(deletedList.map((c) => c.id)));
+    }
+  }
+
+  function toggleRow(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   return (
     <PanelShell
@@ -9126,7 +9185,7 @@ function DeletedCasesPanel() {
         <div className="mb-4">
           <select
             value={effectiveLabId ?? ""}
-            onChange={(e) => setSelectedLabId(e.target.value || null)}
+            onChange={(e) => { setSelectedLabId(e.target.value || null); setSelectedIds(new Set()); }}
             className="h-9 px-3 rounded-md bg-secondary text-sm border border-border focus:outline-none"
           >
             {adminLabs.map((m) => (
@@ -9141,6 +9200,36 @@ function DeletedCasesPanel() {
       {restoreError && (
         <div className="text-xs text-destructive bg-destructive/10 border border-destructive/30 rounded-md px-3 py-2 mb-3">
           {restoreError}
+        </div>
+      )}
+
+      {someSelected && (
+        <div className="sticky top-0 z-10 flex items-center justify-between gap-3 px-3 py-2 mb-2 rounded-md bg-primary/10 border border-primary/30 backdrop-blur-sm">
+          <span className="text-xs font-medium text-foreground">
+            {selectedIds.size} case{selectedIds.size !== 1 ? "s" : ""} selected
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setSelectedIds(new Set())}
+              className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Clear
+            </button>
+            <button
+              type="button"
+              disabled={bulkRestoring}
+              onClick={handleBulkRestore}
+              className="inline-flex items-center gap-1.5 h-7 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-60"
+            >
+              {bulkRestoring ? (
+                <Loader2 size={11} className="animate-spin" />
+              ) : (
+                <RotateCcw size={11} />
+              )}
+              Restore selected
+            </button>
+          </div>
         </div>
       )}
 
@@ -9168,7 +9257,16 @@ function DeletedCasesPanel() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
-                    <th className="text-left font-medium px-3 py-2">Case #</th>
+                    <th className="px-3 py-2 w-8">
+                      <input
+                        type="checkbox"
+                        checked={allSelected}
+                        onChange={toggleSelectAll}
+                        className="h-3.5 w-3.5 rounded cursor-pointer"
+                        aria-label="Select all"
+                      />
+                    </th>
+                    <th className="text-left font-medium py-2">Case #</th>
                     <th className="text-left font-medium py-2">Patient</th>
                     <th className="text-left font-medium py-2">Doctor</th>
                     <th className="text-left font-medium py-2">Deleted</th>
@@ -9179,9 +9277,18 @@ function DeletedCasesPanel() {
                   {deletedList.map((c, i) => (
                     <tr
                       key={c.id}
-                      className={i % 2 === 0 ? "" : "bg-secondary/20"}
+                      className={`${i % 2 === 0 ? "" : "bg-secondary/20"} ${selectedIds.has(c.id) ? "bg-primary/5" : ""}`}
                     >
-                      <td className="px-3 py-2.5 font-medium text-foreground whitespace-nowrap">
+                      <td className="px-3 py-2.5">
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(c.id)}
+                          onChange={() => toggleRow(c.id)}
+                          className="h-3.5 w-3.5 rounded cursor-pointer"
+                          aria-label={`Select case ${c.caseNumber}`}
+                        />
+                      </td>
+                      <td className="py-2.5 font-medium text-foreground whitespace-nowrap pr-4">
                         <div className="flex items-center gap-1.5">
                           <span>{c.caseNumber}</span>
                           <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300 uppercase tracking-wide">
@@ -9203,7 +9310,7 @@ function DeletedCasesPanel() {
                       <td className="px-3 py-2.5 text-right">
                         <button
                           type="button"
-                          disabled={restoringId === c.id}
+                          disabled={restoringId === c.id || bulkRestoring}
                           onClick={() => handleRestore(c.id)}
                           className="inline-flex items-center gap-1.5 h-7 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-60"
                         >

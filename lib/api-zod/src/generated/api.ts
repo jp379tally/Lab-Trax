@@ -1976,6 +1976,44 @@ export const UpdateCaseResponse = zod.object({
 });
 
 /**
+ * Restores up to 200 soft-deleted cases in a single call. For each case,
+clears `deleted_at` / `deleted_by_user_id` and unfreezes any linked
+invoices frozen when the case was deleted. Cases that cannot be restored
+(not found, wrong lab, already active) are returned in `failed` rather
+than aborting the whole batch. The caller must be an admin of the
+specified lab.
+
+ * @summary Restore multiple soft-deleted cases and unfreeze linked invoices
+ */
+export const bulkRestoreCasesBodyCaseIdsMax = 200;
+
+export const BulkRestoreCasesBody = zod.object({
+  caseIds: zod.array(zod.string()).min(1).max(bulkRestoreCasesBodyCaseIdsMax),
+  labOrganizationId: zod.string(),
+});
+
+export const BulkRestoreCasesResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      restored: zod
+        .array(zod.string())
+        .optional()
+        .describe("IDs of successfully restored cases"),
+      failed: zod
+        .array(
+          zod.object({
+            id: zod.string().optional(),
+            reason: zod.string().optional(),
+          }),
+        )
+        .optional()
+        .describe("Cases that could not be restored"),
+    })
+    .optional(),
+});
+
+/**
  * Restores a soft-deleted case by clearing its `deleted_at` /
 `deleted_by_user_id` columns and unfreezes every linked non-deleted
 invoice that was frozen when the case was deleted (clears `frozen`,

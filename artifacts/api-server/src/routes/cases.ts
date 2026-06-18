@@ -5661,6 +5661,114 @@ router.delete(
 );
 
 router.post(
+  "/bulk-restore",
+  asyncHandler(async (req, res) => {
+    const restoringUserId = (req as any).auth.userId as string;
+
+    const { caseIds, labOrganizationId } = z
+      .object({
+        caseIds: z.array(z.string().min(1)).min(1).max(200),
+        labOrganizationId: z.string().min(1),
+      })
+      .parse(req.body);
+
+    await requireAnyRole(restoringUserId, labOrganizationId, ADMIN_ROLES);
+
+    const restored: string[] = [];
+    const failed: { id: string; reason: string }[] = [];
+
+    for (const caseId of caseIds) {
+      try {
+        const found = await db.query.cases.findFirst({
+          where: eq(cases.id, caseId),
+        });
+        if (!found) {
+          failed.push({ id: caseId, reason: "Case not found." });
+          continue;
+        }
+        if (found.labOrganizationId !== labOrganizationId) {
+          failed.push({ id: caseId, reason: "Case does not belong to this lab." });
+          continue;
+        }
+        if (!found.deletedAt) {
+          failed.push({ id: caseId, reason: "Case is not deleted." });
+          continue;
+        }
+
+        await restoreDeleted({
+          table: cases,
+          where: eq(cases.id, found.id),
+          actorUserId: restoringUserId,
+          req,
+          organizationId: found.labOrganizationId,
+          entityType: "case",
+          entityId: found.id,
+        });
+
+        const frozenInvoices = await db
+          .select()
+          .from(invoices)
+          .where(
+            and(
+              eq(invoices.caseId, found.id),
+              eq(invoices.frozen, true),
+              isNotNull(invoices.caseDeletedAt),
+              isNull(invoices.deletedAt),
+            ),
+          );
+
+        if (frozenInvoices.length > 0) {
+          await db
+            .update(invoices)
+            .set({
+              frozen: false,
+              balanceDue: sql`${invoices.total}`,
+              caseDeletedAt: null,
+              caseDeletedByUserId: null,
+              caseDeletedNote: null,
+              updatedByUserId: restoringUserId,
+            } as any)
+            .where(
+              and(
+                inArray(
+                  invoices.id,
+                  frozenInvoices.map((inv) => inv.id),
+                ),
+                eq(invoices.frozen, true),
+                isNull(invoices.deletedAt),
+              ),
+            );
+
+          for (const inv of frozenInvoices) {
+            await writeAuditLog({
+              req,
+              userId: restoringUserId,
+              organizationId: found.labOrganizationId,
+              action: "invoice_unfrozen_case_restored",
+              entityType: "invoice",
+              entityId: inv.id,
+              beforeJson: inv,
+              metadataJson: {
+                caseId: found.id,
+                caseNumber: found.caseNumber,
+              },
+            });
+          }
+        }
+
+        restored.push(caseId);
+      } catch (err) {
+        const reason =
+          err instanceof Error ? err.message : "Unexpected error.";
+        failed.push({ id: caseId, reason });
+      }
+    }
+
+    return ok(res, { restored, failed });
+  })
+);
+
+router.post(
   "/:caseId/restore",
   asyncHandler(async (req, res) => {
     const restoringUserId = (req as any).auth.userId as string;

@@ -2282,6 +2282,32 @@ export type UpdateCase200 = {
   data?: UpdateCase200Data;
 };
 
+export type BulkRestoreCasesBody = {
+  /**
+   * @minItems 1
+   * @maxItems 200
+   */
+  caseIds: string[];
+  labOrganizationId: string;
+};
+
+export type BulkRestoreCases200DataFailedItem = {
+  id?: string;
+  reason?: string;
+};
+
+export type BulkRestoreCases200Data = {
+  /** IDs of successfully restored cases */
+  restored?: string[];
+  /** Cases that could not be restored */
+  failed?: BulkRestoreCases200DataFailedItem[];
+};
+
+export type BulkRestoreCases200 = {
+  ok?: boolean;
+  data?: BulkRestoreCases200Data;
+};
+
 export type RestoreCase200Data = {
   restored?: boolean;
   /** Number of invoices that were unfrozen */

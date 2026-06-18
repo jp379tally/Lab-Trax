@@ -1357,6 +1357,63 @@ paths:
           description: Caller is not a member of the case's lab
         "404":
           description: Case not found or caller lacks access
+  /cases/bulk-restore:
+    post:
+      operationId: bulkRestoreCases
+      tags: [cases]
+      summary: Restore multiple soft-deleted cases and unfreeze linked invoices
+      description: |
+        Restores up to 200 soft-deleted cases in a single call. For each case,
+        clears `deleted_at` / `deleted_by_user_id` and unfreezes any linked
+        invoices frozen when the case was deleted. Cases that cannot be restored
+        (not found, wrong lab, already active) are returned in `failed` rather
+        than aborting the whole batch. The caller must be an admin of the
+        specified lab.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [caseIds, labOrganizationId]
+              properties:
+                caseIds:
+                  type: array
+                  items: { type: string }
+                  minItems: 1
+                  maxItems: 200
+                labOrganizationId:
+                  type: string
+      responses:
+        "200":
+          description: Bulk restore result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      restored:
+                        type: array
+                        items: { type: string }
+                        description: IDs of successfully restored cases
+                      failed:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id: { type: string }
+                            reason: { type: string }
+                        description: Cases that could not be restored
+        "400":
+          description: Validation error
+        "401":
+          description: Not authenticated
+        "403":
+          description: Caller is not an admin of the specified lab
   /cases/{caseId}/restore:
     post:
       operationId: restoreCase
