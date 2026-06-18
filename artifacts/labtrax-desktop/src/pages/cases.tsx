@@ -136,6 +136,15 @@ function generateCaseNumber(): string {
   return `${yy}-1`;
 }
 
+interface RestorationDraft {
+  id: string;
+  toothNumber: string;
+  restorationType: string;
+  material: string;
+  shade: string;
+  quantity: string;
+}
+
 interface NewCaseFormData {
   // Optional: server assigns the case number for remake cases.
   caseNumber?: string;
@@ -147,6 +156,7 @@ interface NewCaseFormData {
   dueDate: string;
   priority: "normal" | "rush";
   casePanBarcode?: string;
+  restorations?: RestorationDraft[];
 }
 
 interface ProviderPickerProps {
@@ -564,6 +574,24 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
   const [remakeCharged, setRemakeCharged] = useState<"yes" | "no" | "">("");
   const remakeSearchTimerRef = useRef<number | null>(null);
 
+  // ── Restorations ─────────────────────────────────────────────────────────
+  const [restorations, setRestorations] = useState<RestorationDraft[]>([]);
+
+  function addRestoration() {
+    setRestorations((prev) => [
+      ...prev,
+      { id: crypto.randomUUID(), toothNumber: "", restorationType: "", material: "", shade: "", quantity: "1" },
+    ]);
+  }
+
+  function removeRestoration(id: string) {
+    setRestorations((prev) => prev.filter((r) => r.id !== id));
+  }
+
+  function updateRestoration(id: string, field: keyof Omit<RestorationDraft, "id">, value: string) {
+    setRestorations((prev) => prev.map((r) => (r.id === id ? { ...r, [field]: value } : r)));
+  }
+
   function clearRemake() {
     setIsRemake(false);
     setRemakeSearch("");
@@ -658,6 +686,17 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
     set("dueDate", raw);
   }
 
+  function buildRestorationPayload() {
+    if (restorations.length === 0) return undefined;
+    return restorations.map((r) => ({
+      toothNumber: r.toothNumber.trim(),
+      restorationType: r.restorationType,
+      material: r.material || undefined,
+      shade: r.shade || undefined,
+      quantity: parseInt(r.quantity, 10) || 1,
+    }));
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!form.labOrganizationId)
@@ -667,6 +706,16 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
     if (!form.patientFirstName.trim() || !form.patientLastName.trim())
       return setError("Patient first and last name are required.");
     if (!form.doctorName.trim()) return setError("Doctor name is required.");
+
+    // Validate restoration rows — tooth number and type are required per row
+    for (const r of restorations) {
+      if (!r.toothNumber.trim()) {
+        return setError("Each restoration must have a tooth number.");
+      }
+      if (!r.restorationType) {
+        return setError("Each restoration must have a type selected.");
+      }
+    }
 
     // If the user marked this as a remake, validate the remake fields and
     // submit directly — skip the auto-duplicate check to avoid double-linking.
@@ -680,7 +729,8 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
         remakeOfCaseId: remakeSelected.id,
         remakeReason: remakeReason.trim(),
         remakeCharged: remakeCharged === "yes",
-      });
+        restorations: buildRestorationPayload(),
+      } as Parameters<typeof mutation.mutate>[0]);
       return;
     }
 
@@ -707,18 +757,18 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
       console.warn("patient-similarity check failed", err);
     }
     setCheckingDupes(false);
-    mutation.mutate(form);
+    mutation.mutate({ ...form, restorations: buildRestorationPayload() } as Parameters<typeof mutation.mutate>[0]);
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
       <div
-        className="bg-card border border-border rounded-2xl shadow-2xl w-full max-w-lg mx-4"
+        className="bg-card border border-border rounded-2xl shadow-2xl w-full max-w-xl mx-4 flex flex-col max-h-[90vh]"
         role="dialog"
         aria-modal="true"
         aria-label="Add case"
       >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
           <h2 className="text-base font-semibold">New case</h2>
           <button
             type="button"
@@ -730,7 +780,7 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
+        <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4 overflow-y-auto">
           {orgsQuery.isLoading && (
             <p className="text-sm text-muted-foreground">
               Loading organizations…
@@ -1080,13 +1130,122 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
             )}
           </div>
 
+          {/* ── Restorations section ─────────────────────────────────────── */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-medium text-muted-foreground">
+                Restorations{" "}
+                <span className="font-normal text-muted-foreground/70">(optional)</span>
+              </span>
+              <button
+                type="button"
+                onClick={addRestoration}
+                className="h-6 px-2.5 rounded-md text-xs font-medium bg-secondary text-muted-foreground border border-transparent hover:bg-secondary/80 transition-colors inline-flex items-center gap-1"
+              >
+                <Plus size={11} />
+                Add row
+              </button>
+            </div>
+
+            {restorations.length > 0 && (
+              <div className="space-y-2">
+                {restorations.map((r, idx) => (
+                  <div key={r.id} className="rounded-lg border border-border bg-secondary/40 p-2.5 space-y-2">
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-[11px] font-medium text-muted-foreground">Row {idx + 1}</span>
+                      <button
+                        type="button"
+                        onClick={() => removeRestoration(r.id)}
+                        className="text-muted-foreground hover:text-destructive transition-colors"
+                        aria-label="Remove restoration"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[11px] font-medium text-muted-foreground mb-1">
+                          Type <span className="text-destructive">*</span>
+                        </label>
+                        <select
+                          value={r.restorationType}
+                          onChange={(e) => updateRestoration(r.id, "restorationType", e.target.value)}
+                          className="w-full h-8 px-2 rounded-md bg-background text-xs border border-border focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                        >
+                          <option value="">Select type…</option>
+                          {RESTORATION_TYPES.map((t) => (
+                            <option key={t} value={t}>{t}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-medium text-muted-foreground mb-1">
+                          Tooth # <span className="text-destructive">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={r.toothNumber}
+                          onChange={(e) => updateRestoration(r.id, "toothNumber", e.target.value)}
+                          placeholder="e.g. 3, 14"
+                          className="w-full h-8 px-2 rounded-md bg-background text-xs border border-border focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-medium text-muted-foreground mb-1">
+                          Material
+                        </label>
+                        <select
+                          value={r.material}
+                          onChange={(e) => updateRestoration(r.id, "material", e.target.value)}
+                          className="w-full h-8 px-2 rounded-md bg-background text-xs border border-border focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                        >
+                          <option value="">—</option>
+                          {MATERIALS.map((m) => (
+                            <option key={m} value={m}>{m}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-medium text-muted-foreground mb-1">
+                          Shade
+                        </label>
+                        <select
+                          value={r.shade}
+                          onChange={(e) => updateRestoration(r.id, "shade", e.target.value)}
+                          className="w-full h-8 px-2 rounded-md bg-background text-xs border border-border focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                        >
+                          <option value="">—</option>
+                          {SHADES.map((s) => (
+                            <option key={s} value={s}>{s}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-medium text-muted-foreground mb-1">
+                          Qty
+                        </label>
+                        <input
+                          type="number"
+                          min={1}
+                          value={r.quantity}
+                          onChange={(e) => updateRestoration(r.id, "quantity", e.target.value)}
+                          className="w-full h-8 px-2 rounded-md bg-background text-xs border border-border focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           {error && (
             <p className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">
               {error}
             </p>
           )}
 
-          <div className="flex gap-3 pt-1">
+          <div className="flex gap-3 pt-1 pb-1">
             <button
               type="button"
               onClick={onClose}
@@ -1123,13 +1282,13 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
           onCancel={() => setDuplicateMatches(null)}
           onProceedAsNew={() => {
             setDuplicateMatches(null);
-            mutation.mutate(form);
+            mutation.mutate({ ...form, restorations: buildRestorationPayload() } as Parameters<typeof mutation.mutate>[0]);
           }}
           onProceedAsRemake={(decision) => {
             // Omit caseNumber so the server assigns the suffixed number
             // (e.g. "26-11B") automatically based on the original case.
             const { caseNumber: _ignored, ...formWithoutCaseNumber } = form;
-            mutation.mutate({ ...formWithoutCaseNumber, ...decision });
+            mutation.mutate({ ...formWithoutCaseNumber, ...decision, restorations: buildRestorationPayload() } as Parameters<typeof mutation.mutate>[0]);
           }}
         />
       )}
