@@ -3182,20 +3182,6 @@ router.post(
     });
     if (!ufAccount) throw new HttpError(404, "Undeposited Funds account not found.");
 
-    const txns = await db.query.bankTransactions.findMany({
-      where: and(
-        inArray(bankTransactions.id, input.transactionIds),
-        eq(bankTransactions.bankAccountId, ufAccount.id),
-        eq(bankTransactions.status, "posted")
-      ),
-    });
-    if (txns.length !== input.transactionIds.length) {
-      throw new HttpError(
-        400,
-        "One or more transactions were not found in Undeposited Funds."
-      );
-    }
-
     const depositDate = input.depositDate
       ? new Date(input.depositDate)
       : new Date();
@@ -3205,9 +3191,47 @@ router.post(
 
     const depositorId = uid(req);
     const depositedAt = new Date();
+    let movedTxns: (typeof bankTransactions.$inferSelect)[] = [];
+
+
     await db.transaction(async (tx) => {
-      // Move all selected UF transactions to the target account and mark cleared.
-      for (const t of txns) {
+      // Lock the requested rows for update so that two concurrent duplicate
+      // POSTs for the same transactionIds serialize here rather than both
+      // passing the "still in UF?" check and double-depositing.
+      const lockedRows = await tx
+        .select()
+        .from(bankTransactions)
+        .where(inArray(bankTransactions.id, input.transactionIds))
+        .for("update");
+
+      // Detect any IDs that don't exist in the DB at all.
+      const foundIds = new Set(lockedRows.map((r) => r.id));
+      const missingCount = input.transactionIds.filter(
+        (id) => !foundIds.has(id)
+      ).length;
+      if (missingCount > 0) {
+        throw new HttpError(
+          400,
+          "One or more transactions were not found in Undeposited Funds."
+        );
+      }
+
+      // After acquiring the lock, verify every row is still in THIS org's UF
+      // account with status=posted.  A row that has already been moved (e.g. by
+      // a concurrent first call) will no longer satisfy this condition.
+      const notInUf = lockedRows.filter(
+        (r) => r.bankAccountId !== ufAccount.id || r.status !== "posted"
+      );
+      if (notInUf.length > 0) {
+        throw new HttpError(
+          400,
+          "One or more transactions are already deposited."
+        );
+      }
+
+      movedTxns = lockedRows;
+
+      for (const t of movedTxns) {
         await tx
           .update(bankTransactions)
           .set({
@@ -3222,12 +3246,12 @@ router.post(
       }
     });
 
-    const totalAmount = txns.reduce(
+    const totalAmount = movedTxns.reduce(
       (s: number, t: any) => s + Number(t.netAmount),
       0
     );
     return ok(res, {
-      moved: txns.length,
+      moved: movedTxns.length,
       totalAmount: totalAmount.toFixed(2),
       bankAccountId: targetAccount.id,
     });

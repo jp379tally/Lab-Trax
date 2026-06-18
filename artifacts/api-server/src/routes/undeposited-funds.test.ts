@@ -637,4 +637,52 @@ maybe("Undeposited Funds workflow (db integration)", () => {
 
     expect(r.status).toBe(403);
   });
+
+  it("make-deposits: second call with same transactionIds returns 400 already-deposited", async () => {
+    // Seed a fresh UF transaction for this sub-test.
+    const { db, bankTransactions } = dbMod as any;
+    const [freshTxn] = await db
+      .insert(bankTransactions)
+      .values({
+        labOrganizationId: labOrgId,
+        bankAccountId: ufAccountId,
+        txnDate: new Date(),
+        type: "deposit",
+        payee: "Double-deposit test payment",
+        debitAmount: "0.00",
+        creditAmount: "200.00",
+        netAmount: "200.00",
+        status: "posted",
+        source: "invoice",
+        createdByUserId: adminUserId,
+      })
+      .returning();
+
+    const payload = {
+      organizationId: labOrgId,
+      bankAccountId: realAccountId,
+      transactionIds: [freshTxn.id],
+    };
+
+    // First call — must succeed.
+    const first = await request(app)
+      .post("/api/finance/make-deposits")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send(payload);
+
+    expect(first.status).toBe(200);
+    expect(first.body.ok).toBe(true);
+    expect(first.body.data.moved).toBe(1);
+
+    // Second call with the same IDs — the transaction has already left UF.
+    const second = await request(app)
+      .post("/api/finance/make-deposits")
+      .set("Authorization", `Bearer ${tokens.admin}`)
+      .send(payload);
+
+    expect(second.status).toBe(400);
+    expect(second.body.error ?? second.body.message ?? "").toMatch(
+      /already deposited/i
+    );
+  });
 });
