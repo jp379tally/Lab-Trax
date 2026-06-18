@@ -3442,6 +3442,15 @@ router.post(
                 .filter(Boolean),
             ),
           ).join(", ");
+          // material — distinct materials across restorations, populated by
+          // the AI prescription intake / iTero importer the same way shade is.
+          const materialList = Array.from(
+            new Set(
+              billableRestorations
+                .map((r) => (r.material || "").trim())
+                .filter(Boolean),
+            ),
+          ).join(", ");
           const caseNotesText = [
             ...caseLevelNotes.map((n) => (n.noteText || "").trim()),
             ...billableRestorations.map((r) => (r.notes || "").trim()),
@@ -3453,6 +3462,7 @@ router.post(
             billTo: billToName,
             teeth: teethList,
             shade: shadeList,
+            material: materialList,
             caseNotes: caseNotesText,
             credits: 0,
             lineItems: billableRestorations.map((r) => ({

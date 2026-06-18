@@ -19,6 +19,7 @@
     "backfill-vendor-links": "tsx ./src/backfill-vendor-links.ts",
     "backfill-deletion-audit-metadata": "tsx ./src/backfill-deletion-audit-metadata.ts",
     "backfill-expected-delivery-dates": "tsx ./src/backfill-expected-delivery-dates.ts",
+    "backfill-invoice-display-shade-material": "tsx ./src/backfill-invoice-display-shade-material.ts",
     "seed-stripe-products": "tsx ./src/seedStripeProducts.ts",
     "seed-revenuecat": "tsx ./src/seedRevenueCat.ts",
     "bump-build-number": "tsx ./src/bump-build-number.ts",

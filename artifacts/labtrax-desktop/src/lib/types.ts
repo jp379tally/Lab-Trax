@@ -226,6 +226,7 @@ export interface InvoiceDisplayMetadata {
   billTo?: string | null;
   teeth?: string | null;
   shade?: string | null;
+  material?: string | null;
   caseNotes?: string | null;
   caseType?: string | null;
   clientName?: string | null;

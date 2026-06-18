@@ -695,6 +695,7 @@ function BulkSendDialog({
       billTo: meta.billTo ?? null,
       teeth: meta.teeth ?? null,
       shade: meta.shade ?? null,
+      material: meta.material ?? null,
       caseNotes: meta.caseNotes ?? null,
       issuedAt: inv.issuedAt ?? null,
       dueAt: inv.dueAt ?? inv.dueDate ?? null,
@@ -1807,6 +1808,10 @@ export function InvoiceEditor({
       billTo,
       teeth,
       shade,
+      // Material is not an editable field — carry it through from the loaded
+      // display-metadata snapshot (populated by AI intake / iTero import) so
+      // it still renders on the PDF.
+      material: readDisplayMetadata(detailQuery.data).material ?? null,
       caseNotes,
       issuedAt: issuedAt ? new Date(issuedAt).toISOString() : null,
       dueAt: dueAt ? new Date(dueAt).toISOString() : null,

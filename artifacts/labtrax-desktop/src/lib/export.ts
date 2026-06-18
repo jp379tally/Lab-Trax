@@ -148,6 +148,7 @@ export interface InvoicePdfOptions {
   billTo?: string | null;
   teeth?: string | null;
   shade?: string | null;
+  material?: string | null;
   caseNotes?: string | null;
   issuedAt?: string | null;
   dueAt?: string | null;
@@ -389,6 +390,33 @@ export function printInvoicePdf(opts: InvoicePdfOptions) {
   document.body.appendChild(iframe);
 }
 
+/**
+ * Build the invoice "meta" row label/value pairs shown under the bill-to
+ * block. Issued / Due / Status are always present; Teeth, Shade, and
+ * Material are appended only when the invoice's display-metadata snapshot
+ * carries them (e.g. populated by the AI prescription intake / iTero import).
+ *
+ * Pulled out of `buildInvoiceDoc` as a pure function so the shade/material
+ * rendering rules are unit-testable without rendering a full jsPDF document.
+ */
+export function buildInvoiceMetaPairs(
+  opts: Pick<
+    InvoicePdfOptions,
+    "issuedAt" | "dueAt" | "status" | "teeth" | "shade" | "material"
+  >,
+): Array<[string, string]> {
+  const pairs: Array<[string, string]> = [
+    ["Issued", fmtDate(opts.issuedAt) || "—"],
+    ["Due", fmtDate(opts.dueAt) || "—"],
+    ["Status", opts.status],
+  ];
+  if (opts.teeth && opts.teeth.trim()) pairs.push(["Teeth", opts.teeth.trim()]);
+  if (opts.shade && opts.shade.trim()) pairs.push(["Shade", opts.shade.trim()]);
+  if (opts.material && opts.material.trim())
+    pairs.push(["Material", opts.material.trim()]);
+  return pairs;
+}
+
 function buildInvoiceDoc(opts: InvoicePdfOptions) {
   const doc = new jsPDF({ unit: "pt", format: "letter" });
   const template = coerceInvoiceTemplate(opts.template ?? DEFAULT_INVOICE_TEMPLATE);
@@ -516,13 +544,7 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
 
   // ── Meta row ─────────────────────────────────────────────────────────
   const m = boxes.meta;
-  const metaPairs: Array<[string, string]> = [
-    ["Issued", fmtDate(opts.issuedAt) || "—"],
-    ["Due", fmtDate(opts.dueAt) || "—"],
-    ["Status", opts.status],
-  ];
-  if (opts.teeth && opts.teeth.trim()) metaPairs.push(["Teeth", opts.teeth.trim()]);
-  if (opts.shade && opts.shade.trim()) metaPairs.push(["Shade", opts.shade.trim()]);
+  const metaPairs = buildInvoiceMetaPairs(opts);
   const colW = m.w / metaPairs.length;
   metaPairs.forEach(([label, value], i) => {
     const x = m.x + colW * i;

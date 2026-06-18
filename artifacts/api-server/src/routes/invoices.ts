@@ -667,6 +667,7 @@ function buildInvoiceDisplayMetadataFromCase(
   restorationRows: Array<{
     toothNumber: string | null;
     shade: string | null;
+    material?: string | null;
   }>,
   noteRows: Array<{ noteText: string | null }>,
 ) {
@@ -702,6 +703,17 @@ function buildInvoiceDisplayMetadataFromCase(
   }
   const shade = shadesOrdered.join(", ");
 
+  const seenMaterials = new Set<string>();
+  const materialsOrdered: string[] = [];
+  for (const r of restorationRows) {
+    const m = (r.material ?? "").trim();
+    if (m && !seenMaterials.has(m)) {
+      seenMaterials.add(m);
+      materialsOrdered.push(m);
+    }
+  }
+  const material = materialsOrdered.join(", ");
+
   const caseNotesText = noteRows
     .map((n) => (n.noteText ?? "").trim())
     .filter(Boolean)
@@ -712,6 +724,7 @@ function buildInvoiceDisplayMetadataFromCase(
     billTo: (caseRow.doctorName ?? "").trim(),
     teeth,
     shade,
+    material,
     caseNotes: caseNotesText,
   };
 }
