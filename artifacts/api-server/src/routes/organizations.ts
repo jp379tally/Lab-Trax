@@ -32,7 +32,7 @@ import {
   DEFAULT_CORRESPONDENCE_TEMPLATE,
   correspondenceTemplateSchema,
 } from "../lib/correspondence-template";
-import { and, desc, eq, inArray, isNotNull, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import {
@@ -437,6 +437,41 @@ router.post(
       }
 
       if (parentLabOrganizationId) {
+        // Require city, state, and ZIP for provider orgs under a parent lab.
+        // These fields are always present in the AI-intake flow and on the Add
+        // Practice form; returning a readable 400 here prevents the user from
+        // ever seeing a raw not-null-violation SQL error.
+        if (
+          !input.city?.trim() ||
+          !input.state?.trim() ||
+          !input.zip?.trim()
+        ) {
+          throw new HttpError(
+            400,
+            "Practice name, city, state, and ZIP are required."
+          );
+        }
+
+        // Guard against duplicate practice names within the same lab.
+        // There is no DB unique index on (parentLabOrganizationId, name) so
+        // this check is the only gate. Case-insensitive, soft-delete-aware.
+        const existingByName = await db.query.organizations.findFirst({
+          where: and(
+            eq(organizations.parentLabOrganizationId, parentLabOrganizationId),
+            eq(
+              sql`lower(${organizations.name})`,
+              input.name.toLowerCase()
+            ),
+            notDeleted(organizations)
+          ),
+        });
+        if (existingByName) {
+          throw new HttpError(
+            409,
+            "Practice already exists. Select existing practice instead."
+          );
+        }
+
         if (input.accountNumber && input.accountNumber.trim()) {
           accountNumber = await assertCustomAccountNumberAvailable(
             parentLabOrganizationId,
@@ -488,17 +523,59 @@ router.post(
       }
     }
 
-    const [organization] = await db
-      .insert(organizations)
-      .values({
-        ...persistableInput,
-        licenseNumber,
-        parentLabOrganizationId,
-        accountNumber,
-        platformAccountNumber,
-        createdByUserId: callerId,
-      })
-      .returning();
+    let organization: (typeof organizations.$inferSelect) | undefined;
+    try {
+      const [row] = await db
+        .insert(organizations)
+        .values({
+          ...persistableInput,
+          licenseNumber,
+          parentLabOrganizationId,
+          accountNumber,
+          platformAccountNumber,
+          createdByUserId: callerId,
+        })
+        .returning();
+      organization = row;
+    } catch (err: unknown) {
+      const pgCode =
+        err != null && typeof err === "object" && "code" in err
+          ? (err as { code: unknown }).code
+          : err != null &&
+              typeof err === "object" &&
+              "cause" in err &&
+              err.cause != null &&
+              typeof err.cause === "object" &&
+              "code" in err.cause
+            ? (err as { cause: { code: unknown } }).cause.code
+            : undefined;
+      if (pgCode === "23505") {
+        throw new HttpError(
+          409,
+          "Practice already exists. Select existing practice instead."
+        );
+      }
+      if (pgCode === "23502" || pgCode === "23514") {
+        throw new HttpError(
+          400,
+          "Practice name, city, state, and ZIP are required."
+        );
+      }
+      req.log?.warn?.(
+        { err: err instanceof Error ? err.message : String(err) },
+        "Unexpected error inserting organization"
+      );
+      throw new HttpError(
+        500,
+        "Could not save this practice. Please check required fields and try again."
+      );
+    }
+    if (!organization) {
+      throw new HttpError(
+        500,
+        "Could not save this practice. Please check required fields and try again."
+      );
+    }
 
     // Only insert an owner membership when the caller is creating their own lab.
     // Provider orgs are client records managed via parentLabOrganizationId — the

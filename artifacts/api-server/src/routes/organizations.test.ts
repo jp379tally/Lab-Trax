@@ -611,10 +611,20 @@ maybe("Organizations CRUD (db integration)", () => {
 
   it("POST /api/organizations — provider org type is preserved in the response", async () => {
     const { access } = await makeSession(ownerId);
+    // city/state/zip are required for provider orgs under a parent lab.
+    // ownerId has lab memberships from earlier test runs, so the route will
+    // resolve a parentLabOrganizationId and then check address fields.
+    // Supply minimal valid address fields so the assertion stays focused on type.
     const r = await request(appMod.default)
       .post("/api/organizations")
       .set("Authorization", `Bearer ${access}`)
-      .send({ type: "provider", name: rid("ProviderOrg") });
+      .send({
+        type: "provider",
+        name: rid("ProviderOrg"),
+        city: "Tampa",
+        state: "FL",
+        zip: "33601",
+      });
     expect(r.status).toBe(201);
     expect(r.body.data.type).toBe("provider");
     createdOrgIds.push(r.body.data.id);
@@ -799,5 +809,514 @@ maybe("Organizations CRUD (db integration)", () => {
       );
       await db.delete(users).where(inArray(users.id, [adminId, victimId]));
     }
+  });
+
+  // ── AI intake: new provider org save regression ───────────────────────────
+  //
+  // Regression guard for the "save new practice from AI intake" flow.
+  // All ten required cases from the task specification are covered here.
+  //
+  // Setup: a dedicated lab owner + lab org + membership is created directly in
+  // the DB so every test can rely on findCallerPrimaryLabId resolving
+  // without needing to sequence API calls.
+
+  describe("AI intake: new provider org save regression", () => {
+    const aiOwnerId = rid("aiown");
+    const aiLabId = rid("ailab");
+    const aiMshipId = rid("aimship");
+    const aiProviderIds: string[] = [];
+    const aiCaseIds: string[] = [];
+
+    beforeAll(async () => {
+      const { db, users, organizations: orgsTable, organizationMemberships } =
+        dbMod as any;
+      await db.insert(users).values({
+        id: aiOwnerId,
+        username: `aiown_${aiOwnerId}`,
+        password: "x",
+      });
+      await db.insert(orgsTable).values({
+        id: aiLabId,
+        type: "lab",
+        name: rid("AiIntakeOrgLab"),
+      });
+      await db.insert(organizationMemberships).values({
+        id: aiMshipId,
+        labId: aiLabId,
+        userId: aiOwnerId,
+        role: "owner",
+        status: "active",
+        approvedByUserId: aiOwnerId,
+        joinedAt: new Date(),
+      });
+    });
+
+    afterAll(async () => {
+      if (!SHOULD_RUN) return;
+      const {
+        db,
+        auditLogs,
+        cases: casesTable,
+        invoices,
+        invoiceLineItems,
+        userSessions,
+        organizationMemberships,
+        organizations: orgsTable,
+        users,
+      } = dbMod as any;
+      if (aiCaseIds.length) {
+        if (invoiceLineItems) {
+          const invRows = await db
+            .select({ id: invoices.id })
+            .from(invoices)
+            .where(inArray(invoices.caseId, aiCaseIds));
+          const invIds = invRows.map((r: any) => r.id);
+          if (invIds.length)
+            await db.delete(invoiceLineItems).where(inArray(invoiceLineItems.invoiceId, invIds));
+          await db.delete(invoices).where(inArray(invoices.caseId, aiCaseIds));
+        }
+        await db.delete(casesTable).where(inArray(casesTable.id, aiCaseIds));
+      }
+      if (aiProviderIds.length) {
+        await db
+          .delete(auditLogs)
+          .where(inArray(auditLogs.organizationId, aiProviderIds));
+        await db
+          .delete(orgsTable)
+          .where(inArray(orgsTable.id, aiProviderIds));
+      }
+      await db
+        .delete(auditLogs)
+        .where(inArray(auditLogs.organizationId, [aiLabId]));
+      await db
+        .delete(organizationMemberships)
+        .where(eq(organizationMemberships.id, aiMshipId));
+      await db.delete(userSessions).where(eq(userSessions.userId, aiOwnerId));
+      await db.delete(orgsTable).where(eq(orgsTable.id, aiLabId));
+      await db.delete(users).where(eq(users.id, aiOwnerId));
+    });
+
+    // ── (1) Complete AI intake payload saves successfully ──────────────────
+
+    it("(1) new practice save from AI intake succeeds with complete data", async () => {
+      const { access } = await makeSession(aiOwnerId);
+      const r = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: rid("HeartlandDental"),
+          displayName: "Heartland Dental Family Dentistry",
+          parentLabOrganizationId: aiLabId,
+          phone: "850-555-0101",
+          addressLine1: "1234 Oak St",
+          city: "Tallahassee",
+          state: "FL",
+          zip: "32311",
+          doctorName: "Dr. James Watson",
+        });
+      expect(r.status).toBe(201);
+      expect(r.body.data.id).toBeTruthy();
+      expect(r.body.data.type).toBe("provider");
+      aiProviderIds.push(r.body.data.id);
+    });
+
+    // ── (2) Optional phone / email missing ────────────────────────────────
+
+    it("(2) new practice save succeeds when optional phone and email are missing", async () => {
+      const { access } = await makeSession(aiOwnerId);
+      const r = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: rid("NoPhonePractice"),
+          parentLabOrganizationId: aiLabId,
+          addressLine1: "99 Pine Rd",
+          city: "Gainesville",
+          state: "FL",
+          zip: "32601",
+        });
+      expect(r.status).toBe(201);
+      aiProviderIds.push(r.body.data.id);
+    });
+
+    // ── (3) ZIP with dash ─────────────────────────────────────────────────
+
+    it("(3) ZIP with dash (32311-2717) is accepted without error", async () => {
+      const { access } = await makeSession(aiOwnerId);
+      const r = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: rid("ZipDashPractice"),
+          parentLabOrganizationId: aiLabId,
+          addressLine1: "500 Elm Ave",
+          city: "Jacksonville",
+          state: "FL",
+          zip: "32311-2717",
+        });
+      expect(r.status).toBe(201);
+      expect(r.body.data.zip).toBe("32311-2717");
+      aiProviderIds.push(r.body.data.id);
+    });
+
+    // ── (4) Placeholder phone does not crash ──────────────────────────────
+
+    it("(4) placeholder phone 000-000-0000 does not crash the insert", async () => {
+      const { access } = await makeSession(aiOwnerId);
+      const r = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: rid("PlaceholderPhone"),
+          parentLabOrganizationId: aiLabId,
+          phone: "000-000-0000",
+          addressLine1: "10 Main St",
+          city: "Miami",
+          state: "FL",
+          zip: "33101",
+        });
+      expect(r.status).toBe(201);
+      aiProviderIds.push(r.body.data.id);
+    });
+
+    // ── (5) Duplicate practice name → clean 409 (not raw SQL) ────────────
+    // Creating two practices with the same name (case-insensitive) under the
+    // same lab must return a human-readable 409 message — no raw SQL or
+    // Drizzle error string may leak to the caller.
+
+    it("(5) duplicate practice name in same lab returns clean 409 (not raw SQL)", async () => {
+      const { access } = await makeSession(aiOwnerId);
+      const practiceName = rid("DupNamePractice");
+
+      const first = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: practiceName,
+          parentLabOrganizationId: aiLabId,
+          city: "Orlando",
+          state: "FL",
+          zip: "32801",
+        });
+      expect(first.status).toBe(201);
+      aiProviderIds.push(first.body.data.id);
+
+      // Same name again — must be rejected with a readable 409.
+      // city/state/zip must also be present so the duplicate-name check is
+      // reached (city/state/zip validation runs before the name check).
+      const second = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: practiceName,
+          parentLabOrganizationId: aiLabId,
+          city: "Orlando",
+          state: "FL",
+          zip: "32801",
+        });
+      expect(second.status).toBe(409);
+      // Message must be human-readable, not a raw SQL string.
+      const msg: string = second.body.message ?? second.body.error ?? "";
+      expect(msg).not.toMatch(/insert into|organizations|drizzle/i);
+      expect(msg.length).toBeGreaterThan(0);
+    });
+
+    // ── (6) Field validation: name, city, state, zip all required ──────────
+    // Missing name → 400 (Zod enforces min(1)).
+    // Missing city → 400, missing state → 400, missing zip → 400.
+    // All must return a human-readable error, never a raw Postgres/Drizzle string.
+
+    it("(6) missing name returns 400; missing city, state, or zip each returns 400", async () => {
+      const { access } = await makeSession(aiOwnerId);
+
+      // Missing name → Zod must reject.
+      const noName = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          parentLabOrganizationId: aiLabId,
+          city: "Orlando",
+          state: "FL",
+          zip: "32801",
+        });
+      expect(noName.status).toBe(400);
+
+      // Missing city → route validation must reject with 400.
+      const noCity = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: rid("NoCityPractice"),
+          parentLabOrganizationId: aiLabId,
+          state: "FL",
+          zip: "32801",
+        });
+      expect(
+        noCity.status,
+        "missing city must return 400, not a raw DB error"
+      ).toBe(400);
+      const noCityMsg: string = noCity.body.message ?? noCity.body.error ?? "";
+      expect(noCityMsg).not.toMatch(/insert into|organizations|drizzle/i);
+
+      // Missing state → route validation must reject with 400.
+      const noState = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: rid("NoStatePractice"),
+          parentLabOrganizationId: aiLabId,
+          city: "Orlando",
+          zip: "32801",
+        });
+      expect(
+        noState.status,
+        "missing state must return 400, not a raw DB error"
+      ).toBe(400);
+
+      // Missing zip → route validation must reject with 400.
+      const noZip = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: rid("NoZipPractice"),
+          parentLabOrganizationId: aiLabId,
+          city: "Orlando",
+          state: "FL",
+        });
+      expect(
+        noZip.status,
+        "missing zip must return 400, not a raw DB error"
+      ).toBe(400);
+    });
+
+    // ── (7) parentLabOrganizationId is persisted on the provider org ───────
+
+    it("(7) created provider org has parentLabOrganizationId set to the active lab", async () => {
+      const { access } = await makeSession(aiOwnerId);
+      const r = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: rid("ParentLabCheck"),
+          parentLabOrganizationId: aiLabId,
+          city: "Tampa",
+          state: "FL",
+          zip: "33601",
+        });
+      expect(r.status).toBe(201);
+      expect(r.body.data.parentLabOrganizationId).toBe(aiLabId);
+      aiProviderIds.push(r.body.data.id);
+    });
+
+    // ── (8) No owner membership created for the lab user ─────────────────
+
+    it("(8) creating a provider org does NOT create an owner lab_memberships row for the caller", async () => {
+      const { access } = await makeSession(aiOwnerId);
+      const r = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: rid("NoMembershipCheck"),
+          parentLabOrganizationId: aiLabId,
+          city: "Tampa",
+          state: "FL",
+          zip: "33601",
+        });
+      expect(r.status).toBe(201);
+      const provId = r.body.data.id;
+      aiProviderIds.push(provId);
+
+      const { db, organizationMemberships } = dbMod as any;
+      const memberships = await db
+        .select()
+        .from(organizationMemberships)
+        .where(eq(organizationMemberships.labId, provId));
+      const callerEntry = memberships.find(
+        (m: any) => m.userId === aiOwnerId
+      );
+      expect(
+        callerEntry,
+        "lab user must not gain membership in the new provider org"
+      ).toBeUndefined();
+    });
+
+    // ── (9) Case creation succeeds immediately after provider org is saved ─
+
+    it("(9) case creation can proceed immediately after new practice is saved", async () => {
+      const { access } = await makeSession(aiOwnerId);
+
+      const orgResp = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: rid("CaseReadyPractice"),
+          parentLabOrganizationId: aiLabId,
+          city: "Pensacola",
+          state: "FL",
+          zip: "32501",
+        });
+      expect(orgResp.status).toBe(201);
+      const provId = orgResp.body.data.id;
+      aiProviderIds.push(provId);
+
+      const caseResp = await request(appMod.default)
+        .post("/api/cases")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          caseNumber: rid("AICR"),
+          labOrganizationId: aiLabId,
+          providerOrganizationId: provId,
+          patientFirstName: "Case",
+          patientLastName: "Ready",
+          doctorName: "Dr. Ready",
+          status: "received",
+        });
+      expect(
+        caseResp.status,
+        "case creation must succeed with the newly saved provider org"
+      ).toBe(201);
+      aiCaseIds.push(caseResp.body.data.id);
+    });
+
+    // ── (10) AI intake data present on case, invoice, and mobile endpoint ────
+    // After a full AI intake cycle (org save → case create), the doctor name,
+    // practice name, and address must be accessible via the canonical cases
+    // endpoint (used by both desktop and mobile). An auto-generated invoice must
+    // also exist linked to the new case.
+
+    it("(10) AI intake: practice/doctor/address on case; auto-invoice created; accessible via GET /api/cases/:id (desktop + mobile path)", async () => {
+      const { access } = await makeSession(aiOwnerId);
+      const practiceName = rid("AiIntakeFull10");
+
+      const orgResp = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: practiceName,
+          displayName: "Heartland Dental Family Dentistry",
+          parentLabOrganizationId: aiLabId,
+          phone: "000-000-0000",
+          addressLine1: "2500 Centennial Dr",
+          city: "Tallahassee",
+          state: "FL",
+          zip: "32311-2717",
+          doctorName: "Dr. Sarah Connor",
+        });
+      expect(orgResp.status).toBe(201);
+      const provId = orgResp.body.data.id;
+      aiProviderIds.push(provId);
+
+      // Confirm practice address fields were persisted in the CREATE response.
+      expect(orgResp.body.data.addressLine1).toBe("2500 Centennial Dr");
+      expect(orgResp.body.data.city).toBe("Tallahassee");
+      expect(orgResp.body.data.state).toBe("FL");
+      expect(orgResp.body.data.zip).toBe("32311-2717");
+      expect(orgResp.body.data.type).toBe("provider");
+      expect(orgResp.body.data.parentLabOrganizationId).toBe(aiLabId);
+
+      const caseResp = await request(appMod.default)
+        .post("/api/cases")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          caseNumber: rid("AIDATA10"),
+          labOrganizationId: aiLabId,
+          providerOrganizationId: provId,
+          patientFirstName: "Intake",
+          patientLastName: "Patient",
+          doctorName: "Dr. Sarah Connor",
+          status: "received",
+          dueDate: "2026-12-01",
+          shade: "A2",
+          notes: "Patient has ceramic preference.",
+          restorations: [
+            {
+              toothNumber: "",
+              restorationType: "Crown",
+              material: "Zirconia",
+              shade: "A2",
+              quantity: 1,
+              unitPrice: 0,
+            },
+          ],
+        });
+      expect(caseResp.status).toBe(201);
+      const caseId = caseResp.body.data.id;
+      aiCaseIds.push(caseId);
+
+      // (a) Canonical GET /api/cases/:id — used by both desktop and mobile.
+      const getResp = await request(appMod.default)
+        .get(`/api/cases/${caseId}`)
+        .set("Authorization", `Bearer ${access}`);
+      expect(getResp.status).toBe(200);
+      const c = getResp.body.data ?? getResp.body;
+
+      expect(c.doctorName, "doctorName must survive to GET /api/cases/:id").toBe(
+        "Dr. Sarah Connor"
+      );
+      expect(
+        c.providerOrganizationId,
+        "providerOrganizationId must link to the AI-saved practice"
+      ).toBe(provId);
+      expect(c.dueDate, "dueDate must survive").toMatch(/2026-12-01/);
+
+      const rests: any[] = c.restorations ?? [];
+      expect(rests.length, "restoration rows must be stored").toBeGreaterThan(0);
+      expect(rests[0].shade).toBe("A2");
+      expect(rests[0].material).toBe("Zirconia");
+
+      // (b) Verify practice address is accessible via GET /api/organizations/:id.
+      // This confirms address fields were actually persisted to the DB, not just
+      // echoed from the POST body.
+      const getOrgResp = await request(appMod.default)
+        .get(`/api/organizations/${provId}`)
+        .set("Authorization", `Bearer ${access}`);
+      expect(getOrgResp.status).toBe(200);
+      const savedOrg = getOrgResp.body.data ?? getOrgResp.body;
+      expect(
+        savedOrg.addressLine1 ?? savedOrg.address_line1,
+        "addressLine1 must be readable via GET /api/organizations/:id"
+      ).toBe("2500 Centennial Dr");
+      expect(savedOrg.city, "city must be readable via GET").toBe("Tallahassee");
+      expect(savedOrg.zip, "ZIP must survive ZIP+4 round-trip").toBe(
+        "32311-2717"
+      );
+      expect(savedOrg.name, "practice name must be readable via GET").toBe(
+        practiceName
+      );
+
+      // (c) Auto-generated invoice must exist linked to the case and the lab.
+      const { db, invoices } = dbMod as any;
+      let invoiceRows: any[] = [];
+      for (let i = 0; i < 30; i++) {
+        await new Promise((res) => setTimeout(res, 100));
+        invoiceRows = await db
+          .select()
+          .from(invoices)
+          .where(eq(invoices.caseId, caseId));
+        if (invoiceRows.length > 0) break;
+      }
+      expect(invoiceRows.length, "auto-generated invoice must exist").toBe(1);
+      expect(invoiceRows[0].labOrganizationId).toBe(aiLabId);
+      // Invoice must be linked to the provider org so statements are routed
+      // correctly — this is the critical link that AI intake sets up end-to-end.
+      expect(
+        invoiceRows[0].providerOrganizationId,
+        "invoice must be linked to the AI-saved provider org"
+      ).toBe(provId);
+    });
   });
 });
