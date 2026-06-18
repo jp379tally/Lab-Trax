@@ -1,0 +1,87 @@
+Send this to Replit now:
+
+URGENT regression: desktop drag-and-drop AI intake is broken.
+
+When I drag/drop a prescription to enter a case, the dashboard drop zone throws a database insert failure instead of creating the case.
+
+Screenshot shows failed insert into `cases` with columns including:
+
+* `case_pan_barcode`
+* `bridge_connectors`
+* `delivery_date_proposal_date`
+* `delivery_date_proposal_note`
+* `rx_notes`
+* `shade`
+
+The error appears during the `INSERT INTO cases (...) VALUES (...) RETURNING ...` step.
+
+This likely came from recent schema/API changes where new fields were added to the cases insert path, but the insert values/placeholders, payload mapping, or default handling is now mismatched.
+
+## Required immediate fix
+
+1. Reproduce drag/drop AI intake from desktop dashboard.
+2. Trace the failing insert.
+3. Verify every column in the `INSERT INTO cases` statement has a matching value.
+4. Verify optional fields have safe defaults:
+
+   * `case_pan_barcode`
+   * `bridge_connectors`
+   * `delivery_date_proposal_date`
+   * `delivery_date_proposal_note`
+   * `rx_notes`
+   * `shade`
+5. Fix the insert payload so case creation works whether these fields are present or absent.
+6. Confirm AI intake still carries through:
+
+   * patient
+   * doctor
+   * practice
+   * due date
+   * tooth number
+   * restorative type
+   * material
+   * shade
+   * notes
+   * case pan barcode if entered
+
+## Regression test required
+
+Add a regression test for desktop drag/drop AI intake case creation with:
+
+* normal prescription fields
+* missing optional barcode
+* missing optional bridge connectors
+* missing optional delivery proposal fields
+* shade present
+* rx notes present
+
+Test must prove:
+
+* case creation succeeds
+* no SQL insert mismatch
+* fields save correctly
+* lab slip/invoice/case overview still receive the data
+* no duplicate invoice is created
+
+## Acceptance
+
+Drag/drop prescription on desktop dashboard.
+
+AI review opens.
+
+Submit case.
+
+Expected:
+
+* no red insert error
+* case is created
+* case appears in recent cases
+* lab slip opens
+* invoice is generated once
+* AI fields carry through
+
+This is a protected workflow regression. Fix before continuing unrelated feature work.
+
+Checkpoint:
+
+“Fix Desktop AI Intake Case Insert Regression”

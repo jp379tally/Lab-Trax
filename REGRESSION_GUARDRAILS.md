@@ -474,10 +474,11 @@ Each protected workflow is guarded by the following test files. Run them to veri
 |-------|------|----------------|
 | API integration | `artifacts/api-server/src/routes/analyze-prescription.test.ts` | Full endpoint behavior: bad input, model chain, name-order fix, schema correctness, 503 on missing key |
 | API integration | `artifacts/api-server/src/routes/cases-ai-reader.test.ts` | Case creation auth, iTero import (stub path), dedup idempotency, AI review acknowledgement, auto-invoice |
+| API integration | `artifacts/api-server/src/routes/cases-ai-intake-carry-through.test.ts` | DashboardDropZone intake regression: shade + rxNotes + stub restoration (toothNumber:"") survive POST→GET with no SQL INSERT mismatch; casePanBarcode null when absent; bridgeConnectors/deliveryDateProposalDate/deliveryDateProposalNote absent without error; exactly one auto-invoice; restorations exposed for mobile Lab Slip |
 
 Run command:
 ```
-pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-ai-reader analyze-prescription
+pnpm --filter @workspace/api-server run test -- --reporter=verbose cases-ai-reader analyze-prescription cases-ai-intake-carry-through
 ```
 
 ### Mobile/Web/Desktop Sync

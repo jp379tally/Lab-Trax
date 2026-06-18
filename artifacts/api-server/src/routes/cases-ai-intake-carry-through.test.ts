@@ -377,6 +377,74 @@ maybe("AI intake data carry-through (db integration)", () => {
     expect(invoiceRows[0].labOrganizationId).toBe(labOrgId);
   });
 
+  // ── (7) Full AI intake combination — the exact regression scenario ───────────
+  // Mirrors the DashboardDropZone POST payload after AI analysis of a
+  // prescription that returned shade + notes but NO tooth indices.
+  //
+  // Protected behaviors:
+  //   - INSERT must not fail with a column/value count mismatch (5xx).
+  //   - Top-level shade survives to the cases row (returned as cases.shade).
+  //   - rxNotes (sent as "notes") survives and is returned as caseNotes.
+  //   - casePanBarcode is null when absent from the request.
+  //   - bridgeConnectors, deliveryDateProposalDate, deliveryDateProposalNote
+  //     being absent from the request must not cause any error.
+  //   - Stub restoration (toothNumber:"") is persisted with correct fields.
+
+  it("(7) Full intake combo: shade + rxNotes + stub restoration, no barcode/bridge/delivery-proposal — no INSERT mismatch", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const caseNumber = rid("AIFULL");
+
+    const createResp = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber,
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Full",
+        patientLastName: "Combo",
+        doctorName: "Dr. FullCombo",
+        status: "received",
+        dueDate: "2026-11-01",
+        shade: "A2",
+        notes: "Old shade A2, patient grinds at night.",
+        restorations: [
+          {
+            toothNumber: "",
+            restorationType: "Crown & Bridge",
+            material: "Zirconia",
+            shade: "A2",
+            quantity: 1,
+            unitPrice: 0,
+          },
+        ],
+        // Explicitly absent: casePanBarcode, bridgeConnectors,
+        // deliveryDateProposalDate, deliveryDateProposalNote.
+        // Their absence must not produce a SQL column/value mismatch.
+      });
+
+    expect(createResp.status, "case creation must not fail with SQL mismatch").toBe(201);
+    const caseId = createResp.body.data.id;
+    createdCaseIds.push(caseId);
+
+    const getResp = await request(appMod.default)
+      .get(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${access}`);
+
+    expect(getResp.status).toBe(200);
+    const c = getResp.body.data ?? getResp.body;
+
+    expect(c.shade, "top-level shade must survive to the cases row").toBe("A2");
+    expect(c.caseNotes, "rxNotes must be returned as caseNotes").toContain("grinds at night");
+    expect(c.casePanBarcode ?? null, "casePanBarcode must be null when absent").toBeNull();
+
+    const rests: any[] = c.restorations ?? [];
+    expect(rests.length, "stub restoration must be stored").toBeGreaterThan(0);
+    expect(rests[0].shade, "restoration shade must survive").toBe("A2");
+    expect(rests[0].material, "restoration material must survive").toBe("Zirconia");
+    expect(rests[0].toothNumber, "empty toothNumber must survive").toBe("");
+  });
+
   // ── (6) Canonical GET /api/cases/:id returns restoration rows ─────────────
   // Both desktop and mobile use this endpoint (the mobile app reads the same
   // canonical API). Restorations[] must be present so caseToRxSummary can
