@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, CalendarClock, ChevronDown, ChevronUp, Download, Eye, History, Loader2, Mail, MessageSquare, Printer, Receipt, Search, Send, X } from "lucide-react";
@@ -106,6 +106,13 @@ export default function StatementsPage() {
     queryKey: ["statement-schedule", orgId],
     queryFn: () => apiFetch<StatementSchedule>(`/lab-orgs/${orgId}/statement-schedule`),
     enabled: !!orgId,
+  });
+
+  const emailTemplateQuery = useQuery<{ emailSubject: string | null; emailBody: string | null }>({
+    queryKey: ["admin", "templates", "statement-email"],
+    queryFn: () => apiFetch("/admin/templates/statement-email"),
+    enabled: !!orgId,
+    staleTime: 5 * 60 * 1000,
   });
 
   const practiceCountForOrg = useMemo(() => {
@@ -407,7 +414,16 @@ export default function StatementsPage() {
           orgId={orgId}
           rows={rows}
           practices={organizationsQuery.data?.filter((o) => o.parentLabOrganizationId === orgId) ?? []}
-          scheduleTemplate={scheduleQuery.data ? { subject: scheduleQuery.data.emailSubject, body: scheduleQuery.data.emailBody } : null}
+          scheduleTemplate={(() => {
+            // Schedule template takes priority; fall back to the saved lab default
+            if (scheduleQuery.data?.emailSubject || scheduleQuery.data?.emailBody) {
+              return { subject: scheduleQuery.data.emailSubject, body: scheduleQuery.data.emailBody };
+            }
+            if (emailTemplateQuery.data?.emailSubject || emailTemplateQuery.data?.emailBody) {
+              return { subject: emailTemplateQuery.data.emailSubject, body: emailTemplateQuery.data.emailBody };
+            }
+            return null;
+          })()}
           onClose={() => setShowGenerate(false)}
         />
       )}
@@ -1313,7 +1329,7 @@ function GenerateStatementsModal({
                   <div>
                     <label className="block text-xs uppercase tracking-wide text-muted-foreground font-medium mb-1.5">Message body</label>
                     <textarea value={emailBody} onChange={(e) => setEmailBody(e.target.value)} rows={5} placeholder={DEFAULT_STATEMENT_BODY} className="w-full px-3 py-2 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary resize-y font-mono" />
-                    <p className="text-[11px] text-muted-foreground mt-1">Leave blank to use the saved auto-send template. Placeholders: <code>{"{{practiceName}}"}</code>, <code>{"{{labName}}"}</code>, <code>{"{{periodLabel}}"}</code>, <code>{"{{openBalance}}"}</code>.</p>
+                    <p className="text-[11px] text-muted-foreground mt-1">Pre-filled from your saved default (Settings → Templates → Statement email). Placeholders: <code>{"{{practiceName}}"}</code>, <code>{"{{labName}}"}</code>, <code>{"{{periodLabel}}"}</code>, <code>{"{{openBalance}}"}</code>.</p>
                   </div>
                 </div>
               )}
@@ -1917,6 +1933,7 @@ function StatementDrawer({
           row={row}
           invoices={sorted}
           practice={practice}
+          labName={labName}
           buildPdfOptions={buildPdfOptions}
           onClose={() => setEmailOpen(false)}
         />
@@ -1961,27 +1978,56 @@ function EmailStatementDialog({
   row,
   invoices,
   practice,
+  labName,
   buildPdfOptions,
   onClose,
 }: {
   row: StatementRow;
   invoices: Invoice[];
   practice: Organization | null;
+  labName: string;
   buildPdfOptions: () => Parameters<typeof buildStatementPdf>[0];
   onClose: () => void;
 }) {
   const labOrganizationId = invoices[0]?.labOrganizationId ?? "";
   const defaultEmail = (practice?.billingEmail ?? "").trim();
+  const practiceName = practice?.displayName || practice?.name || row.practiceName;
+  const periodLabel = new Date().toLocaleDateString("en-US", { month: "short", year: "numeric" });
+
+  const hardcodedSubject = `Statement for ${practiceName} — ${periodLabel}`;
+  const hardcodedMessage = `Hi ${row.practiceName},\n\nPlease find your latest statement attached. Open balance: ${formatMoney(row.openBalance)}${row.overdueBalance > 0 ? ` (overdue: ${formatMoney(row.overdueBalance)})` : ""}.\n\nLet us know if you have any questions.\n\nThank you,`;
+
   const [to, setTo] = useState(defaultEmail);
-  const [subject, setSubject] = useState(
-    `Statement for ${practice?.displayName || practice?.name || row.practiceName} — ${new Date().toLocaleDateString("en-US", { month: "short", year: "numeric" })}`,
-  );
-  const [message, setMessage] = useState(
-    `Hi ${row.practiceName},\n\nPlease find your latest statement attached. Open balance: ${formatMoney(row.openBalance)}${row.overdueBalance > 0 ? ` (overdue: ${formatMoney(row.overdueBalance)})` : ""}.\n\nLet us know if you have any questions.\n\nThank you,`,
-  );
+  const [subject, setSubject] = useState(hardcodedSubject);
+  const [message, setMessage] = useState(hardcodedMessage);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sentAt, setSentAt] = useState<string | null>(null);
+  const templateApplied = useRef(false);
+
+  const emailTemplateQuery = useQuery<{ emailSubject: string | null; emailBody: string | null }>({
+    queryKey: ["admin", "templates", "statement-email"],
+    queryFn: () => apiFetch("/admin/templates/statement-email"),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  useEffect(() => {
+    if (templateApplied.current || !emailTemplateQuery.data) return;
+    templateApplied.current = true;
+    const vars: Record<string, string> = {
+      practiceName,
+      labName,
+      periodLabel,
+      openBalance: formatMoney(row.openBalance),
+      totalBilled: formatMoney(row.totalBilled),
+    };
+    if (emailTemplateQuery.data.emailSubject) {
+      setSubject(renderTemplate(emailTemplateQuery.data.emailSubject, vars));
+    }
+    if (emailTemplateQuery.data.emailBody) {
+      setMessage(renderTemplate(emailTemplateQuery.data.emailBody, vars));
+    }
+  }, [emailTemplateQuery.data, practiceName, labName, periodLabel, row.openBalance, row.totalBilled]);
 
   async function send() {
     setError(null);

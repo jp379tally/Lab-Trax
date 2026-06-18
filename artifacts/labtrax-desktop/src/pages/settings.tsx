@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, BookOpen, Building2, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, FileDown, Github, History, KeyRound, LayoutList, Loader2, LogOut, Monitor, Package, Pencil, Play, RotateCcw, RefreshCcw, Search, ShieldCheck, Smartphone, Sparkles, Trash2, Upload, User as UserIcon, UserMinus, UserPlus, Wrench, X } from "lucide-react";
+import { AlertTriangle, BookOpen, Building2, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, FileDown, Github, History, KeyRound, LayoutList, Loader2, LogOut, Mail, Monitor, Package, Pencil, Play, RotateCcw, RefreshCcw, Search, ShieldCheck, Smartphone, Sparkles, Trash2, Upload, User as UserIcon, UserMinus, UserPlus, Wrench, X } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -54,9 +54,9 @@ interface AdminUser {
   lastLoginAt?: string | null;
 }
 
-type TabKey = "profile" | "password" | "two-factor" | "sessions" | "organizations" | "users" | "backup" | "desktop" | "mobile" | "itero" | "platform-admin" | "subscriptions" | "notifications" | "templates" | "statement-layout" | "correspondence-layout" | "invoice-layout" | "deleted-cases" | "deletion-audit" | "vocabulary";
+type TabKey = "profile" | "password" | "two-factor" | "sessions" | "organizations" | "users" | "backup" | "desktop" | "mobile" | "itero" | "platform-admin" | "subscriptions" | "notifications" | "templates" | "statement-layout" | "statement-email" | "correspondence-layout" | "invoice-layout" | "deleted-cases" | "deletion-audit" | "vocabulary";
 
-const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "two-factor", "sessions", "organizations", "users", "backup", "desktop", "mobile", "itero", "platform-admin", "subscriptions", "notifications", "templates", "statement-layout", "correspondence-layout", "invoice-layout", "deleted-cases", "deletion-audit", "vocabulary"];
+const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "two-factor", "sessions", "organizations", "users", "backup", "desktop", "mobile", "itero", "platform-admin", "subscriptions", "notifications", "templates", "statement-layout", "statement-email", "correspondence-layout", "invoice-layout", "deleted-cases", "deletion-audit", "vocabulary"];
 
 function readInitialTab(): TabKey {
   if (typeof window === "undefined") return "profile";
@@ -90,6 +90,7 @@ export default function SettingsPage() {
     { key: "templates", label: "Templates", icon: LayoutList, show: isAdmin },
     { key: "invoice-layout", label: "Invoice layout", icon: LayoutList, show: isAdmin, parentKey: "templates" },
     { key: "statement-layout", label: "Statement layout", icon: LayoutList, show: isAdmin, parentKey: "templates" },
+    { key: "statement-email", label: "Statement email", icon: Mail, show: isAdmin, parentKey: "templates" },
     { key: "correspondence-layout", label: "Correspondence layout", icon: LayoutList, show: isAdmin, parentKey: "templates" },
     { key: "mobile", label: "Mobile app", icon: Smartphone, show: isAdmin },
     { key: "itero", label: "iTero auto-import", icon: Sparkles, show: isAdmin && typeof window !== "undefined" && !!(window as { electronAPI?: { itero?: unknown } }).electronAPI?.itero },
@@ -188,6 +189,7 @@ export default function SettingsPage() {
           {tab === "desktop" && (isAdmin ? <DesktopInstallerPanel /> : <DesktopAppUserPanel />)}
           {tab === "invoice-layout" && isAdmin && <InvoiceLayoutPanel />}
           {tab === "statement-layout" && isAdmin && <StatementLayoutPanel />}
+          {tab === "statement-email" && isAdmin && <StatementEmailPanel />}
           {tab === "correspondence-layout" && isAdmin && <CorrespondenceLayoutPanel />}
           {tab === "mobile" && isAdmin && <MobileBuildPanel />}
           {tab === "itero" && isAdmin && <IteroPanel />}
@@ -9786,6 +9788,129 @@ interface ShadeMaterialBackfillResult {
   gapInvoicesFound: number;
   updated: number;
   skippedNoDerivable: number;
+}
+
+const DEFAULT_STMT_EMAIL_SUBJECT = "Statement for {{practiceName}} — {{periodLabel}}";
+const DEFAULT_STMT_EMAIL_BODY =
+  "Hello,\n\nPlease find attached the statement for {{practiceName}} covering {{periodLabel}}.\n\nTotal billed: {{totalBilled}}\nOpen balance: {{openBalance}}\n\nThank you,\n{{labName}}";
+
+function StatementEmailPanel() {
+  const qc = useQueryClient();
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const [dirty, setDirty] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const query = useQuery<{ emailSubject: string | null; emailBody: string | null }>({
+    queryKey: ["admin", "templates", "statement-email"],
+    queryFn: () => apiFetch("/admin/templates/statement-email"),
+    staleTime: 60_000,
+  });
+
+  useEffect(() => {
+    if (query.data) {
+      setSubject(query.data.emailSubject ?? "");
+      setBody(query.data.emailBody ?? "");
+      setDirty(false);
+    }
+  }, [query.data]);
+
+  async function handleSave() {
+    setSaveStatus("saving");
+    setSaveError(null);
+    try {
+      await apiFetch("/admin/templates/statement-email", {
+        method: "PATCH",
+        body: JSON.stringify({ emailSubject: subject.trim() || null, emailBody: body.trim() || null }),
+      });
+      await qc.invalidateQueries({ queryKey: ["admin", "templates", "statement-email"] });
+      setDirty(false);
+      setSaveStatus("saved");
+      setTimeout(() => setSaveStatus("idle"), 2500);
+    } catch (err: any) {
+      setSaveError(err?.message || "Failed to save.");
+      setSaveStatus("error");
+    }
+  }
+
+  function handleReset() {
+    setSubject("");
+    setBody("");
+    setDirty(true);
+  }
+
+  if (query.isLoading) {
+    return (
+      <PanelShell title="Statement email template">
+        <div className="flex items-center gap-2 text-muted-foreground text-sm"><Loader2 size={14} className="animate-spin" /> Loading…</div>
+      </PanelShell>
+    );
+  }
+
+  return (
+    <PanelShell
+      title="Statement email template"
+      subtitle="Default subject line and message pre-filled when emailing statements. Admins can still override per send."
+    >
+      <div className="space-y-5">
+        <div className="text-xs text-muted-foreground bg-secondary/60 rounded-md px-3 py-2">
+          Available placeholders: <code className="text-foreground">{"{{practiceName}}"}</code>, <code className="text-foreground">{"{{labName}}"}</code>, <code className="text-foreground">{"{{periodLabel}}"}</code>, <code className="text-foreground">{"{{openBalance}}"}</code>, <code className="text-foreground">{"{{totalBilled}}"}</code>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <label className="block text-xs uppercase tracking-wide text-muted-foreground font-medium mb-1.5">Subject line</label>
+            <input
+              type="text"
+              value={subject}
+              onChange={(e) => { setSubject(e.target.value); setDirty(true); }}
+              placeholder={DEFAULT_STMT_EMAIL_SUBJECT}
+              className="w-full h-9 px-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
+            />
+            <p className="text-[11px] text-muted-foreground mt-1">Leave blank to use the system default.</p>
+          </div>
+
+          <div>
+            <label className="block text-xs uppercase tracking-wide text-muted-foreground font-medium mb-1.5">Message body</label>
+            <textarea
+              value={body}
+              onChange={(e) => { setBody(e.target.value); setDirty(true); }}
+              placeholder={DEFAULT_STMT_EMAIL_BODY}
+              rows={8}
+              className="w-full px-3 py-2 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary resize-y font-mono"
+            />
+            <p className="text-[11px] text-muted-foreground mt-1">Leave blank to use the system default.</p>
+          </div>
+        </div>
+
+        {saveError && (
+          <div className="text-sm text-destructive border border-destructive/30 bg-destructive/10 rounded-md px-3 py-2">{saveError}</div>
+        )}
+
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={!dirty || saveStatus === "saving"}
+            className="inline-flex items-center gap-2 h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {saveStatus === "saving" ? <Loader2 size={13} className="animate-spin" /> : null}
+            {saveStatus === "saved" ? <Check size={13} /> : null}
+            {saveStatus === "saved" ? "Saved" : "Save template"}
+          </button>
+          <button
+            type="button"
+            onClick={handleReset}
+            disabled={saveStatus === "saving"}
+            className="inline-flex items-center gap-2 h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/70 border border-border disabled:opacity-50"
+          >
+            <RotateCcw size={13} /> Reset to system default
+          </button>
+        </div>
+      </div>
+    </PanelShell>
+  );
 }
 
 function VocabularyPanel() {

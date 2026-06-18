@@ -6378,6 +6378,55 @@ Important rules:
     }
   });
 
+  // ── Statement email template ──────────────────────────────────────────────
+  const DEFAULT_STATEMENT_EMAIL_TEMPLATE = {
+    emailSubject: null as string | null,
+    emailBody: null as string | null,
+  };
+
+  router.get("/admin/templates/statement-email", requireAuth, async (req, res) => {
+    try {
+      const userId = (req as any).auth?.userId as string;
+      const org = await getAdminLabOrg(userId);
+      if (!org) return res.status(403).json({ error: "Admin access required." });
+      const key = `tmpl_statement_email:${org.id}`;
+      const [row] = await db.select().from(systemSettings).where(eq(systemSettings.key, key));
+      const stored = row ? (() => { try { return JSON.parse(row.value ?? "{}"); } catch { return {}; } })() : {};
+      const template = { ...DEFAULT_STATEMENT_EMAIL_TEMPLATE, ...stored };
+      return res.json({ ok: true, emailSubject: template.emailSubject, emailBody: template.emailBody, orgId: org.id });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to get statement email template." });
+    }
+  });
+
+  router.patch("/admin/templates/statement-email", requireAuth, async (req, res) => {
+    try {
+      const userId = (req as any).auth?.userId as string;
+      const org = await getAdminLabOrg(userId);
+      if (!org) return res.status(403).json({ error: "Admin access required." });
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const key = `tmpl_statement_email:${org.id}`;
+      const [existing] = await db.select().from(systemSettings).where(eq(systemSettings.key, key));
+      const current = existing ? (() => { try { return JSON.parse(existing.value ?? "{}"); } catch { return {}; } })() : {};
+      const updated = {
+        ...DEFAULT_STATEMENT_EMAIL_TEMPLATE,
+        ...current,
+        ...(typeof body.emailSubject !== "undefined" ? { emailSubject: body.emailSubject || null } : {}),
+        ...(typeof body.emailBody !== "undefined" ? { emailBody: body.emailBody || null } : {}),
+      };
+      await db
+        .insert(systemSettings)
+        .values({ key, value: JSON.stringify(updated), updatedAt: new Date() })
+        .onConflictDoUpdate({
+          target: systemSettings.key,
+          set: { value: JSON.stringify(updated), updatedAt: new Date() },
+        });
+      return res.json({ ok: true, emailSubject: updated.emailSubject, emailBody: updated.emailBody });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to update statement email template." });
+    }
+  });
+
   // ── Admin Backup: run now ─────────────────────────────────────────────────
   router.post("/admin/backup/run", platformAdminUserOrSecret, async (req, res) => {
     if (!isPlatformAdmin(req)) {
