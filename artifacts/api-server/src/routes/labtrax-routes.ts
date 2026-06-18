@@ -4658,6 +4658,22 @@ Important rules:
     });
   });
 
+  // ── Public version probe (no auth required) ──────────────────────────────
+  //
+  // Lightweight endpoint the running Electron renderer can call to compare its
+  // own version against the latest published build. Returns just the version
+  // string so callers can decide whether to surface an "update available" notice
+  // without any installer metadata.
+  router.get("/desktop/version", async (req, res) => {
+    const envVersion = process.env.DESKTOP_INSTALLER_VERSION ?? "1.0.0";
+    const dbRows = await db
+      .select()
+      .from(systemSettings)
+      .where(eq(systemSettings.key, SETTING_DESKTOP_INSTALLER_VERSION));
+    const version = dbRows[0]?.value ?? envVersion;
+    return res.json({ version });
+  });
+
   // ── Notify-me signup (no auth required) ──────────────────────────────────
   //
   // Public endpoint: any visitor who sees the "installer coming soon" banner

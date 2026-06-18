@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  ArrowUpCircle,
   Bell,
   Check,
   Download,
@@ -12,7 +13,7 @@ import {
   RefreshCw,
   Rocket,
 } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch, getApiOrigin } from "@/lib/api";
 
@@ -43,15 +44,50 @@ const FALLBACK_VERSION = "1.0.0";
 const FALLBACK_FILE_NAME = "LabTrax-Windows-Portable.zip";
 const FALLBACK_DOWNLOAD_URL = "/downloads/" + FALLBACK_FILE_NAME;
 
+function compareVersions(a: string, b: string): number {
+  const normalize = (v: string) =>
+    v
+      .replace(/^v/, "")
+      .split(/[-+]/)[0]
+      .split(".")
+      .map((p) => parseInt(p, 10) || 0);
+  const pa = normalize(a);
+  const pb = normalize(b);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
 export default function DownloadPage() {
   const query = useQuery({
     queryKey: ["desktop-installer", "public"],
     queryFn: () => apiFetch<DesktopInstallerPublicInfo>("/desktop-installer"),
   });
 
+  // Lightweight public version probe — no auth required — used to drive the
+  // "update available" banner. Kept separate from /desktop-installer so the
+  // Electron renderer (and any unauthenticated caller) can check for updates
+  // without needing the full installer metadata.
+  const versionQuery = useQuery({
+    queryKey: ["desktop", "version"],
+    queryFn: () => apiFetch<{ version: string }>("/desktop/version"),
+  });
+
   const [notifyEmail, setNotifyEmail] = useState("");
   const [notifyState, setNotifyState] = useState<"idle" | "submitting" | "done" | "error">("idle");
   const [notifyError, setNotifyError] = useState<string | null>(null);
+
+  const [runningVersion, setRunningVersion] = useState<string | null>(null);
+  useEffect(() => {
+    const api = (window as unknown as { electronAPI?: { getAppVersion?: () => Promise<string> } })
+      .electronAPI;
+    if (api?.getAppVersion) {
+      api.getAppVersion().then(setRunningVersion).catch(() => {});
+    }
+  }, []);
 
   async function handleNotifySubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -89,8 +125,28 @@ export default function DownloadPage() {
     (queryError as { status?: number }).status === 503;
   const showDownloadButton = !!info && !unavailable;
 
+  const latestVersion = versionQuery.data?.version ?? null;
+  const updateAvailable =
+    runningVersion !== null &&
+    latestVersion !== null &&
+    compareVersions(latestVersion, runningVersion) > 0;
+
   return (
     <div className="px-8 py-7 max-w-[760px] mx-auto">
+      {updateAvailable && (
+        <div className="mb-5 rounded-lg border border-blue-300 bg-blue-50 dark:border-blue-700/50 dark:bg-blue-950/40 px-5 py-4 flex items-start gap-3">
+          <ArrowUpCircle size={20} className="text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-semibold text-blue-900 dark:text-blue-100">
+              A newer version is available — v{latestVersion}
+            </div>
+            <p className="text-xs text-blue-700 dark:text-blue-300 mt-0.5 leading-relaxed">
+              You're running v{runningVersion}. Download and install the latest version to get new features and fixes.
+            </p>
+          </div>
+        </div>
+      )}
+
       <div className="mb-6">
         <h1 className="text-2xl font-semibold tracking-tight">Download LabTrax Desktop</h1>
         <p className="text-sm text-muted-foreground mt-1">
