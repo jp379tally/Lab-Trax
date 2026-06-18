@@ -962,6 +962,82 @@ export async function sendTwoFactorBackupCodeUsedEmail(
   return sendMail({ to: params.to, subject, html, text });
 }
 
+export interface SecurityAlertEmailParams {
+  to: string;
+  username: string;
+  detectedAt: string;
+  ipAddress?: string | null;
+  userAgent?: string | null;
+}
+
+export async function sendSecurityAlertEmail(
+  params: SecurityAlertEmailParams,
+): Promise<SendMailResult> {
+  const subject =
+    "Security alert: suspicious activity detected on your LabTrax account";
+  const baseUrl = getAppBaseUrl();
+  const passwordResetUrl = `${baseUrl}/desktop/settings/security/password`;
+  const sessionsUrl = `${baseUrl}/desktop/settings/security/sessions`;
+
+  const timestampLabel = (() => {
+    const ms = new Date(params.detectedAt).getTime();
+    return isNaN(ms) ? params.detectedAt : new Date(ms).toUTCString();
+  })();
+
+  const ipLine = params.ipAddress
+    ? `<tr><td style="padding:8px 12px;font-weight:bold;">IP address</td><td style="padding:8px 12px;">${escapeHtml(params.ipAddress)}</td></tr>`
+    : "";
+  const uaLine = params.userAgent
+    ? `<tr style="background:#f5f5f5;"><td style="padding:8px 12px;font-weight:bold;">Device/browser</td><td style="padding:8px 12px;word-break:break-all;">${escapeHtml(params.userAgent)}</td></tr>`
+    : "";
+  const ipText = params.ipAddress ? `IP address: ${params.ipAddress}\n` : "";
+  const uaText = params.userAgent
+    ? `Device/browser: ${params.userAgent}\n`
+    : "";
+
+  const html = `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+    <div style="background: #c0392b; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+      <h2 style="margin: 0;">LabTrax</h2>
+      <p style="margin: 4px 0 0; opacity: 0.85;">Security alert</p>
+    </div>
+    <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
+      <div style="background:#fdf2f2;border-left:4px solid #c0392b;padding:12px 16px;border-radius:4px;margin-bottom:16px;">
+        <strong>Suspicious sign-in activity was detected</strong> on your LabTrax account. A device was signed out as a precaution.
+      </div>
+      <p style="font-size:14px;">Hi <strong>${escapeHtml(params.username)}</strong>, we detected a reused sign-in token from one of your devices and signed that device out as a precaution.</p>
+      <table style="border-collapse:collapse;width:100%;font-size:14px;margin-bottom:16px;">
+        <tr style="background:#f5f5f5;"><td style="padding:8px 12px;font-weight:bold;">When</td><td style="padding:8px 12px;">${escapeHtml(timestampLabel)}</td></tr>
+        ${ipLine}${uaLine}
+      </table>
+      <p style="font-size:14px;"><strong>If this wasn't you</strong>, your account may be compromised. Take action immediately:</p>
+      <ul style="font-size:14px;line-height:1.6;">
+        <li><a href="${passwordResetUrl}" style="color:#c0392b;font-weight:bold;">Reset your password</a></li>
+        <li><a href="${sessionsUrl}" style="color:#c0392b;">Review and revoke active sessions</a></li>
+      </ul>
+      <p style="font-size:13px;color:#666;">If you recognize this activity, no action is needed — the affected session has already been signed out.</p>
+    </div>
+  </div>`;
+
+  const text = [
+    "LabTrax — Security alert",
+    "",
+    `Hi ${params.username}, we detected a reused sign-in token from one of your devices and signed that device out as a precaution.`,
+    "",
+    `When: ${timestampLabel}`,
+    ipText,
+    uaText,
+    "If this wasn't you, take action immediately:",
+    `  - Reset your password: ${passwordResetUrl}`,
+    `  - Review active sessions: ${sessionsUrl}`,
+    "",
+    "If you recognize this activity, no action is needed — the affected session has already been signed out.",
+  ]
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n");
+
+  return sendMail({ to: params.to, subject, html, text });
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")

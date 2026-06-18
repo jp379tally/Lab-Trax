@@ -48,6 +48,7 @@ import {
   resolveLabNameForUser,
 } from "../lib/match-and-invite";
 import { startBillingTrial } from "../lib/entitlement";
+import { sendSecurityAlertEmail } from "../lib/mail";
 
 const router = Router();
 
@@ -851,6 +852,28 @@ router.post(
         console.error(
           "[AUTH] Failed to write reuse-detection notification:",
           err
+        );
+      }
+      // Send a security alert email on a separate channel so the user is
+      // notified even if they're not actively watching the app.
+      try {
+        const affectedUser = await db.query.users.findFirst({
+          where: eq(users.id, payload.sub),
+          columns: { email: true, username: true },
+        });
+        if (affectedUser?.email) {
+          await sendSecurityAlertEmail({
+            to: affectedUser.email,
+            username: affectedUser.username ?? affectedUser.email,
+            detectedAt: now.toISOString(),
+            ipAddress: req.ip ?? null,
+            userAgent: req.get("user-agent") ?? null,
+          });
+        }
+      } catch (err) {
+        req.log.error(
+          { err },
+          "[AUTH] Failed to send reuse-detection security alert email"
         );
       }
       if (!fromBody) clearAuthCookies(req, res);
