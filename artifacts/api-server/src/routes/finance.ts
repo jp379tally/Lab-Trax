@@ -959,6 +959,79 @@ router.post(
   })
 );
 
+const editTransferSchema = z.object({
+  fromAccountId: z.string().min(1),
+  toAccountId: z.string().min(1),
+  amount: z.coerce.number().positive(),
+  txnDate: z.string().min(1),
+  memo: z.string().nullable().optional(),
+});
+
+router.patch(
+  "/transactions/transfer/:transferGroupId",
+  asyncHandler(async (req, res) => {
+    const { transferGroupId } = req.params as { transferGroupId: string };
+    const rows = await db.query.bankTransactions.findMany({
+      where: eq(bankTransactions.transferGroupId, transferGroupId),
+    });
+    if (rows.length !== 2) throw new HttpError(404, "Transfer not found.");
+    const orgId = rows[0].labOrganizationId;
+    if (rows.some((r) => r.labOrganizationId !== orgId)) {
+      throw new HttpError(400, "Transfer entries span multiple organizations.");
+    }
+    await requireAnyRole(uid(req), orgId, BILLING_ROLES);
+    if (rows.some((r) => r.reconciled)) {
+      throw new HttpError(400, "Cannot edit a transfer when either entry is reconciled.");
+    }
+    const input = editTransferSchema.parse(req.body);
+    if (input.fromAccountId === input.toAccountId) {
+      throw new HttpError(400, "From and to accounts must differ.");
+    }
+    const fromAcct = await loadAccountOrThrow(uid(req), input.fromAccountId);
+    const toAcct = await loadAccountOrThrow(uid(req), input.toAccountId);
+    if (fromAcct.labOrganizationId !== orgId || toAcct.labOrganizationId !== orgId) {
+      throw new HttpError(400, "Both accounts must belong to the same organization.");
+    }
+    const amount = Number(input.amount);
+    const txnDate = new Date(input.txnDate);
+    const memo = input.memo ?? null;
+    const outRow = rows.find((r) => Number(r.debitAmount) > 0) ?? rows[0];
+    const inRow = rows.find((r) => r.id !== outRow.id) ?? rows[1];
+    const updated = await db.transaction(async (tx) => {
+      const [updatedOut] = await tx
+        .update(bankTransactions)
+        .set({
+          bankAccountId: fromAcct.id,
+          txnDate,
+          payee: `Transfer to ${toAcct.name}`,
+          memo,
+          debitAmount: amount.toFixed(2),
+          creditAmount: "0.00",
+          netAmount: (-amount).toFixed(2),
+          updatedAt: new Date(),
+        })
+        .where(eq(bankTransactions.id, outRow.id))
+        .returning();
+      const [updatedIn] = await tx
+        .update(bankTransactions)
+        .set({
+          bankAccountId: toAcct.id,
+          txnDate,
+          payee: `Transfer from ${fromAcct.name}`,
+          memo,
+          debitAmount: "0.00",
+          creditAmount: amount.toFixed(2),
+          netAmount: amount.toFixed(2),
+          updatedAt: new Date(),
+        })
+        .where(eq(bankTransactions.id, inRow.id))
+        .returning();
+      return { outRow: updatedOut, inRow: updatedIn };
+    });
+    return ok(res, updated);
+  })
+);
+
 // ─────────────────────────── CSV Import & Matching ───────────────────────
 
 const importSchema = z.object({

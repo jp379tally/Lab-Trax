@@ -647,19 +647,34 @@ function RegisterTable({
                         </td>
                       </tr>
                       {expandedId === r.id && (
-                        <InlineEditRow
-                          key={`edit-${r.id}`}
-                          organizationId={organizationId}
-                          accountId={accountId}
-                          existing={r}
-                          categories={cats.data || []}
-                          colSpan={cols}
-                          onClose={() => setExpandedId(null)}
-                          onSaved={() => {
-                            setExpandedId(null);
-                            void qc.invalidateQueries({ queryKey: ["finance"] });
-                          }}
-                        />
+                        r.transferGroupId ? (
+                          <TransferEditRow
+                            key={`xfer-edit-${r.id}`}
+                            transferGroupId={r.transferGroupId}
+                            accounts={accounts}
+                            existing={r}
+                            colSpan={cols}
+                            onClose={() => setExpandedId(null)}
+                            onSaved={() => {
+                              setExpandedId(null);
+                              void qc.invalidateQueries({ queryKey: ["finance"] });
+                            }}
+                          />
+                        ) : (
+                          <InlineEditRow
+                            key={`edit-${r.id}`}
+                            organizationId={organizationId}
+                            accountId={accountId}
+                            existing={r}
+                            categories={cats.data || []}
+                            colSpan={cols}
+                            onClose={() => setExpandedId(null)}
+                            onSaved={() => {
+                              setExpandedId(null);
+                              void qc.invalidateQueries({ queryKey: ["finance"] });
+                            }}
+                          />
+                        )
                       )}
                       </Fragment>
                     );
@@ -2381,6 +2396,191 @@ function InlineEditRow({
             </span>
           </div>
         )}
+      </td>
+    </tr>
+  );
+}
+
+function TransferEditRow({
+  transferGroupId,
+  accounts,
+  existing,
+  colSpan,
+  onClose,
+  onSaved,
+}: {
+  transferGroupId: string;
+  accounts: BankAccount[];
+  existing: BankTransaction;
+  colSpan: number;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const isOutSide = Number(existing.debitAmount) > 0;
+  const initialAmount = Math.max(
+    Number(existing.debitAmount),
+    Number(existing.creditAmount)
+  ).toString();
+  const otherAcctName = isOutSide
+    ? (existing.payee?.replace(/^Transfer to /, "") ?? "")
+    : (existing.payee?.replace(/^Transfer from /, "") ?? "");
+  const otherAcct = accounts.find((a) => a.name === otherAcctName);
+
+  const [fromAccountId, setFromAccountId] = useState(
+    isOutSide ? existing.bankAccountId : (otherAcct?.id ?? "")
+  );
+  const [toAccountId, setToAccountId] = useState(
+    isOutSide ? (otherAcct?.id ?? "") : existing.bankAccountId
+  );
+  const [amountStr, setAmountStr] = useState(initialAmount);
+  const [txnDate, setTxnDate] = useState(toInputDate(existing.txnDate));
+  const [memo, setMemo] = useState(existing.memo || "");
+  const [error, setError] = useState<string | null>(null);
+
+  const save = useMutation({
+    mutationFn: () =>
+      apiFetch(`/finance/transactions/transfer/${transferGroupId}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          fromAccountId,
+          toAccountId,
+          amount: Number(amountStr),
+          txnDate: new Date(txnDate).toISOString(),
+          memo: memo || null,
+        }),
+      }),
+    onSuccess: () => onSaved(),
+    onError: (e: Error) => setError(e.message),
+  });
+
+  const inputCls = "h-7 px-2 rounded bg-background border border-input text-xs w-full";
+
+  if (existing.reconciled) {
+    return (
+      <tr className="bg-secondary/20 border-t border-border/30">
+        <td colSpan={colSpan} className="px-4 py-2.5">
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-muted-foreground">
+              This entry is reconciled and cannot be edited.
+            </span>
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-xs underline text-muted-foreground hover:text-foreground"
+            >
+              Close
+            </button>
+          </div>
+        </td>
+      </tr>
+    );
+  }
+
+  return (
+    <tr className="bg-secondary/20 border-t border-border/30">
+      <td colSpan={colSpan} className="px-4 py-2.5">
+        <div className="flex flex-wrap items-end gap-2">
+          <div className="flex flex-col gap-0.5 min-w-[130px]">
+            <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
+              From account
+            </label>
+            <select
+              value={fromAccountId}
+              onChange={(e) => setFromAccountId(e.target.value)}
+              className={inputCls}
+            >
+              <option value="">— Select —</option>
+              {accounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex flex-col gap-0.5 min-w-[130px]">
+            <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
+              To account
+            </label>
+            <select
+              value={toAccountId}
+              onChange={(e) => setToAccountId(e.target.value)}
+              className={inputCls}
+            >
+              <option value="">— Select —</option>
+              {accounts
+                .filter((a) => a.id !== fromAccountId)
+                .map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+            </select>
+          </div>
+          <div className="flex flex-col gap-0.5 min-w-[80px]">
+            <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
+              Amount
+            </label>
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              value={amountStr}
+              onChange={(e) => setAmountStr(e.target.value)}
+              className={`${inputCls} text-right tabular-nums`}
+            />
+          </div>
+          <div className="flex flex-col gap-0.5 min-w-[100px]">
+            <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
+              Date
+            </label>
+            <input
+              type="date"
+              value={txnDate}
+              onChange={(e) => setTxnDate(e.target.value)}
+              className={inputCls}
+            />
+          </div>
+          <div className="flex flex-col gap-0.5 min-w-[120px] flex-1">
+            <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
+              Memo
+            </label>
+            <input
+              type="text"
+              value={memo}
+              onChange={(e) => setMemo(e.target.value)}
+              placeholder="—"
+              className={inputCls}
+            />
+          </div>
+          <div className="flex flex-col gap-0.5">
+            <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium invisible">
+              Act
+            </label>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => save.mutate()}
+                disabled={save.isPending}
+                className="h-7 px-2.5 rounded bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 disabled:opacity-50 inline-flex items-center gap-1"
+              >
+                {save.isPending ? (
+                  <Loader2 size={10} className="animate-spin" />
+                ) : (
+                  <CheckCircle2 size={10} />
+                )}
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={onClose}
+                className="h-7 w-7 rounded inline-flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary"
+              >
+                <X size={12} />
+              </button>
+            </div>
+          </div>
+        </div>
+        {error && <div className="mt-1 text-xs text-destructive">{error}</div>}
       </td>
     </tr>
   );
