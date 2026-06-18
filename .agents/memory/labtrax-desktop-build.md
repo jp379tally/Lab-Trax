@@ -71,3 +71,9 @@ mv electron-dist/win-unpacked/electron.exe electron-dist/win-unpacked/LabTrax.ex
 ```
 
 Resulting zip is ~140 MB (vs ~153 MB from a normal electron-builder run because we omit `default_app.asar`). The portable starts cleanly because `resources/app/package.json` has `"main": "electron/main.cjs"` and electron prefers `resources/app/` over a missing `default_app.asar`.
+
+## post-merge.sh rebuilds + publishes the desktop app on EVERY merge — it is a single point of failure for ALL merges
+
+`scripts/post-merge.sh` runs the full desktop build + App Storage publish (`desktop-build-publish.sh` → `upload-desktop-installer`) on every task merge, not just desktop-related ones. **Why this matters:** any break anywhere in that publish chain fails the *entire* post-merge setup (`exit 1`) for *every* future merge — even merges that never touched desktop code. A single barcode/billing/mobile task will fail post-merge purely because the desktop publish step is broken.
+
+**How to apply:** when post-merge starts failing across many unrelated tasks at once, suspect the desktop publish chain, not the merged task. One real instance: `upload-desktop-installer` is invoked as `pnpm run upload-desktop-installer -- "$PATH"`, and pnpm can forward the bare `--` into `process.argv`; the uploader's arg parse must skip a lone `--` or it reads `"--"` as the filename and dies with `Cannot infer installer kind from filename "--"`. Verify any fix end-to-end with `runPostMergeSetup()` (success in ~60s here — the electron build is incremental, not a full 5-min rebuild).
