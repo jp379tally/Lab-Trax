@@ -6,6 +6,7 @@ import { ensureDbConstraints } from "./lib/db-constraints";
 import {
   ensureLegacyCaseMediaTable,
   backfillLegacyCaseMedia,
+  startDailyOrphanedMediaCleanup,
 } from "./lib/case-media";
 
 const rawPort = process.env["PORT"];
@@ -60,6 +61,7 @@ const server = app.listen(port, (err) => {
   process.stderr.write(`[startup] server listening on port ${port}\n`);
   logger.info({ port }, "Server listening");
   scheduleVendorLinkBackfillIfNeeded();
+  startDailyOrphanedMediaCleanup();
 
   // Fire-and-forget DB constraint installation. Logs loudly on failure
   // but does NOT crash the process — the app worked for months without
