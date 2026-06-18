@@ -457,4 +457,178 @@ maybe("Invoices (db integration)", () => {
 
     expect(r.status).toBe(404);
   });
+
+  // ── Auto-deposit reversal (paid → open / void) ────────────────────────────
+
+  it("PATCH paid → open voids the auto-deposit", async () => {
+    const {
+      db,
+      bankAccounts: bankAccountsTable,
+      bankTransactions: bankTransactionsTable,
+      bankTransactionInvoices: bankTransactionInvoicesTable,
+      organizations: orgsTable,
+    } = dbMod as any;
+    const { access } = await makeSession(labOwnerId);
+
+    const acctId = rid("acct");
+    await db.insert(bankAccountsTable).values({
+      id: acctId,
+      labOrganizationId: labOrgId,
+      name: "Test Checking",
+    });
+    await db
+      .update(orgsTable)
+      .set({ defaultBankAccountId: acctId })
+      .where(eq(orgsTable.id, labOrgId));
+
+    try {
+      const invoiceNumber = rid("DEPREV");
+      const create = await request(appMod.default)
+        .post("/api/invoices")
+        .set("Authorization", `Bearer ${access}`)
+        .send({ invoiceNumber, labOrganizationId: labOrgId, providerOrganizationId: providerOrgId });
+      expect(create.status).toBe(201);
+      const invoiceId = create.body.data.id;
+
+      await request(appMod.default)
+        .patch(`/api/invoices/${invoiceId}`)
+        .set("Authorization", `Bearer ${access}`)
+        .send({ items: [{ description: "Crown", quantity: 1, unitPrice: 200 }] });
+
+      await request(appMod.default)
+        .patch(`/api/invoices/${invoiceId}`)
+        .set("Authorization", `Bearer ${access}`)
+        .send({ status: "open" });
+
+      const paid = await request(appMod.default)
+        .patch(`/api/invoices/${invoiceId}`)
+        .set("Authorization", `Bearer ${access}`)
+        .send({ status: "paid" });
+      expect(paid.status).toBe(200);
+
+      const links = await db
+        .select({ txnId: bankTransactionInvoicesTable.bankTransactionId })
+        .from(bankTransactionInvoicesTable)
+        .where(eq(bankTransactionInvoicesTable.invoiceId, invoiceId));
+      expect(links.length).toBeGreaterThan(0);
+      const depositId = links[0].txnId;
+
+      const depositAfterPaid = await db.query.bankTransactions.findFirst({
+        where: eq(bankTransactionsTable.id, depositId),
+      });
+      expect(depositAfterPaid?.status).toBe("posted");
+
+      const unpaid = await request(appMod.default)
+        .patch(`/api/invoices/${invoiceId}`)
+        .set("Authorization", `Bearer ${access}`)
+        .send({ status: "open" });
+      expect(unpaid.status).toBe(200);
+      expect(unpaid.body.data?.status ?? unpaid.body.status).toBe("open");
+
+      const depositAfterUnpaid = await db.query.bankTransactions.findFirst({
+        where: eq(bankTransactionsTable.id, depositId),
+      });
+      expect(depositAfterUnpaid?.status).toBe("void");
+
+      // Invoice link row must be removed so the register has no dangling reference
+      const linksAfterUnpaid = await db
+        .select({ txnId: bankTransactionInvoicesTable.bankTransactionId })
+        .from(bankTransactionInvoicesTable)
+        .where(eq(bankTransactionInvoicesTable.invoiceId, invoiceId));
+      expect(linksAfterUnpaid.length).toBe(0);
+    } finally {
+      await db
+        .update(orgsTable)
+        .set({ defaultBankAccountId: null })
+        .where(eq(orgsTable.id, labOrgId));
+      await db.delete(bankAccountsTable).where(eq(bankAccountsTable.id, acctId));
+    }
+  });
+
+  it("PATCH paid → open → paid is idempotent: fresh deposit re-created", async () => {
+    const {
+      db,
+      bankAccounts: bankAccountsTable,
+      bankTransactions: bankTransactionsTable,
+      bankTransactionInvoices: bankTransactionInvoicesTable,
+      organizations: orgsTable,
+    } = dbMod as any;
+    const { access } = await makeSession(labOwnerId);
+
+    const acctId = rid("acct2");
+    await db.insert(bankAccountsTable).values({
+      id: acctId,
+      labOrganizationId: labOrgId,
+      name: "Test Checking 2",
+    });
+    await db
+      .update(orgsTable)
+      .set({ defaultBankAccountId: acctId })
+      .where(eq(orgsTable.id, labOrgId));
+
+    try {
+      const invoiceNumber = rid("IDEM");
+      const create = await request(appMod.default)
+        .post("/api/invoices")
+        .set("Authorization", `Bearer ${access}`)
+        .send({ invoiceNumber, labOrganizationId: labOrgId, providerOrganizationId: providerOrgId });
+      expect(create.status).toBe(201);
+      const invoiceId = create.body.data.id;
+
+      await request(appMod.default)
+        .patch(`/api/invoices/${invoiceId}`)
+        .set("Authorization", `Bearer ${access}`)
+        .send({ items: [{ description: "Bridge", quantity: 1, unitPrice: 300 }] });
+
+      await request(appMod.default)
+        .patch(`/api/invoices/${invoiceId}`)
+        .set("Authorization", `Bearer ${access}`)
+        .send({ status: "open" });
+
+      await request(appMod.default)
+        .patch(`/api/invoices/${invoiceId}`)
+        .set("Authorization", `Bearer ${access}`)
+        .send({ status: "paid" });
+
+      const linksAfterFirstPay = await db
+        .select({ txnId: bankTransactionInvoicesTable.bankTransactionId })
+        .from(bankTransactionInvoicesTable)
+        .where(eq(bankTransactionInvoicesTable.invoiceId, invoiceId));
+      const firstDepositId = linksAfterFirstPay[0]?.txnId;
+      expect(firstDepositId).toBeTruthy();
+
+      await request(appMod.default)
+        .patch(`/api/invoices/${invoiceId}`)
+        .set("Authorization", `Bearer ${access}`)
+        .send({ status: "open" });
+
+      const repaid = await request(appMod.default)
+        .patch(`/api/invoices/${invoiceId}`)
+        .set("Authorization", `Bearer ${access}`)
+        .send({ status: "paid" });
+      expect(repaid.status).toBe(200);
+      expect(repaid.body.data?.status ?? repaid.body.status).toBe("paid");
+
+      const linksAfterRepay = await db
+        .select({ txnId: bankTransactionInvoicesTable.bankTransactionId })
+        .from(bankTransactionInvoicesTable)
+        .where(eq(bankTransactionInvoicesTable.invoiceId, invoiceId));
+
+      const activeDeposits = await Promise.all(
+        linksAfterRepay.map((l: any) =>
+          db.query.bankTransactions.findFirst({
+            where: eq(bankTransactionsTable.id, l.txnId),
+          })
+        )
+      );
+      const posted = activeDeposits.filter((d: any) => d?.status === "posted");
+      expect(posted.length).toBe(1);
+    } finally {
+      await db
+        .update(orgsTable)
+        .set({ defaultBankAccountId: null })
+        .where(eq(orgsTable.id, labOrgId));
+      await db.delete(bankAccountsTable).where(eq(bankAccountsTable.id, acctId));
+    }
+  });
 });

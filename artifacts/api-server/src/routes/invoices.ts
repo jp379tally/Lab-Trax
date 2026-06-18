@@ -2910,6 +2910,8 @@ router.patch(
         (req as any).auth.userId,
         input.depositBankAccountId
       );
+    } else if (invoice.status === "paid" && updated.status !== "paid") {
+      await reverseInvoiceDepositIfAny(invoice.id, (req as any).auth.userId);
     }
 
     return ok(res, updated);
@@ -3338,6 +3340,10 @@ router.delete(
       })
       .where(eq(invoices.id, invoice.id));
 
+    if (invoice.status === "paid" && newStatus !== "paid") {
+      await reverseInvoiceDepositIfAny(invoice.id, callerId);
+    }
+
     await writeAuditLog({
       req,
       organizationId: invoice.labOrganizationId,
@@ -3501,6 +3507,14 @@ async function reverseInvoiceDepositIfAny(
     .update(bankTransactions)
     .set({ status: "void" })
     .where(eq(bankTransactions.id, autoDeposit.bankTransactionId));
+  await db
+    .delete(bankTransactionInvoices)
+    .where(
+      and(
+        eq(bankTransactionInvoices.bankTransactionId, autoDeposit.bankTransactionId),
+        eq(bankTransactionInvoices.invoiceId, invoiceId),
+      ),
+    );
   return { reversed: true, transactionId: autoDeposit.bankTransactionId };
 }
 

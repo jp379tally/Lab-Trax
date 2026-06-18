@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import {
   bankAccounts,
   bankTransactionInvoices,
@@ -115,7 +115,12 @@ export async function ensureInvoiceDeposit(
           bankTransactions,
           eq(bankTransactions.id, bankTransactionInvoices.bankTransactionId)
         )
-        .where(eq(bankTransactionInvoices.invoiceId, invoice.id));
+        .where(
+          and(
+            eq(bankTransactionInvoices.invoiceId, invoice.id),
+            ne(bankTransactions.status, "void")
+          )
+        );
       if (existingAny.length) {
         return {
           created: false,
