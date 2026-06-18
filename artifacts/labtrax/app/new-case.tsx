@@ -80,6 +80,10 @@ export default function NewCaseScreen() {
   const [priority, setPriority] = useState<"normal" | "rush">("normal");
   const [notes, setNotes] = useState("");
 
+  const [casePanBarcode, setCasePanBarcode] = useState("");
+  const [barcodeConflict, setBarcodeConflict] = useState<{ caseNumber?: string | null } | null>(null);
+  const [barcodeChecking, setBarcodeChecking] = useState(false);
+
   const [submitting, setSubmitting] = useState(false);
   const [attemptedSubmit, setAttemptedSubmit] = useState(false);
 
@@ -132,6 +136,32 @@ export default function NewCaseScreen() {
     const t = setTimeout(() => setDebouncedDoctor(doctorInput.trim()), 300);
     return () => clearTimeout(t);
   }, [doctorInput]);
+
+  // ── Barcode conflict check — debounced, fires 400 ms after last keystroke ──
+  useEffect(() => {
+    const trimmed = casePanBarcode.trim();
+    if (!trimmed || !selectedLabId) {
+      setBarcodeConflict(null);
+      setBarcodeChecking(false);
+      return;
+    }
+    setBarcodeChecking(true);
+    const t = setTimeout(async () => {
+      try {
+        const qs = new URLSearchParams({ barcode: trimmed, labOrganizationId: selectedLabId });
+        const res = await resilientFetch(`/api/cases?${qs.toString()}`);
+        if (!res.ok) { setBarcodeConflict(null); return; }
+        const body = await res.json() as { data?: Array<{ caseNumber?: string | null }> };
+        const matches = body?.data ?? [];
+        setBarcodeConflict(matches.length > 0 ? matches[0] : null);
+      } catch {
+        setBarcodeConflict(null);
+      } finally {
+        setBarcodeChecking(false);
+      }
+    }, 400);
+    return () => clearTimeout(t);
+  }, [casePanBarcode, selectedLabId]);
 
   const doctorSearchParams = { labOrganizationId: selectedLabId ?? "", q: debouncedDoctor };
   const doctorSearch = useSearchDoctors(doctorSearchParams, {
@@ -217,6 +247,7 @@ export default function NewCaseScreen() {
       ...(dueDate.trim() ? { dueDate: dueDate.trim() } : {}),
       ...(notes.trim() ? { notes: notes.trim() } : {}),
       ...(cleanRestorations.length ? { restorations: cleanRestorations } : {}),
+      ...(casePanBarcode.trim() ? { casePanBarcode: casePanBarcode.trim() } : {}),
     };
 
     setSubmitting(true);
@@ -544,6 +575,30 @@ export default function NewCaseScreen() {
             textAlignVertical="top"
             testID="new-case-notes"
           />
+        </Field>
+
+        {/* Pan Barcode */}
+        <Field label="Pan Barcode" styles={styles}>
+          <TextInput
+            style={styles.input}
+            value={casePanBarcode}
+            onChangeText={setCasePanBarcode}
+            placeholder="Scan or type barcode… (optional)"
+            placeholderTextColor={colors.textTertiary}
+            autoCapitalize="characters"
+            autoCorrect={false}
+            testID="new-case-barcode"
+          />
+          {barcodeChecking && (
+            <Text style={{ fontSize: 11, color: colors.textTertiary, marginTop: 4 }}>
+              Checking barcode…
+            </Text>
+          )}
+          {!barcodeChecking && barcodeConflict && (
+            <Text style={{ fontSize: 11, color: "#d97706", marginTop: 4 }}>
+              {`⚠ This barcode is already used by an active case${barcodeConflict.caseNumber ? ` (Case #${barcodeConflict.caseNumber})` : ""}.`}
+            </Text>
+          )}
         </Field>
 
         <Pressable

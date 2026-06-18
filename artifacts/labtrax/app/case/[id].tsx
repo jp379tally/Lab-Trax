@@ -1414,6 +1414,36 @@ function OverviewSection({
   const [rxPreviewOpen, setRxPreviewOpen] = useState(false);
   const insets = useSafeAreaInsets();
 
+  // ── Barcode conflict check — debounced, fires 400 ms after last keystroke ──
+  const [editBarcodeConflict, setEditBarcodeConflict] = useState<{ caseNumber?: string | null } | null>(null);
+  const [editBarcodeChecking, setEditBarcodeChecking] = useState(false);
+  useEffect(() => {
+    const trimmed = form.casePanBarcode.trim();
+    const labOrgId = c.labOrganizationId ?? c.organizationId ?? null;
+    if (!trimmed || !labOrgId) {
+      setEditBarcodeConflict(null);
+      setEditBarcodeChecking(false);
+      return;
+    }
+    setEditBarcodeChecking(true);
+    const t = setTimeout(async () => {
+      try {
+        const qs = new URLSearchParams({ barcode: trimmed, labOrganizationId: labOrgId });
+        const res = await resilientFetch(`/api/cases?${qs.toString()}`);
+        if (!res.ok) { setEditBarcodeConflict(null); return; }
+        const body = await res.json() as { data?: Array<{ id?: string; caseNumber?: string | null }> };
+        const matches = body?.data ?? [];
+        const conflict = matches.find((m) => m.id !== caseId) ?? null;
+        setEditBarcodeConflict(conflict);
+      } catch {
+        setEditBarcodeConflict(null);
+      } finally {
+        setEditBarcodeChecking(false);
+      }
+    }, 400);
+    return () => clearTimeout(t);
+  }, [form.casePanBarcode, c.labOrganizationId, c.organizationId, caseId]);
+
   // ── Locate Case ─────────────────────────────────────────────────────────────
   // Mirrors the desktop "Locate Case" control: pick a destination station, then
   // press "Locate" to move the case there. Location IS the canonical case status
@@ -1637,7 +1667,8 @@ function OverviewSection({
             />
             <View style={styles.editRow}>
               <Text style={styles.editLabel}>Pan Barcode</Text>
-              <View style={{ flexDirection: "row", alignItems: "center", flex: 1, gap: Spacing.xs }}>
+              <View style={{ flex: 1 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: Spacing.xs }}>
                 <TextInput
                   style={[styles.input, { flex: 1, fontVariant: ["tabular-nums"] }]}
                   value={form.casePanBarcode}
@@ -1669,6 +1700,17 @@ function OverviewSection({
                 >
                   <Ionicons name="barcode-outline" size={22} color={colors.tint} />
                 </Pressable>
+              </View>
+              {editBarcodeChecking && (
+                <Text style={{ fontSize: 11, color: colors.textTertiary, marginTop: 4 }}>
+                  Checking barcode…
+                </Text>
+              )}
+              {!editBarcodeChecking && editBarcodeConflict && (
+                <Text style={{ fontSize: 11, color: "#d97706", marginTop: 4 }}>
+                  {`⚠ This barcode is already used by an active case${editBarcodeConflict.caseNumber ? ` (Case #${editBarcodeConflict.caseNumber})` : ""}.`}
+                </Text>
+              )}
               </View>
             </View>
 

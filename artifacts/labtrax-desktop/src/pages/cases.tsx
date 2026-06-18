@@ -550,6 +550,10 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
   >(null);
   const [checkingDupes, setCheckingDupes] = useState(false);
 
+  // ── New-case barcode conflict check ──────────────────────────────────────
+  const [newBarcodeConflict, setNewBarcodeConflict] = useState<LabCase | null>(null);
+  const [newBarcodeChecking, setNewBarcodeChecking] = useState(false);
+
   // ── Remake state ─────────────────────────────────────────────────────────
   const [isRemake, setIsRemake] = useState(false);
   const [remakeSearch, setRemakeSearch] = useState("");
@@ -595,6 +599,33 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
     setForm((f) => ({ ...f, [k]: v }));
     setError(null);
   }
+
+  // ── Barcode conflict check — debounced, fires 400 ms after last keystroke ──
+  useEffect(() => {
+    const trimmed = (form.casePanBarcode ?? "").trim();
+    if (!trimmed || !form.labOrganizationId) {
+      setNewBarcodeConflict(null);
+      setNewBarcodeChecking(false);
+      return;
+    }
+    setNewBarcodeChecking(true);
+    const t = window.setTimeout(async () => {
+      try {
+        const params = new URLSearchParams({
+          barcode: trimmed,
+          labOrganizationId: form.labOrganizationId,
+        });
+        const res = await apiFetch<LabCase[]>(`/cases?${params.toString()}`);
+        const matches = Array.isArray(res) ? res : [];
+        setNewBarcodeConflict(matches.length > 0 ? matches[0] : null);
+      } catch {
+        setNewBarcodeConflict(null);
+      } finally {
+        setNewBarcodeChecking(false);
+      }
+    }, 400);
+    return () => { window.clearTimeout(t); };
+  }, [form.casePanBarcode, form.labOrganizationId]);
 
   // Pre-fill due date from the lab's defaultCaseDueDays setting when the
   // user picks a lab and hasn't typed a date yet.
@@ -849,6 +880,17 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
                 placeholder="Scan or type barcode…"
                 autoComplete="off"
               />
+              {newBarcodeChecking && (
+                <p className="mt-1 text-xs text-muted-foreground flex items-center gap-1">
+                  <Loader2 size={11} className="animate-spin" /> Checking barcode…
+                </p>
+              )}
+              {!newBarcodeChecking && newBarcodeConflict && (
+                <p className="mt-1 text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                  <AlertTriangle size={11} />
+                  {`This barcode is already used by an active case${newBarcodeConflict.caseNumber ? ` (Case #${newBarcodeConflict.caseNumber})` : ""}.`}
+                </p>
+              )}
             </div>
           </div>
 
@@ -2937,6 +2979,36 @@ export function CaseDrawer({
   });
   const [editError, setEditError] = useState<string | null>(null);
   const [editNoteText, setEditNoteText] = useState("");
+
+  // ── Edit-form barcode conflict check ─────────────────────────────────────
+  const [editBarcodeConflict, setEditBarcodeConflict] = useState<LabCase | null>(null);
+  const [editBarcodeChecking, setEditBarcodeChecking] = useState(false);
+  useEffect(() => {
+    const trimmed = editForm.casePanBarcode.trim();
+    if (!trimmed || !labCase.labOrganizationId) {
+      setEditBarcodeConflict(null);
+      setEditBarcodeChecking(false);
+      return;
+    }
+    setEditBarcodeChecking(true);
+    const t = window.setTimeout(async () => {
+      try {
+        const params = new URLSearchParams({
+          barcode: trimmed,
+          labOrganizationId: labCase.labOrganizationId ?? "",
+        });
+        const res = await apiFetch<LabCase[]>(`/cases?${params.toString()}`);
+        const matches = Array.isArray(res) ? res : [];
+        const conflict = matches.find((c) => c.id !== labCase.id) ?? null;
+        setEditBarcodeConflict(conflict);
+      } catch {
+        setEditBarcodeConflict(null);
+      } finally {
+        setEditBarcodeChecking(false);
+      }
+    }, 400);
+    return () => { window.clearTimeout(t); };
+  }, [editForm.casePanBarcode, labCase.id, labCase.labOrganizationId]);
 
   const [routeStatus, setRouteStatus] = useState("");
   const [routeError, setRouteError] = useState<string | null>(null);
@@ -5126,6 +5198,17 @@ export function CaseDrawer({
                           className="w-full h-9 pl-8 pr-2.5 rounded-md bg-secondary text-sm font-mono border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
                         />
                       </div>
+                      {editBarcodeChecking && (
+                        <p className="mt-1 text-xs text-muted-foreground flex items-center gap-1">
+                          <Loader2 size={11} className="animate-spin" /> Checking barcode…
+                        </p>
+                      )}
+                      {!editBarcodeChecking && editBarcodeConflict && (
+                        <p className="mt-1 text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                          <AlertTriangle size={11} />
+                          {`This barcode is already used by an active case${editBarcodeConflict.caseNumber ? ` (Case #${editBarcodeConflict.caseNumber})` : ""}.`}
+                        </p>
+                      )}
                     </div>
                     <div>
                       <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
