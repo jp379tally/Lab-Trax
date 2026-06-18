@@ -17,6 +17,7 @@ import { eq, and, inArray, isNull, desc, sql } from "drizzle-orm";
 import { getProviderOrgIdsForUserAndLinks } from "../lib/cross-lab-doctor";
 import { requireAuth } from "../middlewares/auth";
 import { normalizeDoctor } from "../lib/pricing";
+import { wrapDbError } from "../lib/http";
 import { randomBytes } from "node:crypto";
 
 // Per-user sliding-window rate limiter (in-memory)
@@ -93,7 +94,9 @@ async function persistExchange(
       content: assistantContent,
       createdAt: new Date(now.getTime() + 1),
     },
-  ]);
+  ]).catch((err: unknown): never => wrapDbError(err, {
+    fallback: "Failed to persist AI chat history.",
+  }));
 
   // Keep only the most recent MAX_HISTORY_ROWS rows per user
   const subq = db

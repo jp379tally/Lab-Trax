@@ -38,7 +38,7 @@ import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organization
 import { notDeleted } from "../lib/soft-delete";
 import { eq, and, inArray, or, isNull, sql, desc, count, type SQL } from "drizzle-orm";
 import { hashPassword } from "../lib/crypto";
-import { HttpError } from "../lib/http";
+import { HttpError, wrapDbError } from "../lib/http";
 import { requireAuth, optionalAuth } from "../middlewares/auth";
 import { writeAuditLog } from "../lib/audit";
 import {
@@ -435,7 +435,10 @@ async function seedDefaultUsers() {
       role: def.role,
       accountNumber: (def as any).accountNumber || null,
       initials: def.username.slice(0, 2).toUpperCase(),
-    });
+    }).catch((err: unknown): never => wrapDbError(err, {
+      duplicate: `Demo user '${def.username}' already exists.`,
+      fallback: `Failed to seed demo user '${def.username}'.`,
+    }));
     existingUsernames.add(def.username.toLowerCase());
     console.log(`[SEED] Created demo user: ${def.username}`);
   }

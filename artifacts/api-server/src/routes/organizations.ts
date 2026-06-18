@@ -563,7 +563,10 @@ router.post(
         status: "active",
         approvedByUserId: callerId,
         joinedAt: new Date(),
-      });
+      }).catch((err: unknown): never => wrapDbError(err, {
+        duplicate: "You are already a member of this organization.",
+        fallback: "Failed to create organization membership.",
+      }));
 
       await syncUserToOrganization(
         (req as any).auth.userId,

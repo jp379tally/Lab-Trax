@@ -47,7 +47,7 @@ import {
   organizationMemberships,
   pricingOverrides,
 } from "@workspace/db";
-import { HttpError, ok } from "../lib/http";
+import { HttpError, ok, wrapDbError } from "../lib/http";
 import { ADMIN_ROLES, requireAnyRole } from "../lib/rbac";
 import { notDeleted } from "../lib/soft-delete";
 import { asyncHandler } from "../middlewares/async-handler";
@@ -618,7 +618,9 @@ router.post(
       beforeJson: audit.afterJson ?? null,
       afterJson: audit.beforeJson ?? null,
       metadataJson: { undoneAuditLogId: audit.id, ...result },
-    });
+    }).catch((err: unknown): never => wrapDbError(err, {
+      fallback: "Failed to record merge undo in audit log.",
+    }));
 
     return ok(res, {
       ...result,

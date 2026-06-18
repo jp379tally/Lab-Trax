@@ -17,6 +17,7 @@
  *    missing labOrganizationId returns 400; cross-lab cases are not returned
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { HttpError } from "../lib/http";
 import { eq, inArray } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import request from "supertest";
@@ -776,18 +777,24 @@ maybe("Cases search and tenant isolation (db integration)", () => {
     );
   });
 
-  it("rethrowBarcodeConflict: re-throws 23505 from a different constraint unchanged", () => {
+  it("rethrowBarcodeConflict: wraps 23505 from a different constraint as HttpError(409)", () => {
     const otherConstraint = Object.assign(new Error("unique violation"), {
       code: "23505",
       constraint: "cases_case_number_unique",
     });
 
-    expect(() => casesMod.rethrowBarcodeConflict(otherConstraint, "X")).toThrow(otherConstraint);
+    expect(() => casesMod.rethrowBarcodeConflict(otherConstraint, "X")).toThrow(HttpError);
+    expect(() => casesMod.rethrowBarcodeConflict(otherConstraint, "X")).toThrow(
+      expect.objectContaining({ statusCode: 409 }),
+    );
   });
 
-  it("rethrowBarcodeConflict: re-throws non-23505 errors unchanged", () => {
+  it("rethrowBarcodeConflict: wraps non-23505 errors as HttpError(500)", () => {
     const networkError = new Error("connection reset");
-    expect(() => casesMod.rethrowBarcodeConflict(networkError, "X")).toThrow(networkError);
+    expect(() => casesMod.rethrowBarcodeConflict(networkError, "X")).toThrow(HttpError);
+    expect(() => casesMod.rethrowBarcodeConflict(networkError, "X")).toThrow(
+      expect.objectContaining({ statusCode: 500 }),
+    );
   });
 
   // ── Concurrent-race integration tests ────────────────────────────────────

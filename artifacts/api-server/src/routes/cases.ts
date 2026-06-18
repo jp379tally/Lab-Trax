@@ -314,7 +314,9 @@ async function writeReciprocalRemadeBy(
         remakeCharged: charged,
         note,
       },
-    });
+    }).catch((err: unknown): never => wrapDbError(err, {
+      fallback: "Failed to record remake history event.",
+    }));
     return;
   }
   // Legacy original: append to activityLog and persist.
@@ -885,7 +887,9 @@ async function promoteLabCaseToCanonical(
         material: (parsed?.material as string | undefined) ?? null,
         shade: (parsed?.shade as string | undefined) ?? null,
       })),
-    );
+    ).catch((err: unknown): never => wrapDbError(err, {
+      fallback: "Failed to copy restorations from legacy case.",
+    }));
   }
 
   return promoted;
@@ -1440,7 +1444,9 @@ export function rethrowBarcodeConflict(err: unknown, barcode: string): never {
       `Barcode "${barcode}" is already assigned to another active case. Each barcode can only be assigned to one active case at a time.`,
     );
   }
-  wrapDbError(err);
+  wrapDbError(err, {
+    fallback: "Failed to save case. Please try again.",
+  });
 }
 
 /**
@@ -3314,7 +3320,10 @@ router.post(
           };
         })
       );
-      await db.insert(caseRestorations).values(resolved);
+      await db.insert(caseRestorations).values(resolved)
+        .catch((err: unknown): never => wrapDbError(err, {
+          fallback: "Failed to save case restorations.",
+        }));
     }
 
     const user = (req as any).user;
@@ -3328,7 +3337,9 @@ router.post(
         authorOrganizationId: input.labOrganizationId,
         noteText: input.notes.trim(),
         visibility: "shared_with_provider",
-      });
+      }).catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to save case note.",
+      }));
     }
 
     // No-charge remake exception: when the user explicitly marked the
@@ -3361,7 +3372,9 @@ router.post(
           patientLastName: input.patientLastName,
           restorations: input.restorations?.length || 0,
         },
-      }),
+      }).catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to record case_created timeline event.",
+      })),
 
       // ── audit log ─────────────────────────────────────────────────────
       writeAuditLog({
@@ -3400,7 +3413,9 @@ router.post(
                 remakeCharged: charged,
                 note: `Marked as remake of ${remakeOriginal.kind === "legacy" ? "legacy " : ""}case ${remakeOriginal.caseNumber}${reason ? ` (reason: ${reason})` : ""}`,
               },
-            });
+            }).catch((err: unknown): never => wrapDbError(err, {
+              fallback: "Failed to record remake_of timeline event.",
+            }));
             await writeReciprocalRemadeBy(
               remakeOriginal,
               { id: createdCase.id, caseNumber: createdCase.caseNumber },
@@ -5140,7 +5155,9 @@ router.post(
         visibility: attachment.visibility,
         ...(attachment.note ? { note: attachment.note } : {}),
       },
-    });
+    }).catch((err: unknown): never => wrapDbError(err, {
+      fallback: "Failed to record attachment timeline event.",
+    }));
 
     await writeAuditLog({
       req,
@@ -5202,7 +5219,9 @@ router.delete(
           fileName: attachment.fileName,
           fileType: attachment.fileType,
         },
-      });
+      }).catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to record attachment deletion event.",
+      }));
     } else {
       // Legacy mobile case — look up attachment by labCaseId, require lab membership.
       const mobileRow = await db.query.labCases.findFirst({
@@ -5494,7 +5513,9 @@ router.patch(
           fromStatus: found.status,
           toStatus: input.status,
         },
-      });
+      }).catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to record status change event.",
+      }));
     }
 
     // When a provider org change is marked as originating from an AI
@@ -5521,7 +5542,9 @@ router.patch(
           suggestedProviderOrgId: found.suggestedProviderOrgId,
           suggestedPracticeName: (found as any).suggestedPracticeName ?? null,
         },
-      });
+      }).catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to record provider auto-link event.",
+      }));
     }
 
     await writeAuditLog({
@@ -5631,7 +5654,9 @@ router.post(
               : `Provider requested a delivery date change for ${patientName} (Case ${found.caseNumber})`,
             dataJson: { caseId: found.id, caseNumber: found.caseNumber },
           }))
-        );
+        ).catch((err: unknown): never => wrapDbError(err, {
+          fallback: "Failed to send delivery date request notifications.",
+        }));
       }
     } catch {
       // Best-effort — do not fail the response if notification insert fails.
@@ -5929,7 +5954,9 @@ router.post(
         noteId: note.id,
         noteText: input.noteText,
       },
-    });
+    }).catch((err: unknown): never => wrapDbError(err, {
+      fallback: "Failed to record note_added event.",
+    }));
 
     return ok(res, note, 201);
   })
@@ -6100,7 +6127,9 @@ router.post(
         locationCode: input.locationCode,
         locationName: input.locationName,
       },
-    });
+    }).catch((err: unknown): never => wrapDbError(err, {
+      fallback: "Failed to record location change event.",
+    }));
 
     return ok(res, location, 201);
   })
@@ -6475,7 +6504,9 @@ router.post(
         quantity: restoration.quantity,
         unitPrice: restoration.unitPrice,
       },
-    });
+    }).catch((err: unknown): never => wrapDbError(err, {
+      fallback: "Failed to record restoration_added event.",
+    }));
 
     // ── Step 2: Re-price existing pontics adjacent to the newly inserted
     // restoration.  Uses `_repricePonticsInSpans`, which tries bridge-connector
@@ -6550,7 +6581,9 @@ router.delete(
         toothNumber: restoration.toothNumber,
         material: restoration.material,
       },
-    });
+    }).catch((err: unknown): never => wrapDbError(err, {
+      fallback: "Failed to record restoration_deleted event.",
+    }));
     await writeAuditLog({
       req,
       organizationId: found.labOrganizationId,
@@ -6639,7 +6672,9 @@ router.patch(
         before: restoration,
         after: patchFields,
       },
-    });
+    }).catch((err: unknown): never => wrapDbError(err, {
+      fallback: "Failed to record restoration_updated event.",
+    }));
 
     await syncInvoiceFromRestorations({
       caseId: found.id,
@@ -6708,7 +6743,9 @@ router.patch(
         afterUnitPrice: input.unitPrice.toFixed(2),
         reason: input.reason ?? null,
       },
-    });
+    }).catch((err: unknown): never => wrapDbError(err, {
+      fallback: "Failed to record case_restoration_price_updated event.",
+    }));
 
     await writeAuditLog({
       req,
@@ -6773,7 +6810,9 @@ router.post(
         submissionId: submission.id,
         submissionType: submission.submissionType,
       },
-    });
+    }).catch((err: unknown): never => wrapDbError(err, {
+      fallback: "Failed to record provider_submission_received event.",
+    }));
 
     return ok(res, submission, 201);
   })
@@ -6838,7 +6877,9 @@ router.post(
         authorOrganizationId: submission.submittedByOrganizationId,
         noteText: (submission.payloadJson as any).noteText,
         visibility: "shared_with_provider",
-      });
+      }).catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to save approved submission note.",
+      }));
     }
 
     const user = (req as any).user;
@@ -6852,7 +6893,9 @@ router.post(
         submissionId: submission.id,
         submissionType: submission.submissionType,
       },
-    });
+    }).catch((err: unknown): never => wrapDbError(err, {
+      fallback: "Failed to record provider_submission_approved event.",
+    }));
 
     return ok(res, approved);
   })
@@ -6898,7 +6941,9 @@ router.post(
       actorOrganizationId: found.labOrganizationId,
       actorInitials: user?.initials || "SYS",
       metadataJson: { submissionId: submission.id },
-    });
+    }).catch((err: unknown): never => wrapDbError(err, {
+      fallback: "Failed to record provider_submission_rejected event.",
+    }));
 
     return ok(res, rejected);
   })
@@ -9651,7 +9696,9 @@ router.patch(
         actorOrganizationId: found.labOrganizationId,
         actorInitials: user?.initials || "SYS",
         metadataJson: { aiImportSource: found.aiImportSource ?? null },
-      });
+      }).catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to record ai_review_acknowledged event.",
+      }));
     }
 
     if (remakeOriginal) {
@@ -9671,7 +9718,9 @@ router.patch(
           remakeCharged: charged,
           note: `Marked as remake of ${remakeOriginal.kind === "legacy" ? "legacy " : ""}case ${remakeOriginal.caseNumber}${reason ? ` (reason: ${reason})` : ""} during AI review`,
         },
-      });
+      }).catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to record remake_of event during AI review.",
+      }));
       await writeReciprocalRemadeBy(
         remakeOriginal,
         { id: found.id, caseNumber: found.caseNumber },
@@ -10050,7 +10099,9 @@ router.post(
             actorOrganizationId: body.labOrganizationId,
             actorInitials: user?.initials || "SYS",
             metadataJson: { zipFilename: file.originalname, attachedCount, failedCount, source: "generic_bundle" },
-          });
+          }).catch((err: unknown): never => wrapDbError(err, {
+            fallback: "Failed to record files_attached_from_zip event.",
+          }));
 
           await writeAuditLog({
             req,

@@ -12,7 +12,7 @@ import {
   messages,
   users,
 } from "@workspace/db";
-import { HttpError, ok } from "../lib/http";
+import { HttpError, ok, wrapDbError } from "../lib/http";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
 import { fanOutMessage } from "../lib/messenger-ws";
@@ -289,12 +289,18 @@ router.post(
     const [conv] = await db
       .insert(conversations)
       .values({})
-      .returning({ id: conversations.id });
+      .returning({ id: conversations.id })
+      .catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to create conversation.",
+      }));
 
     await db.insert(conversationParticipants).values([
       { conversationId: conv.id, userId: myUserId },
       { conversationId: conv.id, userId: otherUserId },
-    ]);
+    ]).catch((err: unknown): never => wrapDbError(err, {
+      duplicate: "You are already a participant in this conversation.",
+      fallback: "Failed to add participants to conversation.",
+    }));
 
     return ok(res, { conversationId: conv.id }, 201);
   })

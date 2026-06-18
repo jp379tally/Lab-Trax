@@ -195,7 +195,9 @@ router.post(
               practiceOrganizationId: practice.id,
             },
           })),
-      );
+      ).catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to record statement_emailed timeline events.",
+      }));
     }
 
     return ok(res, {
@@ -465,7 +467,9 @@ router.post(
           subject: input.subject,
           practiceOrganizationId: practice.id,
         },
-      });
+      }).catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to record invoice_emailed timeline event.",
+      }));
     }
 
     return ok(res, {
@@ -579,7 +583,9 @@ router.post(
           to: recipient,
           practiceOrganizationId: practice.id,
         },
-      });
+      }).catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to record invoice_sms_sent timeline event.",
+      }));
     }
 
     return ok(res, {
@@ -889,7 +895,9 @@ router.post(
           sortOrder: index,
         };
       });
-      await db.insert(invoiceLineItems).values(itemsToInsert);
+      await db.insert(invoiceLineItems).values(itemsToInsert).catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to insert invoice line items during backfill.",
+      }));
 
       const subtotal = sumMoney(itemsToInsert.map((item) => item.lineTotal));
       await db
@@ -916,7 +924,9 @@ router.post(
           invoiceNumber: invoice.invoiceNumber,
           source: "backfill",
         },
-      });
+      }).catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to record invoice_generated timeline event.",
+      }));
 
       created++;
       createdInvoiceIds.push(invoice.id);
@@ -1354,7 +1364,9 @@ router.post(
             sortOrder: index,
           };
         });
-        await db.insert(invoiceLineItems).values(itemsToInsert);
+        await db.insert(invoiceLineItems).values(itemsToInsert).catch((err: unknown): never => wrapDbError(err, {
+          fallback: "Failed to insert invoice line items during generation.",
+        }));
       }
 
       const items = await db.query.invoiceLineItems.findMany({
@@ -1396,7 +1408,9 @@ router.post(
           invoiceId: updatedInvoice.id,
           invoiceNumber: updatedInvoice.invoiceNumber,
         },
-      });
+      }).catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to record invoice_generated timeline event.",
+      }));
 
       return ok(res, updatedInvoice, invoice ? 201 : 200);
     }
@@ -1496,7 +1510,9 @@ router.post(
           unitPrice: String(blobPrice),
           lineTotal: lineTotalStr,
           sortOrder: 0,
-        });
+        }).catch((err: unknown): never => wrapDbError(err, {
+          fallback: "Failed to insert legacy invoice line item.",
+        }));
         const [updatedLegacy] = await db
           .update(invoices)
           .set({
@@ -2469,7 +2485,9 @@ async function resolveMobileInvoiceId(
         unitPrice: String(blobPrice),
         lineTotal: lineTotalStr,
         sortOrder: 0,
-      });
+      }).catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to insert mobile legacy invoice line item.",
+      }));
       await db
         .update(invoices)
         .set({
@@ -2900,7 +2918,9 @@ router.patch(
           previousTotal: invoice.total,
           newTotal: updated.total,
         },
-      });
+      }).catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to record invoice update timeline event.",
+      }));
     }
 
     if (updated.status === "paid" && invoice.status !== "paid") {
@@ -2994,7 +3014,9 @@ router.post(
           paymentId: payment.id,
           amount: payment.amount,
         },
-      });
+      }).catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to record payment_received timeline event.",
+      }));
     }
 
     if (
@@ -3571,7 +3593,9 @@ router.post(
           reason: input.reason,
           depositReversed: dep.reversed,
         },
-      });
+      }).catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to record invoice_voided timeline event.",
+      }));
     }
 
     await writeAuditLog({
@@ -3625,7 +3649,9 @@ router.post(
         sourceKind: "writeoff",
         note: writeOffReason,
         appliedByUserId: callerId,
-      });
+      }).catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to record invoice write-off credit.",
+      }));
     }
 
     const [updated] = await db
@@ -3657,7 +3683,9 @@ router.post(
           writeOffAmount,
           depositReversed: dep.reversed,
         },
-      });
+      }).catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to record invoice_written_off timeline event.",
+      }));
     }
 
     await writeAuditLog({

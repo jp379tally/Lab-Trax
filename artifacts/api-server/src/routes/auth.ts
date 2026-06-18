@@ -31,7 +31,7 @@ import {
   setAccessCookie,
   setAuthCookies,
 } from "../lib/cookies";
-import { HttpError, ok } from "../lib/http";
+import { HttpError, ok, wrapDbError } from "../lib/http";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
 import { writeAuditLog } from "../lib/audit";
@@ -529,7 +529,10 @@ router.post(
       ipAddress: req.ip,
       userAgent: req.get("user-agent") ?? null,
       expiresAt: new Date((decoded.exp ?? 0) * 1000),
-    });
+    }).catch((err: unknown): never => wrapDbError(err, {
+      duplicate: "A session for this user already exists.",
+      fallback: "Failed to create session. Please try again.",
+    }));
 
     const accessToken = signAccessToken(user.id, sessionId);
 
@@ -702,7 +705,10 @@ router.post(
       ipAddress: req.ip,
       userAgent: req.get("user-agent") ?? null,
       expiresAt: new Date((decoded.exp ?? 0) * 1000),
-    });
+    }).catch((err: unknown): never => wrapDbError(err, {
+      duplicate: "A session for this user already exists.",
+      fallback: "Failed to create session. Please try again.",
+    }));
 
     const accessToken = signAccessToken(user.id, sessionId);
     await db

@@ -3,7 +3,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import { statementSchedules, statementSendRuns } from "@workspace/db";
-import { HttpError, ok } from "../lib/http";
+import { HttpError, ok, wrapDbError } from "../lib/http";
 import { ADMIN_ROLES, BILLING_ROLES, requireAnyRole } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth, requireVerifiedAccount } from "../middlewares/auth";
@@ -27,7 +27,11 @@ async function loadOrCreateSchedule(labOrganizationId: string) {
   const [created] = await db
     .insert(statementSchedules)
     .values({ labOrganizationId, enabled: false, dayOfMonth: 1 })
-    .returning();
+    .returning()
+    .catch((err: unknown): never => wrapDbError(err, {
+      duplicate: "A statement schedule for this lab already exists.",
+      fallback: "Failed to create statement schedule. Please try again.",
+    }));
   return created;
 }
 
