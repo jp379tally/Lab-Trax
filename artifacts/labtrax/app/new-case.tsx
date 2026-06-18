@@ -18,6 +18,7 @@ import {
   useCreateCase,
   useSearchDoctors,
   getSearchDoctorsQueryKey,
+  useCases,
   type CreateCaseInput,
   type CreateCaseInputRestorationsItem,
   type DoctorSearchEntry,
@@ -28,6 +29,7 @@ import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
 import { DateField } from "@/components/DateField";
+import { SuggestionInput } from "@/components/ui/SuggestionInput";
 
 interface RestorationDraft {
   key: string;
@@ -174,6 +176,76 @@ export default function NewCaseScreen() {
     () => (doctorSearch.data?.data?.entries ?? []).filter((e) => !!e.providerOrganizationId),
     [doctorSearch.data],
   );
+
+  // ── Name suggestions from existing cases ──
+  const existingCasesQuery = useCases(
+    { organizationId: selectedLabId ?? "" },
+    { enabled: !!selectedLabId, staleTime: 5 * 60 * 1000 },
+  );
+
+  const distinctPatientFirstNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const c of existingCasesQuery.data ?? []) {
+      if (c.patientFirstName?.trim()) names.add(c.patientFirstName.trim());
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [existingCasesQuery.data]);
+
+  const distinctPatientLastNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const c of existingCasesQuery.data ?? []) {
+      if (c.patientLastName?.trim()) names.add(c.patientLastName.trim());
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [existingCasesQuery.data]);
+
+  // Distinct doctor entries from existing cases, deduped by BOTH doctorName
+  // and providerOrganizationId so colliding names from different practices each
+  // get their own selectable row with unambiguous binding.
+  const distinctDoctorEntries = useMemo(() => {
+    const seen = new Set<string>();
+    const entries: { doctorName: string; providerOrganizationId: string }[] = [];
+    for (const c of existingCasesQuery.data ?? []) {
+      const name = c.doctorName?.trim();
+      const orgId = c.providerOrganizationId?.trim();
+      if (!name || !orgId) continue;
+      const key = `${name}\0${orgId}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        entries.push({ doctorName: name, providerOrganizationId: orgId });
+      }
+    }
+    return entries.sort((a, b) => a.doctorName.localeCompare(b.doctorName));
+  }, [existingCasesQuery.data]);
+
+  // When the same doctor name exists under multiple provider orgs we show a
+  // short disambiguator so the user can distinguish rows.
+  const doctorNameCount = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const e of distinctDoctorEntries) {
+      counts.set(e.doctorName, (counts.get(e.doctorName) ?? 0) + 1);
+    }
+    return counts;
+  }, [distinctDoctorEntries]);
+
+  const pastDoctorSuggestions = useMemo(() => {
+    if (providerOrgId || !doctorFocused) return [];
+    const trimmed = doctorInput.trim().toLowerCase();
+    return distinctDoctorEntries
+      .filter((e) => trimmed.length === 0 || e.doctorName.toLowerCase().includes(trimmed))
+      .slice(0, 6);
+  }, [distinctDoctorEntries, doctorInput, providerOrgId, doctorFocused]);
+
+  const showPastDoctorDropdown =
+    doctorFocused && !providerOrgId && debouncedDoctor.length < 2 && pastDoctorSuggestions.length > 0;
+
+  function selectPastDoctor(entry: { doctorName: string; providerOrganizationId: string }) {
+    setDoctorName(entry.doctorName);
+    setProviderOrgId(entry.providerOrganizationId);
+    setDoctorInput(entry.doctorName);
+    setDoctorFocused(false);
+    Keyboard.dismiss();
+  }
 
   function onChangeDoctor(text: string) {
     setDoctorInput(text);
@@ -384,23 +456,27 @@ export default function NewCaseScreen() {
 
         {/* Patient */}
         <Field label="Patient First Name" required styles={styles}>
-          <TextInput
-            style={[styles.input, showError("patientFirst") && styles.inputError]}
+          <SuggestionInput
             value={patientFirst}
             onChangeText={setPatientFirst}
+            suggestions={distinctPatientFirstNames}
             placeholder="Jane"
             placeholderTextColor={colors.textTertiary}
+            inputStyle={[styles.input, showError("patientFirst") && styles.inputError]}
             testID="new-case-patient-first"
+            autoCapitalize="words"
           />
         </Field>
         <Field label="Patient Last Name" required styles={styles}>
-          <TextInput
-            style={[styles.input, showError("patientLast") && styles.inputError]}
+          <SuggestionInput
             value={patientLast}
             onChangeText={setPatientLast}
+            suggestions={distinctPatientLastNames}
             placeholder="Doe"
             placeholderTextColor={colors.textTertiary}
+            inputStyle={[styles.input, showError("patientLast") && styles.inputError]}
             testID="new-case-patient-last"
+            autoCapitalize="words"
           />
         </Field>
 
@@ -422,6 +498,27 @@ export default function NewCaseScreen() {
               <Text style={styles.selectedDoctorText} numberOfLines={1}>
                 Linked to {doctorName}
               </Text>
+            </View>
+          ) : null}
+          {showPastDoctorDropdown ? (
+            <View style={styles.dropdown}>
+              {pastDoctorSuggestions.map((entry, idx) => (
+                <Pressable
+                  key={`past-${entry.providerOrganizationId}-${idx}`}
+                  onPress={() => selectPastDoctor(entry)}
+                  style={styles.dropdownItem}
+                  testID={`past-doctor-result-${idx}`}
+                >
+                  <Text style={styles.dropdownItemName} numberOfLines={1}>
+                    {entry.doctorName}
+                  </Text>
+                  {(doctorNameCount.get(entry.doctorName) ?? 1) > 1 ? (
+                    <Text style={styles.dropdownItemSub} numberOfLines={1}>
+                      {"…" + entry.providerOrganizationId.slice(-6)}
+                    </Text>
+                  ) : null}
+                </Pressable>
+              ))}
             </View>
           ) : null}
           {doctorFocused && !providerOrgId && debouncedDoctor.length >= 2 ? (
