@@ -18,7 +18,7 @@
  *   pnpm --filter @workspace/scripts run upload-desktop-installer -- /path/to/zip
  */
 
-import { readFile, stat } from "node:fs/promises";
+import { readFile, stat, access } from "node:fs/promises";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Storage } from "@google-cloud/storage";
@@ -27,10 +27,15 @@ import { parseReleaseNotes } from "./lib/parse-release-notes.js";
 
 const REPLIT_SIDECAR_ENDPOINT = "http://127.0.0.1:1106";
 const OBJECT_KEY_SUFFIX = "desktop-installer/LabTrax-Windows-Portable.zip";
+const LATEST_YML_KEY_SUFFIX = "desktop-installer/latest.yml";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_LOCAL_PATH = resolve(
   __dirname,
   "../../artifacts/labtrax-desktop/electron-dist/LabTrax-Windows-Portable.zip",
+);
+const DEFAULT_LATEST_YML_PATH = resolve(
+  __dirname,
+  "../../artifacts/labtrax-desktop/electron-dist/latest.yml",
 );
 const RELEASE_NOTES_PATH = resolve(
   __dirname,
@@ -102,7 +107,35 @@ async function main() {
     `[upload-installer] ✓ Uploaded. Size=${meta.size}B updated=${meta.updated}`,
   );
 
+  await uploadLatestYml(storage, privateDir);
   await pushInstallerMetadata();
+}
+
+async function uploadLatestYml(storage: Storage, privateDir: string): Promise<void> {
+  let ymlBuffer: Buffer;
+  try {
+    await access(DEFAULT_LATEST_YML_PATH);
+    ymlBuffer = await readFile(DEFAULT_LATEST_YML_PATH);
+  } catch {
+    console.log(
+      "[upload-installer] No latest.yml found at electron-dist/latest.yml — skipping auto-update manifest upload.",
+    );
+    return;
+  }
+
+  const fullPath = `${privateDir}/${LATEST_YML_KEY_SUFFIX}`;
+  const trimmed = fullPath.startsWith("/") ? fullPath.slice(1) : fullPath;
+  const slash = trimmed.indexOf("/");
+  const bucketName = trimmed.slice(0, slash);
+  const objectName = trimmed.slice(slash + 1);
+
+  console.log(`[upload-installer] Uploading latest.yml to gs://${bucketName}/${objectName}`);
+  const file = storage.bucket(bucketName).file(objectName);
+  await file.save(ymlBuffer, {
+    contentType: "application/yaml",
+    resumable: false,
+  });
+  console.log("[upload-installer] ✓ latest.yml uploaded (auto-update manifest).");
 }
 
 async function pushInstallerMetadata(): Promise<void> {

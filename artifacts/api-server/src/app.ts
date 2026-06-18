@@ -20,6 +20,7 @@ import {
   openDesktopInstallerStream,
   getSignedDownloadUrl,
   getDirectDownloadUrl,
+  readUpdateManifest,
   type DesktopInstallerKind,
   DesktopInstallerNotConfiguredError,
 } from "./lib/desktop-installer-storage";
@@ -323,6 +324,27 @@ app.get(
     "The macOS installer has not been uploaded yet. An admin must upload LabTrax.dmg via Settings → Desktop App.",
   ),
 );
+
+// Auto-update manifest for electron-updater generic provider.
+// electron-updater fetches GET /downloads/latest.yml to detect new versions.
+app.get("/downloads/latest.yml", async (_req: Request, res: Response) => {
+  try {
+    const content = await readUpdateManifest();
+    if (!content) {
+      res.setHeader("Cache-Control", "no-store");
+      res.status(404).json({ ok: false, message: "Auto-update manifest not found. Run a desktop build first." });
+      return;
+    }
+    res.setHeader("Content-Type", "application/yaml; charset=utf-8");
+    res.setHeader("Content-Length", String(content.length));
+    res.setHeader("Cache-Control", "no-cache");
+    res.status(200).send(content);
+  } catch (err) {
+    logger.error({ err }, "Failed to serve latest.yml auto-update manifest");
+    res.setHeader("Cache-Control", "no-store");
+    res.status(503).json({ ok: false, message: "Storage temporarily unavailable." });
+  }
+});
 
 // Reject any other /downloads/* path with a clear 404 (legacy static mount removed).
 app.get("/downloads/{*rest}", (_req: Request, res: Response) => {

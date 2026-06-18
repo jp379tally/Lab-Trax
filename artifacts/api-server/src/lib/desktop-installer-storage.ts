@@ -326,6 +326,28 @@ export async function deleteDesktopInstaller(
   return true;
 }
 
+const UPDATE_MANIFEST_KEY_SUFFIX = "desktop-installer/latest.yml";
+
+/**
+ * Returns the contents of the auto-update manifest (`latest.yml`) stored in
+ * App Storage, or null if it has not been published yet or storage is not
+ * configured.
+ *
+ * This is served at `GET /downloads/latest.yml` for electron-updater generic
+ * provider clients.
+ */
+export async function readUpdateManifest(): Promise<Buffer | null> {
+  if (!process.env.PRIVATE_OBJECT_DIR) return null;
+  const privateDir = getPrivateObjectDir();
+  const fullPath = `${privateDir}/${UPDATE_MANIFEST_KEY_SUFFIX}`;
+  const { bucketName, objectName } = parseObjectPath(fullPath);
+  const file = storageClient.bucket(bucketName).file(objectName);
+  const [exists] = await file.exists();
+  if (!exists) return null;
+  const [contents] = await file.download();
+  return contents;
+}
+
 /**
  * Maps a download URL or filename to the corresponding installer kind.
  * Returns null when the URL doesn't reference a locally-stored installer.

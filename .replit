@@ -40,6 +40,10 @@ args = "desktop-full-test"
 task = "workflow.run"
 args = "typecheck-all"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Desktop Build + Publish"
+
 [[workflows.workflow]]
 name = "api-server-tests"
 author = "agent"
@@ -106,13 +110,24 @@ isValidation = true
 task = "shell.exec"
 args = "pnpm run typecheck"
 
+[[workflows.workflow]]
+name = "Desktop Build + Publish"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "bash scripts/desktop-build-publish.sh"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
 [agent]
 stack = "PNPM_WORKSPACE"
 expertMode = true
 
 [postMerge]
 path = "scripts/post-merge.sh"
-timeoutMs = 120000
+timeoutMs = 600000
 
 [[ports]]
 localPort = 8080

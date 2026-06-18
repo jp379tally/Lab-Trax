@@ -1,6 +1,34 @@
 # Auto-update end-to-end runbook
 
-## Release trigger
+## Release trigger — two operating modes
+
+### Mode A: Replit-native (active in this environment)
+
+The GitHub Actions auto-tag pipeline (`auto-tag-desktop-release.yml` +
+`release.yml`) requires a GitHub remote and `BUILD_BOT_TOKEN` — **neither
+is available in this Replit subrepl**. The effective release mechanism is:
+
+| Path | When it fires |
+|---|---|
+| **Automatic** — `scripts/post-merge.sh` | After every merge whose diff (from `ORIG_HEAD` to `HEAD`) touches `artifacts/labtrax-desktop/**`, `lib/**`, or `artifacts/api-server/src/**` |
+| **Manual** — "Desktop Build + Publish" Replit workflow | Restart from the workflow pane at any time |
+| **CLI** — `bash scripts/desktop-build-publish.sh` | Run directly from the repo root |
+
+All three paths:
+1. Build the Vite renderer + electron-builder packager (produces `win-unpacked/`)
+2. Zip `win-unpacked` → `LabTrax-Windows-Portable.zip` (~146 MB)
+3. Generate `electron-dist/latest.yml` from the ZIP's SHA-512 digest
+4. Upload ZIP + `latest.yml` to App Storage
+5. Serve at `GET /downloads/LabTrax-Windows-Portable.zip` and `GET /downloads/latest.yml`
+6. Bake `UPDATE_FEED_URL` (= `${BASE_URL}/downloads`) into `app-update.yml` inside the packaged app so electron-updater knows where to check for updates
+
+**Skip a rebuild:** include `[skip desktop-release]` or `[skip ci]` in the merge commit subject.
+
+**REGRESSION_GUARDRAILS.md** has the authoritative parity rule and step-by-step publish verification checklist.
+
+---
+
+### Mode B: GitHub Actions (requires GitHub remote + secrets)
 
 Every merge to `main` automatically tags a new patch release via
 `.github/workflows/auto-tag-desktop-release.yml`. That workflow:

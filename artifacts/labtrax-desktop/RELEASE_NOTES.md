@@ -20,6 +20,17 @@
   - Keep individual entries concise — one bullet point per change.
 -->
 
+## v1.0.3
+
+- Barcode field in AI intake panel: scan or type a case pan barcode when creating a case from an Rx.
+- Autocomplete comboboxes for doctor and provider search in the AI intake form.
+- Practice-matching banner: the intake panel now highlights when a matched practice is found.
+- Continuous integration: desktop builds now publish automatically after every code merge touching desktop-relevant files.
+
+## v1.0.2
+
+- Incremental bugfixes and dependency updates.
+
 ## v1.0.1
 
 - Added an in-app signup flow so new labs can create an account from the desktop client.

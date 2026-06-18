@@ -800,3 +800,35 @@ Automated gate: `pnpm --filter @workspace/labtrax-desktop run test` — file `sr
 |-----------|---------|
 | Static — `src/__tests__/notification-case-navigation.test.tsx` | Asserts `useSearch` is imported, `search` is in the effect deps, the one-shot boolean guard is gone, `lastProcessedCaseIdRef` is used |
 | Runtime — `src/__tests__/notification-case-navigation.test.tsx` | `getNotificationDestination` maps all notification types correctly; CasesPage calls `apiFetch('/cases/abc')` on initial mount with `?caseId=abc` and after same-page URL navigation to `?caseId=abc` |
+
+---
+
+## Desktop / Web Parity Rule
+
+**The LabTrax Desktop Electron app and the LabTrax web client share the same React source tree** (`artifacts/labtrax-desktop/src/`). Every feature added to the web is automatically present in the desktop renderer — **no per-feature duplication is needed or permitted**.
+
+The single maintenance obligation is **rebuilding and republishing the desktop installer** after every code merge that changes the shared source, so the installed Electron app picks up the same code that web users already see.
+
+### How publishing works (Replit environment)
+
+The GitHub Actions auto-tag pipeline (`auto-tag-desktop-release.yml` + `release.yml`) requires a `BUILD_BOT_TOKEN` and a GitHub remote — **neither exists in this Replit environment**. The Replit-native mechanism is:
+
+1. **Automatic (post-merge):** `scripts/post-merge.sh` detects whether the latest commit changed any file under `artifacts/labtrax-desktop/`, `lib/`, or `artifacts/api-server/src/`. If yes, it calls `scripts/desktop-build-publish.sh` automatically. The post-merge timeout is set to 600 s to accommodate the ~3–5 min Electron build.
+
+2. **Manual (on-demand):** From the Replit workflow pane, restart **"Desktop Build + Publish"** at any time to force a full rebuild + upload without waiting for a merge.
+
+3. **CLI:** `bash scripts/desktop-build-publish.sh` from the repo root.
+
+All three paths produce `LabTrax-Windows-Portable.zip` in `artifacts/labtrax-desktop/electron-dist/`, upload it to App Storage, and update `system_settings.desktop_installer_version` so the Settings → Desktop App panel shows the correct version.
+
+### To skip a rebuild on a specific merge
+
+Include `[skip desktop-release]` or `[skip ci]` in the merge commit subject. `post-merge.sh` checks for these strings and skips the build step.
+
+### Desktop installer version
+
+The installer version is read from `artifacts/labtrax-desktop/package.json` at build time and stored in `system_settings.desktop_installer_version` after each publish. The API exposes it at `GET /api/desktop-installer` (no auth). The `DESKTOP_INSTALLER_VERSION` env var is a fallback for environments where no publish has run yet.
+
+### Guardrail
+
+After any merge that touches `artifacts/labtrax-desktop/**`, `lib/**`, or `artifacts/api-server/src/**`, confirm that `GET /downloads/LabTrax-Windows-Portable.zip` returns an updated binary (check the `Last-Modified` or `ETag` header) and that `GET /api/desktop-installer` returns the new version string before closing the task.
