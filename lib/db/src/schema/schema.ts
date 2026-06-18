@@ -1815,6 +1815,11 @@ export const subscriptions = pgTable(
       withTimezone: true,
     }),
     canceledAt: timestamp("canceled_at", { withTimezone: true }),
+    // Current plan identifiers — set when a Stripe checkout completes or a
+    // subscription update webhook fires. Null for legacy/RC/trial-only rows.
+    stripePriceId: text("stripe_price_id"),
+    planType: text("plan_type"),       // "lab" | "provider"
+    billingInterval: text("billing_interval"), // "month" | "year"
     createdAt: createdAt(),
     updatedAt: updatedAt(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),

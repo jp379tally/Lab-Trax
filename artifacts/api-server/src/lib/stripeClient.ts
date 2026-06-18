@@ -81,6 +81,38 @@ export async function getUncachableStripeClient(): Promise<Stripe | null> {
 }
 
 /**
+ * Logs the Stripe account display name and ID at startup so operators can
+ * confirm that subscription revenue settles into the correct Stripe account.
+ * Non-fatal: a retrieval failure emits WARN but does not block startup.
+ */
+export async function logStripeAccountOwnership(): Promise<void> {
+  const creds = await getStripeCredentials();
+  if (!creds) {
+    logger.warn("[stripe] Stripe not configured — skipping account ownership check");
+    return;
+  }
+  try {
+    const stripe = new Stripe(creds.secretKey);
+    // Pass "" to retrieve the platform's own account (Stripe v22+ requires an explicit id arg).
+    const account = await stripe.accounts.retrieve("");
+    logger.info(
+      {
+        stripeAccountId: account.id,
+        stripeAccountName: account.business_profile?.name ?? account.email ?? "(unnamed)",
+        stripeAccountEmail: account.email ?? null,
+        stripeAccountCountry: account.country ?? null,
+      },
+      "[stripe] Revenue account verified — confirm this is the intended LabTrax/SDR account"
+    );
+  } catch (err: any) {
+    logger.warn(
+      { err: err?.message },
+      "[stripe] Could not retrieve Stripe account info — verify STRIPE_SECRET_KEY belongs to the correct account"
+    );
+  }
+}
+
+/**
  * Construct and verify a Stripe webhook event from a raw request payload.
  * Returns null when Stripe is not configured or the signature is invalid.
  */

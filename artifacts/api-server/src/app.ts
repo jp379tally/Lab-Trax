@@ -13,6 +13,7 @@ import { startStatementScheduler } from "./lib/statements";
 import { startDailyOrphanedMediaCleanup } from "./lib/case-media";
 import { restartScheduledBackupJob } from "./lib/backup";
 import { startBillingJobs } from "./lib/billing-jobs";
+import { logStripeAccountOwnership } from "./lib/stripeClient";
 import { handleStripeWebhook } from "./routes/billing";
 import {
   getDesktopInstallerHandle,
@@ -404,6 +405,9 @@ app.use("/api", requireCsrf, router);
 startStatementScheduler();
 startDailyOrphanedMediaCleanup();
 startBillingJobs();
+logStripeAccountOwnership().catch((err: unknown) => {
+  logger.warn({ err }, "[stripe] Stripe account ownership check failed at startup");
+});
 // Dynamic recurring backup scheduler — reads persisted settings from DB and
 // starts the interval timer. Runs at startup so saved schedules survive restarts.
 restartScheduledBackupJob().catch((err: unknown) => {

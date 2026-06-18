@@ -91,9 +91,13 @@ Run `pnpm --filter @workspace/db run push` to apply schema changes.
 - `BUILD_BOT_TOKEN` — fine-grained GitHub PAT (Contents: Read & Write + bypass branch protection) used by CI to push incremented build counters to protected branches; falls back to `github.token` if unset
 
 **Billing:**
-- `SUBSCRIPTION_TRIAL_DAYS` — free trial length (default: `14`)
+- `SUBSCRIPTION_TRIAL_DAYS` — free trial length (default: `30`). Changed from 14 → 30 days. Existing in-flight trials keep their original end date.
 - `SUBSCRIPTION_GRACE_DAYS` — grace period after trial/payment failure before locking (default: `7`)
-- `STRIPE_PRICE_ID` — default Stripe price ID; run `pnpm --filter @workspace/scripts run seed-stripe-products` to obtain
+- `STRIPE_PRICE_ID` — default Stripe price ID (fallback); run `pnpm --filter @workspace/scripts run seed-stripe-products` to create all four plans
+- `STRIPE_PRICE_ID_LAB_MONTHLY` — Lab plan, monthly billing ($99/mo) — output by seed-stripe-products
+- `STRIPE_PRICE_ID_LAB_ANNUAL` — Lab plan, annual billing ($990/yr) — output by seed-stripe-products
+- `STRIPE_PRICE_ID_PROVIDER_MONTHLY` — Provider plan, monthly billing ($49/mo) — output by seed-stripe-products
+- `STRIPE_PRICE_ID_PROVIDER_ANNUAL` — Provider plan, annual billing ($490/yr) — output by seed-stripe-products
 - `STRIPE_WEBHOOK_SECRET` — Stripe webhook signing secret (store in Stripe Replit integration connector)
 - `EXPO_PUBLIC_REVENUECAT_IOS_API_KEY` / `EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY` — RevenueCat public keys for IAP
 

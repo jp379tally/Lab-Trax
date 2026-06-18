@@ -1,9 +1,20 @@
 /**
  * Idempotent script to create LabTrax subscription products and prices in Stripe.
  *
+ * Creates four plans:
+ *   - LabTrax Lab — Monthly ($99/mo) and Annual ($990/yr)
+ *   - LabTrax Provider — Monthly ($49/mo) and Annual ($490/yr)
+ *
  * Run with: pnpm --filter @workspace/scripts run seed-stripe-products
  *
  * Prerequisites: Stripe integration must be connected in Replit.
+ *
+ * After running, set the env vars printed at the end:
+ *   STRIPE_PRICE_ID_LAB_MONTHLY
+ *   STRIPE_PRICE_ID_LAB_ANNUAL
+ *   STRIPE_PRICE_ID_PROVIDER_MONTHLY
+ *   STRIPE_PRICE_ID_PROVIDER_ANNUAL
+ *   STRIPE_PRICE_ID  (default — set to lab monthly for backwards compat)
  */
 
 async function getStripeCredentials(): Promise<{ secretKey: string }> {
@@ -41,73 +52,117 @@ async function getStripeCredentials(): Promise<{ secretKey: string }> {
   return { secretKey };
 }
 
+interface PlanDef {
+  productName: string;
+  productDescription: string;
+  planType: "lab" | "provider";
+  prices: Array<{
+    interval: "month" | "year";
+    unitAmount: number;
+    nickname: string;
+  }>;
+}
+
+const PLANS: PlanDef[] = [
+  {
+    productName: "LabTrax Lab",
+    productDescription:
+      "Full access to LabTrax for dental laboratories — case tracking, invoicing, finance, and all lab management features.",
+    planType: "lab",
+    prices: [
+      { interval: "month", unitAmount: 9900, nickname: "LabTrax Lab Monthly" },
+      { interval: "year",  unitAmount: 99000, nickname: "LabTrax Lab Annual" },
+    ],
+  },
+  {
+    productName: "LabTrax Provider",
+    productDescription:
+      "LabTrax access for dental providers and practices — case submission, tracking, and communication with your lab.",
+    planType: "provider",
+    prices: [
+      { interval: "month", unitAmount: 4900, nickname: "LabTrax Provider Monthly" },
+      { interval: "year",  unitAmount: 49000, nickname: "LabTrax Provider Annual" },
+    ],
+  },
+];
+
 async function seedStripeProducts() {
   const { default: Stripe } = await import("stripe");
   const { secretKey } = await getStripeCredentials();
   const stripe = new Stripe(secretKey);
 
-  console.log("Checking for existing LabTrax subscription products...");
+  console.log("Seeding LabTrax subscription products and prices in Stripe...\n");
 
-  const existing = await stripe.products.search({
-    query: "name:'LabTrax Pro' AND active:'true'",
-  });
+  const priceIds: Record<string, string> = {};
 
-  let productId: string;
+  for (const plan of PLANS) {
+    console.log(`\n── ${plan.productName} ──`);
 
-  if (existing.data.length > 0) {
-    productId = existing.data[0].id;
-    console.log(`Product already exists: ${productId}`);
-  } else {
-    const product = await stripe.products.create({
-      name: "LabTrax Pro",
-      description:
-        "Full access to LabTrax — case tracking, invoicing, and all lab management features.",
+    const existing = await stripe.products.search({
+      query: `name:'${plan.productName}' AND active:'true'`,
     });
-    productId = product.id;
-    console.log(`Created product: ${product.name} (${productId})`);
-  }
 
-  const existingPrices = await stripe.prices.list({
-    product: productId,
-    active: true,
-  });
+    let productId: string;
+    if (existing.data.length > 0) {
+      productId = existing.data[0].id;
+      console.log(`  Product already exists: ${productId}`);
+      await stripe.products.update(productId, {
+        metadata: { planType: plan.planType },
+      });
+    } else {
+      const product = await stripe.products.create({
+        name: plan.productName,
+        description: plan.productDescription,
+        metadata: { planType: plan.planType },
+      });
+      productId = product.id;
+      console.log(`  Created product: ${product.name} (${productId})`);
+    }
 
-  const hasMonthly = existingPrices.data.some(
-    (p) => p.recurring?.interval === "month"
-  );
-  const hasYearly = existingPrices.data.some(
-    (p) => p.recurring?.interval === "year"
-  );
-
-  if (!hasMonthly) {
-    const price = await stripe.prices.create({
+    const existingPrices = await stripe.prices.list({
       product: productId,
-      unit_amount: 4900,
-      currency: "usd",
-      recurring: { interval: "month" },
+      active: true,
     });
-    console.log(`Created monthly price: $49.00/month (${price.id})`);
-    console.log(`\nSet STRIPE_PRICE_ID=${price.id} to use this price as the default.`);
-  } else {
-    const p = existingPrices.data.find((p) => p.recurring?.interval === "month");
-    console.log(`Monthly price already exists: ${p?.id}`);
-    console.log(`\nSet STRIPE_PRICE_ID=${p?.id} to use this price as the default.`);
+
+    for (const priceDef of plan.prices) {
+      const existing = existingPrices.data.find(
+        (p) => p.recurring?.interval === priceDef.interval
+      );
+
+      const intervalKey =
+        `${plan.planType}_${priceDef.interval === "month" ? "monthly" : "annual"}`;
+
+      if (existing) {
+        console.log(
+          `  Price (${priceDef.interval}): already exists — ${existing.id}`
+        );
+        priceIds[intervalKey] = existing.id;
+      } else {
+        const price = await stripe.prices.create({
+          product: productId,
+          unit_amount: priceDef.unitAmount,
+          currency: "usd",
+          recurring: { interval: priceDef.interval },
+          nickname: priceDef.nickname,
+          metadata: { planType: plan.planType, interval: priceDef.interval },
+        });
+        console.log(
+          `  Created price (${priceDef.interval}): $${(priceDef.unitAmount / 100).toFixed(2)}/${priceDef.interval} — ${price.id}`
+        );
+        priceIds[intervalKey] = price.id;
+      }
+    }
   }
 
-  if (!hasYearly) {
-    const price = await stripe.prices.create({
-      product: productId,
-      unit_amount: 49000,
-      currency: "usd",
-      recurring: { interval: "year" },
-    });
-    console.log(`Created yearly price: $490.00/year (${price.id})`);
-  } else {
-    const p = existingPrices.data.find((p) => p.recurring?.interval === "year");
-    console.log(`Yearly price already exists: ${p?.id}`);
+  console.log("\n\n══ Stripe setup complete. Set these environment variables: ══");
+  for (const [key, id] of Object.entries(priceIds)) {
+    const envKey = `STRIPE_PRICE_ID_${key.toUpperCase()}`;
+    console.log(`  ${envKey}=${id}`);
   }
-
-  console.log("\nDone. Stripe products and prices are ready.");
+  if (priceIds["lab_monthly"]) {
+    console.log(`  STRIPE_PRICE_ID=${priceIds["lab_monthly"]}   # default (lab monthly)`);
+  }
+  console.log("\nDone.");
 }
 
 seedStripeProducts().catch((err) => {

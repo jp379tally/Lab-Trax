@@ -45,7 +45,7 @@ export interface BillingSubject {
 }
 
 const TRIAL_DAYS = () =>
-  Math.max(1, parseInt(process.env.SUBSCRIPTION_TRIAL_DAYS ?? "14", 10));
+  Math.max(1, parseInt(process.env.SUBSCRIPTION_TRIAL_DAYS ?? "30", 10));
 const GRACE_DAYS = () =>
   Math.max(1, parseInt(process.env.SUBSCRIPTION_GRACE_DAYS ?? "7", 10));
 
