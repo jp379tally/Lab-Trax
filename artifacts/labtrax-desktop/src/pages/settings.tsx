@@ -9556,7 +9556,19 @@ function DeletionAuditPanel() {
             Clear
           </button>
         )}
+        {hasFilters && !auditQuery.isLoading && auditQuery.data && (
+          <span className="ml-auto text-xs text-muted-foreground">
+            {entries.length === 1 ? "1 result" : `${entries.length} results`}
+          </span>
+        )}
       </div>
+
+      {/* Limit-reached notice */}
+      {(auditQuery.data?.entries?.length ?? 0) === 100 && (
+        <div className="flex items-center gap-2 rounded-md border border-amber-300/60 bg-amber-50/60 dark:bg-amber-950/30 dark:border-amber-700/50 px-3 py-2 text-xs text-amber-800 dark:text-amber-300 mb-3">
+          <span>Showing first 100 results — narrow your date range to see more.</span>
+        </div>
+      )}
 
       {auditQuery.isLoading && (
         <div className="flex items-center gap-2 text-muted-foreground text-sm py-8 justify-center">
