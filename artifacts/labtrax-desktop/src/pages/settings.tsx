@@ -237,6 +237,7 @@ interface LabTeamMember {
   workStatus: string;
   labNames: string[];
   isSelf: boolean;
+  status?: string | null;
 }
 
 interface PendingInvite {
@@ -338,6 +339,7 @@ function ProfilePanel() {
   const [inviteSuccess, setInviteSuccess] = useState(false);
   const [confirmRemoveMemberId, setConfirmRemoveMemberId] = useState<string | null>(null);
   const [confirmRemoveName, setConfirmRemoveName] = useState<string>("");
+  const [transferTarget, setTransferTarget] = useState<{ membershipId: string; name: string } | null>(null);
 
   const isTeamAdmin =
     teamQuery.data?.callerRole === "admin" ||
@@ -391,6 +393,61 @@ function ProfilePanel() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["lab-team"] });
       toast({ title: "Invite revoked", duration: 3000 });
+    },
+  });
+
+  const changeRoleMutation = useMutation({
+    mutationFn: async ({ membershipId, role }: { membershipId: string; role: string }) => {
+      return apiFetch(`/organizations/memberships/${membershipId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ role }),
+      });
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["lab-team"] });
+      toast({ title: "Role updated", duration: 3000 });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Could not update role", description: err.message, variant: "destructive", duration: 4000 });
+    },
+  });
+
+  const suspendMutation = useMutation({
+    mutationFn: async ({ membershipId, status }: { membershipId: string; status: "active" | "suspended" }) => {
+      return apiFetch(`/organizations/memberships/${membershipId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status }),
+      });
+    },
+    onSuccess: (_data, vars) => {
+      void queryClient.invalidateQueries({ queryKey: ["lab-team"] });
+      toast({ title: vars.status === "suspended" ? "Member suspended" : "Member reactivated", duration: 3000 });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Could not update member status", description: err.message, variant: "destructive", duration: 4000 });
+    },
+  });
+
+  const transferOwnershipMutation = useMutation({
+    mutationFn: async ({ targetMembershipId }: { targetMembershipId: string }) => {
+      const selfMember = teamQuery.data?.team.find((m) => m.isSelf);
+      if (!selfMember?.membershipId) throw new Error("Could not resolve your membership.");
+      await apiFetch(`/organizations/memberships/${targetMembershipId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ role: "owner" }),
+      });
+      await apiFetch(`/organizations/memberships/${selfMember.membershipId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ role: "admin" }),
+      });
+    },
+    onSuccess: () => {
+      setTransferTarget(null);
+      void queryClient.invalidateQueries({ queryKey: ["lab-team"] });
+      toast({ title: "Ownership transferred", duration: 4000 });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Could not transfer ownership", description: err.message, variant: "destructive", duration: 4000 });
     },
   });
 
@@ -701,32 +758,86 @@ function ProfilePanel() {
             const meta = workStatusMeta(m.workStatus);
             const name =
               [m.firstName, m.lastName].filter(Boolean).join(" ") || m.username;
+            const isSuspended = m.status === "suspended";
+            const isCallerOwner = teamQuery.data?.callerRole === "owner";
+            const canChangeRole =
+              isTeamAdmin &&
+              !m.isSelf &&
+              !!m.membershipId &&
+              !(m.isOwner && !isCallerOwner);
+            const canSuspend =
+              isTeamAdmin && !m.isSelf && !m.isOwner && !!m.membershipId;
             const canRemove =
               isTeamAdmin && !m.isSelf && !m.isOwner && m.membershipId;
             return (
               <li
                 key={m.id}
-                className="px-4 py-2.5 flex items-center justify-between text-sm"
+                className={`px-4 py-2.5 flex items-center justify-between text-sm${isSuspended ? " opacity-60" : ""}`}
               >
                 <div className="min-w-0">
-                  <div className="font-medium truncate">
+                  <div className="font-medium truncate flex items-center gap-1.5">
                     {name}
                     {m.isSelf && (
-                      <span className="ml-1.5 text-xs text-muted-foreground font-normal">
-                        (you)
-                      </span>
+                      <span className="text-xs text-muted-foreground font-normal">(you)</span>
+                    )}
+                    {isSuspended && (
+                      <span className="text-xs text-amber-600 font-medium">suspended</span>
                     )}
                   </div>
-                  <div className="text-xs text-muted-foreground truncate">
-                    {m.role || "user"}
-                    {m.email ? ` · ${m.email}` : ""}
+                  <div className="text-xs text-muted-foreground flex items-center gap-1.5 mt-0.5">
+                    {canChangeRole ? (
+                      <select
+                        value={m.role ?? "user"}
+                        onChange={(e) => {
+                          const newRole = e.target.value;
+                          if (newRole === "owner") {
+                            setTransferTarget({ membershipId: m.membershipId!, name });
+                          } else {
+                            changeRoleMutation.mutate({ membershipId: m.membershipId!, role: newRole });
+                          }
+                        }}
+                        disabled={changeRoleMutation.isPending}
+                        className="h-5 text-xs border border-border rounded px-1 bg-background text-foreground cursor-pointer focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+                      >
+                        {isCallerOwner && <option value="owner">Owner</option>}
+                        <option value="admin">Admin</option>
+                        <option value="billing">Billing</option>
+                        <option value="user">User</option>
+                        <option value="read_only">Read-Only</option>
+                      </select>
+                    ) : (
+                      <span className="capitalize">{(m.role ?? "user").replace("_", " ")}</span>
+                    )}
+                    {m.email && <span className="text-muted-foreground/60">· {m.email}</span>}
                   </div>
                 </div>
-                <div className="inline-flex items-center gap-3 shrink-0">
-                  <div className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <span className={`w-2 h-2 rounded-full ${meta.dot}`} />
-                    {meta.label}
-                  </div>
+                <div className="inline-flex items-center gap-2 shrink-0 ml-3">
+                  {!isSuspended && (
+                    <div className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <span className={`w-2 h-2 rounded-full ${meta.dot}`} />
+                      {meta.label}
+                    </div>
+                  )}
+                  {canSuspend && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        suspendMutation.mutate({
+                          membershipId: m.membershipId!,
+                          status: isSuspended ? "active" : "suspended",
+                        })
+                      }
+                      disabled={suspendMutation.isPending}
+                      title={isSuspended ? `Reactivate ${name}` : `Suspend ${name}`}
+                      className="text-muted-foreground hover:text-amber-600 transition-colors disabled:opacity-50"
+                    >
+                      {isSuspended ? (
+                        <UserPlus className="w-3.5 h-3.5" />
+                      ) : (
+                        <UserMinus className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                  )}
                   {canRemove && (
                     confirmRemoveMemberId === m.membershipId ? (
                       <div className="flex items-center gap-1.5">
@@ -876,6 +987,44 @@ function ProfilePanel() {
         </div>
       )}
     </PanelShell>
+
+    {/* Transfer-ownership confirmation dialog */}
+    <AlertDialog
+      open={!!transferTarget}
+      onOpenChange={(open) => {
+        if (!open && !transferOwnershipMutation.isPending) setTransferTarget(null);
+      }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Transfer ownership to {transferTarget?.name}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {transferTarget?.name} will become the new owner of this lab. Your role will change to Admin.
+            This action cannot be undone by you once confirmed.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={transferOwnershipMutation.isPending}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={(e) => {
+              e.preventDefault();
+              if (transferTarget) {
+                transferOwnershipMutation.mutate({ targetMembershipId: transferTarget.membershipId });
+              }
+            }}
+            disabled={transferOwnershipMutation.isPending}
+            className="bg-primary text-primary-foreground hover:bg-primary/90"
+          >
+            {transferOwnershipMutation.isPending ? (
+              <><Loader2 size={13} className="animate-spin mr-1.5" />Transferring…</>
+            ) : (
+              "Transfer ownership"
+            )}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+
     {showPlacementsModal && (
       <div
         className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"

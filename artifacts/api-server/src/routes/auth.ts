@@ -1319,15 +1319,26 @@ router.get(
     const callerPrimaryMembership =
       callerMemberships.find((m) => callerAdminLabIds.has(m.labId)) ??
       callerMemberships.find((m) => m.labId === primaryLabId);
-    const callerRole = callerPrimaryMembership?.role ?? null;
+    // Optional org-scoped filter — lets the mobile client fetch team for one
+    // specific lab without receiving members from all the caller's labs.
+    const orgIdParam = typeof req.query.orgId === "string" ? req.query.orgId : null;
+    const teamLabIds = orgIdParam && labIds.includes(orgIdParam) ? [orgIdParam] : labIds;
+
+    // When the request is scoped to a specific org, callerRole must reflect the
+    // caller's role in THAT org only. Without this, a user who is owner in lab A
+    // but admin in lab B would receive callerRole:"owner" for a lab B request,
+    // incorrectly exposing the owner-transfer affordance on the client.
+    const callerRole = orgIdParam && labIds.includes(orgIdParam)
+      ? (callerMemberships.find((m) => m.labId === orgIdParam)?.role ?? null)
+      : (callerPrimaryMembership?.role ?? null);
 
     const teamMemberships = await db
       .select()
       .from(organizationMemberships)
       .where(
         and(
-          inArray(organizationMemberships.labId, labIds),
-          eq(organizationMemberships.status, "active")
+          inArray(organizationMemberships.labId, teamLabIds),
+          inArray(organizationMemberships.status, ["active", "suspended"])
         )
       );
     const teamUserIds = [...new Set(teamMemberships.map((m) => m.userId))];
@@ -1385,6 +1396,7 @@ router.get(
           workStatus: u.workStatus ?? "available",
           labNames,
           isSelf: u.id === userId,
+          status: adminScopedMembership?.status ?? "active",
         };
       })
       .sort((a, b) => {

@@ -55,6 +55,18 @@ interface MeResponse {
   memberships?: OrgMembership[];
 }
 
+interface LabTeamMember {
+  id: string;
+  username: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  role?: string | null;
+  membershipId?: string | null;
+  isOwner?: boolean;
+  status: string;
+  isSelf: boolean;
+}
+
 interface PendingInvite {
   id: string;
   token: string;
@@ -171,6 +183,95 @@ function OrgCard({ m, colors, styles }: { m: OrgMembership; colors: ThemeColors;
     },
     enabled: isAdmin && !!orgId,
     staleTime: 120_000,
+  });
+
+  const labTeamQuery = useQuery<{ team: LabTeamMember[]; callerRole: string | null }>({
+    queryKey: ["lab-team", orgId],
+    queryFn: async () => {
+      const res = await resilientFetch(`/api/auth/lab-team?orgId=${orgId}`);
+      if (!res.ok) throw new Error("Failed to fetch team");
+      return res.json();
+    },
+    enabled: org?.type === "lab" && !!orgId,
+    staleTime: 60_000,
+  });
+
+  const changeMemberRoleMutation = useMutation({
+    mutationFn: async ({ membershipId, role }: { membershipId: string; role: string }) => {
+      const res = await resilientFetch(`/api/organizations/memberships/${membershipId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error((e as any)?.error || `Failed (${res.status})`);
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["lab-team", orgId] });
+    },
+    onError: (err: Error) => Alert.alert("Could not update role", err.message),
+  });
+
+  const suspendMemberMutation = useMutation({
+    mutationFn: async ({ membershipId, status }: { membershipId: string; status: "active" | "suspended" }) => {
+      const res = await resilientFetch(`/api/organizations/memberships/${membershipId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error((e as any)?.error || `Failed (${res.status})`);
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["lab-team", orgId] });
+    },
+    onError: (err: Error) => Alert.alert("Could not update member status", err.message),
+  });
+
+  const removeMemberMutation = useMutation({
+    mutationFn: async (membershipId: string) => {
+      const res = await resilientFetch(`/api/organizations/memberships/${membershipId}`, { method: "DELETE" });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error((e as any)?.error || `Failed (${res.status})`);
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["lab-team", orgId] });
+    },
+    onError: (err: Error) => Alert.alert("Could not remove member", err.message),
+  });
+
+  const transferOwnershipMutation = useMutation({
+    mutationFn: async ({ targetMembershipId, selfMembershipId }: { targetMembershipId: string; selfMembershipId: string }) => {
+      const r1 = await resilientFetch(`/api/organizations/memberships/${targetMembershipId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: "owner" }),
+      });
+      if (!r1.ok) {
+        const e = await r1.json().catch(() => ({}));
+        throw new Error((e as any)?.error || `Failed (${r1.status})`);
+      }
+      const r2 = await resilientFetch(`/api/organizations/memberships/${selfMembershipId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: "admin" }),
+      });
+      if (!r2.ok) {
+        const e = await r2.json().catch(() => ({}));
+        throw new Error((e as any)?.error || `Failed (${r2.status})`);
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["lab-team", orgId] });
+      qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
+    },
+    onError: (err: Error) => Alert.alert("Could not transfer ownership", err.message),
   });
 
   const leaveMutation = useMutation({
@@ -775,6 +876,160 @@ function OrgCard({ m, colors, styles }: { m: OrgMembership; colors: ThemeColors;
               />
             </Pressable>
           </View>
+        </View>
+      )}
+
+      {/* Members section — lab orgs; all members see the list, only admins get controls */}
+      {org?.type === "lab" && orgId && (
+        <View style={[styles.dupSection, { borderTopColor: colors.border }]}>
+          <View style={styles.dupHeader}>
+            <Text style={[styles.dupTitle, { color: colors.text }]}>Team members</Text>
+            {labTeamQuery.isLoading && <ActivityIndicator size={12} color={colors.textSecondary} />}
+          </View>
+
+          {(labTeamQuery.data?.team ?? []).map((member) => {
+            const memberName =
+              [member.firstName, member.lastName].filter(Boolean).join(" ") || member.username;
+            const isSuspended = member.status === "suspended";
+            const isCallerOwner = labTeamQuery.data?.callerRole === "owner";
+            const canActOnMember = isAdmin && !member.isSelf && !member.isOwner && !!member.membershipId;
+
+            function showRolePicker() {
+              if (!member.membershipId) return;
+              const roles: Array<{ label: string; value: string }> = [
+                ...(isCallerOwner ? [{ label: "Owner", value: "owner" }] : []),
+                { label: "Admin", value: "admin" },
+                { label: "Billing", value: "billing" },
+                { label: "User", value: "user" },
+                { label: "Read-Only", value: "read_only" },
+              ];
+              const buttons = [
+                ...roles.map((r) => ({
+                  text: r.label,
+                  onPress: () => {
+                    if (r.value === "owner") {
+                      const selfMember = labTeamQuery.data?.team.find((t) => t.isSelf);
+                      if (!selfMember?.membershipId) return;
+                      Alert.alert(
+                        "Transfer ownership",
+                        `Make ${memberName} the new owner? Your role will change to Admin.`,
+                        [
+                          { text: "Cancel", style: "cancel" },
+                          {
+                            text: "Transfer ownership",
+                            onPress: () =>
+                              transferOwnershipMutation.mutate({
+                                targetMembershipId: member.membershipId!,
+                                selfMembershipId: selfMember.membershipId!,
+                              }),
+                          },
+                        ]
+                      );
+                    } else {
+                      changeMemberRoleMutation.mutate({ membershipId: member.membershipId!, role: r.value });
+                    }
+                  },
+                })),
+                { text: "Cancel", style: "cancel" as const },
+              ];
+              Alert.alert(`Change role for ${memberName}`, `Current role: ${member.role ?? "user"}`, buttons);
+            }
+
+            function showMemberActions() {
+              if (!member.membershipId) return;
+              const actions = [
+                {
+                  text: isSuspended ? "Reactivate" : "Suspend",
+                  onPress: () =>
+                    suspendMemberMutation.mutate({
+                      membershipId: member.membershipId!,
+                      status: isSuspended ? "active" : "suspended",
+                    }),
+                },
+                {
+                  text: "Remove from lab",
+                  style: "destructive" as const,
+                  onPress: () =>
+                    Alert.alert(
+                      "Remove member",
+                      `Remove ${memberName} from the lab?`,
+                      [
+                        { text: "Cancel", style: "cancel" },
+                        {
+                          text: "Remove",
+                          style: "destructive",
+                          onPress: () => removeMemberMutation.mutate(member.membershipId!),
+                        },
+                      ]
+                    ),
+                },
+                { text: "Cancel", style: "cancel" as const },
+              ];
+              Alert.alert(memberName, undefined, actions);
+            }
+
+            return (
+              <View
+                key={member.id}
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  paddingVertical: 6,
+                  opacity: isSuspended ? 0.6 : 1,
+                }}
+              >
+                <View style={{ flex: 1 }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                    <Text style={[styles.detailValue, { color: colors.text }]}>{memberName}</Text>
+                    {member.isSelf && (
+                      <Text style={[styles.detailLabel, { color: colors.textTertiary }]}>(you)</Text>
+                    )}
+                    {isSuspended && (
+                      <Text style={{ fontSize: 10, color: "#D97706", fontWeight: "600" }}>suspended</Text>
+                    )}
+                  </View>
+                  <Pressable
+                    onPress={canActOnMember ? showRolePicker : undefined}
+                    hitSlop={8}
+                    style={{ alignSelf: "flex-start", marginTop: 2 }}
+                  >
+                    <View
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 3,
+                        borderRadius: 4,
+                        borderWidth: 1,
+                        borderColor: colors.border,
+                        paddingHorizontal: 6,
+                        paddingVertical: 2,
+                        backgroundColor: colors.surfaceAlt,
+                      }}
+                    >
+                      <Text style={[styles.detailLabel, { color: colors.textSecondary }]}>
+                        {(member.role ?? "user").replace("_", "-")}
+                      </Text>
+                      {canActOnMember && (
+                        <Ionicons name="chevron-down" size={10} color={colors.textTertiary} />
+                      )}
+                    </View>
+                  </Pressable>
+                </View>
+                {canActOnMember && (
+                  <Pressable onPress={showMemberActions} hitSlop={12} style={{ padding: 4 }}>
+                    <Ionicons name="ellipsis-horizontal" size={18} color={colors.textSecondary} />
+                  </Pressable>
+                )}
+              </View>
+            );
+          })}
+
+          {!labTeamQuery.isLoading && (labTeamQuery.data?.team ?? []).length === 0 && (
+            <Text style={[styles.dupLabel, { color: colors.textTertiary }]}>No team members found.</Text>
+          )}
+          {labTeamQuery.isError && (
+            <Text style={[styles.dupLabel, { color: colors.error }]}>Could not load team members.</Text>
+          )}
         </View>
       )}
 
