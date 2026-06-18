@@ -194,7 +194,6 @@ function MobileTrialBanner() {
 
   return null;
 }
-}
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function patientName(c: CanonicalCase): string {
@@ -1337,6 +1336,7 @@ export default function CasesListScreen() {
             ) : (
               <View
                 style={styles.scanCameraWrap}
+                testID="scan-camera-wrap"
                 onLayout={(e) => {
                   const { width, height } = e.nativeEvent.layout;
                   cameraViewSize.current = { width, height };

@@ -372,6 +372,7 @@ export default function BatchLocateScreen() {
         ) : (
           <View
             style={styles.scannerArea}
+            testID="batch-locate-scanner-area"
             onLayout={(e) => {
               const { width, height } = e.nativeEvent.layout;
               cameraViewSize.current = { width, height };
