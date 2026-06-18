@@ -1082,7 +1082,11 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
                     <div className="space-y-1">
                       <div className="flex items-center justify-between text-xs text-muted-foreground">
                         <span>
-                          {entry.status === "queued" ? "Waiting…" : "Uploading…"}
+                          {entry.status === "queued"
+                            ? "Waiting…"
+                            : entry.autoRetryAttempt != null
+                              ? `Retrying… (attempt ${entry.autoRetryAttempt} of ${entry.autoRetryMax ?? 3})`
+                              : "Uploading…"}
                         </span>
                         <div className="flex items-center gap-2">
                           <span className="tabular-nums">{entry.progress}%</span>

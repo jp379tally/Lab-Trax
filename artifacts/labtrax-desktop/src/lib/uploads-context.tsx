@@ -94,6 +94,10 @@ export interface UploadEntry {
   // that re-picking the file resumes from `uploadedBytes` instead of byte 0.
   sessionId?: string;
   uploadedBytes?: number;
+  // Auto-retry state. Set while an automatic retry is in progress so the UI
+  // can show "Retrying… (attempt X of Y)" instead of "Uploading…".
+  autoRetryAttempt?: number;
+  autoRetryMax?: number;
 }
 
 export interface UploadRejection {
@@ -171,6 +175,10 @@ function validateFile(file: File): string | null {
 const CHUNK_SIZE_BYTES = 1 * 1024 * 1024; // 1 MB
 const MAX_CHUNK_RETRIES = 5;
 const RETRY_BASE_DELAY_MS = 500;
+
+// Whole-upload automatic retry settings (on top of per-chunk retries).
+export const AUTO_RETRY_MAX = 3;
+const AUTO_RETRY_BASE_DELAY_MS = 2_000; // 2 s → 4 s → 8 s
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -626,9 +634,14 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
       canceledIdsRef.current.delete(entry.id);
       const controller = new AbortController();
       controllersRef.current.set(entry.id, controller);
-      const initialUploadedBytes = Math.min(entry.uploadedBytes ?? 0, file.size);
+
+      // Track session state across auto-retry attempts so each retry can
+      // resume from where the previous attempt left off.
+      let currentSessionId: string | undefined = entry.sessionId;
+      let currentUploadedBytes = Math.min(entry.uploadedBytes ?? 0, file.size);
+
       const initialProgress =
-        file.size > 0 ? Math.min(99, Math.floor((initialUploadedBytes / file.size) * 100)) : 0;
+        file.size > 0 ? Math.min(99, Math.floor((currentUploadedBytes / file.size) * 100)) : 0;
       setEntries((prev) =>
         prev.map((e) =>
           e.id === entry.id
@@ -637,78 +650,193 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
                 status: "uploading",
                 errorMessage: undefined,
                 progress: initialProgress,
-                uploadedBytes: initialUploadedBytes,
+                uploadedBytes: currentUploadedBytes,
                 completedAt: undefined,
+                autoRetryAttempt: undefined,
+                autoRetryMax: undefined,
               }
             : e,
         ),
       );
 
-      const result = await uploadFileResumable({
-        file,
-        initialSessionId: entry.sessionId,
-        initialUploadedBytes,
-        signal: controller.signal,
-        onProgress: (uploadedBytes) => {
-          const clamped = Math.max(0, Math.min(uploadedBytes, file.size));
-          const percent =
-            file.size > 0 ? Math.min(99, Math.floor((clamped / file.size) * 100)) : 0;
-          setEntries((prev) =>
-            prev.map((e) => {
-              if (e.id !== entry.id) return e;
-              if (e.status !== "uploading") return e;
-              const next: UploadEntry = { ...e };
-              if (percent > e.progress) next.progress = percent;
-              if (clamped > (e.uploadedBytes ?? 0)) next.uploadedBytes = clamped;
-              return next;
-            }),
-          );
-        },
-        // Persist the sessionId the moment we know it, so a refresh that
-        // happens BEFORE the upload finishes can still resume from the
-        // server's tracked state instead of re-uploading from byte 0.
-        onSessionReady: (sid) => {
-          setEntries((prev) =>
-            prev.map((e) => (e.id === entry.id && e.sessionId !== sid ? { ...e, sessionId: sid } : e)),
-          );
-        },
-        // Persist the latest server-confirmed offset after every chunk so
-        // resume after refresh starts at the last committed byte.
-        onChunkCommitted: (uploadedBytes) => {
-          const clamped = Math.max(0, Math.min(uploadedBytes, file.size));
+      for (let attempt = 0; attempt <= AUTO_RETRY_MAX; attempt++) {
+        const result = await uploadFileResumable({
+          file,
+          initialSessionId: currentSessionId,
+          initialUploadedBytes: currentUploadedBytes,
+          signal: controller.signal,
+          onProgress: (uploadedBytes) => {
+            const clamped = Math.max(0, Math.min(uploadedBytes, file.size));
+            const percent =
+              file.size > 0 ? Math.min(99, Math.floor((clamped / file.size) * 100)) : 0;
+            setEntries((prev) =>
+              prev.map((e) => {
+                if (e.id !== entry.id) return e;
+                if (e.status !== "uploading") return e;
+                const next: UploadEntry = { ...e };
+                if (percent > e.progress) next.progress = percent;
+                if (clamped > (e.uploadedBytes ?? 0)) next.uploadedBytes = clamped;
+                return next;
+              }),
+            );
+          },
+          // Persist the sessionId the moment we know it, so a refresh that
+          // happens BEFORE the upload finishes can still resume from the
+          // server's tracked state instead of re-uploading from byte 0.
+          onSessionReady: (sid) => {
+            currentSessionId = sid;
+            setEntries((prev) =>
+              prev.map((e) => (e.id === entry.id && e.sessionId !== sid ? { ...e, sessionId: sid } : e)),
+            );
+          },
+          // Persist the latest server-confirmed offset after every chunk so
+          // resume after refresh starts at the last committed byte.
+          onChunkCommitted: (uploadedBytes) => {
+            const clamped = Math.max(0, Math.min(uploadedBytes, file.size));
+            currentUploadedBytes = clamped;
+            setEntries((prev) =>
+              prev.map((e) =>
+                e.id === entry.id && (e.uploadedBytes ?? 0) < clamped
+                  ? { ...e, uploadedBytes: clamped }
+                  : e,
+              ),
+            );
+          },
+        });
+
+        // ── Cancelled / aborted ──────────────────────────────────────────
+        if (canceledIdsRef.current.has(entry.id) || controller.signal.aborted || result.aborted) {
+          canceledIdsRef.current.delete(entry.id);
+          // Reap the partial server-side session so we don't leak storage
+          // until the 7-day pruner runs. Use the freshest sessionId we know.
+          const sidToReap = result.sessionId ?? currentSessionId ?? entry.sessionId;
+          if (sidToReap) void deleteUploadSession(sidToReap);
+          forgetHandle(entry.id);
+          void deleteHandle(entry.id);
+          controllersRef.current.delete(entry.id);
+          setEntries((prev) => prev.filter((e) => e.id !== entry.id));
+          return;
+        }
+
+        // ── Success ──────────────────────────────────────────────────────
+        if (result.url) {
+          controllersRef.current.delete(entry.id);
+          const fileUrl = result.url;
+          const currentNote = entriesRef.current.find((e) => e.id === entry.id)?.note ?? "";
+
+          const serverId = await registerPendingFile({
+            organizationId: entry.organizationId,
+            fileUrl,
+            fileName: file.name,
+            mimeType: file.type || "application/octet-stream",
+            notes: currentNote,
+            uploaderName: entry.uploaderName,
+          });
+
+          if (!serverId) {
+            setEntries((prev) =>
+              prev.map((e) =>
+                e.id === entry.id
+                  ? {
+                      ...e,
+                      status: "error",
+                      errorMessage: "File uploaded but could not be registered. Please retry.",
+                      completedAt: Date.now(),
+                      autoRetryAttempt: undefined,
+                      autoRetryMax: undefined,
+                    }
+                  : e,
+              ),
+            );
+            scheduleAutoClear(entry.id);
+            return;
+          }
+
           setEntries((prev) =>
             prev.map((e) =>
-              e.id === entry.id && (e.uploadedBytes ?? 0) < clamped
-                ? { ...e, uploadedBytes: clamped }
+              e.id === entry.id
+                ? {
+                    ...e,
+                    status: "success",
+                    serverId,
+                    progress: 100,
+                    completedAt: Date.now(),
+                    sessionId: undefined,
+                    uploadedBytes: file.size,
+                    autoRetryAttempt: undefined,
+                    autoRetryMax: undefined,
+                  }
                 : e,
             ),
           );
-        },
-      });
-      controllersRef.current.delete(entry.id);
-
-      if (canceledIdsRef.current.has(entry.id) || controller.signal.aborted || result.aborted) {
-        canceledIdsRef.current.delete(entry.id);
-        // Reap the partial server-side session so we don't leak storage
-        // until the 7-day pruner runs. Use the freshest sessionId we know:
-        // either the one the upload reported back, or whatever the entry
-        // had persisted before the cancel.
-        const sidToReap = result.sessionId ?? entry.sessionId;
-        if (sidToReap) {
-          void deleteUploadSession(sidToReap);
+          forgetHandle(entry.id);
+          void deleteHandle(entry.id);
+          scheduleAutoClear(entry.id);
+          return;
         }
-        forgetHandle(entry.id);
-        void deleteHandle(entry.id);
-        setEntries((prev) => prev.filter((e) => e.id !== entry.id));
-        return;
-      }
 
-      // Persist whatever progress / sessionId the server confirmed so the
-      // next attempt (retry, resume after refresh) can pick up from there.
-      const persistedSessionId = result.sessionLost ? undefined : result.sessionId ?? undefined;
-      const persistedUploadedBytes = result.sessionLost ? 0 : result.uploadedBytes;
+        // ── Failure ──────────────────────────────────────────────────────
+        // Carry forward whatever progress / session the server confirmed so
+        // the next retry (or the final error state) can resume from there.
+        const persistedSessionId = result.sessionLost ? undefined : (result.sessionId ?? undefined);
+        const persistedUploadedBytes = result.sessionLost ? 0 : result.uploadedBytes;
+        currentSessionId = persistedSessionId;
+        currentUploadedBytes = persistedUploadedBytes;
 
-      if (!result.url) {
+        if (attempt < AUTO_RETRY_MAX) {
+          // Auto-retry with exponential backoff: 2 s, 4 s, 8 s
+          const retryNum = attempt + 1; // 1-based display number
+          const waitMs = AUTO_RETRY_BASE_DELAY_MS * Math.pow(2, attempt);
+
+          setEntries((prev) =>
+            prev.map((e) =>
+              e.id !== entry.id
+                ? e
+                : {
+                    ...e,
+                    status: "uploading",
+                    autoRetryAttempt: retryNum,
+                    autoRetryMax: AUTO_RETRY_MAX,
+                    sessionId: persistedSessionId,
+                    uploadedBytes: persistedUploadedBytes,
+                  },
+            ),
+          );
+
+          // Abort-aware wait so the user can cancel during the backoff period.
+          await new Promise<void>((resolve) => {
+            const t = setTimeout(resolve, waitMs);
+            controller.signal.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
+          });
+
+          if (controller.signal.aborted || canceledIdsRef.current.has(entry.id)) {
+            canceledIdsRef.current.delete(entry.id);
+            if (persistedSessionId) void deleteUploadSession(persistedSessionId);
+            forgetHandle(entry.id);
+            void deleteHandle(entry.id);
+            controllersRef.current.delete(entry.id);
+            setEntries((prev) => prev.filter((e) => e.id !== entry.id));
+            return;
+          }
+
+          // Reset progress display to the last committed byte before retrying.
+          const retryProgress =
+            file.size > 0
+              ? Math.min(99, Math.floor((persistedUploadedBytes / file.size) * 100))
+              : 0;
+          setEntries((prev) =>
+            prev.map((e) =>
+              e.id === entry.id && e.status === "uploading"
+                ? { ...e, progress: retryProgress }
+                : e,
+            ),
+          );
+
+          continue;
+        }
+
+        // ── All retries exhausted — show permanent error ─────────────────
+        controllersRef.current.delete(entry.id);
         setEntries((prev) =>
           prev.map((e) =>
             e.id === entry.id
@@ -722,65 +850,14 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
                   completedAt: Date.now(),
                   sessionId: persistedSessionId,
                   uploadedBytes: persistedUploadedBytes,
+                  autoRetryAttempt: undefined,
+                  autoRetryMax: undefined,
                 }
               : e,
           ),
         );
         scheduleAutoClear(entry.id);
-        return;
       }
-      const fileUrl = result.url;
-
-      const currentNote =
-        entriesRef.current.find((e) => e.id === entry.id)?.note ?? "";
-
-      const serverId = await registerPendingFile({
-        organizationId: entry.organizationId,
-        fileUrl,
-        fileName: file.name,
-        mimeType: file.type || "application/octet-stream",
-        notes: currentNote,
-        uploaderName: entry.uploaderName,
-      });
-
-      if (!serverId) {
-        setEntries((prev) =>
-          prev.map((e) =>
-            e.id === entry.id
-              ? {
-                  ...e,
-                  status: "error",
-                  errorMessage:
-                    "File uploaded but could not be registered. Please retry.",
-                  completedAt: Date.now(),
-                }
-              : e,
-          ),
-        );
-        scheduleAutoClear(entry.id);
-        return;
-      }
-
-      setEntries((prev) =>
-        prev.map((e) =>
-          e.id === entry.id
-            ? {
-                ...e,
-                status: "success",
-                serverId,
-                progress: 100,
-                completedAt: Date.now(),
-                // Session was finalized server-side; clear the local handle.
-                sessionId: undefined,
-                uploadedBytes: file.size,
-              }
-            : e,
-        ),
-      );
-      // Once finalized, the persisted file handle is no longer needed.
-      forgetHandle(entry.id);
-      void deleteHandle(entry.id);
-      scheduleAutoClear(entry.id);
     },
     [cancelAutoClear, scheduleAutoClear, forgetHandle],
   );
