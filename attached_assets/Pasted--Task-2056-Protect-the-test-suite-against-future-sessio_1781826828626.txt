@@ -1,0 +1,86 @@
+# Task #2056 — Protect the test suite against future session-wiping patterns
+
+## Goal
+
+Eliminate the remaining test files that depend on long-lived session tokens created in `beforeAll`, and add an automated guard to prevent the pattern from being reintroduced.
+
+## Why
+
+The recent gap-free restore fix in `backup.ts` addresses the specific root cause behind the current wave of test failures, but it does not eliminate the broader risk.
+
+There are currently 43 test files that create authentication/session tokens once in a `beforeAll` block and then reuse those tokens throughout the entire test file. If any future code path clears or invalidates `user_sessions` (for example: a new restore implementation, an admin endpoint, a cleanup job, or another session-management change), those cached tokens become invalid and entire test suites can fail with cascading 401 errors.
+
+Tests should be resilient regardless of how session storage is implemented.
+
+## Scope
+
+### Part 1: Refresh sessions before every test
+
+Update all vulnerable test files to follow the same pattern used in:
+
+```text
+artifacts/api-server/src/routes/doctors.test.ts
+```
+
+Instead of creating session tokens once and reusing them across the file, refresh session tokens inside a `beforeEach` so every test starts with a valid session.
+
+Target files are the 43 files identified by:
+
+```bash
+grep -rL "beforeEach" artifacts/api-server/src/routes/*.test.ts | xargs grep -l "makeSession"
+```
+
+### Part 2: Prevent regression
+
+Add an automated safeguard that fails CI when a test file:
+
+* Declares outer-scope token/session variables
+* Uses `makeSession` or equivalent session creation patterns
+* Does not refresh those sessions in `beforeEach`
+
+Implementation options:
+
+* Extend the existing `guard-session-beforeeach` script (preferred)
+* Add a dedicated CI grep-based guard
+* Add an ESLint rule if that is cleaner and maintainable
+
+The guard should be designed to prevent future reintroduction of the pattern.
+
+## Requirements
+
+### Functional
+
+* All 43 vulnerable test files use per-test session refreshes.
+* No route test relies on a session token created once in `beforeAll`.
+* Tests continue to pass after conversion.
+* Session validity is independent of backup/restore behavior.
+
+### CI Protection
+
+* CI fails when a new test introduces outer-scope session/token reuse without a corresponding `beforeEach` refresh.
+* Legitimate exceptions can use the existing documented escape hatch (if applicable).
+
+## Done when
+
+* All 43 identified files are migrated to the `doctors.test.ts` pattern.
+* Session tokens are refreshed before each test.
+* Automated regression detection is active in CI.
+* The test suite no longer depends on session persistence across tests.
+* Future session-clearing changes cannot silently invalidate an entire file's test tokens.
+
+## Suggested validation
+
+Identify remaining vulnerable files:
+
+```bash
+grep -rL "beforeEach" artifacts/api-server/src/routes/*.test.ts | xargs grep -l "makeSession"
+```
+
+Run the test suite after migration.
+
+Verify the guard fails when intentionally introducing a test file that:
+
+* Creates a session token in outer scope
+* Omits a `beforeEach` refresh
+
+Verify the guard passes when the file follows the approved pattern.

@@ -25,9 +25,21 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Ensures every test file that mints a token inside beforeAll also has a
-      # beforeEach that refreshes it, guarding against backup-restore TRUNCATE
-      # races that silently invalidate shared session tokens mid-suite.
+      # Ensures every test file that mints a session token inside beforeAll
+      # also has a beforeEach block that refreshes it before every test.
+      #
+      # WHY: a backup-restore TRUNCATE (or any future session-clearing path)
+      # that fires between beforeAll and a test body silently invalidates
+      # the shared token, causing cascading 401 failures across the suite.
+      # Re-minting the token in beforeEach guarantees each test starts with
+      # a valid session row regardless of what ran between lifecycle hooks.
+      #
+      # ESCAPE HATCH: if a beforeAll token is intentional and safe (e.g. the
+      # test itself exercises session expiry and must not refresh mid-suite),
+      # add `// session-guard:allow` on the makeSession line to suppress the
+      # violation for that specific call.
+      #
+      # Implementation: scripts/src/guard-session-beforeeach.ts
       - name: Run session-refresh guard
         run: pnpm --filter @workspace/scripts run guard-session-beforeeach
 
