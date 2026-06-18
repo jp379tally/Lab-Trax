@@ -87,6 +87,7 @@ type InvoiceRecord = {
   id?: string;
   invoiceNumber?: string | null;
   status?: string | null;
+  notes?: string | null;
   labOrganizationId?: string | null;
   frozen?: boolean | null;
   caseDeletedNote?: string | null;
@@ -133,6 +134,8 @@ export default function InvoiceEditorScreen() {
   const [status, setStatus] = useState<NonNullable<UpdateInvoiceInput["status"]>>("draft");
   const [teeth, setTeeth] = useState("");
   const [shade, setShade] = useState("");
+  const [billTo, setBillTo] = useState("");
+  const [notes, setNotes] = useState("");
   const [lines, setLines] = useState<DraftLine[]>([]);
   const [saving, setSaving] = useState(false);
   const [hydrated, setHydrated] = useState(false);
@@ -156,6 +159,8 @@ export default function InvoiceEditorScreen() {
     );
     setTeeth(typeof meta.teeth === "string" ? meta.teeth : "");
     setShade(typeof meta.shade === "string" ? meta.shade : "");
+    setBillTo(typeof meta.billTo === "string" ? meta.billTo : "");
+    setNotes(invoice.notes ?? "");
     setLines(
       raw.map((it, idx) => {
         const subItems = Array.isArray(it.subItems) ? it.subItems : [];
@@ -279,13 +284,15 @@ export default function InvoiceEditorScreen() {
       return;
     }
 
-    // (D) Spread the existing displayMetadata so credits / patientName / billTo /
+    // (D) Spread the existing displayMetadata so credits / patientName /
     // caseNotes survive — the server derives the invoice total from meta.credits.
+    // billTo is now directly editable; overwrite it with the current form value.
     const existingMeta = readMeta(invoice);
     const displayMetadata: Record<string, unknown> = {
       ...existingMeta,
       teeth: teeth.trim(),
       shade: shade.trim(),
+      billTo: billTo.trim(),
       // Keep the label sidecar index-aligned with the items we send.
       lineItems: lines.map((l) => ({
         item: l.metaLabel,
@@ -323,6 +330,7 @@ export default function InvoiceEditorScreen() {
         data: {
           invoiceNumber: invoiceNumber.trim(),
           status,
+          notes: notes.trim() || null,
           displayMetadata,
           items,
         },
@@ -509,6 +517,34 @@ export default function InvoiceEditorScreen() {
                   testID="invoice-editor-shade"
                 />
               </Field>
+              <Field label="Bill to">
+                <TextInput
+                  value={billTo}
+                  onChangeText={setBillTo}
+                  style={styles.input}
+                  placeholder="Doctor or practice name"
+                  placeholderTextColor={colors.textTertiary}
+                  autoCapitalize="words"
+                  testID="invoice-editor-bill-to"
+                />
+              </Field>
+            </View>
+
+            {/* ── Notes ── */}
+            <View style={styles.card}>
+              <Text style={styles.cardHeading}>Invoice notes</Text>
+              <TextInput
+                value={notes}
+                onChangeText={setNotes}
+                style={[styles.input, styles.notesInput]}
+                placeholder="Optional notes visible on the invoice"
+                placeholderTextColor={colors.textTertiary}
+                multiline
+                numberOfLines={4}
+                autoCapitalize="sentences"
+                textAlignVertical="top"
+                testID="invoice-editor-notes"
+              />
             </View>
 
             {/* ── Line items ── */}
@@ -814,6 +850,10 @@ function makeStyles(colors: ThemeColors) {
       fontSize: 15,
       color: colors.text,
       backgroundColor: colors.backgroundSolid,
+    },
+    notesInput: {
+      minHeight: 96,
+      paddingTop: 10,
     },
     // Unit price field: inline "$" prefix sharing the same input border.
     priceInputWrap: {
