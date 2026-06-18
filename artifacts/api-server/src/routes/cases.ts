@@ -2301,6 +2301,7 @@ const DELETION_AUDIT_ACTIONS = [
   "case_delete_wrong_pin",
   "case_delete_initiate_rate_limited",
   "case_soft_deleted",
+  "cases_bulk_deleted",
 ] as const;
 
 router.get(
@@ -2319,11 +2320,13 @@ router.get(
       .select({
         id: auditLogs.id,
         action: auditLogs.action,
+        entityId: auditLogs.entityId,
         actorUserId: auditLogs.userId,
         actorUsername: users.username,
         actorFirstName: users.firstName,
         actorLastName: users.lastName,
         metadataJson: auditLogs.metadataJson,
+        beforeJson: auditLogs.beforeJson,
         createdAt: auditLogs.createdAt,
       })
       .from(auditLogs)
@@ -2337,25 +2340,158 @@ router.get(
       .orderBy(desc(auditLogs.createdAt))
       .limit(limit);
 
-    const mapped = entries.map((e) => {
-      const meta = (e.metadataJson ?? {}) as Record<string, unknown>;
-      const caseIds: string[] = Array.isArray(meta["caseIds"])
-        ? (meta["caseIds"] as string[])
-        : [];
-      const actorName =
-        [e.actorFirstName, e.actorLastName].filter(Boolean).join(" ").trim() ||
-        e.actorUsername ||
-        e.actorUserId ||
-        "Unknown";
-      return {
-        id: e.id,
-        action: e.action,
-        actorName,
-        caseCount: caseIds.length,
-        caseIds,
-        createdAt: e.createdAt,
-      };
-    });
+    // Build a list of bulk-operation time windows so de-dup is scoped to
+    // the specific operation rather than global. Individual case_soft_deleted
+    // entries from the same request share a timestamp with the bulk summary
+    // (within a 60-second window). Scoping prevents a restore+re-delete from
+    // having its new individual entry incorrectly suppressed by an old summary.
+    type BulkWindow = { caseIds: Set<string>; ts: number };
+    const bulkWindows: BulkWindow[] = [];
+    for (const e of entries) {
+      if (e.action === "cases_bulk_deleted") {
+        const meta = (e.metadataJson ?? {}) as Record<string, unknown>;
+        const ids = Array.isArray(meta["caseIds"]) ? (meta["caseIds"] as string[]) : [];
+        const ts = e.createdAt ? new Date(e.createdAt).getTime() : 0;
+        bulkWindows.push({ caseIds: new Set(ids), ts });
+      }
+    }
+
+    function isCoveredByBulk(caseId: string, entryCreatedAt: Date | string | null): boolean {
+      const ts = entryCreatedAt ? new Date(entryCreatedAt as string).getTime() : 0;
+      return bulkWindows.some(
+        (w) => w.caseIds.has(caseId) && Math.abs(w.ts - ts) <= 60_000,
+      );
+    }
+
+    // For bulk entries that pre-date the caseDetails field (no caseDetails in
+    // metadata), do a batch lookup so we can still show case identity. Also
+    // collect IDs for case_soft_deleted entries missing caseNumber in metadata
+    // and no usable beforeJson, so we can resolve them in one query.
+    const needsLookupIds = new Set<string>();
+    for (const e of entries) {
+      if (e.action === "cases_bulk_deleted") {
+        const meta = (e.metadataJson ?? {}) as Record<string, unknown>;
+        if (!Array.isArray(meta["caseDetails"])) {
+          const ids = Array.isArray(meta["caseIds"]) ? (meta["caseIds"] as string[]) : [];
+          for (const id of ids) needsLookupIds.add(id);
+        }
+      } else if (e.action === "case_soft_deleted") {
+        const meta = (e.metadataJson ?? {}) as Record<string, unknown>;
+        if (typeof meta["caseNumber"] !== "string" && e.entityId && !e.beforeJson) {
+          needsLookupIds.add(e.entityId);
+        }
+      }
+    }
+
+    // Batch-resolve all IDs that need fallback lookup (includes soft-deleted rows).
+    const fallbackIdentityMap = new Map<string, { caseNumber: string; patientName: string }>();
+    if (needsLookupIds.size > 0) {
+      const idList = Array.from(needsLookupIds);
+      const [canonicalRows, legacyRows] = await Promise.all([
+        db
+          .select({
+            id: cases.id,
+            caseNumber: cases.caseNumber,
+            patientFirstName: cases.patientFirstName,
+            patientLastName: cases.patientLastName,
+          })
+          .from(cases)
+          .where(inArray(cases.id, idList)),
+        db
+          .select({ id: labCases.id, caseData: labCases.caseData })
+          .from(labCases)
+          .where(inArray(labCases.id, idList)),
+      ]);
+      for (const c of canonicalRows) {
+        fallbackIdentityMap.set(c.id, {
+          caseNumber: c.caseNumber,
+          patientName: [c.patientFirstName, c.patientLastName].filter(Boolean).join(" "),
+        });
+      }
+      for (const c of legacyRows) {
+        try {
+          const data = typeof c.caseData === "string" ? JSON.parse(c.caseData) : (c.caseData ?? {});
+          fallbackIdentityMap.set(c.id, {
+            caseNumber: String(data?.caseNumber ?? c.id),
+            patientName: String(data?.patientName ?? ""),
+          });
+        } catch { /* ignore */ }
+      }
+    }
+
+    function resolveIdentity(caseId: string): { caseNumber: string; patientName: string } {
+      return fallbackIdentityMap.get(caseId) ?? { caseNumber: "", patientName: "" };
+    }
+
+    const mapped = entries
+      .filter((e) => {
+        // Drop individual case_soft_deleted rows that are already represented
+        // by a cases_bulk_deleted summary from the same operation (same case,
+        // same time window) to avoid double-counting.
+        if (e.action === "case_soft_deleted" && e.entityId) {
+          return !isCoveredByBulk(e.entityId, e.createdAt);
+        }
+        return true;
+      })
+      .map((e) => {
+        const meta = (e.metadataJson ?? {}) as Record<string, unknown>;
+        const actorName =
+          [e.actorFirstName, e.actorLastName].filter(Boolean).join(" ").trim() ||
+          e.actorUsername ||
+          e.actorUserId ||
+          "Unknown";
+        const actorAccount = e.actorUsername || e.actorUserId || null;
+
+        // Build the array of case identity objects for this entry.
+        let casesResult: Array<{ caseId: string; caseNumber: string; patientName: string }> = [];
+
+        if (e.action === "cases_bulk_deleted") {
+          if (Array.isArray(meta["caseDetails"])) {
+            // New format: caseDetails array written at delete time.
+            casesResult = (meta["caseDetails"] as any[]).map((d: any) => ({
+              caseId: String(d.caseId ?? ""),
+              caseNumber: String(d.caseNumber ?? ""),
+              patientName: String(d.patientName ?? ""),
+            }));
+          } else {
+            // Old format: fall back to batch DB lookup by caseIds.
+            const ids = Array.isArray(meta["caseIds"]) ? (meta["caseIds"] as string[]) : [];
+            casesResult = ids.map((id) => ({ caseId: id, ...resolveIdentity(id) }));
+          }
+        } else if (e.action === "case_soft_deleted") {
+          const metaCaseNumber = typeof meta["caseNumber"] === "string" ? meta["caseNumber"] : null;
+          const metaPatientName = typeof meta["patientName"] === "string" ? meta["patientName"] : null;
+
+          if (metaCaseNumber !== null && e.entityId) {
+            // New format: metadata has case identity.
+            casesResult = [{ caseId: e.entityId, caseNumber: metaCaseNumber, patientName: metaPatientName ?? "" }];
+          } else if (e.entityId) {
+            // Old format: try beforeJson snapshot first, then DB fallback.
+            let caseNumber = "";
+            let patientName = "";
+            if (e.beforeJson) {
+              const before = e.beforeJson as Record<string, unknown>;
+              caseNumber = typeof before["caseNumber"] === "string" ? before["caseNumber"] : "";
+              patientName = [before["patientFirstName"], before["patientLastName"]].filter(Boolean).join(" ");
+            }
+            if (!caseNumber) {
+              const fallback = resolveIdentity(e.entityId);
+              caseNumber = fallback.caseNumber;
+              patientName = patientName || fallback.patientName;
+            }
+            casesResult = [{ caseId: e.entityId, caseNumber, patientName }];
+          }
+        }
+
+        return {
+          id: e.id,
+          action: e.action,
+          actorName,
+          actorAccount,
+          cases: casesResult,
+          createdAt: e.createdAt,
+        };
+      });
 
     return ok(res, { entries: mapped });
   })
@@ -2692,11 +2828,17 @@ router.post(
     // whose cases were all created in the mobile app).
     const [canonicalMatches, legacyMatches] = await Promise.all([
       db
-        .select({ id: cases.id, labOrganizationId: cases.labOrganizationId, caseNumber: cases.caseNumber })
+        .select({
+          id: cases.id,
+          labOrganizationId: cases.labOrganizationId,
+          caseNumber: cases.caseNumber,
+          patientFirstName: cases.patientFirstName,
+          patientLastName: cases.patientLastName,
+        })
         .from(cases)
         .where(and(inArray(cases.id, uniqueCaseIds), notDeleted(cases))),
       db
-        .select({ id: labCases.id, organizationId: labCases.organizationId })
+        .select({ id: labCases.id, organizationId: labCases.organizationId, caseData: labCases.caseData })
         .from(labCases)
         .where(and(inArray(labCases.id, uniqueCaseIds), isNull(labCases.deletedAt))),
     ]);
@@ -2776,6 +2918,10 @@ router.post(
         organizationId: labOrganizationId,
         entityType: "case",
         beforeJson: c,
+        metadataJson: {
+          caseNumber: c.caseNumber,
+          patientName: [c.patientFirstName, c.patientLastName].filter(Boolean).join(" "),
+        },
       });
     }
 
@@ -2826,6 +2972,25 @@ router.post(
         caseIds: [
           ...canonicalMatches.map((c) => c.id),
           ...legacyMatches.map((c) => c.id),
+        ],
+        caseDetails: [
+          ...canonicalMatches.map((c) => ({
+            caseId: c.id,
+            caseNumber: c.caseNumber,
+            patientName: [c.patientFirstName, c.patientLastName].filter(Boolean).join(" "),
+          })),
+          ...legacyMatches.map((c) => {
+            try {
+              const data = typeof c.caseData === "string" ? JSON.parse(c.caseData) : (c.caseData ?? {});
+              return {
+                caseId: c.id,
+                caseNumber: String(data?.caseNumber ?? c.id),
+                patientName: String(data?.patientName ?? ""),
+              };
+            } catch {
+              return { caseId: c.id, caseNumber: c.id, patientName: "" };
+            }
+          }),
         ],
         caseNumbers: canonicalMatches.map((c) => c.caseNumber),
         canonicalCount: canonicalMatches.length,
@@ -5380,6 +5545,10 @@ router.delete(
       organizationId: found.labOrganizationId,
       entityType: "case",
       beforeJson: found,
+      metadataJson: {
+        caseNumber: found.caseNumber,
+        patientName: [found.patientFirstName, found.patientLastName].filter(Boolean).join(" "),
+      },
     });
 
     // Cascade-freeze every linked invoice so the billing record is preserved

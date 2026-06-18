@@ -9078,12 +9078,18 @@ function DeletedCasesPanel() {
   );
 }
 
+interface DeletionAuditCaseDetail {
+  caseId: string;
+  caseNumber: string;
+  patientName: string;
+}
+
 interface DeletionAuditEntry {
   id: string;
   action: string;
   actorName: string;
-  caseCount: number;
-  caseIds: string[];
+  actorAccount: string | null;
+  cases: DeletionAuditCaseDetail[];
   createdAt: string | null;
 }
 
@@ -9092,7 +9098,131 @@ const DELETION_ACTION_LABELS: Record<string, { label: string; color: string }> =
   case_delete_wrong_pin: { label: "Wrong PIN", color: "bg-destructive/10 text-destructive" },
   case_delete_initiate_rate_limited: { label: "Rate limited", color: "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300" },
   case_soft_deleted: { label: "Deleted", color: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300" },
+  cases_bulk_deleted: { label: "Bulk deleted", color: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300" },
 };
+
+function DeletionAuditDetailDrawer({
+  entry,
+  onClose,
+}: {
+  entry: DeletionAuditEntry;
+  onClose: () => void;
+}) {
+  const def = DELETION_ACTION_LABELS[entry.action] ?? {
+    label: entry.action,
+    color: "bg-secondary text-muted-foreground",
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex" onClick={onClose}>
+      <div className="flex-1 bg-black/30" />
+      <div
+        className="w-full max-w-md bg-background border-l border-border shadow-xl flex flex-col h-full overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+          <h3 className="font-semibold text-sm">Audit Event Detail</h3>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-muted-foreground hover:text-foreground transition-colors"
+            aria-label="Close"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="px-5 py-4 space-y-5 flex-1">
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide w-20">Event</span>
+              <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium ${def.color}`}>
+                {def.label}
+              </span>
+            </div>
+            <div className="flex items-start gap-2">
+              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide w-20 shrink-0 pt-0.5">Actor</span>
+              <span className="text-sm text-foreground">
+                {entry.actorName}
+                {entry.actorAccount && entry.actorAccount !== entry.actorName && (
+                  <span className="ml-1.5 text-xs text-muted-foreground">({entry.actorAccount})</span>
+                )}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide w-20">Time</span>
+              <span className="text-sm text-foreground">
+                {entry.createdAt ? new Date(entry.createdAt).toLocaleString() : "—"}
+              </span>
+            </div>
+          </div>
+
+          <div>
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
+              Affected Cases ({entry.cases.length})
+            </p>
+            {entry.cases.length === 0 ? (
+              <p className="text-sm text-muted-foreground italic">No case details recorded.</p>
+            ) : (
+              <div className="border border-border rounded-md divide-y divide-border">
+                {entry.cases.map((c) => (
+                  <div key={c.caseId} className="px-3 py-2.5 flex items-baseline gap-2">
+                    <span className="text-sm font-medium text-foreground whitespace-nowrap">
+                      #{c.caseNumber}
+                    </span>
+                    <span className="text-sm text-muted-foreground truncate">
+                      {c.patientName || "—"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DeletionAuditCasesCell({ cases }: { cases: DeletionAuditCaseDetail[] }) {
+  const [expanded, setExpanded] = useState(false);
+
+  if (cases.length === 0) {
+    return <span className="text-muted-foreground/50">—</span>;
+  }
+
+  if (cases.length === 1) {
+    const c = cases[0];
+    return (
+      <span className="text-foreground">
+        <span className="font-medium">#{c.caseNumber}</span>
+        {c.patientName ? <span className="text-muted-foreground"> — {c.patientName}</span> : null}
+      </span>
+    );
+  }
+
+  return (
+    <span>
+      <button
+        type="button"
+        className="text-xs underline underline-offset-2 text-muted-foreground hover:text-foreground transition-colors"
+        onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }}
+      >
+        {cases.length} cases {expanded ? "▲" : "▼"}
+      </button>
+      {expanded && (
+        <ul className="mt-1 space-y-0.5">
+          {cases.map((c) => (
+            <li key={c.caseId} className="text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">#{c.caseNumber}</span>
+              {c.patientName ? ` — ${c.patientName}` : ""}
+            </li>
+          ))}
+        </ul>
+      )}
+    </span>
+  );
+}
 
 function DeletionAuditPanel() {
   const meQuery = useQuery<MeResponse>({
@@ -9112,6 +9242,7 @@ function DeletionAuditPanel() {
 
   const [selectedLabId, setSelectedLabId] = useState<string | null>(null);
   const effectiveLabId = selectedLabId ?? adminLabs[0]?.organizationId ?? null;
+  const [selectedEntry, setSelectedEntry] = useState<DeletionAuditEntry | null>(null);
 
   const auditQuery = useQuery<{ entries: DeletionAuditEntry[] }>({
     enabled: !!effectiveLabId,
@@ -9127,8 +9258,15 @@ function DeletionAuditPanel() {
   return (
     <PanelShell
       title="Deletion Audit Log"
-      subtitle="A record of who deleted cases, when, and any failed PIN attempts. Updates every 60 seconds."
+      subtitle="A record of who deleted cases, when, and any failed PIN attempts. Click a row to inspect details. Updates every 60 seconds."
     >
+      {selectedEntry && (
+        <DeletionAuditDetailDrawer
+          entry={selectedEntry}
+          onClose={() => setSelectedEntry(null)}
+        />
+      )}
+
       <div className="flex items-center justify-between mb-2">
         {adminLabs.length > 1 && (
           <select
@@ -9204,7 +9342,8 @@ function DeletionAuditPanel() {
                     return (
                       <tr
                         key={entry.id}
-                        className={i % 2 === 0 ? "" : "bg-secondary/20"}
+                        onClick={() => setSelectedEntry(entry)}
+                        className={`cursor-pointer transition-colors hover:bg-accent/50 ${i % 2 === 0 ? "" : "bg-secondary/20"}`}
                       >
                         <td className="px-3 py-2.5">
                           <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium ${def.color}`}>
@@ -9214,14 +9353,8 @@ function DeletionAuditPanel() {
                         <td className="py-2.5 text-foreground pr-4 whitespace-nowrap">
                           {entry.actorName}
                         </td>
-                        <td className="py-2.5 text-muted-foreground pr-4">
-                          {entry.caseCount > 0 ? (
-                            <span title={entry.caseIds.join(", ")}>
-                              {entry.caseCount} {entry.caseCount === 1 ? "case" : "cases"}
-                            </span>
-                          ) : (
-                            <span className="text-muted-foreground/50">—</span>
-                          )}
+                        <td className="py-2.5 pr-4">
+                          <DeletionAuditCasesCell cases={entry.cases} />
                         </td>
                         <td className="py-2.5 text-muted-foreground text-xs whitespace-nowrap pr-3">
                           {entry.createdAt

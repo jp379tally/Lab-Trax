@@ -92,6 +92,12 @@ interface SoftDeleteArgs {
   entityId?: string | null;
   /** Audit metadata: optional "before" snapshot of the row. */
   beforeJson?: unknown;
+  /**
+   * Extra metadata to merge into the audit log entry alongside the
+   * automatically computed `rowsAffected`. Callers use this to attach
+   * entity-specific details (e.g. caseNumber, patientName for cases).
+   */
+  metadataJson?: Record<string, unknown>;
 }
 
 /**
@@ -117,7 +123,7 @@ export async function softDelete(args: SoftDeleteArgs): Promise<unknown[]> {
     entityType: args.entityType,
     entityId: args.entityId ?? null,
     beforeJson: args.beforeJson,
-    metadataJson: { rowsAffected: result.length },
+    metadataJson: { rowsAffected: result.length, ...(args.metadataJson ?? {}) },
   });
 
   return result;
@@ -178,6 +184,7 @@ export async function softDeleteById(args: {
   organizationId?: string | null;
   entityType: string;
   beforeJson?: unknown;
+  metadataJson?: Record<string, unknown>;
 }): Promise<unknown[]> {
   return softDelete({
     table: args.table,
@@ -188,6 +195,7 @@ export async function softDeleteById(args: {
     entityType: args.entityType,
     entityId: args.id,
     beforeJson: args.beforeJson,
+    metadataJson: args.metadataJson,
   });
 }
 
