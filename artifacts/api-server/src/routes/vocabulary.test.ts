@@ -22,6 +22,9 @@
  *  - DELETE /api/vocabulary/:id — removes item; no longer appears in GET
  *  - DELETE /api/vocabulary/:id — 403 for non-admin lab member
  *  - DELETE /api/vocabulary/:id — 404 for unknown id
+ *  - DELETE /api/vocabulary/:id — 409 + usageCount when term is used by a case restoration
+ *  - DELETE /api/vocabulary/:id?force=true — 200 + deleted:true even when in use
+ *  - DELETE /api/vocabulary/:id — 200 directly when term has no references
  *  - Unauthenticated requests return 401
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -57,8 +60,39 @@ maybe("Vocabulary (db integration)", () => {
   const staffId = rid("u");
   const labOrgId = rid("org");
 
+  const createdCaseIds: string[] = [];
+
   let accessToken: string;
   let staffToken: string;
+
+  async function createCaseWithRestoration(
+    restoration: { material?: string; shade?: string; restorationType?: string },
+  ): Promise<string> {
+    const { db, cases, caseRestorations } = dbMod;
+    const [createdCase] = await db
+      .insert(cases)
+      .values({
+        caseNumber: rid("case"),
+        labOrganizationId: labOrgId,
+        providerOrganizationId: labOrgId,
+        patientFirstName: "Usage",
+        patientLastName: "Test",
+        doctorName: "Dr. Usage",
+        createdByUserId: adminId,
+      })
+      .returning();
+    createdCaseIds.push(createdCase.id);
+
+    await db.insert(caseRestorations).values({
+      caseId: createdCase.id,
+      toothNumber: "11",
+      restorationType: restoration.restorationType ?? "Crown",
+      material: restoration.material ?? null,
+      shade: restoration.shade ?? null,
+    });
+
+    return createdCase.id;
+  }
 
   beforeAll(async () => {
     dbMod = await import("@workspace/db");
@@ -123,7 +157,11 @@ maybe("Vocabulary (db integration)", () => {
 
   afterAll(async () => {
     if (!dbMod) return;
-    const { db, labVocabulary, organizations, users, organizationMemberships } = dbMod;
+    const { db, labVocabulary, organizations, users, organizationMemberships, cases, caseRestorations } = dbMod;
+    for (const caseId of createdCaseIds) {
+      await db.delete(caseRestorations).where(eq(caseRestorations.caseId, caseId));
+      await db.delete(cases).where(eq(cases.id, caseId));
+    }
     await db.delete(labVocabulary).where(eq(labVocabulary.labOrganizationId, labOrgId));
     await db.delete(organizationMemberships).where(
       and(
@@ -489,6 +527,82 @@ maybe("Vocabulary (db integration)", () => {
       expect(allowedRes.body.data.usageCount).toBe(0);
 
       await db.delete(labCases).where(eq(labCases.id, legacyCaseId));
+    });
+
+    it("returns 409 + usageCount when the term is referenced by a case restoration", async () => {
+      const value = `UsedMat_${rid("um")}`;
+
+      const createRes = await request(appMod.default)
+        .post("/api/vocabulary")
+        .set("Authorization", `Bearer ${accessToken}`)
+        .send({ kind: "material", value, labOrganizationId: labOrgId });
+      expect(createRes.status).toBe(201);
+      const id = createRes.body.data.id as string;
+
+      await createCaseWithRestoration({ material: value });
+
+      const deleteRes = await request(appMod.default)
+        .delete(`/api/vocabulary/${id}`)
+        .set("Authorization", `Bearer ${accessToken}`);
+
+      expect(deleteRes.status).toBe(409);
+      expect(deleteRes.body.ok).toBe(false);
+      expect(deleteRes.body.usageCount).toBe(1);
+
+      // The blocked delete must NOT remove the term.
+      const listRes = await request(appMod.default)
+        .get(`/api/vocabulary?kind=material&labOrganizationId=${labOrgId}`)
+        .set("Authorization", `Bearer ${accessToken}`);
+      const values: string[] = listRes.body.data.map((v: any) => v.value);
+      expect(values).toContain(value);
+    });
+
+    it("deletes a referenced term when force=true (200 + deleted:true)", async () => {
+      const value = `ForceMat_${rid("fm")}`;
+
+      const createRes = await request(appMod.default)
+        .post("/api/vocabulary")
+        .set("Authorization", `Bearer ${accessToken}`)
+        .send({ kind: "material", value, labOrganizationId: labOrgId });
+      expect(createRes.status).toBe(201);
+      const id = createRes.body.data.id as string;
+
+      await createCaseWithRestoration({ material: value });
+
+      const deleteRes = await request(appMod.default)
+        .delete(`/api/vocabulary/${id}?force=true`)
+        .set("Authorization", `Bearer ${accessToken}`);
+
+      expect(deleteRes.status).toBe(200);
+      expect(deleteRes.body.ok).toBe(true);
+      expect(deleteRes.body.data.deleted).toBe(true);
+      expect(deleteRes.body.data.usageCount).toBe(1);
+
+      const listRes = await request(appMod.default)
+        .get(`/api/vocabulary?kind=material&labOrganizationId=${labOrgId}`)
+        .set("Authorization", `Bearer ${accessToken}`);
+      const values: string[] = listRes.body.data.map((v: any) => v.value);
+      expect(values).not.toContain(value);
+    });
+
+    it("deletes directly (200) when the term has no references", async () => {
+      const value = `UnusedMat_${rid("uu")}`;
+
+      const createRes = await request(appMod.default)
+        .post("/api/vocabulary")
+        .set("Authorization", `Bearer ${accessToken}`)
+        .send({ kind: "material", value, labOrganizationId: labOrgId });
+      expect(createRes.status).toBe(201);
+      const id = createRes.body.data.id as string;
+
+      const deleteRes = await request(appMod.default)
+        .delete(`/api/vocabulary/${id}`)
+        .set("Authorization", `Bearer ${accessToken}`);
+
+      expect(deleteRes.status).toBe(200);
+      expect(deleteRes.body.ok).toBe(true);
+      expect(deleteRes.body.data.deleted).toBe(true);
+      expect(deleteRes.body.data.usageCount).toBe(0);
     });
   });
 });
