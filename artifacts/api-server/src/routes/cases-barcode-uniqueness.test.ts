@@ -299,6 +299,10 @@ maybe("Barcode uniqueness enforcement (PATCH /api/cases/:id)", () => {
       });
 
     expect(r.status).toBe(409);
+    // Error must not expose raw Postgres / Drizzle internals.
+    const barcodeMsg: string =
+      r.body.message ?? r.body.error ?? JSON.stringify(r.body);
+    expect(barcodeMsg).not.toMatch(/insert into|duplicate key violates|drizzle/i);
   });
 
   // ── allowDuplicateBarcode is not accepted ────────────────────────────────

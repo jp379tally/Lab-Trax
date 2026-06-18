@@ -116,6 +116,10 @@ maybe("Auth registration and password reset (db integration)", () => {
         clientType: "mobile",
       });
     expect(second.status).toBe(409);
+    // Must not expose raw SQL or Drizzle internals.
+    const dupUsernameMsg: string = second.body.message ?? second.body.error ?? "";
+    expect(dupUsernameMsg).not.toMatch(/insert into|duplicate key|violates|drizzle/i);
+    expect(dupUsernameMsg.length).toBeGreaterThan(0);
   });
 
   it("register with duplicate email returns 409", async () => {
@@ -130,6 +134,10 @@ maybe("Auth registration and password reset (db integration)", () => {
       .post("/api/auth/register")
       .send({ username: uname("ub"), password: "OtherPass!", email, userType: "lab", clientType: "mobile" });
     expect(second.status).toBe(409);
+    // Must not expose raw SQL or Drizzle internals.
+    const dupEmailMsg: string = second.body.message ?? second.body.error ?? "";
+    expect(dupEmailMsg).not.toMatch(/insert into|duplicate key|violates|drizzle/i);
+    expect(dupEmailMsg.length).toBeGreaterThan(0);
   });
 
   it("register that creates a lab org without required fields returns 400 LAB_FIELDS_REQUIRED", async () => {

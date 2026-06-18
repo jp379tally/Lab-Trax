@@ -6355,10 +6355,12 @@ Important rules:
       const [orgRow] = await db.select({ statementTemplate: organizations.statementTemplate }).from(organizations).where(eq(organizations.id, org.id));
       const current = (orgRow?.statementTemplate as Record<string, unknown> | null) ?? {};
       const updated = { ...DEFAULT_STATEMENT_TEMPLATE, ...current, ...(req.body ?? {}) };
-      await db.update(organizations).set({ statementTemplate: updated, updatedAt: new Date() }).where(eq(organizations.id, org.id));
+      await db.update(organizations).set({ statementTemplate: updated, updatedAt: new Date() }).where(eq(organizations.id, org.id))
+        .catch((err: unknown): never => wrapDbError(err, { fallback: "Failed to update statement template." }));
       return res.json({ ok: true, template: updated });
     } catch (e: any) {
-      return res.status(500).json({ error: e?.message || "Failed to update statement template." });
+      const msg = e instanceof HttpError ? e.message : "Failed to update statement template.";
+      return res.status(e instanceof HttpError ? e.statusCode : 500).json({ error: msg });
     }
   });
 
@@ -6384,10 +6386,12 @@ Important rules:
       const [orgRow] = await db.select({ correspondenceTemplate: organizations.correspondenceTemplate }).from(organizations).where(eq(organizations.id, org.id));
       const current = (orgRow?.correspondenceTemplate as Record<string, unknown> | null) ?? {};
       const updated = { ...DEFAULT_CORRESPONDENCE_TEMPLATE, ...current, ...(req.body ?? {}) };
-      await db.update(organizations).set({ correspondenceTemplate: updated, updatedAt: new Date() }).where(eq(organizations.id, org.id));
+      await db.update(organizations).set({ correspondenceTemplate: updated, updatedAt: new Date() }).where(eq(organizations.id, org.id))
+        .catch((err: unknown): never => wrapDbError(err, { fallback: "Failed to update correspondence template." }));
       return res.json({ ok: true, template: updated });
     } catch (e: any) {
-      return res.status(500).json({ error: e?.message || "Failed to update correspondence template." });
+      const msg = e instanceof HttpError ? e.message : "Failed to update correspondence template.";
+      return res.status(e instanceof HttpError ? e.statusCode : 500).json({ error: msg });
     }
   });
 

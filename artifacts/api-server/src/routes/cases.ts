@@ -5940,7 +5940,10 @@ router.post(
         noteText: input.noteText,
         visibility: input.visibility,
       })
-      .returning();
+      .returning()
+      .catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to save note. Please try again.",
+      }));
 
     const user = (req as any).user;
     await db.insert(caseEvents).values({
@@ -6203,7 +6206,10 @@ router.patch(
           caseRestorations.id,
           matching.map((r) => r.id)
         )
-      );
+      )
+      .catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to update restoration pricing.",
+      }));
 
     await writeAuditLog({
       req,
@@ -6372,7 +6378,10 @@ async function _repricePonticsInSpans(
           priceSourceName: repriced.sourceName,
           priceKey: repriced.key,
         })
-        .where(eq(caseRestorations.id, pontic.id));
+        .where(eq(caseRestorations.id, pontic.id))
+        .catch((err: unknown): never => wrapDbError(err, {
+          fallback: "Failed to update pontic restoration pricing.",
+        }));
     }
   }
 }
@@ -6486,7 +6495,10 @@ router.post(
         priceSourceName,
         priceKey,
       })
-      .returning();
+      .returning()
+      .catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to save restoration. Please try again.",
+      }));
 
     const restorationActor = (req as any).user;
     await db.insert(caseEvents).values({
@@ -6658,7 +6670,10 @@ router.patch(
       .update(caseRestorations)
       .set(patchFields)
       .where(eq(caseRestorations.id, restoration.id))
-      .returning();
+      .returning()
+      .catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to update restoration. Please try again.",
+      }));
 
     const actor = (req as any).user;
     await db.insert(caseEvents).values({
@@ -6725,7 +6740,10 @@ router.patch(
         priceSourceName: input.reason ?? null,
       })
       .where(eq(caseRestorations.id, restoration.id))
-      .returning();
+      .returning()
+      .catch((err: unknown): never => wrapDbError(err, {
+        fallback: "Failed to update restoration price. Please try again.",
+      }));
 
     const actor = (req as any).user;
     await db.insert(caseEvents).values({
@@ -9193,7 +9211,8 @@ async function processOneIteroZipFile(
     ),
   });
   if (preExisting && preExisting.createdCaseId) {
-    await db.update(iteroImportedOrders).set({ lastSeenAt: new Date() }).where(eq(iteroImportedOrders.id, preExisting.id));
+    await db.update(iteroImportedOrders).set({ lastSeenAt: new Date() }).where(eq(iteroImportedOrders.id, preExisting.id))
+      .catch((err: unknown): never => wrapDbError(err, { fallback: "Failed to update iTero import record." }));
     return { caseId: preExisting.createdCaseId, caseNumber: preExisting.iteroOrderId, deduped: true, iteroOrderId: preExisting.iteroOrderId, extraFilesAttached: 0, extraFilesFailed: 0, aiDoctorName: null, suggestedProviderOrgId: null, suggestedDoctorName: null, linkedProviderOrgId: null };
   }
 
