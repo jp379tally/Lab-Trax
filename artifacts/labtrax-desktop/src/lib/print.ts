@@ -18,12 +18,15 @@ import {
   loadPrintLayoutConfig,
 } from "./print-layout";
 import {
+  INVOICE_LINE_ITEM_COLUMNS,
+  INVOICE_SCALAR_KINDS,
   PAGE_H as TPL_PAGE_H,
   PAGE_W as TPL_PAGE_W,
   DEFAULT_FONT_FAMILY,
   ELEMENT_LABELS,
   type CasePrintElement,
   type CasePrintTemplate,
+  type InvoiceScalarKind,
 } from "./case-print-template";
 import { apiFetchArrayBuffer, getApiOrigin } from "./api";
 
@@ -658,6 +661,33 @@ html, body { margin: 0; padding: 0; }
   color: #999;
   font-style: italic;
 }
+.lt-inv-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.lt-inv-table th {
+  font-size: 8px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #888;
+  border-bottom: 1px solid #ccc;
+  padding: 0 4px 3px;
+  text-align: left;
+  white-space: nowrap;
+}
+.lt-inv-table th.lt-r,
+.lt-inv-table td.lt-r { text-align: right; }
+.lt-inv-table td {
+  padding: 2px 4px;
+  border-bottom: 1px solid #eee;
+  vertical-align: top;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+.lt-inv-table tr:last-child td { border-bottom: none; }
 .lt-adv-barcode {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 18px;
@@ -918,10 +948,100 @@ function renderTextElement(
   return `<div class="lt-adv-box" style="${style}"><div class="lt-el-cap">${escapeHtml(caption)}</div><div class="lt-el-val">${escapeHtml(value || "—")}</div></div>`;
 }
 
+function resolveInvoiceScalarValue(kind: InvoiceScalarKind, invoice: Invoice): string {
+  switch (kind) {
+    case "invoiceNumber":
+      return invoice.invoiceNumber ?? "";
+    case "invoiceDate":
+      return invoice.issuedAt ? formatDate(invoice.issuedAt) : "";
+    case "invoiceStatus":
+      return invoice.status ? String(invoice.status) : "";
+    case "invoiceTotal":
+      return invoice.total != null ? formatMoney(invoice.total) : "";
+    case "invoiceBalanceDue":
+      return invoice.balanceDue != null ? formatMoney(invoice.balanceDue) : "";
+    case "invoicePaymentStatus": {
+      const status = invoice.status;
+      if (status === "paid" || status === "void") {
+        return status === "paid" ? "Paid" : "Voided";
+      }
+      const bal = Number(invoice.balanceDue ?? 0);
+      return bal <= 0 ? "Paid" : "Unpaid";
+    }
+  }
+}
+
+function renderInvoiceLineItemsElement(
+  el: CasePrintElement,
+  invoice: Invoice | null | undefined,
+): string {
+  const style = boxStyle(
+    el,
+    `${elTextStyle(el)};display:flex;flex-direction:column;`,
+  );
+
+  const enabledCols: string[] = el.showColumns ?? [...INVOICE_LINE_ITEM_COLUMNS];
+  // fixed column order
+  const orderedCols = (INVOICE_LINE_ITEM_COLUMNS as readonly string[]).filter((c) =>
+    enabledCols.includes(c),
+  );
+
+  if (!invoice) {
+    return `<div class="lt-adv-box" style="${style}"><div class="lt-el-cap">Invoice Line Items</div><div class="lt-el-empty" style="font-size:10px">No invoice linked to this case.</div></div>`;
+  }
+
+  const items = invoice.items ?? [];
+  const isRight = (col: string) =>
+    col === "quantity" || col === "unitPrice" || col === "lineTotal";
+
+  const colLabels: Record<string, string> = {
+    description: "Description",
+    tooth: "Tooth",
+    shade: "Shade",
+    quantity: "Qty",
+    unitPrice: "Unit Price",
+    lineTotal: "Total",
+  };
+
+  const theadCells = orderedCols
+    .map((c) => `<th${isRight(c) ? ' class="lt-r"' : ""}>${escapeHtml(colLabels[c] ?? c)}</th>`)
+    .join("");
+
+  let tbodyRows: string;
+  if (items.length === 0) {
+    tbodyRows = `<tr><td colspan="${orderedCols.length}" class="lt-el-empty">No line items.</td></tr>`;
+  } else {
+    tbodyRows = items
+      .map((item) => {
+        const cells = orderedCols.map((col) => {
+          let val = "";
+          if (col === "description") val = item.description ?? "";
+          else if (col === "tooth")
+            val = item.toothLabel ?? (item.toothNumber != null ? String(item.toothNumber) : "");
+          else if (col === "shade") val = "";
+          else if (col === "quantity") val = String(item.quantity ?? "");
+          else if (col === "unitPrice")
+            val = item.unitPrice != null ? formatMoney(item.unitPrice) : "";
+          else if (col === "lineTotal")
+            val = item.lineTotal != null ? formatMoney(item.lineTotal) : "";
+          const cls = isRight(col) ? ' class="lt-r"' : "";
+          return `<td${cls}>${escapeHtml(val)}</td>`;
+        });
+        return `<tr>${cells.join("")}</tr>`;
+      })
+      .join("");
+  }
+
+  const caption = `<div class="lt-el-cap">Invoice Line Items</div>`;
+  const table = `<table class="lt-inv-table"><thead><tr>${theadCells}</tr></thead><tbody>${tbodyRows}</tbody></table>`;
+  return `<div class="lt-adv-box" style="${style}">${caption}${table}</div>`;
+}
+
 export async function printCaseCardAdvanced(
   labCase: LabCase,
   extras: {
     restorations?: CaseRestoration[];
+    invoice?: Invoice | null;
   },
   template: CasePrintTemplate,
 ): Promise<void> {
@@ -930,6 +1050,7 @@ export async function printCaseCardAdvanced(
   }`.trim();
 
   const restorations = extras.restorations ?? [];
+  const invoice = extras.invoice ?? null;
   const summary = deriveRxSummary(restorations);
   const restorativeType = summary.restorativeType ?? labCase.restorationTypes ?? "";
   const materialLabel =
@@ -1012,6 +1133,31 @@ export async function printCaseCardAdvanced(
 
     if (el.kind === "doctorInfo") {
       sections.push(renderDoctorInfoElement(el, labCase));
+      continue;
+    }
+
+    if ((INVOICE_SCALAR_KINDS as readonly string[]).includes(el.kind)) {
+      const kind = el.kind as InvoiceScalarKind;
+      const caption = ELEMENT_LABELS[kind] ?? "";
+      const style = boxStyle(
+        el,
+        `${elTextStyle(el)};display:flex;flex-direction:column;justify-content:flex-start`,
+      );
+      if (!invoice) {
+        sections.push(
+          `<div class="lt-adv-box" style="${style}"><div class="lt-el-cap">${escapeHtml(caption)}</div><div class="lt-el-val lt-el-empty">No invoice</div></div>`,
+        );
+      } else {
+        const value = resolveInvoiceScalarValue(kind, invoice);
+        sections.push(
+          `<div class="lt-adv-box" style="${style}"><div class="lt-el-cap">${escapeHtml(caption)}</div><div class="lt-el-val">${escapeHtml(value || "—")}</div></div>`,
+        );
+      }
+      continue;
+    }
+
+    if (el.kind === "invoiceLineItems") {
+      sections.push(renderInvoiceLineItemsElement(el, invoice));
       continue;
     }
 

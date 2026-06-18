@@ -30,12 +30,51 @@ export const BUILTIN_ELEMENT_KINDS = [
 ] as const;
 export type BuiltinElementKind = (typeof BUILTIN_ELEMENT_KINDS)[number];
 
-// "doctorInfo" and "image" are opt-in elements — NOT in BUILTIN_ELEMENT_KINDS
-// so ensureBuiltinElements does not force them into every template.
+// ── Invoice element kinds (opt-in, not forced into every template) ─────────
+
+export const INVOICE_SCALAR_KINDS = [
+  "invoiceNumber",
+  "invoiceDate",
+  "invoiceStatus",
+  "invoiceTotal",
+  "invoiceBalanceDue",
+  "invoicePaymentStatus",
+] as const;
+export type InvoiceScalarKind = (typeof INVOICE_SCALAR_KINDS)[number];
+
+export const INVOICE_LINE_ITEM_COLUMNS = [
+  "description",
+  "tooth",
+  "shade",
+  "quantity",
+  "unitPrice",
+  "lineTotal",
+] as const;
+export type InvoiceLineItemColumn = (typeof INVOICE_LINE_ITEM_COLUMNS)[number];
+
+export const INVOICE_LINE_ITEM_COLUMN_LABELS: Record<InvoiceLineItemColumn, string> = {
+  description: "Description",
+  tooth: "Tooth",
+  shade: "Shade",
+  quantity: "Qty",
+  unitPrice: "Unit Price",
+  lineTotal: "Line Total",
+};
+
+export const INVOICE_ELEMENT_KINDS = [
+  ...INVOICE_SCALAR_KINDS,
+  "invoiceLineItems",
+] as const;
+export type InvoiceElementKind = (typeof INVOICE_ELEMENT_KINDS)[number];
+
+// "doctorInfo", "image", and invoice kinds are opt-in elements — NOT in
+// BUILTIN_ELEMENT_KINDS so ensureBuiltinElements does not force them into
+// every template.
 export const ELEMENT_KINDS = [
   ...BUILTIN_ELEMENT_KINDS,
   "image",
   "doctorInfo",
+  ...INVOICE_ELEMENT_KINDS,
 ] as const;
 export type ElementKind = (typeof ELEMENT_KINDS)[number];
 
@@ -65,6 +104,8 @@ export interface CasePrintElement {
   showAddress?: boolean;
   showPhone?: boolean;
   showEmail?: boolean;
+  // Invoice line items column toggles (invoiceLineItems kind only)
+  showColumns?: string[];
 }
 
 export interface CasePrintTemplate {
@@ -89,6 +130,13 @@ export const ELEMENT_LABELS: Record<ElementKind, string> = {
   barcode: "Case Pan Barcode",
   image: "Image",
   doctorInfo: "Doctor Info",
+  invoiceNumber: "Invoice Number",
+  invoiceDate: "Invoice Date",
+  invoiceStatus: "Invoice Status",
+  invoiceTotal: "Invoice Total",
+  invoiceBalanceDue: "Balance Due",
+  invoicePaymentStatus: "Payment Status",
+  invoiceLineItems: "Invoice Line Items",
 };
 
 export const ELEMENT_COLORS: Record<ElementKind, string> = {
@@ -106,6 +154,13 @@ export const ELEMENT_COLORS: Record<ElementKind, string> = {
   barcode: "rgba(100,116,139,0.18)",
   image: "rgba(0,0,0,0)",
   doctorInfo: "rgba(16,185,129,0.10)",
+  invoiceNumber: "rgba(251,191,36,0.18)",
+  invoiceDate: "rgba(251,191,36,0.18)",
+  invoiceStatus: "rgba(251,191,36,0.18)",
+  invoiceTotal: "rgba(251,191,36,0.18)",
+  invoiceBalanceDue: "rgba(251,191,36,0.18)",
+  invoicePaymentStatus: "rgba(251,191,36,0.18)",
+  invoiceLineItems: "rgba(251,191,36,0.10)",
 };
 
 export interface FontFamilyOption {
@@ -128,10 +183,11 @@ export const DEFAULT_FONT_FAMILY = "Helvetica, Arial, sans-serif";
 
 export function isTextKind(
   kind: ElementKind,
-): kind is TextElementKind | "doctorInfo" {
+): kind is TextElementKind | "doctorInfo" | InvoiceScalarKind {
   return (
     (TEXT_ELEMENT_KINDS as readonly string[]).includes(kind) ||
-    kind === "doctorInfo"
+    kind === "doctorInfo" ||
+    (INVOICE_SCALAR_KINDS as readonly string[]).includes(kind)
   );
 }
 
@@ -210,6 +266,44 @@ export function makeDoctorInfoElement(): CasePrintElement {
     showAddress: true,
     showPhone: true,
     showEmail: true,
+  };
+}
+
+export function makeInvoiceScalarElement(
+  kind: InvoiceScalarKind,
+  bottomY: number,
+): CasePrintElement {
+  return {
+    id: `${kind}-${Date.now()}`,
+    kind,
+    x: 48,
+    y: Math.min(bottomY, PAGE_H - 46),
+    w: 350,
+    h: 46,
+    visible: true,
+    fontFamily: DEFAULT_FONT_FAMILY,
+    fontSize: 13,
+    bold: false,
+    italic: false,
+    align: "left",
+  };
+}
+
+export function makeInvoiceLineItemsElement(bottomY: number): CasePrintElement {
+  return {
+    id: `invoiceLineItems-${Date.now()}`,
+    kind: "invoiceLineItems",
+    x: 48,
+    y: Math.min(bottomY, PAGE_H - 120),
+    w: 720,
+    h: 160,
+    visible: true,
+    fontFamily: DEFAULT_FONT_FAMILY,
+    fontSize: 11,
+    bold: false,
+    italic: false,
+    align: "left",
+    showColumns: [...INVOICE_LINE_ITEM_COLUMNS],
   };
 }
 
@@ -320,6 +414,35 @@ function coerceElement(raw: unknown): CasePrintElement | null {
       showPhone: coerceBool(o.showPhone, true),
       showEmail: coerceBool(o.showEmail, true),
     };
+  }
+
+  if ((INVOICE_SCALAR_KINDS as readonly string[]).includes(k)) {
+    const fontFamily =
+      typeof o.fontFamily === "string" && o.fontFamily
+        ? o.fontFamily
+        : DEFAULT_FONT_FAMILY;
+    const fontSize = clampNum(o.fontSize, 5, 200, 13);
+    const bold = coerceBool(o.bold, false);
+    const italic = coerceBool(o.italic, false);
+    const align = coerceAlign(o.align);
+    return { id, kind: k as InvoiceScalarKind, x, y, w, h, visible, fontFamily, fontSize, bold, italic, align };
+  }
+
+  if (k === "invoiceLineItems") {
+    const fontFamily =
+      typeof o.fontFamily === "string" && o.fontFamily
+        ? o.fontFamily
+        : DEFAULT_FONT_FAMILY;
+    const fontSize = clampNum(o.fontSize, 5, 200, 11);
+    const bold = coerceBool(o.bold, false);
+    const italic = coerceBool(o.italic, false);
+    const align = coerceAlign(o.align);
+    const showColumns = Array.isArray(o.showColumns)
+      ? (o.showColumns as unknown[])
+          .filter((c): c is string => typeof c === "string" && c.length > 0)
+          .slice(0, 10)
+      : [...INVOICE_LINE_ITEM_COLUMNS];
+    return { id, kind: "invoiceLineItems", x, y, w, h, visible, fontFamily, fontSize, bold, italic, align, showColumns };
   }
 
   if (isTextKind(k)) {
@@ -484,10 +607,19 @@ export function ensureBuiltinElements(
   elements: CasePrintElement[],
 ): CasePrintElement[] {
   const byKind = new Map<string, CasePrintElement>();
-  const extras: CasePrintElement[] = []; // images + doctorInfo (opt-in, allow multiples)
+  // Opt-in elements (images, doctorInfo, invoice kinds) allow multiples and
+  // are preserved as-is rather than forced from the built-in defaults.
+  const extras: CasePrintElement[] = [];
   for (const el of elements) {
-    if (el.kind === "image" || el.kind === "doctorInfo") extras.push(el);
-    else if (!byKind.has(el.kind)) byKind.set(el.kind, el);
+    if (
+      el.kind === "image" ||
+      el.kind === "doctorInfo" ||
+      (INVOICE_ELEMENT_KINDS as readonly string[]).includes(el.kind)
+    ) {
+      extras.push(el);
+    } else if (!byKind.has(el.kind)) {
+      byKind.set(el.kind, el);
+    }
   }
   const ordered: CasePrintElement[] = BUILTIN_ELEMENT_KINDS.map((kind) => {
     return byKind.get(kind) ?? defaultForKind(kind);

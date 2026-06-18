@@ -948,3 +948,31 @@ Requires `DATABASE_URL` to be set. All 20 tests must pass.
 | `artifacts/api-server/src/lib/backup.ts` | Core backup/restore implementation — `executeRestore`, `runPostRestoreValidation`, `BACKUP_SCHEMA_VERSION`, `buildManifestCounts`, `buildBackupZipBuffer` |
 | `artifacts/api-server/src/routes/backup-restore.test.ts` | 20-test suite covering all protected behaviors |
 | `artifacts/labtrax-desktop/src/pages/settings.tsx` | Desktop UI — `RestorePhase` type, step labels, warning banner, success message |
+
+---
+
+## Lab Slip Optional Invoice Fields
+
+Invoice fields are opt-in elements in the Advanced Print Layout editor. They must not break the existing lab slip print flow when absent and must render live invoice data when present.
+
+### Protected Behaviors
+
+| # | Behavior | Notes |
+|---|----------|-------|
+| 1 | **Invoice Fields section visible in Advanced Print Layout editor** | Left rail shows Invoice Fields section with 6 scalar fields + line-items table; all are opt-in (not pre-placed by default) |
+| 2 | **Adding a scalar field places it on the canvas** | Admin clicks "+ Invoice Number" → element appears on canvas at a sensible position |
+| 3 | **Adding Invoice Line Items places a table block** | Table block appears; column-toggle panel in Selected Properties controls which columns render |
+| 4 | **Print preview fetches invoice for cases that have one** | CasePreviewPicker fetches `/invoices?caseId=…&limit=1` when the draft has invoice elements |
+| 5 | **Graceful no-invoice case** | Scalar fields render "No invoice"; line-items table renders "No invoice linked to this case." when no invoice exists |
+| 6 | **Existing lab slips without invoice elements are unaffected** | `ensureBuiltinElements` treats invoice elements as opt-in extras; zero invoice elements = no change to existing behavior |
+| 7 | **`printCaseCardAdvanced` accepts `invoice` in extras** | Pass `invoiceDetailQuery.data ?? caseInvoice` from the cases page drawer |
+
+### Files
+
+| File | Role |
+|------|------|
+| `artifacts/labtrax-desktop/src/lib/case-print-template.ts` | Type definitions: `INVOICE_SCALAR_KINDS`, `INVOICE_LINE_ITEM_COLUMNS`, `INVOICE_ELEMENT_KINDS`, factory functions |
+| `artifacts/api-server/src/lib/case-print-template.ts` | Server-side schema: `elementSchema` includes `showColumns`; `INVOICE_ELEMENT_KINDS` exported |
+| `artifacts/labtrax-desktop/src/lib/print.ts` | Print rendering: `resolveInvoiceScalarValue`, `renderInvoiceLineItemsElement`, CSS for invoice table |
+| `artifacts/labtrax-desktop/src/components/CasePrintLayoutEditor.tsx` | Editor UI: Invoice Fields left-rail section, column-toggle panel, invoice fetch in preview picker |
+| `artifacts/labtrax-desktop/src/pages/cases.tsx` | Passes `invoice` to `printCaseCardAdvanced` from the case drawer |

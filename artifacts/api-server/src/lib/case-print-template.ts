@@ -51,12 +51,32 @@ export const BUILTIN_ELEMENT_KINDS = [
 ] as const;
 export type BuiltinElementKind = (typeof BUILTIN_ELEMENT_KINDS)[number];
 
-// "doctorInfo" and "image" are opt-in elements — NOT in BUILTIN_ELEMENT_KINDS
-// so ensureBuiltinElements does not force them into every template.
+// ── Invoice element kinds (opt-in, not forced into every template) ─────────
+
+export const INVOICE_SCALAR_KINDS = [
+  "invoiceNumber",
+  "invoiceDate",
+  "invoiceStatus",
+  "invoiceTotal",
+  "invoiceBalanceDue",
+  "invoicePaymentStatus",
+] as const;
+export type InvoiceScalarKind = (typeof INVOICE_SCALAR_KINDS)[number];
+
+export const INVOICE_ELEMENT_KINDS = [
+  ...INVOICE_SCALAR_KINDS,
+  "invoiceLineItems",
+] as const;
+export type InvoiceElementKind = (typeof INVOICE_ELEMENT_KINDS)[number];
+
+// "doctorInfo", "image", and invoice kinds are opt-in elements — NOT in
+// BUILTIN_ELEMENT_KINDS so ensureBuiltinElements does not force them into
+// every template.
 export const ELEMENT_KINDS = [
   ...BUILTIN_ELEMENT_KINDS,
   "image",
   "doctorInfo",
+  ...INVOICE_ELEMENT_KINDS,
 ] as const;
 export type ElementKind = (typeof ELEMENT_KINDS)[number];
 
@@ -86,6 +106,8 @@ const elementSchema = z.object({
   showAddress: z.boolean().optional(),
   showPhone: z.boolean().optional(),
   showEmail: z.boolean().optional(),
+  // Invoice line items column toggles (invoiceLineItems kind only).
+  showColumns: z.array(z.string().min(1).max(32)).max(10).optional(),
 });
 
 export const casePrintTemplateSchema = z.object({

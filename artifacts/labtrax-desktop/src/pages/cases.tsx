@@ -5094,6 +5094,7 @@ export function CaseDrawer({
                             data ?? labCase,
                             {
                               restorations: data?.restorations ?? [],
+                              invoice: invoiceDetailQuery.data ?? caseInvoice,
                             },
                             advTemplate.template,
                           );

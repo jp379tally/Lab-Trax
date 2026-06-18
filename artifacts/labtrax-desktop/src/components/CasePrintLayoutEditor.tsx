@@ -42,7 +42,7 @@ import {
   fetchTemplateImageAsDataUrl,
   printCaseCardAdvanced,
 } from "@/lib/print";
-import type { CaseRestoration, LabCase } from "@/lib/types";
+import type { CaseRestoration, Invoice, LabCase } from "@/lib/types";
 import { useAuth } from "@/lib/auth-context";
 import {
   coerceCasePrintTemplate,
@@ -51,15 +51,23 @@ import {
   ELEMENT_COLORS,
   ELEMENT_LABELS,
   FONT_FAMILIES,
+  INVOICE_ELEMENT_KINDS,
+  INVOICE_LINE_ITEM_COLUMN_LABELS,
+  INVOICE_LINE_ITEM_COLUMNS,
+  INVOICE_SCALAR_KINDS,
   isSameTemplate,
   isTextKind,
   makeImageElement,
   makeDoctorInfoElement,
+  makeInvoiceLineItemsElement,
+  makeInvoiceScalarElement,
   PAGE_H,
   PAGE_W,
   type CasePrintElement,
   type CasePrintTemplate,
   type ElementAlign,
+  type InvoiceElementKind,
+  type InvoiceLineItemColumn,
 } from "@/lib/case-print-template";
 
 interface TemplateApi {
@@ -806,7 +814,12 @@ export function CasePrintLayoutEditor({
               </h3>
               <div className="space-y-1">
                 {draft.elements
-                  .filter((el) => el.kind !== "image" && el.kind !== "doctorInfo")
+                  .filter(
+                    (el) =>
+                      el.kind !== "image" &&
+                      el.kind !== "doctorInfo" &&
+                      !(INVOICE_ELEMENT_KINDS as readonly string[]).includes(el.kind),
+                  )
                   .map((el) => {
                     const isSelected = selectedId === el.id;
                     return (
@@ -1005,6 +1018,175 @@ export function CasePrintLayoutEditor({
               </div>
             </section>
 
+            {/* Invoice Fields */}
+            <section>
+              <div className="flex items-center justify-between mb-2 px-1">
+                <h3 className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                  Invoice Fields
+                </h3>
+              </div>
+              <div className="space-y-1">
+                {INVOICE_SCALAR_KINDS.map((kind) => {
+                  const existing = draft.elements.find((el) => el.kind === kind);
+                  if (existing) {
+                    const isSelected = selectedId === existing.id;
+                    return (
+                      <div
+                        key={kind}
+                        className={`flex items-center gap-1.5 px-2 py-1.5 rounded-md border text-xs transition-colors cursor-pointer ${
+                          isSelected
+                            ? "bg-primary/10 border-primary/40"
+                            : "bg-card border-border hover:bg-secondary/40"
+                        } ${!existing.visible ? "opacity-60" : ""}`}
+                        onClick={() => setSelectedId(existing.id)}
+                      >
+                        <span
+                          className="w-2.5 h-2.5 rounded-sm shrink-0"
+                          style={{ background: ELEMENT_COLORS[kind] }}
+                        />
+                        <span className="flex-1 truncate font-medium">
+                          {ELEMENT_LABELS[kind]}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            patchElement(existing.id, { visible: !existing.visible });
+                          }}
+                          className="text-muted-foreground hover:text-foreground"
+                          title={existing.visible ? "Hide" : "Show"}
+                        >
+                          {existing.visible ? <Eye size={12} /> : <EyeOff size={12} />}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDraft((prev) => ({
+                              ...prev,
+                              elements: prev.elements.filter((x) => x.id !== existing.id),
+                            }));
+                            if (selectedId === existing.id) setSelectedId(null);
+                          }}
+                          className="text-muted-foreground hover:text-destructive"
+                          title="Remove"
+                        >
+                          <Trash2 size={11} />
+                        </button>
+                      </div>
+                    );
+                  }
+                  // Not yet on label — show an "Add" button
+                  return (
+                    <button
+                      key={kind}
+                      type="button"
+                      disabled={!isAdmin}
+                      onClick={() => {
+                        const bottomY =
+                          draft.elements.reduce(
+                            (max, e) => Math.max(max, (e.y ?? 0) + (e.h ?? 0)),
+                            0,
+                          ) + 8;
+                        const el = makeInvoiceScalarElement(kind, bottomY);
+                        setDraft((prev) => ({
+                          ...prev,
+                          elements: [...prev.elements, el],
+                        }));
+                        setSelectedId(el.id);
+                      }}
+                      className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md border border-dashed border-border bg-card hover:bg-secondary/40 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                      title={isAdmin ? `Add ${ELEMENT_LABELS[kind]}` : "Admin only"}
+                    >
+                      <span
+                        className="w-2.5 h-2.5 rounded-sm shrink-0"
+                        style={{ background: ELEMENT_COLORS[kind] }}
+                      />
+                      <span className="flex-1 text-left truncate">+ {ELEMENT_LABELS[kind]}</span>
+                    </button>
+                  );
+                })}
+                {/* invoiceLineItems */}
+                {(() => {
+                  const existing = draft.elements.find((el) => el.kind === "invoiceLineItems");
+                  if (existing) {
+                    const isSelected = selectedId === existing.id;
+                    return (
+                      <div
+                        className={`flex items-center gap-1.5 px-2 py-1.5 rounded-md border text-xs transition-colors cursor-pointer ${
+                          isSelected
+                            ? "bg-primary/10 border-primary/40"
+                            : "bg-card border-border hover:bg-secondary/40"
+                        } ${!existing.visible ? "opacity-60" : ""}`}
+                        onClick={() => setSelectedId(existing.id)}
+                      >
+                        <span
+                          className="w-2.5 h-2.5 rounded-sm shrink-0"
+                          style={{ background: ELEMENT_COLORS["invoiceLineItems"] }}
+                        />
+                        <span className="flex-1 truncate font-medium">
+                          {ELEMENT_LABELS["invoiceLineItems"]}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            patchElement(existing.id, { visible: !existing.visible });
+                          }}
+                          className="text-muted-foreground hover:text-foreground"
+                          title={existing.visible ? "Hide" : "Show"}
+                        >
+                          {existing.visible ? <Eye size={12} /> : <EyeOff size={12} />}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDraft((prev) => ({
+                              ...prev,
+                              elements: prev.elements.filter((x) => x.id !== existing.id),
+                            }));
+                            if (selectedId === existing.id) setSelectedId(null);
+                          }}
+                          className="text-muted-foreground hover:text-destructive"
+                          title="Remove"
+                        >
+                          <Trash2 size={11} />
+                        </button>
+                      </div>
+                    );
+                  }
+                  return (
+                    <button
+                      type="button"
+                      disabled={!isAdmin}
+                      onClick={() => {
+                        const bottomY =
+                          draft.elements.reduce(
+                            (max, e) => Math.max(max, (e.y ?? 0) + (e.h ?? 0)),
+                            0,
+                          ) + 8;
+                        const el = makeInvoiceLineItemsElement(bottomY);
+                        setDraft((prev) => ({
+                          ...prev,
+                          elements: [...prev.elements, el],
+                        }));
+                        setSelectedId(el.id);
+                      }}
+                      className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md border border-dashed border-border bg-card hover:bg-secondary/40 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                      title={isAdmin ? "Add Invoice Line Items table" : "Admin only"}
+                    >
+                      <span
+                        className="w-2.5 h-2.5 rounded-sm shrink-0"
+                        style={{ background: ELEMENT_COLORS["invoiceLineItems"] }}
+                      />
+                      <span className="flex-1 text-left truncate">+ Invoice Line Items</span>
+                    </button>
+                  );
+                })()}
+              </div>
+            </section>
+
             {/* Grid / Snap controls */}
             <section>
               <h3 className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2 px-1 flex items-center gap-1.5">
@@ -1127,6 +1309,37 @@ export function CasePrintLayoutEditor({
                         <span>{label}</span>
                       </label>
                     ))}
+                  </div>
+                )}
+
+                {selectedEl.kind === "invoiceLineItems" && (
+                  <div className="space-y-1.5 pt-1 border-t border-primary/20">
+                    <p className="text-[10px] font-semibold text-primary/80 uppercase tracking-wider">
+                      Columns
+                    </p>
+                    {(INVOICE_LINE_ITEM_COLUMNS as readonly InvoiceLineItemColumn[]).map((col) => {
+                      const cols: string[] = selectedEl.showColumns ?? [...INVOICE_LINE_ITEM_COLUMNS];
+                      const checked = cols.includes(col);
+                      return (
+                        <label
+                          key={col}
+                          className="flex items-center gap-2 text-xs cursor-pointer"
+                        >
+                          <input
+                            type="checkbox"
+                            className="accent-primary w-3 h-3"
+                            checked={checked}
+                            onChange={(e) => {
+                              const next = e.target.checked
+                                ? [...cols, col]
+                                : cols.filter((c) => c !== col);
+                              patchElement(selectedEl.id, { showColumns: next });
+                            }}
+                          />
+                          <span>{INVOICE_LINE_ITEM_COLUMN_LABELS[col]}</span>
+                        </label>
+                      );
+                    })}
                   </div>
                 )}
 
@@ -1668,9 +1881,35 @@ function CasePreviewPicker({ draft, onClose }: CasePreviewPickerProps) {
       const detailed = await apiFetch<LabCase & { restorations: CaseRestoration[] }>(
         `/cases/${labCase.id}`,
       );
+
+      // Fetch the linked invoice only when the draft contains invoice elements.
+      const hasInvoiceElements = draft.elements.some(
+        (el) => (INVOICE_ELEMENT_KINDS as readonly string[]).includes(el.kind),
+      );
+      let invoice: Invoice | null = null;
+      if (hasInvoiceElements) {
+        try {
+          // Fetch list to get the invoice ID, then fetch detail to get items.
+          const invList = await apiFetch<Invoice[]>(
+            `/invoices?caseId=${encodeURIComponent(labCase.id)}&limit=1`,
+          );
+          const header = invList[0] ?? null;
+          if (header?.id) {
+            try {
+              invoice = await apiFetch<Invoice>(`/invoices/${encodeURIComponent(header.id)}`);
+            } catch {
+              // Detail fetch failed — fall back to header-only (no line items)
+              invoice = header;
+            }
+          }
+        } catch {
+          // best-effort: proceed without invoice
+        }
+      }
+
       await printCaseCardAdvanced(
         detailed,
-        { restorations: detailed.restorations ?? [] },
+        { restorations: detailed.restorations ?? [], invoice },
         draft,
       );
       onClose();
@@ -1806,6 +2045,12 @@ const SAMPLE_VALUES: Record<string, string> = {
   rxNotes:
     "Please verify shade with photo on file. Light occlusal contacts. Deliver by Friday.",
   doctorInfo: "Patel Dental Group\n123 Smile Ave, Suite 200\nSpringfield, IL 62701\n(555) 123-4567",
+  invoiceNumber: "INV-2024-0042",
+  invoiceDate: "06/12/2024",
+  invoiceStatus: "open",
+  invoiceTotal: "$450.00",
+  invoiceBalanceDue: "$450.00",
+  invoicePaymentStatus: "Unpaid",
 };
 
 const SAMPLE_TEETH = new Set(["14", "15"]);
@@ -1884,6 +2129,96 @@ function ElementPreview({
         >
           LAB-2024-001
         </div>
+      </div>
+    );
+  }
+
+  if (el.kind === "invoiceLineItems") {
+    const capPx = Math.max(4, Math.round(7 * scale));
+    const cellPx = Math.max(4, Math.round(9 * scale));
+    const cols = el.showColumns ?? [...INVOICE_LINE_ITEM_COLUMNS];
+    const orderedCols = (INVOICE_LINE_ITEM_COLUMNS as readonly string[]).filter((c) =>
+      cols.includes(c),
+    );
+    return (
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          padding: `${Math.round(3 * scale)}px ${Math.round(4 * scale)}px`,
+          overflow: "hidden",
+          boxSizing: "border-box",
+        }}
+      >
+        <div
+          style={{
+            fontSize: capPx,
+            fontWeight: 700,
+            textTransform: "uppercase",
+            letterSpacing: "0.05em",
+            color: "rgba(0,0,0,0.45)",
+            marginBottom: Math.round(2 * scale),
+          }}
+        >
+          Invoice Line Items
+        </div>
+        <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
+          <thead>
+            <tr>
+              {orderedCols.map((c) => (
+                <th
+                  key={c}
+                  style={{
+                    fontSize: capPx,
+                    fontWeight: 700,
+                    textAlign: c === "quantity" || c === "unitPrice" || c === "lineTotal" ? "right" : "left",
+                    color: "rgba(0,0,0,0.45)",
+                    borderBottom: "1px solid rgba(0,0,0,0.18)",
+                    padding: `0 ${Math.round(2 * scale)}px ${Math.round(2 * scale)}px`,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.04em",
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                  }}
+                >
+                  {INVOICE_LINE_ITEM_COLUMN_LABELS[c as InvoiceLineItemColumn]}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {["PFM Crown #14", "Prep", "Shade"].slice(0, 2).map((desc, i) => (
+              <tr key={i}>
+                {orderedCols.map((c) => {
+                  const isR = c === "quantity" || c === "unitPrice" || c === "lineTotal";
+                  let sample = "";
+                  if (c === "description") sample = desc;
+                  else if (c === "tooth") sample = "14";
+                  else if (c === "shade") sample = "A2";
+                  else if (c === "quantity") sample = "1";
+                  else if (c === "unitPrice") sample = "$225.00";
+                  else if (c === "lineTotal") sample = "$225.00";
+                  return (
+                    <td
+                      key={c}
+                      style={{
+                        fontSize: cellPx,
+                        textAlign: isR ? "right" : "left",
+                        padding: `${Math.round(1 * scale)}px ${Math.round(2 * scale)}px`,
+                        borderBottom: "1px solid rgba(0,0,0,0.08)",
+                        overflow: "hidden",
+                        whiteSpace: "nowrap",
+                        color: "#222",
+                      }}
+                    >
+                      {sample}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     );
   }
