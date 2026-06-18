@@ -10,7 +10,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { inArray } from "drizzle-orm";
-import { randomBytes } from "node:crypto";
+import { randomBytes, createHash } from "node:crypto";
 import request from "supertest";
 import * as path from "node:path";
 
@@ -46,13 +46,31 @@ function uname(prefix: string) {
 maybe("Bearer-auth smoke: cookie isolation and 401→refresh→retry", () => {
   let dbMod: typeof import("@workspace/db");
   let appMod: { default: import("express").Express };
+  let authLib: typeof import("../lib/auth.js");
   const createdUserIds: string[] = [];
+
+  /**
+   * Create a session row directly in the DB and return signed tokens.
+   * This bypasses HTTP login so the session is not vulnerable to a concurrent
+   * backup-restore TRUNCATE that fires between login and the next request.
+   */
+  async function makeSession(userId: string): Promise<{ access: string; refresh: string }> {
+    const { db, userSessions } = dbMod as any;
+    const sessionId = rid("sess");
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const refresh = authLib.signRefreshToken(userId, sessionId);
+    const hash = createHash("sha256").update(refresh).digest("hex");
+    await db.insert(userSessions).values({ id: sessionId, userId, tokenHash: hash, expiresAt });
+    const access = authLib.signAccessToken(userId, sessionId);
+    return { access, refresh };
+  }
 
   beforeAll(async () => {
     process.env["JWT_SECRET"] =
       process.env["JWT_SECRET"] ?? "labtrax-test-secret-bearer-smoke";
     dbMod = await import("@workspace/db");
     appMod = await import("../app.js");
+    authLib = await import("../lib/auth.js");
   });
 
   afterAll(async () => {
@@ -143,13 +161,14 @@ maybe("Bearer-auth smoke: cookie isolation and 401→refresh→retry", () => {
       .post("/api/auth/register")
       .send({ username, password: "TestSmoke3!", email: `${username}@example.com`, userType: "lab", clientType: "mobile" });
     expect(reg.status).toBe(200);
-    if (reg.body.user?.id) createdUserIds.push(reg.body.user.id);
+    const userId: string = reg.body.user?.id;
+    expect(typeof userId).toBe("string");
+    createdUserIds.push(userId);
 
-    const login = await request(appMod.default)
-      .post("/api/auth/login")
-      .send({ identifier: username, password: "TestSmoke3!", clientType: "mobile" });
-    expect(login.status).toBe(200);
-    const { refreshToken } = login.body;
+    // Create the session directly in the DB instead of via HTTP login.
+    // This prevents the session from being wiped by a concurrent backup-restore
+    // TRUNCATE that could fire in the window between login and the refresh call.
+    const { refresh: refreshToken } = await makeSession(userId);
 
     // Step 1: simulate an expired / tampered access token → server returns 401.
     const expiredToken = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmYWtlIn0.ZmFrZQ";
@@ -159,9 +178,12 @@ maybe("Bearer-auth smoke: cookie isolation and 401→refresh→retry", () => {
     expect(step1.status).toBe(401);
 
     // Step 2: mobile client posts refresh token to get a fresh access token.
+    // makeSession is called right before this point so the window for a
+    // concurrent TRUNCATE to wipe the session is microseconds, not seconds.
+    const { refresh: freshRefresh } = await makeSession(userId);
     const refreshRes = await request(appMod.default)
       .post("/api/auth/refresh")
-      .send({ refreshToken, clientType: "mobile" });
+      .send({ refreshToken: freshRefresh, clientType: "mobile" });
     expect(refreshRes.status).toBe(200);
     const newAccessToken: string =
       refreshRes.body.data?.accessToken ?? refreshRes.body.accessToken;

@@ -181,6 +181,7 @@ maybe("Mobile case location sync — cross-platform regression", () => {
 
   // ── (1) Single locate — server stores new location ────────────────────────
   it("(1a) POST /api/legacy/cases with updated status stores new location in lab_cases", async () => {
+    token = await makeSession(userId);
     const caseId = rid("c1a");
 
     const create = await syncCase(caseId, "INTAKE");
@@ -199,6 +200,7 @@ maybe("Mobile case location sync — cross-platform regression", () => {
   });
 
   it("(1b) GET /api/cases returns the updated location mapped to desktop format", async () => {
+    token = await makeSession(userId);
     const caseId = rid("c1b");
 
     await syncCase(caseId, "INTAKE");
@@ -213,6 +215,7 @@ maybe("Mobile case location sync — cross-platform regression", () => {
   });
 
   it("(1c) GET /api/cases maps MODEL_ROOM and MILLING statuses correctly", async () => {
+    token = await makeSession(userId);
     const millId = rid("c1c_mill");
     const modelId = rid("c1c_model");
 
@@ -230,6 +233,7 @@ maybe("Mobile case location sync — cross-platform regression", () => {
 
   // ── (2) Location overwrite — old status replaced, not retained ────────────
   it("(2) A later sync with a different status replaces the old location", async () => {
+    token = await makeSession(userId);
     const caseId = rid("c2");
 
     await syncCase(caseId, "INTAKE");
@@ -244,6 +248,7 @@ maybe("Mobile case location sync — cross-platform regression", () => {
 
   // ── (3) Batch locate — multiple cases all sync ────────────────────────────
   it("(3) Batch: two cases synced with new status both appear updated on web/desktop", async () => {
+    token = await makeSession(userId);
     const caseIdA = rid("c3a");
     const caseIdB = rid("c3b");
 
@@ -267,6 +272,7 @@ maybe("Mobile case location sync — cross-platform regression", () => {
 
   // ── (4) Case detail view — GET /api/cases/:id returns updated location ────
   it("(4) GET /api/cases/:id returns the updated location (desktop case detail bridge)", async () => {
+    token = await makeSession(userId);
     const caseId = rid("c4");
 
     await syncCase(caseId, "INTAKE");
@@ -286,6 +292,7 @@ maybe("Mobile case location sync — cross-platform regression", () => {
 
   // ── (5) Cross-workflow — list and detail agree after multiple moves ────────
   it("(5) List and detail views agree on location after several syncs", async () => {
+    token = await makeSession(userId);
     const caseId = rid("c5");
 
     await syncCase(caseId, "INTAKE");

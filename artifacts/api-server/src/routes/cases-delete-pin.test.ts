@@ -120,9 +120,6 @@ maybe("Case delete security flow (db integration)", () => {
       { id: rid("m"), labId: noPhoneLabId, userId: noPhoneUserId, role: "owner", status: "active" },
     ]);
 
-    tokens.admin = await makeSession(adminUserId);
-    tokens.staff = await makeSession(staffUserId);
-    tokens.noPhone = await makeSession(noPhoneUserId);
   }, 60_000);
 
   afterAll(async () => {
@@ -156,47 +153,52 @@ maybe("Case delete security flow (db integration)", () => {
   });
 
   it("returns 403 when caller is staff (not admin/owner)", async () => {
+    const staffToken = await makeSession(staffUserId);
     const c = await insertCanonical();
     const r = await request(appMod.default)
       .post("/api/cases/delete-initiate")
-      .set("Authorization", `Bearer ${tokens.staff}`)
+      .set("Authorization", `Bearer ${staffToken}`)
       .send({ adminPin: "testpin999", caseIds: [c] });
     expect(r.status).toBe(403);
   });
 
   it("returns 401 when admin PIN is wrong", async () => {
+    const adminToken = await makeSession(adminUserId);
     const c = await insertCanonical();
     const r = await request(appMod.default)
       .post("/api/cases/delete-initiate")
-      .set("Authorization", `Bearer ${tokens.admin}`)
+      .set("Authorization", `Bearer ${adminToken}`)
       .send({ adminPin: "wrongpin", caseIds: [c] });
     expect(r.status).toBe(401);
     expect(r.body.error).toMatch(/incorrect.*pin/i);
   });
 
   it("returns 404 when no case matches the provided IDs", async () => {
+    const adminToken = await makeSession(adminUserId);
     const r = await request(appMod.default)
       .post("/api/cases/delete-initiate")
-      .set("Authorization", `Bearer ${tokens.admin}`)
+      .set("Authorization", `Bearer ${adminToken}`)
       .send({ adminPin: "testpin999", caseIds: [rid("ghost")] });
     expect(r.status).toBe(404);
   });
 
   it("returns 400 when lab owner has no verified phone number", async () => {
+    const noPhoneToken = await makeSession(noPhoneUserId);
     const c = await insertCanonical(noPhoneLabId);
     const r = await request(appMod.default)
       .post("/api/cases/delete-initiate")
-      .set("Authorization", `Bearer ${tokens.noPhone}`)
+      .set("Authorization", `Bearer ${noPhoneToken}`)
       .send({ adminPin: "testpin999", caseIds: [c] });
     expect(r.status).toBe(400);
     expect(r.body.error).toMatch(/phone/i);
   });
 
   it("returns 200 and a signed deleteSessionToken on happy path", async () => {
+    const adminToken = await makeSession(adminUserId);
     const c = await insertCanonical();
     const r = await request(appMod.default)
       .post("/api/cases/delete-initiate")
-      .set("Authorization", `Bearer ${tokens.admin}`)
+      .set("Authorization", `Bearer ${adminToken}`)
       .send({ adminPin: "testpin999", caseIds: [c] });
     expect(r.status).toBe(200);
     expect(r.body.ok).toBe(true);
@@ -206,10 +208,11 @@ maybe("Case delete security flow (db integration)", () => {
   // ── POST /api/cases/bulk-delete security gate ──────────────────────────────
 
   it("returns 403 when bulk-delete is called without a token or OTP", async () => {
+    const adminToken = await makeSession(adminUserId);
     const c = await insertCanonical();
     const r = await request(appMod.default)
       .post("/api/cases/bulk-delete")
-      .set("Authorization", `Bearer ${tokens.admin}`)
+      .set("Authorization", `Bearer ${adminToken}`)
       .send({ caseIds: [c] });
     expect(r.status).toBe(403);
     // Case must not be deleted.
@@ -222,15 +225,17 @@ maybe("Case delete security flow (db integration)", () => {
   });
 
   it("returns 401 when bulk-delete is called with an invalid session token", async () => {
+    const adminToken = await makeSession(adminUserId);
     const c = await insertCanonical();
     const r = await request(appMod.default)
       .post("/api/cases/bulk-delete")
-      .set("Authorization", `Bearer ${tokens.admin}`)
+      .set("Authorization", `Bearer ${adminToken}`)
       .send({ caseIds: [c], deleteSessionToken: "not.a.valid.token", smsOtpCode: "123456" });
     expect(r.status).toBe(401);
   });
 
   it("returns 400 when OTP does not match (verifyCode returns not-verified)", async () => {
+    const adminToken = await makeSession(adminUserId);
     const { verifyCode } = await import("../lib/verification.js");
     (verifyCode as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       verified: false,
@@ -240,13 +245,13 @@ maybe("Case delete security flow (db integration)", () => {
     const c = await insertCanonical();
     const init = await request(appMod.default)
       .post("/api/cases/delete-initiate")
-      .set("Authorization", `Bearer ${tokens.admin}`)
+      .set("Authorization", `Bearer ${adminToken}`)
       .send({ adminPin: "testpin999", caseIds: [c] });
     expect(init.status).toBe(200);
 
     const del = await request(appMod.default)
       .post("/api/cases/bulk-delete")
-      .set("Authorization", `Bearer ${tokens.admin}`)
+      .set("Authorization", `Bearer ${adminToken}`)
       .send({
         caseIds: [c],
         deleteSessionToken: init.body.data.deleteSessionToken,
@@ -264,17 +269,18 @@ maybe("Case delete security flow (db integration)", () => {
   });
 
   it("soft-deletes cases when the full 3-step flow completes successfully", async () => {
+    const adminToken = await makeSession(adminUserId);
     const c = await insertCanonical();
 
     const init = await request(appMod.default)
       .post("/api/cases/delete-initiate")
-      .set("Authorization", `Bearer ${tokens.admin}`)
+      .set("Authorization", `Bearer ${adminToken}`)
       .send({ adminPin: "testpin999", caseIds: [c] });
     expect(init.status).toBe(200);
 
     const del = await request(appMod.default)
       .post("/api/cases/bulk-delete")
-      .set("Authorization", `Bearer ${tokens.admin}`)
+      .set("Authorization", `Bearer ${adminToken}`)
       .send({
         caseIds: [c],
         deleteSessionToken: init.body.data.deleteSessionToken,

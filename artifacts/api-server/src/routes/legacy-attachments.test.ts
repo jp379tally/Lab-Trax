@@ -51,8 +51,6 @@ maybe("Legacy mobile case attachment routes (/:caseId/attachments)", () => {
   const labCaseId = `${Date.now()}${randomBytes(4).toString("hex")}`;
   const fileName = `${rid("legacyattach")}.pdf`;
 
-  let memberToken = "";
-  let outsiderToken = "";
   let filePath = "";
   let fileBytes: Buffer;
 
@@ -116,9 +114,6 @@ maybe("Legacy mobile case attachment routes (/:caseId/attachments)", () => {
       },
     ]);
 
-    memberToken = await makeSession(memberUserId);
-    outsiderToken = await makeSession(outsiderUserId);
-
     fileBytes = randomBytes(1024);
     await fsp.mkdir(caseMediaMod.caseMediaDir, { recursive: true });
     filePath = path.join(caseMediaMod.caseMediaDir, fileName);
@@ -170,6 +165,7 @@ maybe("Legacy mobile case attachment routes (/:caseId/attachments)", () => {
 
   it("POST /:caseId/attachments — stores attachment with labCaseId and returns 201", async () => {
     const app = appMod.default;
+    const memberToken = await makeSession(memberUserId);
     const storageKey = `/uploads/case-media/${fileName}`;
 
     const res = await request(app)
@@ -205,6 +201,7 @@ maybe("Legacy mobile case attachment routes (/:caseId/attachments)", () => {
 
   it("GET /:caseId/attachments — returns the stored attachment", async () => {
     const app = appMod.default;
+    const memberToken = await makeSession(memberUserId);
 
     const res = await request(app)
       .get(`/api/cases/${encodeURIComponent(labCaseId)}/attachments`)
@@ -222,6 +219,7 @@ maybe("Legacy mobile case attachment routes (/:caseId/attachments)", () => {
 
   it("GET /:caseId/attachments/:attachmentId/file — serves the file bytes", async () => {
     const app = appMod.default;
+    const memberToken = await makeSession(memberUserId);
 
     const listRes = await request(app)
       .get(`/api/cases/${encodeURIComponent(labCaseId)}/attachments`)
@@ -251,6 +249,7 @@ maybe("Legacy mobile case attachment routes (/:caseId/attachments)", () => {
 
   it("GET /:caseId/attachments — non-member gets 403", async () => {
     const app = appMod.default;
+    const outsiderToken = await makeSession(outsiderUserId);
 
     const res = await request(app)
       .get(`/api/cases/${encodeURIComponent(labCaseId)}/attachments`)
@@ -261,6 +260,7 @@ maybe("Legacy mobile case attachment routes (/:caseId/attachments)", () => {
 
   it("POST /:caseId/attachments — non-member gets 403", async () => {
     const app = appMod.default;
+    const outsiderToken = await makeSession(outsiderUserId);
 
     const res = await request(app)
       .post(`/api/cases/${encodeURIComponent(labCaseId)}/attachments`)
@@ -276,6 +276,7 @@ maybe("Legacy mobile case attachment routes (/:caseId/attachments)", () => {
 
   it("DELETE /:caseId/attachments/:attachmentId — removes the attachment", async () => {
     const app = appMod.default;
+    const memberToken = await makeSession(memberUserId);
 
     const listRes = await request(app)
       .get(`/api/cases/${encodeURIComponent(labCaseId)}/attachments`)

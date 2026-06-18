@@ -133,8 +133,6 @@ maybe("Cases AI reader endpoints (db integration)", () => {
       { id: rid("m"), labId: labOrgId, userId: adminUserId, role: "admin", status: "active" },
     ]);
 
-    tokens.admin = await makeSession(adminUserId);
-    tokens.outsider = await makeSession(outsiderUserId);
   });
 
   afterAll(async () => {
@@ -192,9 +190,10 @@ maybe("Cases AI reader endpoints (db integration)", () => {
   // ── POST /api/cases ──────────────────────────────────────────────────────
 
   it("POST /api/cases: lab member can create a case", async () => {
+    const adminToken = await makeSession(adminUserId);
     const r = await request(appMod.default)
       .post("/api/cases")
-      .set("Authorization", `Bearer ${tokens.admin}`)
+      .set("Authorization", `Bearer ${adminToken}`)
       .send({
         caseNumber: rid("CN"),
         labOrganizationId: labOrgId,
@@ -212,9 +211,10 @@ maybe("Cases AI reader endpoints (db integration)", () => {
   });
 
   it("POST /api/cases: non-member of lab gets 403", async () => {
+    const outsiderToken = await makeSession(outsiderUserId);
     const r = await request(appMod.default)
       .post("/api/cases")
-      .set("Authorization", `Bearer ${tokens.outsider}`)
+      .set("Authorization", `Bearer ${outsiderToken}`)
       .send({
         caseNumber: rid("CN"),
         labOrganizationId: labOrgId,
@@ -229,9 +229,10 @@ maybe("Cases AI reader endpoints (db integration)", () => {
   });
 
   it("POST /api/cases: missing required fields returns 400", async () => {
+    const adminToken = await makeSession(adminUserId);
     const r = await request(appMod.default)
       .post("/api/cases")
-      .set("Authorization", `Bearer ${tokens.admin}`)
+      .set("Authorization", `Bearer ${adminToken}`)
       .send({
         labOrganizationId: labOrgId,
         // caseNumber, patientFirstName, patientLastName, doctorName omitted
@@ -251,10 +252,11 @@ maybe("Cases AI reader endpoints (db integration)", () => {
   // ── POST /api/cases/import-from-itero-rx ─────────────────────────────────
 
   it("POST /api/cases/import-from-itero-rx: missing labOrganizationId returns 400", async () => {
+    const adminToken = await makeSession(adminUserId);
     const rxFile = makeTempRxFile();
     const r = await request(appMod.default)
       .post("/api/cases/import-from-itero-rx")
-      .set("Authorization", `Bearer ${tokens.admin}`)
+      .set("Authorization", `Bearer ${adminToken}`)
       .attach("file", rxFile, "rx.pdf")
       .field("iteroOrderId", rid("order"))
       .field("providerOrganizationId", providerOrgId);
@@ -265,10 +267,11 @@ maybe("Cases AI reader endpoints (db integration)", () => {
   });
 
   it("POST /api/cases/import-from-itero-rx: caller not a lab member gets 403", async () => {
+    const outsiderToken = await makeSession(outsiderUserId);
     const rxFile = makeTempRxFile();
     const r = await request(appMod.default)
       .post("/api/cases/import-from-itero-rx")
-      .set("Authorization", `Bearer ${tokens.outsider}`)
+      .set("Authorization", `Bearer ${outsiderToken}`)
       .attach("file", rxFile, "rx.pdf")
       .field("iteroOrderId", rid("order"))
       .field("labOrganizationId", labOrgId)
@@ -282,12 +285,13 @@ maybe("Cases AI reader endpoints (db integration)", () => {
     // AI_INTEGRATIONS_OPENAI_API_KEY is unset in test env, so the stub path
     // runs. The case must still be created with needsAiReview:true and
     // aiImportSource:'itero'.
+    const adminToken = await makeSession(adminUserId);
     const orderId = rid("order");
     const rxFile = makeTempRxFile();
 
     const r = await request(appMod.default)
       .post("/api/cases/import-from-itero-rx")
-      .set("Authorization", `Bearer ${tokens.admin}`)
+      .set("Authorization", `Bearer ${adminToken}`)
       .attach("file", rxFile, "rx.pdf")
       .field("iteroOrderId", orderId)
       .field("labOrganizationId", labOrgId)
@@ -317,12 +321,13 @@ maybe("Cases AI reader endpoints (db integration)", () => {
     // writeCaseMediaToObjectStorage is called for every successful import.
     mockWriteCaseMediaToObjectStorage.mockClear();
 
+    const adminToken = await makeSession(adminUserId);
     const orderId = rid("order");
     const rxFile = makeTempRxFile();
 
     const r = await request(appMod.default)
       .post("/api/cases/import-from-itero-rx")
-      .set("Authorization", `Bearer ${tokens.admin}`)
+      .set("Authorization", `Bearer ${adminToken}`)
       .attach("file", rxFile, "iTero_Rx_999.pdf")
       .field("iteroOrderId", orderId)
       .field("labOrganizationId", labOrgId)
@@ -356,13 +361,14 @@ maybe("Cases AI reader endpoints (db integration)", () => {
     // Current implementation: returns 200 with { deduped: true, caseId }.
     // This test documents the actual behaviour; the 200 dedup path is a valid
     // idempotent response — change the assertion if the API is updated to return 409.
+    const adminToken = await makeSession(adminUserId);
     const orderId = rid("order");
     const rxFile1 = makeTempRxFile();
     const rxFile2 = makeTempRxFile();
 
     const first = await request(appMod.default)
       .post("/api/cases/import-from-itero-rx")
-      .set("Authorization", `Bearer ${tokens.admin}`)
+      .set("Authorization", `Bearer ${adminToken}`)
       .attach("file", rxFile1, "rx.pdf")
       .field("iteroOrderId", orderId)
       .field("labOrganizationId", labOrgId)
@@ -373,7 +379,7 @@ maybe("Cases AI reader endpoints (db integration)", () => {
 
     const second = await request(appMod.default)
       .post("/api/cases/import-from-itero-rx")
-      .set("Authorization", `Bearer ${tokens.admin}`)
+      .set("Authorization", `Bearer ${adminToken}`)
       .attach("file", rxFile2, "rx.pdf")
       .field("iteroOrderId", orderId)
       .field("labOrganizationId", labOrgId)
@@ -392,6 +398,7 @@ maybe("Cases AI reader endpoints (db integration)", () => {
   // ── PATCH /api/cases/:id/ai-review ───────────────────────────────────────
 
   it("PATCH /api/cases/:id/ai-review: marks case as reviewed", async () => {
+    const adminToken = await makeSession(adminUserId);
     const { db, cases } = dbMod as any;
     const caseId = rid("c");
     await db.insert(cases).values({
@@ -410,7 +417,7 @@ maybe("Cases AI reader endpoints (db integration)", () => {
 
     const r = await request(appMod.default)
       .patch(`/api/cases/${caseId}/ai-review`)
-      .set("Authorization", `Bearer ${tokens.admin}`)
+      .set("Authorization", `Bearer ${adminToken}`)
       .send({ acknowledged: true });
 
     expect(r.status).toBe(200);
@@ -421,6 +428,7 @@ maybe("Cases AI reader endpoints (db integration)", () => {
   });
 
   it("PATCH /api/cases/:id/ai-review: non-member gets 403", async () => {
+    const outsiderToken = await makeSession(outsiderUserId);
     const { db, cases } = dbMod as any;
     const caseId = rid("c");
     await db.insert(cases).values({
@@ -438,7 +446,7 @@ maybe("Cases AI reader endpoints (db integration)", () => {
 
     const r = await request(appMod.default)
       .patch(`/api/cases/${caseId}/ai-review`)
-      .set("Authorization", `Bearer ${tokens.outsider}`)
+      .set("Authorization", `Bearer ${outsiderToken}`)
       .send({ acknowledged: true });
 
     expect(r.status).toBe(403);
@@ -446,6 +454,7 @@ maybe("Cases AI reader endpoints (db integration)", () => {
   });
 
   it("PATCH /api/cases/:id/ai-review: already-reviewed case returns idempotently", async () => {
+    const adminToken = await makeSession(adminUserId);
     const { db, cases } = dbMod as any;
     const caseId = rid("c");
     await db.insert(cases).values({
@@ -463,7 +472,7 @@ maybe("Cases AI reader endpoints (db integration)", () => {
 
     const r = await request(appMod.default)
       .patch(`/api/cases/${caseId}/ai-review`)
-      .set("Authorization", `Bearer ${tokens.admin}`)
+      .set("Authorization", `Bearer ${adminToken}`)
       .send({ acknowledged: true });
 
     expect(r.status).toBe(200);
@@ -475,9 +484,10 @@ maybe("Cases AI reader endpoints (db integration)", () => {
   // ── POST /api/cases: auto-invoice generation ─────────────────────────────
 
   it("POST /api/cases: auto-generates an open invoice for every new case", async () => {
+    const adminToken = await makeSession(adminUserId);
     const r = await request(appMod.default)
       .post("/api/cases")
-      .set("Authorization", `Bearer ${tokens.admin}`)
+      .set("Authorization", `Bearer ${adminToken}`)
       .send({
         caseNumber: rid("CN"),
         labOrganizationId: labOrgId,
@@ -521,10 +531,11 @@ maybe("Cases AI reader endpoints (db integration)", () => {
     // POST body. Before this fix, notes only went into the case_notes table;
     // the lab slip reads labCase.caseNotes which maps to cases.rxNotes, so the
     // Rx Notes section always showed "—". Now rxNotes is populated directly.
+    const adminToken = await makeSession(adminUserId);
     const notesText = "Patient grinds at night — use extra-strength ceramic";
     const r = await request(appMod.default)
       .post("/api/cases")
-      .set("Authorization", `Bearer ${tokens.admin}`)
+      .set("Authorization", `Bearer ${adminToken}`)
       .send({
         caseNumber: rid("CN"),
         labOrganizationId: labOrgId,
@@ -552,9 +563,10 @@ maybe("Cases AI reader endpoints (db integration)", () => {
   it("POST /api/cases: dueDate field is persisted in the cases row", async () => {
     // Regression guard: verifies the AI-extracted (or calendar-picker) dueDate
     // reaches the cases.due_date column so it appears on the lab slip.
+    const adminToken = await makeSession(adminUserId);
     const r = await request(appMod.default)
       .post("/api/cases")
-      .set("Authorization", `Bearer ${tokens.admin}`)
+      .set("Authorization", `Bearer ${adminToken}`)
       .send({
         caseNumber: rid("CN"),
         labOrganizationId: labOrgId,
@@ -590,9 +602,10 @@ maybe("Cases AI reader endpoints (db integration)", () => {
   // path (with a mocked OpenAI client) lives in analyze-prescription.test.ts.
 
   it("POST /api/analyze-prescription: returns 503 when AI is not configured", async () => {
+    const adminToken = await makeSession(adminUserId);
     const r = await request(appMod.default)
       .post("/api/analyze-prescription")
-      .set("Authorization", `Bearer ${tokens.admin}`)
+      .set("Authorization", `Bearer ${adminToken}`)
       .send({ imageBase64: `data:image/jpeg;base64,${"A".repeat(6000)}` });
 
     expect(r.status).toBe(503);

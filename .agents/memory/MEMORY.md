@@ -69,3 +69,4 @@
 - [Mobile resilientFetch raw envelope](mobile-resilientfetch-envelope.md) — resilientFetch is pass-through; raw callers must read body.data.X (server ok() wraps {ok,data}); reading body.X is a silent undefined that looks like a "not found" miss.
 - [Barcode uniqueness hard index](barcode-uniqueness-hard-index.md) — case_pan_barcode is a hard partial unique index per lab; predicate must match the pre-check (incl. status<>'complete'); admin force-duplicate override removed (incompatible).
 - [isPlatformAdmin is inline in labtrax-routes](labtrax-routes-isPlatformAdmin-inline.md) — mocking auth.js does NOT affect it; test mocks must set req.user.role="admin" for the secret-header check to even run.
+- [Backup-restore session gap fix](backup-restore-session-gap.md) — gap-free restore: drop FK, filter TOC via pg_restore --list, run pg_restore --use-list skipping all user_sessions entries; no DROP ever runs on user_sessions.

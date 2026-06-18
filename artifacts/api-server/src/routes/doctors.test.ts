@@ -4,7 +4,7 @@
  * Skipped when no DATABASE_URL is configured — same convention as
  * `cases-similarity.test.ts` and `cross-lab-doctor.test.ts`.
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
 import { createHash } from "node:crypto";
@@ -159,6 +159,15 @@ maybe("Task #382 doctor merge route (db integration)", () => {
       },
     ]);
 
+    tokens.admin = await makeSession(adminUserId);
+    tokens.member = await makeSession(memberUserId);
+    tokens.otherLabAdmin = await makeSession(otherLabAdminId);
+  });
+
+  // Refresh session tokens before every test so a concurrent backup-restore
+  // TRUNCATE of user_sessions (which happens during backup-restore.test.ts)
+  // does not leave stale / invalidated tokens causing spurious 401s.
+  beforeEach(async () => {
     tokens.admin = await makeSession(adminUserId);
     tokens.member = await makeSession(memberUserId);
     tokens.otherLabAdmin = await makeSession(otherLabAdminId);

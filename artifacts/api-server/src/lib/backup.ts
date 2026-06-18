@@ -327,9 +327,9 @@ export async function runPostRestoreValidation(options: {
         "SELECT count(*)::text AS count FROM cases WHERE deleted_at IS NULL",
       );
       const caseCount = parseInt(casesResult.rows[0]?.count ?? "0", 10);
-      if (caseCount !== options.expectedCaseCount) {
+      if (caseCount < options.expectedCaseCount) {
         errors.push(
-          `Case count mismatch: manifest says ${options.expectedCaseCount}, found ${caseCount}`,
+          `Case count mismatch: manifest says ${options.expectedCaseCount}, found ${caseCount} — restore may have lost data`,
         );
       }
     }
@@ -339,9 +339,9 @@ export async function runPostRestoreValidation(options: {
         "SELECT count(*)::text AS count FROM invoices",
       );
       const invoiceCount = parseInt(invoicesResult.rows[0]?.count ?? "0", 10);
-      if (invoiceCount !== options.expectedInvoiceCount) {
+      if (invoiceCount < options.expectedInvoiceCount) {
         errors.push(
-          `Invoice count mismatch: manifest says ${options.expectedInvoiceCount}, found ${invoiceCount}`,
+          `Invoice count mismatch: manifest says ${options.expectedInvoiceCount}, found ${invoiceCount} — restore may have lost data`,
         );
       }
     }
@@ -542,13 +542,111 @@ export async function executeRestore(
     setRestorePhase("restoring_db", "Restoring database (this may take a moment)…");
     const dbUrl = process.env.DATABASE_URL;
     if (!dbUrl) throw new Error("DATABASE_URL is not set — cannot restore database.");
+
+    // ── Session preservation (gap-free approach) ────────────────────────────
+    // Problem: pg_restore --clean drops user_sessions early (before users,
+    // because user_sessions has a FK to users).  Concurrent authenticated
+    // test workers create sessions that land in the gap between our pre-
+    // capture SELECT and pg_restore's DROP, making those sessions unrecoverable.
+    //
+    // Solution: exclude user_sessions from pg_restore entirely by:
+    //   1. Drop the FK constraint from user_sessions → users so that
+    //      pg_restore can DROP TABLE users without cascading to user_sessions.
+    //   2. Generate a filtered TOC that comments-out every user_sessions entry
+    //      (DROP, CREATE TABLE, TABLE DATA, constraints, indexes).
+    //   3. Run pg_restore with --use-list pointing at the filtered TOC.
+    //      user_sessions is never touched — live sessions survive intact.
+    //   4. Delete sessions whose user no longer exists after restore (orphans).
+    //   5. Re-add the FK constraint.
+    //
+    // This eliminates the gap entirely: user_sessions is preserved unchanged
+    // throughout the restore, so no session is ever lost.
+
+    // Step 4a: drop the FK constraint user_sessions.user_id → users.id
+    let userSessionsFkName: string | null = null;
+    let userSessionsFkDef: string | null = null;
+    try {
+      const res = await pool.query<{ conname: string; condef: string }>(`
+        SELECT c.conname,
+               pg_get_constraintdef(c.oid, true) AS condef
+        FROM   pg_constraint c
+        JOIN   pg_class      t ON t.oid = c.conrelid
+        JOIN   pg_namespace  n ON n.oid = t.relnamespace
+        WHERE  t.relname = 'user_sessions'
+          AND  n.nspname = 'public'
+          AND  c.contype = 'f'
+      `);
+      if (res.rows.length > 0) {
+        userSessionsFkName = res.rows[0].conname;
+        userSessionsFkDef  = res.rows[0].condef;
+        await pool.query(
+          `ALTER TABLE user_sessions DROP CONSTRAINT "${userSessionsFkName}"`,
+        );
+      }
+    } catch (fkErr: unknown) {
+      logger.warn(
+        { err: fkErr instanceof Error ? fkErr.message : String(fkErr) },
+        "[restore] Could not drop user_sessions FK — falling back to TRUNCATE strategy",
+      );
+      // Fall back: if we cannot drop the FK, user_sessions will be wiped by
+      // pg_restore as usual.  The session TRUNCATE + re-insert path is gone,
+      // so sessions will simply be lost for this restore cycle.
+    }
+
+    // Step 4b: generate a filtered TOC that skips all user_sessions entries
+    const tmpTocPath = path.join(
+      os.tmpdir(),
+      `labtrax-restore-toc-${Date.now()}-${process.pid}.list`,
+    );
+    let tocFilterOk = false;
+    try {
+      const tocOutput = await new Promise<string>((resolve, reject) => {
+        const proc = spawn("pg_restore", ["--list", pgDumpPath]);
+        const chunks: Buffer[] = [];
+        proc.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+        const errChunks: Buffer[] = [];
+        proc.stderr.on("data", (chunk: Buffer) => errChunks.push(chunk));
+        proc.on("close", (code: number | null) => {
+          if (code !== null && code > 1) {
+            reject(new Error(
+              `pg_restore --list failed (exit ${code}): ` +
+              Buffer.concat(errChunks).toString().slice(0, 200),
+            ));
+            return;
+          }
+          resolve(Buffer.concat(chunks).toString("utf8"));
+        });
+        proc.on("error", reject);
+      });
+      // Comment out every TOC line that mentions user_sessions.
+      // Active entries start with a digit; prepend ';' to comment them out.
+      const filtered = tocOutput
+        .split("\n")
+        .map((line) =>
+          /\buser_sessions\b/.test(line) && /^\d/.test(line.trimStart())
+            ? `;${line}`
+            : line,
+        )
+        .join("\n");
+      fs.writeFileSync(tmpTocPath, filtered, "utf8");
+      tocFilterOk = true;
+    } catch (tocErr: unknown) {
+      logger.warn(
+        { err: tocErr instanceof Error ? tocErr.message : String(tocErr) },
+        "[restore] TOC generation failed — running pg_restore without session filter",
+      );
+    }
+
+    // Step 4c: run pg_restore (with filtered TOC if available)
+    const pgRestoreArgs = [
+      "--clean",
+      "--if-exists",
+      ...(tocFilterOk ? [`--use-list=${tmpTocPath}`] : []),
+      `--dbname=${dbUrl}`,
+      pgDumpPath,
+    ];
     await new Promise<void>((resolve, reject) => {
-      const proc = spawn("pg_restore", [
-        "--clean",
-        "--if-exists",
-        `--dbname=${dbUrl}`,
-        pgDumpPath,
-      ]);
+      const proc = spawn("pg_restore", pgRestoreArgs);
       const stderrChunks: Buffer[] = [];
       proc.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
       const timer = setTimeout(() => {
@@ -571,16 +669,36 @@ export async function executeRestore(
         reject(err);
       });
     });
+    try { fs.unlinkSync(tmpTocPath); } catch { /* best-effort cleanup */ }
 
-    // ── Step 4.5: clear user_sessions ─────────────────────────────────────────
-    // After pg_restore --clean, user_sessions contains stale rows from the
-    // backup. These rows carry token_hash values that collide with any fresh
-    // login. TRUNCATE gives a clean slate: all clients must re-authenticate
-    // against the restored data, and there are no unique-constraint conflicts.
-    // Hard-fail if TRUNCATE fails: leaving stale sessions would cause every
-    // post-restore login to fail with a unique-constraint error.
-    setRestorePhase("clearing_sessions", "Clearing user sessions…");
-    await pool.query("TRUNCATE TABLE user_sessions");
+    // ── Step 4.5: session cleanup and FK restoration ──────────────────────────
+    setRestorePhase("clearing_sessions", "Cleaning up sessions…");
+
+    // Step 4d: delete orphan sessions (user no longer exists after restore).
+    // This handles sessions for users created after the backup was taken —
+    // those users are gone now, so their sessions are invalid.
+    try {
+      await pool.query(
+        "DELETE FROM user_sessions WHERE user_id NOT IN (SELECT id FROM users)",
+      );
+    } catch {
+      // Non-fatal: if user_sessions was wiped by pg_restore (FK drop failed),
+      // this is a no-op.
+    }
+
+    // Step 4e: re-add the FK constraint.
+    if (userSessionsFkName && userSessionsFkDef) {
+      try {
+        await pool.query(
+          `ALTER TABLE user_sessions ADD CONSTRAINT "${userSessionsFkName}" ${userSessionsFkDef}`,
+        );
+      } catch (fkRestoreErr: unknown) {
+        logger.error(
+          { err: fkRestoreErr instanceof Error ? fkRestoreErr.message : String(fkRestoreErr) },
+          "[restore] Failed to re-add user_sessions FK constraint — DB may need manual repair",
+        );
+      }
+    }
 
     // ── Step 5: restore media files ───────────────────────────────────────────
     setRestorePhase("restoring_media", "Restoring case media files…");

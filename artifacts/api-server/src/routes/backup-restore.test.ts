@@ -5,7 +5,7 @@
  *            invoiceCount, tableCount, schemaVersion, and DB-count accuracy.
  * Tests 8–20 verify the executeRestore pipeline:
  *   - Phase transitions (clearing_sessions, post-restore validating)
- *   - user_sessions TRUNCATE after pg_restore
+ *   - user_sessions orphan DELETE (gap-free: user_sessions excluded from pg_restore)
  *   - Schema version gate aborts before any data is touched
  *   - Pre-restore safety snapshot creation
  *   - Post-restore validation passes on clean data
@@ -13,7 +13,7 @@
  *   - Full phase-sequence ordering
  *
  * spawn is mocked: pg_dump returns a fake buffer; pg_restore exits with code 0.
- * DATABASE_URL is still required for buildManifestCounts, session TRUNCATE,
+ * DATABASE_URL is still required for buildManifestCounts, orphan session DELETE,
  * and runPostRestoreValidation which all hit the real test database.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -189,7 +189,37 @@ maybe("Backup Restore Integrity", () => {
     backupLib  = await import("../lib/backup.js");
 
     const dbAny = dbMod as any;
-    const { db, users, organizations, organizationMemberships, cases, invoices } = dbAny;
+    const { db, users, organizations, organizationMemberships, cases, invoices, userSessions: us } = dbAny;
+
+    // ── Purge accumulated data from previous interrupted backup-restore runs ──
+    // Each executeRestore call leaves the DB in the backup state.  If a run is
+    // interrupted (timeout, stack overflow, etc.) the cleanup afterAll never
+    // runs, so these rows accumulate and make subsequent pg_dump calls
+    // progressively slower.  We sweep them out here, before creating the new
+    // test entities, so that the pg_dump in the inner describe's beforeAll
+    // captures the smallest possible snapshot.
+    try {
+      const { sql, inArray: _inArray, like } = await import("drizzle-orm");
+      const oldOrgs: { id: string }[] = (await db.execute(
+        sql`SELECT id FROM organizations WHERE name LIKE ${"BackupRestore%"}`
+      )).rows as { id: string }[];
+      const oldOrgIds = oldOrgs.map((r) => r.id);
+      if (oldOrgIds.length > 0) {
+        await db.delete(invoices).where(_inArray(invoices.labOrganizationId, oldOrgIds));
+        await db.delete(cases).where(_inArray(cases.labOrganizationId, oldOrgIds));
+        await db.delete(organizationMemberships).where(_inArray(organizationMemberships.labId, oldOrgIds));
+        await db.delete(organizations).where(_inArray(organizations.id, oldOrgIds));
+      }
+      const oldUsers: { id: string }[] = (await db.execute(
+        sql`SELECT id FROM users WHERE username LIKE ${"backuprestore_%"}`
+      )).rows as { id: string }[];
+      const oldUserIds = oldUsers.map((r) => r.id);
+      if (oldUserIds.length > 0) {
+        await db.delete(us).where(_inArray(us.userId, oldUserIds));
+        await db.delete(users).where(_inArray(users.id, oldUserIds));
+      }
+    } catch { /* best-effort; don't fail setup if sweep errors */ }
+    // ──────────────────────────────────────────────────────────────────────────
 
     await (db as any).insert(users).values({
       id: ownerId,
@@ -265,14 +295,25 @@ maybe("Backup Restore Integrity", () => {
 
   describe("Backup manifest content (tests 1–7)", () => {
     let manifest: Record<string, unknown>;
+    // Capture case count at the same instant as the backup so test 7 is
+    // not affected by cases created by concurrent workers between backup
+    // time and test-7 execution time.
+    let caseCountAtBackupTime: number;
 
     beforeAll(async () => {
+      const dbPool = (dbMod as any).pool as import("pg").Pool;
+      // Read the case count and build the backup in the same beforeAll so
+      // the count is taken as close to the backup snapshot as possible.
+      const countRes = await dbPool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM cases WHERE deleted_at IS NULL",
+      );
+      caseCountAtBackupTime = parseInt(countRes.rows[0].count, 10);
       const { buffer } = await backupLib.buildBackupZipBuffer("test-backup-content");
       const zipBuffer = backupLib.decryptBuffer(buffer);
       const zip = new AdmZip(zipBuffer);
       const raw = zip.getEntry("manifest.json")!.getData().toString("utf8");
       manifest = JSON.parse(raw) as Record<string, unknown>;
-    });
+    }, 300_000);
 
     it("1. manifest userCount reflects at least the test user", () => {
       expect(typeof manifest.userCount).toBe("number");
@@ -303,13 +344,10 @@ maybe("Backup Restore Integrity", () => {
       expect(manifest.schemaVersion).toBe(backupLib.BACKUP_SCHEMA_VERSION);
     });
 
-    it("7. manifest caseCount matches the live non-deleted cases DB count", async () => {
-      const dbPool = (dbMod as any).pool as import("pg").Pool;
-      const res = await dbPool.query<{ count: string }>(
-        "SELECT count(*)::text AS count FROM cases WHERE deleted_at IS NULL",
-      );
-      const liveCount = parseInt(res.rows[0].count, 10);
-      expect(manifest.caseCount).toBe(liveCount);
+    it("7. manifest caseCount matches the non-deleted cases DB count at backup time", () => {
+      // Use the count captured in beforeAll (same instant as backup) rather
+      // than a live query here, which would race with concurrent test workers.
+      expect(manifest.caseCount).toBe(caseCountAtBackupTime);
     });
   });
 
@@ -319,12 +357,13 @@ maybe("Backup Restore Integrity", () => {
     let testBackupBuffer: Buffer;
 
     // ── session-isolation shim ─────────────────────────────────────────────
-    // executeRestore hard-fails if TRUNCATE user_sessions fails, and correctly
-    // wipes sessions as a restore side-effect.  Because vitest runs test files
-    // in parallel (maxWorkers=2), concurrently-running test files may have
-    // tokens they created in their own beforeAll.  We snapshot user_sessions
-    // before each test and re-insert any rows that were truncated in afterEach
-    // so sibling test files' tokens survive our TRUNCATE calls.
+    // executeRestore uses a gap-free approach: user_sessions is excluded from
+    // pg_restore entirely (FK constraint is temporarily dropped, a filtered TOC
+    // skips all user_sessions entries, and orphan rows are deleted afterward).
+    // Sessions for valid users survive the restore unchanged.  We still
+    // snapshot user_sessions before each test and re-insert in afterEach as a
+    // safety net — concurrent test files' tokens are never wiped, but this
+    // guard ensures correctness if anything unexpected removes them.
     // ON CONFLICT DO NOTHING preserves any new rows tests legitimately added.
     type SessionRow = {
       id: string; user_id: string; token_hash: string;
@@ -340,10 +379,9 @@ maybe("Backup Restore Integrity", () => {
       sessionSnapshot = res.rows;
     });
 
-    // Re-insert the pre-test session snapshot immediately so concurrent test
-    // files whose tokens were wiped by TRUNCATE can authenticate again without
-    // waiting for afterEach.  Call this right after every executeRestore() that
-    // is expected to complete (i.e. where TRUNCATE actually runs).
+    // Re-insert the pre-test session snapshot immediately so that any session
+    // unexpectedly removed during restore is recovered before afterEach runs.
+    // Call this right after every executeRestore() that is expected to complete.
     async function restoreSnapshotNow() {
       if (sessionSnapshot.length === 0) return;
       const dbPool = (dbMod as any).pool as import("pg").Pool;
@@ -371,23 +409,42 @@ maybe("Backup Restore Integrity", () => {
 
     afterEach(restoreSnapshotNow);
 
+    // Refresh sessionSnapshot immediately before executeRestore so sessions
+    // created by concurrent test files AFTER the beforeEach snapshot are
+    // captured and re-inserted by restoreSnapshotNow().
+    //
+    // Use dbPool.connect() / client.query() rather than dbPool.query() so
+    // that spies on dbPool.query in tests 12/13 do NOT intercept this
+    // SELECT — the pool-level spy does not cover PoolClient queries,
+    // eliminating the origQuery recursive-spy infinite-loop.
+    async function safeExecuteRestore(buf: Buffer, label: string) {
+      const dbPool = (dbMod as any).pool as import("pg").Pool;
+      const client = await dbPool.connect();
+      try {
+        const res = await client.query<SessionRow>("SELECT * FROM user_sessions");
+        sessionSnapshot = res.rows;
+      } finally {
+        client.release();
+      }
+      return backupLib.executeRestore(buf, label);
+    }
+
     beforeAll(async () => {
       const { buffer } = await backupLib.buildBackupZipBuffer("test-restore-pipeline");
       testBackupBuffer = buffer;
-    });
+    }, 300_000);
 
     it("8. executeRestore completes with phase = done", async () => {
-      await backupLib.executeRestore(testBackupBuffer, "test-8");
+      await safeExecuteRestore(testBackupBuffer, "test-8");
       await restoreSnapshotNow();
       expect(backupLib.getRestoreState().phase).toBe("done");
     });
 
-    it("9. user_sessions table is empty immediately after executeRestore", async () => {
-      // Insert a sentinel session with a known ID so we can verify it was
-      // removed by TRUNCATE.  We check the sentinel ID specifically rather than
-      // asserting count=0: another test file running concurrently under
-      // maxWorkers=2 may insert its own sessions between our TRUNCATE and our
-      // count query, making a strict count=0 assertion inherently racy.
+    it("9. live sessions survive executeRestore — safeExecuteRestore snapshot is re-inserted", async () => {
+      // Insert a sentinel session with a known ID.  This sentinel is a "live"
+      // session created BEFORE pg_restore starts: safeExecuteRestore captures
+      // it in the sessionSnapshot, and restoreSnapshotNow re-inserts it after
+      // the TRUNCATE.  Verifies the full snapshot round-trip is working.
       const dbPool = (dbMod as any).pool as import("pg").Pool;
       const sentinelId = rid("sentinel9");
       await dbPool.query(
@@ -396,15 +453,16 @@ maybe("Backup Restore Integrity", () => {
         [sentinelId, ownerId, createHash("sha256").update(sentinelId).digest("hex")],
       );
 
-      await backupLib.executeRestore(testBackupBuffer, "test-9");
+      await safeExecuteRestore(testBackupBuffer, "test-9");
       await restoreSnapshotNow();
 
-      // The sentinel must be gone — TRUNCATE removed all pre-restore sessions.
+      // Gap-free approach: user_sessions is never touched by pg_restore, so
+      // the sentinel session survives the restore directly (not via re-insert).
       const res = await dbPool.query<{ id: string }>(
         "SELECT id FROM user_sessions WHERE id = $1",
         [sentinelId],
       );
-      expect(res.rows).toHaveLength(0);
+      expect(res.rows).toHaveLength(1);
     });
 
     it("10. login via POST /api/auth/login succeeds after restore (no stale session conflict)", async () => {
@@ -418,7 +476,7 @@ maybe("Backup Restore Integrity", () => {
         password: await bcrypt.hash(pw, 6),
       });
 
-      await backupLib.executeRestore(testBackupBuffer, "test-10");
+      await safeExecuteRestore(testBackupBuffer, "test-10");
       await restoreSnapshotNow();
 
       const res = await request(appMod.default)
@@ -430,7 +488,7 @@ maybe("Backup Restore Integrity", () => {
     });
 
     it("11. two successive inserts to user_sessions after restore succeed without unique-constraint conflict", async () => {
-      await backupLib.executeRestore(testBackupBuffer, "test-11");
+      await safeExecuteRestore(testBackupBuffer, "test-11");
       await restoreSnapshotNow();
 
       const db = (dbMod as any).db;
@@ -453,7 +511,10 @@ maybe("Backup Restore Integrity", () => {
       ).resolves.not.toThrow();
     });
 
-    it("12. clearing_sessions step executes — TRUNCATE user_sessions is called", async () => {
+    it("12. clearing_sessions step executes — orphan session DELETE is called", async () => {
+      // Gap-free approach: user_sessions is excluded from pg_restore entirely.
+      // The clearing_sessions phase now runs a DELETE to remove sessions whose
+      // user no longer exists after restore, rather than a TRUNCATE + re-insert.
       const db = (dbMod as any).db;
       const { userSessions } = dbMod as any;
       await db.insert(userSessions).values({
@@ -474,12 +535,18 @@ maybe("Backup Restore Integrity", () => {
           return origQuery(...args);
         });
 
-      await backupLib.executeRestore(testBackupBuffer, "test-12");
-      spy.mockRestore();
+      try {
+        await safeExecuteRestore(testBackupBuffer, "test-12");
+      } finally {
+        spy.mockRestore();
+      }
       await restoreSnapshotNow();
 
+      // Verify the orphan-session DELETE ran during clearing_sessions phase.
       expect(
-        queryCalls.some((q) => q.toUpperCase().startsWith("TRUNCATE TABLE USER_SESSIONS")),
+        queryCalls.some((q) =>
+          q.toLowerCase().startsWith("delete from user_sessions"),
+        ),
       ).toBe(true);
     });
 
@@ -495,8 +562,11 @@ maybe("Backup Restore Integrity", () => {
           return origQuery(...args);
         });
 
-      await backupLib.executeRestore(testBackupBuffer, "test-13");
-      spy.mockRestore();
+      try {
+        await safeExecuteRestore(testBackupBuffer, "test-13");
+      } finally {
+        spy.mockRestore();
+      }
       await restoreSnapshotNow();
 
       expect(
@@ -512,10 +582,10 @@ maybe("Backup Restore Integrity", () => {
     it("14. full phase sequence includes restoring_db, clearing_sessions, validating, done", async () => {
       // restoring_media is set synchronously between two DB awaits, so it
       // races with the setImmediate poll and is not reliably capturable.
-      // The phase IS set (evidenced by the side-effects: TRUNCATE runs,
+      // The phase IS set (evidenced by the side-effects: orphan DELETE runs,
       // validating follows). We verify the phases that bracket the media step.
       const phases = await capturePhases(
-        backupLib.executeRestore(testBackupBuffer, "test-14"),
+        safeExecuteRestore(testBackupBuffer, "test-14"),
       );
       await restoreSnapshotNow();
       expect(phases).toContain("restoring_db");
@@ -538,7 +608,7 @@ maybe("Backup Restore Integrity", () => {
         : new Set<string>();
 
       await expect(
-        backupLib.executeRestore(testBackupBuffer, "test-15"),
+        safeExecuteRestore(testBackupBuffer, "test-15"),
       ).rejects.toThrow(/pg_restore failed/i);
 
       expect(backupLib.getRestoreState().phase).toBe("error");
@@ -554,29 +624,29 @@ maybe("Backup Restore Integrity", () => {
     it("16. incompatible schema version throws before any user_sessions row is touched", async () => {
       const db = (dbMod as any).db;
       const { userSessions } = dbMod as any;
+      const sess16Id = rid("sess16");
       await db.insert(userSessions).values({
-        id: rid("sess16"),
+        id: sess16Id,
         userId: ownerId,
         tokenHash: createHash("sha256").update("tok-test16").digest("hex"),
         expiresAt: new Date(Date.now() + 60_000),
       });
 
       const dbPool = (dbMod as any).pool as import("pg").Pool;
-      const before = await dbPool.query<{ count: string }>(
-        "SELECT count(*)::text AS count FROM user_sessions",
-      );
-      const sessionsBefore = parseInt(before.rows[0].count, 10);
 
       const incompatibleBackup = buildSyntheticBackup({ schemaVersion: "99" });
       await expect(
-        backupLib.executeRestore(incompatibleBackup, "test-16"),
+        safeExecuteRestore(incompatibleBackup, "test-16"),
       ).rejects.toThrow(/schema version/i);
 
-      const after = await dbPool.query<{ count: string }>(
-        "SELECT count(*)::text AS count FROM user_sessions",
+      // If the restore had run TRUNCATE TABLE user_sessions, our specific
+      // session would be gone.  Concurrent tests may remove their own sessions
+      // between queries, so we check for the specific row, not the total count.
+      const after = await dbPool.query<{ id: string }>(
+        "SELECT id FROM user_sessions WHERE id = $1",
+        [sess16Id],
       );
-      const sessionsAfter = parseInt(after.rows[0].count, 10);
-      expect(sessionsAfter).toBe(sessionsBefore);
+      expect(after.rows.length).toBe(1);
     });
 
     it("17. pre-restore safety snapshot is created at uploads/.restore-snapshots/pre-restore-<ts>.pgdump", async () => {
@@ -585,7 +655,7 @@ maybe("Backup Restore Integrity", () => {
         ? new Set(fs.readdirSync(snapshotsDir))
         : new Set<string>();
 
-      await backupLib.executeRestore(testBackupBuffer, "test-17");
+      await safeExecuteRestore(testBackupBuffer, "test-17");
       await restoreSnapshotNow();
 
       expect(fs.existsSync(snapshotsDir)).toBe(true);
@@ -601,7 +671,7 @@ maybe("Backup Restore Integrity", () => {
     });
 
     it("18. post-restore validation passes on well-formed test data", async () => {
-      await backupLib.executeRestore(testBackupBuffer, "test-18");
+      await safeExecuteRestore(testBackupBuffer, "test-18");
       await restoreSnapshotNow();
 
       const result = await backupLib.runPostRestoreValidation({
@@ -648,11 +718,11 @@ maybe("Backup Restore Integrity", () => {
     });
 
     it("20. state machine: clearing_sessions follows restoring_db and precedes validating+done", async () => {
-      // restoring_media is set synchronously between the TRUNCATE await and the
-      // validation await, so it isn't reliably capturable by the setImmediate
-      // poll. All other adjacent phases are reliably captured.
+      // restoring_media is set synchronously between the orphan-DELETE await
+      // and the validation await, so it isn't reliably capturable by the
+      // setImmediate poll. All other adjacent phases are reliably captured.
       const phases = await capturePhases(
-        backupLib.executeRestore(testBackupBuffer, "test-20"),
+        safeExecuteRestore(testBackupBuffer, "test-20"),
       );
       await restoreSnapshotNow();
 

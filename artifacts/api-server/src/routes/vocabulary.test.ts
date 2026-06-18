@@ -28,7 +28,7 @@
  *  - Unauthenticated requests return 401
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { randomBytes } from "node:crypto";
+import { randomBytes, createHash } from "node:crypto";
 import { eq, and } from "drizzle-orm";
 import request from "supertest";
 import * as path from "node:path";
@@ -55,6 +55,7 @@ maybe("Vocabulary (db integration)", () => {
   let dbMod: typeof import("@workspace/db");
   let appMod: { default: import("express").Express };
   let cryptoLib: typeof import("../lib/crypto.js");
+  let authLib: typeof import("../lib/auth.js");
 
   const adminId = rid("u");
   const staffId = rid("u");
@@ -62,8 +63,16 @@ maybe("Vocabulary (db integration)", () => {
 
   const createdCaseIds: string[] = [];
 
-  let accessToken: string;
-  let staffToken: string;
+  async function makeSession(userId: string): Promise<{ access: string; refresh: string }> {
+    const { db, userSessions } = dbMod as any;
+    const sessionId = rid("sess");
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const refresh = authLib.signRefreshToken(userId, sessionId);
+    const hash = createHash("sha256").update(refresh).digest("hex");
+    await db.insert(userSessions).values({ id: sessionId, userId, tokenHash: hash, expiresAt });
+    const access = authLib.signAccessToken(userId, sessionId);
+    return { access, refresh };
+  }
 
   async function createCaseWithRestoration(
     restoration: { material?: string; shade?: string; restorationType?: string },
@@ -95,9 +104,12 @@ maybe("Vocabulary (db integration)", () => {
   }
 
   beforeAll(async () => {
+    process.env["JWT_SECRET"] =
+      process.env["JWT_SECRET"] ?? "labtrax-test-secret-vocabulary";
     dbMod = await import("@workspace/db");
     appMod = await import("../app.js");
     cryptoLib = await import("../lib/crypto.js");
+    authLib = await import("../lib/auth.js");
 
     const { db, organizations, users, organizationMemberships } = dbMod;
 
@@ -143,16 +155,6 @@ maybe("Vocabulary (db integration)", () => {
       role: "staff",
       status: "active",
     });
-
-    const loginRes = await request(appMod.default)
-      .post("/api/auth/login")
-      .send({ username: `vocabtest_${adminId}`, password: "password123" });
-    accessToken = loginRes.body.accessToken;
-
-    const staffLoginRes = await request(appMod.default)
-      .post("/api/auth/login")
-      .send({ username: `vocabstaff_${staffId}`, password: "password123" });
-    staffToken = staffLoginRes.body.accessToken;
   });
 
   afterAll(async () => {
@@ -182,9 +184,10 @@ maybe("Vocabulary (db integration)", () => {
 
   describe("GET /api/vocabulary", () => {
     it("returns default material list", async () => {
+      const { access } = await makeSession(adminId);
       const res = await request(appMod.default)
         .get(`/api/vocabulary?kind=material&labOrganizationId=${labOrgId}`)
-        .set("Authorization", `Bearer ${accessToken}`);
+        .set("Authorization", `Bearer ${access}`);
 
       expect(res.status).toBe(200);
       expect(res.body.ok).toBe(true);
@@ -198,9 +201,10 @@ maybe("Vocabulary (db integration)", () => {
     });
 
     it("returns default shade list", async () => {
+      const { access } = await makeSession(adminId);
       const res = await request(appMod.default)
         .get(`/api/vocabulary?kind=shade&labOrganizationId=${labOrgId}`)
-        .set("Authorization", `Bearer ${accessToken}`);
+        .set("Authorization", `Bearer ${access}`);
 
       expect(res.status).toBe(200);
       const values: string[] = res.body.data.map((v: any) => v.value);
@@ -210,9 +214,10 @@ maybe("Vocabulary (db integration)", () => {
     });
 
     it("returns default restoration_type list", async () => {
+      const { access } = await makeSession(adminId);
       const res = await request(appMod.default)
         .get(`/api/vocabulary?kind=restoration_type&labOrganizationId=${labOrgId}`)
-        .set("Authorization", `Bearer ${accessToken}`);
+        .set("Authorization", `Bearer ${access}`);
 
       expect(res.status).toBe(200);
       const values: string[] = res.body.data.map((v: any) => v.value);
@@ -222,17 +227,19 @@ maybe("Vocabulary (db integration)", () => {
     });
 
     it("returns 400 for invalid kind", async () => {
+      const { access } = await makeSession(adminId);
       const res = await request(appMod.default)
         .get(`/api/vocabulary?kind=invalid&labOrganizationId=${labOrgId}`)
-        .set("Authorization", `Bearer ${accessToken}`);
+        .set("Authorization", `Bearer ${access}`);
 
       expect(res.status).toBe(400);
     });
 
     it("returns 400 when labOrganizationId is missing", async () => {
+      const { access } = await makeSession(adminId);
       const res = await request(appMod.default)
         .get("/api/vocabulary?kind=material")
-        .set("Authorization", `Bearer ${accessToken}`);
+        .set("Authorization", `Bearer ${access}`);
 
       expect(res.status).toBe(400);
     });
@@ -247,10 +254,11 @@ maybe("Vocabulary (db integration)", () => {
 
   describe("POST /api/vocabulary", () => {
     it("creates a new custom material and returns 201", async () => {
+      const { access } = await makeSession(adminId);
       const uniqueValue = `TestMat_${rid("m")}`;
       const res = await request(appMod.default)
         .post("/api/vocabulary")
-        .set("Authorization", `Bearer ${accessToken}`)
+        .set("Authorization", `Bearer ${access}`)
         .send({ kind: "material", value: uniqueValue, labOrganizationId: labOrgId });
 
       expect(res.status).toBe(201);
@@ -260,40 +268,43 @@ maybe("Vocabulary (db integration)", () => {
     });
 
     it("appears in subsequent GET after creation", async () => {
+      const { access } = await makeSession(adminId);
       const uniqueValue = `GetAfter_${rid("g")}`;
       await request(appMod.default)
         .post("/api/vocabulary")
-        .set("Authorization", `Bearer ${accessToken}`)
+        .set("Authorization", `Bearer ${access}`)
         .send({ kind: "material", value: uniqueValue, labOrganizationId: labOrgId });
 
       const listRes = await request(appMod.default)
         .get(`/api/vocabulary?kind=material&labOrganizationId=${labOrgId}`)
-        .set("Authorization", `Bearer ${accessToken}`);
+        .set("Authorization", `Bearer ${access}`);
 
       const values: string[] = listRes.body.data.map((v: any) => v.value);
       expect(values).toContain(uniqueValue);
     });
 
     it("deduplicates case-insensitively — returns existing row (200, same id)", async () => {
+      const { access } = await makeSession(adminId);
       const uniqueValue = `Dedup_${rid("d")}`;
       const first = await request(appMod.default)
         .post("/api/vocabulary")
-        .set("Authorization", `Bearer ${accessToken}`)
+        .set("Authorization", `Bearer ${access}`)
         .send({ kind: "shade", value: uniqueValue, labOrganizationId: labOrgId });
       expect(first.status).toBe(201);
 
       const second = await request(appMod.default)
         .post("/api/vocabulary")
-        .set("Authorization", `Bearer ${accessToken}`)
+        .set("Authorization", `Bearer ${access}`)
         .send({ kind: "shade", value: uniqueValue.toLowerCase(), labOrganizationId: labOrgId });
       expect(second.status).toBe(200);
       expect(second.body.data.id).toBe(first.body.data.id);
     });
 
     it("returns default item (200, isDefault: true) when value matches a default", async () => {
+      const { access } = await makeSession(adminId);
       const res = await request(appMod.default)
         .post("/api/vocabulary")
-        .set("Authorization", `Bearer ${accessToken}`)
+        .set("Authorization", `Bearer ${access}`)
         .send({ kind: "material", value: "zirconia", labOrganizationId: labOrgId });
 
       expect(res.status).toBe(200);
@@ -302,18 +313,20 @@ maybe("Vocabulary (db integration)", () => {
     });
 
     it("returns 400 for blank value", async () => {
+      const { access } = await makeSession(adminId);
       const res = await request(appMod.default)
         .post("/api/vocabulary")
-        .set("Authorization", `Bearer ${accessToken}`)
+        .set("Authorization", `Bearer ${access}`)
         .send({ kind: "material", value: "   ", labOrganizationId: labOrgId });
 
       expect(res.status).toBe(400);
     });
 
     it("returns 400 for invalid kind", async () => {
+      const { access } = await makeSession(adminId);
       const res = await request(appMod.default)
         .post("/api/vocabulary")
-        .set("Authorization", `Bearer ${accessToken}`)
+        .set("Authorization", `Bearer ${access}`)
         .send({ kind: "unknown", value: "test", labOrganizationId: labOrgId });
 
       expect(res.status).toBe(400);
@@ -330,19 +343,20 @@ maybe("Vocabulary (db integration)", () => {
 
   describe("PATCH /api/vocabulary/:id", () => {
     it("renames the item and the new value appears in GET", async () => {
+      const { access } = await makeSession(adminId);
       const original = `PatchMe_${rid("p")}`;
       const renamed = `Renamed_${rid("r")}`;
 
       const createRes = await request(appMod.default)
         .post("/api/vocabulary")
-        .set("Authorization", `Bearer ${accessToken}`)
+        .set("Authorization", `Bearer ${access}`)
         .send({ kind: "material", value: original, labOrganizationId: labOrgId });
       expect(createRes.status).toBe(201);
       const id = createRes.body.data.id as string;
 
       const patchRes = await request(appMod.default)
         .patch(`/api/vocabulary/${id}`)
-        .set("Authorization", `Bearer ${accessToken}`)
+        .set("Authorization", `Bearer ${access}`)
         .send({ value: renamed });
 
       expect(patchRes.status).toBe(200);
@@ -352,77 +366,82 @@ maybe("Vocabulary (db integration)", () => {
 
       const listRes = await request(appMod.default)
         .get(`/api/vocabulary?kind=material&labOrganizationId=${labOrgId}`)
-        .set("Authorization", `Bearer ${accessToken}`);
+        .set("Authorization", `Bearer ${access}`);
       const values: string[] = listRes.body.data.map((v: any) => v.value);
       expect(values).toContain(renamed);
       expect(values).not.toContain(original);
     });
 
     it("returns 409 when new name collides with an existing custom item", async () => {
+      const { access } = await makeSession(adminId);
       const nameA = `ColA_${rid("a")}`;
       const nameB = `ColB_${rid("b")}`;
 
       const createA = await request(appMod.default)
         .post("/api/vocabulary")
-        .set("Authorization", `Bearer ${accessToken}`)
+        .set("Authorization", `Bearer ${access}`)
         .send({ kind: "shade", value: nameA, labOrganizationId: labOrgId });
       expect(createA.status).toBe(201);
 
       const createB = await request(appMod.default)
         .post("/api/vocabulary")
-        .set("Authorization", `Bearer ${accessToken}`)
+        .set("Authorization", `Bearer ${access}`)
         .send({ kind: "shade", value: nameB, labOrganizationId: labOrgId });
       expect(createB.status).toBe(201);
       const idB = createB.body.data.id as string;
 
       const patchRes = await request(appMod.default)
         .patch(`/api/vocabulary/${idB}`)
-        .set("Authorization", `Bearer ${accessToken}`)
+        .set("Authorization", `Bearer ${access}`)
         .send({ value: nameA });
 
       expect(patchRes.status).toBe(409);
     });
 
     it("returns 409 when new name collides with a default", async () => {
+      const { access } = await makeSession(adminId);
       const original = `NotADefault_${rid("nd")}`;
 
       const createRes = await request(appMod.default)
         .post("/api/vocabulary")
-        .set("Authorization", `Bearer ${accessToken}`)
+        .set("Authorization", `Bearer ${access}`)
         .send({ kind: "material", value: original, labOrganizationId: labOrgId });
       expect(createRes.status).toBe(201);
       const id = createRes.body.data.id as string;
 
       const patchRes = await request(appMod.default)
         .patch(`/api/vocabulary/${id}`)
-        .set("Authorization", `Bearer ${accessToken}`)
+        .set("Authorization", `Bearer ${access}`)
         .send({ value: "Zirconia" });
 
       expect(patchRes.status).toBe(409);
     });
 
     it("returns 403 for a non-admin lab member", async () => {
+      const { access: adminAccess } = await makeSession(adminId);
+      const { access: staffAccess } = await makeSession(staffId);
       const value = `StaffPatch_${rid("sp")}`;
 
       const createRes = await request(appMod.default)
         .post("/api/vocabulary")
-        .set("Authorization", `Bearer ${accessToken}`)
+        .set("Authorization", `Bearer ${adminAccess}`)
         .send({ kind: "material", value, labOrganizationId: labOrgId });
       expect(createRes.status).toBe(201);
       const id = createRes.body.data.id as string;
 
       const patchRes = await request(appMod.default)
         .patch(`/api/vocabulary/${id}`)
-        .set("Authorization", `Bearer ${staffToken}`)
+        .set("Authorization", `Bearer ${staffAccess}`)
         .send({ value: `StaffRenamed_${rid("sr")}` });
 
       expect(patchRes.status).toBe(403);
     });
 
     it("returns 404 for an unknown id", async () => {
+      const { access } = await makeSession(adminId);
       const res = await request(appMod.default)
         .patch("/api/vocabulary/00000000-0000-0000-0000-000000000000")
-        .set("Authorization", `Bearer ${accessToken}`)
+        .set("Authorization", `Bearer ${access}`)
         .send({ value: "AnythingNew" });
 
       expect(res.status).toBe(404);
@@ -431,18 +450,19 @@ maybe("Vocabulary (db integration)", () => {
 
   describe("DELETE /api/vocabulary/:id", () => {
     it("removes the item so it no longer appears in GET", async () => {
+      const { access } = await makeSession(adminId);
       const value = `DeleteMe_${rid("dm")}`;
 
       const createRes = await request(appMod.default)
         .post("/api/vocabulary")
-        .set("Authorization", `Bearer ${accessToken}`)
+        .set("Authorization", `Bearer ${access}`)
         .send({ kind: "restoration_type", value, labOrganizationId: labOrgId });
       expect(createRes.status).toBe(201);
       const id = createRes.body.data.id as string;
 
       const deleteRes = await request(appMod.default)
         .delete(`/api/vocabulary/${id}`)
-        .set("Authorization", `Bearer ${accessToken}`);
+        .set("Authorization", `Bearer ${access}`);
 
       expect(deleteRes.status).toBe(200);
       expect(deleteRes.body.ok).toBe(true);
@@ -450,37 +470,41 @@ maybe("Vocabulary (db integration)", () => {
 
       const listRes = await request(appMod.default)
         .get(`/api/vocabulary?kind=restoration_type&labOrganizationId=${labOrgId}`)
-        .set("Authorization", `Bearer ${accessToken}`);
+        .set("Authorization", `Bearer ${access}`);
       const values: string[] = listRes.body.data.map((v: any) => v.value);
       expect(values).not.toContain(value);
     });
 
     it("returns 403 for a non-admin lab member", async () => {
+      const { access: adminAccess } = await makeSession(adminId);
+      const { access: staffAccess } = await makeSession(staffId);
       const value = `StaffDel_${rid("sd")}`;
 
       const createRes = await request(appMod.default)
         .post("/api/vocabulary")
-        .set("Authorization", `Bearer ${accessToken}`)
+        .set("Authorization", `Bearer ${adminAccess}`)
         .send({ kind: "material", value, labOrganizationId: labOrgId });
       expect(createRes.status).toBe(201);
       const id = createRes.body.data.id as string;
 
       const deleteRes = await request(appMod.default)
         .delete(`/api/vocabulary/${id}`)
-        .set("Authorization", `Bearer ${staffToken}`);
+        .set("Authorization", `Bearer ${staffAccess}`);
 
       expect(deleteRes.status).toBe(403);
     });
 
     it("returns 404 for an unknown id", async () => {
+      const { access } = await makeSession(adminId);
       const res = await request(appMod.default)
         .delete("/api/vocabulary/00000000-0000-0000-0000-000000000000")
-        .set("Authorization", `Bearer ${accessToken}`);
+        .set("Authorization", `Bearer ${access}`);
 
       expect(res.status).toBe(404);
     });
 
     it("counts legacy mobile cases that reference the term in caseData", async () => {
+      const { access } = await makeSession(adminId);
       const value = `LegacyMat_${rid("lm")}`;
       const { db, labCases } = dbMod;
 
@@ -502,7 +526,7 @@ maybe("Vocabulary (db integration)", () => {
 
       const createRes = await request(appMod.default)
         .post("/api/vocabulary")
-        .set("Authorization", `Bearer ${accessToken}`)
+        .set("Authorization", `Bearer ${access}`)
         .send({ kind: "material", value, labOrganizationId: labOrgId });
       expect(createRes.status).toBe(201);
       const id = createRes.body.data.id as string;
@@ -510,7 +534,7 @@ maybe("Vocabulary (db integration)", () => {
       // Without force, deletion is blocked and the count reflects legacy usage.
       const blockedRes = await request(appMod.default)
         .delete(`/api/vocabulary/${id}`)
-        .set("Authorization", `Bearer ${accessToken}`);
+        .set("Authorization", `Bearer ${access}`);
       expect(blockedRes.status).toBe(409);
       expect(blockedRes.body.usageCount).toBe(2);
 
@@ -522,7 +546,7 @@ maybe("Vocabulary (db integration)", () => {
 
       const allowedRes = await request(appMod.default)
         .delete(`/api/vocabulary/${id}`)
-        .set("Authorization", `Bearer ${accessToken}`);
+        .set("Authorization", `Bearer ${access}`);
       expect(allowedRes.status).toBe(200);
       expect(allowedRes.body.data.usageCount).toBe(0);
 
@@ -530,11 +554,12 @@ maybe("Vocabulary (db integration)", () => {
     });
 
     it("returns 409 + usageCount when the term is referenced by a case restoration", async () => {
+      const { access } = await makeSession(adminId);
       const value = `UsedMat_${rid("um")}`;
 
       const createRes = await request(appMod.default)
         .post("/api/vocabulary")
-        .set("Authorization", `Bearer ${accessToken}`)
+        .set("Authorization", `Bearer ${access}`)
         .send({ kind: "material", value, labOrganizationId: labOrgId });
       expect(createRes.status).toBe(201);
       const id = createRes.body.data.id as string;
@@ -543,7 +568,7 @@ maybe("Vocabulary (db integration)", () => {
 
       const deleteRes = await request(appMod.default)
         .delete(`/api/vocabulary/${id}`)
-        .set("Authorization", `Bearer ${accessToken}`);
+        .set("Authorization", `Bearer ${access}`);
 
       expect(deleteRes.status).toBe(409);
       expect(deleteRes.body.ok).toBe(false);
@@ -552,17 +577,18 @@ maybe("Vocabulary (db integration)", () => {
       // The blocked delete must NOT remove the term.
       const listRes = await request(appMod.default)
         .get(`/api/vocabulary?kind=material&labOrganizationId=${labOrgId}`)
-        .set("Authorization", `Bearer ${accessToken}`);
+        .set("Authorization", `Bearer ${access}`);
       const values: string[] = listRes.body.data.map((v: any) => v.value);
       expect(values).toContain(value);
     });
 
     it("deletes a referenced term when force=true (200 + deleted:true)", async () => {
+      const { access } = await makeSession(adminId);
       const value = `ForceMat_${rid("fm")}`;
 
       const createRes = await request(appMod.default)
         .post("/api/vocabulary")
-        .set("Authorization", `Bearer ${accessToken}`)
+        .set("Authorization", `Bearer ${access}`)
         .send({ kind: "material", value, labOrganizationId: labOrgId });
       expect(createRes.status).toBe(201);
       const id = createRes.body.data.id as string;
@@ -571,7 +597,7 @@ maybe("Vocabulary (db integration)", () => {
 
       const deleteRes = await request(appMod.default)
         .delete(`/api/vocabulary/${id}?force=true`)
-        .set("Authorization", `Bearer ${accessToken}`);
+        .set("Authorization", `Bearer ${access}`);
 
       expect(deleteRes.status).toBe(200);
       expect(deleteRes.body.ok).toBe(true);
@@ -580,24 +606,25 @@ maybe("Vocabulary (db integration)", () => {
 
       const listRes = await request(appMod.default)
         .get(`/api/vocabulary?kind=material&labOrganizationId=${labOrgId}`)
-        .set("Authorization", `Bearer ${accessToken}`);
+        .set("Authorization", `Bearer ${access}`);
       const values: string[] = listRes.body.data.map((v: any) => v.value);
       expect(values).not.toContain(value);
     });
 
     it("deletes directly (200) when the term has no references", async () => {
+      const { access } = await makeSession(adminId);
       const value = `UnusedMat_${rid("uu")}`;
 
       const createRes = await request(appMod.default)
         .post("/api/vocabulary")
-        .set("Authorization", `Bearer ${accessToken}`)
+        .set("Authorization", `Bearer ${access}`)
         .send({ kind: "material", value, labOrganizationId: labOrgId });
       expect(createRes.status).toBe(201);
       const id = createRes.body.data.id as string;
 
       const deleteRes = await request(appMod.default)
         .delete(`/api/vocabulary/${id}`)
-        .set("Authorization", `Bearer ${accessToken}`);
+        .set("Authorization", `Bearer ${access}`);
 
       expect(deleteRes.status).toBe(200);
       expect(deleteRes.body.ok).toBe(true);
