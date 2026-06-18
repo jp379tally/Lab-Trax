@@ -81,6 +81,10 @@ Run `pnpm --filter @workspace/db run push` to apply schema changes.
 - `CLEANUP_HISTORY_MAX_ROWS` — max `media_cleanup_runs` rows (default: `1000`)
 - `MEDIA_CLEANUP_JOB_TOKEN` / `MEDIA_CLEANUP_API_URL` — for standalone cleanup script (scheduled deployment only)
 
+**Desktop installer (code-signing):**
+- `CSC_LINK` — base64-encoded PFX certificate (OV or EV) for Windows code-signing. Encode with `base64 -w 0 certificate.pfx`. When set alongside `CSC_KEY_PASSWORD`, electron-builder signs the installer automatically, removing the SmartScreen "Windows protected your PC" warning. Absent → unsigned build (SmartScreen warning present).
+- `CSC_KEY_PASSWORD` — password protecting the `CSC_LINK` PFX. Must be set together with `CSC_LINK`. Signing config (sha256, RFC 3161 via Sectigo) lives in `artifacts/labtrax-desktop/electron-builder.yml` under `signtoolOptions`.
+
 **Desktop installer:**
 - `DESKTOP_INSTALLER_VERSION` — version string in Desktop App settings panel (default: `"1.0.0"`)
 - `DESKTOP_INSTALLER_URL` — download URL (default: `/downloads/LabTrax-Setup.exe`); switch to `/downloads/LabTrax-Windows-Portable.zip` (portable ZIP fallback) or `/downloads/LabTrax.dmg` for those slots

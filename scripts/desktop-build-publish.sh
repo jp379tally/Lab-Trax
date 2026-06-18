@@ -30,6 +30,18 @@ set -euo pipefail
 #                               UPDATE_FEED_URL so live installs point at prod)
 #   PLATFORM_ADMIN_SECRET     — if set, metadata is pushed via the API;
 #                               otherwise system_settings is updated via psql
+#
+# Code-signing (Windows — removes SmartScreen "Windows protected your PC" warning):
+#   CSC_LINK          — base64-encoded PFX certificate (OV or EV).
+#                       Encode your .pfx with:  base64 -w 0 certificate.pfx
+#                       Store the result as the CSC_LINK Replit secret.
+#   CSC_KEY_PASSWORD  — password protecting the PFX.
+#                       Store it as the CSC_KEY_PASSWORD Replit secret.
+#   electron-builder picks both up automatically when they are present in the
+#   environment. When they are absent the build proceeds without signing and
+#   produces an unsigned installer (SmartScreen warning present). The signing
+#   hash algorithm (sha256) and RFC 3161 timestamp server are configured in
+#   artifacts/labtrax-desktop/electron-builder.yml under signtoolOptions.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -62,6 +74,20 @@ echo "[build] Version: ${VERSION}"
 BASE_URL="${PUBLISH_API_BASE_URL:-${VITE_API_BASE_URL}}"
 export UPDATE_FEED_URL="${BASE_URL%/}/downloads"
 echo "[build] UPDATE_FEED_URL=${UPDATE_FEED_URL} (baked into app-update.yml)"
+
+# Code-signing ----------------------------------------------------------------
+# electron-builder reads CSC_LINK / CSC_KEY_PASSWORD directly from the
+# environment. Child processes (pnpm run electron:build) inherit them
+# automatically — no explicit export is needed.
+echo ""
+if [[ -n "${CSC_LINK:-}" && -n "${CSC_KEY_PASSWORD:-}" ]]; then
+  echo "[signing] ✓ CSC_LINK and CSC_KEY_PASSWORD are set — build will be code-signed."
+  echo "[signing]   SHA-256 + RFC 3161 timestamp via Sectigo (see electron-builder.yml)."
+else
+  echo "[signing] ⚠ CSC_LINK or CSC_KEY_PASSWORD is not set — build will be UNSIGNED."
+  echo "[signing]   SmartScreen will show a warning when users run the installer."
+  echo "[signing]   To enable signing, add CSC_LINK and CSC_KEY_PASSWORD as Replit secrets."
+fi
 
 # Build -----------------------------------------------------------------------
 echo ""
