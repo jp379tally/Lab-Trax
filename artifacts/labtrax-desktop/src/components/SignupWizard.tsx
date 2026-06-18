@@ -14,6 +14,7 @@ import {
 } from "@/lib/api";
 
 type Step =
+  | "welcome"
   | "credentials"
   | "user_type"
   | "lab_info"
@@ -29,6 +30,7 @@ type Step =
   | "hipaa_disclaimer";
 
 const LAB_STEPS: Step[] = [
+  "welcome",
   "credentials",
   "user_type",
   "lab_info",
@@ -40,6 +42,7 @@ const LAB_STEPS: Step[] = [
 ];
 
 const PROVIDER_STEPS_NO_UPDATES: Step[] = [
+  "welcome",
   "credentials",
   "user_type",
   "license",
@@ -52,6 +55,7 @@ const PROVIDER_STEPS_NO_UPDATES: Step[] = [
 ];
 
 const PROVIDER_STEPS_WITH_UPDATES: Step[] = [
+  "welcome",
   "credentials",
   "user_type",
   "license",
@@ -67,6 +71,7 @@ const PROVIDER_STEPS_WITH_UPDATES: Step[] = [
 ];
 
 const STEP_HEADINGS: Record<Step, { title: string; sub: string }> = {
+  welcome: { title: "Welcome to LabTrax", sub: "Your dental laboratory management platform." },
   credentials: { title: "Create your account", sub: "Pick a username, email, and password." },
   user_type: { title: "I am a…", sub: "This sets up your workspace correctly." },
   lab_info: { title: "Lab details", sub: "Tell us about your lab." },
@@ -110,7 +115,7 @@ interface Props {
 export default function SignupWizard({ onCancel }: Props) {
   const { register } = useAuth();
 
-  const [step, setStep] = useState<Step>("credentials");
+  const [step, setStep] = useState<Step>("welcome");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -213,7 +218,7 @@ export default function SignupWizard({ onCancel }: Props) {
     if (userType === "provider") {
       return wantsUpdates ? PROVIDER_STEPS_WITH_UPDATES : PROVIDER_STEPS_NO_UPDATES;
     }
-    return ["credentials", "user_type"];
+    return ["welcome", "credentials", "user_type"];
   }, [userType, wantsUpdates]);
 
   const currentIdx = Math.max(0, stepSequence.indexOf(step));
@@ -221,7 +226,7 @@ export default function SignupWizard({ onCancel }: Props) {
 
   const goBack = useCallback(() => {
     setError(null);
-    if (step === "credentials") {
+    if (step === "welcome" || step === "credentials") {
       onCancel();
       return;
     }
@@ -505,6 +510,51 @@ export default function SignupWizard({ onCancel }: Props) {
             className="mb-4 text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md"
           >
             {error}
+          </div>
+        )}
+
+        {step === "welcome" && (
+          <div className="space-y-5">
+            <p className="text-sm text-muted-foreground leading-relaxed">
+              LabTrax is a dental lab case-tracking platform currently undergoing
+              rapid development. We ship frequent feature updates and continuous
+              improvements every week — and your feedback directly shapes what we
+              build next.
+            </p>
+            <div className="rounded-lg border border-border bg-muted/40 px-4 py-4 space-y-2 text-sm">
+              <p className="font-medium text-foreground">What's available now:</p>
+              <ul className="space-y-1 text-muted-foreground list-disc list-inside">
+                <li>Case tracking from intake to delivery</li>
+                <li>Invoice generation and payment recording</li>
+                <li>Provider and lab organization management</li>
+                <li>Case media uploads and attachments</li>
+                <li>Desktop, web, and mobile clients</li>
+              </ul>
+            </div>
+            <div className="rounded-lg border border-border bg-muted/30 px-4 py-4 space-y-2 text-sm">
+              <p className="font-medium text-foreground">Expanding soon:</p>
+              <ul className="space-y-1 text-muted-foreground list-disc list-inside">
+                <li>Provider patient portal</li>
+                <li>AI-powered Rx parsing and workflows</li>
+                <li>Production tracking and station scanning</li>
+                <li>Automated case status notifications</li>
+                <li>Mobile companion app enhancements</li>
+              </ul>
+            </div>
+            <div className="rounded-lg border border-primary/30 bg-primary/5 px-4 py-3 flex items-start gap-3 text-sm">
+              <span className="text-primary text-lg leading-none mt-0.5">🎁</span>
+              <p className="text-foreground">
+                <strong>Your first 30 days are completely free</strong> — no
+                credit card required to get started.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setStep("credentials")}
+              className="w-full h-10 rounded-lg bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 transition-colors"
+            >
+              Get Started →
+            </button>
           </div>
         )}
 

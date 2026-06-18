@@ -102,6 +102,7 @@ import {
   coerceCasePrintTemplate,
   type CasePrintTemplate,
 } from "@/lib/case-print-template";
+import { TrialBanner } from "@/components/TrialBanner";
 
 const STATUS_FILTERS: Array<{ value: string; label: string }> = [
   { value: "all", label: "All" },
@@ -1829,6 +1830,7 @@ export default function CasesPage() {
 
   return (
     <div ref={pageRef} className="px-8 py-7">
+      <TrialBanner />
       <div className="flex items-start justify-between mb-6">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Cases</h1>

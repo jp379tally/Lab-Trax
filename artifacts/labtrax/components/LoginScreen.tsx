@@ -28,8 +28,9 @@ import { useAuth } from "@/lib/auth-context";
 import { apiRequest, getApiUrl } from "@/lib/query-client";
 import { generateId, GroupJoinRequest } from "@/lib/data";
 import Colors from "@/constants/colors";
+import { Typography, Spacing } from "@/constants/tokens";
 
-type SignUpStep = "credentials" | "user_type" | "lab_name" | "lab_info" | "license" | "practice_info" | "email_verify" | "updates_opt_in" | "phone_entry" | "phone_verify" | "phone_contact_name" | "role_select" | "join_group" | "hipaa_disclaimer" | "complete";
+type SignUpStep = "welcome" | "credentials" | "user_type" | "lab_name" | "lab_info" | "license" | "practice_info" | "email_verify" | "updates_opt_in" | "phone_entry" | "phone_verify" | "phone_contact_name" | "role_select" | "join_group" | "hipaa_disclaimer" | "complete";
 
 function validatePassword(pw: string): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
@@ -157,7 +158,7 @@ export default function LoginScreen() {
 
   function switchToSignUp() {
     setMode("signup");
-    setSignUpStep("credentials");
+    setSignUpStep("welcome");
     setSignUpUsername("");
     setSignUpPassword("");
     setSignUpConfirmPassword("");
@@ -619,7 +620,9 @@ export default function LoginScreen() {
             <Pressable
               onPress={() => {
                 setSignUpError(null);
-                if (signUpStep === "credentials") {
+                if (signUpStep === "welcome") {
+                  switchToSignIn();
+                } else if (signUpStep === "credentials") {
                   switchToSignIn();
                 } else if (signUpStep === "user_type") {
                   setSignUpStep("credentials");
@@ -674,6 +677,7 @@ export default function LoginScreen() {
               </View>
               <Text style={styles.appName}>Create Account</Text>
               <Text style={styles.appTagline}>
+                {signUpStep === "welcome" && "Your dental lab management platform"}
                 {signUpStep === "credentials" && "Enter your details to get started"}
                 {signUpStep === "user_type" && "What type of account?"}
                 {signUpStep === "lab_name" && "Enter your lab name"}
@@ -691,6 +695,7 @@ export default function LoginScreen() {
               </Text>
             </View>
 
+            {signUpStep === "welcome" && renderWelcome()}
             {signUpStep === "credentials" && renderCredentialsStep()}
             {signUpStep === "user_type" && renderUserType()}
             {signUpStep === "lab_name" && renderLabName()}
@@ -2039,6 +2044,104 @@ export default function LoginScreen() {
           {" "}and{" "}
           <Text onPress={() => router.push("/privacy-policy")} style={{ color: "#60A5FA", textDecorationLine: "underline" }}>Privacy Policy</Text>.
         </Text>
+      </View>
+    );
+  }
+
+  function renderWelcome() {
+    return (
+      <View style={styles.formSection}>
+        <Text style={{ ...Typography.body, color: "rgba(255,255,255,0.75)", lineHeight: 22, marginBottom: 16 }}>
+          LabTrax is currently undergoing rapid development. We ship frequent feature updates and continuous improvements every week — and your feedback directly shapes what we build next.
+        </Text>
+
+        <View style={{
+          borderRadius: 12,
+          borderWidth: 1,
+          borderColor: "rgba(255,255,255,0.12)",
+          backgroundColor: "rgba(255,255,255,0.06)",
+          paddingHorizontal: 16,
+          paddingVertical: 14,
+          marginBottom: 12,
+          gap: 8,
+        }}>
+          <Text style={{ ...Typography.bodySemibold, color: "rgba(255,255,255,0.9)", marginBottom: 4 }}>
+            What&apos;s available now:
+          </Text>
+          {[
+            "Case tracking from intake to delivery",
+            "Invoice generation and payment recording",
+            "Provider and lab organization management",
+            "Case media uploads and attachments",
+          ].map((item) => (
+            <View key={item} style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
+              <Text style={{ color: Colors.light.tint, marginTop: 1 }}>•</Text>
+              <Text style={{ ...Typography.body, color: "rgba(255,255,255,0.7)", flex: 1 }}>{item}</Text>
+            </View>
+          ))}
+        </View>
+
+        <View style={{
+          borderRadius: 12,
+          borderWidth: 1,
+          borderColor: "rgba(255,255,255,0.10)",
+          backgroundColor: "rgba(255,255,255,0.04)",
+          paddingHorizontal: 16,
+          paddingVertical: 14,
+          marginBottom: 16,
+          gap: 8,
+        }}>
+          <Text style={{ ...Typography.bodySemibold, color: "rgba(255,255,255,0.9)", marginBottom: 4 }}>
+            Expanding soon:
+          </Text>
+          {[
+            "Provider patient portal",
+            "AI-powered Rx parsing and workflows",
+            "Production tracking and station scanning",
+            "Automated case status notifications",
+            "Mobile companion app enhancements",
+          ].map((item) => (
+            <View key={item} style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
+              <Text style={{ color: Colors.light.tint, marginTop: 1 }}>→</Text>
+              <Text style={{ ...Typography.body, color: "rgba(255,255,255,0.65)", flex: 1 }}>{item}</Text>
+            </View>
+          ))}
+        </View>
+
+        <View style={{
+          borderRadius: 12,
+          borderWidth: 1,
+          borderColor: "rgba(99,179,237,0.4)",
+          backgroundColor: "rgba(99,179,237,0.1)",
+          paddingHorizontal: 16,
+          paddingVertical: 14,
+          flexDirection: "row",
+          alignItems: "flex-start",
+          gap: 10,
+          marginBottom: 24,
+        }}>
+          <Text style={{ fontSize: 18, lineHeight: 22 }}>🎁</Text>
+          <Text style={{ ...Typography.body, color: "rgba(255,255,255,0.9)", flex: 1 }}>
+            <Text style={{ fontWeight: "700" }}>Your first 30 days are completely free</Text>
+            {" "}— no credit card required to get started.
+          </Text>
+        </View>
+
+        <Pressable
+          onPress={() => setSignUpStep("credentials")}
+          style={({ pressed }) => [{
+            backgroundColor: Colors.light.tint,
+            borderRadius: 12,
+            paddingVertical: 14,
+            alignItems: "center",
+            opacity: pressed ? 0.85 : 1,
+          }]}
+          testID="welcome-get-started-btn"
+        >
+          <Text style={{ ...Typography.bodySemibold, color: "#fff", fontSize: 16 }}>
+            Get Started →
+          </Text>
+        </Pressable>
       </View>
     );
   }

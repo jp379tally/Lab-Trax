@@ -29,6 +29,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { DashboardDropZone } from "@/components/DashboardDropZone";
 import { NewCaseModal, CaseDrawer } from "./cases";
 import { useAuth } from "@/lib/auth-context";
+import { TrialBanner, DashboardSubscriptionBanner } from "@/components/TrialBanner";
 
 interface MediaCleanupRun {
   id: string;
@@ -909,6 +910,8 @@ export default function DashboardPage() {
 
   return (
     <div className="px-8 py-7 max-w-[1400px] mx-auto">
+      <DashboardSubscriptionBanner />
+      <TrialBanner />
       <div className="flex items-end justify-between mb-7">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">

@@ -15,6 +15,7 @@ import {
   TouchableWithoutFeedback,
   Keyboard,
 } from "react-native";
+import { useQuery } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -48,6 +49,151 @@ interface ScanMatch {
   patientName: string;
   caseNumber: string | null;
   caseId: string;
+}
+
+// ── MobileTrialBanner ────────────────────────────────────────────────────────
+interface TrialEntitlement {
+  status: string;
+  trialDaysRemaining: number | null;
+}
+
+function MobileTrialBanner() {
+  const { data } = useQuery<{ ok: boolean; entitlement: TrialEntitlement }>({
+    queryKey: ["billing", "subscription"],
+    queryFn: async () => {
+      const res = await resilientFetch("/api/billing/subscription");
+      return res.json() as Promise<{ ok: boolean; entitlement: TrialEntitlement }>;
+    },
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+
+  const entitlement = data?.entitlement;
+  if (!entitlement) return null;
+
+  const { status, trialDaysRemaining } = entitlement;
+  if (status === "active" || status === "legacy_free") return null;
+
+  if (status === "locked" || status === "canceled" || status === "grace") {
+    return (
+      <Pressable
+        onPress={() => router.push("/settings/subscriptions" as never)}
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 8,
+          marginHorizontal: Spacing.md,
+          marginBottom: Spacing.sm,
+          paddingHorizontal: Spacing.md,
+          paddingVertical: 10,
+          borderRadius: 10,
+          borderWidth: 1,
+          borderColor: "rgba(220,38,38,0.4)",
+          backgroundColor: "rgba(220,38,38,0.08)",
+        }}
+      >
+        <Ionicons name="alert-circle" size={16} color="#EF4444" />
+        <Text style={{ flex: 1, fontSize: 13, fontWeight: "500", color: "#EF4444" }}>
+          {status === "grace" ? "Trial expired — add billing to continue" : "Subscription Required"}
+        </Text>
+        <Text style={{ fontSize: 12, fontWeight: "600", color: "#EF4444" }}>Upgrade →</Text>
+      </Pressable>
+    );
+  }
+
+  if (status === "trialing" && trialDaysRemaining !== null) {
+    if (trialDaysRemaining <= 0) {
+      return (
+        <Pressable
+          onPress={() => router.push("/settings/subscriptions" as never)}
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 8,
+            marginHorizontal: Spacing.md,
+            marginBottom: Spacing.sm,
+            paddingHorizontal: Spacing.md,
+            paddingVertical: 10,
+            borderRadius: 10,
+            borderWidth: 1,
+            borderColor: "rgba(220,38,38,0.4)",
+            backgroundColor: "rgba(220,38,38,0.08)",
+          }}
+        >
+          <Ionicons name="alert-circle" size={16} color="#EF4444" />
+          <Text style={{ flex: 1, fontSize: 13, fontWeight: "500", color: "#EF4444" }}>
+            Subscription Required
+          </Text>
+          <Text style={{ fontSize: 12, fontWeight: "600", color: "#EF4444" }}>Upgrade →</Text>
+        </Pressable>
+      );
+    }
+
+    if (trialDaysRemaining <= 3) {
+      return (
+        <Pressable
+          onPress={() => router.push("/settings/subscriptions" as never)}
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 8,
+            marginHorizontal: Spacing.md,
+            marginBottom: Spacing.sm,
+            paddingHorizontal: Spacing.md,
+            paddingVertical: 10,
+            borderRadius: 10,
+            borderWidth: 1,
+            borderColor: "rgba(245,158,11,0.4)",
+            backgroundColor: "rgba(245,158,11,0.08)",
+          }}
+        >
+          <Ionicons name="alert-circle-outline" size={16} color="#F59E0B" />
+          <Text style={{ flex: 1, fontSize: 13, color: "#92400E" }}>
+            Trial expires in{" "}
+            <Text style={{ fontWeight: "700" }}>
+              {trialDaysRemaining} day{trialDaysRemaining !== 1 ? "s" : ""}
+            </Text>
+            . Add billing to avoid interruption.
+          </Text>
+          <Text style={{ fontSize: 12, fontWeight: "600", color: "#D97706" }}>Add →</Text>
+        </Pressable>
+      );
+    }
+
+    if (trialDaysRemaining <= 7) {
+      return (
+        <Pressable
+          onPress={() => router.push("/settings/subscriptions" as never)}
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 8,
+            marginHorizontal: Spacing.md,
+            marginBottom: Spacing.sm,
+            paddingHorizontal: Spacing.md,
+            paddingVertical: 10,
+            borderRadius: 10,
+            borderWidth: 1,
+            borderColor: "rgba(59,130,246,0.3)",
+            backgroundColor: "rgba(59,130,246,0.06)",
+          }}
+        >
+          <Ionicons name="time-outline" size={16} color="#3B82F6" />
+          <Text style={{ flex: 1, fontSize: 13, color: "#1D4ED8" }}>
+            Free trial expires in{" "}
+            <Text style={{ fontWeight: "700" }}>
+              {trialDaysRemaining} day{trialDaysRemaining !== 1 ? "s" : ""}
+            </Text>
+            .
+          </Text>
+          <Text style={{ fontSize: 12, fontWeight: "600", color: "#3B82F6" }}>View →</Text>
+        </Pressable>
+      );
+    }
+  }
+
+  return null;
+}
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -601,6 +747,9 @@ export default function CasesListScreen() {
           </Pressable>
         </View>
       )}
+
+      {/* Trial status banner */}
+      <MobileTrialBanner />
 
       {/* Share-intent banner */}
       {pendingShared.length > 0 ? (
