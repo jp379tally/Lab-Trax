@@ -525,6 +525,14 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
     return Array.from(names).sort((a, b) => a.localeCompare(b));
   }, [casesQuery.data]);
 
+  const distinctDoctorNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const c of casesQuery.data ?? []) {
+      if (c.doctorName?.trim()) names.add(c.doctorName.trim());
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [casesQuery.data]);
+
   const [form, setForm] = useState<NewCaseFormData>({
     caseNumber: generateCaseNumber(),
     labOrganizationId: "",
@@ -778,12 +786,12 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
               <label className="block text-xs font-medium text-muted-foreground mb-1">
                 Doctor name
               </label>
-              <input
-                className="w-full h-9 px-3 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+              <FieldCombobox
                 value={form.doctorName}
-                onChange={(e) => set("doctorName", e.target.value)}
+                suggestions={distinctDoctorNames}
+                onChange={(v) => set("doctorName", v)}
                 placeholder="Dr. Smith"
-                required
+                inputClassName="h-9 focus:ring-primary focus:border-primary"
               />
             </div>
 
