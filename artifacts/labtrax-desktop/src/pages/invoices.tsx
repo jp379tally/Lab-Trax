@@ -2894,36 +2894,72 @@ export function InvoiceEditor({
             />
           </section>
 
-          {detailQuery.data?.linkedTransactions && detailQuery.data.linkedTransactions.length > 0 && (
-            <section>
-              <h3 className="text-sm font-semibold mb-2">Linked register entries</h3>
-              <div className="border border-border rounded-md divide-y divide-border">
-                {detailQuery.data.linkedTransactions.map((t) => (
-                  <div
-                    key={t.id}
-                    className="flex items-center justify-between px-3 py-2 text-sm"
-                  >
-                    <div>
-                      <div className="font-medium">
-                        {formatMoney(
-                          Number(t.creditAmount) - Number(t.debitAmount)
+          {detailQuery.data?.linkedTransactions && detailQuery.data.linkedTransactions.length > 0 && (() => {
+            const linkedTxns = detailQuery.data.linkedTransactions;
+            const linkedTxnTotal = linkedTxns.reduce(
+              (sum, t) => sum + Number(t.creditAmount) - Number(t.debitAmount),
+              0
+            );
+            // Use balanceDue (remaining unpaid) as the target — not total —
+            // so partially-paid invoices don't generate false positives.
+            const invoiceBalanceDue = Number(detailQuery.data?.balanceDue ?? detailQuery.data?.total ?? 0);
+            const aggregateMismatch =
+              invoiceBalanceDue > 0.005 &&
+              linkedTxnTotal < invoiceBalanceDue - 0.01;
+            return (
+              <section>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-sm font-semibold">Linked register entries</h3>
+                  <span className={`text-xs tabular-nums ${aggregateMismatch ? "text-amber-600 dark:text-amber-400 font-medium" : "text-muted-foreground"}`}>
+                    {aggregateMismatch && <AlertCircle size={11} className="inline mr-1 mb-0.5" />}
+                    Total: {formatMoney(linkedTxnTotal)}
+                  </span>
+                </div>
+                <div className="border border-border rounded-md divide-y divide-border">
+                  {linkedTxns.map((t) => {
+                    const entryNet = Number(t.creditAmount) - Number(t.debitAmount);
+                    // Flag this individual entry when it alone is less than the
+                    // outstanding balance AND it's the only linked entry (single
+                    // entry that can't cover the invoice by itself).
+                    const entryShortfall =
+                      aggregateMismatch &&
+                      linkedTxns.length === 1 &&
+                      entryNet < invoiceBalanceDue - 0.01;
+                    return (
+                      <div
+                        key={t.id}
+                        className={`flex items-center justify-between px-3 py-2 text-sm ${entryShortfall ? "bg-amber-50/60 dark:bg-amber-950/20" : ""}`}
+                      >
+                        <div>
+                          <div className={`font-medium flex items-center gap-1 ${entryShortfall ? "text-amber-700 dark:text-amber-400" : ""}`}>
+                            {formatMoney(entryNet)}
+                            {entryShortfall && (
+                              <AlertCircle size={12} className="shrink-0" aria-label={`Doesn't cover balance due (${formatMoney(invoiceBalanceDue)})`} />
+                            )}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            {t.accountName || "Bank"} · {formatDate(t.txnDate)}
+                            {t.payee ? ` · ${t.payee}` : ""}
+                          </div>
+                        </div>
+                        {t.source === "invoice" && (
+                          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                            auto
+                          </span>
                         )}
                       </div>
-                      <div className="text-xs text-muted-foreground">
-                        {t.accountName || "Bank"} · {formatDate(t.txnDate)}
-                        {t.payee ? ` · ${t.payee}` : ""}
-                      </div>
-                    </div>
-                    {t.source === "invoice" && (
-                      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                        auto
-                      </span>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
+                    );
+                  })}
+                </div>
+                {aggregateMismatch && (
+                  <p className="mt-1.5 flex items-start gap-1 text-xs text-amber-600 dark:text-amber-400">
+                    <AlertCircle size={12} className="shrink-0 mt-0.5" />
+                    Linked entries ({formatMoney(linkedTxnTotal)}) don&apos;t cover the balance due ({formatMoney(invoiceBalanceDue)}).
+                  </p>
+                )}
+              </section>
+            );
+          })()}
 
           {detailQuery.data?.payments && detailQuery.data.payments.length > 0 && (
             <section>

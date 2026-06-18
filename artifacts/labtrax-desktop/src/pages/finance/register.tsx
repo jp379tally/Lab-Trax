@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeftRight, Ban, CheckCircle2, Download, Landmark, Loader2, Plus, Repeat, Scale, Search, Trash2, Upload, X } from "lucide-react";
+import { AlertTriangle, ArrowLeftRight, Ban, CheckCircle2, Download, Landmark, Loader2, Plus, Repeat, Scale, Search, Trash2, Upload, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { FinanceShell } from "@/components/finance/FinanceShell";
 import { TYPE_BADGE_CLASS, TYPE_LABEL, useVendors, VendorCombobox } from "@/components/finance/VendorCombobox";
@@ -2442,6 +2442,19 @@ function TxnEditor({
     [orgInvoices]
   );
 
+  const linkedInvoiceTotal = useMemo(
+    () =>
+      invoiceIds.reduce((sum, id) => {
+        const inv = invoiceById.get(id);
+        return sum + Number(inv?.balanceDue ?? 0);
+      }, 0),
+    [invoiceIds, invoiceById]
+  );
+  const depositNum = Number(deposit) || 0;
+  const invoiceMismatch =
+    invoiceIds.length > 0 &&
+    Math.abs(depositNum - linkedInvoiceTotal) >= 0.01;
+
   const save = useMutation({
     mutationFn: () => {
       const body = {
@@ -2461,13 +2474,20 @@ function TxnEditor({
       const path = existing
         ? `/finance/transactions/${existing.id}`
         : "/finance/transactions";
-      return apiFetch(path, {
+      return apiFetch<{ depositInvoiceMismatchWarning?: string | null }>(path, {
         method: existing ? "PATCH" : "POST",
         body: JSON.stringify(body),
       });
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["finance"] });
+      if (data?.depositInvoiceMismatchWarning) {
+        toast({
+          title: "Deposit/invoice mismatch",
+          description: data.depositInvoiceMismatchWarning,
+          variant: "destructive",
+        });
+      }
       onClose();
     },
     onError: (e: Error) => setError(e.message),
@@ -2577,8 +2597,17 @@ function TxnEditor({
                 min="0"
                 value={deposit}
                 onChange={(e) => setDeposit(e.target.value)}
-                className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm text-right tabular-nums"
+                className={`w-full h-9 px-2.5 rounded-md bg-background border text-sm text-right tabular-nums ${invoiceMismatch ? "border-amber-500 dark:border-amber-400" : "border-input"}`}
               />
+              {invoiceIds.length > 0 && (
+                <p className={`mt-1 text-xs flex items-center gap-1 ${invoiceMismatch ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"}`}>
+                  {invoiceMismatch && <AlertTriangle size={11} className="shrink-0" />}
+                  Invoice total: {formatMoney(linkedInvoiceTotal)}
+                  {invoiceMismatch && (
+                    <> &mdash; Δ {formatMoney(Math.abs(depositNum - linkedInvoiceTotal))}</>
+                  )}
+                </p>
+              )}
             </Field>
           </div>
           <label className="inline-flex items-center gap-2 text-sm">
@@ -2601,6 +2630,11 @@ function TxnEditor({
                         className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-secondary text-xs font-mono"
                       >
                         {inv?.invoiceNumber || id}
+                        {inv?.balanceDue !== undefined && inv.balanceDue !== null && (
+                          <span className="text-muted-foreground">
+                            {" "}{formatMoney(Number(inv.balanceDue))}
+                          </span>
+                        )}
                         <button
                           type="button"
                           onClick={() =>
@@ -2616,6 +2650,15 @@ function TxnEditor({
                       </span>
                     );
                   })}
+                </div>
+              )}
+              {invoiceMismatch && (
+                <div className="flex items-start gap-1.5 px-2.5 py-2 rounded-md bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 text-xs">
+                  <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+                  <span>
+                    Deposit ({formatMoney(depositNum)}) doesn&apos;t match the linked invoice total ({formatMoney(linkedInvoiceTotal)}).
+                    Check amounts before saving.
+                  </span>
                 </div>
               )}
               <select

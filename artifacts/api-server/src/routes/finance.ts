@@ -689,6 +689,32 @@ async function syncTxnInvoiceLinks(
   }
 }
 
+async function computeDepositMismatchWarning(
+  txnId: string,
+  depositAmount: number
+): Promise<string | null> {
+  const links = await db.query.bankTransactionInvoices.findMany({
+    where: eq(bankTransactionInvoices.bankTransactionId, txnId),
+  });
+  if (!links.length) return null;
+  const invIds = links.map((l) => l.invoiceId);
+  const found = await db.query.invoices.findMany({
+    where: inArray(invoices.id, invIds),
+    columns: { id: true, balanceDue: true, invoiceNumber: true },
+  });
+  if (!found.length) return null;
+  const invoiceTotal = found.reduce(
+    (sum, inv) => sum + Number(inv.balanceDue ?? 0),
+    0
+  );
+  const delta = Math.abs(depositAmount - invoiceTotal);
+  if (delta < 0.01) return null;
+  return (
+    `Deposit $${depositAmount.toFixed(2)} does not match linked invoice total ` +
+    `$${invoiceTotal.toFixed(2)} (Δ$${delta.toFixed(2)}).`
+  );
+}
+
 router.post(
   "/transactions",
   asyncHandler(async (req, res) => {
@@ -733,7 +759,10 @@ router.post(
       );
     }
     await syncTxnInvoiceLinks(row.id, acct.labOrganizationId, input.invoiceIds);
-    return ok(res, row, 201);
+    const depositInvoiceMismatchWarning = input.invoiceIds?.length
+      ? await computeDepositMismatchWarning(row.id, credit)
+      : null;
+    return res.status(201).json({ ok: true, data: { ...row, depositInvoiceMismatchWarning } });
   })
 );
 
@@ -791,7 +820,14 @@ router.patch(
       row.labOrganizationId,
       input.invoiceIds
     );
-    return ok(res, row);
+    const depositCredit =
+      input.deposit !== undefined
+        ? Number(input.deposit)
+        : Number(row.creditAmount);
+    const depositInvoiceMismatchWarning = input.invoiceIds?.length
+      ? await computeDepositMismatchWarning(row.id, depositCredit)
+      : null;
+    return res.json({ ok: true, data: { ...row, depositInvoiceMismatchWarning } });
   })
 );
 
