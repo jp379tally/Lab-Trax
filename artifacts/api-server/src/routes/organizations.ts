@@ -468,7 +468,7 @@ router.post(
         if (existingByName) {
           throw new HttpError(
             409,
-            "Practice already exists. Select existing practice instead."
+            "A practice with this name already exists. Select existing practice instead."
           );
         }
 
@@ -552,7 +552,7 @@ router.post(
       if (pgCode === "23505") {
         throw new HttpError(
           409,
-          "Practice already exists. Select existing practice instead."
+          "A practice with this name already exists. Select existing practice instead."
         );
       }
       if (pgCode === "23502" || pgCode === "23514") {

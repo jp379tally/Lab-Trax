@@ -988,7 +988,7 @@ maybe("Organizations CRUD (db integration)", () => {
     // same lab must return a human-readable 409 message — no raw SQL or
     // Drizzle error string may leak to the caller.
 
-    it("(5) duplicate practice name in same lab returns clean 409 (not raw SQL)", async () => {
+    it("(5) duplicate practice name in same lab returns clean 409 with expected message", async () => {
       const { access } = await makeSession(aiOwnerId);
       const practiceName = rid("DupNamePractice");
 
@@ -1024,7 +1024,46 @@ maybe("Organizations CRUD (db integration)", () => {
       // Message must be human-readable, not a raw SQL string.
       const msg: string = second.body.message ?? second.body.error ?? "";
       expect(msg).not.toMatch(/insert into|organizations|drizzle/i);
-      expect(msg.length).toBeGreaterThan(0);
+      expect(msg).toBe(
+        "A practice with this name already exists. Select existing practice instead."
+      );
+    });
+
+    it("(5b) duplicate practice name is rejected case-insensitively", async () => {
+      const { access } = await makeSession(aiOwnerId);
+      const baseName = rid("CaseDupPractice");
+
+      const first = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: baseName.toLowerCase(),
+          parentLabOrganizationId: aiLabId,
+          city: "Tampa",
+          state: "FL",
+          zip: "33601",
+        });
+      expect(first.status).toBe(201);
+      aiProviderIds.push(first.body.data.id);
+
+      // Same name but uppercased — must still be rejected.
+      const second = await request(appMod.default)
+        .post("/api/organizations")
+        .set("Authorization", `Bearer ${access}`)
+        .send({
+          type: "provider",
+          name: baseName.toUpperCase(),
+          parentLabOrganizationId: aiLabId,
+          city: "Tampa",
+          state: "FL",
+          zip: "33601",
+        });
+      expect(second.status).toBe(409);
+      const msg: string = second.body.message ?? second.body.error ?? "";
+      expect(msg).toBe(
+        "A practice with this name already exists. Select existing practice instead."
+      );
     });
 
     // ── (6) Field validation: name, city, state, zip all required ──────────
