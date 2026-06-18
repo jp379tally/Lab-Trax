@@ -489,6 +489,9 @@ export default function CasesListScreen() {
   const [barcodeFilter, setBarcodeFilter] = useState("");
   const [showBarcodeFilter, setShowBarcodeFilter] = useState(false);
 
+  // ── Conflict filter (show only cases with duplicate active barcodes)
+  const [conflictFilter, setConflictFilter] = useState(false);
+
   // ── Location filter (empty array = all locations)
   const [locationFilter, setLocationFilter] = useState<string[]>([]);
   const [showLocationModal, setShowLocationModal] = useState(false);
@@ -561,6 +564,38 @@ export default function CasesListScreen() {
 
   const casesQuery = useCases();
   const cases = casesQuery.data ?? [];
+
+  // ── Conflict detection ────────────────────────────────────────────────────
+  // A case is "conflicting" when two or more active (non-terminal) cases in the
+  // same lab share the same casePanBarcode — mirrors the desktop Conflict badge
+  // and the DB partial-unique-index predicate (status <> 'complete').
+  const conflictIds = useMemo(() => {
+    const counts = new Map<string, string[]>(); // key → [caseId, ...]
+    for (const c of cases) {
+      const barcode = c.casePanBarcode?.trim();
+      if (!barcode) continue;
+      const s = (c.status ?? "").toLowerCase();
+      // Skip terminal statuses — matches partial-index predicate
+      if (
+        s.includes("complete") ||
+        s.includes("deliver") ||
+        s.includes("done") ||
+        s.includes("cancel") ||
+        s.includes("void")
+      ) continue;
+      const key = `${c.labOrganizationId ?? ""}::${barcode.toLowerCase()}`;
+      const list = counts.get(key);
+      if (list) list.push(c.id);
+      else counts.set(key, [c.id]);
+    }
+    const result = new Set<string>();
+    for (const ids of counts.values()) {
+      if (ids.length >= 2) {
+        for (const id of ids) result.add(id);
+      }
+    }
+    return result;
+  }, [cases]);
 
   const refreshShared = useCallback(() => {
     peekSharedFiles()
@@ -641,8 +676,13 @@ export default function CasesListScreen() {
       );
     }
 
+    // Conflict filter — only cases that share an active barcode with another case
+    if (conflictFilter) {
+      result = result.filter((c) => conflictIds.has(c.id));
+    }
+
     return result;
-  }, [cases, query, dueFilter, customFrom, customTo, locationFilter, barcodeFilter]);
+  }, [cases, query, dueFilter, customFrom, customTo, locationFilter, barcodeFilter, conflictFilter, conflictIds]);
 
   // ── Custom date modal actions ─────────────────────────────────────────────
   function openCustomModal() {
@@ -705,7 +745,7 @@ export default function CasesListScreen() {
   }, [locationFilter]);
 
   const activeFilters =
-    dueFilter !== "all" || locationFilter.length > 0 || barcodeFilter.trim().length > 0;
+    dueFilter !== "all" || locationFilter.length > 0 || barcodeFilter.trim().length > 0 || conflictFilter;
 
   // Derived: the CanonicalCase objects for the currently selected IDs
   const selectedCases = useMemo(
@@ -928,6 +968,43 @@ export default function CasesListScreen() {
               </Pressable>
             )}
           </Pressable>
+
+          {/* Divider */}
+          <View style={styles.chipDivider} />
+
+          {/* Conflicts chip — narrows list to cases with duplicate active barcodes */}
+          <Pressable
+            style={[
+              styles.chip,
+              conflictFilter && { backgroundColor: "#F59E0B22", borderColor: "#F59E0B" },
+            ]}
+            onPress={() => setConflictFilter((v) => !v)}
+            testID="cases-conflict-filter-chip"
+          >
+            <Ionicons
+              name="alert-circle-outline"
+              size={14}
+              color={conflictFilter ? "#D97706" : colors.textSecondary}
+              style={{ marginRight: 4 }}
+            />
+            <Text
+              style={[
+                styles.chipText,
+                conflictFilter && { color: "#D97706" },
+              ]}
+            >
+              Conflicts
+            </Text>
+            {conflictFilter && (
+              <Pressable
+                hitSlop={8}
+                onPress={(e) => { e.stopPropagation(); setConflictFilter(false); }}
+                style={{ marginLeft: 4 }}
+              >
+                <Ionicons name="close-circle" size={14} color="#D97706" />
+              </Pressable>
+            )}
+          </Pressable>
         </ScrollView>
       </View>
 
@@ -1038,6 +1115,11 @@ export default function CasesListScreen() {
                       <View style={styles.panRow}>
                         <Ionicons name="barcode-outline" size={12} color={colors.textTertiary} />
                         <Text style={styles.panText} numberOfLines={1}>{item.casePanBarcode}</Text>
+                        {conflictIds.has(item.id) ? (
+                          <View style={styles.conflictBadge} testID={`conflict-badge-${item.id}`}>
+                            <Text style={styles.conflictBadgeText}>Conflict</Text>
+                          </View>
+                        ) : null}
                       </View>
                     ) : null}
                     <Text style={styles.rowDue}>Due {formatDate(item.dueDate)}</Text>
@@ -1566,6 +1648,20 @@ function makeStyles(c: ThemeColors) {
     rowDue: { ...Typography.caption, color: c.textTertiary, marginTop: 2 },
     panRow: { flexDirection: "row", alignItems: "center", gap: 3, marginTop: 2 },
     panText: { ...Typography.caption, color: c.textTertiary, fontVariant: ["tabular-nums"] as any },
+    conflictBadge: {
+      marginLeft: 4,
+      paddingHorizontal: 5,
+      paddingVertical: 1,
+      borderRadius: Radius.xs,
+      backgroundColor: "rgba(245,158,11,0.15)",
+      borderWidth: 1,
+      borderColor: "rgba(245,158,11,0.5)",
+    },
+    conflictBadgeText: {
+      fontSize: 10,
+      fontWeight: "600" as const,
+      color: "#D97706",
+    },
     rowRight: { alignItems: "flex-end", gap: Spacing.xs },
     center: {
       flex: 1,

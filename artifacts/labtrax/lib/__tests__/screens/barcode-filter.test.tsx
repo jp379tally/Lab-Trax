@@ -7,6 +7,13 @@
  *   filter string as a substring but is not identical is excluded.
  * - The chip label updates to show the active barcode value.
  * - Clearing the filter restores the full case list.
+ *
+ * Barcode conflict detection:
+ * - Two or more active (non-terminal) cases in the same lab with the same
+ *   casePanBarcode are "conflicting". Each gets an amber "Conflict" badge.
+ * - A "Conflicts" filter chip narrows the list to only conflicting cases.
+ * - Terminal-status cases (complete, delivered, etc.) are excluded from
+ *   conflict detection even when they share a barcode.
  */
 
 import React from "react";
@@ -52,6 +59,51 @@ const NO_BARCODE = {
   ...BASE, id: "bc-4", caseNumber: "9004",
   patientFirstName: "Dave", patientLastName: "D",
   casePanBarcode: undefined,
+};
+
+// ── Conflict detection fixtures ───────────────────────────────────────────────
+
+const LAB_ID = "lab-org-001";
+
+/** Two active cases that share the same barcode in the same lab → both conflicting */
+const CONFLICT_A = {
+  ...BASE,
+  id: "con-1", caseNumber: "8001",
+  patientFirstName: "Eve", patientLastName: "E",
+  casePanBarcode: "DUP-BARCODE",
+  labOrganizationId: LAB_ID,
+  status: "received",
+};
+const CONFLICT_B = {
+  ...BASE,
+  id: "con-2", caseNumber: "8002",
+  patientFirstName: "Frank", patientLastName: "F",
+  casePanBarcode: "DUP-BARCODE",
+  labOrganizationId: LAB_ID,
+  status: "in_progress",
+};
+
+/** Active case with a unique barcode — must NOT be flagged as conflicting */
+const UNIQUE_BARCODE = {
+  ...BASE,
+  id: "con-3", caseNumber: "8003",
+  patientFirstName: "Grace", patientLastName: "G",
+  casePanBarcode: "UNIQUE-BARCODE",
+  labOrganizationId: LAB_ID,
+  status: "received",
+};
+
+/**
+ * Complete case that happens to share the same barcode as CONFLICT_A/B.
+ * Terminal-status cases are excluded from conflict detection.
+ */
+const COMPLETE_DUP = {
+  ...BASE,
+  id: "con-4", caseNumber: "8004",
+  patientFirstName: "Hank", patientLastName: "H",
+  casePanBarcode: "DUP-BARCODE",
+  labOrganizationId: LAB_ID,
+  status: "complete",
 };
 
 afterEach(() => {
@@ -135,5 +187,67 @@ describe("CasesListScreen — barcode quick-filter", () => {
 
     // Alice's "SCAN-001" (uppercase) should still match "scan-001" (lowercase)
     expect(getAllByText(/#9001/).length).toBeGreaterThan(0);
+  });
+});
+
+describe("CasesListScreen — barcode conflict detection", () => {
+  beforeEach(() => {
+    setMockAppState({
+      cases: [CONFLICT_A, CONFLICT_B, UNIQUE_BARCODE, COMPLETE_DUP],
+    });
+  });
+
+  it("conflict badge appears on both active cases that share a barcode", () => {
+    const { getByTestId } = render(<CasesListScreen />);
+    // Both con-1 and con-2 share "DUP-BARCODE" and are active
+    expect(getByTestId("conflict-badge-con-1")).toBeTruthy();
+    expect(getByTestId("conflict-badge-con-2")).toBeTruthy();
+  });
+
+  it("conflict badge shows the text 'Conflict'", () => {
+    const { getAllByText } = render(<CasesListScreen />);
+    const badges = getAllByText("Conflict");
+    // One badge per conflicting case (con-1 and con-2)
+    expect(badges.length).toBe(2);
+  });
+
+  it("conflict badge does not appear on a case with a unique barcode", () => {
+    const { queryByTestId } = render(<CasesListScreen />);
+    expect(queryByTestId("conflict-badge-con-3")).toBeNull();
+  });
+
+  it("complete-status duplicate is excluded from conflict detection", () => {
+    // COMPLETE_DUP shares "DUP-BARCODE" but status=complete → not flagged
+    const { queryByTestId } = render(<CasesListScreen />);
+    expect(queryByTestId("conflict-badge-con-4")).toBeNull();
+  });
+
+  it("Conflicts chip is present in the filter row", () => {
+    const { getByTestId } = render(<CasesListScreen />);
+    expect(getByTestId("cases-conflict-filter-chip")).toBeTruthy();
+  });
+
+  it("pressing the Conflicts chip filters to only conflicting cases", () => {
+    const { getByTestId, queryAllByText, getAllByText } = render(<CasesListScreen />);
+    fireEvent.press(getByTestId("cases-conflict-filter-chip"));
+
+    // con-1 and con-2 (conflicting) must be visible
+    expect(getAllByText(/#8001/).length).toBeGreaterThan(0);
+    expect(getAllByText(/#8002/).length).toBeGreaterThan(0);
+    // con-3 (unique barcode) must be hidden
+    expect(queryAllByText(/#8003/).length).toBe(0);
+    // con-4 (complete dup — excluded from conflicts) must be hidden
+    expect(queryAllByText(/#8004/).length).toBe(0);
+  });
+
+  it("clearing the Conflicts chip restores all cases", () => {
+    const { getByTestId, getAllByText } = render(<CasesListScreen />);
+    // Enable then clear
+    fireEvent.press(getByTestId("cases-conflict-filter-chip"));
+    fireEvent.press(getByTestId("cases-conflict-filter-chip"));
+
+    expect(getAllByText(/#8001/).length).toBeGreaterThan(0);
+    expect(getAllByText(/#8002/).length).toBeGreaterThan(0);
+    expect(getAllByText(/#8003/).length).toBeGreaterThan(0);
   });
 });
