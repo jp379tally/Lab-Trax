@@ -113,14 +113,6 @@ export default function AccountScreen() {
             onPress={() => push("/settings/password")}
           />
           <SettingsRow
-            icon="shield-checkmark-outline"
-            iconColor="#10B981"
-            iconBg="#10B98120"
-            title="Two-factor authentication"
-            subtitle="Secure your account with an authenticator app"
-            onPress={() => push("/settings/two-factor")}
-          />
-          <SettingsRow
             icon="phone-portrait-outline"
             iconColor="#64748B"
             iconBg="#64748B20"

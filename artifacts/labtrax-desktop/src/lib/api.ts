@@ -239,7 +239,6 @@ export function clearPlatformAdminSecretCache(): void {
 })();
 
 const TOKEN_STORAGE_KEY = "labtrax_desktop_tokens_v1";
-const TRUSTED_DEVICE_STORAGE_KEY = "labtrax_trusted_device_v1";
 const REMEMBER_ME_STORAGE_KEY = "labtrax_desktop_remember_me_v1";
 
 /** Returns the user's last "Remember Me" choice (defaults true for new installs). */
@@ -264,34 +263,6 @@ export function saveRememberMe(val: boolean): void {
   }
 }
 
-export function getTrustedDeviceToken(): string | null {
-  try {
-    if (typeof localStorage === "undefined") return null;
-    return localStorage.getItem(TRUSTED_DEVICE_STORAGE_KEY);
-  } catch {
-    return null;
-  }
-}
-
-export function saveTrustedDeviceToken(token: string): void {
-  try {
-    if (typeof localStorage !== "undefined") {
-      localStorage.setItem(TRUSTED_DEVICE_STORAGE_KEY, token);
-    }
-  } catch {
-    /* ignore */
-  }
-}
-
-export function clearTrustedDeviceToken(): void {
-  try {
-    if (typeof localStorage !== "undefined") {
-      localStorage.removeItem(TRUSTED_DEVICE_STORAGE_KEY);
-    }
-  } catch {
-    /* ignore */
-  }
-}
 
 type TokenPair = { accessToken: string; refreshToken: string };
 
@@ -1046,15 +1017,6 @@ export async function sendUploadChunk(
   return result.data;
 }
 
-export class TwoFactorRequiredError extends Error {
-  readonly pendingToken: string;
-  constructor(pendingToken: string) {
-    super("Two-factor authentication required.");
-    this.name = "TwoFactorRequiredError";
-    this.pendingToken = pendingToken;
-  }
-}
-
 export async function login(username: string, password: string, rememberMe = true): Promise<SessionUser> {
   let r: Response;
   try {
@@ -1066,9 +1028,6 @@ export async function login(username: string, password: string, rememberMe = tru
         password,
         deviceName: "LabTrax Desktop",
         clientType: "desktop",
-        // Include a previously saved trust token so a recognised device skips
-        // the 2FA challenge on re-login (Task #863).
-        deviceTrustToken: getTrustedDeviceToken() ?? undefined,
       }),
     });
   } catch {
@@ -1087,9 +1046,6 @@ export async function login(username: string, password: string, rememberMe = tru
     );
   }
   const body = await r.json().catch(() => ({}));
-  if (r.ok && body?.requiresTwoFactor && typeof body.pendingToken === "string") {
-    throw new TwoFactorRequiredError(body.pendingToken);
-  }
   if (!r.ok || !body?.success) {
     throw new ApiError(body?.message || "Invalid username or password.", r.status);
   }
@@ -1262,42 +1218,6 @@ export async function checkUsernameAvailable(username: string): Promise<boolean>
   const body = await r.json().catch(() => ({}));
   if (!r.ok) throw new ApiError(body?.error || "Failed to check username.", r.status);
   return !!body?.available;
-}
-
-export async function completeTwoFactorChallenge(
-  pendingToken: string,
-  code: string,
-  trustDevice = false,
-): Promise<SessionUser> {
-  const r = await fetch(apiUrl("/auth/2fa/challenge"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      pendingToken,
-      code,
-      deviceName: "LabTrax Desktop",
-      clientType: "desktop",
-      trustDevice,
-    }),
-  });
-  const body = await r.json().catch(() => ({}));
-  if (!r.ok || !body?.data?.success) {
-    throw new ApiError(body?.error || body?.message || "Invalid code.", r.status);
-  }
-  const { accessToken, refreshToken, deviceTrustToken } = body.data;
-  if (typeof accessToken === "string" && typeof refreshToken === "string") {
-    persistTokens({ accessToken, refreshToken });
-  } else {
-    throw new ApiError("The server didn't return a sign-in token. Please contact your administrator.", r.status);
-  }
-  // Persist the trust token for future logins (Task #863).
-  if (typeof deviceTrustToken === "string" && deviceTrustToken) {
-    saveTrustedDeviceToken(deviceTrustToken);
-  }
-  const me = await apiFetch<{ success?: boolean; user?: SessionUser } | SessionUser>("/auth/me");
-  const user = (me as any)?.user ?? (me as SessionUser);
-  emit(user);
-  return user;
 }
 
 export async function logout(): Promise<void> {

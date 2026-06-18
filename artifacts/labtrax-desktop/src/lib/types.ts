@@ -392,7 +392,6 @@ export interface Organization {
   logoUrl?: string | null;
   logoplacements?: string[] | null;
   duplicateSuggestionThreshold?: string | number | null;
-  trustedDeviceTtlDays?: number | null;
   defaultCaseDueDays?: number | null;
   capCaseDueToDefault?: boolean | null;
   licenseNumber?: string | null;

@@ -5,7 +5,6 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import type { SafeUserTwoFactorChannel } from "./safeUserTwoFactorChannel";
 
 /**
  * User fields safe to return to clients (no password/secret material).
@@ -33,8 +32,6 @@ export interface SafeUser {
   emailVerifiedAt?: Date | null;
   /** When the user's phone was verified, or null if unverified. */
   phoneVerifiedAt?: Date | null;
-  /** Preferred second-factor / verification channel. */
-  twoFactorChannel?: SafeUserTwoFactorChannel;
   wantsUpdates?: boolean | null;
   workStatus?: string | null;
   profilePhotoUrl?: string | null;

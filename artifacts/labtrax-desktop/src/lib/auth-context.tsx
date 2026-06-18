@@ -13,10 +13,8 @@ import {
   login as apiLogin,
   logout as apiLogout,
   register as apiRegister,
-  completeTwoFactorChallenge as apiCompleteTwoFactor,
   subscribeSession,
   waitForTokenHydration,
-  TwoFactorRequiredError,
   type RegisterPayload,
   type RegisterResult,
   type SessionUser,
@@ -34,10 +32,7 @@ interface AuthContextValue {
    * The notice is one-shot per launch. */
   acknowledgeRestoreNotice: () => void;
   restoreNoticeDismissed: boolean;
-  /** Throws TwoFactorRequiredError if 2FA is enabled. */
   login: (username: string, password: string, rememberMe?: boolean) => Promise<void>;
-  /** Pass trustDevice=true to remember this device for 30 days. */
-  completeTwoFactor: (pendingToken: string, code: string, trustDevice?: boolean) => Promise<void>;
   register: (payload: RegisterPayload) => Promise<RegisterResult>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
@@ -108,12 +103,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setStatus("authed");
   }, []);
 
-  const completeTwoFactor = useCallback(async (pendingToken: string, code: string, trustDevice = false) => {
-    const me = await apiCompleteTwoFactor(pendingToken, code, trustDevice);
-    setUser(me);
-    setStatus("authed");
-  }, []);
-
   const register = useCallback(async (payload: RegisterPayload) => {
     const result = await apiRegister(payload);
     setUser(result.user);
@@ -135,7 +124,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       restoreNoticeDismissed,
       acknowledgeRestoreNotice,
       login,
-      completeTwoFactor,
       register,
       logout,
       refresh: verify,
@@ -147,7 +135,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       restoreNoticeDismissed,
       acknowledgeRestoreNotice,
       login,
-      completeTwoFactor,
       register,
       logout,
       verify,

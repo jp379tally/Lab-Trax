@@ -10,7 +10,7 @@ import type { LoginResultPendingJoinRequest } from "./loginResultPendingJoinRequ
 import type { SafeUser } from "./safeUser";
 
 /**
- * Either a completed login (success + optional tokens) or a 2FA challenge (requiresTwoFactor + pendingToken).
+ * Completed login response with session tokens.
  */
 export interface LoginResult {
   success?: boolean | null;
@@ -20,6 +20,4 @@ export interface LoginResult {
   message?: string | null;
   organization?: LoginResultOrganization;
   pendingJoinRequest?: LoginResultPendingJoinRequest;
-  requiresTwoFactor?: boolean | null;
-  pendingToken?: string | null;
 }

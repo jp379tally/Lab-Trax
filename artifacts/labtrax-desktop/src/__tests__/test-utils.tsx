@@ -27,7 +27,6 @@ export const MOCK_AUTH_DEFAULTS: AuthContextValue = {
   restoreNoticeDismissed: false,
   acknowledgeRestoreNotice: () => {},
   login: async () => {},
-  completeTwoFactor: async () => {},
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   register: async () => ({ user: null as any, token: "" }),
   logout: async () => {},

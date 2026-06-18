@@ -203,102 +203,6 @@ export const PostAiChatResponse = zod.object({
 });
 
 /**
- * @summary Get current 2FA status for the authenticated user
- */
-export const GetTwoFactorStatusResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      twoFactorEnabled: zod.boolean(),
-    })
-    .optional(),
-});
-
-/**
- * @summary Initiate 2FA setup — generates a TOTP secret and QR code
- */
-export const SetupTwoFactorResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      otpauthUrl: zod.string(),
-      qrCodeDataUrl: zod.string(),
-      secret: zod.string(),
-    })
-    .optional(),
-});
-
-/**
- * @summary Confirm 2FA setup by submitting a verification code
- */
-export const ConfirmTwoFactorBody = zod.object({
-  code: zod.string(),
-});
-
-export const ConfirmTwoFactorResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      success: zod.boolean(),
-      backupCodes: zod.array(zod.string()),
-    })
-    .optional(),
-});
-
-/**
- * @summary Disable 2FA (requires current password confirmation)
- */
-export const DisableTwoFactorBody = zod.object({
-  code: zod.string(),
-});
-
-export const DisableTwoFactorResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      disabled: zod.boolean().optional(),
-    })
-    .optional(),
-});
-
-/**
- * @summary Regenerate backup codes (requires current TOTP code)
- */
-export const RegenerateBackupCodesBody = zod.object({
-  code: zod.string(),
-});
-
-export const RegenerateBackupCodesResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      backupCodes: zod.array(zod.string()),
-    })
-    .optional(),
-});
-
-/**
- * @summary Complete login by verifying a TOTP or backup code
- */
-export const TwoFactorChallengeBody = zod.object({
-  pendingToken: zod.string(),
-  code: zod.string(),
-  deviceName: zod.string().optional(),
-  clientType: zod.enum(["web", "mobile", "desktop"]).optional(),
-});
-
-export const TwoFactorChallengeResponse = zod.object({
-  ok: zod.boolean().optional(),
-  data: zod
-    .object({
-      success: zod.boolean().optional(),
-      accessToken: zod.string().optional(),
-      refreshToken: zod.string().optional(),
-    })
-    .optional(),
-});
-
-/**
  * @summary List vendors / employees / items for a lab
  */
 export const ListVendorsQueryParams = zod.object({
@@ -3283,10 +3187,6 @@ export const RegisterUserResponse = zod
           .describe(
             "When the user's phone was verified, or null if unverified.",
           ),
-        twoFactorChannel: zod
-          .enum(["sms", "email"])
-          .nullish()
-          .describe("Preferred second-factor \/ verification channel."),
         wantsUpdates: zod.boolean().nullish(),
         workStatus: zod.string().nullish(),
         profilePhotoUrl: zod.string().nullish(),
@@ -3298,8 +3198,6 @@ export const RegisterUserResponse = zod
     message: zod.string().nullish(),
     organization: zod.record(zod.string(), zod.unknown()).nullish(),
     pendingJoinRequest: zod.record(zod.string(), zod.unknown()).nullish(),
-    requiresTwoFactor: zod.boolean().nullish(),
-    pendingToken: zod.string().nullish(),
   })
   .describe(
     "Bare (non-enveloped) auth response. Tokens are present only for non-web (bearer) clients; web clients receive httpOnly cookies instead.",
@@ -3315,7 +3213,6 @@ export const LoginUserBody = zod
     password: zod.string(),
     deviceName: zod.string().nullish(),
     clientType: zod.enum(["web", "mobile", "desktop"]).nullish(),
-    deviceTrustToken: zod.string().nullish(),
   })
   .describe(
     "Provide either username or identifier (identifier matches username, email, or platform account number — case-insensitive).",
@@ -3362,10 +3259,6 @@ export const LoginUserResponse = zod
           .describe(
             "When the user's phone was verified, or null if unverified.",
           ),
-        twoFactorChannel: zod
-          .enum(["sms", "email"])
-          .nullish()
-          .describe("Preferred second-factor \/ verification channel."),
         wantsUpdates: zod.boolean().nullish(),
         workStatus: zod.string().nullish(),
         profilePhotoUrl: zod.string().nullish(),
@@ -3377,12 +3270,8 @@ export const LoginUserResponse = zod
     message: zod.string().nullish(),
     organization: zod.record(zod.string(), zod.unknown()).nullish(),
     pendingJoinRequest: zod.record(zod.string(), zod.unknown()).nullish(),
-    requiresTwoFactor: zod.boolean().nullish(),
-    pendingToken: zod.string().nullish(),
   })
-  .describe(
-    "Either a completed login (success + optional tokens) or a 2FA challenge (requiresTwoFactor + pendingToken).",
-  );
+  .describe("Completed login response with session tokens.");
 
 /**
  * @summary Rotate the refresh token and issue a new access token (reuse detection)
@@ -3451,10 +3340,6 @@ export const GetCurrentUserResponse = zod.object({
         .date()
         .nullish()
         .describe("When the user's phone was verified, or null if unverified."),
-      twoFactorChannel: zod
-        .enum(["sms", "email"])
-        .nullish()
-        .describe("Preferred second-factor \/ verification channel."),
       wantsUpdates: zod.boolean().nullish(),
       workStatus: zod.string().nullish(),
       profilePhotoUrl: zod.string().nullish(),

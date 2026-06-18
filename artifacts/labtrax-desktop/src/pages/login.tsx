@@ -1,6 +1,6 @@
 import { useState, useEffect, type FormEvent } from "react";
 import { useAuth } from "@/lib/auth-context";
-import { ApiError, TwoFactorRequiredError, getApiOrigin, getRememberMe, saveRememberMe } from "@/lib/api";
+import { ApiError, getApiOrigin, getRememberMe, saveRememberMe } from "@/lib/api";
 import { describeAuthRestoreStatus } from "@/lib/auth-restore-status";
 import { Logo } from "@/components/Logo";
 import SignupWizard from "@/components/SignupWizard";
@@ -10,7 +10,6 @@ const IDLE_LOGOUT_FLAG = "labtrax_idle_logout_v1";
 export default function LoginPage() {
   const {
     login,
-    completeTwoFactor,
     restoreStatus,
     restoreNoticeDismissed,
     acknowledgeRestoreNotice,
@@ -32,13 +31,6 @@ export default function LoginPage() {
     } catch {}
   }, []);
 
-  // Two-factor auth challenge state
-  const [pendingToken, setPendingToken] = useState<string | null>(null);
-  const [totpCode, setTotpCode] = useState("");
-  const [useBackupCode, setUseBackupCode] = useState(false);
-  const [challengeSubmitting, setChallengeSubmitting] = useState(false);
-  const [trustDevice, setTrustDevice] = useState(true);
-
   // One-shot toast-style notice when the saved sign-in blob couldn't be
   // decrypted. Distinct from the persistent keychain-unavailable banner
   // (which is rendered globally above the login screen).
@@ -58,14 +50,6 @@ export default function LoginPage() {
     try {
       await login(username.trim(), password, rememberMe);
     } catch (err) {
-      if (err instanceof TwoFactorRequiredError) {
-        setPendingToken(err.pendingToken);
-        setTotpCode("");
-        setUseBackupCode(false);
-        setTrustDevice(true);
-        setSubmitting(false);
-        return;
-      }
       const fallback = "Sign in failed.";
       const message = (err as Error)?.message || fallback;
       const isNetworkError =
@@ -85,25 +69,6 @@ export default function LoginPage() {
     }
   }
 
-  async function onChallenge(e: FormEvent) {
-    e.preventDefault();
-    if (!totpCode.trim()) {
-      setError("Please enter your verification code.");
-      return;
-    }
-    if (!pendingToken) return;
-    setChallengeSubmitting(true);
-    setError(null);
-    try {
-      await completeTwoFactor(pendingToken, totpCode.trim(), trustDevice);
-    } catch (err) {
-      const message = (err as Error)?.message || "Invalid code.";
-      setError(message);
-    } finally {
-      setChallengeSubmitting(false);
-    }
-  }
-
   const apiOrigin = getApiOrigin();
   const appVersion = (import.meta.env.VITE_APP_VERSION as string | undefined) || "";
   const commitSha = (import.meta.env.VITE_COMMIT_SHA as string | undefined) || "";
@@ -112,7 +77,7 @@ export default function LoginPage() {
     ? `v${appVersion}${buildNumber ? ` (build ${buildNumber})` : ""}${commitSha ? ` · ${commitSha}` : ""}`
     : "";
 
-  if (mode === "signup" && !pendingToken) {
+  if (mode === "signup") {
     return (
       <div className="min-h-screen w-full flex items-center justify-center bg-background px-6 py-10">
         <div className="w-full max-w-[460px]">
@@ -142,77 +107,6 @@ export default function LoginPage() {
           <Logo size={56} />
         </div>
         <div className="bg-card border border-border rounded-xl shadow-sm p-7">
-          {pendingToken ? (
-            <>
-              <div className="mb-6">
-                <h1 className="text-xl font-semibold tracking-tight">Two-factor verification</h1>
-                <p className="text-sm text-muted-foreground mt-1">
-                  {useBackupCode
-                    ? "Enter one of your saved backup codes."
-                    : "Enter the 6-digit code from your authenticator app."}
-                </p>
-              </div>
-              {error && (
-                <div className="mb-4 text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">
-                  {error}
-                </div>
-              )}
-              <form onSubmit={onChallenge} className="space-y-4">
-                <div>
-                  <label className="block text-xs font-medium text-foreground mb-1.5">
-                    {useBackupCode ? "Backup code" : "Verification code"}
-                  </label>
-                  <input
-                    type={useBackupCode ? "text" : "text"}
-                    inputMode={useBackupCode ? "text" : "numeric"}
-                    autoComplete="one-time-code"
-                    autoFocus
-                    value={totpCode}
-                    onChange={(e) => setTotpCode(useBackupCode ? e.target.value.toUpperCase() : e.target.value.replace(/\D/g, "").slice(0, 6))}
-                    maxLength={useBackupCode ? 20 : 6}
-                    placeholder={useBackupCode ? "XXXXXXXXXX" : "000000"}
-                    className="w-full h-10 px-3 rounded-md bg-background border border-input text-sm text-center font-mono tracking-widest focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-                  />
-                </div>
-                {/* Trust this device checkbox */}
-                <label className="flex items-center gap-2.5 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={trustDevice}
-                    onChange={(e) => setTrustDevice(e.target.checked)}
-                    className="h-4 w-4 rounded border-input accent-primary cursor-pointer"
-                  />
-                  <span className="text-sm text-foreground">
-                    Trust this device for 30 days
-                  </span>
-                </label>
-                <button
-                  type="submit"
-                  disabled={challengeSubmitting || !totpCode.trim()}
-                  className="w-full h-10 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
-                >
-                  {challengeSubmitting ? "Verifying…" : "Verify"}
-                </button>
-                <div className="flex items-center justify-between text-xs">
-                  <button
-                    type="button"
-                    onClick={() => { setUseBackupCode(!useBackupCode); setTotpCode(""); setError(null); }}
-                    className="text-muted-foreground hover:text-foreground underline"
-                  >
-                    {useBackupCode ? "Use authenticator app" : "Use a backup code instead"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { setPendingToken(null); setError(null); setTotpCode(""); }}
-                    className="text-muted-foreground hover:text-foreground underline"
-                  >
-                    Back to sign in
-                  </button>
-                </div>
-              </form>
-            </>
-          ) : (
-            <>
               <div className="mb-6">
                 <h1 className="text-xl font-semibold tracking-tight">Sign in</h1>
                 <p className="text-sm text-muted-foreground mt-1">
@@ -316,8 +210,6 @@ export default function LoginPage() {
                   Create one
                 </button>
               </div>
-            </>
-          )}
         </div>
         <p className="text-center text-xs text-muted-foreground mt-5">
           The same account works on the LabTrax mobile app.

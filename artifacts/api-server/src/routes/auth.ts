@@ -15,7 +15,6 @@ import {
   organizations,
   userSessions,
   users,
-  trustedDevices,
   systemSettings,
 } from "@workspace/db";
 import {
@@ -23,7 +22,6 @@ import {
   signRefreshToken,
   verifyRefreshToken,
   makeSessionHash,
-  signPendingTwoFactorToken,
 } from "../lib/auth";
 import { hashPassword, verifyPassword, sha256 } from "../lib/crypto";
 import {
@@ -98,7 +96,6 @@ function safeUser(user: any) {
     phoneVerifiedAt: user.phoneVerifiedAt
       ? new Date(user.phoneVerifiedAt).toISOString()
       : null,
-    twoFactorChannel: user.twoFactorChannel ?? null,
     wantsUpdates: user.wantsUpdates,
     workStatus: user.workStatus ?? "available",
     profilePhotoUrl: user.profilePhotoUrl ?? null,
@@ -693,41 +690,6 @@ router.post(
       throw new HttpError(401, "Invalid username or password.");
     }
 
-    if (user.twoFactorEnabled) {
-      // Check if the client supplied a valid trusted-device token (Task #863).
-      // If so, skip the interactive 2FA challenge and issue a full session.
-      if (input.deviceTrustToken) {
-        const tokenHash = sha256(input.deviceTrustToken);
-        const now = new Date();
-        const [device] = await db
-          .select()
-          .from(trustedDevices)
-          .where(
-            and(
-              eq(trustedDevices.userId, user.id),
-              eq(trustedDevices.tokenHash, tokenHash),
-              gt(trustedDevices.expiresAt, now)
-            )
-          );
-
-        if (device) {
-          // Valid trust token — record usage and skip 2FA.
-          await db
-            .update(trustedDevices)
-            .set({ lastUsedAt: now })
-            .where(eq(trustedDevices.id, device.id));
-          // Fall through to session creation below (no pendingToken response).
-        } else {
-          // Token not found or expired — require 2FA as normal.
-          const pendingToken = signPendingTwoFactorToken(user.id);
-          return res.json({ requiresTwoFactor: true, pendingToken });
-        }
-      } else {
-        const pendingToken = signPendingTwoFactorToken(user.id);
-        return res.json({ requiresTwoFactor: true, pendingToken });
-      }
-    }
-
     const sessionId = crypto.randomUUID();
     const rawRefreshToken = signRefreshToken(user.id, sessionId);
     const decoded = verifyRefreshToken(rawRefreshToken);
@@ -1103,11 +1065,6 @@ router.put(
       .update(users)
       .set({ password: hashed })
       .where(eq(users.id, id));
-
-    // Changing the password revokes ALL remembered ("trusted") devices, matching
-    // the forgot-password reset flow: a prior device-trust token must not keep
-    // skipping the 2FA challenge after the owner rotates their password.
-    await db.delete(trustedDevices).where(eq(trustedDevices.userId, id));
 
     await writeAuditLog({
       req,

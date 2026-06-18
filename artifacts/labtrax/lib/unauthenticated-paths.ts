@@ -14,7 +14,6 @@
  *  - Keep the list sorted for easier review.
  */
 export const UNAUTHENTICATED_PATHS = new Set<string>([
-  "/api/auth/2fa/challenge",
   "/api/auth/login",
   "/api/auth/refresh",
   "/api/auth/register",

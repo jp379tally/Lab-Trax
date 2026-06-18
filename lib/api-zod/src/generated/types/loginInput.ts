@@ -16,5 +16,4 @@ export interface LoginInput {
   password: string;
   deviceName?: string | null;
   clientType?: LoginInputClientType;
-  deviceTrustToken?: string | null;
 }

@@ -6,18 +6,6 @@
  * OpenAPI spec version: 0.1.0
  */
 /**
- * Preferred second-factor / verification channel.
- */
-export type SafeUserTwoFactorChannel =
-  | (typeof SafeUserTwoFactorChannel)[keyof typeof SafeUserTwoFactorChannel]
-  | null;
-
-export const SafeUserTwoFactorChannel = {
-  sms: "sms",
-  email: "email",
-} as const;
-
-/**
  * User fields safe to return to clients (no password/secret material).
  */
 export interface SafeUser {
@@ -43,8 +31,6 @@ export interface SafeUser {
   emailVerifiedAt?: string | null;
   /** When the user's phone was verified, or null if unverified. */
   phoneVerifiedAt?: string | null;
-  /** Preferred second-factor / verification channel. */
-  twoFactorChannel?: SafeUserTwoFactorChannel;
   wantsUpdates?: boolean | null;
   workStatus?: string | null;
   profilePhotoUrl?: string | null;
@@ -109,8 +95,6 @@ export interface AuthResult {
   message?: string | null;
   organization?: AuthResultOrganization;
   pendingJoinRequest?: AuthResultPendingJoinRequest;
-  requiresTwoFactor?: boolean | null;
-  pendingToken?: string | null;
 }
 
 export type LoginInputClientType =
@@ -132,7 +116,6 @@ export interface LoginInput {
   password: string;
   deviceName?: string | null;
   clientType?: LoginInputClientType;
-  deviceTrustToken?: string | null;
 }
 
 export type LoginResultOrganization = { [key: string]: unknown } | null;
@@ -140,7 +123,7 @@ export type LoginResultOrganization = { [key: string]: unknown } | null;
 export type LoginResultPendingJoinRequest = { [key: string]: unknown } | null;
 
 /**
- * Either a completed login (success + optional tokens) or a 2FA challenge (requiresTwoFactor + pendingToken).
+ * Completed login response with session tokens.
  */
 export interface LoginResult {
   success?: boolean | null;
@@ -150,8 +133,6 @@ export interface LoginResult {
   message?: string | null;
   organization?: LoginResultOrganization;
   pendingJoinRequest?: LoginResultPendingJoinRequest;
-  requiresTwoFactor?: boolean | null;
-  pendingToken?: string | null;
 }
 
 /**
@@ -1690,57 +1671,6 @@ export interface UpdateCategoryInput {
   isArchived?: boolean;
 }
 
-export interface RegenerateBackupCodesInput {
-  code: string;
-}
-
-export type RegenerateBackupCodesResultData = {
-  backupCodes: string[];
-};
-
-export interface RegenerateBackupCodesResult {
-  ok?: boolean;
-  data?: RegenerateBackupCodesResultData;
-}
-
-export type TwoFactorSetupResultData = {
-  otpauthUrl: string;
-  qrCodeDataUrl: string;
-  secret: string;
-};
-
-export interface TwoFactorSetupResult {
-  ok?: boolean;
-  data?: TwoFactorSetupResultData;
-}
-
-export interface TwoFactorConfirmInput {
-  code: string;
-}
-
-export type TwoFactorConfirmResultData = {
-  success: boolean;
-  backupCodes: string[];
-};
-
-export interface TwoFactorConfirmResult {
-  ok?: boolean;
-  data?: TwoFactorConfirmResultData;
-}
-
-export interface TwoFactorDisableInput {
-  code: string;
-}
-
-export type TwoFactorStatusResultData = {
-  twoFactorEnabled: boolean;
-};
-
-export interface TwoFactorStatusResult {
-  ok?: boolean;
-  data?: TwoFactorStatusResultData;
-}
-
 export interface MessengerUser {
   id: string;
   username: string;
@@ -1830,33 +1760,6 @@ export interface SendMessageInput {
 
 export interface MarkReadInput {
   lastMessageId: string;
-}
-
-export type TwoFactorChallengeInputClientType =
-  (typeof TwoFactorChallengeInputClientType)[keyof typeof TwoFactorChallengeInputClientType];
-
-export const TwoFactorChallengeInputClientType = {
-  web: "web",
-  mobile: "mobile",
-  desktop: "desktop",
-} as const;
-
-export interface TwoFactorChallengeInput {
-  pendingToken: string;
-  code: string;
-  deviceName?: string;
-  clientType?: TwoFactorChallengeInputClientType;
-}
-
-export type TwoFactorChallengeResultData = {
-  success?: boolean;
-  accessToken?: string;
-  refreshToken?: string;
-};
-
-export interface TwoFactorChallengeResult {
-  ok?: boolean;
-  data?: TwoFactorChallengeResultData;
 }
 
 export type AiChatMessageRole =
@@ -2095,15 +1998,6 @@ export type DeleteLocation200Data = {
 export type DeleteLocation200 = {
   ok: boolean;
   data: DeleteLocation200Data;
-};
-
-export type DisableTwoFactor200Data = {
-  disabled?: boolean;
-};
-
-export type DisableTwoFactor200 = {
-  ok?: boolean;
-  data?: DisableTwoFactor200Data;
 };
 
 export type ListVendorsParams = {

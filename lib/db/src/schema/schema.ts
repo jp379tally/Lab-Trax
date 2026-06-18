@@ -59,17 +59,6 @@ export const users = pgTable(
     // Nullable — missing keys default to true (opt-in matches previous behaviour).
     // Keys: accountLinkInvites, caseNoteNotifications, billingReminders
     smsPreferences: jsonb("sms_preferences"),
-    // Two-factor authentication (Task #825). twoFactorSecret is AES-256-GCM
-    // encrypted using a key derived from JWT_SECRET. twoFactorBackupCodes is a
-    // JSONB array of bcrypt-hashed one-time-use codes (8 codes generated on
-    // enable). Plain-text codes are returned exactly once at setup time.
-    twoFactorSecret: text("two_factor_secret"),
-    twoFactorEnabled: boolean("two_factor_enabled").default(false).notNull(),
-    twoFactorBackupCodes: jsonb("two_factor_backup_codes"),
-    // Which channel the login second-factor challenge uses
-    // ("totp" | "email" | "sms"). Null = TOTP (back-compat). Phase 2
-    // (Account epic) lets users pick email/SMS as an alternative to TOTP.
-    twoFactorChannel: text("two_factor_channel"),
     // Durable email/phone verification state (Account epic Phase 2).
     // Null = unverified. Set the moment a one-time code is confirmed for the
     // account's own contact value. Enforced server-side: unverified users are
@@ -264,11 +253,6 @@ export const organizations = pgTable(
       precision: 4,
       scale: 3,
     }),
-    // How many days a trusted device token remains valid before the user must
-    // pass the 2FA challenge again. Null = fall back to the global
-    // TRUSTED_DEVICE_TTL_DAYS env var (default 30). Valid range: 1–365.
-    // Only meaningful on type="lab" rows; ignored on provider organizations.
-    trustedDeviceTtlDays: integer("trusted_device_ttl_days"),
     // Default number of days after case received-date that the due date
     // should be set. Null = no default (field left blank on new cases).
     // Only meaningful on type="lab" rows.
@@ -2036,40 +2020,6 @@ export const rxPracticeNameAliases = pgTable(
   })
 );
 
-/**
- * Trusted devices for 2FA skip (Task #863).
- * After passing a 2FA challenge the user can tick "Trust this device for 30 days".
- * We store a SHA-256 hash of the opaque token sent back to the client. The
- * token is presented on subsequent logins (via the Authorization body or a
- * custom header) so the server can skip the TOTP challenge for recognised
- * devices.
- *
- * Indexed by userId (list all devices for a user) and tokenHash (verify a
- * presented token in O(1)).
- */
-export const trustedDevices = pgTable(
-  "trusted_devices",
-  {
-    id: varchar("id")
-      .primaryKey()
-      .default(sql`gen_random_uuid()`),
-    userId: varchar("user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    tokenHash: text("token_hash").notNull(),
-    deviceName: text("device_name"),
-    userAgent: text("user_agent"),
-    ipAddress: text("ip_address"),
-    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
-    createdAt: createdAt(),
-  },
-  (table) => ({
-    userIdx: index("trusted_devices_user_idx").on(table.userId),
-    tokenHashUnique: uniqueIndex("trusted_devices_token_hash_unique").on(table.tokenHash),
-  })
-);
-
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,
@@ -2278,7 +2228,6 @@ export type User = typeof users.$inferSelect;
 export type LabCaseRow = typeof labCases.$inferSelect;
 export type Subscription = typeof subscriptions.$inferSelect;
 export type SubscriptionEvent = typeof subscriptionEvents.$inferSelect;
-export type TrustedDevice = typeof trustedDevices.$inferSelect;
 export type Conversation = typeof conversations.$inferSelect;
 export type ConversationParticipant = typeof conversationParticipants.$inferSelect;
 export type Message = typeof messages.$inferSelect;

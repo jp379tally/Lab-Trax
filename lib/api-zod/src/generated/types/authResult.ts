@@ -20,6 +20,4 @@ export interface AuthResult {
   message?: string | null;
   organization?: AuthResultOrganization;
   pendingJoinRequest?: AuthResultPendingJoinRequest;
-  requiresTwoFactor?: boolean | null;
-  pendingToken?: string | null;
 }
