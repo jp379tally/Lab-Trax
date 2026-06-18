@@ -320,7 +320,7 @@ export async function runDesktopInstallerHealthCheck(
   } catch (err) {
     settingsError = (err as Error)?.message ?? String(err);
   }
-  const envUrl = process.env.DESKTOP_INSTALLER_URL ?? "/downloads/LabTrax-Windows-Portable.zip";
+  const envUrl = process.env.DESKTOP_INSTALLER_URL ?? "/downloads/LabTrax-Setup.exe";
   const envVersion = process.env.DESKTOP_INSTALLER_VERSION ?? "1.0.0";
   const configuredUrl = dbUrl ?? envUrl;
   const configuredVersion = dbVersion ?? envVersion;

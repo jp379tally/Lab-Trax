@@ -3,10 +3,16 @@ set -euo pipefail
 # Desktop Build + Publish Script
 #
 # Builds the LabTrax Desktop Electron app and publishes the resulting
-# LabTrax-Windows-Portable.zip (and latest.yml auto-update manifest) to App
-# Storage so the API server can serve them at:
-#   GET /downloads/LabTrax-Windows-Portable.zip
-#   GET /downloads/latest.yml
+# installer (and latest.yml auto-update manifest) to App Storage so the API
+# server can serve it:
+#
+#   Preferred (NSIS installer — built by CI on windows-latest or locally on Windows):
+#     GET /downloads/LabTrax-Setup.exe
+#     GET /downloads/latest.yml          ← references LabTrax-Setup.exe
+#
+#   Fallback (portable ZIP — produced by this script on Linux/Replit):
+#     GET /downloads/LabTrax-Windows-Portable.zip
+#     GET /downloads/latest.yml          ← references LabTrax-Windows-Portable.zip
 #
 # Called automatically from post-merge.sh when a merge touches desktop-relevant
 # files. Can also be run manually at any time:
@@ -63,41 +69,72 @@ echo "[build] Running electron:build …"
 cd "$DESKTOP_DIR"
 pnpm run electron:build
 
+# Determine which installer was produced --------------------------------------
+# On Windows (or Linux + Wine): electron-builder produces LabTrax-Setup.exe.
+# On Linux without Wine (Replit): electron-builder falls back to win-unpacked
+# only, and electron-build.mjs zips it as LabTrax-Windows-Portable.zip.
+#
+# Prefer the NSIS installer when both exist (e.g. CI output was copied in).
+EXE_PATH="${DESKTOP_DIR}/electron-dist/LabTrax-Setup.exe"
 ZIP_PATH="${DESKTOP_DIR}/electron-dist/LabTrax-Windows-Portable.zip"
-if [[ ! -f "$ZIP_PATH" ]]; then
-  echo "[build] ERROR: ZIP not found at ${ZIP_PATH} after build."
+LATEST_YML="${DESKTOP_DIR}/electron-dist/latest.yml"
+
+if [[ -f "$EXE_PATH" ]]; then
+  INSTALLER_PATH="$EXE_PATH"
+  INSTALLER_KIND="exe"
+  INSTALLER_FILENAME="LabTrax-Setup.exe"
+  DOWNLOAD_URL="/downloads/LabTrax-Setup.exe"
+  echo "[build] ✓ NSIS installer found: ${INSTALLER_PATH}"
+elif [[ -f "$ZIP_PATH" ]]; then
+  INSTALLER_PATH="$ZIP_PATH"
+  INSTALLER_KIND="zip"
+  INSTALLER_FILENAME="LabTrax-Windows-Portable.zip"
+  DOWNLOAD_URL="/downloads/LabTrax-Windows-Portable.zip"
+  echo "[build] ✓ Portable ZIP found (NSIS not available on this platform): ${INSTALLER_PATH}"
+else
+  echo "[build] ERROR: Neither LabTrax-Setup.exe nor LabTrax-Windows-Portable.zip found after build."
   exit 1
 fi
-ZIP_SIZE=$(du -sh "$ZIP_PATH" | cut -f1)
-echo "[build] ✓ Build complete — ${ZIP_PATH} (${ZIP_SIZE})"
+
+INSTALLER_SIZE=$(du -sh "$INSTALLER_PATH" | cut -f1)
+echo "[build] Installer: ${INSTALLER_PATH} (${INSTALLER_SIZE})"
 
 # Generate latest.yml for electron-updater generic provider -------------------
 # electron-updater fetches GET /downloads/latest.yml to compare the available
-# version against the running version.  We generate it from the actual ZIP's
+# version against the running version. We generate it from the installer's
 # SHA-512 digest (base64) and byte size so the hash matches exactly.
-echo ""
-echo "[publish] Generating latest.yml auto-update manifest …"
-SHA512=$(openssl dgst -sha512 -binary "$ZIP_PATH" | base64 --wrap=0)
-BYTE_SIZE=$(stat -c%s "$ZIP_PATH")
-RELEASE_DATE=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
-LATEST_YML="${DESKTOP_DIR}/electron-dist/latest.yml"
-cat > "$LATEST_YML" <<EOF
+#
+# If electron-builder already wrote latest.yml (Windows or Linux + Wine), we
+# keep that file — it contains the correct blockmap reference for NSIS delta
+# patches. We only generate a synthetic latest.yml for the portable ZIP path
+# (Linux without Wine), where electron-builder skips it.
+if [[ ! -f "$LATEST_YML" ]]; then
+  echo ""
+  echo "[publish] Generating latest.yml auto-update manifest …"
+  SHA512=$(openssl dgst -sha512 -binary "$INSTALLER_PATH" | base64 --wrap=0)
+  BYTE_SIZE=$(stat -c%s "$INSTALLER_PATH")
+  RELEASE_DATE=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+  cat > "$LATEST_YML" <<EOF
 version: ${VERSION}
 files:
-  - url: LabTrax-Windows-Portable.zip
+  - url: ${INSTALLER_FILENAME}
     sha512: ${SHA512}
     size: ${BYTE_SIZE}
-path: LabTrax-Windows-Portable.zip
+path: ${INSTALLER_FILENAME}
 sha512: ${SHA512}
 releaseDate: '${RELEASE_DATE}'
 EOF
-echo "[publish] ✓ latest.yml generated (sha512=${SHA512:0:16}…, size=${BYTE_SIZE}B)"
+  echo "[publish] ✓ latest.yml generated (sha512=${SHA512:0:16}…, size=${BYTE_SIZE}B, url=${INSTALLER_FILENAME})"
+else
+  echo ""
+  echo "[publish] Using existing latest.yml from electron-builder (${LATEST_YML})."
+fi
 
-# Upload ZIP + latest.yml to App Storage --------------------------------------
+# Upload installer + latest.yml to App Storage --------------------------------
 echo ""
-echo "[publish] Uploading ZIP and latest.yml to App Storage …"
+echo "[publish] Uploading installer and latest.yml to App Storage …"
 cd "$ROOT_DIR"
-pnpm --filter @workspace/scripts run upload-desktop-installer
+pnpm --filter @workspace/scripts run upload-desktop-installer -- "$INSTALLER_PATH"
 echo "[publish] ✓ Upload complete."
 
 # Update system_settings version record ---------------------------------------
@@ -107,10 +144,15 @@ echo "[publish] ✓ Upload complete."
 # When it is not set (Replit dev environment), update the DB directly.
 if [[ -z "${PLATFORM_ADMIN_SECRET:-}" && -n "${DATABASE_URL:-}" ]]; then
   echo ""
-  echo "[publish] Updating system_settings.desktop_installer_version → ${VERSION} (via psql) …"
+  echo "[publish] Updating system_settings (version → ${VERSION}, url → ${DOWNLOAD_URL}) via psql …"
   psql "$DATABASE_URL" -q -c "
     INSERT INTO system_settings (key, value, updated_at)
     VALUES ('desktop_installer_version', '${VERSION}', NOW())
+    ON CONFLICT (key) DO UPDATE
+      SET value = EXCLUDED.value,
+          updated_at = NOW();
+    INSERT INTO system_settings (key, value, updated_at)
+    VALUES ('desktop_installer_url', '${DOWNLOAD_URL}', NOW())
     ON CONFLICT (key) DO UPDATE
       SET value = EXCLUDED.value,
           updated_at = NOW();
@@ -121,7 +163,11 @@ fi
 echo ""
 echo "========================================="
 echo " LabTrax Desktop v${VERSION} published."
-echo " Download: /downloads/LabTrax-Windows-Portable.zip"
+if [[ "$INSTALLER_KIND" == "exe" ]]; then
+  echo " Download (NSIS installer): /downloads/LabTrax-Setup.exe"
+else
+  echo " Download (portable ZIP):   /downloads/LabTrax-Windows-Portable.zip"
+fi
 echo " Auto-update feed: ${UPDATE_FEED_URL}/latest.yml"
 echo "========================================="
 echo ""

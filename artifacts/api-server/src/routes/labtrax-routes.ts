@@ -4616,7 +4616,7 @@ Important rules:
   router.get("/desktop-installer", requireAuth, async (req, res) => {
     const envVersion = process.env.DESKTOP_INSTALLER_VERSION ?? "1.0.0";
     const envUrl =
-      process.env.DESKTOP_INSTALLER_URL ?? "/downloads/LabTrax-Windows-Portable.zip";
+      process.env.DESKTOP_INSTALLER_URL ?? "/downloads/LabTrax-Setup.exe";
     const dbRows = await db
       .select()
       .from(systemSettings)
@@ -4713,7 +4713,7 @@ Important rules:
     }
     const envVersion = process.env.DESKTOP_INSTALLER_VERSION ?? "1.0.0";
     const envUrl =
-      process.env.DESKTOP_INSTALLER_URL ?? "/downloads/LabTrax-Windows-Portable.zip";
+      process.env.DESKTOP_INSTALLER_URL ?? "/downloads/LabTrax-Setup.exe";
     const dbRows = await db
       .select()
       .from(systemSettings)

@@ -83,7 +83,7 @@ Run `pnpm --filter @workspace/db run push` to apply schema changes.
 
 **Desktop installer:**
 - `DESKTOP_INSTALLER_VERSION` — version string in Desktop App settings panel (default: `"1.0.0"`)
-- `DESKTOP_INSTALLER_URL` — download URL (default: `/downloads/LabTrax-Windows-Portable.zip`); switch to `/downloads/LabTrax-Setup.exe` or `/downloads/LabTrax.dmg` for those slots
+- `DESKTOP_INSTALLER_URL` — download URL (default: `/downloads/LabTrax-Setup.exe`); switch to `/downloads/LabTrax-Windows-Portable.zip` (portable ZIP fallback) or `/downloads/LabTrax.dmg` for those slots
 - `INSTALLER_HEALTH_CHECK_HOUR_UTC` — UTC hour for nightly installer health check (default: `6`)
 - `INSTALLER_HEALTH_BASE_URL` — base URL for the download HEAD probe (e.g. `https://your.replit.app`); if unset, reachability probe is skipped
 - `DEFAULT_OBJECT_STORAGE_BUCKET_ID`, `PRIVATE_OBJECT_DIR`, `PUBLIC_OBJECT_SEARCH_PATHS` — App Storage config (auto-set when provisioned)
