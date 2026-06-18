@@ -128,8 +128,12 @@ function AuthRestoreBanner() {
 
 function readInviteToken(): string | null {
   try {
-    const t = new URLSearchParams(window.location.search).get("invite");
-    return t && t.trim() ? t.trim() : null;
+    const params = new URLSearchParams(window.location.search);
+    const legacy = params.get("invite");
+    if (legacy && legacy.trim()) return legacy.trim();
+    const tokenParam = params.get("token");
+    if (tokenParam && tokenParam.trim()) return tokenParam.trim();
+    return null;
   } catch {
     return null;
   }
@@ -172,6 +176,11 @@ function Gate() {
               try {
                 const url = new URL(window.location.href);
                 url.searchParams.delete("invite");
+                url.searchParams.delete("token");
+                const base = import.meta.env.BASE_URL?.replace(/\/$/, "") ?? "";
+                if (url.pathname === `${base}/accept-invite`) {
+                  url.pathname = `${base}/`;
+                }
                 window.history.replaceState({}, "", url.toString());
               } catch {
                 /* ignore */

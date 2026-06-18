@@ -178,7 +178,7 @@ export async function sendInviteEmail(
   params: InviteEmailParams
 ): Promise<SendMailResult> {
   const roleLabel = formatRoleLabel(params.roleToAssign);
-  const acceptUrl = `${getAppBaseUrl()}/desktop/?invite=${encodeURIComponent(
+  const acceptUrl = `${getAppBaseUrl()}/desktop/accept-invite?token=${encodeURIComponent(
     params.token
   )}`;
   const expires = params.expiresAt ? params.expiresAt.toUTCString() : null;
