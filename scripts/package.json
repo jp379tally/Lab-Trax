@@ -24,6 +24,7 @@
     "seed-revenuecat": "tsx ./src/seedRevenueCat.ts",
     "bump-build-number": "tsx ./src/bump-build-number.ts",
     "check-expo-deps": "tsx ./src/check-expo-deps.ts",
+    "cleanup-bogus-provider-memberships": "tsx ./src/cleanup-bogus-provider-memberships.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

@@ -499,20 +499,25 @@ router.post(
       })
       .returning();
 
-    await db.insert(organizationMemberships).values({
-      labId: organization.id,
-      userId: callerId,
-      role: "owner",
-      status: "active",
-      approvedByUserId: callerId,
-      joinedAt: new Date(),
-    });
+    // Only insert an owner membership when the caller is creating their own lab.
+    // Provider orgs are client records managed via parentLabOrganizationId — the
+    // creating lab user should not gain a membership in the practice they add.
+    if (organization.type === "lab") {
+      await db.insert(organizationMemberships).values({
+        labId: organization.id,
+        userId: callerId,
+        role: "owner",
+        status: "active",
+        approvedByUserId: callerId,
+        joinedAt: new Date(),
+      });
 
-    await syncUserToOrganization(
-      (req as any).auth.userId,
-      organization.id,
-      "owner"
-    );
+      await syncUserToOrganization(
+        (req as any).auth.userId,
+        organization.id,
+        "owner"
+      );
+    }
 
     await writeAuditLog({
       req,
