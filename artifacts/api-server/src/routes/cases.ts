@@ -6626,6 +6626,89 @@ router.patch(
   })
 );
 
+router.patch(
+  "/:caseId/restorations/:restorationId/price",
+  asyncHandler(async (req, res) => {
+    const found = await assertCaseAccessOrPromote(
+      (req as any).auth.userId,
+      req.params.caseId
+    );
+    await requireAnyRole(
+      (req as any).auth.userId,
+      found.labOrganizationId,
+      ADMIN_ROLES
+    );
+
+    const restoration = await db.query.caseRestorations.findFirst({
+      where: and(
+        eq(caseRestorations.id, req.params.restorationId),
+        eq(caseRestorations.caseId, found.id)
+      ),
+    });
+    if (!restoration) throw new HttpError(404, "Restoration not found.");
+
+    const input = z
+      .object({
+        unitPrice: z.coerce.number().min(0),
+        reason: z.string().max(500).optional(),
+      })
+      .parse(req.body);
+
+    const beforeUnitPrice = restoration.unitPrice;
+    const beforePriceSource = restoration.priceSource;
+
+    const [updated] = await db
+      .update(caseRestorations)
+      .set({
+        unitPrice: input.unitPrice.toFixed(2),
+        priceSource: "manual",
+        priceSourceId: null,
+        priceSourceName: input.reason ?? null,
+      })
+      .where(eq(caseRestorations.id, restoration.id))
+      .returning();
+
+    const actor = (req as any).user;
+    await db.insert(caseEvents).values({
+      caseId: found.id,
+      eventType: "case_restoration_price_updated",
+      actorUserId: (req as any).auth.userId,
+      actorOrganizationId: found.labOrganizationId,
+      actorInitials: actor?.initials || "SYS",
+      metadataJson: {
+        restorationId: restoration.id,
+        toothNumber: restoration.toothNumber,
+        restorationType: restoration.restorationType,
+        beforeUnitPrice,
+        beforePriceSource,
+        afterUnitPrice: input.unitPrice.toFixed(2),
+        reason: input.reason ?? null,
+      },
+    });
+
+    await writeAuditLog({
+      req,
+      organizationId: found.labOrganizationId,
+      action: "case_restoration_price_updated",
+      entityType: "case",
+      entityId: found.id,
+      beforeJson: { unitPrice: beforeUnitPrice, priceSource: beforePriceSource },
+      afterJson: {
+        unitPrice: input.unitPrice.toFixed(2),
+        priceSource: "manual",
+        reason: input.reason ?? null,
+      },
+    });
+
+    await syncInvoiceFromRestorations({
+      caseId: found.id,
+      actorUserId: (req as any).auth.userId,
+    });
+
+    return ok(res, updated);
+  })
+);
+
 router.post(
   "/:caseId/submissions",
   asyncHandler(async (req, res) => {

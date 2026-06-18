@@ -2918,6 +2918,7 @@ function formatEventType(eventType: string | undefined | null): string {
   // case at a station, so surface it as "Location Changed" in the
   // history feed (and in the printed history below).
   if (eventType === "status_changed") return "Location Changed";
+  if (eventType === "case_restoration_price_updated") return "Price Override";
   return eventType
     .replace(/_/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
@@ -5987,6 +5988,7 @@ export function CaseDrawer({
                     caseId={labCase.id}
                     labOrganizationId={labCase.labOrganizationId}
                     isPendingDelete={pendingDeletes.has(r.id)}
+                    canEditPrice={isAdmin}
                     onPendingDelete={() => {
                       setPendingDeletes((prev) => {
                         const next = new Set(prev);
@@ -6800,6 +6802,34 @@ export function CaseDrawer({
                                   </div>
                                 );
                               })()}
+                              {eventType === "case_restoration_price_updated" && (
+                                <div className="mt-1.5 text-xs space-y-0.5">
+                                  {!!(metadata.restorationType || metadata.toothNumber) && (
+                                    <div className="text-muted-foreground">
+                                      {[
+                                        metadata.restorationType != null ? String(metadata.restorationType) : null,
+                                        metadata.toothNumber != null ? `Tooth ${String(metadata.toothNumber)}` : null,
+                                      ].filter(Boolean).join(" · ")}
+                                    </div>
+                                  )}
+                                  <div className="flex items-center gap-1.5">
+                                    {metadata.beforeUnitPrice != null && (
+                                      <span className="tabular-nums line-through text-muted-foreground">
+                                        {formatMoney(String(metadata.beforeUnitPrice))}
+                                      </span>
+                                    )}
+                                    <span className="text-muted-foreground">→</span>
+                                    {metadata.afterUnitPrice != null && (
+                                      <span className="tabular-nums font-medium">
+                                        {formatMoney(String(metadata.afterUnitPrice))}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {metadata.reason != null && (
+                                    <div className="text-muted-foreground italic">{String(metadata.reason)}</div>
+                                  )}
+                                </div>
+                              )}
                               {eventType === "remade_by" && metadata.remakeCaseId && (
                                 <div className="mt-1">
                                   <button
@@ -7075,6 +7105,7 @@ function RestorationRow({
   isPendingDelete,
   onPendingDelete,
   onUndoPendingDelete,
+  canEditPrice,
 }: {
   restoration: CaseRestoration;
   caseId: string;
@@ -7082,13 +7113,60 @@ function RestorationRow({
   isPendingDelete?: boolean;
   onPendingDelete?: () => void;
   onUndoPendingDelete?: () => void;
+  canEditPrice?: boolean;
 }) {
+  const queryClient = useQueryClient();
   const [expanded, setExpanded] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [editingPrice, setEditingPrice] = useState(false);
+  const [priceInput, setPriceInput] = useState("");
+  const [reasonInput, setReasonInput] = useState("");
+  const [savingPrice, setSavingPrice] = useState(false);
+  const [priceError, setPriceError] = useState<string | null>(null);
   const source = (r.priceSource ?? null) as RestorationPriceSource | null;
   const style = source ? PRICE_SOURCE_STYLES[source] : null;
   const hasHistorySource =
     source === "tier" || source === "override" || source === "default";
+
+  function openPriceEditor() {
+    setPriceInput(r.unitPrice != null ? Number(r.unitPrice).toFixed(2) : "0.00");
+    setReasonInput("");
+    setPriceError(null);
+    setEditingPrice(true);
+  }
+
+  function cancelPriceEditor() {
+    setEditingPrice(false);
+    setPriceError(null);
+  }
+
+  async function savePriceEdit() {
+    const parsed = parseFloat(priceInput);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      setPriceError("Enter a valid price (0 or greater).");
+      return;
+    }
+    setSavingPrice(true);
+    setPriceError(null);
+    try {
+      await apiFetch(`/cases/${caseId}/restorations/${r.id}/price`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          unitPrice: parsed,
+          ...(reasonInput.trim() ? { reason: reasonInput.trim() } : {}),
+        }),
+      });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["case", caseId] }),
+        queryClient.invalidateQueries({ queryKey: ["invoice-for-case", caseId] }),
+      ]);
+      setEditingPrice(false);
+    } catch (err: any) {
+      setPriceError(err?.message ?? "Failed to save price.");
+    } finally {
+      setSavingPrice(false);
+    }
+  }
 
   return (
     <div
@@ -7150,14 +7228,26 @@ function RestorationRow({
               Undo
             </button>
           ) : !confirmDelete ? (
-            <button
-              type="button"
-              onClick={() => setConfirmDelete(true)}
-              className="h-7 w-7 rounded hover:bg-destructive/10 flex items-center justify-center text-muted-foreground hover:text-destructive transition-colors mt-0.5"
-              title="Delete restoration"
-            >
-              <Trash2 size={13} />
-            </button>
+            <div className="flex items-center gap-1 mt-0.5">
+              {canEditPrice && !editingPrice && (
+                <button
+                  type="button"
+                  onClick={openPriceEditor}
+                  className="h-7 w-7 rounded hover:bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+                  title="Edit price"
+                >
+                  <Pencil size={12} />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setConfirmDelete(true)}
+                className="h-7 w-7 rounded hover:bg-destructive/10 flex items-center justify-center text-muted-foreground hover:text-destructive transition-colors"
+                title="Delete restoration"
+              >
+                <Trash2 size={13} />
+              </button>
+            </div>
           ) : (
             <div className="flex items-center gap-1 mt-0.5">
               <button
@@ -7178,6 +7268,57 @@ function RestorationRow({
           )}
         </div>
       </div>
+      {editingPrice && (
+        <div className="mt-2.5 border border-border rounded-md bg-secondary/30 px-3 py-2.5 space-y-2">
+          <div className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">Override unit price</div>
+          <div className="flex items-center gap-2">
+            <div className="relative w-28 shrink-0">
+              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">$</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={priceInput}
+                onChange={(e) => setPriceInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") savePriceEdit(); if (e.key === "Escape") cancelPriceEditor(); }}
+                className="w-full h-7 rounded border border-input bg-background pl-5 pr-2 text-sm tabular-nums focus:outline-none focus:ring-1 focus:ring-ring"
+                placeholder="0.00"
+                autoFocus
+              />
+            </div>
+            <button
+              type="button"
+              onClick={savePriceEdit}
+              disabled={savingPrice}
+              className="h-7 px-2.5 rounded bg-primary text-primary-foreground text-[11px] font-medium hover:bg-primary/90 disabled:opacity-50 inline-flex items-center gap-1"
+            >
+              {savingPrice && <Loader2 size={10} className="animate-spin" />}
+              Save
+            </button>
+            <button
+              type="button"
+              onClick={cancelPriceEditor}
+              disabled={savingPrice}
+              className="h-7 px-2 rounded bg-secondary hover:bg-secondary/80 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+          <div>
+            <input
+              type="text"
+              value={reasonInput}
+              onChange={(e) => setReasonInput(e.target.value)}
+              placeholder="Reason (optional)"
+              maxLength={500}
+              className="w-full h-7 rounded border border-input bg-background px-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
+          {priceError && (
+            <div className="text-xs text-destructive">{priceError}</div>
+          )}
+        </div>
+      )}
       {hasHistorySource && r.priceSourceId && (
         <div className="mt-2">
           <button
