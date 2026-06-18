@@ -300,7 +300,8 @@ export async function generateStatementPdfBuffer(
   data: PracticeStatementData,
   periodLabel: string,
   logoBuffer?: Buffer | null,
-  logoPdfSize?: string | null
+  logoPdfSize?: string | null,
+  invoiceScope?: InvoiceScope
 ): Promise<Buffer> {
   return await new Promise<Buffer>((resolve, reject) => {
     const doc = new PDFDocument({ size: "LETTER", margin: 48 });
@@ -524,6 +525,67 @@ export async function generateStatementPdfBuffer(
         y += 4;
       }
       // ── End grouped line items ──────────────────────────────────────────
+    }
+
+    // ── Aging summary (open_overdue_90 scope only) ──────────────────────
+    if (invoiceScope === "open_overdue_90") {
+      const now = new Date();
+      const buckets = { current: 0, d30: 0, d60: 0, d90: 0, d90plus: 0 };
+      for (const inv of data.invoices) {
+        if (inv.status === "paid" || inv.status === "void") continue;
+        const balance = Number(inv.balanceDue);
+        if (balance <= 0) continue;
+        if (!inv.dueAt) { buckets.current += balance; continue; }
+        const daysOverdue = Math.floor(
+          (now.getTime() - new Date(inv.dueAt).getTime()) / 86400000
+        );
+        if (daysOverdue <= 0) buckets.current += balance;
+        else if (daysOverdue <= 30) buckets.d30 += balance;
+        else if (daysOverdue <= 60) buckets.d60 += balance;
+        else if (daysOverdue <= 90) buckets.d90 += balance;
+        else buckets.d90plus += balance;
+      }
+
+      const ageRows: Array<{ label: string; amount: number; highlight?: boolean }> = [
+        { label: "Current (not overdue)", amount: buckets.current },
+        { label: "1\u201330 days overdue", amount: buckets.d30 },
+        { label: "31\u201360 days overdue", amount: buckets.d60 },
+        { label: "61\u201390 days overdue", amount: buckets.d90 },
+        { label: "90+ days overdue", amount: buckets.d90plus, highlight: true },
+      ].filter((r) => r.amount > 0);
+
+      if (ageRows.length > 0) {
+        const SECTION_H = 32 + ageRows.length * 14 + 10;
+        if (y + SECTION_H > doc.page.height - 60) {
+          doc.addPage();
+          y = doc.y;
+        }
+        y += 16;
+        doc.fontSize(11).font("Helvetica-Bold").fillColor("#000").text("Aging Summary", startX, y);
+        y += 16;
+        doc.font("Helvetica-Bold").fontSize(9).fillColor("#444");
+        doc.text("Age bucket", startX, y, { width: 220 });
+        doc.text("Balance due", startX + 220, y, { width: 110, align: "right" });
+        doc.fillColor("#000");
+        y += 13;
+        doc
+          .moveTo(startX, y - 2)
+          .lineTo(startX + 330, y - 2)
+          .strokeColor("#ccc")
+          .stroke();
+        doc.font("Helvetica").fontSize(9);
+        for (const row of ageRows) {
+          if (y + 14 > doc.page.height - 60) {
+            doc.addPage();
+            y = doc.y;
+          }
+          if (row.highlight) doc.fillColor("#c00000");
+          doc.text(row.label, startX, y, { width: 220 });
+          doc.text(fmtMoney(row.amount), startX + 220, y, { width: 110, align: "right" });
+          if (row.highlight) doc.fillColor("#000");
+          y += 14;
+        }
+      }
     }
 
     doc.end();
@@ -1151,12 +1213,13 @@ export async function generateStatementsZipBuffer(
   statements: PracticeStatementData[],
   label: string,
   logoBuffer: Buffer | null,
-  logoPdfSize?: string | null
+  logoPdfSize?: string | null,
+  invoiceScope?: InvoiceScope
 ): Promise<Buffer> {
   const pdfs: Array<{ name: string; buf: Buffer }> = [];
   for (const s of statements) {
     const safeName = s.practiceName.replace(/[^a-z0-9-_]+/gi, "_");
-    const buf = await generateStatementPdfBuffer(labName, s, label, logoBuffer, logoPdfSize);
+    const buf = await generateStatementPdfBuffer(labName, s, label, logoBuffer, logoPdfSize, invoiceScope);
     pdfs.push({ name: `statement-${safeName}.pdf`, buf });
   }
 
@@ -1271,7 +1334,8 @@ export async function runBatchSendStatements(opts: {
             s,
             label,
             logoBuffer,
-            (labOrg as any)?.logoPdfSize
+            (labOrg as any)?.logoPdfSize,
+            opts.invoiceScope
           );
           const er = await sendStatementEmail({
             to: s.practiceEmail,
@@ -1396,7 +1460,8 @@ export async function generateStatementsZipBufferForLab(opts: {
     statements,
     label,
     logoBuffer,
-    (labOrg as any)?.logoPdfSize
+    (labOrg as any)?.logoPdfSize,
+    opts.invoiceScope
   );
   const dateStr = new Date().toISOString().slice(0, 10);
   return { zipBuffer, filename: `statements-${dateStr}.zip`, periodLabel: label };

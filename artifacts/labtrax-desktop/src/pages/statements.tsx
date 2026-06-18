@@ -1,7 +1,7 @@
 import { useMemo, useState, useEffect, useRef } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, CalendarClock, ChevronDown, ChevronUp, Download, Eye, History, Loader2, Mail, MessageSquare, Printer, Receipt, Search, Send, X } from "lucide-react";
+import { AlertTriangle, CalendarClock, ChevronDown, ChevronUp, Download, Eye, History, Loader2, Mail, MessageSquare, Printer, Receipt, RefreshCw, Search, Send, X } from "lucide-react";
 import { ApiError, apiFetch } from "@/lib/api";
 import { useLabOrganizations, useSelectedOrg } from "@/lib/finance";
 import type { Invoice, Organization } from "@/lib/types";
@@ -1079,7 +1079,7 @@ function GenerateStatementsModal({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
-  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
+  const [step, setStep] = useState<1 | 2 | 3 | 4 | 5>(1);
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [allSelected, setAllSelected] = useState(true);
@@ -1177,7 +1177,45 @@ function GenerateStatementsModal({
       qc.invalidateQueries({ queryKey: ["statement-runs", orgId] });
       setResults(newResults);
       setResultPeriodLabel(newLabel);
-      setStep(4);
+      setStep(5);
+    } catch (err: unknown) {
+      setSendError(err instanceof ApiError ? err.message : (err as Error).message);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function handleRetryFailed() {
+    if (!results) return;
+    const failedIds = results
+      .filter((r) => r.emailStatus === "failed" || r.smsStatus === "failed")
+      .map((r) => r.practiceId);
+    if (!failedIds.length) return;
+    setSending(true);
+    setSendError(null);
+    const channels: Array<"email" | "sms"> = [
+      ...(emailEnabled ? (["email"] as const) : []),
+      ...(smsEnabled ? (["sms"] as const) : []),
+    ];
+    try {
+      const resp = await apiFetch<{ periodLabel: string; results: BatchSendResult[] }>(
+        `/lab-orgs/${orgId}/statements/batch-send`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            practiceIds: failedIds,
+            invoiceScope: scope,
+            channels,
+            emailSubject: emailSubject.trim() || null,
+            emailBody: emailBody.trim() || null,
+            periodLabel: stmtPeriodLabel.trim() || null,
+          }),
+        }
+      );
+      const retryMap = new Map(resp.results.map((r) => [r.practiceId, r]));
+      setResults((prev) => (prev ? prev.map((r) => retryMap.get(r.practiceId) ?? r) : null));
+      setResultPeriodLabel(resp.periodLabel);
+      qc.invalidateQueries({ queryKey: ["statement-runs", orgId] });
     } catch (err: unknown) {
       setSendError(err instanceof ApiError ? err.message : (err as Error).message);
     } finally {
@@ -1200,27 +1238,26 @@ function GenerateStatementsModal({
           <div>
             <div className="text-xs text-muted-foreground">Generate statements</div>
             <div className="text-sm font-semibold">
-              {step === 1 ? "Select practices" : step === 2 ? "Invoice scope & label" : step === 3 ? "Delivery channels" : "Results"}
+              {step === 1 ? "Select practices" : step === 2 ? "Invoice scope & label" : step === 3 ? "Delivery channels" : step === 4 ? "Review & send" : "Results"}
             </div>
           </div>
           <button type="button" onClick={onClose} className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"><X size={16} /></button>
         </header>
 
         <div className="flex items-center px-5 py-2.5 border-b border-border gap-1 shrink-0">
-          {SCOPE_OPTIONS.map(({ value: _, title: __, desc: ___ }, idx) => {
-            const n = idx + 1;
-            const labels = ["Practices", "Scope", "Delivery"];
+          {(["Practices", "Scope", "Delivery", "Review"] as const).map((label, idx) => {
+            const n = (idx + 1) as 1 | 2 | 3 | 4;
             const active = step === n;
-            const done = step > n && step < 4;
+            const done = step > n && step < 5;
             return (
-              <div key={n} className="flex items-center gap-1.5">
+              <div key={n} className="flex items-center gap-1">
                 <div className={`flex items-center gap-1.5 text-[11px] font-medium ${active ? "text-primary" : done ? "text-success" : "text-muted-foreground"}`}>
                   <div className={`h-5 w-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${active ? "bg-primary text-primary-foreground" : done ? "bg-success/20 text-success" : "bg-secondary text-muted-foreground"}`}>
                     {done ? "✓" : n}
                   </div>
-                  {labels[idx]}
+                  {label}
                 </div>
-                {idx < 2 && <div className="w-6 h-px bg-border mx-1" />}
+                {idx < 3 && <div className="w-5 h-px bg-border mx-0.5" />}
               </div>
             );
           })}
@@ -1319,6 +1356,47 @@ function GenerateStatementsModal({
                 </label>
               </div>
               {!canSend && <p className="text-sm text-destructive">Please select at least one delivery option.</p>}
+            </div>
+          )}
+
+          {step === 4 && (
+            <div className="space-y-4">
+              <p className="text-sm text-muted-foreground">Review the practices to be contacted, then confirm to send.</p>
+              <div className="rounded-md border border-border overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-secondary/40 border-b border-border">
+                      <th className="text-left px-4 py-2 text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Practice</th>
+                      {emailEnabled && <th className="text-left px-3 py-2 text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Email</th>}
+                      {smsEnabled && <th className="text-left px-3 py-2 text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Phone</th>}
+                      <th className="text-right px-4 py-2 text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Open balance</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(allSelected ? practices : practices.filter((p) => selectedIds.has(p.id))).map((p) => {
+                      const bal = balanceByPracticeId.get(p.id);
+                      return (
+                        <tr key={p.id} className="border-t border-border">
+                          <td className="px-4 py-2 font-medium text-sm">{p.displayName || p.name}</td>
+                          {emailEnabled && (
+                            <td className="px-3 py-2 text-xs text-muted-foreground truncate max-w-[160px]">
+                              {p.billingEmail || <span className="text-warning">No email</span>}
+                            </td>
+                          )}
+                          {smsEnabled && (
+                            <td className="px-3 py-2 text-xs text-muted-foreground">
+                              {(p as any).phone || <span className="text-warning">No phone</span>}
+                            </td>
+                          )}
+                          <td className="px-4 py-2 text-right tabular-nums text-sm font-medium">
+                            {formatMoney(bal?.open ?? 0)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
               {emailEnabled && (
                 <div className="border-t border-border pt-4 space-y-3">
                   <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Email template (optional overrides)</div>
@@ -1337,7 +1415,7 @@ function GenerateStatementsModal({
             </div>
           )}
 
-          {step === 4 && (
+          {step === 5 && (
             <div className="space-y-3">
               {results ? (
                 <>
@@ -1362,11 +1440,25 @@ function GenerateStatementsModal({
                       </tbody>
                     </table>
                   </div>
-                  <div className="text-xs text-muted-foreground flex gap-4">
-                    <span className="text-success font-medium">{results.filter((r) => r.emailStatus === "sent" || r.smsStatus === "sent").length} delivered</span>
-                    <span className="text-warning">{results.filter((r) => r.emailStatus === "skipped" && r.smsStatus !== "sent").length} skipped</span>
-                    <span className="text-destructive">{results.filter((r) => r.emailStatus === "failed" || r.smsStatus === "failed").length} failed</span>
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs text-muted-foreground flex gap-4">
+                      <span className="text-success font-medium">{results.filter((r) => r.emailStatus === "sent" || r.smsStatus === "sent").length} delivered</span>
+                      <span className="text-warning">{results.filter((r) => r.emailStatus === "skipped" && r.smsStatus !== "sent").length} skipped</span>
+                      <span className="text-destructive">{results.filter((r) => r.emailStatus === "failed" || r.smsStatus === "failed").length} failed</span>
+                    </div>
+                    {results.some((r) => r.emailStatus === "failed" || r.smsStatus === "failed") && (
+                      <button
+                        type="button"
+                        onClick={handleRetryFailed}
+                        disabled={sending}
+                        className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs font-medium border border-border hover:bg-secondary disabled:opacity-50"
+                      >
+                        {sending ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+                        Retry failed
+                      </button>
+                    )}
                   </div>
+                  {sendError && <div className="text-sm text-destructive border border-destructive/30 bg-destructive/10 rounded-md p-2.5">{sendError}</div>}
                 </>
               ) : downloadEnabled ? (
                 <div className="py-8 text-center">
@@ -1383,24 +1475,24 @@ function GenerateStatementsModal({
           <button
             type="button"
             onClick={() => {
-              if (step === 4 || step === 1) onClose();
+              if (step === 5 || step === 1) onClose();
               else setStep((s) => (s - 1) as 1 | 2 | 3 | 4);
             }}
             className="h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary"
           >
-            {step === 4 ? "Close" : step === 1 ? "Cancel" : "Back"}
+            {step === 5 ? "Close" : step === 1 ? "Cancel" : "Back"}
           </button>
-          {step < 3 && (
+          {step < 4 && (
             <button
               type="button"
-              onClick={() => setStep((s) => (s + 1) as 1 | 2 | 3 | 4)}
+              onClick={() => setStep((s) => (s + 1) as 1 | 2 | 3 | 4 | 5)}
               disabled={step === 1 && selectedCount === 0}
               className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50"
             >
               Next
             </button>
           )}
-          {step === 3 && (
+          {step === 4 && (
             <button
               type="button"
               onClick={handleSend}
