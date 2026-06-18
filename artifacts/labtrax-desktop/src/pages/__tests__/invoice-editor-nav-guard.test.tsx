@@ -111,7 +111,10 @@ describe("InvoiceEditor navigation guard", () => {
       expect(blocked).toBe(true);
     });
     expect(proceed).not.toHaveBeenCalled();
-    expect(screen.getByText("Discard changes?")).toBeInTheDocument();
+    // guardNavigation triggers a React setState — wait for the dialog to render.
+    await waitFor(() =>
+      expect(screen.getByText("Discard changes?")).toBeInTheDocument(),
+    );
   });
 
   it("'Keep editing' cancels the deferred navigation", async () => {
@@ -121,7 +124,7 @@ describe("InvoiceEditor navigation guard", () => {
 
     const proceed = vi.fn();
     await waitFor(() => expect(guardNavigation(proceed)).toBe(true));
-    fireEvent.click(screen.getByText("Keep editing"));
+    fireEvent.click(await screen.findByText("Keep editing"));
 
     expect(proceed).not.toHaveBeenCalled();
     expect(screen.queryByText("Discard changes?")).not.toBeInTheDocument();
@@ -136,7 +139,7 @@ describe("InvoiceEditor navigation guard", () => {
 
     const proceed = vi.fn();
     await waitFor(() => expect(guardNavigation(proceed)).toBe(true));
-    fireEvent.click(screen.getByText("Discard changes"));
+    fireEvent.click(await screen.findByText("Discard changes"));
 
     expect(proceed).toHaveBeenCalledTimes(1);
     expect(screen.queryByText("Discard changes?")).not.toBeInTheDocument();
@@ -166,7 +169,7 @@ describe("InvoiceEditor navigation guard", () => {
     makeDirty();
 
     await waitFor(() => expect(guardNavigation(vi.fn())).toBe(true));
-    fireEvent.click(screen.getByText("Keep editing"));
+    fireEvent.click(await screen.findByText("Keep editing"));
 
     view.unmount();
 

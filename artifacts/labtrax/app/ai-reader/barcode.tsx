@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -12,13 +12,15 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { CameraView, useCameraPermissions } from "expo-camera";
+import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
+import * as Haptics from "expo-haptics";
 import * as Print from "expo-print";
 import { buildCaseCardHtml } from "@/lib/case-pdf";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { resilientFetch } from "@/lib/query-client";
 import { getAiReaderSession, clearAiReaderSession } from "@/lib/ai-reader-store";
+import { pickBestBarcode, guideBoxFromLayout } from "@/lib/barcode-guide-box";
 
 type Step = "scan" | "manual" | "done";
 
@@ -43,6 +45,13 @@ export default function AiReaderBarcodeScreen() {
   const [printModalVisible, setPrintModalVisible] = useState(false);
   const [printLoading, setPrintLoading] = useState(false);
 
+  // Guide-box scanning: measure the camera view and accumulate barcodes over a
+  // ~120ms frame window so pickBestBarcode can choose the best in-box candidate.
+  const cameraViewSize = useRef<{ width: number; height: number } | null>(null);
+  const assigningRef = useRef(false);
+  const barcodeAccumRef = useRef<BarcodeScanningResult[]>([]);
+  const barcodeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const session = getAiReaderSession();
   const caseId = session.caseId;
   const caseNumber = session.caseNumber;
@@ -56,18 +65,46 @@ export default function AiReaderBarcodeScreen() {
     }
   }
 
-  // ── Barcode scan handler ──
+  // ── Barcode scan handler (guide-box filtering) ──
   const handleBarcodeScanned = useCallback(
-    async ({ data }: { data: string }) => {
-      if (scanned || assigning || !data?.trim()) return;
-      setScanned(true);
-      await assignBarcode(data.trim());
+    (event: BarcodeScanningResult) => {
+      if (assigningRef.current || !event.data?.trim()) return;
+
+      // Accumulate barcodes over a ~120ms window so pickBestBarcode can select
+      // the in-box candidate closest to center across the full frame.
+      barcodeAccumRef.current.push(event);
+      if (barcodeDebounceRef.current) clearTimeout(barcodeDebounceRef.current);
+
+      barcodeDebounceRef.current = setTimeout(() => {
+        barcodeDebounceRef.current = null;
+        if (assigningRef.current) {
+          barcodeAccumRef.current = [];
+          return;
+        }
+
+        const candidates = barcodeAccumRef.current.splice(0);
+        if (candidates.length === 0) return;
+
+        const viewSize = cameraViewSize.current;
+        if (!viewSize) return;
+
+        // Reticle fractions: top 30%, left/right 15%, height 40%
+        const box = guideBoxFromLayout(viewSize.width, viewSize.height, 0.15, 0.30, 0.15, 0.40);
+        const best = pickBestBarcode(candidates, box);
+        if (!best || !best.data.trim()) return;
+
+        assigningRef.current = true;
+        setScanned(true);
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+        assignBarcode(best.data.trim());
+      }, 120);
     },
-    [scanned, assigning, caseId],
+    [],
   );
 
   async function assignBarcode(code: string) {
     if (!caseId || !code.trim()) return;
+    assigningRef.current = true;
     setAssigning(true);
     try {
       const res = await resilientFetch(`/api/cases/${encodeURIComponent(caseId)}`, {
@@ -90,6 +127,7 @@ export default function AiReaderBarcodeScreen() {
         // the case holding it must be completed (which frees its barcode) or a
         // different barcode used.
         if (res.status === 409) {
+          assigningRef.current = false;
           setScanned(false);
           setAssigning(false);
           Alert.alert(
@@ -102,6 +140,7 @@ export default function AiReaderBarcodeScreen() {
           "Barcode not saved",
           errMsg || `Server responded with ${res.status}. Assign it later from the case detail.`,
         );
+        assigningRef.current = false;
         setScanned(false);
         setAssigning(false);
         return;
@@ -114,8 +153,10 @@ export default function AiReaderBarcodeScreen() {
         "Network error",
         e instanceof Error ? e.message : "Could not assign barcode. Try again from the case detail.",
       );
+      assigningRef.current = false;
       setScanned(false);
     } finally {
+      assigningRef.current = false;
       setAssigning(false);
     }
   }
@@ -249,7 +290,13 @@ export default function AiReaderBarcodeScreen() {
                 </Pressable>
               </View>
             ) : (
-              <View style={styles.scannerWrap}>
+              <View
+                style={styles.scannerWrap}
+                onLayout={(e) => {
+                  const { width, height } = e.nativeEvent.layout;
+                  cameraViewSize.current = { width, height };
+                }}
+              >
                 {!scanned && (
                   <CameraView
                     style={StyleSheet.absoluteFill}
@@ -282,7 +329,7 @@ export default function AiReaderBarcodeScreen() {
                   </View>
                 )}
                 <View style={styles.scanHint} pointerEvents="none">
-                  <Text style={styles.scanHintText}>Point at the case pan barcode</Text>
+                  <Text style={styles.scanHintText}>Center the barcode in the box</Text>
                 </View>
               </View>
             )

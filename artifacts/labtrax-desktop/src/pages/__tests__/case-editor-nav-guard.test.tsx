@@ -133,9 +133,12 @@ describe("CaseDrawer navigation guard", () => {
       expect(blocked).toBe(true);
     });
     expect(proceed).not.toHaveBeenCalled();
-    expect(
-      screen.getByRole("heading", { name: "Unsaved changes" }),
-    ).toBeInTheDocument();
+    // guardNavigation triggers a React setState — wait for the dialog to render.
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "Unsaved changes" }),
+      ).toBeInTheDocument(),
+    );
   });
 
   it("'Keep editing' cancels the deferred navigation", async () => {
@@ -144,7 +147,7 @@ describe("CaseDrawer navigation guard", () => {
 
     const proceed = vi.fn();
     await waitFor(() => expect(guardNavigation(proceed)).toBe(true));
-    fireEvent.click(screen.getByText("Keep editing"));
+    fireEvent.click(await screen.findByText("Keep editing"));
 
     expect(proceed).not.toHaveBeenCalled();
     expect(
@@ -158,7 +161,7 @@ describe("CaseDrawer navigation guard", () => {
 
     const proceed = vi.fn();
     await waitFor(() => expect(guardNavigation(proceed)).toBe(true));
-    fireEvent.click(screen.getByText("Discard changes"));
+    fireEvent.click(await screen.findByText("Discard changes"));
 
     expect(proceed).toHaveBeenCalledTimes(1);
     expect(
@@ -191,7 +194,7 @@ describe("CaseDrawer navigation guard", () => {
     await makeDirty();
 
     await waitFor(() => expect(guardNavigation(vi.fn())).toBe(true));
-    fireEvent.click(screen.getByText("Keep editing"));
+    fireEvent.click(await screen.findByText("Keep editing"));
 
     view.unmount();
 
