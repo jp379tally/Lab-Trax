@@ -1292,6 +1292,125 @@ interface PracticeFields {
   statementEmailOptOut: boolean;
 }
 
+interface StatementHistoryEntry {
+  id: string;
+  createdAt: string | null;
+  to: string | null;
+  cc: string[];
+  subject: string | null;
+  invoiceIds: string[];
+  invoiceNumbers: string[];
+  sentAt: string | null;
+  actorFirstName: string | null;
+  actorLastName: string | null;
+  actorInitials: string | null;
+}
+
+function PracticeStatementsSection({ org }: { org: Organization }) {
+  const historyQuery = useQuery({
+    queryKey: ["organization", org.id, "statement-history"],
+    queryFn: () =>
+      apiFetch<{ history: StatementHistoryEntry[] }>(
+        `/organizations/${org.id}/statement-history`,
+      ),
+    enabled: org.type === "provider" && !!org.parentLabOrganizationId,
+  });
+
+  const history = historyQuery.data?.history ?? [];
+
+  function actorLabel(entry: StatementHistoryEntry): string {
+    if (entry.actorFirstName || entry.actorLastName) {
+      return [entry.actorFirstName, entry.actorLastName].filter(Boolean).join(" ");
+    }
+    return entry.actorInitials ?? "System";
+  }
+
+  return (
+    <section>
+      <div className="flex items-center gap-2 mb-3">
+        <Send size={14} className="text-muted-foreground" />
+        <span className="text-sm font-medium">Statements sent</span>
+        {historyQuery.isLoading && (
+          <Loader2 size={12} className="animate-spin text-muted-foreground" />
+        )}
+      </div>
+
+      {historyQuery.isError && (
+        <div className="text-xs text-destructive">
+          Could not load statement history.
+        </div>
+      )}
+
+      {!historyQuery.isLoading && !historyQuery.isError && history.length === 0 && (
+        <div className="text-xs text-muted-foreground italic">
+          No statements have been emailed to this practice yet.
+        </div>
+      )}
+
+      {history.length > 0 && (
+        <div className="border border-border rounded-md divide-y divide-border">
+          {history.map((entry) => {
+            const dateStr = entry.sentAt ?? entry.createdAt;
+            const date = dateStr ? new Date(dateStr) : null;
+            const invoiceCount = entry.invoiceNumbers.length;
+
+            return (
+              <div key={entry.id} className="px-4 py-3 flex flex-col gap-1">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground shrink-0">
+                    <Mail size={12} />
+                    <span className="font-medium text-foreground truncate max-w-[220px]">
+                      {entry.to ?? "—"}
+                    </span>
+                  </div>
+                  <time
+                    className="text-xs text-muted-foreground shrink-0 tabular-nums"
+                    dateTime={dateStr ?? undefined}
+                    title={date ? date.toLocaleString() : undefined}
+                  >
+                    {date
+                      ? date.toLocaleDateString(undefined, {
+                          month: "short",
+                          day: "numeric",
+                          year: "numeric",
+                        })
+                      : "—"}
+                  </time>
+                </div>
+
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-xs text-muted-foreground">
+                    {invoiceCount === 1
+                      ? "1 invoice"
+                      : `${invoiceCount} invoices`}
+                    {entry.invoiceNumbers.length > 0 && (
+                      <>
+                        {" "}
+                        &mdash;{" "}
+                        <span className="font-mono">
+                          {entry.invoiceNumbers.slice(0, 5).join(", ")}
+                          {entry.invoiceNumbers.length > 5 && " …"}
+                        </span>
+                      </>
+                    )}
+                  </span>
+                </div>
+
+                <div className="text-[11px] text-muted-foreground">
+                  Sent by {actorLabel(entry)}
+                  {entry.cc.length > 0 && (
+                    <> &middot; CC: {entry.cc.join(", ")}</>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function PracticeEditor({
   org,
   onClose,
@@ -1598,6 +1717,7 @@ export function PracticeEditor({
                 currentUserId={currentUser?.id}
                 isArchived={isArchived}
               />
+              <PracticeStatementsSection org={org} />
             </>
           )}
 

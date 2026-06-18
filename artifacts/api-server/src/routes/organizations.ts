@@ -32,10 +32,11 @@ import {
   DEFAULT_CORRESPONDENCE_TEMPLATE,
   correspondenceTemplateSchema,
 } from "../lib/correspondence-template";
-import { and, eq, inArray, isNotNull, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, ne } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import {
+  auditLogs,
   cases,
   labCases,
   organizationConnections,
@@ -3368,6 +3369,86 @@ router.patch(
 
     return ok(res, updated);
   })
+);
+
+// ─── Statement history ───────────────────────────────────────────────────────
+
+// Returns the most recent statement-email audit log entries for a practice org.
+// The caller must have read access to the practice (direct membership OR lab
+// membership when the org is a provider).
+router.get(
+  "/:organizationId/statement-history",
+  asyncHandler(async (req, res) => {
+    const { organizationId } = req.params;
+    const { organization } = await resolveOrgReadAccess(
+      (req as any).auth.userId,
+      organizationId,
+    );
+
+    // `organization` is populated when access was granted via the parent lab.
+    // When the caller is a direct member, fetch the org ourselves to get
+    // parentLabOrganizationId (needed to scope the audit log query).
+    const org =
+      organization ??
+      (await db.query.organizations.findFirst({
+        where: eq(organizations.id, organizationId),
+      }));
+    if (!org) throw new HttpError(404, "Organization not found.");
+
+    const labOrgId = org.parentLabOrganizationId;
+    if (!labOrgId) {
+      // Not a provider org — no statement history applies.
+      return ok(res, { history: [] });
+    }
+
+    const rawLimit = Number(req.query.limit ?? 25);
+    const limit = Math.min(isNaN(rawLimit) ? 25 : rawLimit, 100);
+
+    const rows = await db
+      .select({
+        id: auditLogs.id,
+        createdAt: auditLogs.createdAt,
+        metadataJson: auditLogs.metadataJson,
+        actorFirstName: users.firstName,
+        actorLastName: users.lastName,
+        actorInitials: users.initials,
+      })
+      .from(auditLogs)
+      .leftJoin(users, eq(auditLogs.userId, users.id))
+      .where(
+        and(
+          eq(auditLogs.organizationId, labOrgId),
+          eq(auditLogs.action, "statement_emailed"),
+          eq(auditLogs.entityId, organizationId),
+        ),
+      )
+      .orderBy(desc(auditLogs.createdAt))
+      .limit(limit);
+
+    const history = rows.map((r) => {
+      const meta = (r.metadataJson ?? {}) as Record<string, unknown>;
+      return {
+        id: r.id,
+        createdAt: r.createdAt,
+        to: typeof meta["to"] === "string" ? meta["to"] : null,
+        cc: Array.isArray(meta["cc"]) ? (meta["cc"] as string[]) : [],
+        subject: typeof meta["subject"] === "string" ? meta["subject"] : null,
+        invoiceIds: Array.isArray(meta["invoiceIds"])
+          ? (meta["invoiceIds"] as string[])
+          : [],
+        invoiceNumbers: Array.isArray(meta["invoiceNumbers"])
+          ? (meta["invoiceNumbers"] as string[])
+          : [],
+        sentAt:
+          typeof meta["sentAt"] === "string" ? meta["sentAt"] : null,
+        actorFirstName: r.actorFirstName ?? null,
+        actorLastName: r.actorLastName ?? null,
+        actorInitials: r.actorInitials ?? null,
+      };
+    });
+
+    return ok(res, { history });
+  }),
 );
 
 // ─── Invoice template named presets ─────────────────────────────────────────
