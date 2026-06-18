@@ -632,6 +632,16 @@ export const cases = pgTable(
     caseNumberUnique: uniqueIndex("cases_case_number_unique").on(
       table.caseNumber
     ),
+    // Atomic guard against two concurrent requests assigning the same barcode
+    // to different active cases in the same lab (TOCTOU race that the
+    // checkBarcodeUniqueness pre-check alone cannot close). Mirrors the
+    // pre-check's predicate: only non-deleted, non-complete cases with a
+    // barcode hold a barcode, so a completed case releases it for reuse.
+    barcodeUniquePerLab: uniqueIndex("cases_barcode_unique_per_lab")
+      .on(table.labOrganizationId, table.casePanBarcode)
+      .where(
+        sql`deleted_at IS NULL AND case_pan_barcode IS NOT NULL AND status <> 'complete'`,
+      ),
     casesDeletedAtIdx: index("cases_deleted_at_idx").on(table.deletedAt),
     caseLabIdx: index("cases_lab_idx").on(table.labOrganizationId),
     caseProviderIdx: index("cases_provider_idx").on(

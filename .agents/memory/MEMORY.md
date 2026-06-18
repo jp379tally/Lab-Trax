@@ -68,3 +68,4 @@
 - [iTero Rx object-storage mirror](itero-rx-object-storage-mirror.md) — single-file poller route was missing writeCaseMediaToObjectStorage; all multer-write paths must mirror to object storage or files 404 after restart.
 - [Case-delete invoice freeze](case-delete-invoice-freeze.md) — deleting a case must KEEP its invoice (frozen=true, balanceDue 0), never delete it; applies to BOTH single-delete and bulk-delete ("delete all" uses bulk); freeze must be tenant-scoped + idempotent.
 - [Mobile resilientFetch raw envelope](mobile-resilientfetch-envelope.md) — resilientFetch is pass-through; raw callers must read body.data.X (server ok() wraps {ok,data}); reading body.X is a silent undefined that looks like a "not found" miss.
+- [Barcode uniqueness hard index](barcode-uniqueness-hard-index.md) — case_pan_barcode is a hard partial unique index per lab; predicate must match the pre-check (incl. status<>'complete'); admin force-duplicate override removed (incompatible).

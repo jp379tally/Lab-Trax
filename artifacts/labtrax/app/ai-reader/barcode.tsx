@@ -66,7 +66,7 @@ export default function AiReaderBarcodeScreen() {
     [scanned, assigning, caseId],
   );
 
-  async function assignBarcode(code: string, allowDuplicate = false) {
+  async function assignBarcode(code: string) {
     if (!caseId || !code.trim()) return;
     setAssigning(true);
     try {
@@ -75,7 +75,6 @@ export default function AiReaderBarcodeScreen() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           casePanBarcode: code.trim(),
-          ...(allowDuplicate ? { allowDuplicateBarcode: true } : {}),
         }),
       });
       if (!res.ok) {
@@ -86,21 +85,16 @@ export default function AiReaderBarcodeScreen() {
         } catch {
           errMsg = await res.text().catch(() => "");
         }
-        // 409 = barcode already in use on another active case — offer override.
+        // 409 = barcode already in use on another active case. Barcodes are
+        // strictly unique per lab for active cases, so there's no override —
+        // the case holding it must be completed (which frees its barcode) or a
+        // different barcode used.
         if (res.status === 409) {
           setScanned(false);
           setAssigning(false);
           Alert.alert(
             "Barcode conflict",
-            errMsg || "This barcode is already assigned to another active case.",
-            [
-              { text: "Cancel", style: "cancel" },
-              {
-                text: "Assign anyway (admin only)",
-                style: "destructive",
-                onPress: () => assignBarcode(code, true),
-              },
-            ],
+            errMsg || "This barcode is already assigned to another active case. Use a different barcode.",
           );
           return;
         }

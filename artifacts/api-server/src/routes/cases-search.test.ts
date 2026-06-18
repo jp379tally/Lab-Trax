@@ -643,18 +643,20 @@ maybe("Cases search and tenant isolation (db integration)", () => {
     await db.delete(cases).where(inArray(cases.id, [case1Id, case2Id]));
   });
 
-  it("PATCH /api/cases/:id: admin override allows duplicate barcode (allowDuplicateBarcode=true)", async () => {
+  it("PATCH /api/cases/:id: barcodes are strictly unique — allowDuplicateBarcode no longer overrides (409)", async () => {
     const sharedBarcode = `OVR${randomBytes(4).toString("hex").toUpperCase()}`;
     const case1Id = await insertCase({ caseNumber: rid("OVR"), panBarcode: sharedBarcode });
     const case2Id = await insertCase({ caseNumber: rid("OVR") });
 
+    // The admin force-duplicate override was removed in favor of a hard
+    // per-lab unique index. The flag is ignored and the duplicate is rejected.
     const r = await request(appMod.default)
       .patch(`/api/cases/${case2Id}`)
       .set("Authorization", `Bearer ${tokens.admin}`)
       .send({ casePanBarcode: sharedBarcode, allowDuplicateBarcode: true });
 
-    expect(r.status).toBe(200);
-    expect(r.body.data.case?.casePanBarcode ?? r.body.data?.casePanBarcode).toBe(sharedBarcode);
+    expect(r.status).toBe(409);
+    expect(r.body.error ?? r.body.message ?? "").toMatch(/already assigned/i);
 
     const { db, cases } = dbMod as any;
     await db.delete(cases).where(inArray(cases.id, [case1Id, case2Id]));

@@ -57,7 +57,7 @@ import {
   resolveServerPriceWithSource,
   type ResolvedItemRow,
 } from "../lib/pricing";
-import { ADMIN_ROLES, BILLING_ROLES, MembershipRole, requireAnyRole, requireMembership } from "../lib/rbac";
+import { ADMIN_ROLES, BILLING_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth, requireVerifiedAccount } from "../middlewares/auth";
 import {
@@ -1397,9 +1397,35 @@ async function checkBarcodeUniqueness(
   if (conflicting) {
     throw new HttpError(
       409,
-      `Barcode "${barcode}" is already assigned to case #${conflicting.caseNumber}. A lab admin can pass allowDuplicateBarcode=true to force-assign.`,
+      `Barcode "${barcode}" is already assigned to case #${conflicting.caseNumber}. Each barcode can only be assigned to one active case at a time.`,
     );
   }
+}
+
+/**
+ * Translate a PG unique-violation (23505) raised by the
+ * `cases_barcode_unique_per_lab` partial index into the same 409 the
+ * `checkBarcodeUniqueness` pre-check returns. The DB constraint is the
+ * authoritative guard that closes the TOCTOU race between the pre-check
+ * SELECT and the INSERT/UPDATE; the pre-check remains as a fast-path that
+ * names the conflicting case for a friendlier message. Re-throws anything
+ * else (including the unrelated `cases_case_number_unique` violation).
+ */
+function rethrowBarcodeConflict(err: unknown, barcode: string): never {
+  if (
+    err != null &&
+    typeof err === "object" &&
+    "code" in err &&
+    (err as { code: unknown }).code === "23505" &&
+    "constraint" in err &&
+    (err as { constraint: unknown }).constraint === "cases_barcode_unique_per_lab"
+  ) {
+    throw new HttpError(
+      409,
+      `Barcode "${barcode}" is already assigned to another active case. Each barcode can only be assigned to one active case at a time.`,
+    );
+  }
+  throw err;
 }
 
 const ATTACHMENT_VISIBILITIES = [
@@ -1477,8 +1503,6 @@ const createCaseSchema = z.object({
   // Optional barcode to assign to the case pan at creation time.
   // Empty strings are treated as omitted (no barcode assigned).
   casePanBarcode: z.string().optional().transform((v) => (v && v.trim().length > 0 ? v.trim() : undefined)),
-  // When true (admin only), skip the duplicate-barcode uniqueness check.
-  allowDuplicateBarcode: z.boolean().optional(),
   // Top-level shade extracted from the Rx (stored directly on the case row so
   // it's visible in the overview even when no tooth indices were identified).
   shade: z.string().optional(),
@@ -3028,19 +3052,17 @@ router.post(
     return Promise.race([
       (async () => {
     const input = createCaseSchema.parse(req.body);
-    const createMembership = await requireMembership(
+    await requireMembership(
       (req as any).auth.userId,
       input.labOrganizationId
     );
 
     // Barcode uniqueness check — reject duplicate barcodes across active cases
-    // in the same lab unless the caller is an admin and explicitly overrides.
+    // in the same lab. Barcodes are strictly unique per lab for active cases;
+    // the cases_barcode_unique_per_lab partial index is the atomic guard, and
+    // this pre-check is a fast-path that names the conflicting case.
     if (input.casePanBarcode) {
-      if (!input.allowDuplicateBarcode) {
-        await checkBarcodeUniqueness(input.casePanBarcode, input.labOrganizationId);
-      } else if (!ADMIN_ROLES.includes(createMembership.role as MembershipRole)) {
-        throw new HttpError(403, "Only lab admins can override duplicate barcode assignment.");
-      }
+      await checkBarcodeUniqueness(input.casePanBarcode, input.labOrganizationId);
     }
 
     // Validate remake link target. The original may live in either the
@@ -3083,6 +3105,7 @@ router.post(
     // on cases.caseNumber is the ultimate guard against collisions even
     // under concurrent creates of the same remake target.
     const createdCase = await db.transaction(async (tx) => {
+      try {
       let resolvedCaseNumber: string;
       if (remakeOriginal) {
         // Acquire a transaction-scoped advisory lock keyed on the original case
@@ -3155,6 +3178,13 @@ router.post(
         .returning();
 
       return created;
+      } catch (err) {
+        // The cases_barcode_unique_per_lab partial index is the atomic guard
+        // that closes the race between the checkBarcodeUniqueness pre-check and
+        // this INSERT. Translate its 23505 into the same 409 the pre-check
+        // returns; re-throw anything else (incl. the case-number unique index).
+        rethrowBarcodeConflict(err, input.casePanBarcode ?? "");
+      }
     });
 
     if (input.restorations && input.restorations.length > 0) {
@@ -5174,8 +5204,6 @@ const updateCaseSchema = z.object({
     .transform((v) => (v === null ? null : v.trim()))
     .optional(),
   rxNotes: z.union([z.string(), z.null()]).optional(),
-  // When true (admin only), skip the duplicate-barcode uniqueness check.
-  allowDuplicateBarcode: z.boolean().optional(),
 });
 
 router.patch(
@@ -5284,7 +5312,7 @@ router.patch(
     }
 
     // Canonical cases table path.
-    const patchMembership = await requireMembership(
+    await requireMembership(
       (req as any).auth.userId,
       found.labOrganizationId
     );
@@ -5335,15 +5363,13 @@ router.patch(
     if (input.bridgeConnectors !== undefined)
       updates.bridgeConnectors = input.bridgeConnectors || null;
     if (input.casePanBarcode !== undefined) {
-      // Non-empty barcode being set or changed — enforce uniqueness unless
-      // the caller is a lab admin explicitly overriding the check.
+      // Non-empty barcode being set or changed — enforce strict uniqueness
+      // across active cases in the lab. The cases_barcode_unique_per_lab
+      // partial index is the atomic guard; this pre-check is a fast-path that
+      // names the conflicting case for a friendlier error.
       const newBarcode = input.casePanBarcode || null;
       if (newBarcode && newBarcode !== found.casePanBarcode) {
-        if (!input.allowDuplicateBarcode) {
-          await checkBarcodeUniqueness(newBarcode, found.labOrganizationId, found.id);
-        } else if (!ADMIN_ROLES.includes(patchMembership.role as MembershipRole)) {
-          throw new HttpError(403, "Only lab admins can override duplicate barcode assignment.");
-        }
+        await checkBarcodeUniqueness(newBarcode, found.labOrganizationId, found.id);
       }
       updates.casePanBarcode = newBarcode;
     }
@@ -5357,11 +5383,20 @@ router.patch(
     }
     if (input.rxNotes !== undefined) updates.rxNotes = input.rxNotes ?? null;
 
-    const [updated] = await db
-      .update(cases)
-      .set(updates)
-      .where(eq(cases.id, found.id))
-      .returning();
+    let updated: typeof cases.$inferSelect | undefined;
+    try {
+      [updated] = await db
+        .update(cases)
+        .set(updates)
+        .where(eq(cases.id, found.id))
+        .returning();
+    } catch (err) {
+      // The cases_barcode_unique_per_lab partial index atomically closes the
+      // race between the checkBarcodeUniqueness pre-check above and this UPDATE.
+      // Translate its 23505 into the same 409 the pre-check returns; re-throw
+      // anything else.
+      rethrowBarcodeConflict(err, (updates.casePanBarcode as string | null) ?? "");
+    }
 
     if (input.status && input.status !== found.status) {
       const user = (req as any).user;
