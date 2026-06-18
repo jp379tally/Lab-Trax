@@ -16,7 +16,7 @@
  *
  * These tests are gated on DATABASE_URL and skip cleanly when it is not set.
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import request from "supertest";
@@ -148,6 +148,12 @@ maybe("frozen-invoice (db integration)", () => {
       createdByUserId: adminUserId,
     });
 
+    adminToken = await makeSession(adminUserId);
+  });
+
+  // Refresh session token before every test so a concurrent user_sessions
+  // wipe does not invalidate the shared token mid-suite.
+  beforeEach(async () => {
     adminToken = await makeSession(adminUserId);
   });
 

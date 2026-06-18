@@ -14,7 +14,7 @@
  *    list, the bare /api/cases list, the `?organizationId=` filter (IDOR), and
  *    case detail.
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash, randomBytes } from "node:crypto";
 import { inArray, eq } from "drizzle-orm";
 import request from "supertest";
@@ -171,6 +171,12 @@ maybe("Provider portal foundation (db integration)", () => {
     const { access } = await makeSession(labOwnerId);
     caseAId = await createCase(access, providerOrgAId, "AlphaPatient");
     caseBId = await createCase(access, providerOrgBId, "BetaPatient");
+  });
+
+  // Ensure a fresh session exists before each test; per-test sessions created
+  // in each it() body are still the authoritative token for that test.
+  beforeEach(async () => {
+    await makeSession(labOwnerId);
   });
 
   afterAll(async () => {

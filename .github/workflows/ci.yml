@@ -6,6 +6,31 @@ on:
   pull_request:
 
 jobs:
+  guard-session-beforeeach:
+    name: Session-refresh beforeEach guard
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Ensures every test file that mints a token inside beforeAll also has a
+      # beforeEach that refreshes it, guarding against backup-restore TRUNCATE
+      # races that silently invalidate shared session tokens mid-suite.
+      - name: Run session-refresh guard
+        run: pnpm --filter @workspace/scripts run guard-session-beforeeach
+
   typecheck:
     name: Typecheck (all packages)
     runs-on: ubuntu-latest

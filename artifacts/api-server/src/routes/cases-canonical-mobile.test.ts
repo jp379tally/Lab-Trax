@@ -22,7 +22,7 @@
  * Skipped when DATABASE_URL is not configured — all rows are removed in
  * afterAll so the suite is safe to run against a shared dev DB.
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { inArray, eq } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
@@ -110,6 +110,12 @@ maybe("Canonical mobile rebuild — acceptance criteria (db integration)", () =>
       approvedByUserId: labOwnerId,
       joinedAt: new Date(),
     });
+  });
+
+  // Ensure a fresh session exists before each test; per-test sessions created
+  // in each it() body are still the authoritative token for that test.
+  beforeEach(async () => {
+    await makeSession(labOwnerId);
   });
 
   afterAll(async () => {

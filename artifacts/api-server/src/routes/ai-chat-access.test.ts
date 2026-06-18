@@ -11,7 +11,7 @@
  *    buildSingleCaseContext returns "" → the focused-case context block is
  *    absent from the system prompt; patient details do not leak.
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import request from "supertest";
@@ -179,6 +179,12 @@ maybe("AI chat provider access control (db integration)", () => {
       },
     ]);
 
+    providerToken = await makeSession(providerUserId);
+  });
+
+  // Refresh session token before every test so a concurrent user_sessions
+  // wipe does not invalidate the shared token mid-suite.
+  beforeEach(async () => {
     providerToken = await makeSession(providerUserId);
   });
 

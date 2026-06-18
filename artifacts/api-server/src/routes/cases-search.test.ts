@@ -16,7 +16,7 @@
  *    returns empty array for short/no-match queries; non-member gets 403;
  *    missing labOrganizationId returns 400; cross-lab cases are not returned
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../lib/http";
 import { eq, inArray } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
@@ -155,6 +155,13 @@ maybe("Cases search and tenant isolation (db integration)", () => {
       { id: rid("m"), labId: labOrgId, userId: labAdminUserId, role: "admin", status: "active" },
     ]);
 
+    tokens.admin = await makeSession(labAdminUserId);
+    tokens.outsider = await makeSession(outsiderUserId);
+  });
+
+  // Refresh session tokens before every test so a concurrent user_sessions
+  // wipe does not invalidate shared tokens mid-suite.
+  beforeEach(async () => {
     tokens.admin = await makeSession(labAdminUserId);
     tokens.outsider = await makeSession(outsiderUserId);
   });

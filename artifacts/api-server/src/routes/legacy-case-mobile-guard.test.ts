@@ -10,7 +10,7 @@
  * creates lab_cases records via this endpoint while case creation hasn't
  * yet been migrated to the canonical POST /api/cases path.
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import { randomBytes, createHash, randomUUID } from "node:crypto";
 import * as path from "node:path";
@@ -92,6 +92,12 @@ maybeDb(
         },
       ]);
 
+      token = await makeSession(userId);
+    });
+
+    // Refresh session token before every test so a concurrent user_sessions
+    // wipe does not invalidate the shared token mid-suite.
+    beforeEach(async () => {
       token = await makeSession(userId);
     });
 

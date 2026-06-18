@@ -31,7 +31,7 @@
  *
  * Response envelope: all routes return { ok: true, data: T } via ok().
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, and, isNull } from "drizzle-orm";
 import { randomBytes, createHash, randomUUID } from "node:crypto";
 import * as path from "node:path";
@@ -109,6 +109,12 @@ maybe("Mobile photo attachment rendering — regression", () => {
       status: "active",
     }]);
 
+    token = await makeSession(userId);
+  });
+
+  // Refresh session token before every test so a concurrent user_sessions
+  // wipe does not invalidate the shared token mid-suite.
+  beforeEach(async () => {
     token = await makeSession(userId);
   });
 

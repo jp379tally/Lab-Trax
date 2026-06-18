@@ -11,7 +11,7 @@
  *  - GET /api/invoices/practice-summary: frozen invoice is excluded from
  *    openCount, openBalance, and aging buckets.
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import request from "supertest";
@@ -144,6 +144,12 @@ maybe("Frozen invoice exclusion from overdue/balance-due reports (db integration
       total: "150.00",
       dueAt: tenDaysAgo,
     });
+  });
+
+  // Refresh session token before every test so a concurrent user_sessions
+  // wipe does not invalidate the shared token mid-suite.
+  beforeEach(async () => {
+    adminToken = await makeSession(adminUserId);
   });
 
   afterAll(async () => {

@@ -15,7 +15,7 @@
  *
  * Skipped when DATABASE_URL is not configured (same convention as siblings).
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import request from "supertest";
@@ -72,6 +72,12 @@ maybe("POST /api/legacy/cases — append-only history/media merge", () => {
     await db.insert(users).values([
       { id: ownerUserId, username: `own_${ownerUserId}`, password: "x" },
     ]);
+    token = await makeSession(ownerUserId);
+  });
+
+  // Refresh session token before every test so a concurrent user_sessions
+  // wipe does not invalidate the shared token mid-suite.
+  beforeEach(async () => {
     token = await makeSession(ownerUserId);
   });
 

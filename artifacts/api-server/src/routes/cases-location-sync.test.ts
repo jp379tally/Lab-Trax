@@ -41,7 +41,7 @@
  *                        consistent across list and detail views.
  *   (6) Auth guard     — unauthenticated client cannot read location.
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import * as path from "node:path";
@@ -153,6 +153,12 @@ maybe("Mobile case location sync — cross-platform regression", () => {
         status: "active",
       },
     ]);
+    token = await makeSession(userId);
+  });
+
+  // Refresh session token before every test so a concurrent user_sessions
+  // wipe does not invalidate the shared token mid-suite.
+  beforeEach(async () => {
     token = await makeSession(userId);
   });
 

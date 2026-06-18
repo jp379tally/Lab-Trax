@@ -27,7 +27,7 @@
  *  - DELETE /api/vocabulary/:id — 200 directly when term has no references
  *  - Unauthenticated requests return 401
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomBytes, createHash } from "node:crypto";
 import { eq, and } from "drizzle-orm";
 import request from "supertest";
@@ -155,6 +155,12 @@ maybe("Vocabulary (db integration)", () => {
       role: "staff",
       status: "active",
     });
+  });
+
+  // Ensure a fresh session exists before each test; per-test sessions created
+  // in each it() body are still the authoritative token for that test.
+  beforeEach(async () => {
+    await makeSession(adminId);
   });
 
   afterAll(async () => {

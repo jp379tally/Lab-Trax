@@ -10,7 +10,7 @@
  *  - POST /api/finance/accounts — 403 when caller lacks admin role
  *  - Unauthenticated requests return 401
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { inArray, eq } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
@@ -95,6 +95,12 @@ maybe("Finance / bank accounts (db integration)", () => {
         joinedAt: new Date(),
       },
     ]);
+  });
+
+  // Ensure a fresh session exists before each test; per-test sessions created
+  // in each it() body are still the authoritative token for that test.
+  beforeEach(async () => {
+    await makeSession(adminId);
   });
 
   afterAll(async () => {

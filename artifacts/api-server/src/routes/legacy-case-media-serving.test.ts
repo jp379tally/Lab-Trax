@@ -18,7 +18,7 @@
  *
  * Skipped when DATABASE_URL is not configured (same convention as siblings).
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import { promises as fsp } from "node:fs";
@@ -97,6 +97,13 @@ maybe("GET /api/cases/attachment-file/:filename — legacy case media", () => {
     await fsp.mkdir(caseMediaMod.caseMediaDir, { recursive: true });
     filePath = path.join(caseMediaMod.caseMediaDir, fileName);
     await fsp.writeFile(filePath, fileBytes);
+  });
+
+  // Refresh session tokens before every test so a concurrent user_sessions
+  // wipe does not invalidate shared tokens mid-suite.
+  beforeEach(async () => {
+    ownerToken = await makeSession(ownerUserId);
+    strangerToken = await makeSession(strangerUserId);
   });
 
   afterAll(async () => {

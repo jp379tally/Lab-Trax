@@ -14,7 +14,7 @@
  *  - 400 when caseIds array is empty (Zod schema: min(1))
  *  - Duplicate caseIds are deduplicated; updatedCount reflects unique cases
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import request from "supertest";
@@ -144,6 +144,13 @@ maybe("POST /api/cases/bulk-reassign (db integration)", () => {
     tokens.admin = await makeSession(adminUserId);
     tokens.outsider = await makeSession(outsiderUserId);
   }, 60_000);
+
+  // Refresh session tokens before every test so a concurrent user_sessions
+  // wipe does not invalidate shared tokens mid-suite.
+  beforeEach(async () => {
+    tokens.admin = await makeSession(adminUserId);
+    tokens.outsider = await makeSession(outsiderUserId);
+  });
 
   afterAll(async () => {
     if (!SHOULD_RUN) return;

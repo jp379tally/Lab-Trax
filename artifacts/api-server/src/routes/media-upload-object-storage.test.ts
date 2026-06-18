@@ -16,7 +16,7 @@
  * not require a provisioned bucket. Skipped when DATABASE_URL is unset
  * (same convention as sibling route tests).
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { inArray } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import request from "supertest";
@@ -85,6 +85,12 @@ maybe("case-media uploads persist to object storage (autoscale durability)", () 
     await db.insert(users).values([
       { id: userId, username: `up_${userId}`, password: "x" },
     ]);
+    token = await makeSession(userId);
+  });
+
+  // Refresh session token before every test so a concurrent user_sessions
+  // wipe does not invalidate the shared token mid-suite.
+  beforeEach(async () => {
     token = await makeSession(userId);
   });
 

@@ -23,7 +23,7 @@
  *  - GET /api/cases/patient-similarity — scopes results by providerOrganizationId
  *  - GET /api/cases/patient-similarity — results are ranked exact > nickname > fuzzy
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, inArray } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import request from "supertest";
@@ -133,6 +133,13 @@ maybe("GET /api/cases/patient-similarity (db integration)", () => {
       { id: rid("m"), labId: labOrgId, userId: adminUserId, role: "admin", status: "active" },
     ]);
 
+    tokens.admin = await makeSession(adminUserId);
+    tokens.outsider = await makeSession(outsiderUserId);
+  });
+
+  // Refresh session tokens before every test so a concurrent user_sessions
+  // wipe does not invalidate shared tokens mid-suite.
+  beforeEach(async () => {
     tokens.admin = await makeSession(adminUserId);
     tokens.outsider = await makeSession(outsiderUserId);
   });

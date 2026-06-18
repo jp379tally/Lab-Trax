@@ -15,7 +15,7 @@
  *  - POST /api/auth/logout — invalidates the session; subsequent requests return 401
  *  - GET /api/auth/me — returns the correct user for a valid token
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import request from "supertest";
@@ -134,6 +134,13 @@ maybe("Auth and multi-user lab sessions (db integration)", () => {
         deletedByUserId: userAId,
       },
     ]);
+  });
+
+  // Ensure fresh sessions exist before each test; per-test sessions created
+  // in each it() body are still the authoritative token for that test.
+  beforeEach(async () => {
+    await makeSession(userAId);
+    await makeSession(userBId);
   });
 
   afterAll(async () => {

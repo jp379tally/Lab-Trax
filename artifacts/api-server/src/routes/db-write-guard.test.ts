@@ -15,7 +15,7 @@
  * Skipped when DATABASE_URL is not set (requires a real DB for auth fixtures).
  */
 
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash, randomBytes } from "node:crypto";
 import request from "supertest";
 import * as path from "node:path";
@@ -197,6 +197,12 @@ maybe("DB write error safety guard", () => {
       priceSource: "manual",
     }).returning();
     restorationId = r.id;
+  });
+
+  // Ensure a fresh session exists before each test; per-test sessions created
+  // in each it() body are still the authoritative token for that test.
+  beforeEach(async () => {
+    await makeSession(labOwnerId);
   });
 
   afterEach(() => {

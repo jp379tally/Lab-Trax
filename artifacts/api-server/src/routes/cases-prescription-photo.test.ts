@@ -20,7 +20,7 @@
  *   (6) Invoice        — POST /api/invoices/cases/:caseId/generate-invoice creates
  *                        an invoice for the same case (zero regression on invoice).
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import * as path from "node:path";
@@ -113,6 +113,12 @@ maybe(
         },
       ]);
 
+      token = await makeSession(userId);
+    });
+
+    // Refresh session token before every test so a concurrent user_sessions
+    // wipe does not invalidate the shared token mid-suite.
+    beforeEach(async () => {
       token = await makeSession(userId);
     });
 

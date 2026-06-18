@@ -23,7 +23,7 @@
  *     the source org's deletedAt within the configured window;
  *   - undo past the window returns 409.
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import request from "supertest";
@@ -248,6 +248,13 @@ maybe("Task #711 practice merge route (db integration)", () => {
           "merged for the tests to exercise the route.",
       );
     }
+  });
+
+  // Refresh session tokens before every test so a concurrent user_sessions
+  // wipe does not invalidate shared tokens mid-suite.
+  beforeEach(async () => {
+    tokens.admin = await makeSession(adminUserId);
+    tokens.otherLabAdmin = await makeSession(otherLabAdminId);
   });
 
   afterAll(async () => {

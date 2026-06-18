@@ -13,7 +13,7 @@
  *  - POST /api/sms/twilio-inbound non-YES — silently ignored (200 XML, no link)
  *  - Unauthenticated /api/account-links/manual returns 401
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { inArray, eq, and } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
@@ -81,6 +81,13 @@ maybe("Account links (db integration)", () => {
         platformAccountNumber: ACCT_B,
       },
     ]);
+  });
+
+  // Ensure fresh sessions exist before each test; per-test sessions created in
+  // each it() body are still the authoritative token for that test.
+  beforeEach(async () => {
+    await makeSession(userAId);
+    await makeSession(userBId);
   });
 
   afterAll(async () => {

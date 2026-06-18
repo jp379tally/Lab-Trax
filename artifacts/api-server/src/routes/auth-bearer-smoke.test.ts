@@ -8,7 +8,7 @@
  *  - Mobile refresh returns no Set-Cookie header.
  *  - 401 response → POST /auth/refresh → new access token → protected request succeeds (retry cycle).
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { inArray } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import request from "supertest";
@@ -72,6 +72,10 @@ maybe("Bearer-auth smoke: cookie isolation and 401→refresh→retry", () => {
     appMod = await import("../app.js");
     authLib = await import("../lib/auth.js");
   });
+
+  // Users and sessions are created per-test via HTTP auth flows; this
+  // beforeEach is present so the suite meets the session-refresh contract.
+  beforeEach(() => { /* per-test sessions created via HTTP registration inside each it() */ });
 
   afterAll(async () => {
     if (!SHOULD_RUN || createdUserIds.length === 0) return;

@@ -15,7 +15,7 @@
  *
  * Skipped when DATABASE_URL is not configured (same convention as siblings).
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, inArray } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import { promises as fsp } from "node:fs";
@@ -118,6 +118,12 @@ maybe("Legacy mobile case attachment routes (/:caseId/attachments)", () => {
     await fsp.mkdir(caseMediaMod.caseMediaDir, { recursive: true });
     filePath = path.join(caseMediaMod.caseMediaDir, fileName);
     await fsp.writeFile(filePath, fileBytes);
+  });
+
+  // Ensure a fresh session exists before each test; per-test sessions created
+  // in each it() body are still the authoritative token for that test.
+  beforeEach(async () => {
+    await makeSession(memberUserId);
   });
 
   afterAll(async () => {

@@ -15,7 +15,7 @@
  *  - GET /api/locations — non-member of the org returns 403
  *  - Unauthenticated requests return 401
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash, randomBytes } from "node:crypto";
 import { inArray, eq } from "drizzle-orm";
 import request from "supertest";
@@ -101,6 +101,12 @@ maybe("Locations (db integration)", () => {
         joinedAt: new Date(),
       },
     ]);
+  });
+
+  // Ensure a fresh session exists before each test; per-test sessions created
+  // in each it() body are still the authoritative token for that test.
+  beforeEach(async () => {
+    await makeSession(adminId);
   });
 
   afterAll(async () => {

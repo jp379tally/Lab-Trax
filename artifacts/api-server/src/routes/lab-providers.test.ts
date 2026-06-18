@@ -18,7 +18,7 @@
  *   - soft-deleted provider practices are excluded;
  *   - inline-created practices (no cases) still appear.
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { inArray } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import request from "supertest";
@@ -147,6 +147,13 @@ maybe("GET /api/organizations/:labId/providers (db integration)", () => {
           "mounted — skipping provider-list integration tests.",
       );
     }
+  });
+
+  // Refresh session tokens before every test so a concurrent user_sessions
+  // wipe does not invalidate shared tokens mid-suite.
+  beforeEach(async () => {
+    tokens.member = await makeSession(memberUserId);
+    tokens.nonMember = await makeSession(nonMemberUserId);
   });
 
   afterAll(async () => {

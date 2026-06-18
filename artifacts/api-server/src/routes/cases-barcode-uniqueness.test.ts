@@ -17,7 +17,7 @@
  *  - Assigning the same barcode back to the same case (no change) → 200
  *  - Assigning a barcode that belongs to a *different lab* → 200 (no cross-lab collision)
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash, randomBytes } from "node:crypto";
 import { inArray, eq } from "drizzle-orm";
 import * as path from "node:path";
@@ -141,6 +141,12 @@ maybe("Barcode uniqueness enforcement (PATCH /api/cases/:id)", () => {
         joinedAt: new Date(),
       },
     ]);
+  });
+
+  // Ensure a fresh session exists before each test; per-test sessions created
+  // in each it() body are still the authoritative token for that test.
+  beforeEach(async () => {
+    await makeSession(labOwnerId);
   });
 
   afterAll(async () => {

@@ -11,7 +11,7 @@
  *  - Unauthenticated requests return 401
  *  - Missing mailer config returns 503
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash, randomBytes } from "node:crypto";
 import { eq, inArray } from "drizzle-orm";
 import request from "supertest";
@@ -144,6 +144,12 @@ maybe("Invoice PDF and statement generation (db integration)", () => {
       approvedByUserId: labOwnerId,
       joinedAt: new Date(),
     });
+  });
+
+  // Ensure a fresh session exists before each test; per-test sessions created
+  // in each it() body are still the authoritative token for that test.
+  beforeEach(async () => {
+    await makeSession(labOwnerId);
   });
 
   afterAll(async () => {

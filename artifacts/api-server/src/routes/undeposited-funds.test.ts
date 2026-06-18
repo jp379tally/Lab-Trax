@@ -8,7 +8,7 @@
  * api-server integration tests. All rows inserted during the suite are
  * cleaned up in afterAll so the suite can run in the shared CI database.
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, inArray } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import request from "supertest";
@@ -180,6 +180,13 @@ maybe("Undeposited Funds workflow (db integration)", () => {
       .returning();
     otherLabUfAccountId = otherUfRow.id as string;
 
+    tokens.admin = await makeSession(adminUserId);
+    tokens.otherAdmin = await makeSession(otherLabAdminId);
+  });
+
+  // Refresh session tokens before every test so a concurrent user_sessions
+  // wipe does not invalidate shared tokens mid-suite.
+  beforeEach(async () => {
     tokens.admin = await makeSession(adminUserId);
     tokens.otherAdmin = await makeSession(otherLabAdminId);
   });

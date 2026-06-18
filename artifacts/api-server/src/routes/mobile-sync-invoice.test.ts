@@ -21,7 +21,7 @@
  *   (e) Calling generate-invoice a second time is idempotent (200, same row)
  *   (f) generate-invoice for a completely unknown id still returns 404
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { eq, inArray, and } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import * as path from "node:path";
@@ -90,6 +90,12 @@ maybeDb("Mobile sync + invoice — DB regression suite", () => {
       { id: rid("m"), labId: labOrgId, userId: mobileUserId, role: "admin", status: "active" },
     ]);
 
+    mobileToken = await makeSession(mobileUserId);
+  });
+
+  // Refresh session token before every test so a concurrent user_sessions
+  // wipe does not invalidate the shared token mid-suite.
+  beforeEach(async () => {
     mobileToken = await makeSession(mobileUserId);
   });
 

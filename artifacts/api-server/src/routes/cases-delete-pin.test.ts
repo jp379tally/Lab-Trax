@@ -10,7 +10,7 @@
  *
  * Skipped when DATABASE_URL is not configured (matches sibling suite convention).
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { inArray } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import request from "supertest";
@@ -121,6 +121,14 @@ maybe("Case delete security flow (db integration)", () => {
     ]);
 
   }, 60_000);
+
+  // Refresh session tokens before every test so a concurrent user_sessions
+  // wipe does not invalidate shared tokens mid-suite.
+  beforeEach(async () => {
+    tokens.admin = await makeSession(adminUserId);
+    tokens.staff = await makeSession(staffUserId);
+    tokens.noPhone = await makeSession(noPhoneUserId);
+  });
 
   afterAll(async () => {
     if (!SHOULD_RUN) return;

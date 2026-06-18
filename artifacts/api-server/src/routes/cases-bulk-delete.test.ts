@@ -20,7 +20,7 @@
  *  - 404 when no id matches either table
  *  - 401 when no auth token is provided
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import request from "supertest";
@@ -197,6 +197,13 @@ maybe("POST /api/cases/bulk-delete (db integration)", () => {
     tokens.admin = await makeSession(adminUserId);
     tokens.staff = await makeSession(staffUserId);
   }, 60_000);
+
+  // Refresh session tokens before every test so a concurrent user_sessions
+  // wipe does not invalidate shared tokens mid-suite.
+  beforeEach(async () => {
+    tokens.admin = await makeSession(adminUserId);
+    tokens.staff = await makeSession(staffUserId);
+  });
 
   afterAll(async () => {
     if (!SHOULD_RUN) return;
