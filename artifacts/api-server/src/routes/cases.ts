@@ -1411,14 +1411,29 @@ async function checkBarcodeUniqueness(
  * names the conflicting case for a friendlier message. Re-throws anything
  * else (including the unrelated `cases_case_number_unique` violation).
  */
-function rethrowBarcodeConflict(err: unknown, barcode: string): never {
+export function rethrowBarcodeConflict(err: unknown, barcode: string): never {
+  // Drizzle ORM (node-postgres adapter) wraps the raw pg error in a
+  // DrizzleQueryError whose `cause` holds the original pg DatabaseError.
+  // Check both the top-level error and `cause` so the constraint name is
+  // found regardless of the wrapper version.
+  const pgLike =
+    err != null && typeof err === "object"
+      ? "code" in err
+        ? err
+        : "cause" in err &&
+            err.cause != null &&
+            typeof err.cause === "object" &&
+            "code" in err.cause
+          ? err.cause
+          : null
+      : null;
+
   if (
-    err != null &&
-    typeof err === "object" &&
-    "code" in err &&
-    (err as { code: unknown }).code === "23505" &&
-    "constraint" in err &&
-    (err as { constraint: unknown }).constraint === "cases_barcode_unique_per_lab"
+    pgLike != null &&
+    (pgLike as { code: unknown }).code === "23505" &&
+    "constraint" in pgLike &&
+    (pgLike as { constraint: unknown }).constraint ===
+      "cases_barcode_unique_per_lab"
   ) {
     throw new HttpError(
       409,
@@ -1427,6 +1442,21 @@ function rethrowBarcodeConflict(err: unknown, barcode: string): never {
   }
   throw err;
 }
+
+/**
+ * Test-only TOCTOU barrier. Exported as a mutable object so tests can assign
+ * `barcodeWriteHook` after import (exported `let` bindings are read-only in
+ * ES modules). Set `barcodeWriteHook` to an async function that blocks after
+ * `checkBarcodeUniqueness` clears but before the DB write. A latch that waits
+ * for N callers lets tests guarantee both requests pass the pre-check before
+ * either write reaches the DB, making the unique-index race deterministic.
+ *
+ * Always no-op in production (`barcodeWriteHook` is `undefined`).
+ * Must be reset to `undefined` in test cleanup.
+ */
+export const _testHooks: {
+  barcodeWriteHook: (() => Promise<void>) | undefined;
+} = { barcodeWriteHook: undefined };
 
 const ATTACHMENT_VISIBILITIES = [
   "shared_with_provider",
@@ -3106,6 +3136,13 @@ router.post(
       dueDateLabOrg?.defaultCaseDueDays,
       dueDateLabOrg?.capCaseDueToDefault,
     );
+
+    // Test-only TOCTOU barrier: lets concurrent requests that both cleared the
+    // pre-check rendezvous here before either write reaches the DB, making the
+    // unique-index race deterministic in tests. No-op in production (undefined).
+    if (input.casePanBarcode && _testHooks.barcodeWriteHook) {
+      await _testHooks.barcodeWriteHook();
+    }
 
     // For remake cases, compute the next letter suffix (B, C, D, …) inside
     // a transaction so the count + insert are atomic. The UNIQUE constraint
@@ -5400,6 +5437,12 @@ router.patch(
     }
     if (input.rxNotes !== undefined) updates.rxNotes = input.rxNotes ?? null;
 
+    // Test-only TOCTOU barrier: lets concurrent requests that both cleared the
+    // pre-check rendezvous here before either write reaches the DB, making the
+    // unique-index race deterministic in tests. No-op in production (undefined).
+    if (updates.casePanBarcode !== undefined && _testHooks.barcodeWriteHook) {
+      await _testHooks.barcodeWriteHook();
+    }
     let updated: typeof cases.$inferSelect | undefined;
     try {
       [updated] = await db

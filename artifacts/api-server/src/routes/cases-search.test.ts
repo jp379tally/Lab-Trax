@@ -48,6 +48,7 @@ maybe("Cases search and tenant isolation (db integration)", () => {
   let dbMod: typeof import("@workspace/db");
   let appMod: { default: import("express").Express };
   let auth: typeof import("../lib/auth.js");
+  let casesMod: typeof import("./cases.js");
 
   const labOrgId = rid("lab");
   const otherLabOrgId = rid("lab2");
@@ -133,6 +134,7 @@ maybe("Cases search and tenant isolation (db integration)", () => {
     dbMod = await import("@workspace/db");
     appMod = await import("../app.js");
     auth = await import("../lib/auth.js");
+    casesMod = await import("./cases.js");
 
     const { db, organizations, users, organizationMemberships } = dbMod as any;
 
@@ -730,5 +732,188 @@ maybe("Cases search and tenant isolation (db integration)", () => {
     expect(created.casePanBarcode).toBe(sharedBarcode);
 
     await db.delete(cases).where(inArray(cases.id, [completedId, created.id]));
+  });
+
+  // ── rethrowBarcodeConflict unit tests ────────────────────────────────────
+  //
+  // These tests exercise the function that translates PG 23505 errors from the
+  // `cases_barcode_unique_per_lab` partial index into 409 responses. They are
+  // separated from the concurrent-race integration tests so that a regression
+  // in the constraint name or error code is caught directly, independently of
+  // timing.
+
+  it("rethrowBarcodeConflict: translates PG 23505 + cases_barcode_unique_per_lab into HttpError(409) — direct pg error", () => {
+    // Direct pg DatabaseError shape (code + constraint on the error itself).
+    const pgError = Object.assign(new Error("unique violation"), {
+      code: "23505",
+      constraint: "cases_barcode_unique_per_lab",
+    });
+
+    expect(() => casesMod.rethrowBarcodeConflict(pgError, "TESTBAR")).toThrow(
+      expect.objectContaining({ statusCode: 409 })
+    );
+    expect(() => casesMod.rethrowBarcodeConflict(pgError, "TESTBAR")).toThrow(
+      /already assigned/i
+    );
+  });
+
+  it("rethrowBarcodeConflict: translates PG 23505 + cases_barcode_unique_per_lab into HttpError(409) — Drizzle-wrapped error", () => {
+    // Drizzle ORM wraps the raw pg error in a DrizzleQueryError; the pg fields
+    // live on err.cause.  This is the shape actually thrown in production.
+    const cause = Object.assign(new Error("unique violation"), {
+      code: "23505",
+      constraint: "cases_barcode_unique_per_lab",
+    });
+    const drizzleError = Object.assign(new Error("DrizzleQueryError wrapper"), {
+      cause,
+    });
+
+    expect(() => casesMod.rethrowBarcodeConflict(drizzleError, "TESTBAR")).toThrow(
+      expect.objectContaining({ statusCode: 409 })
+    );
+    expect(() => casesMod.rethrowBarcodeConflict(drizzleError, "TESTBAR")).toThrow(
+      /already assigned/i
+    );
+  });
+
+  it("rethrowBarcodeConflict: re-throws 23505 from a different constraint unchanged", () => {
+    const otherConstraint = Object.assign(new Error("unique violation"), {
+      code: "23505",
+      constraint: "cases_case_number_unique",
+    });
+
+    expect(() => casesMod.rethrowBarcodeConflict(otherConstraint, "X")).toThrow(otherConstraint);
+  });
+
+  it("rethrowBarcodeConflict: re-throws non-23505 errors unchanged", () => {
+    const networkError = new Error("connection reset");
+    expect(() => casesMod.rethrowBarcodeConflict(networkError, "X")).toThrow(networkError);
+  });
+
+  // ── Concurrent-race integration tests ────────────────────────────────────
+  //
+  // These tests prove that the cases_barcode_unique_per_lab DB constraint (not
+  // just the checkBarcodeUniqueness pre-check) is what prevents two concurrent
+  // requests from both assigning the same barcode.
+  //
+  // Mechanism: _testBarcodeWriteHook is a test-only latch injected into
+  // cases.ts that fires after checkBarcodeUniqueness passes but before the DB
+  // write (UPDATE / INSERT). By holding both requests at the latch until both
+  // have cleared the pre-check, we guarantee:
+  //   - Neither request rejected the other via the pre-check (no case# in msg)
+  //   - Both writes reach the DB at the same time
+  //   - The DB constraint catches the loser
+  //   - rethrowBarcodeConflict translates 23505 → 409
+  //
+  // If the unique index were removed:  both writes succeed → no 409 → fails.
+  // If rethrowBarcodeConflict stopped matching the constraint:  loser → 500 → fails.
+  // If the message comes from the pre-check instead of the constraint:
+  //   message contains "case #" rather than "another active case" → fails.
+
+  it("PATCH /api/cases/:id race: DB constraint catches the loser when both requests clear the pre-check simultaneously", async () => {
+    const raceBarcode = `RACE${randomBytes(4).toString("hex").toUpperCase()}`;
+    const case1Id = await insertCase({ caseNumber: rid("RC1") });
+    const case2Id = await insertCase({ caseNumber: rid("RC2") });
+
+    // Latch: both requests block here until both have cleared checkBarcodeUniqueness.
+    let arrivals = 0;
+    let releaseAll!: () => void;
+    const gateOpen = new Promise<void>((r) => { releaseAll = r; });
+    casesMod._testHooks.barcodeWriteHook = async () => {
+      arrivals++;
+      if (arrivals >= 2) releaseAll();
+      await gateOpen;
+    };
+
+    try {
+      const [r1, r2] = await Promise.all([
+        request(appMod.default)
+          .patch(`/api/cases/${case1Id}`)
+          .set("Authorization", `Bearer ${tokens.admin}`)
+          .send({ casePanBarcode: raceBarcode }),
+        request(appMod.default)
+          .patch(`/api/cases/${case2Id}`)
+          .set("Authorization", `Bearer ${tokens.admin}`)
+          .send({ casePanBarcode: raceBarcode }),
+      ]);
+
+      const statuses = [r1.status, r2.status];
+      expect(statuses).toContain(200);
+      expect(statuses).toContain(409);
+
+      // Message must come from rethrowBarcodeConflict (DB constraint path),
+      // NOT from the pre-check (which would say "case #<number>").
+      const loser = r1.status === 409 ? r1 : r2;
+      const msg = loser.body.error ?? loser.body.message ?? "";
+      expect(msg).toMatch(/another active case/i);
+      expect(msg).not.toMatch(/case #/);
+    } finally {
+      casesMod._testHooks.barcodeWriteHook = undefined;
+      const { db, cases } = dbMod as any;
+      await db.delete(cases).where(inArray(cases.id, [case1Id, case2Id]));
+    }
+  });
+
+  it("POST /api/cases race: DB constraint catches the loser when both requests clear the pre-check simultaneously", async () => {
+    const raceBarcode = `RCPOST${randomBytes(4).toString("hex").toUpperCase()}`;
+
+    // Latch: both requests block here until both have cleared checkBarcodeUniqueness.
+    let arrivals = 0;
+    let releaseAll!: () => void;
+    const gateOpen = new Promise<void>((r) => { releaseAll = r; });
+    casesMod._testHooks.barcodeWriteHook = async () => {
+      arrivals++;
+      if (arrivals >= 2) releaseAll();
+      await gateOpen;
+    };
+
+    try {
+      const [r1, r2] = await Promise.all([
+        request(appMod.default)
+          .post("/api/cases")
+          .set("Authorization", `Bearer ${tokens.admin}`)
+          .send({
+            caseNumber: rid("RCP1"),
+            labOrganizationId: labOrgId,
+            providerOrganizationId: providerOrgId,
+            patientFirstName: "Race",
+            patientLastName: "One",
+            doctorName: "Dr. Race",
+            casePanBarcode: raceBarcode,
+          }),
+        request(appMod.default)
+          .post("/api/cases")
+          .set("Authorization", `Bearer ${tokens.admin}`)
+          .send({
+            caseNumber: rid("RCP2"),
+            labOrganizationId: labOrgId,
+            providerOrganizationId: providerOrgId,
+            patientFirstName: "Race",
+            patientLastName: "Two",
+            doctorName: "Dr. Race",
+            casePanBarcode: raceBarcode,
+          }),
+      ]);
+
+      const statuses = [r1.status, r2.status];
+      expect(statuses).toContain(201);
+      expect(statuses).toContain(409);
+
+      // Message must come from rethrowBarcodeConflict (DB constraint path),
+      // NOT from the pre-check (which would say "case #<number>").
+      const loser = r1.status === 409 ? r1 : r2;
+      const msg = loser.body.error ?? loser.body.message ?? "";
+      expect(msg).toMatch(/another active case/i);
+      expect(msg).not.toMatch(/case #/);
+
+      const winner = r1.status === 201 ? r1 : r2;
+      const createdId = (winner.body.data?.case ?? winner.body.data)?.id;
+      const { db, cases } = dbMod as any;
+      if (createdId) {
+        await db.delete(cases).where(eq(cases.id, createdId));
+      }
+    } finally {
+      casesMod._testHooks.barcodeWriteHook = undefined;
+    }
   });
 });
