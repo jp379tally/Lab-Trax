@@ -4683,6 +4683,26 @@ router.get(
         .filter((e): e is { status: string; label: string; occurredAt: Date } => e !== null),
     ];
 
+    // Backfill note into case_attachment_added events whose metadataJson
+    // predates the note field being stored there. Look up the note from the
+    // already-fetched attachments list by attachmentId so we never do extra
+    // DB queries and existing history entries gain their notes automatically.
+    const attachmentNoteById = new Map<string, string>();
+    for (const a of enrichedAttachments as any[]) {
+      if (a.id && a.note) attachmentNoteById.set(a.id, a.note);
+    }
+    const enrichEventsWithNote = (evList: any[]) =>
+      evList.map((ev: any) => {
+        if (ev.eventType !== "case_attachment_added") return ev;
+        const meta = (ev.metadataJson ?? {}) as Record<string, unknown>;
+        if (meta.note) return ev; // already has note
+        const attachmentId = typeof meta.attachmentId === "string" ? meta.attachmentId : null;
+        if (!attachmentId) return ev;
+        const note = attachmentNoteById.get(attachmentId);
+        if (!note) return ev;
+        return { ...ev, metadataJson: { ...meta, note } };
+      });
+
     return ok(res, {
       ...found,
       caseNotes: (found as any).rxNotes ?? (enrichedNotes.length > 0 ? enrichedNotes.map((n: any) => n.noteText).join("\n\n") : null),
@@ -4691,9 +4711,12 @@ router.get(
       restorations,
       notes: enrichedNotes,
       attachments: visibleAttachmentsFor(enrichedAttachments, isLabMember),
-      events,
-      originalCaseEvents,
-      remakeChildrenEvents,
+      events: enrichEventsWithNote(events),
+      originalCaseEvents: enrichEventsWithNote(originalCaseEvents),
+      remakeChildrenEvents: remakeChildrenEvents.map((rc) => ({
+        ...rc,
+        events: enrichEventsWithNote(rc.events),
+      })),
       locations,
       remakeOriginal,
       remakeChildren,
@@ -5115,6 +5138,7 @@ router.post(
         fileName: attachment.fileName,
         fileType: attachment.fileType,
         visibility: attachment.visibility,
+        ...(attachment.note ? { note: attachment.note } : {}),
       },
     });
 
