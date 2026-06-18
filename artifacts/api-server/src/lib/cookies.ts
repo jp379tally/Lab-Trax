@@ -58,17 +58,31 @@ export function generateCsrfToken(): string {
   return crypto.randomBytes(32).toString("base64url");
 }
 
+/**
+ * Set all three auth cookies (access, refresh, CSRF) in a single call.
+ *
+ * Pass a pre-generated `csrfToken` when the token must be persisted on the
+ * server-side session row *before* the cookies are sent (e.g. the refresh
+ * handler, which updates the session in one DB round-trip). When omitted a
+ * fresh token is generated automatically.
+ *
+ * Returns the CSRF token that was actually used so callers can hash and
+ * store it on the session row.
+ */
 export function setAuthCookies(
   req: Request,
   res: Response,
   accessToken: string,
   refreshToken: string,
-) {
+  csrfToken?: string,
+): string {
   setAccessCookie(req, res, accessToken);
   setRefreshCookie(req, res, refreshToken);
   // Mint a fresh CSRF token whenever auth cookies are (re)issued so it
   // rotates on login, refresh, and registration.
-  setCsrfCookie(req, res, generateCsrfToken());
+  const token = csrfToken ?? generateCsrfToken();
+  setCsrfCookie(req, res, token);
+  return token;
 }
 
 export function clearAuthCookies(req: Request, res: Response) {

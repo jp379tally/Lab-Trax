@@ -28,6 +28,7 @@ import {
 import { hashPassword, verifyPassword, sha256 } from "../lib/crypto";
 import {
   clearAuthCookies,
+  generateCsrfToken,
   getRefreshCookie,
   setAccessCookie,
   setAuthCookies,
@@ -607,7 +608,13 @@ router.post(
     // POSTs, which trips the CSRF guard (403) whenever the in-memory bearer
     // token is momentarily absent (e.g. the offline-queue drain at launch).
     if (useCookies) {
-      setAuthCookies(req, res, accessToken, rawRefreshToken);
+      const csrfToken = setAuthCookies(req, res, accessToken, rawRefreshToken);
+      // Bind the issued CSRF token to the session row so the CSRF middleware
+      // can verify the token wasn't exfiltrated from a sibling subdomain.
+      await db
+        .update(userSessions)
+        .set({ csrfTokenHash: sha256(csrfToken) })
+        .where(eq(userSessions.id, sessionId));
     }
     return res.json({
       success: true,
@@ -758,7 +765,13 @@ router.post(
     // POSTs, which trips the CSRF guard (403) whenever the in-memory bearer
     // token is momentarily absent (e.g. the offline-queue drain at launch).
     if (useCookies) {
-      setAuthCookies(req, res, accessToken, rawRefreshToken);
+      const csrfToken = setAuthCookies(req, res, accessToken, rawRefreshToken);
+      // Bind the issued CSRF token to the session row so the CSRF middleware
+      // can verify the token wasn't exfiltrated from a sibling subdomain.
+      await db
+        .update(userSessions)
+        .set({ csrfTokenHash: sha256(csrfToken) })
+        .where(eq(userSessions.id, sessionId));
     }
     return res.json({
       success: true,
@@ -891,11 +904,19 @@ router.post(
     // trigger reuse detection, which limits the blast radius of a leak.
     const newRefreshToken = signRefreshToken(payload.sub, payload.sid);
     const newDecoded = verifyRefreshToken(newRefreshToken);
+
+    // Pre-generate the CSRF token for web (cookie) clients so it can be
+    // stored on the session row atomically with the refresh-token rotation,
+    // binding the new token to the server side in a single DB round-trip.
+    // Bearer clients don't use CSRF so we skip token generation for them.
+    const newCsrfToken = fromBody ? undefined : generateCsrfToken();
+
     await db
       .update(userSessions)
       .set({
         tokenHash: makeSessionHash(newRefreshToken),
         expiresAt: new Date((newDecoded.exp ?? 0) * 1000),
+        ...(newCsrfToken ? { csrfTokenHash: sha256(newCsrfToken) } : {}),
       })
       .where(eq(userSessions.id, payload.sid));
 
@@ -906,7 +927,7 @@ router.post(
       // the note in the login handler about the native cookie-jar CSRF trap.
       return ok(res, { accessToken, refreshToken: newRefreshToken });
     }
-    setAuthCookies(req, res, accessToken, newRefreshToken);
+    setAuthCookies(req, res, accessToken, newRefreshToken, newCsrfToken);
     return ok(res, { refreshed: true });
   })
 );

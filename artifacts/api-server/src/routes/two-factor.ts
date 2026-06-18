@@ -470,9 +470,18 @@ router.post(
       });
     }
 
-    setAuthCookies(req, res, accessToken, rawRefreshToken);
-
+    const csrfToken = setAuthCookies(req, res, accessToken, rawRefreshToken);
     const useCookies = clientType === "web";
+
+    // Bind the issued CSRF token to the session row so the CSRF middleware
+    // can verify the token wasn't exfiltrated from a sibling subdomain.
+    if (useCookies) {
+      await db
+        .update(userSessions)
+        .set({ csrfTokenHash: sha256(csrfToken) })
+        .where(eq(userSessions.id, sessionId));
+    }
+
     return ok(res, {
       success: true,
       ...(useCookies ? {} : { accessToken, refreshToken: rawRefreshToken }),

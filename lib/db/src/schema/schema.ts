@@ -1251,6 +1251,7 @@ export const userSessions = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     tokenHash: text("token_hash").notNull(),
+    csrfTokenHash: text("csrf_token_hash"),
     deviceName: text("device_name"),
     ipAddress: text("ip_address"),
     userAgent: text("user_agent"),

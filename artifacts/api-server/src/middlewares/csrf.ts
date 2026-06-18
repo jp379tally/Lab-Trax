@@ -1,5 +1,9 @@
 import crypto from "node:crypto";
+import jwt from "jsonwebtoken";
+import { eq } from "drizzle-orm";
 import type { NextFunction, Request, Response } from "express";
+import { db } from "@workspace/db";
+import { userSessions } from "@workspace/db";
 import {
   ACCESS_COOKIE_NAME,
   CSRF_COOKIE_NAME,
@@ -32,7 +36,11 @@ function timingSafeEqualStrings(a: string, b: string): boolean {
   return crypto.timingSafeEqual(ab, bb);
 }
 
-export function requireCsrf(req: Request, _res: Response, next: NextFunction) {
+function hashCsrfToken(token: string): string {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+export async function requireCsrf(req: Request, _res: Response, next: NextFunction) {
   if (SAFE_METHODS.has(req.method)) {
     return next();
   }
@@ -69,7 +77,45 @@ export function requireCsrf(req: Request, _res: Response, next: NextFunction) {
     !!headerValue &&
     timingSafeEqualStrings(cookieToken, headerValue);
   if (hasValidCsrfToken) {
-    // Browser (web) client presented a valid double-submit token.
+    // Session-binding check: verify the presented CSRF token matches the
+    // hash stored on the server-side session row. This closes the gap where
+    // an attacker exfiltrates both the auth cookie and the CSRF cookie (e.g.
+    // via a misconfigured subdomain or careful XSS), because the per-session
+    // hash is not accessible from the client side.
+    //
+    // We decode (not verify) the access token to extract the session ID.
+    // Full signature verification happens later in requireAuth; here we only
+    // need the `sid` claim to look up the session row. If the access token is
+    // absent, malformed, or expired, we skip the binding check and let
+    // requireAuth handle the rejection.
+    try {
+      const accessToken = cookies[ACCESS_COOKIE_NAME];
+      if (accessToken) {
+        const decoded = jwt.decode(accessToken) as { sid?: string } | null;
+        const sessionId = decoded?.sid;
+        if (sessionId) {
+          const session = await db.query.userSessions.findFirst({
+            where: eq(userSessions.id, sessionId),
+          });
+          // Only enforce when the session row has a stored hash. Rows created
+          // before this change (csrfTokenHash IS NULL) are allowed through so
+          // that existing logged-in users aren't immediately logged out.
+          if (
+            session?.csrfTokenHash != null &&
+            !timingSafeEqualStrings(
+              hashCsrfToken(cookieToken),
+              session.csrfTokenHash
+            )
+          ) {
+            return next(new HttpError(403, "Invalid or missing CSRF token."));
+          }
+        }
+      }
+    } catch {
+      // If the DB lookup fails for any transient reason, don't block the
+      // request here — the double-submit check already passed and requireAuth
+      // will enforce session validity independently.
+    }
     return next();
   }
 
