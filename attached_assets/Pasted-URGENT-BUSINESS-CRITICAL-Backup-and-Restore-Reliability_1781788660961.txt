@@ -1,0 +1,212 @@
+URGENT / BUSINESS-CRITICAL:
+
+# Backup and Restore Reliability — Zero-Regression Guardrail
+
+## What & Why
+
+Backup and restore is the most important safety feature in LabTrax.
+
+Current issue:
+When restoring from backup, the app says it is processing, then logs the user out. After that, login fails with a database/session error involving `user_sessions`.
+
+This is unacceptable because backup/restore protects the entire business.
+
+Backup and restore must be treated as a protected, business-critical workflow.
+
+## Current Error
+
+After restore, login fails with an insert error into `user_sessions`.
+
+This suggests restore may be causing one or more of:
+
+* broken `user_sessions` table state
+* schema mismatch after restore
+* missing/default column problem
+* invalid restored session data
+* duplicate/conflicting session IDs
+* database sequence/state corruption
+* restore replacing live auth/session tables incorrectly
+* transaction not completing cleanly
+* partial restore leaving auth tables inconsistent
+
+Investigate this first.
+
+## Required Outcome
+
+Backup must capture all critical LabTrax data:
+
+* cases
+* invoices
+* payments
+* providers/practices
+* users
+* organizations/labs
+* memberships/roles
+* attachments/file metadata
+* case history/events
+* notes
+* pricing tiers
+* settings/templates
+* audit logs where appropriate
+* any required lookup/reference tables
+
+Restore must complete without breaking:
+
+* login
+* sessions
+* users
+* organizations
+* roles
+* cases
+* invoices
+* files
+* case history
+* mobile access
+* desktop access
+
+## Immediate Fix Required
+
+1. Reproduce the restore issue.
+2. Identify why restore logs the user out.
+3. Identify why login fails afterward.
+4. Fix the `user_sessions` restore/session issue.
+5. Ensure restore either:
+
+   * preserves valid session/auth tables safely, or
+   * clears/rebuilds sessions cleanly so users can log in normally.
+6. Restore must not leave the database in a half-working state.
+
+## Backup / Restore Safety Requirements
+
+### Transactional Restore
+
+Restore must be atomic.
+
+If restore fails:
+
+* rollback completely
+* do not partially overwrite data
+* show clear failure message
+* keep existing database usable
+
+### Pre-Restore Snapshot
+
+Before restoring from backup:
+
+* automatically create a pre-restore safety snapshot
+* store timestamp
+* allow admin to recover if restore fails
+
+### Schema Compatibility Check
+
+Before restore:
+
+* verify backup schema version
+* verify current app schema version
+* block incompatible restore unless migration path exists
+* show clear message if incompatible
+
+### Restore Validation
+
+After restore completes, run validation checks:
+
+* users table accessible
+* organizations accessible
+* current user can authenticate
+* cases count matches backup
+* invoices count matches backup
+* critical foreign keys valid
+* no broken organization memberships
+* no broken case/provider links
+* no broken invoice/case links
+* no broken attachment metadata
+* app can create a new session
+
+### Session Handling
+
+Do not restore stale live session rows in a way that breaks login.
+
+Either:
+
+* exclude `user_sessions` from backup/restore, or
+* clear restored sessions after restore, or
+* migrate them safely
+
+Pick the safest approach and document it.
+
+Restore should require users to log in again if needed, but login must work.
+
+## Regression Guardrails
+
+Add a permanent protected workflow:
+
+“Backup Restore Integrity”
+
+No future build, migration, schema change, auth change, invoice change, case change, or organization change may merge unless backup/restore tests pass.
+
+Update `REGRESSION_GUARDRAILS.md`.
+
+## Required Tests
+
+Add automated tests for:
+
+1. Backup includes cases.
+2. Backup includes invoices.
+3. Backup includes organizations/labs.
+4. Backup includes users/memberships/roles.
+5. Backup includes providers/practices.
+6. Backup includes notes/history.
+7. Backup includes pricing/settings/templates.
+8. Restore completes successfully.
+9. Restore does not break login.
+10. Restore does not break `user_sessions`.
+11. Restore does not create duplicate session conflicts.
+12. Restore preserves case-to-invoice links.
+13. Restore preserves case-to-provider links.
+14. Restore preserves user-to-lab memberships.
+15. Restore rollback works if restore fails.
+16. Restore blocks incompatible schema versions.
+17. Pre-restore safety snapshot is created.
+18. After restore, admin can log in and view cases/invoices.
+19. Mobile can log in after restore.
+20. Desktop can log in after restore.
+
+## Manual Acceptance Test
+
+Use a real backup/restore flow:
+
+1. Create test case.
+2. Create invoice.
+3. Add note.
+4. Add attachment metadata.
+5. Confirm case visible on desktop and mobile.
+6. Run backup.
+7. Delete/change test records.
+8. Restore backup.
+9. Confirm records return.
+10. Log out.
+11. Log back in.
+12. Confirm no `user_sessions` error.
+13. Confirm cases/invoices/history/files still work.
+
+## UI Requirements
+
+During restore:
+
+* show clear progress
+* warn that users may be logged out
+* do not silently fail
+* show restore success/failure
+* if sessions are cleared, show: “Restore complete. Please sign in again.”
+
+## Priority
+
+This is higher priority than new AI Reader work, barcode improvements, provider portal work, or UI enhancements.
+
+Backup/restore reliability is business-critical.
+
+Do not continue unrelated feature work until this restore/login failure is fixed and protected.
+
+Checkpoint:
+
+“Backup Restore Integrity Guardrail”
