@@ -17,6 +17,7 @@
     "backfill-account-numbers-v2": "tsx ./src/backfill-account-numbers-v2.ts",
     "backfill-restoration-buckets": "tsx ./src/backfill-restoration-buckets.ts",
     "backfill-vendor-links": "tsx ./src/backfill-vendor-links.ts",
+    "backfill-deletion-audit-metadata": "tsx ./src/backfill-deletion-audit-metadata.ts",
     "backfill-expected-delivery-dates": "tsx ./src/backfill-expected-delivery-dates.ts",
     "seed-stripe-products": "tsx ./src/seedStripeProducts.ts",
     "seed-revenuecat": "tsx ./src/seedRevenueCat.ts",
