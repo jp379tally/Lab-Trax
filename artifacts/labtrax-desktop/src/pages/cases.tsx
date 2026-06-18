@@ -3139,7 +3139,6 @@ export function CaseDrawer({
     rxNotes: (labCase.caseNotes ?? "").trim(),
   });
   const [editError, setEditError] = useState<string | null>(null);
-  const [editNoteText, setEditNoteText] = useState("");
 
   // ── Edit-form barcode conflict check ─────────────────────────────────────
   const [editBarcodeConflict, setEditBarcodeConflict] = useState<LabCase | null>(null);
@@ -5430,23 +5429,11 @@ export function CaseDrawer({
                         </p>
                       )}
                     </div>
-                    <div>
-                      <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
-                        Add note
-                      </label>
-                      <textarea
-                        value={editNoteText}
-                        onChange={(e) => setEditNoteText(e.target.value)}
-                        placeholder="Type a note… (saved immediately as an internal lab note)"
-                        rows={3}
-                        className="mt-1 w-full px-2.5 py-2 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary resize-none"
-                      />
-                    </div>
                     {editError && <p className="text-xs text-destructive">{editError}</p>}
                     <div className="flex gap-2 pt-1">
                       <button
                         type="button"
-                        onClick={() => { setEditMode(false); setEditError(null); setEditNoteText(""); }}
+                        onClick={() => { setEditMode(false); setEditError(null); }}
                         className="flex-1 h-9 rounded-md bg-secondary text-sm font-medium text-muted-foreground hover:text-foreground"
                       >
                         Cancel
@@ -5469,10 +5456,6 @@ export function CaseDrawer({
                             editRxTeeth.trim() !== origTeeth.trim()
                           ) {
                             setPendingRxSummaryEdit({ type: editRxType, material: editRxMaterial, shade: editRxShade, teeth: editRxTeeth });
-                          }
-                          if (editNoteText.trim()) {
-                            addNoteMutation.mutate({ text: editNoteText.trim(), shared: false });
-                            setEditNoteText("");
                           }
                           setEditMode(false);
                           setEditError(null);
@@ -5500,20 +5483,6 @@ export function CaseDrawer({
                       <div className="space-y-3">
                         {editMode ? (
                           <div className="grid grid-cols-2 gap-3">
-                            <div>
-                              <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Restorative Type</label>
-                              <div className="mt-1">
-                                <FieldCombobox
-                                  value={editRxType}
-                                  suggestions={restorationTypeSuggestions}
-                                  onChange={setEditRxType}
-                                  onCreate={(v) => createVocabItem("restoration_type", v)}
-                                  placeholder="Select type…"
-                                  addNewLabel="Add restoration type"
-                                  inputClassName="h-9 focus:ring-primary focus:border-primary"
-                                />
-                              </div>
-                            </div>
                             <div>
                               <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Material</label>
                               <div className="mt-1">
@@ -5564,10 +5533,6 @@ export function CaseDrawer({
                           </div>
                         ) : (
                           <div className="grid grid-cols-2 gap-4 text-sm">
-                            <Field
-                              label="Restorative type"
-                              value={summary.restorativeType ?? "Other"}
-                            />
                             <Field
                               label={
                                 summary.materials.length > 1
