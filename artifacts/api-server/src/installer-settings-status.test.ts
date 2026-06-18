@@ -45,10 +45,10 @@ vi.mock("./middlewares/auth.js", () => ({
 }));
 
 // Controllable mock for App Storage metadata calls. Default: no installer present.
-const getMetadataMock = vi.fn<[string], Promise<{ size: number; uploadedAt: string; etag?: string } | null>>();
+const getMetadataMock = vi.fn<(key: string) => Promise<{ size: number; uploadedAt: string; etag?: string } | null>>();
 
 vi.mock("./lib/desktop-installer-storage.js", () => ({
-  getDesktopInstallerMetadata: (...args: any[]) => getMetadataMock(...args),
+  getDesktopInstallerMetadata: (key: string) => getMetadataMock(key),
   openDesktopInstallerStream: vi.fn().mockResolvedValue(null),
   deleteDesktopInstaller: vi.fn().mockResolvedValue(undefined),
   writeDesktopInstallerFromBuffer: vi.fn().mockResolvedValue({ size: 0, uploadedAt: new Date().toISOString() }),
