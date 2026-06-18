@@ -90,18 +90,22 @@ dmg:
   sign: false
 
 # ─── Publish ─────────────────────────────────────────────────────────────────
-# Using the GitHub Releases provider so electron-updater can query the
-# GitHub API to discover the latest release and download latest.yml /
-# latest-mac.yml at runtime.
+# Using the "generic" publish provider so electron-updater points at the
+# same App Storage-backed API server that already serves the installer ZIPs.
+# This replaces the GitHub Releases provider, which requires a GitHub remote
+# and GH_TOKEN — neither is available in the Replit environment where this
+# app is built and published.
 #
-# GH_TOKEN is intentionally NOT passed to electron-builder during CI builds.
-# Without it, electron-builder skips the direct upload to GitHub and instead
-# writes all output files (installer, latest.yml / latest-mac.yml, blockmap)
-# to the local electron-dist/ directory. The release.yml workflow captures
-# these files via upload-artifact and then attaches them to a single unified
-# GitHub Release in the publish-release job after both platform builds succeed.
+# UPDATE_FEED_URL (set by scripts/desktop-build-publish.sh before calling
+# electron-builder) is expanded here and baked into resources/app-update.yml
+# inside the packaged app. Every installed copy reads that file to know where
+# to fetch latest.yml at runtime — no environment variable is required on
+# the end-user's machine.
 #
-# This prevents electron-builder from creating a premature partial release
-# (Windows-only or macOS-only) before all assets are ready.
+# scripts/electron-build.mjs passes an additional --config override when
+# UPDATE_FEED_URL is present. That override is kept so ad-hoc test builds
+# (local http-server feed — see docs/auto-update-runbook.md) can point at a
+# different URL without modifying this file.
 publish:
-  provider: github
+  provider: generic
+  url: ${UPDATE_FEED_URL}

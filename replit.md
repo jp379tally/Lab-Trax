@@ -136,7 +136,7 @@ The publish endpoint (`/publish`) accepts `X-Platform-Admin-Secret` without a us
 
 End-users see the current installed version and a **Check for updates** button in Settings → Desktop App (admin-only). The card mirrors auto-updater state (checking / available / downloading / ready-to-install) and exposes **Restart & install** when a build is staged. IPC: `check-for-updates`, `download-update`, `get-update-state`, plus the `update-state` broadcast channel.
 
-Auto-update channel for existing installs uses GitHub Releases `latest.yml` / `latest-mac.yml` (electron-updater). Keep both channels in sync on every release.
+Auto-update channel for existing installs uses the **generic** electron-updater provider pointed at `GET /downloads/latest.yml` on the same App Storage-backed API server that serves the installer ZIPs. The feed URL is baked into `resources/app-update.yml` at build time by `scripts/desktop-build-publish.sh` (via `UPDATE_FEED_URL`). No GitHub remote or `GH_TOKEN` is required for auto-update to work.
 
 ## Cross-Lab Provider Account Numbers
 

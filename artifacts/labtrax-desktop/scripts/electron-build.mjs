@@ -15,20 +15,22 @@
  * zips that directory into electron-dist/LabTrax-Windows-Portable.zip, which
  * is a fully functional Windows distribution users can download and run.
  *
- * Auto-update publishing (GitHub Releases):
- *   The publish provider is set to "github" in electron-builder.yml. When
- *   GH_TOKEN is present, electron-builder runs with --publish always and
- *   uploads the installer (.exe) and the auto-update manifest (latest.yml)
- *   directly to the GitHub Release. electron-updater in the packaged app
- *   queries the GitHub Releases API to discover new versions automatically.
+ * Auto-update publishing (App Storage generic provider):
+ *   The publish provider is set to "generic" in electron-builder.yml and
+ *   reads UPDATE_FEED_URL (set by scripts/desktop-build-publish.sh) for the
+ *   feed URL. electron-builder bakes that URL into resources/app-update.yml
+ *   inside the packaged app. electron-updater then fetches
+ *   GET /downloads/latest.yml from the same API server that serves the
+ *   installer ZIPs to discover new versions automatically.
  *
- *   The CI workflow (.github/workflows/build-windows.yml) supplies GH_TOKEN
- *   automatically on tag pushes so that every versioned release is published
- *   with both artifacts. No additional configuration is required.
+ *   When UPDATE_FEED_URL is set here, this script passes an additional
+ *   --config override (takes precedence over electron-builder.yml) so
+ *   ad-hoc test builds can point at a local http-server feed without
+ *   modifying the yml. See docs/auto-update-runbook.md for the test flow.
  *
  * Usage (Windows):
  *   VITE_API_BASE_URL=https://your-app.replit.app pnpm run electron:build
- *   VITE_API_BASE_URL=… GH_TOKEN=ghp_… pnpm run electron:build
+ *   VITE_API_BASE_URL=… UPDATE_FEED_URL=https://your-app.replit.app/downloads pnpm run electron:build
  *
  * Usage (macOS — via GitHub Actions build-macos.yml or locally on a Mac):
  *   ELECTRON_PLATFORM=mac VITE_API_BASE_URL=https://your-app.replit.app pnpm run electron:build
@@ -90,6 +92,11 @@ if (!process.env.VITE_API_BASE_URL) {
 }
 
 const updateFeedUrl = process.env.UPDATE_FEED_URL;
+// GH_TOKEN is kept as a secondary publish trigger for backward-compatibility
+// with the GitHub Actions release.yml workflow (which still attaches build
+// artifacts to GitHub Releases for the version history). Setting GH_TOKEN
+// alone no longer configures the auto-update channel — UPDATE_FEED_URL is
+// required to produce a correct app-update.yml for the generic provider.
 const ghToken = process.env.GH_TOKEN;
 const shouldPublish = Boolean(updateFeedUrl || ghToken);
 
@@ -179,12 +186,13 @@ if (shouldPublish) {
   console.log(
     updateFeedUrl
       ? `\nPublishing release artifacts to: ${updateFeedUrl}`
-      : "\nPublishing release artifacts to GitHub Releases…",
+      : "\nPublishing release artifacts via GH_TOKEN (GitHub release assets only — auto-update feed requires UPDATE_FEED_URL)…",
   );
 } else {
   console.log(
-    "\nNote: set GH_TOKEN to publish release artifacts to GitHub Releases\n" +
-    "for auto-update. Without publishing, users must download new versions manually.",
+    "\nNote: set UPDATE_FEED_URL to bake the auto-update feed URL into the\n" +
+    "packaged app (app-update.yml). Without it the build is not publishable\n" +
+    "and users must download new versions manually.",
   );
 }
 

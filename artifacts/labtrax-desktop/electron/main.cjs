@@ -145,8 +145,19 @@ function setupAutoUpdater() {
 
   const feedUrl = process.env.UPDATE_FEED_URL;
   if (feedUrl) {
+    // Runtime override: useful for local runbook testing (see docs/auto-update-runbook.md)
+    // where you want to point the running app at a local http-server feed
+    // without rebuilding. Normal production installs don't need this.
     autoUpdater.setFeedURL({ provider: "generic", url: feedUrl });
     updateState.feedUrl = feedUrl;
+    log.info(`Auto-updater feed URL (runtime override): ${feedUrl}`);
+  } else {
+    // No runtime override — electron-updater reads the generic provider URL
+    // baked into resources/app-update.yml at build time by
+    // scripts/desktop-build-publish.sh. This is the normal code-path for
+    // end-user installs: the URL points at GET /downloads/latest.yml on the
+    // production API server.
+    log.info("Auto-updater using feed URL from app-update.yml (baked at build time).");
   }
 
   autoUpdater.on("checking-for-update", () => {

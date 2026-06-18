@@ -4,6 +4,13 @@
 
 ### Mode A: Replit-native (active in this environment)
 
+Auto-update is powered by the **generic** electron-updater provider. The
+publish pipeline writes `latest.yml` (SHA-512 manifest) to App Storage and
+serves it at `GET /downloads/latest.yml`. electron-builder bakes the feed
+URL into `resources/app-update.yml` inside the packaged app so every
+installed copy knows where to check for updates — **no `UPDATE_FEED_URL`
+environment variable is required on the end-user's machine.**
+
 The GitHub Actions auto-tag pipeline (`auto-tag-desktop-release.yml` +
 `release.yml`) requires a GitHub remote and `BUILD_BOT_TOKEN` — **neither
 is available in this Replit subrepl**. The effective release mechanism is:
@@ -200,8 +207,18 @@ Leave the server running for step 4.
 
 ## 4. Launch version N pointed at the feed
 
-The packaged version-N app reads `UPDATE_FEED_URL` from its environment
-on launch (see `setupAutoUpdater()` in `electron/main.cjs`).
+For the runbook test you need to override the feed URL that was baked into
+the version-N binary so it checks the local http-server (not the production
+API server). Pass `UPDATE_FEED_URL` as an environment variable on launch —
+`setupAutoUpdater()` in `electron/main.cjs` detects it and calls
+`autoUpdater.setFeedURL({ provider: "generic", url: feedUrl })`, which
+takes precedence over `app-update.yml`.
+
+> **Note for production installs:** end-users never need to set
+> `UPDATE_FEED_URL`. The correct generic feed URL is already baked into
+> `resources/app-update.yml` at build time by
+> `scripts/desktop-build-publish.sh`. The runtime env-var override is a
+> runbook testing convenience only.
 
 **Windows (PowerShell):**
 
