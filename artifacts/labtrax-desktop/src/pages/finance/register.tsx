@@ -528,11 +528,16 @@ function RegisterTable({
                         <td className="py-2.5 px-3 font-mono text-xs text-muted-foreground">
                           {r.checkNumber || (r.type !== "other" ? <span className="capitalize">{r.type}</span> : "")}
                         </td>
-                        {/* Payee — with vendor type badge; memo shown as secondary text */}
+                        {/* Payee — with vendor type badge and transfer badge; memo shown as secondary text */}
                         <td className="py-2.5 px-3">
                           <div className="min-w-0">
                             {r.payee ? (
                               <span className="flex items-center gap-1.5 min-w-0">
+                                {r.transferGroupId && (
+                                  <span className="shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
+                                    Transfer
+                                  </span>
+                                )}
                                 {r.vendorId && vendorTypeById.has(r.vendorId) && (
                                   <span
                                     className={`shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full ${TYPE_BADGE_CLASS[vendorTypeById.get(r.vendorId)!]}`}
@@ -541,6 +546,12 @@ function RegisterTable({
                                   </span>
                                 )}
                                 <span className="truncate">{r.payee}</span>
+                              </span>
+                            ) : r.transferGroupId ? (
+                              <span className="flex items-center gap-1.5 min-w-0">
+                                <span className="shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
+                                  Transfer
+                                </span>
                               </span>
                             ) : <span className="text-muted-foreground">—</span>}
                             {r.memo && (
@@ -621,10 +632,17 @@ function RegisterTable({
                             {!isUF && !r.reconciled && !isVoid && (
                               <button
                                 type="button"
-                                onClick={() => voidMut.mutate(r.id)}
+                                onClick={() => {
+                                  if (r.transferGroupId) {
+                                    if (confirm("This is a transfer entry. Voiding it will also void the linked entry on the other account. Continue?"))
+                                      voidMut.mutate(r.id);
+                                  } else {
+                                    voidMut.mutate(r.id);
+                                  }
+                                }}
                                 className="h-6 w-6 rounded hover:bg-secondary text-muted-foreground hover:text-destructive flex items-center justify-center"
                                 aria-label="Void"
-                                title="Void"
+                                title={r.transferGroupId ? "Void both transfer entries" : "Void"}
                               >
                                 <Ban size={12} />
                               </button>
@@ -633,12 +651,15 @@ function RegisterTable({
                               <button
                                 type="button"
                                 onClick={() => {
-                                  if (confirm("Delete this transaction?"))
+                                  const msg = r.transferGroupId
+                                    ? "This is a transfer entry. Deleting it will also delete the linked entry on the other account. Continue?"
+                                    : "Delete this transaction?";
+                                  if (confirm(msg))
                                     deleteMut.mutate(r.id);
                                 }}
                                 className="h-6 w-6 rounded hover:bg-secondary text-muted-foreground hover:text-destructive flex items-center justify-center"
                                 aria-label="Delete"
-                                title="Delete"
+                                title={r.transferGroupId ? "Delete both transfer entries" : "Delete"}
                               >
                                 <Trash2 size={12} />
                               </button>

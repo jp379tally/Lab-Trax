@@ -19,6 +19,7 @@ import {
 } from "@workspace/db";
 import { HttpError, ok } from "../lib/http";
 import { softDelete, softDeleteById } from "../lib/soft-delete";
+import { writeAuditLog } from "../lib/audit";
 import {
   ensureVendorTypesSeeded,
   getBuiltinKindMap,
@@ -858,6 +859,34 @@ router.post(
     if (!txn) throw new HttpError(404, "Transaction not found.");
     await requireAnyRole(uid(req), txn.labOrganizationId, BILLING_ROLES);
     if (txn.reconciled) throw new HttpError(400, "Reconciled entries cannot be voided.");
+
+    if (txn.transferGroupId) {
+      const sibling = await db.query.bankTransactions.findFirst({
+        where: and(
+          eq(bankTransactions.transferGroupId, txn.transferGroupId),
+          ne(bankTransactions.id, txn.id),
+          isNull(bankTransactions.deletedAt),
+        ),
+      });
+      if (sibling) {
+        if (sibling.reconciled)
+          throw new HttpError(400, "The linked transfer entry is reconciled and cannot be voided.");
+        const [row] = await db.transaction(async (tx) => {
+          const [updated] = await tx
+            .update(bankTransactions)
+            .set({ status: "void", updatedAt: new Date() })
+            .where(eq(bankTransactions.id, txn.id))
+            .returning();
+          await tx
+            .update(bankTransactions)
+            .set({ status: "void", updatedAt: new Date() })
+            .where(eq(bankTransactions.id, sibling.id));
+          return [updated];
+        });
+        return ok(res, row);
+      }
+    }
+
     const [row] = await db
       .update(bankTransactions)
       .set({ status: "void", updatedAt: new Date() })
@@ -877,6 +906,78 @@ router.delete(
     await requireAnyRole(uid(req), txn.labOrganizationId, ADMIN_ROLES);
     if (txn.reconciled)
       throw new HttpError(400, "Reconciled entries cannot be deleted.");
+
+    if (txn.transferGroupId) {
+      const sibling = await db.query.bankTransactions.findFirst({
+        where: and(
+          eq(bankTransactions.transferGroupId, txn.transferGroupId),
+          ne(bankTransactions.id, txn.id),
+          isNull(bankTransactions.deletedAt),
+        ),
+      });
+      if (sibling) {
+        if (sibling.reconciled)
+          throw new HttpError(400, "The linked transfer entry is reconciled and cannot be deleted.");
+        const now = new Date();
+        const actorId = uid(req);
+        // Atomically soft-delete both entries in one transaction.
+        // Re-validate reconciled state inside the transaction to close any
+        // race window between the pre-check and the actual update.
+        await db.transaction(async (tx) => {
+          // Lock both rows so concurrent requests can't race past the checks.
+          const locked = await tx
+            .select({
+              id: bankTransactions.id,
+              reconciled: bankTransactions.reconciled,
+              deletedAt: bankTransactions.deletedAt,
+            })
+            .from(bankTransactions)
+            .where(
+              and(
+                eq(bankTransactions.transferGroupId, txn.transferGroupId!),
+                isNull(bankTransactions.deletedAt),
+              )
+            )
+            .for("update");
+          for (const row of locked) {
+            if (row.reconciled)
+              throw new HttpError(400, "A transfer entry is reconciled and cannot be deleted.");
+          }
+          await tx
+            .update(bankTransactions)
+            .set({ deletedAt: now, deletedByUserId: actorId })
+            .where(
+              and(
+                eq(bankTransactions.transferGroupId, txn.transferGroupId!),
+                isNull(bankTransactions.deletedAt),
+              )
+            );
+        });
+        // Write audit logs outside the transaction (non-critical to atomicity).
+        await writeAuditLog({
+          req,
+          userId: actorId,
+          organizationId: txn.labOrganizationId,
+          action: "bank_transaction_soft_deleted",
+          entityType: "bank_transaction",
+          entityId: txn.id,
+          beforeJson: txn,
+          metadataJson: { rowsAffected: 1, transferGroupId: txn.transferGroupId, pairedWith: sibling.id },
+        });
+        await writeAuditLog({
+          req,
+          userId: actorId,
+          organizationId: sibling.labOrganizationId,
+          action: "bank_transaction_soft_deleted",
+          entityType: "bank_transaction",
+          entityId: sibling.id,
+          beforeJson: sibling,
+          metadataJson: { rowsAffected: 1, transferGroupId: sibling.transferGroupId, pairedWith: txn.id },
+        });
+        return ok(res, { deleted: true });
+      }
+    }
+
     await softDeleteById({
       table: bankTransactions,
       id: txn.id,
