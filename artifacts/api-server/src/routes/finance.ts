@@ -17,7 +17,7 @@ import {
   vendors,
   vendorTypes,
 } from "@workspace/db";
-import { HttpError, ok } from "../lib/http";
+import { HttpError, ok, wrapDbError } from "../lib/http";
 import { softDelete, softDeleteById } from "../lib/soft-delete";
 import { writeAuditLog } from "../lib/audit";
 import {
@@ -339,7 +339,7 @@ router.post(
         reconciled: true,
         source: "opening",
         createdByUserId: uid(req),
-      });
+      }).catch((err: unknown): never => wrapDbError(err));
     }
     return ok(res, acct, 201);
   })
@@ -1231,7 +1231,7 @@ router.post(
           source: "import",
           importBatchId: batchId,
           createdByUserId: uid(req),
-        });
+        }).catch((err: unknown): never => wrapDbError(err));
         await replaceMatchingProjected(
           acct.id,
           rowDate,
@@ -1840,7 +1840,7 @@ export async function generateForOrganization(
         source: "recurring",
         recurringRuleId: rule.id,
         createdByUserId: userId,
-      });
+      }).catch((err: unknown): never => wrapDbError(err));
       created += 1;
       lastGen = occDate;
     }

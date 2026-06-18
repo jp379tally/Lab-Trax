@@ -33,7 +33,7 @@ import { inArray, isNotNull, isNull } from "drizzle-orm";
 import { ensureInvoiceDeposit } from "../lib/invoice-deposits";
 import { writeAuditLog } from "../lib/audit";
 import { calculateLineTotal, sumMoney } from "../lib/case";
-import { HttpError, ok } from "../lib/http";
+import { HttpError, ok, wrapDbError } from "../lib/http";
 import { createTransport, getMailerConfig } from "../lib/mailer";
 import {
   generateStatementPdfBuffer,
@@ -632,7 +632,8 @@ router.post(
         createdByUserId: (req as any).auth.userId,
         updatedByUserId: (req as any).auth.userId,
       })
-      .returning();
+      .returning()
+      .catch((err: unknown): never => wrapDbError(err));
 
     await writeAuditLog({
       req,
@@ -851,7 +852,8 @@ router.post(
           updatedByUserId: (req as any).auth.userId,
         })
         .onConflictDoNothing({ target: [invoices.labOrganizationId, invoices.invoiceNumber] })
-        .returning();
+        .returning()
+        .catch((err: unknown): never => wrapDbError(err));
 
       if (!invoice) {
         // Invoice number collided with a row not linked to this case (e.g.
@@ -1296,7 +1298,8 @@ router.post(
           updatedByUserId: userId,
         })
         .onConflictDoNothing({ target: [invoices.labOrganizationId, invoices.invoiceNumber] })
-        .returning();
+        .returning()
+        .catch((err: unknown): never => wrapDbError(err));
 
       const targetInvoice =
         invoice ??
@@ -1453,7 +1456,8 @@ router.post(
         updatedByUserId: userId,
       })
       .onConflictDoNothing({ target: [invoices.labOrganizationId, invoices.invoiceNumber] })
-      .returning();
+      .returning()
+      .catch((err: unknown): never => wrapDbError(err));
 
     const targetLegacyInvoice =
       legacyInvoice ??

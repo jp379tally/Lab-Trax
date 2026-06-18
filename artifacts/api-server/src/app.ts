@@ -465,7 +465,7 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   logger.error({ err }, "Unhandled API error");
   return res
     .status(500)
-    .json({ ok: false, message: (err as Error)?.message || "Server error." });
+    .json({ ok: false, message: "An unexpected error occurred." });
 });
 
 export default app;

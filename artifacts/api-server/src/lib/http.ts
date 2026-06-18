@@ -14,3 +14,84 @@ export class HttpError extends Error {
 export function ok<T>(res: Response, data: T, status = 200) {
   return res.status(status).json({ ok: true, data });
 }
+
+/**
+ * Extract the PostgreSQL error code from a raw Drizzle / pg error.
+ *
+ * Drizzle (node-postgres adapter) may wrap the native DatabaseError in a
+ * DrizzleQueryError whose `cause` holds the original pg error.  We check
+ * both the top-level object and `cause` so the code is found regardless of
+ * the wrapper version.
+ */
+export function extractPgCode(err: unknown): string | undefined {
+  if (err == null || typeof err !== "object") return undefined;
+  if ("code" in err) return (err as { code: unknown }).code as string | undefined;
+  if (
+    "cause" in err &&
+    err.cause != null &&
+    typeof err.cause === "object" &&
+    "code" in err.cause
+  ) {
+    return (err as { cause: { code: unknown } }).cause.code as string | undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Convert a raw database error into a safe `HttpError` and throw it.
+ *
+ * Maps the most common PostgreSQL constraint violation codes to readable
+ * HTTP status codes.  Any error that does NOT carry a recognised PG code is
+ * mapped to 500 with a generic message so that no raw Drizzle / SQL text can
+ * ever leak to API callers.
+ *
+ * Pass optional `messages` to override the per-code default text with
+ * context-specific wording (e.g. "Practice already exists." instead of the
+ * generic duplicate message).
+ *
+ * Usage:
+ *   ```ts
+ *   try {
+ *     await db.insert(myTable).values(row);
+ *   } catch (err) {
+ *     wrapDbError(err, { duplicate: "That name is already taken." });
+ *   }
+ *   ```
+ */
+export function wrapDbError(
+  err: unknown,
+  messages?: {
+    /** 23505 — unique constraint violation */
+    duplicate?: string;
+    /** 23502 — not-null constraint violation */
+    notNull?: string;
+    /** 23514 — check constraint violation */
+    checkViolation?: string;
+    /** catch-all for every other error code */
+    fallback?: string;
+  },
+): never {
+  const pgCode = extractPgCode(err);
+  if (pgCode === "23505") {
+    throw new HttpError(
+      409,
+      messages?.duplicate ?? "A record with this value already exists.",
+    );
+  }
+  if (pgCode === "23502") {
+    throw new HttpError(
+      400,
+      messages?.notNull ?? "A required field is missing.",
+    );
+  }
+  if (pgCode === "23514") {
+    throw new HttpError(
+      400,
+      messages?.checkViolation ?? "A field value is invalid.",
+    );
+  }
+  throw new HttpError(
+    500,
+    messages?.fallback ?? "An unexpected error occurred. Please try again.",
+  );
+}

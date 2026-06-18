@@ -47,7 +47,7 @@ import {
   openCaseMediaObjectStream,
   writeCaseMediaToObjectStorage,
 } from "../lib/case-media-object-storage";
-import { HttpError, ok } from "../lib/http";
+import { HttpError, ok, wrapDbError } from "../lib/http";
 import {
   buildLineItemDescription,
   fetchLabItemLabels,
@@ -1440,7 +1440,7 @@ export function rethrowBarcodeConflict(err: unknown, barcode: string): never {
       `Barcode "${barcode}" is already assigned to another active case. Each barcode can only be assigned to one active case at a time.`,
     );
   }
-  throw err;
+  wrapDbError(err);
 }
 
 /**

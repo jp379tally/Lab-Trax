@@ -53,7 +53,7 @@ import {
   assertLabNameAvailable,
 } from "../lib/lab-creation";
 import { hashPassword } from "../lib/crypto";
-import { HttpError, ok } from "../lib/http";
+import { HttpError, ok, wrapDbError } from "../lib/http";
 import { notDeleted, restoreDeleted, softDeleteById } from "../lib/soft-delete";
 import { getAppBaseUrl, sendInviteEmail, sendInviteResultEmail } from "../lib/mail";
 import { checkEmailPref } from "../lib/email-prefs";
@@ -538,37 +538,12 @@ router.post(
         .returning();
       organization = row;
     } catch (err: unknown) {
-      const pgCode =
-        err != null && typeof err === "object" && "code" in err
-          ? (err as { code: unknown }).code
-          : err != null &&
-              typeof err === "object" &&
-              "cause" in err &&
-              err.cause != null &&
-              typeof err.cause === "object" &&
-              "code" in err.cause
-            ? (err as { cause: { code: unknown } }).cause.code
-            : undefined;
-      if (pgCode === "23505") {
-        throw new HttpError(
-          409,
-          "A practice with this name already exists. Select existing practice instead."
-        );
-      }
-      if (pgCode === "23502" || pgCode === "23514") {
-        throw new HttpError(
-          400,
-          "Practice name, city, state, and ZIP are required."
-        );
-      }
-      req.log?.warn?.(
-        { err: err instanceof Error ? err.message : String(err) },
-        "Unexpected error inserting organization"
-      );
-      throw new HttpError(
-        500,
-        "Could not save this practice. Please check required fields and try again."
-      );
+      wrapDbError(err, {
+        duplicate: "A practice with this name already exists. Select existing practice instead.",
+        notNull: "Practice name, city, state, and ZIP are required.",
+        checkViolation: "Practice name, city, state, and ZIP are required.",
+        fallback: "Could not save this practice. Please check required fields and try again.",
+      });
     }
     if (!organization) {
       throw new HttpError(
