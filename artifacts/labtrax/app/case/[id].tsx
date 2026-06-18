@@ -10,6 +10,8 @@ import {
   RefreshControl,
   TextInput,
   Alert,
+  KeyboardAvoidingView,
+  Platform,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, router } from "expo-router";
@@ -2844,21 +2846,25 @@ function FilesSection({
         animationType="slide"
         onRequestClose={() => handleNoteConfirm(undefined)}
       >
-        <Pressable
-          style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.45)" /* hex-allow: semi-transparent overlay */ }}
-          onPress={() => handleNoteConfirm(undefined)}
+        <KeyboardAvoidingView
+          style={{ flex: 1 }}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
         >
-          <View style={{ flex: 1 }} />
-        </Pressable>
-        <View
-          style={{
-            backgroundColor: colors.surface,
-            borderTopLeftRadius: Radius.lg,
-            borderTopRightRadius: Radius.lg,
-            padding: Spacing.xl,
-            gap: Spacing.md,
-          }}
-        >
+          <Pressable
+            style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.45)" /* hex-allow: semi-transparent overlay */ }}
+            onPress={() => handleNoteConfirm(undefined)}
+          >
+            <View style={{ flex: 1 }} />
+          </Pressable>
+          <View
+            style={{
+              backgroundColor: colors.surface,
+              borderTopLeftRadius: Radius.lg,
+              borderTopRightRadius: Radius.lg,
+              padding: Spacing.xl,
+              gap: Spacing.md,
+            }}
+          >
           <Text style={{ ...Typography.h2, color: colors.text }}>Add a note</Text>
           <Text style={{ ...Typography.caption, color: colors.textTertiary }}>
             {pendingFiles.length === 1
@@ -2918,6 +2924,7 @@ function FilesSection({
             </Pressable>
           </View>
         </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {canEdit ? (
