@@ -95,6 +95,135 @@ echo "[build] Running electron:build …"
 cd "$DESKTOP_DIR"
 pnpm run electron:build
 
+# Signature verification ------------------------------------------------------
+# When CSC_LINK is set, electron-builder was asked to sign the binary.
+# Verify that the produced LabTrax.exe actually carries a trusted Authenticode
+# signature before allowing the publish step to continue. An unsigned installer
+# that slips through here would trigger a SmartScreen warning for every user.
+#
+# Gating logic:
+#   CSC_LINK absent   → step skipped entirely (unsigned build, no error)
+#   CSC_LINK present  → verification is mandatory; missing CSC_KEY_PASSWORD is
+#                       a hard failure (electron-builder would have used it)
+#
+# Tool selection (in order of preference):
+#   signtool     — Windows SDK CLI (/pa verifies the full Authenticode chain,
+#                  not just raw bytes). Available on windows-latest GitHub runners.
+#   osslsigncode — Linux/macOS cross-platform PE signature verifier.
+#                  Install: apt-get install -y osslsigncode  (or brew install)
+#
+# Publisher-name validation (optional but strongly recommended):
+#   Set CSC_EXPECTED_PUBLISHER to the exact CN (Common Name) from your
+#   code-signing certificate, e.g. "Acme Dental Software LLC".
+#   When set, the signer's subject name in the EXE must contain this string;
+#   a mismatch (wrong cert, expired cert renewed under a new name, etc.) is
+#   treated as a failure and aborts the publish.
+#   When absent, only signature validity is checked.
+UNPACKED_EXE="${DESKTOP_DIR}/electron-dist/win-unpacked/LabTrax.exe"
+
+if [[ -n "${CSC_LINK:-}" ]]; then
+  echo ""
+  echo "[signing] CSC_LINK is set — verifying Authenticode signature on built EXE …"
+
+  # CSC_KEY_PASSWORD must accompany CSC_LINK; electron-builder requires both.
+  if [[ -z "${CSC_KEY_PASSWORD:-}" ]]; then
+    echo "[signing] ERROR: CSC_LINK is set but CSC_KEY_PASSWORD is absent."
+    echo "[signing]   Both variables must be present for code-signing to succeed."
+    echo "[signing]   Set CSC_KEY_PASSWORD as a Replit secret or CI secret, then re-run."
+    exit 1
+  fi
+
+  if [[ ! -f "$UNPACKED_EXE" ]]; then
+    echo "[signing] ERROR: Expected signed EXE at ${UNPACKED_EXE} but file not found after build."
+    echo "[signing]   Ensure electron-builder produced win-unpacked/ before this step."
+    exit 1
+  fi
+
+  if command -v signtool &>/dev/null; then
+    # Windows path — signtool ships with the Windows SDK and is present by
+    # default on GitHub Actions windows-latest runners.
+    # /pa  — default Authenticode verification policy (validates full chain).
+    # /v   — verbose: output includes "Issued to: <CN>" for each chain entry.
+    echo "[signing] Using signtool (Windows SDK) …"
+    SIGNTOOL_OUT=$(signtool verify /pa /v "$UNPACKED_EXE" 2>&1)
+    SIGNTOOL_EXIT=$?
+    if [[ $SIGNTOOL_EXIT -ne 0 ]]; then
+      echo "[signing] ✗ signtool verify /pa FAILED (exit ${SIGNTOOL_EXIT})."
+      echo "$SIGNTOOL_OUT" | sed 's/^/[signing]   /'
+      echo "[signing]   The EXE is not properly signed despite CSC_LINK being set."
+      echo "[signing]   Check that CSC_LINK is correctly base64-encoded and that the"
+      echo "[signing]   certificate has not expired. Aborting publish."
+      exit 1
+    fi
+    echo "[signing] ✓ signtool verify /pa passed — EXE is signed and trusted."
+
+    # Publisher-name check — only when CSC_EXPECTED_PUBLISHER is configured.
+    if [[ -n "${CSC_EXPECTED_PUBLISHER:-}" ]]; then
+      if echo "$SIGNTOOL_OUT" | grep -qi "Issued to:.*${CSC_EXPECTED_PUBLISHER}"; then
+        echo "[signing] ✓ Publisher name matches CSC_EXPECTED_PUBLISHER (\"${CSC_EXPECTED_PUBLISHER}\")."
+      else
+        echo "[signing] ✗ Publisher name check FAILED."
+        echo "[signing]   Expected signer CN to contain: \"${CSC_EXPECTED_PUBLISHER}\""
+        echo "[signing]   Actual signtool output (certificate chain):"
+        echo "$SIGNTOOL_OUT" | grep "Issued to:" | sed 's/^/[signing]     /'
+        echo "[signing]   Check that CSC_LINK contains the correct certificate for this release."
+        exit 1
+      fi
+    else
+      echo "[signing]   CSC_EXPECTED_PUBLISHER not set — publisher-name check skipped."
+      echo "[signing]   Set CSC_EXPECTED_PUBLISHER to the certificate CN to enable this check."
+    fi
+
+  elif command -v osslsigncode &>/dev/null; then
+    # Linux/macOS path — osslsigncode is a cross-platform Authenticode verifier.
+    # Install on Ubuntu/Debian: apt-get install -y osslsigncode
+    # Install on macOS (Homebrew): brew install osslsigncode
+    echo "[signing] Using osslsigncode (cross-platform PE signature verifier) …"
+    OSSLSIGN_OUT=$(osslsigncode verify -verbose "$UNPACKED_EXE" 2>&1)
+    if ! echo "$OSSLSIGN_OUT" | grep -q "Signature verification: ok"; then
+      echo "[signing] ✗ osslsigncode verify FAILED."
+      echo "$OSSLSIGN_OUT" | sed 's/^/[signing]   /'
+      echo "[signing]   The EXE is not properly signed despite CSC_LINK being set."
+      echo "[signing]   Check that CSC_LINK is correctly base64-encoded and that the"
+      echo "[signing]   certificate has not expired. Aborting publish."
+      exit 1
+    fi
+    echo "[signing] ✓ osslsigncode verify passed — EXE carries a valid Authenticode signature."
+
+    # Publisher-name check — only when CSC_EXPECTED_PUBLISHER is configured.
+    if [[ -n "${CSC_EXPECTED_PUBLISHER:-}" ]]; then
+      if echo "$OSSLSIGN_OUT" | grep -qi "${CSC_EXPECTED_PUBLISHER}"; then
+        echo "[signing] ✓ Publisher name matches CSC_EXPECTED_PUBLISHER (\"${CSC_EXPECTED_PUBLISHER}\")."
+      else
+        echo "[signing] ✗ Publisher name check FAILED."
+        echo "[signing]   Expected signer subject to contain: \"${CSC_EXPECTED_PUBLISHER}\""
+        echo "[signing]   Actual osslsigncode output (signer info):"
+        echo "$OSSLSIGN_OUT" | grep -i "subject\|CN=" | sed 's/^/[signing]     /'
+        echo "[signing]   Check that CSC_LINK contains the correct certificate for this release."
+        exit 1
+      fi
+    else
+      echo "[signing]   CSC_EXPECTED_PUBLISHER not set — publisher-name check skipped."
+      echo "[signing]   Set CSC_EXPECTED_PUBLISHER to the certificate CN to enable this check."
+    fi
+
+  else
+    # Neither tool is available. Refuse to publish when signing was requested
+    # but cannot be verified — silent unsigned uploads are the bug we prevent.
+    echo "[signing] ERROR: CSC_LINK is set but no signature verification tool is available."
+    echo "[signing]   Install one of the following, then re-run this script:"
+    echo "[signing]     • signtool     — Windows SDK (present on windows-latest CI runners)"
+    echo "[signing]     • osslsigncode — Linux: apt-get install -y osslsigncode"
+    echo "[signing]                       macOS: brew install osslsigncode"
+    echo "[signing]   Aborting publish to avoid silently uploading a potentially unsigned installer."
+    exit 1
+  fi
+else
+  echo ""
+  echo "[signing] CSC_LINK not set — skipping signature verification (unsigned build path)."
+  echo "[signing]   SmartScreen will show a warning when users run this installer."
+fi
+
 # Determine which installer was produced --------------------------------------
 # On Windows (or Linux + Wine): electron-builder produces LabTrax-Setup.exe.
 # On Linux without Wine (Replit): electron-builder falls back to win-unpacked

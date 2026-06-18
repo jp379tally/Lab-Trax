@@ -84,6 +84,7 @@ Run `pnpm --filter @workspace/db run push` to apply schema changes.
 **Desktop installer (code-signing):**
 - `CSC_LINK` — base64-encoded PFX certificate (OV or EV) for Windows code-signing. Encode with `base64 -w 0 certificate.pfx`. When set alongside `CSC_KEY_PASSWORD`, electron-builder signs the installer automatically, removing the SmartScreen "Windows protected your PC" warning. Absent → unsigned build (SmartScreen warning present).
 - `CSC_KEY_PASSWORD` — password protecting the `CSC_LINK` PFX. Must be set together with `CSC_LINK`. Signing config (sha256, RFC 3161 via Sectigo) lives in `artifacts/labtrax-desktop/electron-builder.yml` under `signtoolOptions`.
+- `CSC_EXPECTED_PUBLISHER` — optional but strongly recommended. Exact CN (Common Name) from the code-signing certificate (e.g. `"Acme Dental Software LLC"`). When set, `desktop-build-publish.sh` verifies the built EXE's signer subject contains this string after `signtool verify /pa` passes — catches wrong-cert scenarios (expired cert renewed under a new name, dev cert used in production, etc.). Absent → publisher-name check is skipped.
 
 **Desktop installer:**
 - `DESKTOP_INSTALLER_VERSION` — version string in Desktop App settings panel (default: `"1.0.0"`)
