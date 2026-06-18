@@ -92,7 +92,9 @@ function kindFromFilename(name: string): InstallerKind | null {
 }
 
 async function resolveLocalPath(): Promise<string> {
-  const arg = process.argv[2];
+  // Ignore a bare "--" separator that pnpm may forward into argv
+  // (e.g. `pnpm run upload-desktop-installer -- /path/to/file.zip`).
+  const arg = process.argv.slice(2).find((a) => a !== "--");
   if (arg) return resolve(arg);
 
   // Auto-detect: prefer exe (NSIS installer), fall back to zip (portable).
