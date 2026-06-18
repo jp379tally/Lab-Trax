@@ -1400,6 +1400,21 @@ export default function CasesPage() {
   const initialFilters = useRef(readCasesFilters());
 
   const [search, setSearch] = useState(initialFilters.current.search);
+  const [barcodeFilter, setBarcodeFilter] = useState("");
+  const [conflictsOnly, setConflictsOnly] = useState(false);
+
+  // Exact barcode lookup, server-backed so it finds matches even beyond the
+  // 500 most-recent cases the main list is capped at. Only fires when the
+  // barcode field has a value.
+  const barcodeFilterTrimmed = barcodeFilter.trim();
+  const barcodeFilterActive = barcodeFilterTrimmed.length > 0;
+  const barcodeSearch = useQuery({
+    queryKey: ["cases", "barcode", barcodeFilterTrimmed],
+    queryFn: () =>
+      apiFetch<LabCase[]>(`/cases?barcode=${encodeURIComponent(barcodeFilterTrimmed)}`),
+    enabled: barcodeFilterActive,
+  });
+
   const [statusFilter, setStatusFilter] = useState<string>(initialFilters.current.statusFilter);
   const [priorityFilter, setPriorityFilter] = useState<string>(initialFilters.current.priorityFilter);
   const [dateRangeFilter, setDateRangeFilter] = useState<DateRangeFilter>(initialFilters.current.dateRangeFilter);
@@ -1626,7 +1641,7 @@ export default function CasesPage() {
 
   useEffect(() => {
     setSelectedIds(new Set());
-  }, [search, statusFilter, priorityFilter, dateRangeFilter, customStartDate, customEndDate, iteroActiveBatch]);
+  }, [search, barcodeFilter, conflictsOnly, statusFilter, priorityFilter, dateRangeFilter, customStartDate, customEndDate, iteroActiveBatch]);
 
   useEffect(() => {
     const el = pageRef.current?.closest("main") as HTMLElement | null;
@@ -1663,8 +1678,42 @@ export default function CasesPage() {
     scrollRestoredRef.current = true;
   }, [isLoading]);
 
+  // Cases that share a pan barcode with at least one other active (non-complete)
+  // case in the same lab. Computed from whichever list is currently in view so
+  // an admin can spot duplicates before scanning. Keyed by lab + barcode to
+  // keep tenant boundaries intact.
+  const conflictKeys = useMemo(() => {
+    const src = barcodeFilterActive ? (barcodeSearch.data ?? []) : (data ?? []);
+    const counts = new Map<string, number>();
+    for (const c of src) {
+      const bc = String(c.casePanBarcode ?? "").trim();
+      if (!bc) continue;
+      if (String(c.status ?? "").toLowerCase() === "complete") continue;
+      const key = `${c.labOrganizationId ?? ""}::${bc}`;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    const set = new Set<string>();
+    for (const [key, n] of counts) if (n >= 2) set.add(key);
+    return set;
+  }, [data, barcodeFilterActive, barcodeSearch.data]);
+
+  const isConflicting = useCallback(
+    (c: LabCase) => {
+      const bc = String(c.casePanBarcode ?? "").trim();
+      if (!bc) return false;
+      if (String(c.status ?? "").toLowerCase() === "complete") return false;
+      return conflictKeys.has(`${c.labOrganizationId ?? ""}::${bc}`);
+    },
+    [conflictKeys],
+  );
+
+  const conflictCount = useMemo(() => {
+    const src = barcodeFilterActive ? (barcodeSearch.data ?? []) : (data ?? []);
+    return src.filter(isConflicting).length;
+  }, [data, barcodeFilterActive, barcodeSearch.data, isConflicting]);
+
   const filtered = useMemo(() => {
-    const rows = data ?? [];
+    const rows = barcodeFilterActive ? (barcodeSearch.data ?? []) : (data ?? []);
     const q = search.trim().toLowerCase();
 
     let startDate: Date | null = null;
@@ -1694,6 +1743,7 @@ export default function CasesPage() {
     return rows
       .filter((c) => {
         if (batchCaseIdSet && !batchCaseIdSet.has(c.id)) return false;
+        if (conflictsOnly && !isConflicting(c)) return false;
         if (statusFilter !== "all" && c.status !== statusFilter) return false;
         if (priorityFilter !== "all" && c.priority !== priorityFilter) return false;
         if (startDate !== null || endDate !== null) {
@@ -1721,7 +1771,7 @@ export default function CasesPage() {
         const vb = (b[sortKey] || "") as string;
         return sortDir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
       });
-  }, [data, search, statusFilter, priorityFilter, dateRangeFilter, customStartDate, customEndDate, sortKey, sortDir, iteroActiveBatch]);
+  }, [data, barcodeFilterActive, barcodeSearch.data, conflictsOnly, isConflicting, search, statusFilter, priorityFilter, dateRangeFilter, customStartDate, customEndDate, sortKey, sortDir, iteroActiveBatch]);
 
   const distinctDoctorNames = useMemo(() => {
     const names = new Set<string>();
@@ -1898,6 +1948,62 @@ export default function CasesPage() {
               />
             </div>
           )}
+
+          <div className="relative w-44">
+            <Barcode
+              size={14}
+              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
+            />
+            {barcodeFilterActive && barcodeSearch.isFetching && (
+              <Loader2
+                size={12}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 animate-spin text-muted-foreground pointer-events-none"
+              />
+            )}
+            {barcodeFilterActive && !barcodeSearch.isFetching && (
+              <button
+                type="button"
+                onClick={() => setBarcodeFilter("")}
+                title="Clear barcode filter"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                <X size={12} />
+              </button>
+            )}
+            <input
+              type="search"
+              value={barcodeFilter}
+              onChange={(e) => setBarcodeFilter(e.target.value)}
+              placeholder="Filter by exact barcode…"
+              autoComplete="off"
+              aria-label="Filter cases by exact barcode"
+              className="w-full h-9 pl-8 pr-7 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary font-mono"
+            />
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setConflictsOnly((v) => !v)}
+            disabled={conflictCount === 0 && !conflictsOnly}
+            title={
+              conflictCount === 0
+                ? "No barcode conflicts detected"
+                : "Show only cases that share a pan barcode with another active case"
+            }
+            className={`inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium border transition-colors disabled:opacity-50 ${
+              conflictsOnly
+                ? "bg-amber-500/15 border-amber-500/40 text-amber-700 dark:text-amber-400"
+                : "bg-secondary border-transparent text-foreground hover:bg-secondary/80"
+            }`}
+          >
+            <AlertTriangle size={14} className={conflictCount > 0 ? "text-amber-500" : ""} />
+            Conflicts
+            {conflictCount > 0 && (
+              <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-amber-500 text-white text-[10px] font-semibold">
+                {conflictCount}
+              </span>
+            )}
+          </button>
 
           <div className="ml-auto flex items-center gap-1.5 shrink-0">
             {scanMode ? (
@@ -2211,11 +2317,25 @@ export default function CasesPage() {
                   </td>
                   <td className="py-3"><StatusBadge status={c.status} /></td>
                   <td className="py-3 text-muted-foreground font-mono text-xs">
-                    {c.casePanBarcode
-                      ? c.casePanBarcode.length > 12
-                        ? c.casePanBarcode.slice(0, 12) + "…"
-                        : c.casePanBarcode
-                      : "—"}
+                    <div className="flex items-center gap-1.5">
+                      <span>
+                        {c.casePanBarcode
+                          ? c.casePanBarcode.length > 12
+                            ? c.casePanBarcode.slice(0, 12) + "…"
+                            : c.casePanBarcode
+                          : "—"}
+                      </span>
+                      {isConflicting(c) && (
+                        <span
+                          title="This pan barcode is shared with another active case — possible duplicate."
+                          aria-label="Barcode conflict"
+                          className="inline-flex items-center gap-0.5 px-1.5 h-5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 text-[10px] font-semibold uppercase tracking-wide"
+                        >
+                          <AlertTriangle size={10} />
+                          Conflict
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="py-3 text-muted-foreground">{formatShortDate(c.dueDate)}</td>
                   <td className="py-3 text-right tabular-nums">

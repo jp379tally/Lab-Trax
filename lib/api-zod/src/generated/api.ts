@@ -860,6 +860,12 @@ export const ListCasesQueryParams = zod.object({
     .string()
     .optional()
     .describe('Comma-separated extras to include (e.g. \"restorations\").'),
+  barcode: zod.coerce
+    .string()
+    .optional()
+    .describe(
+      "Filter to cases whose pan barcode exactly matches this value\n(tenant-scoped). Useful for spotting duplicate-barcode conflicts\nbefore assigning a barcode to a new case.\n",
+    ),
 });
 
 export const ListCasesResponse = zod.object({

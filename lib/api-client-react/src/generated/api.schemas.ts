@@ -2135,6 +2135,13 @@ export type ListCasesParams = {
    * Comma-separated extras to include (e.g. "restorations").
    */
   include?: string;
+  /**
+ * Filter to cases whose pan barcode exactly matches this value
+(tenant-scoped). Useful for spotting duplicate-barcode conflicts
+before assigning a barcode to a new case.
+
+ */
+  barcode?: string;
 };
 
 export type ImportCaseFromIteroRxBody = {

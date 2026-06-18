@@ -340,6 +340,10 @@ export default function CasesListScreen() {
   const [draftTo, setDraftTo] = useState("");
   const [customError, setCustomError] = useState("");
 
+  // ── Barcode quick-filter (exact pan-barcode match)
+  const [barcodeFilter, setBarcodeFilter] = useState("");
+  const [showBarcodeFilter, setShowBarcodeFilter] = useState(false);
+
   // ── Location filter (empty array = all locations)
   const [locationFilter, setLocationFilter] = useState<string[]>([]);
   const [showLocationModal, setShowLocationModal] = useState(false);
@@ -484,8 +488,16 @@ export default function CasesListScreen() {
       );
     }
 
+    // Barcode quick-filter — exact pan-barcode match
+    const bc = barcodeFilter.trim().toLowerCase();
+    if (bc) {
+      result = result.filter(
+        (c) => (c.casePanBarcode ?? "").trim().toLowerCase() === bc,
+      );
+    }
+
     return result;
-  }, [cases, query, dueFilter, customFrom, customTo, locationFilter]);
+  }, [cases, query, dueFilter, customFrom, customTo, locationFilter, barcodeFilter]);
 
   // ── Custom date modal actions ─────────────────────────────────────────────
   function openCustomModal() {
@@ -548,7 +560,7 @@ export default function CasesListScreen() {
   }, [locationFilter]);
 
   const activeFilters =
-    dueFilter !== "all" || locationFilter.length > 0;
+    dueFilter !== "all" || locationFilter.length > 0 || barcodeFilter.trim().length > 0;
 
   // Derived: the CanonicalCase objects for the currently selected IDs
   const selectedCases = useMemo(
@@ -728,8 +740,74 @@ export default function CasesListScreen() {
               </Pressable>
             )}
           </Pressable>
+
+          {/* Divider */}
+          <View style={styles.chipDivider} />
+
+          {/* Barcode quick-filter chip */}
+          <Pressable
+            style={[
+              styles.chip,
+              (showBarcodeFilter || barcodeFilter.trim().length > 0) && {
+                backgroundColor: colors.tint + "22",
+                borderColor: colors.tint,
+              },
+            ]}
+            onPress={() => setShowBarcodeFilter((v) => !v)}
+            testID="cases-barcode-filter-chip"
+          >
+            <Ionicons
+              name="barcode-outline"
+              size={14}
+              color={showBarcodeFilter || barcodeFilter.trim().length > 0 ? colors.tint : colors.textSecondary}
+              style={{ marginRight: 4 }}
+            />
+            <Text
+              style={[
+                styles.chipText,
+                (showBarcodeFilter || barcodeFilter.trim().length > 0) && { color: colors.tint },
+              ]}
+            >
+              {barcodeFilter.trim().length > 0 ? "Barcode: " + barcodeFilter.trim() : "Barcode"}
+            </Text>
+            {barcodeFilter.trim().length > 0 && (
+              <Pressable
+                hitSlop={8}
+                onPress={(e) => { e.stopPropagation(); setBarcodeFilter(""); }}
+                style={{ marginLeft: 4 }}
+              >
+                <Ionicons name="close-circle" size={14} color={colors.tint} />
+              </Pressable>
+            )}
+          </Pressable>
         </ScrollView>
       </View>
+
+      {/* Barcode search input (revealed by the Barcode chip) */}
+      {showBarcodeFilter ? (
+        <View style={styles.barcodeFilterRow}>
+          <View style={styles.searchWrap}>
+            <Ionicons name="barcode-outline" size={18} color={colors.textTertiary} />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search by exact barcode"
+              placeholderTextColor={colors.textTertiary}
+              value={barcodeFilter}
+              onChangeText={setBarcodeFilter}
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoFocus
+              returnKeyType="search"
+              testID="cases-barcode-filter-input"
+            />
+            {barcodeFilter.length > 0 ? (
+              <Pressable onPress={() => setBarcodeFilter("")} hitSlop={8}>
+                <Ionicons name="close-circle" size={18} color={colors.textTertiary} />
+              </Pressable>
+            ) : null}
+          </View>
+        </View>
+      ) : null}
 
       {/* Case list */}
       {casesQuery.isLoading ? (
@@ -1295,6 +1373,14 @@ function makeStyles(c: ThemeColors) {
       backgroundColor: c.surfaceAlt,
       alignItems: "center",
       justifyContent: "center",
+    },
+
+    // Barcode filter input row (revealed by the Barcode chip)
+    barcodeFilterRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      marginHorizontal: Spacing.lg,
+      marginBottom: Spacing.xs,
     },
 
     // Filter row

@@ -697,6 +697,13 @@ paths:
           in: query
           schema: { type: string }
           description: Comma-separated extras to include (e.g. "restorations").
+        - name: barcode
+          in: query
+          schema: { type: string }
+          description: |
+            Filter to cases whose pan barcode exactly matches this value
+            (tenant-scoped). Useful for spotting duplicate-barcode conflicts
+            before assigning a barcode to a new case.
       responses:
         "200":
           description: Case list
