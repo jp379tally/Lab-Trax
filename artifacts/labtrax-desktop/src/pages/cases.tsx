@@ -3654,6 +3654,7 @@ export function CaseDrawer({
           priority: updates.priority,
           ...(updates.dueDate ? { dueDate: updates.dueDate } : {}),
           casePanBarcode: updates.casePanBarcode || null,
+          rxNotes: updates.rxNotes.trim() || null,
         }),
       }),
     onSuccess: () => {

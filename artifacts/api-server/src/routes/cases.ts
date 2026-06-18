@@ -7234,6 +7234,7 @@ const iteroImportBodySchema = z.object({
   doctorNameHint: z.string().optional(),
   patientFirstNameHint: z.string().optional(),
   patientLastNameHint: z.string().optional(),
+  casePanBarcodeHint: z.string().optional(),
 });
 
 // ── ZIP import config ────────────────────────────────────────────────────────
@@ -7640,6 +7641,7 @@ router.post(
           externalPatientId: body.iteroOrderId,
           rxNotes: extracted.notes?.trim() || null,
           shade: normalizeIteroShade(extracted.shade),
+          casePanBarcode: body.casePanBarcodeHint?.trim() || null,
           suggestedDoctorName,
           // When the per-lab "auto-link suggested practice" setting fired,
           // the suggestion has been applied — null it out so the review

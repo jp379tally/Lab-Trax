@@ -1379,6 +1379,7 @@ export function DashboardDropZone() {
           if (r.doctorName?.trim()) fd.append("doctorNameHint", r.doctorName.trim());
           if (first?.trim()) fd.append("patientFirstNameHint", first.trim());
           if (last?.trim()) fd.append("patientLastNameHint", last.trim());
+          if (rxBarcode.trim()) fd.append("casePanBarcodeHint", rxBarcode.trim());
 
           const result = await apiFetch<{
             deduped: boolean;

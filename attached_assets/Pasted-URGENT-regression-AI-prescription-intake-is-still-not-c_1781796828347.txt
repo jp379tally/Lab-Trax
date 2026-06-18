@@ -1,0 +1,144 @@
+URGENT regression: AI prescription intake is still not carrying confirmed prescription data into the Lab Slip / Case Overview / Invoice.
+
+Current example:
+
+Case: Richard Tomberlin
+Case #: 26-29
+Practice: First Care Dental Associates
+Doctor shown: Daniel Sharpstein
+Status: Received
+AI-imported case from iTero / Rx upload
+
+After upload + AI analysis, the Lab Slip / Overview still shows missing production data:
+
+* Due Date: blank
+* Tooth #: blank
+* Shade: blank
+* Material: blank
+* Case Pan Barcode: blank
+* Rx Notes: blank
+* Restorative Type: Other
+
+I manually entered case pan barcode `0001`, and it is not showing on the Lab Slip.
+
+It also does not look like an invoice was generated for this case, which should happen automatically after AI-created case entry.
+
+## Required behavior
+
+When AI analyzes a prescription and the user confirms/creates the case, the confirmed AI intake data must populate all production surfaces:
+
+1. Lab Slip
+2. Case Overview
+3. Invoice
+4. Desktop Case Detail
+5. Mobile Case Detail
+6. Case History / attached Rx record
+
+## Fields that must carry through
+
+* patient name
+* doctor name
+* practice/provider
+* due date
+* tooth number
+* shade
+* material
+* restorative type
+* notes / special instructions / Rx notes
+* case pan barcode
+* attached prescription/Rx PDF/image
+* generated invoice
+
+## Specific requirements
+
+If AI reads or the user confirms:
+
+* due date
+* tooth number
+* shade
+* material
+* restoration type
+* notes
+* barcode
+
+then those exact values must be saved into canonical case/restoration/note/barcode fields and rendered on the Lab Slip and Case Overview.
+
+The Lab Slip must not read from a different stale or empty source.
+
+The Invoice must be generated from the same canonical restoration/case data and must be created once.
+
+## Required investigation
+
+Trace this exact pipeline:
+
+1. AI analysis output.
+2. Review form state before case creation.
+3. Submit payload.
+4. `POST /api/cases` payload.
+5. restoration payload.
+6. note/Rx notes payload.
+7. case pan barcode payload.
+8. invoice generation call.
+9. saved database rows.
+10. Lab Slip render source.
+11. Invoice tab data source.
+12. Mobile case detail data source.
+
+Find where these values are being dropped.
+
+## Required fixes
+
+* Due date must save and display.
+* Tooth number must save and display.
+* Shade must save and display.
+* Material must save and display.
+* Restorative type must save and display.
+* Rx notes/special instructions must save and display.
+* Case pan barcode `0001` must save as string `0001` and display on Lab Slip.
+* Invoice must auto-generate once after AI case creation.
+* Attached Rx must remain linked to the case and case history.
+
+## Regression tests required
+
+Add a fixture-based test where AI/review confirms:
+
+* due date
+* tooth number
+* shade
+* material
+* restorative type
+* notes
+* barcode `0001`
+
+After creation assert:
+
+1. Case Overview shows all values.
+2. Lab Slip shows all values.
+3. Invoice exists.
+4. Invoice uses same tooth/material/shade/restoration data.
+5. Case pan barcode is stored/displayed as `0001`.
+6. Mobile detail shows same values.
+7. No duplicate invoice is created.
+8. No value is blank unless it was actually blank in the confirmed review form.
+
+## Acceptance
+
+Use the Richard Tomberlin / Case 26-29 failure as a manual reproduction.
+
+After fix:
+
+* Upload Rx / AI analysis.
+* Confirm details.
+* Create case.
+* Open Lab Slip.
+* Verify due date, tooth number, shade, material, restoration type, notes, and barcode display correctly.
+* Open Invoice.
+* Verify invoice exists and matches the prescription.
+* Refresh mobile.
+* Verify same values display there.
+
+Do not continue unrelated feature work until this is fixed.
+
+Checkpoint:
+
+“Fix AI Intake Carry-Through to Lab Slip and Invoice”

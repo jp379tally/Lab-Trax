@@ -498,4 +498,124 @@ maybe("AI intake data carry-through (db integration)", () => {
     expect(rests[0].shade).toBe("A3");
     expect(rests[0].material).toBe("Zirconia");
   });
+
+  // ── (8) PATCH /:id rxNotes survives ────────────────────────────────────────
+  // Regression for editMutation dropping rxNotes from the PATCH body.
+  // A PATCH that includes rxNotes must update the cases.rx_notes column and
+  // have it returned as caseNotes on the next GET.
+
+  it("(8) PATCH /:id rxNotes saves and is returned as caseNotes on GET", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const caseNumber = rid("AIRXN");
+
+    const createResp = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber,
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "RxNotes",
+        patientLastName: "PatchTest",
+        doctorName: "Dr. RxNotes",
+        status: "received",
+      });
+
+    expect(createResp.status).toBe(201);
+    const caseId = createResp.body.data.id;
+    createdCaseIds.push(caseId);
+
+    const patchResp = await request(appMod.default)
+      .patch(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({ rxNotes: "Patient allergic to nickel — must use BioHPP only." });
+
+    expect(patchResp.status, "PATCH with rxNotes must succeed").toBe(200);
+
+    const getResp = await request(appMod.default)
+      .get(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${access}`);
+
+    expect(getResp.status).toBe(200);
+    const c = getResp.body.data ?? getResp.body;
+    expect(c.caseNotes, "rxNotes must be returned as caseNotes after PATCH").toContain(
+      "BioHPP only"
+    );
+  });
+
+  // ── (9) casePanBarcode "0001" (leading zeros) survives without coercion ────
+  // Barcodes like "0001" must be stored and returned as the string "0001",
+  // never coerced to the number 1 or the string "1".
+
+  it("(9) casePanBarcode '0001' (leading zeros) is stored and returned as string '0001'", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const caseNumber = rid("AIBC0");
+
+    const createResp = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber,
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Barcode",
+        patientLastName: "Leading",
+        doctorName: "Dr. Zeroes",
+        status: "received",
+        casePanBarcode: "0001",
+      });
+
+    expect(createResp.status).toBe(201);
+    const caseId = createResp.body.data.id;
+    createdCaseIds.push(caseId);
+
+    const getResp = await request(appMod.default)
+      .get(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${access}`);
+
+    expect(getResp.status).toBe(200);
+    const c = getResp.body.data ?? getResp.body;
+    expect(c.casePanBarcode, "barcode with leading zeros must not be coerced").toBe("0001");
+  });
+
+  // ── (10) PATCH /:id casePanBarcode updates the barcode ────────────────────
+  // After case creation without a barcode, a PATCH with casePanBarcode must
+  // update the cases.case_pan_barcode column so the Lab Slip shows the new value.
+
+  it("(10) PATCH /:id casePanBarcode saves and is returned on GET", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const caseNumber = rid("AIBC1");
+
+    const createResp = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber,
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Barcode",
+        patientLastName: "Patch",
+        doctorName: "Dr. PatchBarcode",
+        status: "received",
+      });
+
+    expect(createResp.status).toBe(201);
+    const caseId = createResp.body.data.id;
+    createdCaseIds.push(caseId);
+
+    const patchResp = await request(appMod.default)
+      .patch(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({ casePanBarcode: "PATCHED-BC-01" });
+
+    expect(patchResp.status, "PATCH with casePanBarcode must succeed").toBe(200);
+
+    const getResp = await request(appMod.default)
+      .get(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${access}`);
+
+    expect(getResp.status).toBe(200);
+    const c = getResp.body.data ?? getResp.body;
+    expect(c.casePanBarcode, "patched barcode must be returned on GET").toBe("PATCHED-BC-01");
+  });
 });

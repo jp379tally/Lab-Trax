@@ -340,22 +340,36 @@ maybe("Backup Restore Integrity", () => {
       sessionSnapshot = res.rows;
     });
 
-    afterEach(async () => {
+    // Re-insert the pre-test session snapshot immediately so concurrent test
+    // files whose tokens were wiped by TRUNCATE can authenticate again without
+    // waiting for afterEach.  Call this right after every executeRestore() that
+    // is expected to complete (i.e. where TRUNCATE actually runs).
+    async function restoreSnapshotNow() {
       if (sessionSnapshot.length === 0) return;
       const dbPool = (dbMod as any).pool as import("pg").Pool;
       for (const row of sessionSnapshot) {
-        await dbPool.query(
-          `INSERT INTO user_sessions
-             (id, user_id, token_hash, csrf_token_hash, device_name,
-              ip_address, user_agent, expires_at, revoked_at, created_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-           ON CONFLICT (id) DO NOTHING`,
-          [row.id, row.user_id, row.token_hash, row.csrf_token_hash,
-           row.device_name, row.ip_address, row.user_agent,
-           row.expires_at, row.revoked_at, row.created_at],
-        );
+        try {
+          await dbPool.query(
+            `INSERT INTO user_sessions
+               (id, user_id, token_hash, csrf_token_hash, device_name,
+                ip_address, user_agent, expires_at, revoked_at, created_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+             ON CONFLICT (id) DO NOTHING`,
+            [row.id, row.user_id, row.token_hash, row.csrf_token_hash,
+             row.device_name, row.ip_address, row.user_agent,
+             row.expires_at, row.revoked_at, row.created_at],
+          );
+        } catch (e: any) {
+          // A concurrently running test file's afterAll may have deleted the
+          // user that this session references (FK: user_sessions → users).
+          // Skip foreign_key_violation (PG error code 23503) — those sessions
+          // are no longer needed.  Re-throw anything else.
+          if (e.code !== "23503") throw e;
+        }
       }
-    });
+    }
+
+    afterEach(restoreSnapshotNow);
 
     beforeAll(async () => {
       const { buffer } = await backupLib.buildBackupZipBuffer("test-restore-pipeline");
@@ -364,6 +378,7 @@ maybe("Backup Restore Integrity", () => {
 
     it("8. executeRestore completes with phase = done", async () => {
       await backupLib.executeRestore(testBackupBuffer, "test-8");
+      await restoreSnapshotNow();
       expect(backupLib.getRestoreState().phase).toBe("done");
     });
 
@@ -382,6 +397,7 @@ maybe("Backup Restore Integrity", () => {
       );
 
       await backupLib.executeRestore(testBackupBuffer, "test-9");
+      await restoreSnapshotNow();
 
       // The sentinel must be gone — TRUNCATE removed all pre-restore sessions.
       const res = await dbPool.query<{ id: string }>(
@@ -403,6 +419,7 @@ maybe("Backup Restore Integrity", () => {
       });
 
       await backupLib.executeRestore(testBackupBuffer, "test-10");
+      await restoreSnapshotNow();
 
       const res = await request(appMod.default)
         .post("/api/auth/login")
@@ -414,6 +431,7 @@ maybe("Backup Restore Integrity", () => {
 
     it("11. two successive inserts to user_sessions after restore succeed without unique-constraint conflict", async () => {
       await backupLib.executeRestore(testBackupBuffer, "test-11");
+      await restoreSnapshotNow();
 
       const db = (dbMod as any).db;
       const { userSessions } = dbMod as any;
@@ -458,6 +476,7 @@ maybe("Backup Restore Integrity", () => {
 
       await backupLib.executeRestore(testBackupBuffer, "test-12");
       spy.mockRestore();
+      await restoreSnapshotNow();
 
       expect(
         queryCalls.some((q) => q.toUpperCase().startsWith("TRUNCATE TABLE USER_SESSIONS")),
@@ -478,6 +497,7 @@ maybe("Backup Restore Integrity", () => {
 
       await backupLib.executeRestore(testBackupBuffer, "test-13");
       spy.mockRestore();
+      await restoreSnapshotNow();
 
       expect(
         queryCalls.some(
@@ -497,6 +517,7 @@ maybe("Backup Restore Integrity", () => {
       const phases = await capturePhases(
         backupLib.executeRestore(testBackupBuffer, "test-14"),
       );
+      await restoreSnapshotNow();
       expect(phases).toContain("restoring_db");
       expect(phases).toContain("clearing_sessions");
       expect(phases).toContain("validating");
@@ -565,6 +586,7 @@ maybe("Backup Restore Integrity", () => {
         : new Set<string>();
 
       await backupLib.executeRestore(testBackupBuffer, "test-17");
+      await restoreSnapshotNow();
 
       expect(fs.existsSync(snapshotsDir)).toBe(true);
       const newFiles = fs
@@ -580,6 +602,7 @@ maybe("Backup Restore Integrity", () => {
 
     it("18. post-restore validation passes on well-formed test data", async () => {
       await backupLib.executeRestore(testBackupBuffer, "test-18");
+      await restoreSnapshotNow();
 
       const result = await backupLib.runPostRestoreValidation({
         expectedCaseCount: null,
@@ -631,6 +654,7 @@ maybe("Backup Restore Integrity", () => {
       const phases = await capturePhases(
         backupLib.executeRestore(testBackupBuffer, "test-20"),
       );
+      await restoreSnapshotNow();
 
       const dbIdx    = phases.lastIndexOf("restoring_db");
       const clearIdx = phases.indexOf("clearing_sessions");

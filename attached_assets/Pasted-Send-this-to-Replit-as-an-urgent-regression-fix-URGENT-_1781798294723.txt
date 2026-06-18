@@ -1,0 +1,137 @@
+Send this to Replit as an urgent regression fix:
+
+URGENT regression: saving a new practice during AI intake fails with an `organizations` insert error.
+
+## Current failure
+
+During desktop AI data entry / Rx upload, the app detects a new practice and shows:
+
+“New practice — confirm details”
+
+When I try to save the new practice, it fails with a database insert error:
+
+`Failed query: insert into "organizations" (...)`
+
+The error appears while saving a provider/practice organization from the AI intake review screen.
+
+Example visible in screenshot:
+
+* Practice: `Heartland Dental - Family Dentistry at SouthWood [565]`
+* Provider / doctor: `Selvan Manthiram`
+* Phone: `000-000-0000`
+* Address: `1970 Gainsborough Ln, Tallahassee`
+* ZIP: `32311-2717`
+
+This blocks AI intake because the case cannot be properly created when a new practice has to be saved.
+
+## Required investigation
+
+Trace the new-practice save pipeline:
+
+1. AI intake extracted practice/doctor/address/phone.
+2. New practice confirmation form state.
+3. Save practice submit payload.
+4. `POST /api/organizations` or equivalent server endpoint.
+5. Server validation schema.
+6. Database insert payload.
+7. `organizations` table schema.
+8. Returned error cause.
+
+Find whether the insert is failing because of:
+
+* column/value mismatch
+* missing required value
+* bad default
+* newly added schema column not handled by insert
+* invalid `state`
+* invalid `zip`
+* invalid `phone`
+* duplicate organization name
+* missing `parent_lab_organization_id`
+* missing or invalid `account_number`
+* missing required `created_by_user_id`
+* any recent schema/API drift
+
+## Required fix
+
+Saving a new provider/practice from AI intake must work.
+
+If AI extracted incomplete or imperfect data, the UI should allow correction before save and the server should return a clear validation message, not raw SQL.
+
+Required behavior:
+
+1. User reviews new practice details.
+2. User edits anything incorrect.
+3. User saves practice.
+4. Provider/practice organization is created canonically.
+5. Practice links to the active lab.
+6. Case creation continues.
+7. New practice appears in desktop/web provider list.
+8. Mobile sees the same provider/practice.
+9. No duplicate provider is created if a canonical match already exists.
+
+## Error handling
+
+Do not show raw SQL to the user.
+
+Replace raw insert errors with a readable message such as:
+
+“Could not save this practice. Please check required fields and try again.”
+
+If duplicate:
+“Practice already exists. Select existing practice instead.”
+
+If required field missing:
+“Practice name, city, state, and ZIP are required.”
+
+## Data requirements
+
+For new provider/practice creation from AI intake, confirm the canonical fields:
+
+* type = provider
+* name / display name
+* doctor/provider name if separate
+* phone
+* billing email if available
+* address line 1
+* address line 2
+* city
+* state
+* ZIP
+* parent lab organization ID
+* created by user ID
+* active status
+
+Do not create owner memberships for the lab user on every provider organization unless that is explicitly required. Provider organizations should be linked as provider/practice records, not shown as organizations I own.
+
+## Tests required
+
+Add regression tests for:
+
+1. New practice save from AI intake succeeds with complete data.
+2. New practice save succeeds when optional phone/email is missing.
+3. ZIP with dash, like `32311-2717`, is accepted or normalized.
+4. Placeholder phone `000-000-0000` does not crash insert.
+5. Duplicate practice returns a clean duplicate message.
+6. Missing required fields return validation errors, not raw SQL.
+7. Created provider/practice links to active lab.
+8. Created provider/practice does not incorrectly make the current user “Owner” of that practice organization.
+9. Case creation continues after new practice save.
+10. AI intake data carries through to Lab Slip, Invoice, Case Detail, and Mobile.
+
+## Acceptance
+
+Using the same failure case:
+
+* Save `Heartland Dental - Family Dentistry at SouthWood [565]`
+* Practice saves successfully or gives a clean validation message.
+* No raw SQL appears.
+* Case creation can continue.
+* New practice is visible as a provider/practice, not as a lab organization owned by me.
+* AI intake data still carries through correctly.
+
+Do not continue unrelated feature work until this is fixed.
+
+Checkpoint:
+
+“Fix AI Intake New Practice Save”

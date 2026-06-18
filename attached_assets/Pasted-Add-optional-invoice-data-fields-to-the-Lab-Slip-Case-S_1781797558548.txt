@@ -1,0 +1,131 @@
+Add optional invoice-data fields to the Lab Slip / Case Slip print layout editor.
+
+## What & Why
+
+I want the option to merge the lab slip and invoice into one physical printed document.
+
+Right now the advanced print layout editor lets me place case/lab-slip fields such as:
+
+* Case #
+* Patient
+* Doctor
+* Due Date
+* Priority
+* Restorative Type
+* Tooth Number(s)
+* Material
+* Shade
+* Prescription Notes
+* Case Pan Barcode
+
+I need the same layout editor to also allow optional invoice fields at the bottom of the lab slip, so I can print one combined production document when I want to.
+
+## Required Feature
+
+Add a new field group in the Advanced Print Layout editor:
+
+**Invoice Fields**
+
+Fields should include:
+
+* Invoice Number
+* Invoice Date
+* Invoice Status
+* Invoice Total
+* Balance Due
+* Invoice Line Items
+* Item Description
+* Tooth Number
+* Shade
+* Quantity
+* Unit Price
+* Line Total
+* Payment Status
+
+## Behavior
+
+These invoice fields should be optional draggable layout elements, just like the existing lab slip fields.
+
+User should be able to:
+
+* add invoice fields to the lab slip layout
+* place them near the bottom of the page
+* resize/reposition them
+* hide/show them
+* save the layout
+* preview the layout
+* print the combined lab slip + invoice data
+
+## Important
+
+Do not force invoice data onto every lab slip.
+
+This must be optional.
+
+If I want a pure lab slip, I should be able to leave invoice fields off.
+
+If I want a combined lab slip + invoice document, I should be able to add invoice fields to the layout.
+
+## Data Source
+
+Invoice data must come from the canonical invoice linked to the case.
+
+Do not duplicate invoice data.
+
+Do not create a separate “lab slip invoice” copy.
+
+If invoice data changes, the lab slip invoice fields should reflect the current invoice data.
+
+## Missing Invoice Handling
+
+If no invoice exists for the case:
+
+* invoice fields should render blank or show “No invoice”
+* layout should not crash
+* print preview should still work
+
+## Invoice Line Items
+
+Invoice line items should support a table-style layout.
+
+At minimum, allow a block/table that renders:
+
+* item description
+* tooth number
+* shade
+* quantity
+* unit price
+* line total
+
+## Acceptance
+
+1. Open Advanced Print Layout.
+2. See a new **Invoice Fields** group.
+3. Drag invoice fields onto the lab slip.
+4. Place them at the bottom of the document.
+5. Save layout.
+6. Preview case slip.
+7. Printed output includes both lab slip data and invoice data.
+8. If invoice is updated, print preview reflects updated invoice data.
+9. If invoice does not exist, print preview does not crash.
+10. Existing lab slip-only layouts continue working.
+
+## Regression Guardrail
+
+Add this to print layout protected workflows:
+
+“Lab Slip Optional Invoice Fields”
+
+Future print-layout changes must not break:
+
+* case fields
+* barcode field
+* prescription notes
+* material/shade/restoration data
+* optional invoice fields
+* saved custom layouts
+* print preview
+
+Checkpoint:
+
+“Optional Invoice Data on Lab Slip Layout”
