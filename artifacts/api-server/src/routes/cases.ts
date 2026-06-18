@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Router, type Request, type Response } from "express";
-import { and, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import {
@@ -2340,6 +2340,11 @@ router.get(
 
     const limit = Math.min(Number(req.query.limit ?? 100), 500);
 
+    const fromParam = String(req.query.from ?? "").trim();
+    const toParam = String(req.query.to ?? "").trim();
+    const fromDate = fromParam ? new Date(fromParam) : null;
+    const toDate = toParam ? new Date(toParam) : null;
+
     const entries = await db
       .select({
         id: auditLogs.id,
@@ -2359,6 +2364,8 @@ router.get(
         and(
           eq(auditLogs.organizationId, labOrganizationId),
           inArray(auditLogs.action, [...DELETION_AUDIT_ACTIONS]),
+          fromDate && !isNaN(fromDate.getTime()) ? gte(auditLogs.createdAt, fromDate) : undefined,
+          toDate && !isNaN(toDate.getTime()) ? lte(auditLogs.createdAt, toDate) : undefined,
         ),
       )
       .orderBy(desc(auditLogs.createdAt))

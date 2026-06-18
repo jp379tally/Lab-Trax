@@ -9244,16 +9244,49 @@ function DeletionAuditPanel() {
   const effectiveLabId = selectedLabId ?? adminLabs[0]?.organizationId ?? null;
   const [selectedEntry, setSelectedEntry] = useState<DeletionAuditEntry | null>(null);
 
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [textFilter, setTextFilter] = useState("");
+
+  const fromIso = useMemo(() => {
+    if (!dateFrom) return "";
+    const [y, m, d] = dateFrom.split("-").map(Number);
+    return new Date(y, m - 1, d, 0, 0, 0, 0).toISOString();
+  }, [dateFrom]);
+
+  const toIso = useMemo(() => {
+    if (!dateTo) return "";
+    const [y, m, d] = dateTo.split("-").map(Number);
+    return new Date(y, m - 1, d, 23, 59, 59, 999).toISOString();
+  }, [dateTo]);
+
   const auditQuery = useQuery<{ entries: DeletionAuditEntry[] }>({
     enabled: !!effectiveLabId,
-    queryKey: ["cases", "deletion-audit-log", effectiveLabId],
-    queryFn: () =>
-      apiFetch(`/cases/deletion-audit-log?labOrganizationId=${encodeURIComponent(effectiveLabId!)}&limit=100`),
+    queryKey: ["cases", "deletion-audit-log", effectiveLabId, fromIso, toIso],
+    queryFn: () => {
+      const params = new URLSearchParams({ labOrganizationId: effectiveLabId!, limit: "100" });
+      if (fromIso) params.set("from", fromIso);
+      if (toIso) params.set("to", toIso);
+      return apiFetch(`/cases/deletion-audit-log?${params.toString()}`);
+    },
     staleTime: 30_000,
     refetchInterval: 60_000,
   });
 
-  const entries = auditQuery.data?.entries ?? [];
+  const needle = textFilter.trim().toLowerCase();
+  const entries = useMemo(() => {
+    const all = auditQuery.data?.entries ?? [];
+    if (!needle) return all;
+    return all.filter((e) => {
+      if (e.actorName?.toLowerCase().includes(needle)) return true;
+      if (e.actorAccount?.toLowerCase().includes(needle)) return true;
+      return e.cases.some(
+        (c) => c.caseNumber?.toLowerCase().includes(needle) || c.patientName?.toLowerCase().includes(needle),
+      );
+    });
+  }, [auditQuery.data, needle]);
+
+  const hasFilters = dateFrom || dateTo || textFilter.trim();
 
   return (
     <PanelShell
@@ -9267,7 +9300,8 @@ function DeletionAuditPanel() {
         />
       )}
 
-      <div className="flex items-center justify-between mb-2">
+      {/* Top bar: lab selector + refresh */}
+      <div className="flex items-center justify-between mb-3">
         {adminLabs.length > 1 && (
           <select
             value={effectiveLabId ?? ""}
@@ -9297,6 +9331,48 @@ function DeletionAuditPanel() {
         </button>
       </div>
 
+      {/* Filter bar */}
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <div className="flex items-center gap-1.5">
+          <label className="text-xs text-muted-foreground whitespace-nowrap">From</label>
+          <input
+            type="date"
+            value={dateFrom}
+            onChange={(e) => setDateFrom(e.target.value)}
+            className="h-8 px-2 rounded-md bg-secondary text-sm border border-border focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+        </div>
+        <div className="flex items-center gap-1.5">
+          <label className="text-xs text-muted-foreground whitespace-nowrap">To</label>
+          <input
+            type="date"
+            value={dateTo}
+            onChange={(e) => setDateTo(e.target.value)}
+            className="h-8 px-2 rounded-md bg-secondary text-sm border border-border focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+        </div>
+        <div className="relative flex-1 min-w-[160px]">
+          <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+          <input
+            type="text"
+            placeholder="Actor or case number…"
+            value={textFilter}
+            onChange={(e) => setTextFilter(e.target.value)}
+            className="h-8 w-full pl-7 pr-2 rounded-md bg-secondary text-sm border border-border focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+        </div>
+        {hasFilters && (
+          <button
+            type="button"
+            onClick={() => { setDateFrom(""); setDateTo(""); setTextFilter(""); }}
+            className="inline-flex items-center gap-1 h-8 px-2.5 rounded-md text-xs text-muted-foreground hover:bg-secondary/80 border border-border"
+          >
+            <X size={11} />
+            Clear
+          </button>
+        )}
+      </div>
+
       {auditQuery.isLoading && (
         <div className="flex items-center gap-2 text-muted-foreground text-sm py-8 justify-center">
           <Loader2 size={14} className="animate-spin" />
@@ -9320,7 +9396,9 @@ function DeletionAuditPanel() {
         <>
           {entries.length === 0 ? (
             <div className="text-sm text-muted-foreground text-center py-10">
-              No case deletion events recorded yet.
+              {hasFilters
+                ? "No results match your filters."
+                : "No case deletion events recorded yet."}
             </div>
           ) : (
             <div className="border border-border rounded-md overflow-hidden">
