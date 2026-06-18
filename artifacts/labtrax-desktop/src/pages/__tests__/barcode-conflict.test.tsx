@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 /**
- * Barcode conflict detection — desktop cases list
+ * Barcode conflict detection — desktop cases list & case drawer
  *
  * Guards:
  * - Conflict badges appear only for active (non-complete) cases that share a
@@ -18,12 +18,17 @@
  * - When the barcode filter is active, conflict detection switches to
  *   barcodeSearch.data — not the main list — so the conflicts shown match the
  *   server's returned set for that barcode, not the local paginated cache.
+ * - Inline barcode edit in the case drawer shows an amber warning in real time
+ *   when the typed barcode is already used by another active case.
+ * - The warning includes the conflicting case number and a "Save anyway" button.
+ * - The warning clears automatically when the barcode becomes unique again.
  */
 
 import React from "react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import CasesPage from "@/pages/cases";
+import CasesPage, { CaseDrawer } from "@/pages/cases";
+import type { LabCase } from "@/lib/types";
 import { makeAuthWrapper } from "../../__tests__/test-utils";
 import { AiPanelContext } from "@/lib/ai-panel-context";
 
@@ -294,6 +299,269 @@ describe("Barcode conflict detection — desktop cases list", () => {
     // Barcode search returns two matching active cases → conflict is now detected
     await waitFor(() => {
       expect(screen.getAllByLabelText("Barcode conflict").length).toBe(2);
+    });
+  });
+});
+
+// ── Inline barcode edit conflict warning — CaseDrawer ───────────────────────
+
+const DRAWER_LAB_ID = "lab-drawer";
+
+const BASE_CASE: LabCase = {
+  id: "case-edit",
+  caseNumber: "100",
+  patientFirstName: "Edit",
+  patientLastName: "Case",
+  doctorName: "Dr. Edit",
+  status: "received",
+  priority: "normal",
+  dueDate: null,
+  createdAt: "2026-01-01T00:00:00Z",
+  updatedAt: "2026-01-01T00:00:00Z",
+  totalPrice: "0",
+  labOrganizationId: DRAWER_LAB_ID,
+  casePanBarcode: "CURRENT-BC",
+} as unknown as LabCase;
+
+const CONFLICT_CASE_FIXTURE = {
+  id: "case-other",
+  caseNumber: "200",
+  casePanBarcode: "CONFLICT-BC",
+  labOrganizationId: DRAWER_LAB_ID,
+  status: "received",
+};
+
+function makeDrawerFetch(
+  conflictResults: unknown[] = [],
+): ReturnType<typeof vi.fn> {
+  return vi.fn(async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.includes("?barcode=")) {
+      return new Response(JSON.stringify(conflictResults), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    // Default: return empty array — safe for .map() calls on any endpoint
+    return new Response("[]", {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  });
+}
+
+describe("Inline barcode edit conflict warning — CaseDrawer", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", makeDrawerFetch([]));
+  });
+
+  it("shows an amber warning when the typed barcode is already in use by another active case", async () => {
+    vi.stubGlobal("fetch", makeDrawerFetch([CONFLICT_CASE_FIXTURE]));
+
+    const Wrapper = makeAuthWrapper("/cases");
+    render(
+      <Wrapper>
+        {withAiPanel(<CaseDrawer labCase={BASE_CASE} onClose={() => {}} />)}
+      </Wrapper>,
+    );
+
+    // Enter inline barcode edit mode
+    const barcodeBtn = screen.getByTitle(/Click to edit barcode/i);
+    fireEvent.click(barcodeBtn);
+
+    // Type a conflicting barcode
+    const input = screen.getByPlaceholderText(/Scan or type barcode.*blank to clear/i);
+    fireEvent.change(input, { target: { value: "CONFLICT-BC" } });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/already used by an active case/i),
+      ).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Case #200/)).toBeInTheDocument();
+  });
+
+  it("includes the conflicting case number in the warning message", async () => {
+    vi.stubGlobal("fetch", makeDrawerFetch([CONFLICT_CASE_FIXTURE]));
+
+    const Wrapper = makeAuthWrapper("/cases");
+    render(
+      <Wrapper>
+        {withAiPanel(<CaseDrawer labCase={BASE_CASE} onClose={() => {}} />)}
+      </Wrapper>,
+    );
+
+    fireEvent.click(screen.getByTitle(/Click to edit barcode/i));
+    fireEvent.change(
+      screen.getByPlaceholderText(/Scan or type barcode.*blank to clear/i),
+      { target: { value: "CONFLICT-BC" } },
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Case #200/)).toBeInTheDocument();
+    });
+  });
+
+  it("shows a 'Save anyway' button when a conflict is detected", async () => {
+    vi.stubGlobal("fetch", makeDrawerFetch([CONFLICT_CASE_FIXTURE]));
+
+    const Wrapper = makeAuthWrapper("/cases");
+    render(
+      <Wrapper>
+        {withAiPanel(<CaseDrawer labCase={BASE_CASE} onClose={() => {}} />)}
+      </Wrapper>,
+    );
+
+    fireEvent.click(screen.getByTitle(/Click to edit barcode/i));
+    fireEvent.change(
+      screen.getByPlaceholderText(/Scan or type barcode.*blank to clear/i),
+      { target: { value: "CONFLICT-BC" } },
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Save anyway/i)).toBeInTheDocument();
+    });
+  });
+
+  it("clears the warning when the typed barcode becomes unique", async () => {
+    const fetchStub = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("barcode=CONFLICT-BC")) {
+        return new Response(JSON.stringify([CONFLICT_CASE_FIXTURE]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.includes("?barcode=")) {
+        return new Response("[]", {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      // Default: return empty array — safe for .map() calls on any endpoint
+      return new Response("[]", {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchStub);
+
+    const Wrapper = makeAuthWrapper("/cases");
+    render(
+      <Wrapper>
+        {withAiPanel(<CaseDrawer labCase={BASE_CASE} onClose={() => {}} />)}
+      </Wrapper>,
+    );
+
+    fireEvent.click(screen.getByTitle(/Click to edit barcode/i));
+    const input = screen.getByPlaceholderText(/Scan or type barcode.*blank to clear/i);
+
+    // Type conflicting barcode — warning should appear
+    fireEvent.change(input, { target: { value: "CONFLICT-BC" } });
+    await waitFor(() => {
+      expect(screen.getByText(/already used by an active case/i)).toBeInTheDocument();
+    });
+
+    // Change to a unique barcode — warning should clear
+    fireEvent.change(input, { target: { value: "UNIQUE-BC" } });
+    await waitFor(() => {
+      expect(screen.queryByText(/already used by an active case/i)).toBeNull();
+    });
+  });
+
+  it("'Save anyway' button sends allowDuplicate and exits edit mode", async () => {
+    vi.stubGlobal("fetch", makeDrawerFetch([CONFLICT_CASE_FIXTURE]));
+
+    const Wrapper = makeAuthWrapper("/cases");
+    render(
+      <Wrapper>
+        {withAiPanel(<CaseDrawer labCase={BASE_CASE} onClose={() => {}} />)}
+      </Wrapper>,
+    );
+
+    fireEvent.click(screen.getByTitle(/Click to edit barcode/i));
+    fireEvent.change(
+      screen.getByPlaceholderText(/Scan or type barcode.*blank to clear/i),
+      { target: { value: "CONFLICT-BC" } },
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Save anyway/i)).toBeInTheDocument();
+    });
+
+    // Click "Save anyway" — edit mode should exit (input disappears)
+    fireEvent.click(screen.getByText(/Save anyway/i));
+
+    await waitFor(() => {
+      expect(
+        screen.queryByPlaceholderText(/Scan or type barcode.*blank to clear/i),
+      ).toBeNull();
+    });
+
+    // The PATCH call must have been made with allowDuplicateBarcode: true
+    const patchCalls = (fetch as ReturnType<typeof vi.fn>).mock.calls.filter(
+      ([input, init]: [RequestInfo | URL, RequestInit | undefined]) => {
+        const url = typeof input === "string" ? input : input.toString();
+        return url.includes(`/cases/${BASE_CASE.id}`) && init?.method === "PATCH";
+      },
+    );
+    expect(patchCalls.length).toBeGreaterThan(0);
+    const body = JSON.parse(patchCalls[0][1].body as string) as Record<string, unknown>;
+    expect(body.allowDuplicateBarcode).toBe(true);
+  });
+
+  it("does NOT warn when the only conflicting case has status 'complete'", async () => {
+    const completedConflict = { ...CONFLICT_CASE_FIXTURE, status: "complete" };
+    vi.stubGlobal("fetch", makeDrawerFetch([completedConflict]));
+
+    const Wrapper = makeAuthWrapper("/cases");
+    render(
+      <Wrapper>
+        {withAiPanel(<CaseDrawer labCase={BASE_CASE} onClose={() => {}} />)}
+      </Wrapper>,
+    );
+
+    fireEvent.click(screen.getByTitle(/Click to edit barcode/i));
+    fireEvent.change(
+      screen.getByPlaceholderText(/Scan or type barcode.*blank to clear/i),
+      { target: { value: "CONFLICT-BC" } },
+    );
+
+    // Give the debounce time to fire and resolve
+    await new Promise((r) => setTimeout(r, 600));
+
+    // No warning — completed case must not count as a conflict
+    expect(screen.queryByText(/already used by an active case/i)).toBeNull();
+    expect(screen.queryByText(/Save anyway/i)).toBeNull();
+  });
+
+  it("conflict check sends 'organizationId' (not 'labOrganizationId') to scope the search to the current lab", async () => {
+    const fetchStub = makeDrawerFetch([CONFLICT_CASE_FIXTURE]);
+    vi.stubGlobal("fetch", fetchStub);
+
+    const Wrapper = makeAuthWrapper("/cases");
+    render(
+      <Wrapper>
+        {withAiPanel(<CaseDrawer labCase={BASE_CASE} onClose={() => {}} />)}
+      </Wrapper>,
+    );
+
+    fireEvent.click(screen.getByTitle(/Click to edit barcode/i));
+    fireEvent.change(
+      screen.getByPlaceholderText(/Scan or type barcode.*blank to clear/i),
+      { target: { value: "CONFLICT-BC" } },
+    );
+
+    await waitFor(() => {
+      const urls: string[] = (fetchStub as ReturnType<typeof vi.fn>).mock.calls.map(
+        ([input]: [RequestInfo | URL]) =>
+          typeof input === "string" ? input : input.toString(),
+      );
+      const conflictUrl = urls.find((u) => u.includes("?barcode="));
+      expect(conflictUrl).toBeDefined();
+      const parsed = new URL(conflictUrl!, "http://localhost");
+      expect(parsed.searchParams.get("organizationId")).toBe(DRAWER_LAB_ID);
+      expect(parsed.searchParams.has("labOrganizationId")).toBe(false);
     });
   });
 });

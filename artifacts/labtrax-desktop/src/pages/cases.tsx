@@ -613,11 +613,12 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
       try {
         const params = new URLSearchParams({
           barcode: trimmed,
-          labOrganizationId: form.labOrganizationId,
+          organizationId: form.labOrganizationId,
         });
         const res = await apiFetch<LabCase[]>(`/cases?${params.toString()}`);
         const matches = Array.isArray(res) ? res : [];
-        setNewBarcodeConflict(matches.length > 0 ? matches[0] : null);
+        const active = matches.filter((c) => c.status !== "complete");
+        setNewBarcodeConflict(active.length > 0 ? active[0] : null);
       } catch {
         setNewBarcodeConflict(null);
       } finally {
@@ -2995,11 +2996,11 @@ export function CaseDrawer({
       try {
         const params = new URLSearchParams({
           barcode: trimmed,
-          labOrganizationId: labCase.labOrganizationId ?? "",
+          organizationId: labCase.labOrganizationId ?? "",
         });
         const res = await apiFetch<LabCase[]>(`/cases?${params.toString()}`);
         const matches = Array.isArray(res) ? res : [];
-        const conflict = matches.find((c) => c.id !== labCase.id) ?? null;
+        const conflict = matches.filter((c) => c.status !== "complete" && c.id !== labCase.id)[0] ?? null;
         setEditBarcodeConflict(conflict);
       } catch {
         setEditBarcodeConflict(null);
@@ -3009,6 +3010,41 @@ export function CaseDrawer({
     }, 400);
     return () => { window.clearTimeout(t); };
   }, [editForm.casePanBarcode, labCase.id, labCase.labOrganizationId]);
+
+  // ── Inline barcode-edit conflict check (barcodeEditMode only) ────────────
+  const [inlineBarcodeConflict, setInlineBarcodeConflict] = useState<LabCase | null>(null);
+  const [inlineBarcodeChecking, setInlineBarcodeChecking] = useState(false);
+  useEffect(() => {
+    if (!barcodeEditMode) {
+      setInlineBarcodeConflict(null);
+      setInlineBarcodeChecking(false);
+      return;
+    }
+    const trimmed = barcodeEditValue.trim();
+    if (!trimmed || !labCase.labOrganizationId) {
+      setInlineBarcodeConflict(null);
+      setInlineBarcodeChecking(false);
+      return;
+    }
+    setInlineBarcodeChecking(true);
+    const t = window.setTimeout(async () => {
+      try {
+        const params = new URLSearchParams({
+          barcode: trimmed,
+          organizationId: labCase.labOrganizationId ?? "",
+        });
+        const res = await apiFetch<LabCase[]>(`/cases?${params.toString()}`);
+        const matches = Array.isArray(res) ? res : [];
+        const conflict = matches.filter((c) => c.status !== "complete" && c.id !== labCase.id)[0] ?? null;
+        setInlineBarcodeConflict(conflict);
+      } catch {
+        setInlineBarcodeConflict(null);
+      } finally {
+        setInlineBarcodeChecking(false);
+      }
+    }, 400);
+    return () => { window.clearTimeout(t); };
+  }, [barcodeEditValue, barcodeEditMode, labCase.id, labCase.labOrganizationId]);
 
   const [routeStatus, setRouteStatus] = useState("");
   const [routeError, setRouteError] = useState<string | null>(null);
@@ -3499,18 +3535,19 @@ export function CaseDrawer({
     },
   });
 
-  function commitBarcodeEdit() {
+  function commitBarcodeEdit(opts?: { allowDuplicate?: boolean }) {
     const trimmed = barcodeEditValue.trim();
     setBarcodeEditMode(false);
     setBarcodeError(null);
     setBarcodeConflictValue(null);
+    setInlineBarcodeConflict(null);
     const effectiveCurrent =
       optimisticBarcode !== null
         ? optimisticBarcode
         : (data?.casePanBarcode ?? labCase.casePanBarcode ?? "");
     if (trimmed === effectiveCurrent) return;
     setOptimisticBarcode(trimmed);
-    barcodeMutation.mutate({ value: trimmed });
+    barcodeMutation.mutate({ value: trimmed, ...(opts?.allowDuplicate ? { allowDuplicate: true } : {}) });
   }
 
   const routeMutation = useMutation({
@@ -4971,42 +5008,64 @@ export function CaseDrawer({
                         Case pan barcode
                       </div>
                       {barcodeEditMode ? (
-                        <div className="flex items-center gap-1 mt-0.5">
-                          <div className="relative flex-1">
-                            <Barcode
-                              size={13}
-                              className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
-                            />
-                            <input
-                              ref={barcodeInlineInputRef}
-                              value={barcodeEditValue}
-                              onChange={(e) => setBarcodeEditValue(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") { e.preventDefault(); commitBarcodeEdit(); }
-                                if (e.key === "Escape") { setBarcodeEditMode(false); }
-                              }}
-                              placeholder="Scan or type barcode… (blank to clear)"
-                              className="w-full h-7 pl-7 pr-2.5 rounded-md bg-secondary text-sm font-mono border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
-                              autoComplete="off"
-                            />
+                        <>
+                          <div className="flex items-center gap-1 mt-0.5">
+                            <div className="relative flex-1">
+                              <Barcode
+                                size={13}
+                                className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
+                              />
+                              <input
+                                ref={barcodeInlineInputRef}
+                                value={barcodeEditValue}
+                                onChange={(e) => setBarcodeEditValue(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") { e.preventDefault(); commitBarcodeEdit(); }
+                                  if (e.key === "Escape") { setBarcodeEditMode(false); }
+                                }}
+                                placeholder="Scan or type barcode… (blank to clear)"
+                                className="w-full h-7 pl-7 pr-2.5 rounded-md bg-secondary text-sm font-mono border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                                autoComplete="off"
+                              />
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => commitBarcodeEdit()}
+                              className="h-7 w-7 rounded flex items-center justify-center text-primary hover:bg-primary/10 transition-colors shrink-0"
+                              title="Save barcode"
+                            >
+                              <Check size={13} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setBarcodeEditMode(false)}
+                              className="h-7 w-7 rounded flex items-center justify-center text-muted-foreground hover:bg-secondary transition-colors shrink-0"
+                              title="Cancel"
+                            >
+                              <X size={13} />
+                            </button>
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => commitBarcodeEdit()}
-                            className="h-7 w-7 rounded flex items-center justify-center text-primary hover:bg-primary/10 transition-colors shrink-0"
-                            title="Save barcode"
-                          >
-                            <Check size={13} />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setBarcodeEditMode(false)}
-                            className="h-7 w-7 rounded flex items-center justify-center text-muted-foreground hover:bg-secondary transition-colors shrink-0"
-                            title="Cancel"
-                          >
-                            <X size={13} />
-                          </button>
-                        </div>
+                          {inlineBarcodeChecking && (
+                            <p className="mt-1 text-xs text-muted-foreground flex items-center gap-1">
+                              <Loader2 size={11} className="animate-spin" /> Checking barcode…
+                            </p>
+                          )}
+                          {!inlineBarcodeChecking && inlineBarcodeConflict && (
+                            <div className="mt-1 space-y-1">
+                              <p className="text-xs text-amber-600 dark:text-amber-400 flex items-start gap-1">
+                                <AlertTriangle size={11} className="mt-0.5 shrink-0" />
+                                {`This barcode is already used by an active case${inlineBarcodeConflict.caseNumber ? ` (Case #${inlineBarcodeConflict.caseNumber})` : ""}.`}
+                              </p>
+                              <button
+                                type="button"
+                                className="text-xs text-muted-foreground underline hover:text-foreground transition-colors"
+                                onClick={() => commitBarcodeEdit({ allowDuplicate: true })}
+                              >
+                                Save anyway
+                              </button>
+                            </div>
+                          )}
+                        </>
                       ) : (
                         <button
                           type="button"
