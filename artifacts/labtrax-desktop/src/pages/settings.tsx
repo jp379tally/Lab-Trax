@@ -9288,6 +9288,31 @@ function DeletionAuditPanel() {
 
   const hasFilters = dateFrom || dateTo || textFilter.trim();
 
+  function exportAuditCsv() {
+    function escapeCsv(value: string) {
+      return `"${String(value).replace(/"/g, '""')}"`;
+    }
+    const headers = ["Event", "Actor", "Actor Account", "Cases", "Timestamp"];
+    const rows = entries.map((entry) => {
+      const eventLabel = DELETION_ACTION_LABELS[entry.action]?.label ?? entry.action;
+      const actor = entry.actorName ?? "";
+      const actorAccount = entry.actorAccount ?? "";
+      const casesText = entry.cases
+        .map((c) => [c.caseNumber ? `#${c.caseNumber}` : "", c.patientName].filter(Boolean).join(" "))
+        .join("; ");
+      const timestamp = entry.createdAt ? new Date(entry.createdAt).toLocaleString() : "";
+      return [eventLabel, actor, actorAccount, casesText, timestamp].map(escapeCsv).join(",");
+    });
+    const csv = [headers.map(escapeCsv).join(","), ...rows].join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `deletion-audit-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <PanelShell
       title="Deletion Audit Log"
@@ -9316,19 +9341,30 @@ function DeletionAuditPanel() {
           </select>
         )}
         {adminLabs.length <= 1 && <span />}
-        <button
-          type="button"
-          onClick={() => auditQuery.refetch()}
-          disabled={auditQuery.isFetching}
-          className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-secondary text-xs font-medium hover:bg-secondary/80 disabled:opacity-60"
-        >
-          {auditQuery.isFetching ? (
-            <Loader2 size={11} className="animate-spin" />
-          ) : (
-            <RefreshCcw size={11} />
-          )}
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={exportAuditCsv}
+            disabled={entries.length === 0}
+            className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-secondary text-xs font-medium hover:bg-secondary/80 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <FileDown size={11} />
+            Export CSV
+          </button>
+          <button
+            type="button"
+            onClick={() => auditQuery.refetch()}
+            disabled={auditQuery.isFetching}
+            className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-secondary text-xs font-medium hover:bg-secondary/80 disabled:opacity-60"
+          >
+            {auditQuery.isFetching ? (
+              <Loader2 size={11} className="animate-spin" />
+            ) : (
+              <RefreshCcw size={11} />
+            )}
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Filter bar */}
