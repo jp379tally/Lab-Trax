@@ -32,16 +32,25 @@ set -euo pipefail
 #                               otherwise system_settings is updated via psql
 #
 # Code-signing (Windows — removes SmartScreen "Windows protected your PC" warning):
-#   CSC_LINK          — base64-encoded PFX certificate (OV or EV).
-#                       Encode your .pfx with:  base64 -w 0 certificate.pfx
-#                       Store the result as the CSC_LINK Replit secret.
-#   CSC_KEY_PASSWORD  — password protecting the PFX.
-#                       Store it as the CSC_KEY_PASSWORD Replit secret.
-#   electron-builder picks both up automatically when they are present in the
-#   environment. When they are absent the build proceeds without signing and
-#   produces an unsigned installer (SmartScreen warning present). The signing
-#   hash algorithm (sha256) and RFC 3161 timestamp server are configured in
-#   artifacts/labtrax-desktop/electron-builder.yml under signtoolOptions.
+#   CSC_LINK              — base64-encoded PFX certificate (OV or EV).
+#                           Encode your .pfx with:  base64 -w 0 certificate.pfx
+#                           Store the result as the CSC_LINK Replit secret.
+#   CSC_KEY_PASSWORD      — password protecting the PFX.
+#                           Store it as the CSC_KEY_PASSWORD Replit secret.
+#   CSC_EXPECTED_PUBLISHER — optional but strongly recommended. Exact CN from
+#                           the code-signing certificate (e.g. "Acme Dental LLC").
+#                           When set, the built EXE's signer subject must contain
+#                           this string. Catches wrong-cert scenarios (expired cert
+#                           renewed under a new name, dev cert in production, etc.).
+#
+#   electron-builder picks CSC_LINK / CSC_KEY_PASSWORD up automatically when
+#   they are present in the environment. When absent, the build proceeds unsigned.
+#   After every signed build, scripts/verify-signing.sh verifies BOTH
+#   win-unpacked/LabTrax.exe AND the installer package (when it is a PE file)
+#   before any upload or latest.yml generation. If verification fails, the
+#   publish is aborted — unsigned or wrongly-signed builds never reach the feed.
+#   The signing hash algorithm (sha256) and RFC 3161 timestamp server are
+#   configured in artifacts/labtrax-desktop/electron-builder.yml.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -83,6 +92,8 @@ echo ""
 if [[ -n "${CSC_LINK:-}" && -n "${CSC_KEY_PASSWORD:-}" ]]; then
   echo "[signing] ✓ CSC_LINK and CSC_KEY_PASSWORD are set — build will be code-signed."
   echo "[signing]   SHA-256 + RFC 3161 timestamp via Sectigo (see electron-builder.yml)."
+  echo "[signing]   Post-build: verify-signing.sh will verify both EXE and installer"
+  echo "[signing]   before any upload or latest.yml generation."
 else
   echo "[signing] ⚠ CSC_LINK or CSC_KEY_PASSWORD is not set — build will be UNSIGNED."
   echo "[signing]   SmartScreen will show a warning when users run the installer."
@@ -95,141 +106,13 @@ echo "[build] Running electron:build …"
 cd "$DESKTOP_DIR"
 pnpm run electron:build
 
-# Signature verification ------------------------------------------------------
-# When CSC_LINK is set, electron-builder was asked to sign the binary.
-# Verify that the produced LabTrax.exe actually carries a trusted Authenticode
-# signature before allowing the publish step to continue. An unsigned installer
-# that slips through here would trigger a SmartScreen warning for every user.
-#
-# Gating logic:
-#   CSC_LINK absent   → step skipped entirely (unsigned build, no error)
-#   CSC_LINK present  → verification is mandatory; missing CSC_KEY_PASSWORD is
-#                       a hard failure (electron-builder would have used it)
-#
-# Tool selection (in order of preference):
-#   signtool     — Windows SDK CLI (/pa verifies the full Authenticode chain,
-#                  not just raw bytes). Available on windows-latest GitHub runners.
-#   osslsigncode — Linux/macOS cross-platform PE signature verifier.
-#                  Install: apt-get install -y osslsigncode  (or brew install)
-#
-# Publisher-name validation (optional but strongly recommended):
-#   Set CSC_EXPECTED_PUBLISHER to the exact CN (Common Name) from your
-#   code-signing certificate, e.g. "Acme Dental Software LLC".
-#   When set, the signer's subject name in the EXE must contain this string;
-#   a mismatch (wrong cert, expired cert renewed under a new name, etc.) is
-#   treated as a failure and aborts the publish.
-#   When absent, only signature validity is checked.
-UNPACKED_EXE="${DESKTOP_DIR}/electron-dist/win-unpacked/LabTrax.exe"
-
-if [[ -n "${CSC_LINK:-}" ]]; then
-  echo ""
-  echo "[signing] CSC_LINK is set — verifying Authenticode signature on built EXE …"
-
-  # CSC_KEY_PASSWORD must accompany CSC_LINK; electron-builder requires both.
-  if [[ -z "${CSC_KEY_PASSWORD:-}" ]]; then
-    echo "[signing] ERROR: CSC_LINK is set but CSC_KEY_PASSWORD is absent."
-    echo "[signing]   Both variables must be present for code-signing to succeed."
-    echo "[signing]   Set CSC_KEY_PASSWORD as a Replit secret or CI secret, then re-run."
-    exit 1
-  fi
-
-  if [[ ! -f "$UNPACKED_EXE" ]]; then
-    echo "[signing] ERROR: Expected signed EXE at ${UNPACKED_EXE} but file not found after build."
-    echo "[signing]   Ensure electron-builder produced win-unpacked/ before this step."
-    exit 1
-  fi
-
-  if command -v signtool &>/dev/null; then
-    # Windows path — signtool ships with the Windows SDK and is present by
-    # default on GitHub Actions windows-latest runners.
-    # /pa  — default Authenticode verification policy (validates full chain).
-    # /v   — verbose: output includes "Issued to: <CN>" for each chain entry.
-    echo "[signing] Using signtool (Windows SDK) …"
-    SIGNTOOL_OUT=$(signtool verify /pa /v "$UNPACKED_EXE" 2>&1)
-    SIGNTOOL_EXIT=$?
-    if [[ $SIGNTOOL_EXIT -ne 0 ]]; then
-      echo "[signing] ✗ signtool verify /pa FAILED (exit ${SIGNTOOL_EXIT})."
-      echo "$SIGNTOOL_OUT" | sed 's/^/[signing]   /'
-      echo "[signing]   The EXE is not properly signed despite CSC_LINK being set."
-      echo "[signing]   Check that CSC_LINK is correctly base64-encoded and that the"
-      echo "[signing]   certificate has not expired. Aborting publish."
-      exit 1
-    fi
-    echo "[signing] ✓ signtool verify /pa passed — EXE is signed and trusted."
-
-    # Publisher-name check — only when CSC_EXPECTED_PUBLISHER is configured.
-    if [[ -n "${CSC_EXPECTED_PUBLISHER:-}" ]]; then
-      if echo "$SIGNTOOL_OUT" | grep -qi "Issued to:.*${CSC_EXPECTED_PUBLISHER}"; then
-        echo "[signing] ✓ Publisher name matches CSC_EXPECTED_PUBLISHER (\"${CSC_EXPECTED_PUBLISHER}\")."
-      else
-        echo "[signing] ✗ Publisher name check FAILED."
-        echo "[signing]   Expected signer CN to contain: \"${CSC_EXPECTED_PUBLISHER}\""
-        echo "[signing]   Actual signtool output (certificate chain):"
-        echo "$SIGNTOOL_OUT" | grep "Issued to:" | sed 's/^/[signing]     /'
-        echo "[signing]   Check that CSC_LINK contains the correct certificate for this release."
-        exit 1
-      fi
-    else
-      echo "[signing]   CSC_EXPECTED_PUBLISHER not set — publisher-name check skipped."
-      echo "[signing]   Set CSC_EXPECTED_PUBLISHER to the certificate CN to enable this check."
-    fi
-
-  elif command -v osslsigncode &>/dev/null; then
-    # Linux/macOS path — osslsigncode is a cross-platform Authenticode verifier.
-    # Install on Ubuntu/Debian: apt-get install -y osslsigncode
-    # Install on macOS (Homebrew): brew install osslsigncode
-    echo "[signing] Using osslsigncode (cross-platform PE signature verifier) …"
-    OSSLSIGN_OUT=$(osslsigncode verify -verbose "$UNPACKED_EXE" 2>&1)
-    if ! echo "$OSSLSIGN_OUT" | grep -q "Signature verification: ok"; then
-      echo "[signing] ✗ osslsigncode verify FAILED."
-      echo "$OSSLSIGN_OUT" | sed 's/^/[signing]   /'
-      echo "[signing]   The EXE is not properly signed despite CSC_LINK being set."
-      echo "[signing]   Check that CSC_LINK is correctly base64-encoded and that the"
-      echo "[signing]   certificate has not expired. Aborting publish."
-      exit 1
-    fi
-    echo "[signing] ✓ osslsigncode verify passed — EXE carries a valid Authenticode signature."
-
-    # Publisher-name check — only when CSC_EXPECTED_PUBLISHER is configured.
-    if [[ -n "${CSC_EXPECTED_PUBLISHER:-}" ]]; then
-      if echo "$OSSLSIGN_OUT" | grep -qi "${CSC_EXPECTED_PUBLISHER}"; then
-        echo "[signing] ✓ Publisher name matches CSC_EXPECTED_PUBLISHER (\"${CSC_EXPECTED_PUBLISHER}\")."
-      else
-        echo "[signing] ✗ Publisher name check FAILED."
-        echo "[signing]   Expected signer subject to contain: \"${CSC_EXPECTED_PUBLISHER}\""
-        echo "[signing]   Actual osslsigncode output (signer info):"
-        echo "$OSSLSIGN_OUT" | grep -i "subject\|CN=" | sed 's/^/[signing]     /'
-        echo "[signing]   Check that CSC_LINK contains the correct certificate for this release."
-        exit 1
-      fi
-    else
-      echo "[signing]   CSC_EXPECTED_PUBLISHER not set — publisher-name check skipped."
-      echo "[signing]   Set CSC_EXPECTED_PUBLISHER to the certificate CN to enable this check."
-    fi
-
-  else
-    # Neither tool is available. Refuse to publish when signing was requested
-    # but cannot be verified — silent unsigned uploads are the bug we prevent.
-    echo "[signing] ERROR: CSC_LINK is set but no signature verification tool is available."
-    echo "[signing]   Install one of the following, then re-run this script:"
-    echo "[signing]     • signtool     — Windows SDK (present on windows-latest CI runners)"
-    echo "[signing]     • osslsigncode — Linux: apt-get install -y osslsigncode"
-    echo "[signing]                       macOS: brew install osslsigncode"
-    echo "[signing]   Aborting publish to avoid silently uploading a potentially unsigned installer."
-    exit 1
-  fi
-else
-  echo ""
-  echo "[signing] CSC_LINK not set — skipping signature verification (unsigned build path)."
-  echo "[signing]   SmartScreen will show a warning when users run this installer."
-fi
-
 # Determine which installer was produced --------------------------------------
 # On Windows (or Linux + Wine): electron-builder produces LabTrax-Setup.exe.
 # On Linux without Wine (Replit): electron-builder falls back to win-unpacked
 # only, and electron-build.mjs zips it as LabTrax-Windows-Portable.zip.
 #
 # Prefer the NSIS installer when both exist (e.g. CI output was copied in).
+UNPACKED_EXE="${DESKTOP_DIR}/electron-dist/win-unpacked/LabTrax.exe"
 EXE_PATH="${DESKTOP_DIR}/electron-dist/LabTrax-Setup.exe"
 ZIP_PATH="${DESKTOP_DIR}/electron-dist/LabTrax-Windows-Portable.zip"
 LATEST_YML="${DESKTOP_DIR}/electron-dist/latest.yml"
@@ -254,6 +137,32 @@ fi
 INSTALLER_SIZE=$(du -sh "$INSTALLER_PATH" | cut -f1)
 echo "[build] Installer: ${INSTALLER_PATH} (${INSTALLER_SIZE})"
 
+# Signature verification ------------------------------------------------------
+# When CSC_LINK is set, electron-builder was asked to sign the binary.
+# scripts/verify-signing.sh verifies:
+#   1. win-unpacked/LabTrax.exe     — the unpacked main executable (always)
+#   2. LabTrax-Setup.exe            — the NSIS installer package (when produced;
+#                                     ZIP packages are not Authenticode-signable
+#                                     so only the EXE inside them is verified)
+#
+# Verification outputs for each file:
+#   • Certificate subject (CN)
+#   • Publisher name
+#   • Timestamp authority
+#   • Signature status (valid / failed)
+#
+# Gating: if verification fails for ANY reason (invalid signature, expired or
+# revoked certificate, publisher mismatch, no verification tool), the script
+# exits non-zero and set -euo pipefail stops execution here — latest.yml is
+# never generated and the upload step never runs.
+echo ""
+if [[ "$INSTALLER_KIND" == "exe" ]]; then
+  bash "$SCRIPT_DIR/verify-signing.sh" "$UNPACKED_EXE" "$INSTALLER_PATH"
+else
+  # Portable ZIP: only the inner EXE is Authenticode-signable.
+  bash "$SCRIPT_DIR/verify-signing.sh" "$UNPACKED_EXE"
+fi
+
 # Generate latest.yml for electron-updater generic provider -------------------
 # electron-updater fetches GET /downloads/latest.yml to compare the available
 # version against the running version. We generate it from the installer's
@@ -263,6 +172,10 @@ echo "[build] Installer: ${INSTALLER_PATH} (${INSTALLER_SIZE})"
 # keep that file — it contains the correct blockmap reference for NSIS delta
 # patches. We only generate a synthetic latest.yml for the portable ZIP path
 # (Linux without Wine), where electron-builder skips it.
+#
+# NOTE: latest.yml is generated AFTER signature verification. If verification
+# failed, set -euo pipefail has already stopped the script — a failed build
+# never produces a manifest that could reach the auto-update feed.
 if [[ ! -f "$LATEST_YML" ]]; then
   echo ""
   echo "[publish] Generating latest.yml auto-update manifest …"
@@ -286,6 +199,8 @@ else
 fi
 
 # Upload installer + latest.yml to App Storage --------------------------------
+# NOTE: upload runs AFTER signature verification. If verification failed,
+# set -euo pipefail has already stopped the script — no artifact is uploaded.
 echo ""
 echo "[publish] Uploading installer and latest.yml to App Storage …"
 cd "$ROOT_DIR"

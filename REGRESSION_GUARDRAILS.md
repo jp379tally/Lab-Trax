@@ -832,3 +832,71 @@ The installer version is read from `artifacts/labtrax-desktop/package.json` at b
 ### Guardrail
 
 After any merge that touches `artifacts/labtrax-desktop/**`, `lib/**`, or `artifacts/api-server/src/**`, confirm that `GET /downloads/LabTrax-Windows-Portable.zip` returns an updated binary (check the `Last-Modified` or `ETag` header) and that `GET /api/desktop-installer` returns the new version string before closing the task.
+
+---
+
+## Protected Workflow: Desktop Signed Build Verification
+
+**No desktop release workflow may merge if signing verification is failing.**
+
+`scripts/verify-signing.sh` is called by `scripts/desktop-build-publish.sh` after every successful Electron build and before any artifact upload or `latest.yml` generation. It verifies that both `win-unpacked/LabTrax.exe` and the installer package (when it is a PE file) carry a valid, trusted Authenticode signature with the expected publisher identity.
+
+### What this protects
+
+- **A build signed with the wrong certificate must fail.** Signature validity, certificate chain trust, and publisher CN are all verified — not just the presence of a signature block.
+- **An expired or revoked certificate must fail the build.** The certificate validity period is checked; an unsigned or wrongly-signed installer must never reach the auto-update feed.
+- **Both artifacts must pass.** `LabTrax.exe` (the main executable) and `LabTrax-Setup.exe` (the NSIS installer, when produced) are both verified. A situation where the EXE is signed but the distributed installer is not is caught and failed.
+- **latest.yml and the upload are blocked if verification fails.** `desktop-build-publish.sh` calls `verify-signing.sh` before generating the auto-update manifest or uploading any file; a non-zero exit from `verify-signing.sh` stops the script via `set -euo pipefail`.
+
+### Protected sub-behaviors
+
+| Scenario | Required outcome |
+|----------|-----------------|
+| `CSC_LINK` absent | Verification step skipped; log shows "Signing disabled; verification skipped." Upload proceeds (unsigned path) |
+| `CSC_LINK` set, `CSC_KEY_PASSWORD` absent | **Exit 1** — misconfiguration; build aborted before upload |
+| `CSC_LINK` set, signature valid, publisher matches `CSC_EXPECTED_PUBLISHER` | Verification passes; upload proceeds |
+| `CSC_LINK` set, signature invalid or missing | **Exit 1** — upload blocked; `latest.yml` not generated |
+| `CSC_LINK` set, certificate expired or revoked | **Exit 1** — upload blocked; `latest.yml` not generated |
+| `CSC_LINK` set, publisher CN does not contain `CSC_EXPECTED_PUBLISHER` | **Exit 1** — wrong certificate; upload blocked |
+| `CSC_LINK` set, no verification tool available | **Exit 1** — cannot verify; upload blocked |
+| Installer is a ZIP (portable path) | Only `LabTrax.exe` verified; ZIP is not Authenticode-signable; note logged |
+
+### CI output (logged for every verification run)
+
+For each verified file, `verify-signing.sh` logs:
+- **Certificate subject** — full Subject line from the signing certificate
+- **Publisher name** — CN extracted from the Subject
+- **Timestamp authority** — TSA subject from the countersignature
+- **Signature status** — "VALID (Authenticode chain trusted)" or "FAILED"
+
+### Automated gate
+
+```
+bash scripts/test-signing-verification.sh
+```
+
+The test suite injects a configurable mock `osslsigncode` via `PATH` and asserts all five required scenarios plus two bonus cases (installer verification, ZIP skip). Runs on Linux / Replit without certificates.
+
+**Protected workflow name (Replit):** "Desktop Signed Build Verification"
+
+**Command:** `bash scripts/test-signing-verification.sh`
+
+All 9+ assertions must pass before any desktop release is approved.
+
+### Test cases that must pass
+
+| # | Scenario | Expected result |
+|---|----------|----------------|
+| 1 | `CSC_LINK` absent | Exit 0; log contains "Signing disabled; verification skipped." |
+| 2 | Valid certificate, publisher matches | Exit 0; verification passes; publisher check passes |
+| 3 | Invalid certificate (tool reports failure) | Exit 1; publish aborted |
+| 4 | Corrupted certificate payload | Exit 1; publish aborted |
+| 5 | Publisher mismatch (`CSC_EXPECTED_PUBLISHER` set, CN differs) | Exit 1; mismatch logged |
+
+### Files
+
+| File | Role |
+|------|------|
+| `scripts/verify-signing.sh` | Standalone verifier — verifies EXE and (optionally) installer; rich CI output |
+| `scripts/test-signing-verification.sh` | Automated test suite — 5 required scenarios + bonus cases via mocked tool |
+| `scripts/desktop-build-publish.sh` | Calls `verify-signing.sh`; gates upload and `latest.yml` on its exit code |

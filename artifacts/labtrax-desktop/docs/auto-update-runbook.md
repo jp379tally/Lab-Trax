@@ -322,45 +322,80 @@ both N and N+1 builds — a mismatch here is the most common cause of
 
 ## Automated signature verification in `desktop-build-publish.sh`
 
-`scripts/desktop-build-publish.sh` includes a post-build signature check that
-runs **before** the installer is uploaded to App Storage. This prevents a
-silently-unsigned installer from reaching users.
+`scripts/desktop-build-publish.sh` calls `scripts/verify-signing.sh`
+after `pnpm run electron:build` completes and **before** any `latest.yml`
+generation or upload to App Storage. This prevents a silently-unsigned or
+wrongly-signed installer from reaching users or the auto-update feed.
 
-### How it works
+The verification is implemented as a standalone script so it can be tested
+in isolation (see `scripts/test-signing-verification.sh` and the Replit
+"Desktop Signed Build Verification" workflow).
 
-After `pnpm run electron:build` completes, the script checks
-`electron-dist/win-unpacked/LabTrax.exe` (the always-produced unpacked binary)
-using one of two tools, in order of preference:
+### What is verified
+
+Both of the following artifacts are checked when CSC_LINK is set:
+
+| Artifact | Always verified? | Notes |
+|---|---|---|
+| `electron-dist/win-unpacked/LabTrax.exe` | Yes | The main executable; produced on all platforms |
+| `electron-dist/LabTrax-Setup.exe` | When produced (Windows / CI) | The NSIS installer PE; also an Authenticode-signable PE file |
+| `electron-dist/LabTrax-Windows-Portable.zip` | No | Not a PE file; not Authenticode-signable. Only the EXE inside it is verified (above). A note is logged. |
+
+### CI output (logged for every verified file)
+
+For each file that is checked, `verify-signing.sh` logs four fields:
+
+```
+[signing]   Certificate subject  : /C=US/O=Acme Dental Software LLC/CN=Acme Dental Software LLC
+[signing]   Publisher (CN)       : Acme Dental Software LLC
+[signing]   Timestamp authority  : /CN=Sectigo RSA Time Stamping CA
+[signing]   Signature status     : ✓ VALID (Authenticode chain trusted)
+```
+
+These fields are always emitted to make post-build debugging straightforward
+without re-running the build manually.
+
+### Verification tools (tried in order)
 
 | Tool | Platform | How to install |
 |---|---|---|
-| `signtool verify /pa` | Windows | Included in the Windows SDK; present on `windows-latest` GitHub Actions runners automatically |
-| `osslsigncode verify` | Linux / macOS | `apt-get install -y osslsigncode` (Ubuntu/Debian) or `brew install osslsigncode` (macOS) |
+| `signtool verify /pa /v` | Windows | Included in the Windows SDK; present on `windows-latest` GitHub Actions runners automatically |
+| `osslsigncode verify -verbose` | Linux / macOS | `apt-get install -y osslsigncode` (Ubuntu/Debian) or `brew install osslsigncode` (macOS) |
 
-`/pa` (or its `osslsigncode` equivalent) validates the full Authenticode
-certificate chain, not just the presence of raw signature bytes — an expired
-or revoked certificate will fail the check even if a signature block exists.
+`/pa` (and the `osslsigncode` equivalent) validates the full Authenticode
+certificate chain — an expired or revoked certificate fails the check even
+if a signature block is physically present.
 
 ### Environment variables
 
 | Variable | Required? | Purpose |
 |---|---|---|
-| `CSC_LINK` | Triggers signing path | Base64-encoded PFX. Absent → step skipped entirely |
-| `CSC_KEY_PASSWORD` | Required when `CSC_LINK` is set | PFX password. Present but empty when `CSC_LINK` is set → hard failure |
-| `CSC_EXPECTED_PUBLISHER` | Optional but strongly recommended | Exact CN (Common Name) from the code-signing certificate, e.g. `"Acme Dental Software LLC"`. When set, the signer's subject in the built EXE must contain this string — catches wrong-cert scenarios (expired cert renewed under a new name, accidentally using a dev cert in a production build, etc.) |
+| `CSC_LINK` | Triggers signing path | Base64-encoded PFX. Absent → verification skipped entirely (unsigned build path) |
+| `CSC_KEY_PASSWORD` | Required when `CSC_LINK` is set | PFX password. Absent when `CSC_LINK` is set → hard failure (exit 1) |
+| `CSC_EXPECTED_PUBLISHER` | Optional but strongly recommended | Exact CN (Common Name) from the code-signing certificate, e.g. `"Acme Dental Software LLC"`. When set, the signer's subject in every verified file must contain this string — catches wrong-cert scenarios (expired cert renewed under a new name, dev cert in a production build, etc.) |
 
 ### Behaviour by scenario
 
 | Condition | Outcome |
 |---|---|
-| `CSC_LINK` absent | Step is **skipped** — unsigned build path, no error |
-| `CSC_LINK` set, `CSC_KEY_PASSWORD` absent | **Exits non-zero** — misconfiguration; both must be present |
-| `CSC_LINK` set, password present, signature valid | Proceeds; publisher check runs next if `CSC_EXPECTED_PUBLISHER` is set |
-| `CSC_LINK` set, signature invalid / missing | **Exits non-zero** — publish is aborted |
+| `CSC_LINK` absent | Step is **skipped** — log: "Signing disabled; verification skipped." Upload proceeds (unsigned path) |
+| `CSC_LINK` set, `CSC_KEY_PASSWORD` absent | **Exits non-zero** — misconfiguration; build aborted before upload |
+| `CSC_LINK` set, both files have valid signatures | Proceeds to publisher check; then to upload if publisher passes |
+| `CSC_LINK` set, any file has invalid / missing signature | **Exits non-zero** — upload blocked; `latest.yml` not generated |
+| `CSC_LINK` set, certificate expired or revoked | **Exits non-zero** — upload blocked; `latest.yml` not generated |
 | `CSC_LINK` set, `CSC_EXPECTED_PUBLISHER` set, CN matches | Proceeds to upload |
-| `CSC_LINK` set, `CSC_EXPECTED_PUBLISHER` set, CN mismatch | **Exits non-zero** — wrong certificate |
-| `CSC_LINK` set, `CSC_EXPECTED_PUBLISHER` absent | Signature check only; publisher name not validated (warn in log) |
-| `CSC_LINK` set, no verification tool found | **Exits non-zero** — cannot safely proceed |
+| `CSC_LINK` set, `CSC_EXPECTED_PUBLISHER` set, CN mismatch | **Exits non-zero** — wrong certificate; upload blocked |
+| `CSC_LINK` set, `CSC_EXPECTED_PUBLISHER` absent | Signature + chain check only; publisher name not validated (warning logged) |
+| `CSC_LINK` set, no verification tool found | **Exits non-zero** — cannot safely proceed; upload blocked |
+| Installer is a ZIP (portable path) | Only `LabTrax.exe` verified; note logged |
+
+### Auto-update protection
+
+`desktop-build-publish.sh` uses `set -euo pipefail`. `verify-signing.sh` is
+called **before** `latest.yml` generation and before the upload step. A
+non-zero exit from `verify-signing.sh` stops the entire script — neither the
+auto-update manifest nor the installer binary is ever written to App Storage
+when verification fails.
 
 ### CI setup (GitHub Actions `windows-latest`)
 
@@ -368,41 +403,74 @@ or revoked certificate will fail the check even if a signature block exists.
 `windows-latest` runners. Ensure `CSC_LINK`, `CSC_KEY_PASSWORD`, and
 (strongly recommended) `CSC_EXPECTED_PUBLISHER` are set as repository secrets.
 The `.github/workflows/release.yml` Windows publish step inherits all three
-and will abort with a clear error if the built EXE is unsigned or signed with
-the wrong certificate.
+and will abort with a clear error message if any verified file is unsigned,
+expired, or signed with the wrong certificate.
 
 ### Replit / Linux builds
 
 Portable-ZIP builds produced on Linux do not go through the Windows code-signing
 path (Wine is not present). When `CSC_LINK` is set on Replit, install
-`osslsigncode` in the environment so the check can run; the script will abort
-rather than upload an unverified binary.
+`osslsigncode` in the environment so the check can run:
+
+```bash
+apt-get install -y osslsigncode
+```
+
+The script aborts rather than upload an unverified binary.
+
+### Standalone verifier
+
+`verify-signing.sh` can be called directly for ad-hoc checks:
+
+```bash
+# Verify just the EXE
+CSC_LINK=... CSC_KEY_PASSWORD=... CSC_EXPECTED_PUBLISHER="Acme Dental Software LLC" \
+  bash scripts/verify-signing.sh electron-dist/win-unpacked/LabTrax.exe
+
+# Verify both EXE and NSIS installer
+CSC_LINK=... CSC_KEY_PASSWORD=... CSC_EXPECTED_PUBLISHER="Acme Dental Software LLC" \
+  bash scripts/verify-signing.sh \
+    electron-dist/win-unpacked/LabTrax.exe \
+    electron-dist/LabTrax-Setup.exe
+```
+
+### Automated test suite
+
+`scripts/test-signing-verification.sh` tests all five required scenarios using
+a configurable mock `osslsigncode` injected via `PATH`. Runs on Linux / Replit
+without certificates. Run it from the Replit "Desktop Signed Build Verification"
+workflow or directly:
+
+```bash
+bash scripts/test-signing-verification.sh
+```
 
 ### Diagnosing a failure
 
 ```
-[signing] ✗ signtool verify /pa FAILED (exit 1).
-[signing]   The EXE is not properly signed despite CSC_LINK being set.
-[signing]   Check that CSC_LINK is correctly base64-encoded and that the
-[signing]   certificate has not expired. Aborting publish.
+[signing]   Signature status     : ✗ FAILED (exit 1)
+[signing] Full signtool output:
+[signing]   ...
+[signing] DIAGNOSIS: Certificate is expired, revoked, or not yet valid.
+[signing] Aborting publish — do not upload an unverified artifact.
 ```
 
 ```
-[signing] ✗ Publisher name check FAILED.
-[signing]   Expected signer CN to contain: "Acme Dental Software LLC"
-[signing]   Actual signtool output (certificate chain):
-[signing]     Issued to: Some Other Company
-[signing]   Check that CSC_LINK contains the correct certificate for this release.
+[signing]   ✗ Publisher mismatch!
+[signing]       Expected (CSC_EXPECTED_PUBLISHER): "Acme Dental Software LLC"
+[signing]       Actual publisher                 : "Wrong Company LLC"
+[signing]     A build signed with the wrong certificate must never be published.
+[signing]     Check that CSC_LINK contains the correct certificate.
 ```
 
 Common causes:
 
 | Symptom | Likely cause |
 |---|---|
-| `signtool verify /pa FAILED` immediately after build | `CSC_LINK` base64 is truncated or padded incorrectly — re-encode: `base64 -w 0 certificate.pfx` |
+| `FAILED (exit 1)` immediately after build | `CSC_LINK` base64 is truncated or padded incorrectly — re-encode: `base64 -w 0 certificate.pfx` |
 | `CSC_KEY_PASSWORD is absent` error | `CSC_KEY_PASSWORD` secret not set — add it alongside `CSC_LINK` |
-| `The certificate chain was issued by an authority that is not trusted` | OV certificate not in the trusted root store on the build runner (normal for self-signed test certs) |
-| `A required certificate is not within its validity period` | Certificate expired — renew with your CA |
+| `Certificate chain … not trusted` | OV certificate not in the trusted root store on the build runner (normal for self-signed test certs) |
+| `Certificate is expired, revoked, or not yet valid` | Certificate expired — renew with your CA |
 | Publisher name mismatch | Wrong PFX in `CSC_LINK` (e.g. dev cert used in a production build, or renewed cert with a different CN) |
 | `osslsigncode verify` fails but Windows `signtool` passes | `osslsigncode` version <2.5 has stricter SHA-1 rejection; upgrade to ≥2.5 |
 | `No signature verification tool found` on Linux | Run `apt-get install -y osslsigncode` in the build environment |
