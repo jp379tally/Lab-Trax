@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { Loader2 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import {
   ApiError,
+  apiFetch,
   checkUsernameAvailable,
   fetchLabGroups,
   lookupLabs,
@@ -12,6 +14,23 @@ import {
   type LabGroup,
   type LabLookupResult,
 } from "@/lib/api";
+
+interface Plan {
+  id: string;
+  currency: string;
+  unitAmount: number | null;
+  interval: string | null;
+  productName: string | null;
+  productDescription: string | null;
+  planType: "lab" | "provider" | null;
+}
+
+function groupWizardPlans(plans: Plan[]): { lab: Plan[]; provider: Plan[] } {
+  return {
+    lab: plans.filter((p) => p.planType === "lab"),
+    provider: plans.filter((p) => p.planType === "provider"),
+  };
+}
 
 type Step =
   | "welcome"
@@ -27,6 +46,7 @@ type Step =
   | "phone_contact_name"
   | "role_select"
   | "join_group"
+  | "plan_select"
   | "hipaa_disclaimer";
 
 const LAB_STEPS: Step[] = [
@@ -38,6 +58,7 @@ const LAB_STEPS: Step[] = [
   "updates_opt_in",
   "role_select",
   "join_group",
+  "plan_select",
   "hipaa_disclaimer",
 ];
 
@@ -51,6 +72,7 @@ const PROVIDER_STEPS_NO_UPDATES: Step[] = [
   "updates_opt_in",
   "role_select",
   "join_group",
+  "plan_select",
   "hipaa_disclaimer",
 ];
 
@@ -67,6 +89,7 @@ const PROVIDER_STEPS_WITH_UPDATES: Step[] = [
   "phone_contact_name",
   "role_select",
   "join_group",
+  "plan_select",
   "hipaa_disclaimer",
 ];
 
@@ -84,6 +107,7 @@ const STEP_HEADINGS: Record<Step, { title: string; sub: string }> = {
   phone_contact_name: { title: "Contact name", sub: "Who should we text for case updates?" },
   role_select: { title: "Account role", sub: "Pick the role for this account." },
   join_group: { title: "Join an existing lab", sub: "Optional — request to join a registered lab." },
+  plan_select: { title: "Choose your plan", sub: "Start your 30-day free trial on the right plan." },
   hipaa_disclaimer: { title: "HIPAA notice", sub: "Please review and accept to finish." },
 };
 
@@ -180,12 +204,28 @@ export default function SignupWizard({ onCancel }: Props) {
   // HIPAA
   const [hipaaAccepted, setHipaaAccepted] = useState(false);
 
+  // Plan selection (plan_select step)
+  const [wizardPlans, setWizardPlans] = useState<Plan[]>([]);
+  const [wizardPlansLoading, setWizardPlansLoading] = useState(false);
+  const [selectedPriceId, setSelectedPriceId] = useState<string | null>(null);
+
   // Resend timer tick
   useEffect(() => {
     if (resendTimer <= 0) return;
     const t = setTimeout(() => setResendTimer((v) => v - 1), 1000);
     return () => clearTimeout(t);
   }, [resendTimer]);
+
+  // Load plans when reaching the plan_select step
+  useEffect(() => {
+    if (step !== "plan_select") return;
+    if (wizardPlans.length > 0 || wizardPlansLoading) return;
+    setWizardPlansLoading(true);
+    apiFetch<{ ok: boolean; plans: Plan[] }>("/billing/plans")
+      .then((r) => setWizardPlans(r.plans ?? []))
+      .catch(() => setWizardPlans([]))
+      .finally(() => setWizardPlansLoading(false));
+  }, [step, wizardPlans.length, wizardPlansLoading]);
 
   // Debounced claim lab search
   useEffect(() => {
@@ -471,6 +511,30 @@ export default function SignupWizard({ onCancel }: Props) {
           ? { labId: claimLab!.id, accountNumber: claimAccountNumber.trim() }
           : undefined,
       });
+      // Registration succeeded — tokens are now set. If the user picked a
+      // plan during sign-up, open Stripe checkout in a new tab before the
+      // app router replaces this screen with the dashboard.
+      if (selectedPriceId) {
+        try {
+          const result = await apiFetch<{ ok: boolean; url: string }>("/billing/checkout-session", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ priceId: selectedPriceId }),
+          });
+          if (result.url) {
+            window.open(result.url, "_blank");
+            // Suppress the post-login PlanPickerOnboarding overlay for this
+            // session — the user already chose a plan; the checkout tab is open.
+            try {
+              sessionStorage.setItem("labtrax_plan_picker_skipped_v1", "1");
+            } catch {
+              /* ignore */
+            }
+          }
+        } catch {
+          // Checkout failure is non-fatal — user can finish checkout from the Billing page.
+        }
+      }
       // Auth context flips to "authed" — the app router will replace this screen.
     } catch (err) {
       if (err instanceof ApiError) {
@@ -1199,12 +1263,111 @@ export default function SignupWizard({ onCancel }: Props) {
               type="button"
               onClick={() => {
                 setError(null);
-                setStep("hipaa_disclaimer");
+                setStep("plan_select");
               }}
               className={primaryBtnClass}
             >
               {joinTargetOrgId ? "Continue with join request" : "Skip for now"}
             </button>
+          </div>
+        )}
+
+        {step === "plan_select" && (
+          <div className="space-y-4">
+            {wizardPlansLoading && (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="animate-spin text-muted-foreground" size={22} />
+              </div>
+            )}
+
+            {!wizardPlansLoading && wizardPlans.length === 0 && (
+              <div className="text-sm text-muted-foreground bg-muted/40 rounded-lg p-4 text-center">
+                Billing plans are not yet configured. You can choose a plan later from the Billing page.
+              </div>
+            )}
+
+            {!wizardPlansLoading && wizardPlans.length > 0 && (() => {
+              const grouped = groupWizardPlans(wizardPlans);
+              return (
+                <div className="space-y-4">
+                  {(["lab", "provider"] as const).map((type) => {
+                    const typePlans = grouped[type];
+                    if (typePlans.length === 0) return null;
+                    return (
+                      <div key={type} className="space-y-2">
+                        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                          {type === "lab" ? "Lab" : "Provider"}
+                        </p>
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          {typePlans.map((plan) => {
+                            const price =
+                              plan.unitAmount != null
+                                ? (plan.unitAmount / 100).toFixed(2)
+                                : "—";
+                            const interval =
+                              plan.interval === "month"
+                                ? "/mo"
+                                : plan.interval === "year"
+                                ? "/yr"
+                                : "";
+                            const isSelected = plan.id === selectedPriceId;
+                            return (
+                              <button
+                                key={plan.id}
+                                type="button"
+                                onClick={() => {
+                                  setSelectedPriceId(isSelected ? null : plan.id);
+                                  setError(null);
+                                }}
+                                className={`flex flex-col gap-1 p-3 rounded-lg border text-left transition-colors ${
+                                  isSelected
+                                    ? "border-primary bg-primary/5"
+                                    : "border-border bg-card hover:border-primary hover:bg-primary/5"
+                                }`}
+                              >
+                                <div className="flex items-center justify-between gap-1">
+                                  <span className="text-sm font-medium">
+                                    {plan.productName ?? "LabTrax"}
+                                  </span>
+                                  {isSelected && (
+                                    <span className="text-xs text-primary font-medium shrink-0">✓ Selected</span>
+                                  )}
+                                </div>
+                                <span className="text-lg font-bold text-foreground">
+                                  ${price}
+                                  <span className="text-sm font-normal text-muted-foreground">{interval}</span>
+                                </span>
+                                {plan.productDescription && (
+                                  <span className="text-xs text-muted-foreground leading-snug">
+                                    {plan.productDescription}
+                                  </span>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+
+            <button
+              type="button"
+              onClick={() => {
+                setError(null);
+                setStep("hipaa_disclaimer");
+              }}
+              className={primaryBtnClass}
+            >
+              {selectedPriceId ? "Continue with selected plan" : "Continue"}
+            </button>
+            {wizardPlans.length > 0 && !selectedPriceId && (
+              <p className="text-xs text-muted-foreground text-center">
+                Select a plan above or continue to choose later.
+              </p>
+            )}
           </div>
         )}
 

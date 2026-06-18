@@ -15,6 +15,7 @@ import { AppLayout } from "@/components/AppLayout";
 import { OfflineBanner } from "@/components/OfflineBanner";
 import { MessengerProvider } from "@/context/MessengerContext";
 import { canReceivePayments } from "@/components/finance/FinanceShell";
+import PlanPickerOnboarding from "@/components/PlanPickerOnboarding";
 
 const DashboardPage = lazy(() => import("@/pages/dashboard"));
 const CasesPage = lazy(() => import("@/pages/cases"));
@@ -205,6 +206,7 @@ function Gate() {
         <OfflineBanner />
         <AuthRestoreBanner />
         <ProviderPortal />
+        <PlanPickerOnboarding />
       </>
     );
   }
@@ -213,6 +215,7 @@ function Gate() {
       <OfflineBanner />
       <AuthRestoreBanner />
       <AuthedRoutes />
+      <PlanPickerOnboarding />
     </>
   );
 }
