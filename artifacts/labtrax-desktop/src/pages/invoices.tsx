@@ -907,6 +907,7 @@ function serializeInvoiceForm(f: {
   billTo: string;
   teeth: string;
   shade: string;
+  material: string;
   caseNotes: string;
   layoutPresetId: string | null;
   items: DraftLine[];
@@ -924,6 +925,7 @@ function serializeInvoiceForm(f: {
     billTo: f.billTo,
     teeth: f.teeth,
     shade: f.shade,
+    material: f.material,
     caseNotes: f.caseNotes,
     layoutPresetId: f.layoutPresetId ?? null,
     items: f.items.map((it) => ({
@@ -1310,6 +1312,7 @@ export function InvoiceEditor({
   const [billTo, setBillTo] = useState<string>("");
   const [teeth, setTeeth] = useState<string>("");
   const [shade, setShade] = useState<string>("");
+  const [material, setMaterial] = useState<string>("");
   const [caseNotes, setCaseNotes] = useState<string>("");
   const [credits, setCredits] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
@@ -1340,6 +1343,7 @@ export function InvoiceEditor({
     const nextBillTo = meta.billTo ?? "";
     const nextTeeth = meta.teeth ?? "";
     const nextShade = meta.shade ?? "";
+    const nextMaterial = meta.material ?? "";
     const nextCaseNotes = meta.caseNotes ?? "";
     const nextCredits = Number(meta.credits ?? 0) || 0;
     const nextLayoutPresetId = (d as any).layoutPresetId ?? null;
@@ -1375,6 +1379,7 @@ export function InvoiceEditor({
     setBillTo(nextBillTo);
     setTeeth(nextTeeth);
     setShade(nextShade);
+    setMaterial(nextMaterial);
     setCaseNotes(nextCaseNotes);
     setCredits(nextCredits);
     setLayoutPresetId(nextLayoutPresetId);
@@ -1393,6 +1398,7 @@ export function InvoiceEditor({
       billTo: nextBillTo,
       teeth: nextTeeth,
       shade: nextShade,
+      material: nextMaterial,
       caseNotes: nextCaseNotes,
       layoutPresetId: nextLayoutPresetId,
       items: nextItems,
@@ -1456,6 +1462,7 @@ export function InvoiceEditor({
         billTo: billTo.trim(),
         teeth: teeth.trim(),
         shade: shade.trim(),
+        material: material.trim(),
         caseNotes: caseNotes.trim(),
         credits: Number(credits) || 0,
         lineItems: trimmedItems.map((it) => ({
@@ -1706,6 +1713,7 @@ export function InvoiceEditor({
         billTo,
         teeth,
         shade,
+        material,
         caseNotes,
         layoutPresetId,
         items,
@@ -1724,6 +1732,7 @@ export function InvoiceEditor({
     billTo,
     teeth,
     shade,
+    material,
     caseNotes,
     layoutPresetId,
     items,
@@ -1808,10 +1817,7 @@ export function InvoiceEditor({
       billTo,
       teeth,
       shade,
-      // Material is not an editable field — carry it through from the loaded
-      // display-metadata snapshot (populated by AI intake / iTero import) so
-      // it still renders on the PDF.
-      material: readDisplayMetadata(detailQuery.data).material ?? null,
+      material: material.trim() || null,
       caseNotes,
       issuedAt: issuedAt ? new Date(issuedAt).toISOString() : null,
       dueAt: dueAt ? new Date(dueAt).toISOString() : null,
@@ -2423,6 +2429,18 @@ export function InvoiceEditor({
                   value={shade}
                   onChange={(e) => setShade(e.target.value)}
                   placeholder="e.g. A2"
+                  className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                  Material
+                </label>
+                <input
+                  type="text"
+                  value={material}
+                  onChange={(e) => setMaterial(e.target.value)}
+                  placeholder="e.g. Zirconia"
                   className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
                 />
               </div>
