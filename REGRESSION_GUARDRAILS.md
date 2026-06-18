@@ -951,6 +951,39 @@ Requires `DATABASE_URL` to be set. All 20 tests must pass.
 
 ---
 
+## Desktop Installer Availability
+
+The Settings → Desktop App panel displays `installerStatus` for each installer slot. When the status is `"missing"` the download link returns 404 for users; when it is `"ok"` the download is live. This guardrail ensures the publish pipeline cannot silently succeed while leaving the download unavailable.
+
+### Protected Behaviors
+
+| # | Behavior | Automated Gate |
+|---|----------|---------------|
+| 1 | `GET /admin/settings/desktop-installer` returns `installerStatus: "missing"` when no installer object exists in App Storage for the active download-URL kind | `installer-settings-status.test.ts` |
+| 2 | `GET /admin/settings/desktop-installer` returns `installerStatus: "ok"` after a successful upload populates the active slot | `installer-settings-status.test.ts` |
+| 3 | `GET /admin/settings/desktop-installer` returns 403 without the `X-Platform-Admin-Secret` header | `installer-settings-status.test.ts` |
+| 4 | `desktop-build-publish.sh` exits non-zero if `HEAD /downloads/<installer>` does not return HTTP 200 after upload | Post-upload verification block in `scripts/desktop-build-publish.sh` (sets `VERIFY_BASE_URL` from `PUBLISH_API_BASE_URL` or `REPLIT_DEV_DOMAIN`) |
+| 5 | `POST /admin/desktop-installer/publish` atomically writes App Storage object + `system_settings` rows + changelog in one call | `installer-publish-e2e.test.ts` (gated on `INSTALLER_E2E_OBJECT_DIR` + `PLATFORM_ADMIN_SECRET`) |
+
+### Root cause / failure mode reference
+
+The `"missing"` status occurs when any of these conditions hold at deploy time:
+- `PRIVATE_OBJECT_DIR` or `DEFAULT_OBJECT_STORAGE_BUCKET_ID` is unset — uploads go nowhere
+- `desktop-build-publish.sh` uploads to App Storage but the settings DB row (`system_settings.desktop_installer_url`) is never written (requires `PLATFORM_ADMIN_SECRET` or `DATABASE_URL` to be set)
+- `release.yml` CI publish step silently skips (missing `PLATFORM_ADMIN_SECRET` or `PUBLISH_API_BASE_URL`)
+
+### Files
+
+| File | Role |
+|------|------|
+| `artifacts/api-server/src/installer-settings-status.test.ts` | 3-test suite: missing/ok/403 behaviors for `installerStatus` |
+| `artifacts/api-server/src/installer-publish-e2e.test.ts` | Atomic publish end-to-end (gated on real App Storage env vars) |
+| `artifacts/api-server/src/lib/desktop-installer-storage.ts` | `getDesktopInstallerMetadata` — returns null when slot is absent |
+| `artifacts/api-server/src/routes/labtrax-routes.ts` | Settings endpoint: `installerStatus` computation at `GET /admin/settings/desktop-installer` |
+| `scripts/desktop-build-publish.sh` | Publish pipeline: post-upload HEAD verification exits 1 on 404 |
+
+---
+
 ## Lab Slip Optional Invoice Fields
 
 Invoice fields are opt-in elements in the Advanced Print Layout editor. They must not break the existing lab slip print flow when absent and must render live invoice data when present.

@@ -1381,6 +1381,10 @@ function CaseDeleteModal({
 
   async function submitPin() {
     if (!pin.trim() || isPending) return;
+    if (caseIds.length === 0) {
+      setError("No cases selected. Please select cases from the list first.");
+      return;
+    }
     setIsPending(true);
     setError(null);
     try {
@@ -1641,6 +1645,7 @@ export default function CasesPage() {
   const [showBulkStatusModal, setShowBulkStatusModal] = useState(false);
   const [bulkStatusValue, setBulkStatusValue] = useState<string>("");
   const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
+  const [bulkDeleteCaseIds, setBulkDeleteCaseIds] = useState<string[]>([]);
 
   const CASES_COL_DEFAULTS = [120, 100, 160, 140, 140, 120, 100, 90, 130, 100, 90, 200] as const;
   const { widths: caseColWidths, resizingCol: resizingCaseCol, startResize: startCaseResize, resetColumn: resetCaseColumn } =
@@ -2340,7 +2345,10 @@ export default function CasesPage() {
             {isPageAdmin && (
               <button
                 type="button"
-                onClick={() => setShowBulkDeleteModal(true)}
+                onClick={() => {
+                  setBulkDeleteCaseIds(Array.from(selectedIds));
+                  setShowBulkDeleteModal(true);
+                }}
                 className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-destructive text-destructive-foreground text-xs font-medium hover:bg-destructive/90 transition-colors"
               >
                 <Trash2 size={13} />
@@ -2753,12 +2761,13 @@ export default function CasesPage() {
 
       {showBulkDeleteModal && (
         <CaseDeleteModal
-          caseIds={Array.from(selectedIds)}
+          caseIds={bulkDeleteCaseIds}
           onClose={() => setShowBulkDeleteModal(false)}
           onSuccess={(deletedCount) => {
             qc.invalidateQueries({ queryKey: ["cases"] });
             setSelectedIds(new Set());
             setShowBulkDeleteModal(false);
+            setBulkDeleteCaseIds([]);
             setBulkToast(`${deletedCount} case${deletedCount !== 1 ? "s" : ""} deleted.`);
           }}
         />

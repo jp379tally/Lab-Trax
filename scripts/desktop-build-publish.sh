@@ -207,6 +207,55 @@ cd "$ROOT_DIR"
 pnpm --filter @workspace/scripts run upload-desktop-installer -- "$INSTALLER_PATH"
 echo "[publish] ✓ Upload complete."
 
+# Post-upload verification ----------------------------------------------------
+# Confirm the installer is actually reachable before declaring success.
+# Without this check a silent misconfiguration (wrong PRIVATE_OBJECT_DIR,
+# serving-route not wired up, proxy drop) leaves /downloads/ returning 404
+# while the script reports "Published" — exactly the failure mode that caused
+# the Settings → Desktop App page to show MISSING.
+#
+# Verification strategy:
+#   1. If PUBLISH_API_BASE_URL is set: HEAD the download URL via the live API.
+#      This catches serving failures that direct-GCS checks cannot reveal
+#      (reverse-proxy misconfiguration, stale routing, etc.).
+#      Exit 1 when the HEAD does not return 200 — the publish is not complete.
+#   2. If PUBLISH_API_BASE_URL is unset: probe the local Replit proxy
+#      at localhost:80 so the check still runs in dev-mode publishes.
+#      A missing REPLIT_DEV_DOMAIN means we skip the probe with a notice.
+VERIFY_BASE_URL=""
+if [[ -n "${PUBLISH_API_BASE_URL:-}" ]]; then
+  VERIFY_BASE_URL="${PUBLISH_API_BASE_URL%/}"
+elif [[ -n "${REPLIT_DEV_DOMAIN:-}" ]]; then
+  VERIFY_BASE_URL="https://${REPLIT_DEV_DOMAIN}"
+fi
+
+if [[ -n "$VERIFY_BASE_URL" ]]; then
+  echo ""
+  echo "[verify] Confirming installer is reachable at ${VERIFY_BASE_URL}${DOWNLOAD_URL} …"
+  VERIFY_HTTP_STATUS=$(curl --silent --head --output /dev/null \
+    --write-out '%{http_code}' \
+    --max-time 30 \
+    "${VERIFY_BASE_URL}${DOWNLOAD_URL}" 2>/dev/null || echo "000")
+  if [[ "$VERIFY_HTTP_STATUS" == "200" ]]; then
+    echo "[verify] ✓ HEAD ${DOWNLOAD_URL} → HTTP 200 — installer is live."
+  else
+    echo ""
+    echo "[verify] ERROR: HEAD ${VERIFY_BASE_URL}${DOWNLOAD_URL} returned HTTP ${VERIFY_HTTP_STATUS} (expected 200)."
+    echo "[verify]   The installer was uploaded to App Storage but the download URL is not"
+    echo "[verify]   serving correctly. Common causes:"
+    echo "[verify]     • DEFAULT_OBJECT_STORAGE_BUCKET_ID or PRIVATE_OBJECT_DIR is wrong"
+    echo "[verify]     • The serving route in app.ts is not wired to the correct storage key"
+    echo "[verify]     • A reverse-proxy or CDN layer is caching a stale 404"
+    echo "[verify]   Check the API server logs for errors from serveInstaller()."
+    exit 1
+  fi
+else
+  echo ""
+  echo "[verify] NOTICE: PUBLISH_API_BASE_URL and REPLIT_DEV_DOMAIN are both unset."
+  echo "[verify]   Skipping post-upload download probe — set one of these to enable"
+  echo "[verify]   automatic verification that the installer is reachable after publish."
+fi
+
 # Update system_settings version record ---------------------------------------
 # The API reads system_settings.desktop_installer_version to display the
 # current published version. If PLATFORM_ADMIN_SECRET is set, the upload
