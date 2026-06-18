@@ -1,0 +1,73 @@
+Send this to Replit:
+
+URGENT regression: Desktop app installer/download is missing.
+
+The Desktop App settings page now shows:
+
+* LabTrax Desktop for Windows
+* Version 1.0.0
+* Status: MISSING
+* Warning: `No LabTrax-Setup.exe is uploaded — this download link will return 404.`
+* Warning: `No installer has been uploaded to App Storage yet`
+
+This is a regression. Users/admins must be able to download the desktop installer from the Desktop app settings page.
+
+## Required fix
+
+1. Determine why `LabTrax-Setup.exe` is missing from App Storage.
+2. Determine whether the desktop build/publish pipeline failed to upload it.
+3. Confirm whether recent signing/build changes broke installer publishing.
+4. Restore the installer upload path.
+5. Ensure the Desktop App settings page shows the correct:
+
+   * version
+   * download status
+   * installer URL
+   * release notes
+6. The Download Installer button must work and must not return 404.
+
+## Required safeguards
+
+Add a regression guardrail:
+
+“Desktop Installer Availability”
+
+Before any desktop release is marked published:
+
+* installer artifact exists
+* installer URL returns 200
+* app settings page does not show MISSING
+* download button works
+* signed build verification passes if signing is enabled
+* release metadata points to the uploaded installer
+
+## Tests required
+
+Add tests or CI checks for:
+
+1. Build produces `LabTrax-Setup.exe`.
+2. Publish uploads installer to App Storage or configured release storage.
+3. App settings page reads the current installer metadata.
+4. Missing installer state is shown only when truly missing.
+5. Download URL returns 200 for published build.
+6. Publish workflow fails if installer upload fails.
+7. Signed-build verification still runs before publish when signing is enabled.
+
+## Acceptance
+
+Open Settings → Desktop app.
+
+Expected:
+
+* Status is not `MISSING`
+* Version is current
+* Download Installer button is enabled
+* Download Installer successfully downloads `LabTrax-Setup.exe`
+* No 404 warning
+* Release metadata is correct
+
+This must be fixed before any further desktop release work.
+
+Checkpoint:
+
+“Restore Desktop Installer Download”
