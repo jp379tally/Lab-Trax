@@ -4232,7 +4232,7 @@ function BackupPanel() {
   );
 }
 
-type RestorePhase = "idle" | "uploading" | "validating" | "decrypting" | "restoring_db" | "restoring_media" | "done" | "error";
+type RestorePhase = "idle" | "uploading" | "validating" | "decrypting" | "restoring_db" | "clearing_sessions" | "restoring_media" | "done" | "error";
 
 const RESTORE_PHASE_LABELS: Record<RestorePhase, string> = {
   idle: "Idle",
@@ -4240,6 +4240,7 @@ const RESTORE_PHASE_LABELS: Record<RestorePhase, string> = {
   validating: "Validating…",
   decrypting: "Decrypting…",
   restoring_db: "Restoring database…",
+  clearing_sessions: "Clearing sessions…",
   restoring_media: "Restoring media files…",
   done: "Done",
   error: "Error",
@@ -4251,8 +4252,9 @@ const RESTORE_PHASE_STEP: Record<RestorePhase, number> = {
   validating: 2,
   decrypting: 3,
   restoring_db: 4,
-  restoring_media: 5,
-  done: 6,
+  clearing_sessions: 5,
+  restoring_media: 6,
+  done: 7,
   error: 0,
 };
 
@@ -4419,7 +4421,7 @@ function RestoreSection({
   }
 
   const isRunning = restorePhase !== "idle" && restorePhase !== "done" && restorePhase !== "error";
-  const stepCount = 5;
+  const stepCount = 6;
   const step = RESTORE_PHASE_STEP[restorePhase];
 
   return (
@@ -4442,11 +4444,14 @@ function RestoreSection({
               Restore all lab data from a LabTrax <code className="font-mono">.zip.enc</code> backup file.{" "}
               <strong className="text-destructive">All current data and media will be replaced.</strong>
             </p>
+            <p className="text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 border border-amber-300/50 rounded px-2 py-1.5">
+              ⚠ All users currently signed in will be logged out after restore completes.
+            </p>
 
             {restoreSuccess && (
               <div className="rounded-md bg-success/10 border border-success/30 px-3 py-2 text-xs text-success font-medium space-y-2">
                 <div>
-                  Restore complete — restart the app to finish loading the restored data.
+                  Restore complete. Please sign in again.
                   {relaunchCountdown !== null && relaunchCountdown > 0 && (
                     <span className="ml-1">(Relaunching in {relaunchCountdown}…)</span>
                   )}
@@ -4536,7 +4541,7 @@ function RestoreSection({
 
                 <button
                   type="button"
-                  disabled={gate.blocked || !selectedFile}
+                  disabled={gate.blocked || !selectedFile || isRunning}
                   onClick={() => openConfirm()}
                   className="h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 disabled:opacity-60 inline-flex items-center gap-2"
                 >

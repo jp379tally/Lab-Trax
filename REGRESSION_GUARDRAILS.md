@@ -901,3 +901,50 @@ All 9+ assertions must pass before any desktop release is approved.
 | `scripts/verify-signing.sh` | Standalone verifier — verifies EXE and (optionally) installer; rich CI output |
 | `scripts/test-signing-verification.sh` | Automated test suite — 5 required scenarios + bonus cases via mocked tool |
 | `scripts/desktop-build-publish.sh` | Calls `verify-signing.sh`; gates upload and `latest.yml` on its exit code |
+
+---
+
+## Backup Restore Integrity
+
+**Status:** Protected since the addition of clearing_sessions, pre-restore snapshot, schema version gate, and post-restore validation.
+
+**Why:** Before this protection was added, a restore would leave all user sessions from the backup in `user_sessions`, causing unique-constraint conflicts on the next login and silently locking users out of the restored instance. An incompatible-schema backup could also corrupt the live database before failing. These bugs are non-obvious regression candidates because the rest of the restore pipeline appears to succeed.
+
+**Test command:**
+```
+pnpm --filter @workspace/api-server run test -- --reporter=verbose src/routes/backup-restore.test.ts
+```
+Requires `DATABASE_URL` to be set. All 20 tests must pass.
+
+### Protected behaviors
+
+| # | Behavior | Test |
+|---|----------|------|
+| 1 | Backup manifest includes `userCount` | test 1 |
+| 2 | Backup manifest includes `caseCount` | test 2 |
+| 3 | Backup manifest includes `orgCount` | test 3 |
+| 4 | Backup manifest includes `invoiceCount` | test 4 |
+| 5 | Backup manifest includes `tableCount > 10` | test 5 |
+| 6 | Backup manifest includes `schemaVersion = BACKUP_SCHEMA_VERSION` | test 6 |
+| 7 | Manifest `caseCount` matches live DB non-deleted count | test 7 |
+| 8 | `executeRestore` ends with `phase = done` on success | test 8 |
+| 9 | `user_sessions` is empty immediately after restore | test 9 |
+| 10 | Login succeeds post-restore without stale session conflict | test 10 |
+| 11 | Back-to-back session inserts succeed post-restore | test 11 |
+| 12 | `TRUNCATE TABLE user_sessions` is issued during the `clearing_sessions` step | test 12 |
+| 13 | Post-restore validation SQL queries are issued before `done` | test 13 |
+| 14 | Full phase sequence includes `restoring_db`, `clearing_sessions`, `restoring_media`, `done` | test 14 |
+| 15 | `pg_restore` failure sets `phase = error`; pre-restore snapshot still exists | test 15 |
+| 16 | Schema version mismatch throws `"schema version"` error before any DB row is touched | test 16 |
+| 17 | Pre-restore safety snapshot is written to `uploads/.restore-snapshots/pre-restore-<ts>.pgdump` | test 17 |
+| 18 | `runPostRestoreValidation` returns `valid = true` on clean data | test 18 |
+| 19 | `runPostRestoreValidation` returns `valid = false` when orphaned `lab_membership` rows exist | test 19 |
+| 20 | Phase ordering: `clearing_sessions` follows `restoring_db` and precedes `restoring_media` | test 20 |
+
+### Files
+
+| File | Role |
+|------|------|
+| `artifacts/api-server/src/lib/backup.ts` | Core backup/restore implementation — `executeRestore`, `runPostRestoreValidation`, `BACKUP_SCHEMA_VERSION`, `buildManifestCounts`, `buildBackupZipBuffer` |
+| `artifacts/api-server/src/routes/backup-restore.test.ts` | 20-test suite covering all protected behaviors |
+| `artifacts/labtrax-desktop/src/pages/settings.tsx` | Desktop UI — `RestorePhase` type, step labels, warning banner, success message |

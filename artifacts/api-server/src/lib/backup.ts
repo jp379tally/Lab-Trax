@@ -6,7 +6,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 import { Transform } from "node:stream";
 import archiver from "archiver";
 import AdmZip from "adm-zip";
-import { db } from "@workspace/db";
+import { db, pool } from "@workspace/db";
 import { systemSettings, users, backupRuns } from "@workspace/db";
 import { eq, lt, sql } from "drizzle-orm";
 import { filterEmailsByPref } from "./email-prefs";
@@ -58,6 +58,14 @@ export const SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS = "backup_stale_alert_thr
 export const SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS = "backup_stale_alert_rate_limit_days";
 export const SETTING_BACKUP_STALE_DAYS = "backup_stale_days";
 export const DEFAULT_BACKUP_STALE_DAYS = 7;
+
+/**
+ * Monotonically increasing integer that tracks breaking changes to the backup
+ * format. Written into every manifest and checked on restore. If the major
+ * version in the manifest differs from the running app's version, the restore
+ * is aborted before any data is touched.
+ */
+export const BACKUP_SCHEMA_VERSION = "2";
 export const ALL_SCHEDULE_SETTINGS = [
   SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES,
   SETTING_BACKUP_SCHEDULE_DESTINATION,
@@ -212,6 +220,7 @@ export type RestorePhase =
   | "validating"
   | "decrypting"
   | "restoring_db"
+  | "clearing_sessions"
   | "restoring_media"
   | "done"
   | "error";
@@ -241,6 +250,183 @@ function setRestorePhase(phase: RestorePhase, message?: string) {
     phase,
     message: message ?? null,
   };
+}
+
+/** Query live row counts used to populate the backup manifest. */
+async function buildManifestCounts(): Promise<{
+  userCount: number;
+  orgCount: number;
+  caseCount: number;
+  invoiceCount: number;
+  tableCount: number;
+}> {
+  try {
+    const result = await pool.query<{
+      user_count: string;
+      org_count: string;
+      case_count: string;
+      invoice_count: string;
+      table_count: string;
+    }>(
+      `SELECT
+        (SELECT count(*) FROM users   WHERE deleted_at IS NULL)::text          AS user_count,
+        (SELECT count(*) FROM organizations WHERE deleted_at IS NULL)::text    AS org_count,
+        (SELECT count(*) FROM cases   WHERE deleted_at IS NULL)::text          AS case_count,
+        (SELECT count(*) FROM invoices)::text                                  AS invoice_count,
+        (SELECT count(*) FROM information_schema.tables
+          WHERE table_schema = 'public')::text                                 AS table_count`,
+    );
+    const row = result.rows[0];
+    return {
+      userCount:   parseInt(row.user_count,   10) || 0,
+      orgCount:    parseInt(row.org_count,    10) || 0,
+      caseCount:   parseInt(row.case_count,   10) || 0,
+      invoiceCount: parseInt(row.invoice_count, 10) || 0,
+      tableCount:  parseInt(row.table_count,  10) || 0,
+    };
+  } catch {
+    return { userCount: 0, orgCount: 0, caseCount: 0, invoiceCount: 0, tableCount: 0 };
+  }
+}
+
+export interface PostRestoreValidationResult {
+  valid: boolean;
+  errors: string[];
+}
+
+/**
+ * Run a set of SQL assertions after pg_restore completes to verify the
+ * restored database is self-consistent. Returns a { valid, errors } result
+ * rather than throwing so callers can decide whether to surface warnings vs.
+ * hard-fail. Checks:
+ *   (a) users table has ≥ 1 row
+ *   (b) organizations table is readable
+ *   (c) cases count matches the manifest (if provided)
+ *   (d) invoices count matches the manifest (if provided)
+ *   (e) no orphaned lab_memberships rows (missing user or org FK)
+ *   (f) no cases with broken provider_organization_id FK
+ */
+export async function runPostRestoreValidation(options: {
+  expectedCaseCount: number | null;
+  expectedInvoiceCount: number | null;
+}): Promise<PostRestoreValidationResult> {
+  const errors: string[] = [];
+  try {
+    const usersResult = await pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM users WHERE deleted_at IS NULL",
+    );
+    const userCount = parseInt(usersResult.rows[0]?.count ?? "0", 10);
+    if (userCount < 1) {
+      errors.push("users table is empty after restore — at least one user is required");
+    }
+
+    await pool.query("SELECT count(*) FROM organizations");
+
+    if (options.expectedCaseCount !== null) {
+      const casesResult = await pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM cases WHERE deleted_at IS NULL",
+      );
+      const caseCount = parseInt(casesResult.rows[0]?.count ?? "0", 10);
+      if (caseCount !== options.expectedCaseCount) {
+        errors.push(
+          `Case count mismatch: manifest says ${options.expectedCaseCount}, found ${caseCount}`,
+        );
+      }
+    }
+
+    if (options.expectedInvoiceCount !== null) {
+      const invoicesResult = await pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM invoices",
+      );
+      const invoiceCount = parseInt(invoicesResult.rows[0]?.count ?? "0", 10);
+      if (invoiceCount !== options.expectedInvoiceCount) {
+        errors.push(
+          `Invoice count mismatch: manifest says ${options.expectedInvoiceCount}, found ${invoiceCount}`,
+        );
+      }
+    }
+
+    const orphanResult = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+       FROM lab_memberships lm
+       WHERE lm.deleted_at IS NULL
+         AND (
+           NOT EXISTS (SELECT 1 FROM users        u WHERE u.id = lm.user_id)
+           OR NOT EXISTS (SELECT 1 FROM organizations o WHERE o.id = lm.lab_id)
+         )`,
+    );
+    const orphanCount = parseInt(orphanResult.rows[0]?.count ?? "0", 10);
+    if (orphanCount > 0) {
+      errors.push(
+        `Found ${orphanCount} orphaned lab_membership row(s) with missing user or organization references`,
+      );
+    }
+
+    const brokenResult = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+       FROM cases c
+       WHERE c.deleted_at IS NULL
+         AND c.provider_organization_id IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM organizations o WHERE o.id = c.provider_organization_id
+         )`,
+    );
+    const brokenCount = parseInt(brokenResult.rows[0]?.count ?? "0", 10);
+    if (brokenCount > 0) {
+      errors.push(
+        `Found ${brokenCount} case(s) with broken provider_organization_id FK`,
+      );
+    }
+  } catch (err: unknown) {
+    errors.push(
+      `Validation query failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  return { valid: errors.length === 0, errors };
+}
+
+/**
+ * Synchronously decrypt and parse the manifest from an encrypted backup
+ * buffer, and validate that it is compatible with the running app.
+ *
+ * Throws an error (message starts with "Incompatible backup") if the
+ * backup's major schema version differs from BACKUP_SCHEMA_VERSION, or an
+ * "Invalid backup" error if the archive is corrupt.  Routes should call this
+ * before accepting the file and returning 202 so the caller receives a 409
+ * synchronously rather than discovering the mismatch via async status polling.
+ */
+export function parseAndValidateBackupManifest(
+  encryptedBuffer: Buffer,
+): Record<string, unknown> {
+  const zipBuffer = decryptBuffer(encryptedBuffer);
+  const zip = new AdmZip(zipBuffer);
+  const manifestEntry = zip.getEntry("manifest.json");
+  if (!manifestEntry) {
+    throw new Error("Invalid backup: manifest.json is missing from the archive.");
+  }
+  const manifest = JSON.parse(manifestEntry.getData().toString("utf8")) as Record<string, unknown>;
+  if (manifest.appName !== "LabTrax") {
+    throw new Error(
+      `Invalid backup: manifest.json has appName '${manifest.appName}', expected 'LabTrax'.`,
+    );
+  }
+  if (!zip.getEntry("db/database.pgdump")) {
+    throw new Error("Invalid backup: db/database.pgdump is missing from the archive.");
+  }
+  const manifestSchemaVersion = typeof manifest.schemaVersion === "string"
+    ? manifest.schemaVersion : null;
+  if (manifestSchemaVersion !== null) {
+    const manifestMajor = parseInt(manifestSchemaVersion, 10);
+    const appMajor = parseInt(BACKUP_SCHEMA_VERSION, 10);
+    if (!isNaN(manifestMajor) && !isNaN(appMajor) && manifestMajor !== appMajor) {
+      throw new Error(
+        `Incompatible backup: this backup was created with schema version ${manifestMajor} ` +
+        `but the running app uses schema version ${appMajor}. ` +
+        `Restore across major schema versions is not supported.`,
+      );
+    }
+  }
+  return manifest;
 }
 
 /**
@@ -310,10 +496,47 @@ export async function executeRestore(
       throw err;
     }
 
+    // ── Step 2.5: schema version check ───────────────────────────────────────
+    // Abort before any data is touched if the backup's major schema version
+    // differs from the running app. This prevents silent data corruption when
+    // restoring an older/newer-format backup onto an incompatible app version.
+    const manifestSchemaVersion = typeof manifest.schemaVersion === "string"
+      ? manifest.schemaVersion : null;
+    if (manifestSchemaVersion !== null) {
+      const manifestMajor = parseInt(manifestSchemaVersion, 10);
+      const appMajor = parseInt(BACKUP_SCHEMA_VERSION, 10);
+      if (!isNaN(manifestMajor) && !isNaN(appMajor) && manifestMajor !== appMajor) {
+        throw new Error(
+          `Incompatible backup: this backup was created with schema version ${manifestMajor} ` +
+          `but the running app uses schema version ${appMajor}. ` +
+          `Restore across major schema versions is not supported. ` +
+          `Use a LabTrax version that matches the backup's schema version, or export a fresh backup.`,
+        );
+      }
+    }
+
     // ── Step 3: extract pg dump to temp file ─────────────────────────────────
     const pgDumpPath = path.join(tmpDir, "database.pgdump");
     const dbEntry = zip.getEntry("db/database.pgdump")!;
     fs.writeFileSync(pgDumpPath, dbEntry.getData());
+
+    // ── Step 3.5: pre-restore safety snapshot ────────────────────────────────
+    // Capture a pg_dump of the CURRENT live database before any data is changed.
+    // Stored at uploads/.restore-snapshots/pre-restore-<ts>.pgdump so an admin
+    // can manually recover if the restore is interrupted or produces bad data.
+    const snapshotsDir = path.resolve(process.cwd(), "uploads", ".restore-snapshots");
+    try {
+      fs.mkdirSync(snapshotsDir, { recursive: true });
+      const snapshotPath = path.join(snapshotsDir, `pre-restore-${Date.now()}.pgdump`);
+      const snapshotBuffer = await buildPgDumpBuffer();
+      fs.writeFileSync(snapshotPath, snapshotBuffer);
+      logger.info({ snapshotPath }, "[restore] Pre-restore safety snapshot created");
+    } catch (snapshotErr: unknown) {
+      logger.warn(
+        { err: snapshotErr instanceof Error ? snapshotErr.message : String(snapshotErr) },
+        "[restore] Pre-restore snapshot failed — continuing. Manual recovery may be needed if restore fails.",
+      );
+    }
 
     // ── Step 4: run pg_restore ────────────────────────────────────────────────
     setRestorePhase("restoring_db", "Restoring database (this may take a moment)…");
@@ -349,6 +572,16 @@ export async function executeRestore(
       });
     });
 
+    // ── Step 4.5: clear user_sessions ─────────────────────────────────────────
+    // After pg_restore --clean, user_sessions contains stale rows from the
+    // backup. These rows carry token_hash values that collide with any fresh
+    // login. TRUNCATE gives a clean slate: all clients must re-authenticate
+    // against the restored data, and there are no unique-constraint conflicts.
+    // Hard-fail if TRUNCATE fails: leaving stale sessions would cause every
+    // post-restore login to fail with a unique-constraint error.
+    setRestorePhase("clearing_sessions", "Clearing user sessions…");
+    await pool.query("TRUNCATE TABLE user_sessions");
+
     // ── Step 5: restore media files ───────────────────────────────────────────
     setRestorePhase("restoring_media", "Restoring case media files…");
     const mediaDir = path.resolve(process.cwd(), "uploads", "case-media");
@@ -381,6 +614,27 @@ export async function executeRestore(
       if (!entry.isDirectory) {
         fs.writeFileSync(destPath, entry.getData());
       }
+    }
+
+    // ── Step 5.5: post-restore validation ────────────────────────────────────
+    // SQL checks verify the restored database is self-consistent. Hard-fail:
+    // if validation finds orphaned rows or broken FKs the restore is considered
+    // corrupt and phase is set to error so the admin knows to investigate or
+    // roll back using the pre-restore safety snapshot.
+    setRestorePhase("validating", "Validating restored data…");
+    const expectedCaseCount = typeof manifest.caseCount === "number"
+      ? manifest.caseCount : null;
+    const expectedInvoiceCount = typeof manifest.invoiceCount === "number"
+      ? manifest.invoiceCount : null;
+    const validation = await runPostRestoreValidation({
+      expectedCaseCount,
+      expectedInvoiceCount,
+    });
+    if (!validation.valid) {
+      throw new Error(
+        `Post-restore validation failed: ${validation.errors.join("; ")}. ` +
+        `A pre-restore safety snapshot was saved to uploads/.restore-snapshots/ for manual recovery.`,
+      );
     }
 
     // ── Step 6: record restore run ────────────────────────────────────────────
@@ -444,13 +698,28 @@ function backupFileName(): string {
 }
 
 /** Build the manifest JSON embedded at the root of the inner ZIP. */
-function buildBackupManifest(triggeredBy: string): Record<string, unknown> {
+function buildBackupManifest(
+  triggeredBy: string,
+  counts?: {
+    userCount: number;
+    orgCount: number;
+    caseCount: number;
+    invoiceCount: number;
+    tableCount: number;
+  },
+): Record<string, unknown> {
   return {
     version: "2.0",
+    schemaVersion: BACKUP_SCHEMA_VERSION,
     appName: "LabTrax",
     exportedAt: new Date().toISOString(),
     exportedBy: triggeredBy,
     dbFormat: "pg_dump:custom",
+    userCount:    counts?.userCount    ?? 0,
+    orgCount:     counts?.orgCount     ?? 0,
+    caseCount:    counts?.caseCount    ?? 0,
+    invoiceCount: counts?.invoiceCount ?? 0,
+    tableCount:   counts?.tableCount   ?? 0,
     decryptNote:
       "This file is AES-256-GCM encrypted. Format: 4-byte magic " +
       `('${BACKUP_MAGIC_BUFFERED}' = tag after IV, or '${BACKUP_MAGIC_STREAMED}' = tag appended at end) ` +
@@ -462,8 +731,7 @@ function buildBackupManifest(triggeredBy: string): Record<string, unknown> {
 }
 
 /** Create the ZIP archiver and queue the manifest, db dump, and media dir. */
-function createBackupArchive(triggeredBy: string, pgDump: Buffer): archiver.Archiver {
-  const manifest = buildBackupManifest(triggeredBy);
+function createBackupArchive(manifest: Record<string, unknown>, pgDump: Buffer): archiver.Archiver {
   const mediaDir = path.resolve(process.cwd(), "uploads", "case-media");
   const mediaExists = fs.existsSync(mediaDir);
 
@@ -478,12 +746,13 @@ export async function buildBackupZipBuffer(triggeredBy: string): Promise<{
   buffer: Buffer;
   fileName: string;
 }> {
-  const pgDump = await buildPgDumpBuffer();
+  const [pgDump, counts] = await Promise.all([buildPgDumpBuffer(), buildManifestCounts()]);
   const fileName = backupFileName();
+  const manifest = buildBackupManifest(triggeredBy, counts);
 
   const zipBuffer: Buffer = await new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    const archive = createBackupArchive(triggeredBy, pgDump);
+    const archive = createBackupArchive(manifest, pgDump);
     archive.on("data", (chunk: Buffer) => chunks.push(chunk));
     archive.on("end", () => resolve(Buffer.concat(chunks)));
     archive.on("error", reject);
@@ -801,12 +1070,13 @@ export async function streamBackupDownload(
 ): Promise<void> {
   // ── Pre-flight (must not write anything yet) ──────────────────────────────
   const key = deriveBackupKey(); // throws if no secret is configured
-  const pgDump = await buildPgDumpBuffer(); // throws on pg_dump failure
+  const [pgDump, counts] = await Promise.all([buildPgDumpBuffer(), buildManifestCounts()]);
   const fileName = backupFileName();
+  const manifest = buildBackupManifest(triggeredBy, counts);
 
   const iv = randomBytes(GCM_IV_BYTES);
   const cipher = createCipheriv("aes-256-gcm", key, iv);
-  const archive = createBackupArchive(triggeredBy, pgDump);
+  const archive = createBackupArchive(manifest, pgDump);
 
   // Count ciphertext bytes without breaking pipe backpressure (no raw 'data'
   // listener on the piped path).

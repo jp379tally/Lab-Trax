@@ -25,6 +25,9 @@ vi.mock("../lib/backup.js", () => ({
   restartScheduledBackupJob: vi.fn().mockResolvedValue(undefined),
   getRestoreState: () => ({ phase: restoreStatePhase, message: null }),
   executeRestore: (buf: Buffer, by: string) => executeRestoreSpy(buf, by),
+  // Pre-flight manifest validation: return a compatible manifest by default
+  // so chunked-upload tests reach the 202 + executeRestore path.
+  parseAndValidateBackupManifest: vi.fn().mockReturnValue({ appName: "LabTrax" }),
 }));
 vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));
 vi.mock("../lib/statements.js", () => ({ startStatementScheduler: vi.fn() }));

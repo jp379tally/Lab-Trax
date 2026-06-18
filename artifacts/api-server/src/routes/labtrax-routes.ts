@@ -25,7 +25,7 @@ import {
 import { dispatchInstallerAlert } from "../lib/desktop-installer-alerts";
 import { runDesktopInstallerHealthCheck } from "../lib/desktop-installer-health";
 import { getDownloadInterruptionStats } from "../lib/download-interruptions";
-import { runBackup, generateBackupForDownload, streamBackupDownload, getBackupHourUtc, getBackupScheduleConfig, getLastSuccessfulBackupAt, getBackupStaleAlertSettings, getBackupHistoryRetentionDays, restartScheduledBackupJob, runScheduledBackupNow, executeRestore, getRestoreState, SETTING_BACKUP_HOUR_UTC, SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, SETTING_BACKUP_SCHEDULE_DESTINATION, SETTING_BACKUP_SCHEDULE_PATH, SETTING_BACKUP_SCHEDULE_ENABLED, SETTING_BACKUP_LAST_SUCCESSFUL_AT, SETTING_BACKUP_HISTORY_RETENTION_DAYS, SETTING_BACKUP_HISTORY_MAX_ROWS, ALL_SCHEDULE_SETTINGS, SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS, SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS, SETTING_BACKUP_STALE_DAYS, DEFAULT_BACKUP_STALE_DAYS, type BackupDestination } from "../lib/backup";
+import { runBackup, generateBackupForDownload, streamBackupDownload, getBackupHourUtc, getBackupScheduleConfig, getLastSuccessfulBackupAt, getBackupStaleAlertSettings, getBackupHistoryRetentionDays, restartScheduledBackupJob, runScheduledBackupNow, executeRestore, getRestoreState, parseAndValidateBackupManifest, SETTING_BACKUP_HOUR_UTC, SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, SETTING_BACKUP_SCHEDULE_DESTINATION, SETTING_BACKUP_SCHEDULE_PATH, SETTING_BACKUP_SCHEDULE_ENABLED, SETTING_BACKUP_LAST_SUCCESSFUL_AT, SETTING_BACKUP_HISTORY_RETENTION_DAYS, SETTING_BACKUP_HISTORY_MAX_ROWS, ALL_SCHEDULE_SETTINGS, SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS, SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS, SETTING_BACKUP_STALE_DAYS, DEFAULT_BACKUP_STALE_DAYS, type BackupDestination } from "../lib/backup";
 import { sendInstallerPublishFailureAlertEmail, sendMail, getAppBaseUrl } from "../lib/mail";
 import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, getCleanupProgress, getCleanupStuckTimeoutMinutes, cancelCleanup, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC, SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES, bindLegacyCaseMedia, extractMediaFilenamesFromText } from "../lib/case-media";
 import { writeCaseMediaToObjectStorage, caseMediaObjectStorageAvailable } from "../lib/case-media-object-storage";
@@ -6922,25 +6922,33 @@ Important rules:
       }
       const reqUser = req.user;
       const triggeredBy = `restore:${reqUser?.username || "admin"}`;
-      // Respond immediately with 202, restore runs async.
+      // Synchronous pre-flight: decrypt + manifest parse before 202.
+      // Returns 409 immediately if the backup is incompatible (schema version
+      // mismatch, wrong app name, or missing required archive entries).
+      let encryptedBuffer: Buffer;
+      try {
+        encryptedBuffer = fs.readFileSync(uploadedFile.path);
+        try { fs.unlinkSync(uploadedFile.path); } catch { /* ignore */ }
+      } catch (readErr: unknown) {
+        return res.status(500).json({ error: "Failed to read uploaded file." });
+      }
+      try {
+        parseAndValidateBackupManifest(encryptedBuffer);
+      } catch (manifestErr: unknown) {
+        const msg = manifestErr instanceof Error ? manifestErr.message : String(manifestErr);
+        return res.status(409).json({ error: msg });
+      }
+      // Respond with 202, restore runs async.
       res.status(202).json({ ok: true, phase: "decrypting", message: "Restore started." });
       // Run the restore pipeline in background.
       (async () => {
-        let filePath: string | undefined = uploadedFile.path;
         try {
-          const encryptedBuffer = fs.readFileSync(filePath);
-          // Delete temp upload file once in memory.
-          try { fs.unlinkSync(filePath); filePath = undefined; } catch { /* ignore */ }
           await executeRestore(encryptedBuffer, triggeredBy);
         } catch (err: unknown) {
           req.log?.error(
             { err: err instanceof Error ? err.message : String(err) },
             "[restore] Restore pipeline failed",
           );
-        } finally {
-          if (filePath) {
-            try { fs.unlinkSync(filePath); } catch { /* ignore */ }
-          }
         }
       })().catch(() => { /* handled above */ });
     },
@@ -7147,6 +7155,17 @@ Important rules:
           destroyRestoreSession(sessionId);
           const reqUser = req.user;
           const triggeredBy = `restore:${reqUser?.username || "admin"}`;
+          // Synchronous pre-flight: returns 409 if the backup is incompatible
+          // (schema version mismatch, wrong app name, missing archive entries).
+          try {
+            parseAndValidateBackupManifest(encryptedBuffer);
+          } catch (manifestErr: unknown) {
+            const msg = manifestErr instanceof Error ? manifestErr.message : String(manifestErr);
+            if (!res.headersSent) {
+              res.status(409).json({ error: msg });
+            }
+            return;
+          }
           if (!res.headersSent) {
             res.status(202).json({ ok: true, phase: "decrypting", message: "Restore started.", complete: true });
           }
