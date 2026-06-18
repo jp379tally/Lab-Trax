@@ -2681,6 +2681,7 @@ router.patch(
           .optional(),
         displayMetadata: z.record(z.any()).nullable().optional(),
         layoutPresetId: z.string().nullable().optional(),
+        depositBankAccountId: z.string().min(1).optional(),
       })
       .parse(req.body);
 
@@ -2906,7 +2907,8 @@ router.patch(
           total: String(updated.total),
           labOrganizationId: updated.labOrganizationId,
         },
-        (req as any).auth.userId
+        (req as any).auth.userId,
+        input.depositBankAccountId
       );
     }
 
@@ -2932,6 +2934,7 @@ router.post(
         amount: z.coerce.number().positive(),
         paymentMethod: z.enum(["card", "ach", "check", "cash", "other"]),
         referenceNumber: z.string().optional(),
+        depositBankAccountId: z.string().min(1).optional(),
       })
       .parse(req.body);
 
@@ -2999,7 +3002,8 @@ router.post(
           total: String(updatedInvoice.total),
           labOrganizationId: updatedInvoice.labOrganizationId,
         },
-        (req as any).auth.userId
+        (req as any).auth.userId,
+        input.depositBankAccountId
       );
     }
 

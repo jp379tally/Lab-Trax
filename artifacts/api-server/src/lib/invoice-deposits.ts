@@ -17,43 +17,68 @@ export type InvoiceForDeposit = {
 };
 
 /**
- * Ensure a posted deposit exists in the lab's default bank account that
- * mirrors a fully-paid invoice. Idempotent: if a deposit is already linked
- * to the invoice it is left as-is. Returns the deposit row when created or
- * already present, or null when no default account is configured.
+ * Ensure a posted deposit exists in the chosen bank account (or the lab's
+ * default when no override is given) that mirrors a fully-paid invoice.
+ * Idempotent: if a deposit is already linked to the invoice it is left as-is.
+ * Returns the deposit row when created or already present, or null when no
+ * account is configured/available.
+ *
+ * @param bankAccountId Optional override — the specific account to deposit
+ *   into. Falls back to the org's defaultBankAccountId when omitted.
  */
 export async function ensureInvoiceDeposit(
   invoice: InvoiceForDeposit,
-  userId: string | null
+  userId: string | null,
+  bankAccountId?: string | null
 ): Promise<{
   created: boolean;
   transactionId: string | null;
   reason?: string;
 }> {
-  const org = await db.query.organizations.findFirst({
-    where: eq(organizations.id, invoice.labOrganizationId),
-  });
-  const defaultAccountId = org?.defaultBankAccountId ?? null;
-  if (!defaultAccountId) {
-    return {
-      created: false,
-      transactionId: null,
-      reason: "no_default_account",
-    };
-  }
+  let account: (typeof bankAccounts.$inferSelect) | undefined;
 
-  const account = await db.query.bankAccounts.findFirst({
-    where: and(
-      eq(bankAccounts.id, defaultAccountId),
-      eq(bankAccounts.labOrganizationId, invoice.labOrganizationId)
-    ),
-  });
-  if (!account || account.isArchived) {
-    return {
-      created: false,
-      transactionId: null,
-      reason: "default_account_unavailable",
-    };
+  if (bankAccountId) {
+    // Caller specified an explicit account — validate it belongs to this lab.
+    account = await db.query.bankAccounts.findFirst({
+      where: and(
+        eq(bankAccounts.id, bankAccountId),
+        eq(bankAccounts.labOrganizationId, invoice.labOrganizationId)
+      ),
+    });
+    if (!account || account.isArchived) {
+      return {
+        created: false,
+        transactionId: null,
+        reason: "specified_account_unavailable",
+      };
+    }
+  } else {
+    // Fall back to the org's configured default account.
+    const org = await db.query.organizations.findFirst({
+      where: eq(organizations.id, invoice.labOrganizationId),
+    });
+    const defaultAccountId = org?.defaultBankAccountId ?? null;
+    if (!defaultAccountId) {
+      return {
+        created: false,
+        transactionId: null,
+        reason: "no_default_account",
+      };
+    }
+
+    account = await db.query.bankAccounts.findFirst({
+      where: and(
+        eq(bankAccounts.id, defaultAccountId),
+        eq(bankAccounts.labOrganizationId, invoice.labOrganizationId)
+      ),
+    });
+    if (!account || account.isArchived) {
+      return {
+        created: false,
+        transactionId: null,
+        reason: "default_account_unavailable",
+      };
+    }
   }
 
   const amount = Number(invoice.total || 0);

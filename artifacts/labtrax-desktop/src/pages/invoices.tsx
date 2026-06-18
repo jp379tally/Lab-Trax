@@ -35,6 +35,7 @@ import {
 } from "lucide-react";
 import QRCodeLib from "qrcode";
 import { apiFetch, ApiError, getApiOrigin, getAccessToken } from "@/lib/api";
+import { useBankAccounts } from "@/lib/finance";
 import { setNavBlocker } from "@/lib/nav-guard";
 import { DoctorNamePicker } from "@/components/DoctorNamePicker";
 import {
@@ -3634,14 +3635,47 @@ function RecordPaymentDialog({
   onClose: () => void;
   onRecorded: () => void;
 }) {
+  const labOrgId = invoice.labOrganizationId ?? null;
+  const accountsQuery = useBankAccounts(labOrgId);
+  const settingsQuery = useQuery({
+    queryKey: ["finance", "settings", labOrgId],
+    queryFn: () =>
+      apiFetch<{ defaultBankAccountId: string | null }>(
+        `/finance/settings?organizationId=${labOrgId}`
+      ),
+    enabled: !!labOrgId,
+  });
+
+  const activeAccounts = (accountsQuery.data ?? []).filter(
+    (a) => !a.isArchived
+  );
+
+  const defaultAccountId = settingsQuery.data?.defaultBankAccountId ?? null;
+
   const balanceDue = Number(invoice.balanceDue ?? invoice.total ?? 0);
   const [amount, setAmount] = useState<string>(
     balanceDue > 0 ? balanceDue.toFixed(2) : "",
   );
   const [method, setMethod] = useState<string>("check");
   const [reference, setReference] = useState("");
+  const [depositAccountId, setDepositAccountId] = useState<string>("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Once we know the default account, pre-select it
+  useEffect(() => {
+    if (!depositAccountId && defaultAccountId) {
+      setDepositAccountId(defaultAccountId);
+    }
+  }, [defaultAccountId, depositAccountId]);
+
+  // If no default is set but accounts loaded, pick the first non-Undeposited Funds account
+  useEffect(() => {
+    if (!depositAccountId && activeAccounts.length > 0 && settingsQuery.isFetched) {
+      const first = activeAccounts.find((a) => a.accountType !== "undeposited_funds") ?? activeAccounts[0];
+      if (first) setDepositAccountId(first.id);
+    }
+  }, [activeAccounts, depositAccountId, settingsQuery.isFetched]);
 
   async function submit() {
     const parsed = parseFloat(amount);
@@ -3658,6 +3692,7 @@ function RecordPaymentDialog({
           amount: parsed,
           paymentMethod: method,
           ...(reference.trim() ? { referenceNumber: reference.trim() } : {}),
+          ...(depositAccountId ? { depositBankAccountId: depositAccountId } : {}),
         }),
       });
       onRecorded();
@@ -3730,6 +3765,25 @@ function RecordPaymentDialog({
               className="mt-1 w-full h-9 px-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
             />
           </label>
+          {activeAccounts.length > 0 && (
+            <label className="block">
+              <span className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                Deposit to account
+              </span>
+              <select
+                value={depositAccountId}
+                onChange={(e) => setDepositAccountId(e.target.value)}
+                className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
+              >
+                {activeAccounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                    {a.id === defaultAccountId ? " (default)" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           {error && (
             <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               {error}
