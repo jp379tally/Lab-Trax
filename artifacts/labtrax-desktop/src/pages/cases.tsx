@@ -6428,7 +6428,7 @@ export function CaseDrawer({
 
       {/* Invoice editor overlay */}
       {viewingInvoice && (
-        <InvoiceEditor invoice={viewingInvoice} onClose={() => setViewingInvoice(null)} />
+        <InvoiceEditor key={viewingInvoice.id} invoice={viewingInvoice} onClose={() => setViewingInvoice(null)} />
       )}
 
       {/* Print Layout Editor */}

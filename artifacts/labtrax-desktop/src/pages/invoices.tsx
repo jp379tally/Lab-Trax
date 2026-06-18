@@ -604,6 +604,7 @@ export default function InvoicesPage() {
 
       {editing && (
         <InvoiceEditor
+          key={editing.id}
           invoice={editing}
           doctorNames={distinctDoctorNames}
           onClose={() => setEditing(null)}
