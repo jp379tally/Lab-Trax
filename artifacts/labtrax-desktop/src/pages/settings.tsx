@@ -9668,6 +9668,19 @@ interface VocabItem {
   isDefault: boolean;
 }
 
+interface ShadeMaterialGapsData {
+  labOrganizationId: string;
+  totalCaseLinked: number;
+  gapCount: number;
+}
+
+interface ShadeMaterialBackfillResult {
+  labOrganizationId: string;
+  gapInvoicesFound: number;
+  updated: number;
+  skippedNoDerivable: number;
+}
+
 function VocabularyPanel() {
   const qc = useQueryClient();
 
@@ -9688,6 +9701,36 @@ function VocabularyPanel() {
 
   const [selectedLabId, setSelectedLabId] = useState<string | null>(null);
   const effectiveLabId = selectedLabId ?? adminLabs[0]?.organizationId ?? null;
+
+  const gapsQuery = useQuery<ShadeMaterialGapsData>({
+    enabled: !!effectiveLabId,
+    queryKey: ["invoices", "shade-material-gaps", effectiveLabId],
+    queryFn: () =>
+      apiFetch(
+        `/invoices/admin/shade-material-gaps?labOrganizationId=${encodeURIComponent(effectiveLabId!)}`,
+      ),
+    staleTime: 60_000,
+  });
+
+  const [backfillResult, setBackfillResult] = useState<ShadeMaterialBackfillResult | null>(null);
+  const [backfillError, setBackfillError] = useState<string | null>(null);
+
+  const backfillMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<ShadeMaterialBackfillResult>("/invoices/admin/shade-material-backfill", {
+        method: "POST",
+        body: JSON.stringify({ labOrganizationId: effectiveLabId }),
+      }),
+    onSuccess: (data) => {
+      setBackfillResult(data);
+      setBackfillError(null);
+      void qc.invalidateQueries({ queryKey: ["invoices", "shade-material-gaps", effectiveLabId] });
+    },
+    onError: (err: unknown) => {
+      setBackfillError(err instanceof Error ? err.message : "Backfill failed.");
+      setBackfillResult(null);
+    },
+  });
 
   // One query per kind
   const queryForKind = (kind: VocabKind) =>
@@ -9935,6 +9978,71 @@ function VocabularyPanel() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {effectiveLabId && (
+        <div className="border-t border-border pt-6 mt-6 space-y-3">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Invoice shade &amp; material gaps
+          </h3>
+          <p className="text-sm text-muted-foreground">
+            Invoices linked to cases may have an empty shade or material snapshot if they were
+            created before that data was captured. Running the backfill fills them in from the
+            case's restoration rows without overwriting any values you've already edited by hand.
+          </p>
+
+          {gapsQuery.isLoading && (
+            <div className="flex items-center gap-2 text-muted-foreground text-sm">
+              <Loader2 size={13} className="animate-spin" /> Checking…
+            </div>
+          )}
+
+          {gapsQuery.isError && (
+            <p className="text-sm text-destructive">Failed to load gap count.</p>
+          )}
+
+          {gapsQuery.data && (
+            <div className="rounded-md border border-border bg-secondary/30 px-4 py-3 text-sm">
+              <div className="grid grid-cols-2 gap-x-6 gap-y-1">
+                <span className="text-muted-foreground">Case-linked invoices</span>
+                <span>{gapsQuery.data.totalCaseLinked.toLocaleString()}</span>
+                <span className="text-muted-foreground">Missing shade or material</span>
+                <span className={gapsQuery.data.gapCount > 0 ? "font-semibold text-amber-600 dark:text-amber-400" : ""}>
+                  {gapsQuery.data.gapCount.toLocaleString()}
+                  {gapsQuery.data.gapCount === 0 && " — all up to date"}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {backfillError && (
+            <Alert tone="danger">{backfillError}</Alert>
+          )}
+
+          {backfillResult && (
+            <Alert tone="success">
+              Backfill complete — {backfillResult.updated} invoice{backfillResult.updated === 1 ? "" : "s"} updated
+              {backfillResult.skippedNoDerivable > 0
+                ? `, ${backfillResult.skippedNoDerivable} skipped (no restoration data available).`
+                : "."}
+            </Alert>
+          )}
+
+          <button
+            type="button"
+            disabled={!effectiveLabId || backfillMutation.isPending || (gapsQuery.data?.gapCount === 0)}
+            onClick={() => {
+              setBackfillResult(null);
+              setBackfillError(null);
+              backfillMutation.mutate();
+            }}
+            className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium disabled:opacity-60"
+          >
+            {backfillMutation.isPending
+              ? <><Loader2 size={12} className="animate-spin" /> Running…</>
+              : <><Play size={12} /> Run backfill now</>}
+          </button>
         </div>
       )}
 

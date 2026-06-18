@@ -29,7 +29,7 @@ import {
   users,
 } from "@workspace/db";
 import { getProviderOrgIdsForUserAndLinks } from "../lib/cross-lab-doctor";
-import { inArray, isNull } from "drizzle-orm";
+import { inArray, isNotNull, isNull } from "drizzle-orm";
 import { ensureInvoiceDeposit } from "../lib/invoice-deposits";
 import { writeAuditLog } from "../lib/audit";
 import { calculateLineTotal, sumMoney } from "../lib/case";
@@ -944,6 +944,158 @@ router.post(
 
     return ok(res, summary);
   })
+);
+
+// Distinct, order-preserving, trimmed join of a column across rows.
+function distinctJoinValues(values: Array<string | null>): string {
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  for (const raw of values) {
+    const v = (raw ?? "").trim();
+    if (v && !seen.has(v)) {
+      seen.add(v);
+      ordered.push(v);
+    }
+  }
+  return ordered.join(", ");
+}
+
+// Report: count of case-linked invoices whose display_metadata_json has an
+// empty shade or material field. Admins use this to decide whether to re-run
+// the shade/material backfill script.
+router.get(
+  "/admin/shade-material-gaps",
+  asyncHandler(async (req, res) => {
+    const labOrganizationId = z.string().min(1).parse(req.query.labOrganizationId);
+    await requireAnyRole((req as any).auth.userId, labOrganizationId, ADMIN_ROLES);
+
+    const [row] = await db
+      .select({
+        gapCount: sql<number>`count(*) filter (where
+          (display_metadata_json->>'shade' is null or trim(display_metadata_json->>'shade') = '')
+          or
+          (display_metadata_json->>'material' is null or trim(display_metadata_json->>'material') = '')
+        )::int`,
+        totalCaseLinked: sql<number>`count(*)::int`,
+      })
+      .from(invoices)
+      .where(
+        and(
+          isNotNull(invoices.caseId),
+          eq(invoices.labOrganizationId, labOrganizationId),
+          isNull(invoices.deletedAt),
+        ),
+      );
+
+    return ok(res, {
+      labOrganizationId,
+      totalCaseLinked: row?.totalCaseLinked ?? 0,
+      gapCount: row?.gapCount ?? 0,
+    });
+  }),
+);
+
+// Backfill shade/material snapshot for case-linked invoices that are missing
+// them. Mirrors the logic in scripts/src/backfill-invoice-display-shade-material.ts
+// but scoped to a single lab org. Never overwrites a non-empty snapshot value.
+// Returns counts of updated vs skipped invoices.
+router.post(
+  "/admin/shade-material-backfill",
+  asyncHandler(async (req, res) => {
+    const { labOrganizationId } = z
+      .object({ labOrganizationId: z.string().min(1) })
+      .parse(req.body);
+
+    await requireAnyRole((req as any).auth.userId, labOrganizationId, ADMIN_ROLES);
+
+    // Fetch only case-linked invoices with at least one empty field.
+    const gapRows = await db
+      .select({
+        id: invoices.id,
+        caseId: invoices.caseId,
+        displayMetadataJson: invoices.displayMetadataJson,
+      })
+      .from(invoices)
+      .where(
+        and(
+          isNotNull(invoices.caseId),
+          eq(invoices.labOrganizationId, labOrganizationId),
+          isNull(invoices.deletedAt),
+          sql`(
+            (display_metadata_json->>'shade' is null or trim(display_metadata_json->>'shade') = '')
+            or
+            (display_metadata_json->>'material' is null or trim(display_metadata_json->>'material') = '')
+          )`,
+        ),
+      );
+
+    let updated = 0;
+    let skippedNoDerivable = 0;
+
+    for (const inv of gapRows) {
+      if (!inv.caseId) continue;
+      const meta = (
+        inv.displayMetadataJson && typeof inv.displayMetadataJson === "object"
+          ? inv.displayMetadataJson
+          : {}
+      ) as Record<string, unknown>;
+
+      const shadeEmpty =
+        !meta.shade ||
+        (typeof meta.shade === "string" && meta.shade.trim() === "");
+      const materialEmpty =
+        !meta.material ||
+        (typeof meta.material === "string" && meta.material.trim() === "");
+
+      const restorationRows = await db
+        .select({
+          shade: caseRestorations.shade,
+          material: caseRestorations.material,
+          restorationType: caseRestorations.restorationType,
+        })
+        .from(caseRestorations)
+        .where(eq(caseRestorations.caseId, inv.caseId));
+
+      const billable = restorationRows.filter(
+        (r) => !/^missing$/i.test(r.restorationType ?? ""),
+      );
+
+      const derivedShade = distinctJoinValues(billable.map((r) => r.shade));
+      const derivedMaterial = distinctJoinValues(billable.map((r) => r.material));
+
+      const setShade = shadeEmpty && derivedShade ? derivedShade : null;
+      const setMaterial =
+        materialEmpty && derivedMaterial ? derivedMaterial : null;
+
+      if (!setShade && !setMaterial) {
+        skippedNoDerivable++;
+        continue;
+      }
+
+      const nextMeta: Record<string, unknown> = { ...meta };
+      if (setShade) nextMeta.shade = setShade;
+      if (setMaterial) nextMeta.material = setMaterial;
+
+      await db
+        .update(invoices)
+        .set({ displayMetadataJson: nextMeta })
+        .where(eq(invoices.id, inv.id));
+
+      updated++;
+    }
+
+    req.log?.info?.(
+      { labOrganizationId, gapInvoicesFound: gapRows.length, updated, skippedNoDerivable },
+      "[SHADE-MATERIAL BACKFILL] completed",
+    );
+
+    return ok(res, {
+      labOrganizationId,
+      gapInvoicesFound: gapRows.length,
+      updated,
+      skippedNoDerivable,
+    });
+  }),
 );
 
 // Admin-only bulk reassignment: move all non-voided invoices from one
