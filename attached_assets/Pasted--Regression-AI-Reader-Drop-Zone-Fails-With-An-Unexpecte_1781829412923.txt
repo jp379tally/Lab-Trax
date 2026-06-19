@@ -1,0 +1,162 @@
+# Regression: AI Reader / Drop Zone Fails With "An Unexpected Error Occurred"
+
+## Summary
+
+The Dashboard AI Reader / Drop Zone workflow appears to be broken.
+
+Previously, users could drag a case document into the Drop Zone and the AI reader would process it and begin case creation.
+
+Now, dropping a document into the Drop Zone immediately results in:
+
+```text
+An unexpected error occurred.
+```
+
+No case is created and no useful error information is presented to the user.
+
+## Severity
+
+High
+
+This breaks one of the primary workflow accelerators in LabTrax and appears to be a regression from previously working behavior.
+
+## Steps to Reproduce
+
+1. Navigate to Dashboard.
+2. Drag a case document into the Drop Zone.
+3. Wait for AI processing to begin.
+
+## Expected Result
+
+* File uploads successfully.
+* AI reader processes the document.
+* Extracted case information is displayed.
+* User proceeds through case creation workflow.
+
+## Actual Result
+
+* Red error panel appears in Drop Zone.
+* Message shown:
+
+```text
+An unexpected error occurred.
+```
+
+* No additional details are provided.
+* No case is created.
+
+## Screenshot
+
+Attached screenshot shows the Dashboard Drop Zone displaying:
+
+```text
+An unexpected error occurred.
+```
+
+while the remainder of the Dashboard continues functioning normally.
+
+## Why This Appears To Be A Regression
+
+The AI reader workflow was functioning previously.
+
+The same workflow now fails before any visible processing occurs, suggesting one of the following:
+
+### Frontend Issues
+
+* Drop Zone upload handler failure
+* Missing API route
+* Bad request payload
+* Failed upload initialization
+* React state/runtime error
+
+### Backend Issues
+
+* AI extraction endpoint failure
+* Authentication/session validation issue
+* Storage upload failure
+* OpenAI/AI provider integration error
+* Queue worker failure
+* OCR service failure
+
+### Infrastructure Issues
+
+* Missing environment variable
+* Expired API key
+* Storage bucket permission issue
+* Background worker not running
+* Service deployment regression
+
+## Required Investigation
+
+Check:
+
+### Browser Console
+
+Look for:
+
+```text
+500 errors
+401 errors
+403 errors
+network failures
+uncaught exceptions
+```
+
+### Server Logs
+
+Look for failures in:
+
+```text
+drop-zone upload route
+AI reader endpoint
+OCR pipeline
+document extraction service
+OpenAI requests
+storage uploads
+background jobs
+```
+
+### Recent Changes
+
+Review recent commits affecting:
+
+```text
+Dashboard
+Drop Zone
+Case Creation
+AI Reader
+Document Upload
+OCR
+Storage
+Authentication
+```
+
+## UX Improvement
+
+Current error:
+
+```text
+An unexpected error occurred.
+```
+
+is not actionable.
+
+Replace with specific messages such as:
+
+* Unable to upload document
+* AI extraction service unavailable
+* OCR processing failed
+* Unsupported file type
+* File exceeds upload limit
+* Authentication expired
+
+and log the actual error server-side.
+
+## Acceptance Criteria
+
+* Drag-and-drop upload works again.
+* AI reader successfully processes uploaded case documents.
+* Case creation workflow launches normally.
+* Meaningful error messages are shown when failures occur.
+* Root cause of regression is identified and fixed.
+* Existing AI reader functionality is covered by automated tests to prevent future regressions.

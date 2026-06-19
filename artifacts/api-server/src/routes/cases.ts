@@ -7182,6 +7182,24 @@ function isCaseNumberUniqueViolation(err: unknown): boolean {
   return false;
 }
 
+function isBarcodeConflict(err: unknown): boolean {
+  const seen = new Set<unknown>();
+  let cur: unknown = err;
+  while (cur != null && typeof cur === "object" && !seen.has(cur)) {
+    seen.add(cur);
+    const e = cur as { code?: unknown; constraint?: unknown; cause?: unknown };
+    if (
+      e.code === "23505" &&
+      typeof e.constraint === "string" &&
+      e.constraint === "cases_barcode_unique_per_lab"
+    ) {
+      return true;
+    }
+    cur = e.cause;
+  }
+  return false;
+}
+
 interface ExtractedRxFields {
   doctorName?: string | null;
   patientFirstName?: string | null;
@@ -7666,7 +7684,7 @@ router.post(
     // Postgres rolls back the dedup-claim row too, freeing the iTero order
     // for retry on the next poll cycle. The only success path commits the
     // claim with createdCaseId set, so future requests see the existing case.
-    const runImportTx = (caseNumber: string) =>
+    const runImportTx = (caseNumber: string, barcode: string | null) =>
       db.transaction(async (tx) => {
       const [claim] = await tx
         .insert(iteroImportedOrders)
@@ -7734,7 +7752,7 @@ router.post(
           externalPatientId: body.iteroOrderId,
           rxNotes: extracted.notes?.trim() || null,
           shade: normalizeIteroShade(extracted.shade),
-          casePanBarcode: body.casePanBarcodeHint?.trim() || null,
+          casePanBarcode: barcode,
           suggestedDoctorName,
           // When the per-lab "auto-link suggested practice" setting fired,
           // the suggestion has been applied — null it out so the review
@@ -7944,10 +7962,13 @@ router.post(
     // retry rather than 500 the caller.
     const MAX_CASE_NUMBER_ATTEMPTS = 5;
     let txResult: Awaited<ReturnType<typeof runImportTx>>;
+    // The barcode hint is optional metadata — if it conflicts with an existing
+    // case, strip it and proceed without it rather than failing the import.
+    let barcodeForImport: string | null = body.casePanBarcodeHint?.trim() || null;
     for (let attempt = 1; ; attempt++) {
       const caseNumber = await generateIteroCaseNumber(body.labOrganizationId);
       try {
-        txResult = await runImportTx(caseNumber);
+        txResult = await runImportTx(caseNumber, barcodeForImport);
         break;
       } catch (err) {
         if (isCaseNumberUniqueViolation(err) && attempt < MAX_CASE_NUMBER_ATTEMPTS) {
@@ -7957,7 +7978,20 @@ router.post(
           );
           continue;
         }
-        throw err;
+        // Barcode hint conflicts with an existing case — strip it and retry.
+        // The casePanBarcodeHint is a convenience field from the iTero poller;
+        // case creation must not fail permanently because of a barcode collision.
+        if (isBarcodeConflict(err) && barcodeForImport !== null) {
+          req.log?.warn?.(
+            { barcode: barcodeForImport },
+            "iTero import: barcode conflict; retrying without barcode hint"
+          );
+          barcodeForImport = null;
+          // The transaction rolled back so the case number slot is available again.
+          txResult = await runImportTx(caseNumber, null);
+          break;
+        }
+        rethrowBarcodeConflict(err, barcodeForImport ?? "");
       }
     }
 
