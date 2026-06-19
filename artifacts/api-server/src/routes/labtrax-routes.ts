@@ -9,7 +9,7 @@ import {
 } from "../lib/admin-pin";
 import { normalizePhoneE164 } from "../lib/account-link-sms";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -29,6 +29,7 @@ import { runBackup, generateBackupForDownload, streamBackupDownload, getBackupHo
 import { sendInstallerPublishFailureAlertEmail, sendMail, getAppBaseUrl } from "../lib/mail";
 import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, getCleanupProgress, getCleanupStuckTimeoutMinutes, cancelCleanup, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC, SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES, bindLegacyCaseMedia, extractMediaFilenamesFromText } from "../lib/case-media";
 import { writeCaseMediaToObjectStorage, caseMediaObjectStorageAvailable } from "../lib/case-media-object-storage";
+import { convertPdfBufferToImageDataUrls } from "../lib/pdf-to-images";
 import multer from "multer";
 import OpenAI, { toFile } from "openai";
 import { getMailerConfig } from "../lib/mailer";
@@ -3550,34 +3551,7 @@ export async function registerRoutes(): Promise<IRouter> {
   });
 
   async function convertPdfToImageBase64s(rawPdfBase64: string): Promise<string[]> {
-    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "rx-pdf-"));
-    const pdfPath = path.join(tmpDir, "input.pdf");
-    const outputPrefix = path.join(tmpDir, "page");
-    try {
-      await writeFile(pdfPath, Buffer.from(rawPdfBase64, "base64"));
-      await new Promise<void>((resolve, reject) => {
-        const proc = spawn("pdftoppm", ["-jpeg", "-r", "250", "-f", "1", "-l", "3", pdfPath, outputPrefix]);
-        let stderr = "";
-        proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString().slice(0, 500); });
-        proc.on("close", (code: number) => {
-          if (code === 0) resolve();
-          else reject(new Error(`pdftoppm exited ${code}: ${stderr}`));
-        });
-        proc.on("error", reject);
-      });
-      const allFiles = await readdir(tmpDir);
-      const jpgFiles = allFiles
-        .filter((f) => f.startsWith("page") && (f.endsWith(".jpg") || f.endsWith(".jpeg")))
-        .sort();
-      const images: string[] = [];
-      for (const file of jpgFiles) {
-        const data = await readFile(path.join(tmpDir, file));
-        images.push(`data:image/jpeg;base64,${data.toString("base64")}`);
-      }
-      return images;
-    } finally {
-      await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-    }
+    return convertPdfBufferToImageDataUrls(Buffer.from(rawPdfBase64, "base64"));
   }
 
   router.post(["/analyze-prescription", "/cases/analyze-rx"], optionalAuth, async (req, res) => {

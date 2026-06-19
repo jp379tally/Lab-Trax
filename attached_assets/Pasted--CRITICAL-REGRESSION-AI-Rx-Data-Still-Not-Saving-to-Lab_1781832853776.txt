@@ -1,0 +1,216 @@
+# CRITICAL REGRESSION: AI Rx Data Still Not Saving to Lab Slip or Invoice
+
+## Summary
+
+This is still not fixed.
+
+The AI reader is extracting data from the uploaded Rx, but that data is not being saved correctly to the created case, and the invoice is not being generated from the extracted Rx/restoration data.
+
+This is a core LabTrax workflow regression.
+
+## Required Workflow
+
+The intended workflow is:
+
+1. User drags and drops an Rx file.
+2. AI reads the Rx.
+3. AI extracts case data.
+4. User reviews the extracted data.
+5. User creates the case.
+6. Lab slip is populated with extracted data.
+7. Invoice is automatically generated from the extracted restoration data and the doctor/practice fee schedule.
+
+## Expected Result
+
+After AI reads the Rx and the case is created, the Lab Slip should be filled out with:
+
+* Doctor name
+* Patient name
+* Practice
+* Tooth number
+* Material
+* Shade
+* Due date
+* Restoration type
+* Rx notes
+* Case notes
+* Any relevant prescription details
+
+The invoice should then be generated using that same extracted restoration data.
+
+Example:
+
+```text
+Rx says:
+Dr. Test requests #3 crown, zirconia material, shade A2.
+Note: make 1mm out of occlusion.
+
+Expected case:
+Doctor: Dr. Test
+Tooth #: 3
+Restoration: Crown
+Material: Zirconia
+Shade: A2
+Rx Notes: Make 1mm out of occlusion
+
+Expected invoice:
+Line item: Zirconia crown
+Quantity: 1
+Price: Dr. Test’s configured zirconia crown price
+Total: matching configured price
+```
+
+## Actual Result
+
+The AI import screen shows extracted data, but after creating the case, the final case is missing that data.
+
+Visible extracted data before creation includes:
+
+```text
+Tooth: 8
+Material: Emax
+Shade: A2
+Due date: 07/02/2026
+Rx notes: Pre-Treatment Scan. Procedure: Fixed Restorative. Treatment: Crown. Specification: Full Contour.
+```
+
+But the created Lab Slip shows:
+
+```text
+Due Date: —
+Tooth #: —
+Shade: —
+Notes: No notes
+Material: —
+Tooth Number(s): —
+Rx Notes: —
+```
+
+The invoice also shows:
+
+```text
+Total: $0.00
+Balance Due: $0.00
+```
+
+That means the data is visible in the AI review form but is being dropped before or during persistence, and the invoice is being created empty.
+
+## This Used To Work
+
+This workflow previously created a usable case and invoice from the Rx.
+
+The regression appears to be in one or more of these areas:
+
+* AI import form submit payload
+* field-name mapping between frontend and backend
+* create-case endpoint
+* restoration row creation
+* lab slip display mapping
+* invoice draft generation
+* fee schedule lookup
+
+## Required Fix
+
+Fix the entire data path:
+
+```text
+AI extraction
+→ AI review form
+→ create case request payload
+→ backend case creation
+→ restoration rows
+→ lab slip display
+→ invoice line items
+→ invoice total
+```
+
+Do not only show the extracted data in the review modal. The extracted data must be saved to the case and used for billing.
+
+## Areas to Check Immediately
+
+### 1. Frontend Create Payload
+
+Verify the create-case request includes:
+
+* doctorId
+* patientName
+* practiceId
+* dueDate
+* toothNumber / toothNumbers
+* material
+* shade
+* restorationType
+* rxNotes
+* notes
+* extracted restoration details
+* attached Rx file reference
+
+### 2. Backend Persistence
+
+Verify the backend saves AI-created case data into the correct tables/fields.
+
+If tooth, material, shade, and restoration type now belong to restoration rows, then AI-created cases must create restoration rows.
+
+### 3. Lab Slip Display
+
+Verify the Lab Slip reads from the same source where AI-created restoration data is saved.
+
+The display currently shows blanks, so either the data is not saved or the Lab Slip is reading the wrong fields.
+
+### 4. Invoice Generation
+
+Verify invoice generation runs after AI case creation and uses:
+
+* doctor/practice fee schedule
+* restoration type
+* material
+* quantity/unit count
+* tooth count
+* configured admin pricing
+
+Invoice should not be `$0.00` when the Rx contains a billable restoration.
+
+### 5. Regression Tests
+
+Add automated coverage for this exact workflow.
+
+A test should create an AI-imported case with:
+
+```text
+Doctor: Dr. Test
+Patient: Test Patient
+Tooth: 3
+Material: Zirconia
+Shade: A2
+Restoration: Crown
+Rx note: Make 1mm out of occlusion
+```
+
+Then assert:
+
+* Lab slip contains tooth #3
+* Lab slip contains Zirconia
+* Lab slip contains shade A2
+* Lab slip contains the Rx note
+* Invoice contains 1 zirconia crown line item
+* Invoice total matches Dr. Test’s configured price
+* Invoice total is not $0.00
+
+## Acceptance Criteria
+
+* AI-created cases persist extracted tooth number.
+* AI-created cases persist extracted material.
+* AI-created cases persist extracted shade.
+* AI-created cases persist extracted due date.
+* AI-created cases persist Rx notes.
+* AI-created cases show the extracted data on the Lab Slip.
+* AI-created cases generate invoice line items automatically.
+* Invoice totals are calculated from the doctor/practice fee schedule.
+* Invoice total is not `$0.00` when the Rx contains billable work.
+* Regression tests prevent this from breaking again.
+
+## Priority
+
+Critical / blocker.
+
+This is a primary LabTrax workflow. The user believes the AI has read the Rx correctly, but the created case and invoice are incomplete. This creates production risk, billing errors, and manual rework.

@@ -29,7 +29,7 @@ import {
 } from "@workspace/db";
 import multer from "multer";
 import { randomBytes } from "node:crypto";
-import OpenAI, { toFile } from "openai";
+import OpenAI from "openai";
 import AdmZip from "adm-zip";
 import { writeAuditLog } from "../lib/audit";
 import { resolveCaseDueDate } from "../lib/case-due-date";
@@ -42,6 +42,7 @@ import {
   type SimilarityMatchKind,
 } from "../lib/patient-similarity";
 import { notDeleted, restoreDeleted, softDeleteById } from "../lib/soft-delete";
+import { convertPdfBufferToImageDataUrls } from "../lib/pdf-to-images";
 import { caseMediaDir, extractMediaFileName } from "../lib/case-media";
 import {
   openCaseMediaObjectStream,
@@ -7270,66 +7271,56 @@ async function extractRxFieldsFromBuffer(
   mimeType: string,
   originalName: string
 ): Promise<ExtractedRxFields> {
+  // Detect PDFs by mime type, filename, OR magic bytes ("%PDF-" → 0x25 0x50
+  // 0x44 0x46). iTero Rx files always arrive as PDFs, and some clients send a
+  // generic octet-stream mime, so the magic-byte check is the reliable signal.
   const isPdf =
     mimeType.toLowerCase().includes("pdf") ||
-    originalName.toLowerCase().endsWith(".pdf");
+    originalName.toLowerCase().endsWith(".pdf") ||
+    (buf.length >= 5 &&
+      buf[0] === 0x25 &&
+      buf[1] === 0x50 &&
+      buf[2] === 0x44 &&
+      buf[3] === 0x46);
 
+  // Build the vision image set. The Replit AI Integrations proxy does NOT
+  // support the OpenAI Files API (`POST /files` → 400 "not supported"), so we
+  // CANNOT use openai.files.create() / responses.create() with a file_id for
+  // native PDF understanding. Instead we rasterize the PDF to JPEG page images
+  // with pdftoppm and feed them to the vision (chat.completions image_url) API
+  // — the same proven path the /analyze-prescription endpoint uses. This makes
+  // server-side extraction work for ALL callers (the background poller and any
+  // client) without depending on client-sent hints.
+  const imageDataUrls: string[] = [];
   if (isPdf) {
-    // Use the Responses API with file input for native PDF understanding.
-    const uploaded = await openai.files.create({
-      file: await toFile(buf, originalName || "rx.pdf", {
-        type: "application/pdf",
-      }),
-      purpose: "user_data",
-    });
-    try {
-      const r = await openai.responses.create({
-        model: "gpt-5.1",
-        input: [
-          {
-            role: "user",
-            content: [
-              { type: "input_file", file_id: uploaded.id },
-              { type: "input_text", text: ITERO_RX_SYSTEM_PROMPT },
-            ],
-          },
-        ],
-      });
-      const text = r.output_text || "";
-      const m = text.match(/\{[\s\S]*\}/);
-      if (!m) return {};
-      try {
-        return JSON.parse(m[0]) as ExtractedRxFields;
-      } catch {
-        return {};
-      }
-    } finally {
-      try {
-        await openai.files.delete(uploaded.id);
-      } catch {
-        /* ignore */
-      }
-    }
+    const pages = await convertPdfBufferToImageDataUrls(buf);
+    if (pages.length === 0) return {};
+    imageDataUrls.push(...pages);
+  } else {
+    imageDataUrls.push(
+      `data:${mimeType || "image/jpeg"};base64,${buf.toString("base64")}`
+    );
   }
 
-  // Image path — use chat.completions vision (matches existing pattern).
-  const dataUrl = `data:${mimeType || "image/jpeg"};base64,${buf.toString("base64")}`;
   const resp = await openai.chat.completions.create({
-    model: "gpt-5.1",
+    model: "gpt-5.4",
     messages: [
       { role: "system", content: ITERO_RX_SYSTEM_PROMPT },
       {
         role: "user",
         content: [
           { type: "text", text: "Analyze this iTero Lab-Review prescription." },
-          {
-            type: "image_url",
-            image_url: { url: dataUrl, detail: "auto" },
-          },
+          ...imageDataUrls.map(
+            (url) =>
+              ({
+                type: "image_url" as const,
+                image_url: { url, detail: "high" as const },
+              })
+          ),
         ],
       },
     ],
-    max_completion_tokens: 1200,
+    max_completion_tokens: 1500,
   });
   const text = resp.choices?.[0]?.message?.content || "";
   const m = text.match(/\{[\s\S]*\}/);
