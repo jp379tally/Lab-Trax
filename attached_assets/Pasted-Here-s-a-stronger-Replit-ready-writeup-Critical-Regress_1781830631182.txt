@@ -1,0 +1,177 @@
+Here’s a stronger Replit-ready writeup:
+
+# Critical Regression: AI Rx Data Is Not Persisting to Case Details or Invoice
+
+## Summary
+
+The AI reader is extracting data from the Rx, but the extracted data is not being carried through into the created case correctly.
+
+This is a repeated issue and a regression. The AI workflow previously helped create the case and invoice using the prescription data. Now the final created case is missing key fields, and the invoice is not being generated from the Rx/restoration data as expected.
+
+## Current Behavior
+
+After AI analyzes the Rx and the user creates the case, the resulting case record is missing critical information.
+
+In the AI import form, the prescription appears to contain usable data, including:
+
+* Tooth number: `8`
+* Shade: `A2`
+* Due date: `07/02/2026`
+* Notes / Rx text:
+
+```text
+Pre-Treatment Scan. Procedure: Fixed Restorative.
+Treatment: Crown. Specification: Full Contour.
+```
+
+But after creating the case, the case detail panel shows missing fields:
+
+* Due Date is blank
+* Tooth # is blank
+* Shade is blank
+* Notes show “No notes”
+* Material is blank
+* Tooth Number(s) is blank
+* Rx notes are blank or not visible
+* Invoice is not being created/populated from the Rx/restoration data
+
+## Expected Behavior
+
+When the AI reader extracts Rx data and the user creates the case, the extracted data should be saved into the final case record.
+
+At minimum, the following fields should persist:
+
+* Patient
+* Doctor
+* Practice
+* Due date
+* Tooth number(s)
+* Shade
+* Material
+* Restoration type / treatment type
+* Rx notes
+* Any parsed procedure/specification details
+
+The case’s invoice should also be generated from the extracted Rx/restoration data, as it previously did.
+
+## Regression Details
+
+This workflow used to work.
+
+The AI reader was previously able to:
+
+1. Read the uploaded Rx.
+2. Extract the relevant case data.
+3. Create the case with the extracted data filled in.
+4. Use the Rx/restoration data to generate the invoice.
+
+Now the workflow partially works in the AI import form but fails after case creation because the data is not persisted into the final case and invoice.
+
+## Screenshot Evidence
+
+The attached screenshot shows the mismatch:
+
+### AI Import Form Contains Data
+
+Visible extracted fields include:
+
+```text
+Tooth: 8
+Shade: A2
+Due date: 07/02/2026
+Rx text: Pre-Treatment Scan. Procedure: Fixed Restorative. Treatment: Crown. Specification: Full Contour.
+```
+
+### Created Case Is Missing That Data
+
+The resulting case detail panel shows:
+
+```text
+Due Date: —
+Tooth #: —
+Shade: —
+Notes: No notes
+Material: —
+Tooth Number(s): —
+Rx Notes: —
+```
+
+This indicates the data exists before submission but is being dropped during case creation, mapping, persistence, or display.
+
+## Areas to Investigate
+
+### Frontend Mapping
+
+Check the create-case payload from the AI import form.
+
+Verify that these fields are included in the request body:
+
+* dueDate
+* toothNumber / toothNumbers
+* shade
+* material
+* restorationType
+* notes
+* rxNotes
+* restorations
+* invoice line items
+
+Possible bug: UI state contains the values, but the submit payload omits them or maps them to the wrong field names.
+
+### Backend Case Creation Endpoint
+
+Check the endpoint that creates cases from AI-imported Rx data.
+
+Verify it saves:
+
+* case-level fields
+* restoration rows
+* Rx summary fields
+* invoice draft fields
+* notes
+
+Possible bug: backend accepts only patient/doctor/practice and ignores restoration/Rx fields.
+
+### Restoration Data Model
+
+If tooth, material, shade, and treatment now belong to restoration rows instead of the case table, confirm the AI import creates restoration rows correctly.
+
+The case detail screen should then read from those restoration rows and display them in the Lab Slip and Invoice sections.
+
+### Invoice Generation
+
+The invoice should be created from the Rx/restoration data.
+
+Verify:
+
+* invoice draft is created when AI-created case is saved
+* invoice line items are generated from restoration type/material/tooth data
+* invoice display is populated immediately after case creation
+* regression tests cover this behavior
+
+## Required Fix
+
+Fix the AI-created case flow so extracted Rx data persists all the way through:
+
+```text
+AI extraction → import form → create-case payload → backend persistence → case details → invoice
+```
+
+Do not stop at showing the extracted data in the import form. The data must be saved and used.
+
+## Acceptance Criteria
+
+* AI-extracted due date appears on the created case.
+* AI-extracted tooth number appears on the created case.
+* AI-extracted shade appears on the created case.
+* AI-extracted material/restoration details appear on the case.
+* Rx notes/details are saved and visible.
+* Invoice is generated from the Rx/restoration data.
+* Existing behavior from the previous working version is restored.
+* Automated regression coverage is added for AI-created case persistence and invoice creation.
+
+## Priority
+
+Critical.
+
+This directly affects the core AI reader workflow and creates incomplete cases/invoices after users believe the Rx was analyzed successfully.

@@ -7342,10 +7342,20 @@ const iteroImportBodySchema = z.object({
     .string()
     .min(1, "providerOrganizationId is required"),
   // Optional client hints — used as fallbacks when AI fails to extract them.
+  // The drop zone pre-extracts these via analyze-prescription (vision API) and
+  // sends them so the case is always fully populated even when the server-side
+  // openai.files.create() PDF extraction is unavailable.
   doctorNameHint: z.string().optional(),
   patientFirstNameHint: z.string().optional(),
   patientLastNameHint: z.string().optional(),
   casePanBarcodeHint: z.string().optional(),
+  dueDateHint: z.string().optional(),
+  shadeHint: z.string().optional(),
+  toothIndicesHint: z.string().optional(),
+  materialHint: z.string().optional(),
+  caseTypeHint: z.string().optional(),
+  notesHint: z.string().optional(),
+  isRushHint: z.string().optional(),
 });
 
 // ── ZIP import config ────────────────────────────────────────────────────────
@@ -7489,6 +7499,20 @@ router.post(
         );
       }
     }
+
+    // Merge client-provided clinical hints as fallbacks when AI extraction is
+    // incomplete or unavailable. The drop zone pre-extracts these via
+    // analyze-prescription (vision API) before the user clicks "Create case";
+    // sending them here ensures the case is always fully populated even when
+    // the server-side openai.files.create() PDF path is blocked (e.g. Replit
+    // AI proxy does not support that endpoint).
+    if (!extracted.dueDate && body.dueDateHint) extracted.dueDate = body.dueDateHint;
+    if (!extracted.shade && body.shadeHint) extracted.shade = body.shadeHint;
+    if (!extracted.teeth && body.toothIndicesHint) extracted.teeth = body.toothIndicesHint;
+    if (!extracted.material && body.materialHint) extracted.material = body.materialHint;
+    if (!extracted.caseType && body.caseTypeHint) extracted.caseType = body.caseTypeHint;
+    if (!extracted.notes && body.notesHint) extracted.notes = body.notesHint;
+    if (!extracted.isRush && body.isRushHint === "true") extracted.isRush = true;
 
     const patientFirstName =
       (extracted.patientFirstName?.trim() || body.patientFirstNameHint?.trim() ||

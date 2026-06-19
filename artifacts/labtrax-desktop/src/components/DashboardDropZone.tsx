@@ -1380,6 +1380,18 @@ export function DashboardDropZone() {
           if (first?.trim()) fd.append("patientFirstNameHint", first.trim());
           if (last?.trim()) fd.append("patientLastNameHint", last.trim());
           if (rxBarcode.trim()) fd.append("casePanBarcodeHint", rxBarcode.trim());
+          // Pass all AI-extracted clinical data as hints. The server will merge
+          // these into the extracted fields when its own AI extraction fails
+          // (e.g. Replit AI proxy does not support openai.files.create() for PDFs).
+          // This ensures the case is fully populated from the data the user
+          // already reviewed in the form.
+          if (r.dueDate?.trim()) fd.append("dueDateHint", r.dueDate.trim());
+          if (r.shade?.trim()) fd.append("shadeHint", r.shade.trim());
+          if (r.toothIndices?.trim()) fd.append("toothIndicesHint", r.toothIndices.trim());
+          if (r.material?.trim()) fd.append("materialHint", r.material.trim());
+          if (r.caseType?.trim()) fd.append("caseTypeHint", r.caseType.trim());
+          if (r.notes?.trim()) fd.append("notesHint", r.notes.trim());
+          if (r.isRush) fd.append("isRushHint", "true");
 
           const result = await apiFetch<{
             deduped: boolean;
