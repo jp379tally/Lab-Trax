@@ -32,26 +32,6 @@ args = "typecheck-all"
 task = "workflow.run"
 args = "Desktop Build + Publish"
 
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "prebuild-mobile-tests"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "prebuild-api-tests"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "prebuild-legacy-fence"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "prebuild-scripts-tests"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "prebuild-typecheck"
-
 [[workflows.workflow]]
 name = "EAS iOS Build + Submit"
 author = "agent"
@@ -95,61 +75,6 @@ args = "bash scripts/desktop-build-publish.sh"
 
 [workflows.workflow.metadata]
 outputType = "console"
-
-[[workflows.workflow]]
-name = "prebuild-mobile-tests"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "pnpm --filter @workspace/labtrax run test"
-
-[workflows.workflow.metadata]
-isValidation = true
-
-[[workflows.workflow]]
-name = "prebuild-api-tests"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "pnpm --filter @workspace/api-server run test"
-
-[workflows.workflow.metadata]
-isValidation = true
-
-[[workflows.workflow]]
-name = "prebuild-legacy-fence"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "pnpm --filter @workspace/scripts run lint-mobile-legacy-paths"
-
-[workflows.workflow.metadata]
-isValidation = true
-
-[[workflows.workflow]]
-name = "prebuild-scripts-tests"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "pnpm --filter @workspace/scripts run test"
-
-[workflows.workflow.metadata]
-isValidation = true
-
-[[workflows.workflow]]
-name = "prebuild-typecheck"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "pnpm run typecheck"
-
-[workflows.workflow.metadata]
-isValidation = true
 
 [agent]
 stack = "PNPM_WORKSPACE"

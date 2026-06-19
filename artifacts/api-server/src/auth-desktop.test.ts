@@ -142,12 +142,26 @@ vi.mock("@workspace/db", () => {
     return obj;
   };
 
-  interface InsertChain extends PromiseLike<void> {
+  interface InsertChain {
     values(v: Record<string, unknown>): InsertChain;
     returning(): Promise<Array<Record<string, unknown>>>;
+    then<TResult1 = void, TResult2 = never>(
+      onfulfilled?: ((value: void) => TResult1 | PromiseLike<TResult1>) | null,
+      onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+    ): Promise<TResult1 | TResult2>;
+    catch<TResult = never>(
+      onrejected?: ((reason: unknown) => TResult | PromiseLike<TResult>) | null,
+    ): Promise<void | TResult>;
+    finally(onfinally?: (() => void) | null): Promise<void>;
   }
   const insert = (t: Marker): InsertChain => {
     let lastValues: Record<string, unknown> = {};
+    // A real Drizzle write resolves to a query promise that supports
+    // then/catch/finally — not just `then`. Route handlers chain
+    // `.catch(wrapDbError)` onto inserts (e.g. the userSessions insert in the
+    // login handler), so the mock must expose all three or `.catch` is
+    // `undefined` and the handler throws a TypeError (surfacing as a 500).
+    const settled: Promise<void> = Promise.resolve();
     const obj: InsertChain = {
       values(v) {
         lastValues = v;
@@ -160,7 +174,13 @@ vi.mock("@workspace/db", () => {
         return Promise.resolve([lastValues]);
       },
       then(onfulfilled, onrejected) {
-        return Promise.resolve().then(onfulfilled, onrejected);
+        return settled.then(onfulfilled, onrejected);
+      },
+      catch(onrejected) {
+        return settled.catch(onrejected);
+      },
+      finally(onfinally) {
+        return settled.finally(onfinally);
       },
     };
     return obj;
