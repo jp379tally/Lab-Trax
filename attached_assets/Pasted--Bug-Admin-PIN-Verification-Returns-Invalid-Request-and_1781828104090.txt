@@ -1,0 +1,148 @@
+# Bug: Admin PIN Verification Returns "Invalid Request" and No SMS Is Sent
+
+## Summary
+
+The case deletion workflow is failing at the first step of admin verification.
+
+When entering a valid Admin PIN and clicking **Next**, the UI displays:
+
+```text
+Invalid request.
+```
+
+No verification SMS is sent to the lab owner's phone, preventing users from completing the deletion workflow.
+
+## Environment
+
+* LabTrax Production
+* Cases page
+* Bulk Delete workflow
+* Windows 11
+* Chrome
+
+## Steps to Reproduce
+
+1. Navigate to Cases.
+2. Select one or more cases.
+3. Click Delete Cases.
+4. Enter the Admin PIN.
+5. Click Next.
+
+## Expected Result
+
+* Admin PIN is validated.
+* Verification code is generated.
+* SMS is sent to the lab owner's phone.
+* User advances to OTP verification step.
+
+## Actual Result
+
+* Error message displayed:
+
+```text
+Invalid request.
+```
+
+* No SMS received.
+* Workflow cannot continue.
+
+## Screenshot
+
+Attached screenshot shows the modal displaying:
+
+```text
+Delete 0 cases
+Invalid request.
+```
+
+## Initial Investigation
+
+Several things stand out:
+
+### 1. Modal says "Delete 0 cases"
+
+The deletion dialog is being opened with a selection count of zero.
+
+Possible causes:
+
+* Frontend is losing selected case IDs.
+* Request payload contains an empty case list.
+* Backend validation rejects empty selections before SMS generation.
+* API endpoint expects at least one case ID and returns a generic error.
+
+### 2. SMS Generation May Not Be Triggering
+
+The SMS request may never be reaching the OTP service because validation is failing earlier.
+
+Check:
+
+* Delete-case initiation endpoint
+* Admin PIN verification endpoint
+* OTP generation endpoint
+* SMS provider logs
+
+### 3. Error Handling Is Too Generic
+
+Current user-facing message:
+
+```text
+Invalid request.
+```
+
+This makes troubleshooting difficult.
+
+Replace with more specific errors such as:
+
+* No cases selected
+* Invalid admin PIN
+* SMS delivery failed
+* Verification service unavailable
+* Phone number not configured
+
+## Areas to Inspect
+
+Frontend:
+
+```text
+Cases page
+DeleteCasesModal
+AdminVerificationModal
+Case selection state
+```
+
+Backend:
+
+```text
+Delete case initiation endpoint
+Admin PIN validation logic
+OTP generation service
+SMS delivery service
+```
+
+Database:
+
+```sql
+labs
+users
+admin_verification
+verification_codes
+```
+
+Verify:
+
+* Lab owner phone number exists.
+* Phone number is verified.
+* OTP records are being created.
+* SMS send attempts are logged.
+
+## Acceptance Criteria
+
+* Entering a valid Admin PIN successfully generates an OTP.
+* SMS is delivered to the configured phone number.
+* User advances to the verification-code screen.
+* Meaningful error messages are returned when failures occur.
+* Delete workflow works correctly when cases are selected.
+* Delete workflow cannot be launched with a zero-case selection state unless intentionally supported.
+
+```
+```

@@ -2639,6 +2639,12 @@ router.post(
   "/delete-initiate",
   asyncHandler(async (req, res) => {
     const userId = (req as any).auth.userId as string;
+    // Pre-validate caseIds before Zod so callers get a specific error instead
+    // of the generic "Invalid request." that ZodError produces.
+    const rawIds: unknown = (req.body as Record<string, unknown>)?.caseIds;
+    if (!Array.isArray(rawIds) || rawIds.length === 0) {
+      throw new HttpError(400, "No cases selected. Please select at least one case before deleting.");
+    }
     const input = deleteInitiateSchema.parse(req.body);
     const uniqueCaseIds = Array.from(new Set(input.caseIds));
 

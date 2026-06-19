@@ -1,0 +1,219 @@
+# UX Review: Vocabulary Page Is Confusing, Low Value, and Needs Redesign or Removal
+
+## Summary
+
+The current **Admin Settings → Vocabulary** page is confusing and appears to provide little or no value to a typical LabTrax user.
+
+After viewing the page, it is not clear:
+
+* What "Vocabulary" means
+* Why a user would visit this page
+* What business problem it solves
+* What actions the user is expected to take
+* Whether the page is functioning correctly
+
+The result is a page that feels unfinished, technical, and disconnected from normal lab workflows.
+
+## Current Problems
+
+### 1. The Purpose Is Unclear
+
+The page title is:
+
+```text
+Vocabulary
+```
+
+Most dental labs will not know what that means.
+
+Questions a user immediately has:
+
+* Vocabulary of what?
+* Cases?
+* Materials?
+* Restorations?
+* Invoices?
+* Why is this in Admin Settings?
+
+The page does not answer those questions.
+
+### 2. Most Sections Are Empty
+
+The screen currently shows:
+
+```text
+Materials
+No custom items — defaults only.
+
+Shades
+No custom items — defaults only.
+```
+
+To the user, this looks like:
+
+* Nothing is configured
+* Nothing needs attention
+* Nothing can be done
+
+The page feels empty and unfinished.
+
+### 3. Restoration Types Are Not Explained
+
+The only visible item is:
+
+```text
+PFM
+```
+
+There is no explanation of:
+
+* What restoration types are used for
+* Where they appear
+* Why I would edit them
+* When I would create new ones
+
+Most users will not understand why this section exists.
+
+### 4. Invoice Shade & Material Gaps Section Is Extremely Technical
+
+Current wording:
+
+```text
+Invoices linked to cases may have an empty shade or material snapshot...
+```
+
+This sounds like an internal migration script or database maintenance utility.
+
+Normal users do not think in terms of:
+
+* snapshots
+* backfills
+* restoration rows
+* invoice-linked records
+
+This belongs in an admin migration tool, not a user-facing settings page.
+
+### 5. The Success Message Creates More Questions
+
+Current message:
+
+```text
+Backfill complete —
+17 invoices updated,
+11 skipped
+```
+
+A user immediately wonders:
+
+* Which invoices?
+* Why were they skipped?
+* Was there a problem?
+* Do I need to do anything?
+
+The page provides no context.
+
+## Recommendation
+
+### Option A (Preferred): Remove This Page Entirely
+
+If fewer than 10–20% of labs will ever intentionally use this page, remove it from the main navigation.
+
+Move it into:
+
+```text
+Platform Admin
+Advanced Settings
+System Configuration
+```
+
+Normal users should not see internal data maintenance tools.
+
+### Option B: Convert It Into a Simple "Case Options" Page
+
+Rename:
+
+```text
+Vocabulary
+```
+
+to:
+
+```text
+Case Options
+```
+
+or
+
+```text
+Lab Catalog
+```
+
+Then organize it as:
+
+```text
+Materials Used By Your Lab
+
+[ Add Material ]
+
+Current Materials:
+• Zirconia
+• PFM
+• E.max
+
+------------------
+
+Shade Guide Options
+
+[ Add Shade ]
+
+Current Shades:
+• A1
+• A2
+• B1
+
+------------------
+
+Restoration Types
+
+[ Add Restoration Type ]
+
+Current Types:
+• Crown
+• Bridge
+• PFM
+```
+
+This immediately communicates value.
+
+### Option C: Hide Advanced Functions
+
+Move the following behind an expandable section:
+
+```text
+Advanced
+```
+
+Hide:
+
+* Backfill operations
+* Migration utilities
+* Snapshot repair tools
+* Database cleanup tools
+* Technical status messages
+
+Normal users should never see these by default.
+
+## Acceptance Criteria
+
+* A typical lab owner can explain what this page is for within 10 seconds.
+* The page clearly communicates its purpose.
+* Empty sections do not dominate the screen.
+* Technical migration tools are hidden or moved elsewhere.
+* Users understand why they would add, edit, or remove items.
+* The page provides business value or is removed entirely.
+
+## Priority
+
+Medium-High.
+
+The page currently consumes navigation space, increases cognitive load, and creates confusion without providing obvious value to most users.

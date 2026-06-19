@@ -2346,7 +2346,9 @@ export default function CasesPage() {
               <button
                 type="button"
                 onClick={() => {
-                  setBulkDeleteCaseIds(Array.from(selectedIds));
+                  const ids = Array.from(selectedIds);
+                  if (ids.length === 0) return;
+                  setBulkDeleteCaseIds(ids);
                   setShowBulkDeleteModal(true);
                 }}
                 className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-destructive text-destructive-foreground text-xs font-medium hover:bg-destructive/90 transition-colors"

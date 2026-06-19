@@ -1,0 +1,131 @@
+# Bug / UX Cleanup: Restore Desktop App Download and Simplify Desktop App Settings Screen
+
+## Summary
+
+The **Admin Settings → Desktop app** screen currently shows that the Windows desktop installer is **missing**, and the **Download Installer** button is effectively unavailable / expected to 404.
+
+Previously, admins could download the LabTrax desktop app directly from this screen. We need to restore that behavior so admins can download and install the desktop app again.
+
+This screen also needs a UX cleanup. It currently exposes too much technical detail, including storage paths, release asset instructions, `.exe` upload details, retry failure text, and implementation notes. This is confusing for a normal admin user.
+
+## Current Behavior
+
+On the Desktop app settings page:
+
+* The app shows **LabTrax Desktop for Windows — MISSING**
+* The page says:
+
+```text
+No LabTrax-Setup.exe is uploaded — this download link will return 404.
+```
+
+* The download button is present but not useful.
+* The page contains developer/admin implementation details that are not user-friendly.
+* The screen is visually cluttered and hard to understand.
+
+## Expected Behavior
+
+Admins should be able to easily download the LabTrax desktop app, just like before.
+
+The page should show a simple, user-friendly desktop app section:
+
+* Current desktop app version
+* Clear **Download for Windows** button
+* Optional release notes
+* Last updated date
+* Simple status if unavailable
+
+The user should not need to understand `.exe` storage, GitHub release URLs, `/downloads/` paths, upload mechanics, retry thresholds, or App Storage internals.
+
+## Required Fixes
+
+### 1. Restore Desktop App Download
+
+Make the desktop installer downloadable again.
+
+Acceptance criteria:
+
+* Admin can click **Download for Windows**
+* A valid installer downloads successfully
+* The download does not return 404
+* The app does not require the admin to manually understand or upload `LabTrax-Setup.exe`
+* If `.exe` files are restricted by the current storage/deployment setup, use an approved alternative that still lets admins download the desktop app
+
+Possible implementation options:
+
+* Restore the previous working installer download path
+* Host the installer as a GitHub Release asset
+* Host it in approved app storage with a safe signed URL
+* Use a zipped installer if `.exe` files are blocked
+* Use an `.msi` installer if that is more deployment-friendly
+* Use a stable `/downloads/windows` endpoint that redirects to the current valid installer
+
+The important outcome is: **admins can download the desktop app again.**
+
+### 2. Hide Technical Configuration From Normal Admin View
+
+Move technical fields out of the main user-facing screen.
+
+The following should not be prominent on the normal admin download screen:
+
+* GitHub Release asset URL instructions
+* `/downloads/` path instructions
+* `LabTrax-Setup.exe` upload warnings
+* “download link will return 404”
+* retry failure details
+* App Storage implementation notes
+* Electron IPC details
+* raw internal status/debug messages
+
+These can be moved to:
+
+* a collapsed **Advanced** section
+* a Platform Admin-only area
+* a developer-only environment
+* internal logs
+
+### 3. Improve Empty / Missing Installer State
+
+If no installer is available, show a clean message:
+
+```text
+The desktop app installer is temporarily unavailable. Please contact support.
+```
+
+Do not show raw technical details to the user.
+
+### 4. Clean Up the Page Layout
+
+Suggested simplified layout:
+
+```text
+Desktop App
+
+Download and install LabTrax Desktop for Windows.
+
+Version: 1.0.0
+Status: Available
+
+[Download for Windows]
+
+Release notes:
+- Optional short notes here
+```
+
+Advanced technical controls should be hidden unless explicitly needed.
+
+## Acceptance Criteria
+
+* Desktop app download works again for admins.
+* Download button retrieves a valid installer.
+* No 404 occurs during normal use.
+* The page is understandable to a non-technical admin.
+* Technical upload/configuration details are removed from the main view.
+* Any advanced installer management tools are hidden behind an Advanced section or restricted to Platform Admins.
+* The page clearly communicates whether the installer is available without exposing implementation details.
+
+## Priority
+
+High.
+
+This blocks admins from installing the desktop app and makes the settings page look broken/confusing.
