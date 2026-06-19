@@ -84,7 +84,7 @@ export default function SettingsPage() {
     { key: "backup", label: "Backup", icon: ShieldCheck, show: isAdmin },
     { key: "deleted-cases", label: "Deleted Cases", icon: Trash2, show: isAdmin },
     { key: "deletion-audit", label: "Deletion Audit Log", icon: History, show: isAdmin },
-    { key: "vocabulary", label: "Vocabulary", icon: BookOpen, show: isAdmin },
+    { key: "vocabulary", label: "Lab Catalog", icon: BookOpen, show: isAdmin },
     { key: "desktop", label: "Desktop app", icon: Download, show: true },
     { key: "templates", label: "Templates", icon: LayoutList, show: isAdmin },
     { key: "invoice-layout", label: "Invoice layout", icon: LayoutList, show: isAdmin, parentKey: "templates" },
@@ -9277,6 +9277,18 @@ const VOCAB_KIND_LABELS: Record<string, string> = {
   shade: "Shades",
   restoration_type: "Restoration Types",
 };
+
+const VOCAB_KIND_DESCRIPTIONS: Record<string, string> = {
+  material: "Appears as selectable options when your team adds restorations to a case (e.g. Zirconia, E.max).",
+  shade: "Appears when entering shade information on case restorations and invoices (e.g. A2, BL1).",
+  restoration_type: "Appears when choosing the type of restoration on a case (e.g. Crown, Bridge, Veneer).",
+};
+
+const VOCAB_BUILTIN_DEFAULTS: Record<string, string[]> = {
+  material: ["Zirconia", "PFM", "E.max", "Full Cast", "Composite", "Acrylic", "Metal", "PMMA", "Other"],
+  shade: ["A1", "A2", "A3", "A3.5", "A4", "B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D2", "D3", "D4", "BL1", "BL2", "BL3", "BL4"],
+  restoration_type: ["Crown", "Bridge", "Veneer", "Implant Crown", "Inlay", "Onlay", "Full Denture", "Partial Denture", "Night Guard", "Retainer", "Sports Guard", "Snore Guard", "Other"],
+};
 const VOCAB_KINDS = ["material", "shade", "restoration_type"] as const;
 type VocabKind = (typeof VOCAB_KINDS)[number];
 
@@ -9580,8 +9592,8 @@ function VocabularyPanel() {
 
   return (
     <PanelShell
-      title="Vocabulary"
-      subtitle="Manage the custom materials, shades, and restoration types your lab has added. Built-in defaults cannot be edited or removed."
+      title="Lab Catalog"
+      subtitle="Define the materials, shades, and restoration types your lab uses — these appear as selectable options when creating cases and invoices."
     >
       {adminLabs.length > 1 && (
         <div className="mb-2">
@@ -9615,27 +9627,41 @@ function VocabularyPanel() {
       )}
 
       {!isLoading && effectiveLabId && (
-        <div className="space-y-6">
+        <div className="space-y-8">
           {VOCAB_KINDS.map((kind) => {
             const q = queriesByKind[kind];
             const items = (q.data ?? []).filter((it) => !it.isDefault);
+            const builtins = VOCAB_BUILTIN_DEFAULTS[kind] ?? [];
 
             return (
               <div key={kind}>
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                <h3 className="text-sm font-semibold mb-0.5">
                   {VOCAB_KIND_LABELS[kind]}
                 </h3>
+                <p className="text-xs text-muted-foreground mb-3">
+                  {VOCAB_KIND_DESCRIPTIONS[kind]}
+                </p>
                 {q.isError && (
                   <p className="text-sm text-destructive py-2">Failed to load.</p>
                 )}
                 {!q.isError && items.length === 0 && (
-                  <p className="text-sm text-muted-foreground py-2 italic">
-                    No custom items — defaults only.
-                  </p>
+                  <div className="rounded-md border border-border bg-secondary/20 px-3 py-2.5">
+                    <p className="text-xs text-muted-foreground mb-2">
+                      No custom {VOCAB_KIND_LABELS[kind].toLowerCase()} yet — your team will see the built-in defaults:
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {builtins.map((val) => (
+                        <span key={val} className="inline-block px-2 py-0.5 rounded bg-secondary text-xs text-muted-foreground border border-border/60">
+                          {val}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
                 )}
                 {!q.isError && items.length > 0 && (
-                  <div className="border border-border rounded-md overflow-hidden">
-                    {items.map((item, i) => {
+                  <div className="space-y-3">
+                    <div className="border border-border rounded-md overflow-hidden">
+                      {items.map((item, i) => {
                       const isEditing = editingId === item.id;
                       const isSaving = savingId === item.id;
                       const isBeingDeleted = deletingId === item.id;
@@ -9716,6 +9742,19 @@ function VocabularyPanel() {
                       );
                     })}
                   </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">
+                      Built-in defaults (cannot be edited):
+                    </p>
+                    <div className="flex flex-wrap gap-1.5 mt-1.5">
+                      {builtins.map((val) => (
+                        <span key={val} className="inline-block px-2 py-0.5 rounded bg-secondary text-xs text-muted-foreground border border-border/60">
+                          {val}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
                 )}
               </div>
             );
@@ -9724,67 +9763,73 @@ function VocabularyPanel() {
       )}
 
       {effectiveLabId && (
-        <div className="border-t border-border pt-6 mt-6 space-y-3">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Invoice shade &amp; material gaps
-          </h3>
-          <p className="text-sm text-muted-foreground">
-            Invoices linked to cases may have an empty shade or material snapshot if they were
-            created before that data was captured. Running the backfill fills them in from the
-            case's restoration rows without overwriting any values you've already edited by hand.
-          </p>
-
-          {gapsQuery.isLoading && (
-            <div className="flex items-center gap-2 text-muted-foreground text-sm">
-              <Loader2 size={13} className="animate-spin" /> Checking…
-            </div>
-          )}
-
-          {gapsQuery.isError && (
-            <p className="text-sm text-destructive">Failed to load gap count.</p>
-          )}
-
-          {gapsQuery.data && (
-            <div className="rounded-md border border-border bg-secondary/30 px-4 py-3 text-sm">
-              <div className="grid grid-cols-2 gap-x-6 gap-y-1">
-                <span className="text-muted-foreground">Case-linked invoices</span>
-                <span>{gapsQuery.data.totalCaseLinked.toLocaleString()}</span>
-                <span className="text-muted-foreground">Missing shade or material</span>
-                <span className={gapsQuery.data.gapCount > 0 ? "font-semibold text-amber-600 dark:text-amber-400" : ""}>
-                  {gapsQuery.data.gapCount.toLocaleString()}
-                  {gapsQuery.data.gapCount === 0 && " — all up to date"}
-                </span>
+        <div className="border-t border-border pt-5 mt-2">
+          <details className="group">
+            <summary className="flex items-center gap-2 cursor-pointer list-none select-none">
+              <ChevronRight size={14} className="text-muted-foreground group-open:rotate-90 transition-transform shrink-0" />
+              <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Advanced</span>
+            </summary>
+            <div className="mt-4 space-y-3 pl-5">
+              <div>
+                <h4 className="text-sm font-medium mb-1">Fill in missing shade &amp; material info</h4>
+                <p className="text-sm text-muted-foreground">
+                  Some older invoices may be missing shade or material information. Run this tool to fill them in automatically without overwriting values you've already edited.
+                </p>
               </div>
+
+              {gapsQuery.isLoading && (
+                <div className="flex items-center gap-2 text-muted-foreground text-sm">
+                  <Loader2 size={13} className="animate-spin" /> Checking…
+                </div>
+              )}
+
+              {gapsQuery.isError && (
+                <p className="text-sm text-destructive">Failed to load.</p>
+              )}
+
+              {gapsQuery.data && (
+                <div className="rounded-md border border-border bg-secondary/30 px-4 py-3 text-sm">
+                  <div className="grid grid-cols-2 gap-x-6 gap-y-1">
+                    <span className="text-muted-foreground">Case-linked invoices</span>
+                    <span>{gapsQuery.data.totalCaseLinked.toLocaleString()}</span>
+                    <span className="text-muted-foreground">Missing shade or material</span>
+                    <span className={gapsQuery.data.gapCount > 0 ? "font-semibold text-amber-600 dark:text-amber-400" : ""}>
+                      {gapsQuery.data.gapCount.toLocaleString()}
+                      {gapsQuery.data.gapCount === 0 && " — all up to date"}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {backfillError && (
+                <Alert tone="danger">{backfillError}</Alert>
+              )}
+
+              {backfillResult && (
+                <Alert tone="success">
+                  Done — {backfillResult.updated} invoice{backfillResult.updated === 1 ? "" : "s"} updated
+                  {backfillResult.skippedNoDerivable > 0
+                    ? `, ${backfillResult.skippedNoDerivable} skipped (no restoration data to draw from).`
+                    : "."}
+                </Alert>
+              )}
+
+              <button
+                type="button"
+                disabled={!effectiveLabId || backfillMutation.isPending || (gapsQuery.data?.gapCount === 0)}
+                onClick={() => {
+                  setBackfillResult(null);
+                  setBackfillError(null);
+                  backfillMutation.mutate();
+                }}
+                className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium disabled:opacity-60"
+              >
+                {backfillMutation.isPending
+                  ? <><Loader2 size={12} className="animate-spin" /> Running…</>
+                  : <><Play size={12} /> Fill in now</>}
+              </button>
             </div>
-          )}
-
-          {backfillError && (
-            <Alert tone="danger">{backfillError}</Alert>
-          )}
-
-          {backfillResult && (
-            <Alert tone="success">
-              Backfill complete — {backfillResult.updated} invoice{backfillResult.updated === 1 ? "" : "s"} updated
-              {backfillResult.skippedNoDerivable > 0
-                ? `, ${backfillResult.skippedNoDerivable} skipped (no restoration data available).`
-                : "."}
-            </Alert>
-          )}
-
-          <button
-            type="button"
-            disabled={!effectiveLabId || backfillMutation.isPending || (gapsQuery.data?.gapCount === 0)}
-            onClick={() => {
-              setBackfillResult(null);
-              setBackfillError(null);
-              backfillMutation.mutate();
-            }}
-            className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium disabled:opacity-60"
-          >
-            {backfillMutation.isPending
-              ? <><Loader2 size={12} className="animate-spin" /> Running…</>
-              : <><Play size={12} /> Run backfill now</>}
-          </button>
+          </details>
         </div>
       )}
 
