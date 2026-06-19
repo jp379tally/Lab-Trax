@@ -162,10 +162,17 @@ interface DuplicateHit {
   source: "canonical" | "legacy";
   patientFirstName: string;
   patientLastName: string;
+  doctorName?: string;
   status?: string;
   createdAt?: string | null;
+  dueDate?: string | null;
   toothNumbers?: string;
   restorationTypes?: string;
+  shade?: string;
+  material?: string;
+  hasInvoice?: boolean;
+  invoiceTotal?: string | null;
+  invoiceStatus?: string | null;
 }
 
 interface ManualRemakeHit {
@@ -376,7 +383,7 @@ function DuplicatePromptPanel({
         charge.
       </p>
 
-      <div className="max-h-48 overflow-y-auto rounded-md border border-amber-200 bg-white divide-y divide-amber-100">
+      <div className="max-h-40 overflow-y-auto rounded-md border border-amber-200 bg-white divide-y divide-amber-100">
         {matches.map((m) => {
           const isSelected = selectedId === m.id;
           const isLegacy = m.source === "legacy";
@@ -404,8 +411,6 @@ function DuplicatePromptPanel({
                 <div className="text-[11px] text-muted-foreground truncate">
                   {[
                     m.status,
-                    m.toothNumbers ? `teeth ${m.toothNumbers}` : null,
-                    m.restorationTypes,
                     m.createdAt
                       ? new Date(m.createdAt).toLocaleDateString()
                       : null,
@@ -426,6 +431,98 @@ function DuplicatePromptPanel({
           );
         })}
       </div>
+
+      {/* ── Prior case detail card ── */}
+      {selectedMatch && (
+        <div className="rounded-md border border-amber-200 bg-white p-3 space-y-2 text-[11px]">
+          <p className="text-[10px] font-semibold text-amber-800 uppercase tracking-wide">
+            Prior case details
+          </p>
+
+          {/* Key fields grid */}
+          <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
+            {selectedMatch.doctorName && (
+              <>
+                <span className="text-muted-foreground">Doctor</span>
+                <span className="font-medium text-foreground truncate">{selectedMatch.doctorName}</span>
+              </>
+            )}
+            <span className="text-muted-foreground">Received</span>
+            <span className="text-foreground">
+              {selectedMatch.createdAt
+                ? new Date(selectedMatch.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
+                : "—"}
+            </span>
+            {selectedMatch.dueDate && (
+              <>
+                <span className="text-muted-foreground">Due date</span>
+                <span className="text-foreground">
+                  {new Date(selectedMatch.dueDate).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+                </span>
+              </>
+            )}
+            <span className="text-muted-foreground">Status</span>
+            <span className="text-foreground capitalize">{selectedMatch.status || "—"}</span>
+          </div>
+
+          {/* Restorations */}
+          {(selectedMatch.toothNumbers || selectedMatch.restorationTypes || selectedMatch.material || selectedMatch.shade) && (
+            <div className="pt-1.5 border-t border-amber-100">
+              <p className="text-[10px] font-semibold text-amber-800 uppercase tracking-wide mb-1">Restorations</p>
+              <p className="text-foreground leading-relaxed">
+                {[
+                  selectedMatch.toothNumbers ? `Tooth ${selectedMatch.toothNumbers}` : null,
+                  selectedMatch.restorationTypes || null,
+                  selectedMatch.material || null,
+                  selectedMatch.shade ? `Shade ${selectedMatch.shade}` : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </p>
+            </div>
+          )}
+
+          {/* Invoice */}
+          {selectedMatch.hasInvoice && (
+            <div className="pt-1.5 border-t border-amber-100 flex items-center justify-between gap-2">
+              <span className="text-muted-foreground">Invoice</span>
+              <span className="flex items-center gap-1.5">
+                {selectedMatch.invoiceTotal
+                  ? <span className="font-medium text-foreground">${parseFloat(selectedMatch.invoiceTotal).toFixed(2)}</span>
+                  : <span className="text-muted-foreground">—</span>}
+                {selectedMatch.invoiceStatus && (
+                  <span className={`capitalize text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                    selectedMatch.invoiceStatus === "paid"
+                      ? "bg-green-100 text-green-700"
+                      : selectedMatch.invoiceStatus === "draft"
+                      ? "bg-muted text-muted-foreground"
+                      : selectedMatch.invoiceStatus === "voided"
+                      ? "bg-red-50 text-red-500"
+                      : "bg-blue-50 text-blue-600"
+                  }`}>
+                    {selectedMatch.invoiceStatus}
+                  </span>
+                )}
+              </span>
+            </div>
+          )}
+
+          {/* Recency hint */}
+          {selectedMatch.createdAt && (() => {
+            const daysSince = Math.floor(
+              (Date.now() - new Date(selectedMatch.createdAt).getTime()) / (1000 * 60 * 60 * 24)
+            );
+            if (daysSince <= 30) {
+              return (
+                <div className="pt-1.5 border-t border-amber-100 text-[10px] text-amber-700">
+                  Received {daysSince === 0 ? "today" : `${daysSince}d ago`} — recent case, consider no-charge remake.
+                </div>
+              );
+            }
+            return null;
+          })()}
+        </div>
+      )}
 
       <div>
         <label className="block text-[11px] font-medium text-amber-900 mb-1">

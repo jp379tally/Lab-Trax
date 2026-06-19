@@ -1568,7 +1568,11 @@ export interface PatientSimilarityHit {
   dueDate: string | null;
   toothNumbers: string;
   restorationTypes: string;
+  shade: string;
+  material: string;
   hasInvoice: boolean;
+  invoiceTotal: string | null;
+  invoiceStatus: string | null;
 }
 
 const patientSimilarityQuerySchema = z.object({
@@ -1657,13 +1661,28 @@ router.get(
       : [];
     const invoiceRows = candidateIds.length
       ? await db
-          .select({ caseId: invoices.caseId })
+          .select({
+            caseId: invoices.caseId,
+            total: invoices.total,
+            status: invoices.status,
+          })
           .from(invoices)
-          .where(inArray(invoices.caseId, candidateIds))
+          .where(
+            and(
+              inArray(invoices.caseId, candidateIds),
+              isNull(invoices.voidedAt),
+            ),
+          )
       : [];
-    const invoicedSet = new Set(
-      invoiceRows.map((r: any) => r.caseId).filter(Boolean) as string[],
-    );
+    // Build a per-case invoice map, preferring non-draft invoices over drafts.
+    const invoiceMap = new Map<string, { total: string; status: string }>();
+    for (const row of invoiceRows) {
+      if (!row.caseId) continue;
+      const existing = invoiceMap.get(row.caseId);
+      if (!existing || (existing.status === "draft" && row.status !== "draft")) {
+        invoiceMap.set(row.caseId, { total: row.total ?? "0.00", status: row.status });
+      }
+    }
     const restByCase = new Map<string, typeof restorations>();
     for (const r of restorations) {
       const list = restByCase.get(r.caseId) ?? [];
@@ -1681,6 +1700,7 @@ router.get(
       );
       if (!kind) continue;
       const items = restByCase.get(row.id) ?? [];
+      const inv = invoiceMap.get(row.id);
       hits.push({
         id: row.id,
         source: "canonical",
@@ -1702,7 +1722,15 @@ router.get(
         restorationTypes: Array.from(
           new Set(items.map((i: any) => i.restorationType).filter(Boolean)),
         ).join(", "),
-        hasInvoice: invoicedSet.has(row.id),
+        shade: Array.from(
+          new Set(items.map((i: any) => i.shade).filter(Boolean)),
+        ).join(", "),
+        material: Array.from(
+          new Set(items.map((i: any) => i.material).filter(Boolean)),
+        ).join(", "),
+        hasInvoice: !!inv,
+        invoiceTotal: inv?.total ?? null,
+        invoiceStatus: inv?.status ?? null,
       });
     }
 
@@ -1768,7 +1796,11 @@ router.get(
           dueDate: parsed.dueDate ? String(parsed.dueDate) : null,
           toothNumbers: String(parsed.toothIndices ?? ""),
           restorationTypes: String(parsed.caseType ?? parsed.material ?? ""),
+          shade: String(parsed.shade ?? ""),
+          material: String(parsed.material ?? ""),
           hasInvoice: !!parsed.invoiceId,
+          invoiceTotal: null,
+          invoiceStatus: null,
         });
       } catch {
         // ignore malformed legacy payloads
@@ -1904,7 +1936,15 @@ router.get(
             restorationTypes: Array.from(
               new Set(items.map((i: any) => i.restorationType).filter(Boolean)),
             ).join(", "),
+            shade: Array.from(
+              new Set(items.map((i: any) => i.shade).filter(Boolean)),
+            ).join(", "),
+            material: Array.from(
+              new Set(items.map((i: any) => i.material).filter(Boolean)),
+            ).join(", "),
             hasInvoice: crossInvoicedSet.has(row.id),
+            invoiceTotal: null,
+            invoiceStatus: null,
           });
         }
 
@@ -1955,7 +1995,11 @@ router.get(
               dueDate: parsed.dueDate ? String(parsed.dueDate) : null,
               toothNumbers: String(parsed.toothIndices ?? ""),
               restorationTypes: String(parsed.caseType ?? parsed.material ?? ""),
+              shade: String(parsed.shade ?? ""),
+              material: String(parsed.material ?? ""),
               hasInvoice: !!parsed.invoiceId,
+              invoiceTotal: null,
+              invoiceStatus: null,
             });
           } catch {
             // ignore malformed legacy payloads

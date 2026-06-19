@@ -1,0 +1,221 @@
+# UX Enhancement: Remake Detection Must Show Prior Case Details Before Requiring a Decision
+
+## Summary
+
+The current remake detection workflow identifies a possible duplicate/remake but does not provide enough information for the user to determine:
+
+* Whether this is actually a remake
+* Why the case is being remade
+* What was done on the original case
+* Whether the lab should charge for the remake
+
+The system is asking users to make a business decision without giving them the information needed to make that decision.
+
+## Current Behavior
+
+When a possible remake is detected, the user sees:
+
+```text
+Possible duplicate / remake?
+
+Found 1 prior case for [Patient]
+```
+
+and a case number.
+
+The user is then expected to choose:
+
+* Invoice as usual
+* No-charge remake
+* Not a remake
+
+However, the user cannot easily review the prior case.
+
+## Problem
+
+The user needs context before making a remake determination.
+
+Currently the workflow forces the user to decide before they can answer important questions such as:
+
+### Questions Users Need Answered
+
+* What restoration was originally fabricated?
+* Which tooth was involved?
+* What material was used?
+* What shade was prescribed?
+* When was the original case completed?
+* Was the original case delivered?
+* What was billed?
+* Was the original invoice paid?
+* Were there notes documenting a previous remake?
+* Has this patient already had multiple remakes?
+* Was the original case under warranty?
+* Was the original case recently delivered?
+
+Without this information the user is guessing.
+
+## Required Enhancement
+
+When a possible remake is detected, users should be able to review the previous case without leaving the workflow.
+
+### Option 1 (Preferred)
+
+Add a panel directly inside the remake dialog.
+
+Example:
+
+```text
+Possible duplicate / remake?
+
+Prior Case: 26-14
+Received: 5/19/2026
+Doctor: Dr. Smith
+
+Restoration:
+PFM Crown
+
+Tooth:
+#8
+
+Material:
+PFM
+
+Shade:
+A2
+
+Status:
+Delivered
+
+Invoice:
+$195.00
+
+Paid:
+Yes
+
+Notes:
+Original crown fractured after seating.
+```
+
+### Option 2
+
+Add:
+
+```text
+View Prior Case
+```
+
+button.
+
+Clicking opens a side drawer showing:
+
+* Lab Slip
+* Restorations
+* Files
+* Invoice
+* Notes
+* History
+
+without losing the current remake workflow.
+
+### Option 3
+
+Add a comparison view.
+
+Show:
+
+```text
+New Case                    Previous Case
+
+Tooth #8                    Tooth #8
+A2                          A2
+PFM Crown                   PFM Crown
+Received Today              Delivered 5/19/2026
+```
+
+This makes remake decisions much easier.
+
+## Additional Data That Should Be Displayed
+
+For every potential remake candidate:
+
+### Case Information
+
+* Case number
+* Received date
+* Delivered date
+* Status
+* Doctor
+* Practice
+
+### Restoration Information
+
+* Tooth number(s)
+* Material
+* Shade
+* Restoration type
+* Priority
+
+### Financial Information
+
+* Invoice total
+* Invoice status
+* Paid/unpaid
+* Previous remake count
+
+### Notes
+
+* Case notes
+* Internal notes
+* Previous remake reasons
+
+## Workflow Improvements
+
+### Auto-Suggest Charge Recommendation
+
+The system can provide guidance such as:
+
+```text
+Delivered 7 days ago
+Same tooth
+Same restoration
+
+Recommended:
+No-charge remake
+```
+
+or
+
+```text
+Delivered 18 months ago
+
+Recommended:
+Charge normally
+```
+
+The user still makes the final decision.
+
+### Display Previous Remake History
+
+Example:
+
+```text
+Prior Case: 26-14
+Remakes linked: 2
+```
+
+This helps identify abuse patterns.
+
+## Acceptance Criteria
+
+* User can review prior case details before deciding remake status.
+* User does not have to leave the workflow to investigate.
+* Restoration, material, tooth, shade, notes, and invoice information are visible.
+* Users can make informed charge/no-charge decisions.
+* Existing remake detection functionality remains intact.
+* Workflow becomes faster and requires fewer clicks.
+
+## Priority
+
+High.
+
+This directly affects billing decisions, remake tracking, profitability, and customer service. Users need context before determining whether a case should be billed or treated as a warranty remake.
