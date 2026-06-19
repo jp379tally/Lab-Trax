@@ -4143,6 +4143,15 @@ interface InstallerSlotInfo {
   error: string | null;
 }
 
+interface DesktopInstallerPublicInfo {
+  version: string;
+  downloadUrl: string;
+  fileName: string;
+  releaseNotes: string | null;
+  installerObject: { size: number; uploadedAt: string } | null;
+  available: boolean;
+}
+
 interface DesktopInstallerInfo {
   version: string;
   dbVersion: string | null;
@@ -4528,6 +4537,7 @@ function DesktopInstallerPanel() {
     message: string;
   } | null>(null);
   const [uploadConfirmPending, setUploadConfirmPending] = useState<File | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
 
   // Desktop build trigger state
@@ -4535,6 +4545,16 @@ function DesktopInstallerPanel() {
   const [buildTriggerSuccess, setBuildTriggerSuccess] = useState(false);
   const [buildTriggerTimestamp, setBuildTriggerTimestamp] = useState<string | null>(null);
 
+  const { user } = useAuth();
+
+  // Public query — accessible to any authenticated user; drives the simplified card.
+  const publicQuery = useQuery({
+    queryKey: ["desktop-installer-public"],
+    queryFn: () => apiFetch<DesktopInstallerPublicInfo>("/desktop-installer"),
+  });
+  const publicInfo = publicQuery.data;
+
+  // Admin query — platform-admin gated; 403 for regular admins (gate detects it).
   const query = useQuery({
     queryKey: ["admin", "desktop-installer"],
     queryFn: () => apiFetch<DesktopInstallerInfo>("/admin/settings/desktop-installer"),
@@ -4723,17 +4743,20 @@ function DesktopInstallerPanel() {
     resetMutation.error,
   ]);
 
+  const isPlatformAdmin = user?.role === "admin" && gate.configured && !gate.blocked;
+
   const info = query.data;
+  // Use the public endpoint's URL for display; fall back to admin URL if available.
+  // This ensures the simplified card works for non-platform-admin lab admins.
+  const displayUrl = publicInfo?.downloadUrl ?? info?.downloadUrl ?? "";
   // Convert relative /downloads/… paths to absolute URLs so the link works in
   // the Electron renderer (origin is app://labtrax, not the API host).
-  const absDownloadUrl = info?.downloadUrl
-    ? info.downloadUrl.startsWith("/")
-      ? `${getApiOrigin() || (typeof window !== "undefined" ? window.location.origin : "")}${info.downloadUrl}`
-      : info.downloadUrl
-    : "";
-  const isExe = info?.downloadUrl.toLowerCase().endsWith(".exe") ?? false;
-  const isDmg = info?.downloadUrl.toLowerCase().endsWith(".dmg") ?? false;
-  const isZip = info?.downloadUrl.toLowerCase().endsWith(".zip") ?? (!isExe && !isDmg);
+  const absDownloadUrl = displayUrl.startsWith("/")
+    ? `${getApiOrigin() || (typeof window !== "undefined" ? window.location.origin : "")}${displayUrl}`
+    : displayUrl;
+  const isExe = displayUrl.toLowerCase().endsWith(".exe");
+  const isDmg = displayUrl.toLowerCase().endsWith(".dmg");
+  const isZip = displayUrl.toLowerCase().endsWith(".zip") || (!isExe && !isDmg);
   const hasDbOverrides = info !== undefined && (info.dbDownloadUrl !== null || info.dbVersion !== null || info.dbReleaseNotes !== null);
 
   const hasChanges =
@@ -4755,23 +4778,149 @@ function DesktopInstallerPanel() {
           : "Download and distribute LabTrax Desktop to staff Windows machines."
       }
     >
-      {gate.blocked && <PlatformAdminSetupNotice />}
       <AppVersionCard />
-      {query.isLoading && (
+      {publicQuery.isLoading && !publicInfo && (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 size={13} className="animate-spin" />
           Loading…
         </div>
       )}
-      {query.error && !gate.blocked && (
-        <Alert tone="danger">{(query.error as Error).message}</Alert>
+      {publicQuery.isError && !publicInfo && (
+        <Alert tone="danger">{(publicQuery.error as Error).message}</Alert>
       )}
-      {info && (
+      {publicInfo && (
         <div className="space-y-5">
-          {info.repoUrlWarning && (
-            <Alert tone="warning">{info.repoUrlWarning}</Alert>
-          )}
-          {info.buildCounterWarning && (
+          {/* ── Simplified download card — visible to all admins ──────── */}
+          <div className="rounded-lg border border-border bg-secondary/30 px-5 py-4 space-y-3">
+            <div className="flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold">
+                  {isDmg ? "LabTrax Desktop for Mac" : "LabTrax Desktop for Windows"}
+                </div>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  Version {publicInfo.version}
+                  {publicInfo.installerObject
+                    ? <> · updated {formatInstallerTimestamp(publicInfo.installerObject.uploadedAt)}</>
+                    : null}
+                </div>
+              </div>
+              {publicInfo.available ? (
+                <a
+                  href={absDownloadUrl}
+                  download
+                  className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-2 shrink-0"
+                >
+                  <Download size={14} />
+                  {isZip ? "Download Portable ZIP" : isDmg ? "Download macOS DMG" : "Download for Windows"}
+                </a>
+              ) : (
+                <button
+                  type="button"
+                  disabled
+                  className="h-9 px-4 rounded-md bg-primary/40 text-primary-foreground/70 text-sm font-semibold cursor-not-allowed inline-flex items-center gap-2 shrink-0"
+                >
+                  <Download size={14} />
+                  {isZip ? "Download Portable ZIP" : isDmg ? "Download macOS DMG" : "Download for Windows"}
+                </button>
+              )}
+            </div>
+            {!publicInfo.available && (
+              <p className="text-sm text-muted-foreground">
+                The desktop app installer is temporarily unavailable. Please contact support.
+              </p>
+            )}
+            {publicInfo.releaseNotes && (
+              <div className="rounded-md border border-border bg-background px-4 py-3 space-y-1">
+                <div className="text-[11px] uppercase tracking-wide font-semibold text-muted-foreground">
+                  Release notes
+                </div>
+                <p className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
+                  {publicInfo.releaseNotes}
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* ── How to install ───────────────────────────────────────── */}
+          <div className="rounded-lg border border-border px-5 py-4 space-y-3">
+            <div className="text-sm font-semibold">
+              {isZip ? "How to install (portable ZIP)" : isDmg ? "How to install (macOS)" : "How to install"}
+            </div>
+            {isDmg ? (
+              <ol className="space-y-2 text-sm text-muted-foreground list-none">
+                <li className="flex gap-3">
+                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">1</span>
+                  <span>Download <strong>LabTrax.dmg</strong> using the button above.</span>
+                </li>
+                <li className="flex gap-3">
+                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">2</span>
+                  <span>Double-click the downloaded <code className="font-mono bg-secondary px-1 py-0.5 rounded text-xs">.dmg</code> file to mount the disk image.</span>
+                </li>
+                <li className="flex gap-3">
+                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">3</span>
+                  <span>Drag the <strong>LabTrax</strong> icon into the <strong>Applications</strong> folder, then launch LabTrax from Applications or Spotlight.</span>
+                </li>
+              </ol>
+            ) : isZip ? (
+              <ol className="space-y-2 text-sm text-muted-foreground list-none">
+                <li className="flex gap-3">
+                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">1</span>
+                  <span>Download <strong>LabTrax-Windows-Portable.zip</strong> using the button above.</span>
+                </li>
+                <li className="flex gap-3">
+                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">2</span>
+                  <span>Right-click the ZIP and choose <strong>Extract All…</strong> — make sure to extract the entire folder, not just the <code className="font-mono bg-secondary px-1 py-0.5 rounded text-xs">LabTrax.exe</code> file on its own.</span>
+                </li>
+                <li className="flex gap-3">
+                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">3</span>
+                  <span>Open the extracted <strong>LabTrax</strong> folder and run <code className="font-mono bg-secondary px-1 py-0.5 rounded text-xs">LabTrax.exe</code> from inside it.</span>
+                </li>
+              </ol>
+            ) : (
+              <ol className="space-y-2 text-sm text-muted-foreground list-none">
+                <li className="flex gap-3">
+                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">1</span>
+                  <span>Download the installer using the button above.</span>
+                </li>
+                <li className="flex gap-3">
+                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">2</span>
+                  <span>Double-click the downloaded <code className="font-mono bg-secondary px-1 py-0.5 rounded text-xs">.exe</code> file to launch the setup wizard.</span>
+                </li>
+                <li className="flex gap-3">
+                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">3</span>
+                  <span>Follow the on-screen steps. LabTrax Desktop will be installed and a shortcut placed on the Desktop.</span>
+                </li>
+              </ol>
+            )}
+          </div>
+
+          {/* ── Advanced — Platform Admin only ───────────────────────── */}
+          {isPlatformAdmin && (
+            <div className="space-y-4">
+              <button
+                type="button"
+                onClick={() => setAdvancedOpen((v) => !v)}
+                className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <ChevronDown
+                  size={13}
+                  className={`transition-transform ${advancedOpen ? "" : "-rotate-90"}`}
+                />
+                Advanced
+              </button>
+              {advancedOpen && (
+                <div className="space-y-5">
+                  {!info && (
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Loader2 size={13} className="animate-spin" />
+                      Loading…
+                    </div>
+                  )}
+                  {info && <>
+                  {info.repoUrlWarning && (
+                    <Alert tone="warning">{info.repoUrlWarning}</Alert>
+                  )}
+                  {info.buildCounterWarning && (
             <div className="rounded-lg border border-amber-400/50 bg-amber-500/10 px-4 py-3 space-y-2">
               <div className="flex items-start gap-2">
                 <svg
@@ -4858,122 +5007,84 @@ function DesktopInstallerPanel() {
               </div>
             </div>
           )}
-          {info.urlError ? (
+          {info.urlError && (
             <Alert tone="danger">
               Current download URL is invalid: {info.urlError} Use the field below to fix it.
             </Alert>
-          ) : (
-            <div className="rounded-lg border border-border bg-secondary/30 px-5 py-4 space-y-3">
-              <div className="flex items-center justify-between gap-4">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <div className="text-sm font-semibold">{isDmg ? "LabTrax Desktop for Mac" : "LabTrax Desktop for Windows"}</div>
-                    <InstallerStatusBadge status={info.installerStatus} />
-                  </div>
-                  <div className="text-xs text-muted-foreground mt-0.5">
-                    Version {info.version} · {info.fileName}
-                  </div>
-                </div>
-                {info.installerStatus === "missing" || info.installerStatus === "unknown" ? (
-                  <button
-                    type="button"
-                    disabled
-                    title={info.installerStatusMessage ?? "Installer file not uploaded — use the upload control below."}
-                    className="h-9 px-4 rounded-md bg-primary/40 text-primary-foreground/70 text-sm font-semibold cursor-not-allowed inline-flex items-center gap-2 shrink-0"
-                  >
-                    <Download size={14} />
-                    {isZip ? "Download Portable ZIP" : isDmg ? "Download macOS DMG" : "Download Installer"}
-                  </button>
-                ) : (
-                  <a
-                    href={absDownloadUrl}
-                    download
-                    className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-2 shrink-0"
-                  >
-                    <Download size={14} />
-                    {isZip ? "Download Portable ZIP" : isDmg ? "Download macOS DMG" : "Download Installer"}
-                  </a>
-                )}
-              </div>
-              {info.installerStatusMessage && info.installerStatus !== "ok" && (
-                <div
-                  className={`text-[12px] rounded-md px-3 py-2 ${
-                    info.installerStatus === "missing" || info.installerStatus === "unknown"
-                      ? "bg-destructive/10 text-destructive"
-                      : info.installerStatus === "stale"
-                        ? "bg-amber-500/10 text-amber-700 dark:text-amber-400"
-                        : "bg-secondary text-muted-foreground"
-                  }`}
-                >
-                  {info.installerStatusMessage}
-                </div>
-              )}
-              <div className="text-[11px] text-muted-foreground">
-                {info.installerObject ? (
-                  <>
-                    Current installer: {formatInstallerSize(info.installerObject.size)} · uploaded{" "}
-                    {formatInstallerTimestamp(info.installerObject.uploadedAt)}
-                  </>
-                ) : info.installerStatus === "external" ? (
-                  <>External download — file is hosted outside App Storage.</>
-                ) : (
-                  <span className="text-amber-600 dark:text-amber-400">
-                    No {isExe ? "installer" : isDmg ? "macOS installer" : "portable zip"} has been uploaded to App Storage yet — the download link will return 404 until an admin uploads <code className="font-mono bg-secondary px-1 py-0.5 rounded">{isExe ? "LabTrax-Setup.exe" : isDmg ? "LabTrax.dmg" : "LabTrax-Windows-Portable.zip"}</code> below.
-                  </span>
-                )}
-              </div>
-              {(() => {
-                const stats = interruptionStatsQuery.data;
-                if (!stats) return null;
-                const threshold = info.downloadInterruptionAlertThreshold;
-                const isAlert = stats.retryFailCount24h >= threshold;
-                const hasAny = stats.count24h > 0;
-                return (
-                  <div
-                    className={`text-[11px] rounded-md px-3 py-2 flex items-center gap-2 flex-wrap ${
-                      isAlert
-                        ? "bg-amber-500/10 text-amber-700 dark:text-amber-400"
-                        : "bg-secondary/60 text-muted-foreground"
-                    }`}
-                  >
-                    <span className="font-medium shrink-0">Last 24 h:</span>
-                    {hasAny ? (
-                      <>
-                        <span>
-                          {stats.count24h} interruption{stats.count24h !== 1 ? "s" : ""}
-                          {stats.retryFailCount24h > 0 && (
-                            <> · <span className={isAlert ? "font-semibold" : ""}>{stats.retryFailCount24h} retry failure{stats.retryFailCount24h !== 1 ? "s" : ""}</span></>
-                          )}
-                        </span>
-                        {stats.lastOccurredAt && (
-                          <span className="text-muted-foreground">
-                            · last {new Date(stats.lastOccurredAt).toLocaleString()}
-                          </span>
-                        )}
-                        {isAlert && (
-                          <span className="font-semibold">
-                            ⚠ Retry failures at or above alert threshold ({threshold})
-                          </span>
-                        )}
-                      </>
-                    ) : (
-                      <span>no interruptions</span>
-                    )}
-                  </div>
-                );
-              })()}
-              {info.releaseNotes && (
-                <div className="rounded-md border border-border bg-background px-4 py-3 space-y-1">
-                  <div className="text-[11px] uppercase tracking-wide font-semibold text-muted-foreground">
-                    Release notes
-                  </div>
-                  <p className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
-                    {info.releaseNotes}
-                  </p>
-                </div>
+          )}
+          <div className="rounded-lg border border-border bg-secondary/30 px-5 py-4 space-y-3">
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="text-sm font-semibold">Installer status</div>
+              <InstallerStatusBadge status={info.installerStatus} />
+            </div>
+            <div className="text-[11px] text-muted-foreground">
+              {info.installerObject ? (
+                <>
+                  Current installer: {formatInstallerSize(info.installerObject.size)} · uploaded{" "}
+                  {formatInstallerTimestamp(info.installerObject.uploadedAt)}
+                </>
+              ) : info.installerStatus === "external" ? (
+                <>External download — file is hosted outside App Storage.</>
+              ) : (
+                <span className="text-amber-600 dark:text-amber-400">
+                  No installer has been uploaded yet — the download link will return 404 until an admin uploads a file below.
+                </span>
               )}
             </div>
-          )}
+            {info.installerStatusMessage && info.installerStatus !== "ok" && (
+              <div
+                className={`text-[12px] rounded-md px-3 py-2 ${
+                  info.installerStatus === "missing" || info.installerStatus === "unknown"
+                    ? "bg-destructive/10 text-destructive"
+                    : info.installerStatus === "stale"
+                      ? "bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                      : "bg-secondary text-muted-foreground"
+                }`}
+              >
+                {info.installerStatusMessage}
+              </div>
+            )}
+            {(() => {
+              const stats = interruptionStatsQuery.data;
+              if (!stats) return null;
+              const threshold = info.downloadInterruptionAlertThreshold;
+              const isAlert = stats.retryFailCount24h >= threshold;
+              const hasAny = stats.count24h > 0;
+              return (
+                <div
+                  className={`text-[11px] rounded-md px-3 py-2 flex items-center gap-2 flex-wrap ${
+                    isAlert
+                      ? "bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                      : "bg-secondary/60 text-muted-foreground"
+                  }`}
+                >
+                  <span className="font-medium shrink-0">Last 24 h:</span>
+                  {hasAny ? (
+                    <>
+                      <span>
+                        {stats.count24h} interruption{stats.count24h !== 1 ? "s" : ""}
+                        {stats.retryFailCount24h > 0 && (
+                          <> · <span className={isAlert ? "font-semibold" : ""}>{stats.retryFailCount24h} retry failure{stats.retryFailCount24h !== 1 ? "s" : ""}</span></>
+                        )}
+                      </span>
+                      {stats.lastOccurredAt && (
+                        <span className="text-muted-foreground">
+                          · last {new Date(stats.lastOccurredAt).toLocaleString()}
+                        </span>
+                      )}
+                      {isAlert && (
+                        <span className="font-semibold">
+                          ⚠ Retry failures at or above alert threshold ({threshold})
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    <span>no interruptions</span>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
 
           <div className="rounded-lg border border-border px-5 py-4 space-y-3">
             <div className="text-sm font-semibold">Download URL, Version &amp; Release Notes</div>
@@ -5117,17 +5228,12 @@ function DesktopInstallerPanel() {
           <div className="rounded-lg border border-border px-5 py-4 space-y-3">
             <div className="text-sm font-semibold">Upload a refreshed installer</div>
             <p className="text-xs text-muted-foreground">
-              After a fresh electron build, upload one of the Windows installers —{" "}
-              the one-click{" "}
-              <code className="font-mono bg-secondary px-1 py-0.5 rounded">LabTrax-Setup.exe</code>{" "}
-              or the portable{" "}
-              <code className="font-mono bg-secondary px-1 py-0.5 rounded">LabTrax-Windows-Portable.zip</code>{" "}
-              — or the macOS{" "}
-              <code className="font-mono bg-secondary px-1 py-0.5 rounded">LabTrax.dmg</code>.
-              The file is stored in App Storage and served at the matching{" "}
-              <code className="font-mono bg-secondary px-1 py-0.5 rounded">/downloads/</code>{" "}
-              URL without any redeploy. Max size 300 MB. Remember to update the
-              <em> Download URL</em> above to match.
+              After a fresh build, upload the Windows installer (
+              <code className="font-mono bg-secondary px-1 py-0.5 rounded">LabTrax-Setup.exe</code> or{" "}
+              <code className="font-mono bg-secondary px-1 py-0.5 rounded">LabTrax-Windows-Portable.zip</code>)
+              or the macOS installer (
+              <code className="font-mono bg-secondary px-1 py-0.5 rounded">LabTrax.dmg</code>).
+              Max size 300 MB.
             </p>
             {uploadError && <Alert tone="danger">{uploadError}</Alert>}
             {uploadSuccess && <Alert tone="success">Installer uploaded.</Alert>}
@@ -5274,58 +5380,6 @@ function DesktopInstallerPanel() {
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
-
-          <div className="rounded-lg border border-border px-5 py-4 space-y-3">
-            <div className="text-sm font-semibold">
-              {isZip ? "How to install (portable ZIP)" : isDmg ? "How to install (macOS)" : "How to install"}
-            </div>
-            {isDmg ? (
-              <ol className="space-y-2 text-sm text-muted-foreground list-none">
-                <li className="flex gap-3">
-                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">1</span>
-                  <span>Download <strong>LabTrax.dmg</strong> using the button above.</span>
-                </li>
-                <li className="flex gap-3">
-                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">2</span>
-                  <span>Double-click the downloaded <code className="font-mono bg-secondary px-1 py-0.5 rounded text-xs">.dmg</code> file to mount the disk image.</span>
-                </li>
-                <li className="flex gap-3">
-                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">3</span>
-                  <span>Drag the <strong>LabTrax</strong> icon into the <strong>Applications</strong> folder, then launch LabTrax from Applications or Spotlight.</span>
-                </li>
-              </ol>
-            ) : isZip ? (
-              <ol className="space-y-2 text-sm text-muted-foreground list-none">
-                <li className="flex gap-3">
-                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">1</span>
-                  <span>Download <strong>LabTrax-Windows-Portable.zip</strong> using the button above.</span>
-                </li>
-                <li className="flex gap-3">
-                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">2</span>
-                  <span>Right-click the ZIP and choose <strong>Extract All…</strong> — make sure to extract the entire folder, not just the <code className="font-mono bg-secondary px-1 py-0.5 rounded text-xs">LabTrax.exe</code> file on its own.</span>
-                </li>
-                <li className="flex gap-3">
-                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">3</span>
-                  <span>Open the extracted <strong>LabTrax</strong> folder and run <code className="font-mono bg-secondary px-1 py-0.5 rounded text-xs">LabTrax.exe</code> from inside it.</span>
-                </li>
-              </ol>
-            ) : (
-              <ol className="space-y-2 text-sm text-muted-foreground list-none">
-                <li className="flex gap-3">
-                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">1</span>
-                  <span>Download the installer using the button above.</span>
-                </li>
-                <li className="flex gap-3">
-                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">2</span>
-                  <span>Double-click the downloaded <code className="font-mono bg-secondary px-1 py-0.5 rounded text-xs">.exe</code> file to launch the setup wizard.</span>
-                </li>
-                <li className="flex gap-3">
-                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">3</span>
-                  <span>Follow the on-screen steps. LabTrax Desktop will be installed and a shortcut placed on the Desktop.</span>
-                </li>
-              </ol>
-            )}
-          </div>
 
           <div className="rounded-lg border border-border bg-secondary/20 px-5 py-4 space-y-3">
             <div className="flex items-center justify-between gap-3">
@@ -5494,6 +5548,11 @@ function DesktopInstallerPanel() {
           <DesktopInstallerPipelineHealthPanel />
           <DesktopInstallerUploadsPanel />
           <DesktopInstallerHistoryPanel repoUrl={info.repoUrl} />
+                  </>}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </PanelShell>
