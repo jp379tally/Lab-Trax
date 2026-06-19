@@ -28,6 +28,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { eq, inArray } from "drizzle-orm";
 import { randomBytes, createHash } from "node:crypto";
 import request from "supertest";
+import AdmZip from "adm-zip";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -119,6 +120,20 @@ function aiExtractedRx(overrides: Record<string, unknown> = {}) {
       },
     ],
   };
+}
+
+/**
+ * Build a minimal valid iTero export ZIP containing a single Rx PDF whose
+ * filename encodes the order id (`iTero_Rx_<digits>.pdf`), which is how the
+ * ZIP route derives the dedup key.
+ */
+function makeIteroZipBuffer(orderDigits: string): Buffer {
+  const zip = new AdmZip();
+  zip.addFile(
+    `iTero_Rx_${orderDigits}.pdf`,
+    Buffer.from("%PDF-1.4 fake rx content for testing"),
+  );
+  return zip.toBuffer();
 }
 
 maybe("iTero Rx AI extraction persistence (db integration)", () => {
@@ -332,5 +347,116 @@ maybe("iTero Rx AI extraction persistence (db integration)", () => {
     expect(lineTotalSum).toBe(300);
 
     try { fs.unlinkSync(rxFile); } catch { /* ignore */ }
+  });
+
+  it("persists AI-extracted Rx fields via the ZIP import path (no client hints)", async () => {
+    const adminToken = await makeSession(adminUserId);
+    const zipBuf = makeIteroZipBuffer(`90${Math.floor(Math.random() * 1e6)}`);
+
+    // NOTE: no *Hint fields — the ZIP route must populate everything from the
+    // server-side vision extraction alone, same as the poller/stale-client path.
+    const r = await request(appMod.default)
+      .post("/api/cases/import-from-itero-zip")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .attach("file", zipBuf, "iTero_Export.zip")
+      .field("labOrganizationId", labOrgId)
+      .field("providerOrganizationId", providerOrgId);
+
+    expect(r.status).toBe(201);
+    expect(r.body.ok).toBe(true);
+    const caseId = r.body.data.caseId as string;
+    expect(caseId).toBeTruthy();
+
+    // Supported vision path used; unsupported Files/Responses APIs untouched.
+    expect(mockChatCreate).toHaveBeenCalled();
+    expect(mockFilesCreate).not.toHaveBeenCalled();
+    expect(mockResponsesCreate).not.toHaveBeenCalled();
+    expect(mockConvertPdf).toHaveBeenCalled();
+
+    const { db, cases, caseRestorations, invoices, invoiceLineItems } =
+      dbMod as any;
+
+    const [caseRow] = await db
+      .select({
+        shade: cases.shade,
+        rxNotes: cases.rxNotes,
+        dueDate: cases.dueDate,
+        patientFirstName: cases.patientFirstName,
+        doctorName: cases.doctorName,
+        needsAiReview: cases.needsAiReview,
+      })
+      .from(cases)
+      .where(eq(cases.id, caseId));
+    expect(caseRow.shade).toBe("A2");
+    expect(caseRow.rxNotes).toContain("Match adjacent shade");
+    expect(caseRow.dueDate).toBeTruthy();
+    expect(caseRow.patientFirstName).toBe("Ada");
+    expect(caseRow.doctorName).toBe("Dr. Babbage");
+    expect(caseRow.needsAiReview).toBe(true);
+
+    const restorations = await db
+      .select()
+      .from(caseRestorations)
+      .where(eq(caseRestorations.caseId, caseId));
+    expect(restorations).toHaveLength(2);
+    expect(restorations.map((x: any) => x.toothNumber).sort()).toEqual(["8", "9"]);
+    for (const rest of restorations) {
+      expect(rest.restorationType).toBe("Crown & Bridge");
+      expect(rest.material).toBe("Zirconia");
+      expect(rest.shade).toBe("A2");
+      expect(Number(rest.unitPrice)).toBe(150);
+    }
+
+    const [invoice] = await db
+      .select()
+      .from(invoices)
+      .where(eq(invoices.caseId, caseId));
+    expect(invoice, "auto-invoice must be created").toBeDefined();
+    expect(invoice.status).toBe("draft");
+    expect(Number(invoice.total)).toBe(300);
+    expect(Number(invoice.subtotal)).toBe(300);
+    expect(Number(invoice.balanceDue)).toBe(300);
+
+    const lineItems = await db
+      .select()
+      .from(invoiceLineItems)
+      .where(eq(invoiceLineItems.invoiceId, invoice.id));
+    const lineTotalSum = lineItems.reduce(
+      (acc: number, li: any) => acc + Number(li.lineTotal),
+      0
+    );
+    expect(lineTotalSum).toBe(300);
+  });
+
+  it("falls back to notesHint for cases.rxNotes when AI extracts no notes (ZIP path)", async () => {
+    const adminToken = await makeSession(adminUserId);
+    const zipBuf = makeIteroZipBuffer(`91${Math.floor(Math.random() * 1e6)}`);
+
+    // AI extraction succeeds for everything EXCEPT notes — the exact partial
+    // failure where the client-supplied notesHint must still reach rxNotes.
+    mockChatCreate.mockResolvedValue(aiExtractedRx({ notes: undefined }));
+    const hintNote = "Patient prefers a brighter shade; confirm before milling.";
+
+    const r = await request(appMod.default)
+      .post("/api/cases/import-from-itero-zip")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .attach("file", zipBuf, "iTero_Export.zip")
+      .field("labOrganizationId", labOrgId)
+      .field("providerOrganizationId", providerOrgId)
+      .field("notesHint", hintNote);
+
+    expect(r.status).toBe(201);
+    const caseId = r.body.data.caseId as string;
+    expect(caseId).toBeTruthy();
+
+    const { db, cases } = dbMod as any;
+    const [caseRow] = await db
+      .select({ rxNotes: cases.rxNotes, shade: cases.shade })
+      .from(cases)
+      .where(eq(cases.id, caseId));
+    // rxNotes (the Lab Slip field, not just the case-note row) carries the hint.
+    expect(caseRow.rxNotes).toBe(hintNote);
+    // Other AI-extracted fields are unaffected.
+    expect(caseRow.shade).toBe("A2");
   });
 });

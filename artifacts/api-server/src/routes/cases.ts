@@ -8669,6 +8669,9 @@ router.post(
     // Fall back to hint values when AI didn't extract them.
     if (!extracted.shade && body.shadeHint) extracted.shade = body.shadeHint;
     if (!extracted.material && body.materialHint) extracted.material = body.materialHint;
+    // Route notesHint into extracted.notes so it persists to cases.rxNotes (not
+    // just the case-note row) when server-side AI extraction is unavailable.
+    if (!extracted.notes && body.notesHint) extracted.notes = body.notesHint;
 
     // Build tooth list from top-level teeth, fall back to restorations array.
     const teethStr = extracted.teeth?.trim() || body.toothIndicesHint?.trim() || "";
