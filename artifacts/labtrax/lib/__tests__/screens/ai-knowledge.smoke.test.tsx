@@ -8,6 +8,8 @@ import {
   mockCreateAiMemoryMutateAsync,
   mockUpdateAiMemoryMutateAsync,
   mockDeleteAiMemoryMutateAsync,
+  mockApproveAiMemoryCandidateMutateAsync,
+  mockRejectAiMemoryCandidateMutateAsync,
 } from "../../../vitest.setup";
 
 import AiKnowledgeScreen from "@/app/manage/ai-knowledge";
@@ -172,6 +174,77 @@ describe("AiKnowledgeScreen — admin edit flows", () => {
 
     await waitFor(() => {
       expect(mockDeleteAiMemoryMutateAsync).toHaveBeenCalledWith({ id: "ai-1" });
+    });
+  });
+});
+
+const GLOSSARY_CANDIDATE = {
+  id: "cand-1",
+  labOrganizationId: "lab-1",
+  kind: "glossary" as const,
+  key: "Zr",
+  value: "Zirconia",
+  status: "pending" as const,
+  sourceUserId: null,
+  reviewedByUserId: null,
+  reviewedAt: null,
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z",
+};
+
+describe("AiKnowledgeScreen — AI suggestion review (admin only)", () => {
+  it("hides the suggestions surface from non-admin lab members", () => {
+    setMockAppState({
+      meMemberships: labMembership("user"),
+      aiMemory: [],
+      aiCandidates: [GLOSSARY_CANDIDATE],
+    });
+
+    const { queryByTestId } = render(<AiKnowledgeScreen />);
+
+    expect(queryByTestId("ai-candidates")).toBeNull();
+    expect(queryByTestId("candidate-cand-1")).toBeNull();
+  });
+
+  it("lets an admin approve a suggestion", async () => {
+    setMockAppState({
+      meMemberships: labMembership("admin"),
+      aiMemory: [],
+      aiCandidates: [GLOSSARY_CANDIDATE],
+    });
+
+    const { getByText, getByTestId } = render(<AiKnowledgeScreen />);
+
+    expect(getByText("Suggested by AI")).toBeTruthy();
+    expect(getByText("Zr")).toBeTruthy();
+
+    fireEvent.press(getByTestId("candidate-approve-cand-1"));
+
+    await waitFor(() => {
+      expect(mockApproveAiMemoryCandidateMutateAsync).toHaveBeenCalledTimes(1);
+    });
+    expect(mockApproveAiMemoryCandidateMutateAsync).toHaveBeenCalledWith({
+      id: "cand-1",
+      data: {},
+    });
+  });
+
+  it("lets an admin dismiss a suggestion", async () => {
+    setMockAppState({
+      meMemberships: labMembership("owner"),
+      aiMemory: [],
+      aiCandidates: [GLOSSARY_CANDIDATE],
+    });
+
+    const { getByTestId } = render(<AiKnowledgeScreen />);
+
+    fireEvent.press(getByTestId("candidate-dismiss-cand-1"));
+
+    await waitFor(() => {
+      expect(mockRejectAiMemoryCandidateMutateAsync).toHaveBeenCalledTimes(1);
+    });
+    expect(mockRejectAiMemoryCandidateMutateAsync).toHaveBeenCalledWith({
+      id: "cand-1",
     });
   });
 });

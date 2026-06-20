@@ -101,6 +101,8 @@ export const mockAddCaseRestorationMutateAsync = vi.fn(async () => ({ ok: true, 
 export const mockCreateAiMemoryMutateAsync = vi.fn(async () => ({ ok: true, data: null }));
 export const mockUpdateAiMemoryMutateAsync = vi.fn(async () => ({ ok: true, data: null }));
 export const mockDeleteAiMemoryMutateAsync = vi.fn(async () => undefined);
+export const mockApproveAiMemoryCandidateMutateAsync = vi.fn(async () => ({ ok: true, data: null }));
+export const mockRejectAiMemoryCandidateMutateAsync = vi.fn(async () => ({ ok: true, data: null }));
 
 // Mutable handler for the mocked `resilientFetch`. The default returns
 // `{ data: null }` (preserves the previous behaviour). Tests that need
@@ -654,6 +656,26 @@ vi.mock("@workspace/api-client-react", () => ({
   }),
   useDeleteAiMemory: () => ({
     mutateAsync: mockDeleteAiMemoryMutateAsync,
+    mutate: vi.fn(),
+    isPending: false,
+    isError: false,
+  }),
+  useGetAiMemoryCandidates: () => ({
+    data: { ok: true, data: (mockAppOverrides.current.aiCandidates as unknown[]) ?? [] },
+    isLoading: false,
+    isError: false,
+    isFetching: false,
+    refetch: vi.fn(async () => undefined),
+  }),
+  getGetAiMemoryCandidatesQueryKey: (params?: unknown) => ["/api/ai-memory/candidates", params],
+  useApproveAiMemoryCandidate: () => ({
+    mutateAsync: mockApproveAiMemoryCandidateMutateAsync,
+    mutate: vi.fn(),
+    isPending: false,
+    isError: false,
+  }),
+  useRejectAiMemoryCandidate: () => ({
+    mutateAsync: mockRejectAiMemoryCandidateMutateAsync,
     mutate: vi.fn(),
     isPending: false,
     isError: false,

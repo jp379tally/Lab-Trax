@@ -18,9 +18,14 @@ import {
   useCreateAiMemory,
   useUpdateAiMemory,
   useDeleteAiMemory,
+  useGetAiMemoryCandidates,
+  useApproveAiMemoryCandidate,
+  useRejectAiMemoryCandidate,
   getGetAiMemoryQueryKey,
+  getGetAiMemoryCandidatesQueryKey,
   type AiMemoryItem,
   type AiMemoryItemKind,
+  type AiMemoryCandidateItem,
 } from "@workspace/api-client-react";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
@@ -93,6 +98,64 @@ export default function AiKnowledgeScreen() {
     },
   );
 
+  // Auto-learned candidates awaiting admin review. Only admins of the lab can
+  // list or act on them (the GET endpoint is lab-admin-only), so the query is
+  // gated on `canManage` to avoid a guaranteed 403 for non-admin members.
+  const candidatesQ = useGetAiMemoryCandidates(
+    { labOrganizationId: labOrgId ?? "" },
+    {
+      query: {
+        queryKey: getGetAiMemoryCandidatesQueryKey({
+          labOrganizationId: labOrgId ?? "",
+        }),
+        enabled: !!labOrgId && canManage,
+        staleTime: 30_000,
+      },
+    },
+  );
+  const candidates = candidatesQ.data?.data ?? [];
+
+  const qc = useQueryClient();
+  const approve = useApproveAiMemoryCandidate();
+  const reject = useRejectAiMemoryCandidate();
+  const [candidateActionId, setCandidateActionId] = useState<string | null>(null);
+
+  const invalidateCandidates = () =>
+    Promise.all([
+      qc.invalidateQueries({
+        queryKey: getGetAiMemoryCandidatesQueryKey({
+          labOrganizationId: labOrgId ?? "",
+        }),
+      }),
+      qc.invalidateQueries({
+        queryKey: getGetAiMemoryQueryKey({ labOrganizationId: labOrgId ?? "" }),
+      }),
+    ]);
+
+  async function approveCandidate(candidate: AiMemoryCandidateItem) {
+    setCandidateActionId(candidate.id);
+    try {
+      await approve.mutateAsync({ id: candidate.id, data: {} });
+      await invalidateCandidates();
+    } catch (e) {
+      Alert.alert("Couldn’t approve", friendlyError(e, "Please try again."));
+    } finally {
+      setCandidateActionId(null);
+    }
+  }
+
+  async function rejectCandidate(candidate: AiMemoryCandidateItem) {
+    setCandidateActionId(candidate.id);
+    try {
+      await reject.mutateAsync({ id: candidate.id });
+      await invalidateCandidates();
+    } catch (e) {
+      Alert.alert("Couldn’t dismiss", friendlyError(e, "Please try again."));
+    } finally {
+      setCandidateActionId(null);
+    }
+  }
+
   const items = memQ.data?.data ?? [];
   const itemsByKind = useMemo(() => {
     const map: Record<AiMemoryItemKind, AiMemoryItem[]> = {
@@ -136,7 +199,14 @@ export default function AiKnowledgeScreen() {
         <ScrollView
           contentContainerStyle={styles.content}
           refreshControl={
-            <RefreshControl refreshing={memQ.isFetching} onRefresh={() => memQ.refetch()} tintColor={colors.tint} />
+            <RefreshControl
+              refreshing={memQ.isFetching || candidatesQ.isFetching}
+              onRefresh={() => {
+                void memQ.refetch();
+                if (canManage) void candidatesQ.refetch();
+              }}
+              tintColor={colors.tint}
+            />
           }
         >
           <Text style={styles.intro}>
@@ -145,6 +215,59 @@ export default function AiKnowledgeScreen() {
           </Text>
 
           {memQ.isError ? <Text style={styles.loadError}>Couldn’t load knowledge. Pull to refresh.</Text> : null}
+
+          {canManage && candidatesQ.isError ? (
+            <Text style={styles.loadError}>Couldn’t load AI suggestions. Pull to refresh.</Text>
+          ) : null}
+
+          {canManage && candidates.length > 0 ? (
+            <View style={styles.candidateBox} testID="ai-candidates">
+              <View style={styles.candidateHeader}>
+                <Ionicons name="sparkles" size={16} color={colors.warning} />
+                <Text style={styles.candidateTitle}>Suggested by AI</Text>
+              </View>
+              <Text style={styles.candidateIntro}>
+                The AI noticed these from recent chats. Approve to add them to your lab’s memory, or dismiss.
+              </Text>
+              <View style={styles.list}>
+                {candidates.map((candidate) => {
+                  const meta = KIND_META[candidate.kind];
+                  const busy = candidateActionId === candidate.id;
+                  return (
+                    <View key={candidate.id} style={styles.candidateRow} testID={`candidate-${candidate.id}`}>
+                      <Text style={styles.candidateKind}>{meta.label.toUpperCase()}</Text>
+                      <Text style={styles.name}>{candidate.key}</Text>
+                      <Text style={styles.value}>{candidate.value}</Text>
+                      <View style={styles.candidateActions}>
+                        <Pressable
+                          style={[styles.approveBtn, busy && styles.btnDisabled]}
+                          onPress={() => void approveCandidate(candidate)}
+                          disabled={busy}
+                          testID={`candidate-approve-${candidate.id}`}
+                        >
+                          {busy ? (
+                            <ActivityIndicator size="small" color={colors.textInverse} />
+                          ) : (
+                            <Ionicons name="checkmark" size={16} color={colors.textInverse} />
+                          )}
+                          <Text style={styles.approveText}>Approve</Text>
+                        </Pressable>
+                        <Pressable
+                          style={[styles.dismissBtn, busy && styles.btnDisabled]}
+                          onPress={() => void rejectCandidate(candidate)}
+                          disabled={busy}
+                          testID={`candidate-dismiss-${candidate.id}`}
+                        >
+                          <Ionicons name="close" size={16} color={colors.textSecondary} />
+                          <Text style={styles.dismissText}>Dismiss</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+            </View>
+          ) : null}
 
           {AI_MEMORY_KINDS.map((kind) => {
             const meta = KIND_META[kind];
@@ -359,5 +482,48 @@ function makeStyles(c: ThemeColors) {
     main: { flex: 1, gap: 2 },
     name: { ...Typography.bodySemibold, color: c.text },
     value: { ...Typography.caption, color: c.textSecondary },
+    candidateBox: {
+      gap: Spacing.sm,
+      padding: Spacing.md,
+      borderRadius: Radius.lg,
+      borderWidth: 1,
+      borderColor: c.warning + "66",
+      backgroundColor: c.warning + "12",
+    },
+    candidateHeader: { flexDirection: "row", alignItems: "center", gap: Spacing.xs },
+    candidateTitle: { ...Typography.h3, color: c.text },
+    candidateIntro: { ...Typography.caption, color: c.textSecondary },
+    candidateRow: {
+      gap: 2,
+      padding: Spacing.md,
+      borderRadius: Radius.md,
+      borderWidth: 1,
+      borderColor: c.border,
+      backgroundColor: c.backgroundSolid,
+    },
+    candidateKind: { ...Typography.captionSemibold, color: c.textTertiary, letterSpacing: 0.5 },
+    candidateActions: { flexDirection: "row", gap: Spacing.sm, marginTop: Spacing.sm },
+    approveBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.xs,
+      paddingVertical: Spacing.xs,
+      paddingHorizontal: Spacing.md,
+      borderRadius: Radius.md,
+      backgroundColor: c.tint,
+    },
+    approveText: { ...Typography.captionSemibold, color: c.textInverse },
+    dismissBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.xs,
+      paddingVertical: Spacing.xs,
+      paddingHorizontal: Spacing.md,
+      borderRadius: Radius.md,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    dismissText: { ...Typography.captionSemibold, color: c.textSecondary },
+    btnDisabled: { opacity: 0.5 },
   });
 }
