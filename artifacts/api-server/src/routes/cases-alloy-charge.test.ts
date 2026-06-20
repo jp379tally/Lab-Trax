@@ -49,6 +49,7 @@ maybe("Alloy surcharge feature (db integration)", () => {
   let authLib: typeof import("../lib/auth.js");
 
   const labOwnerId = rid("u");
+  const labStaffId = rid("ustaff"); // member without admin role
   const labOrgId = rid("lab");
   const providerOrgId = rid("prov"); // no connection tier → default fallback
   const providerTierOrgId = rid("provt"); // connection points at a named tier
@@ -133,11 +134,18 @@ maybe("Alloy surcharge feature (db integration)", () => {
       pricingOverrides,
     } = dbMod as any;
 
-    await db.insert(users).values({
-      id: labOwnerId,
-      username: `alloyowner_${labOwnerId}`,
-      password: "doesnotmatter",
-    });
+    await db.insert(users).values([
+      {
+        id: labOwnerId,
+        username: `alloyowner_${labOwnerId}`,
+        password: "doesnotmatter",
+      },
+      {
+        id: labStaffId,
+        username: `alloystaff_${labStaffId}`,
+        password: "doesnotmatter",
+      },
+    ]);
 
     await db.insert(organizations).values([
       { id: labOrgId, type: "lab", name: rid("AlloyTestLab") },
@@ -155,15 +163,26 @@ maybe("Alloy surcharge feature (db integration)", () => {
       },
     ]);
 
-    await db.insert(organizationMemberships).values({
-      id: rid("m"),
-      labId: labOrgId,
-      userId: labOwnerId,
-      role: "owner",
-      status: "active",
-      approvedByUserId: labOwnerId,
-      joinedAt: new Date(),
-    });
+    await db.insert(organizationMemberships).values([
+      {
+        id: rid("m"),
+        labId: labOrgId,
+        userId: labOwnerId,
+        role: "owner",
+        status: "active",
+        approvedByUserId: labOwnerId,
+        joinedAt: new Date(),
+      },
+      {
+        id: rid("m"),
+        labId: labOrgId,
+        userId: labStaffId,
+        role: "staff",
+        status: "active",
+        approvedByUserId: labOwnerId,
+        joinedAt: new Date(),
+      },
+    ]);
 
     // Standard tier → default fallback; named tier → reached via connection.
     await db.insert(pricingTiers).values([
@@ -264,14 +283,16 @@ maybe("Alloy surcharge feature (db integration)", () => {
       .where(eq(organizationConnections.labOrganizationId, labOrgId));
     await db.delete(pricingOverrides).where(eq(pricingOverrides.labOrganizationId, labOrgId));
     await db.delete(pricingTiers).where(eq(pricingTiers.labOrganizationId, labOrgId));
-    await db.delete(userSessions).where(inArray(userSessions.userId, [labOwnerId]));
+    await db
+      .delete(userSessions)
+      .where(inArray(userSessions.userId, [labOwnerId, labStaffId]));
     await db
       .delete(organizationMemberships)
-      .where(inArray(organizationMemberships.userId, [labOwnerId]));
+      .where(inArray(organizationMemberships.userId, [labOwnerId, labStaffId]));
     await db
       .delete(organizations)
       .where(inArray(organizations.id, [providerOrgId, providerTierOrgId, labOrgId]));
-    await db.delete(users).where(inArray(users.id, [labOwnerId]));
+    await db.delete(users).where(inArray(users.id, [labOwnerId, labStaffId]));
   });
 
   // ── (1) alloy-charge endpoint: adds a priced line + event, idempotent ─────
@@ -657,5 +678,89 @@ maybe("Alloy surcharge feature (db integration)", () => {
       );
     expect(Number(alloyRow.unitPrice)).toBe(OVERRIDE_ALLOY);
     expect(alloyRow.priceSource).toBe("override");
+  }, 20000);
+
+  // ── (4) set-alloy-price endpoint (Task #2077): admin-only, writes the price
+  //        into the resolved tier/override and re-prices the line + invoice ───
+
+  it("(4) POST /:caseId/alloy-price writes the price to the resolved tier and re-prices the alloy line + invoice", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const { db, caseRestorations, invoiceLineItems, pricingTiers } =
+      dbMod as any;
+
+    // Dr. Default + providerOrgId (no override, no connection tier) resolves to
+    // the Standard tier — the destination resolver prefers a tier.
+    const caseId = await createCase(access);
+    const invoice = await waitForInvoice(caseId);
+
+    const NEW_PRICE = 137.5;
+    const r = await request(appMod.default)
+      .post(`/api/cases/${caseId}/alloy-price`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({ price: NEW_PRICE });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.data.target.kind).toBe("tier");
+    expect(r.body.data.target.name).toBe("Standard");
+    expect(Number(r.body.data.amount)).toBe(NEW_PRICE);
+    expect(r.body.data.restorationId).toBeTruthy();
+
+    // The Standard tier's pricesJson.alloy now holds the new price.
+    const [tier] = await db
+      .select()
+      .from(pricingTiers)
+      .where(
+        and(
+          eq(pricingTiers.labOrganizationId, labOrgId),
+          eq(pricingTiers.name, "Standard"),
+        ),
+      );
+    expect(Number((tier.pricesJson as any).alloy)).toBe(NEW_PRICE);
+
+    // An alloy restoration row exists, re-priced to the new amount.
+    const [alloyRow] = await db
+      .select()
+      .from(caseRestorations)
+      .where(
+        and(
+          eq(caseRestorations.caseId, caseId),
+          eq(caseRestorations.priceKey, "alloy"),
+        ),
+      );
+    expect(Number(alloyRow.unitPrice)).toBe(NEW_PRICE);
+
+    // The invoice carries a single priced "Alloy" line at the new price.
+    const lines = await db
+      .select()
+      .from(invoiceLineItems)
+      .where(eq(invoiceLineItems.invoiceId, invoice.id));
+    const alloyLines = lines.filter((l: any) => l.description === "Alloy");
+    expect(alloyLines).toHaveLength(1);
+    expect(Number(alloyLines[0].unitPrice)).toBe(NEW_PRICE);
+  }, 20000);
+
+  it("(4) POST /:caseId/alloy-price is rejected for a non-admin member", async () => {
+    const { access: ownerAccess } = await makeSession(labOwnerId);
+    const { access: staffAccess } = await makeSession(labStaffId);
+    const { db, pricingTiers } = dbMod as any;
+
+    const caseId = await createCase(ownerAccess);
+
+    const r = await request(appMod.default)
+      .post(`/api/cases/${caseId}/alloy-price`)
+      .set("Authorization", `Bearer ${staffAccess}`)
+      .send({ price: 200 });
+    expect(r.status).toBe(403);
+
+    // The Standard tier price was not touched by the rejected request.
+    const [tier] = await db
+      .select()
+      .from(pricingTiers)
+      .where(
+        and(
+          eq(pricingTiers.labOrganizationId, labOrgId),
+          eq(pricingTiers.name, "Standard"),
+        ),
+      );
+    expect(Number((tier.pricesJson as any).alloy)).not.toBe(200);
   }, 20000);
 });

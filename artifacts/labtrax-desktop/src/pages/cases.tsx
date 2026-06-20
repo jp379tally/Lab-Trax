@@ -3943,6 +3943,28 @@ export function CaseDrawer({
       ),
   });
 
+  // Inline "set alloy price" from the PFM reminder (Task #2077). When the
+  // alloy line was added at $0 (no tier/override has an alloy price), an admin
+  // can set it right here; the server writes it to the tier/override the case
+  // resolves to and re-prices the line + invoice.
+  const [alloyPriceInput, setAlloyPriceInput] = useState("");
+  const setAlloyPriceMutation = useMutation({
+    mutationFn: (price: number) =>
+      apiFetch<{
+        ok: boolean;
+        target: { kind: "tier" | "override"; id: string; name: string };
+        amount: number;
+      }>(`/cases/${labCase.id}/alloy-price`, {
+        method: "POST",
+        body: JSON.stringify({ price }),
+      }),
+    onSuccess: () => {
+      setAlloyPriceInput("");
+      qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+      qc.invalidateQueries({ queryKey: ["cases"] });
+    },
+  });
+
   const addNoteMutation = useMutation({
     mutationFn: ({ text, shared }: { text: string; shared: boolean }) =>
       apiFetch<{ id: string; visibility: string; noteText: string }>(`/cases/${labCase.id}/notes`, {
@@ -5155,11 +5177,18 @@ export function CaseDrawer({
                 (r as { priceKey?: string | null }).priceKey === "pfm_crown" ||
                 /pfm/i.test(r.material ?? ""),
             );
-            const hasAlloyCharge = (data?.restorations ?? []).some(
+            const alloyLine = (data?.restorations ?? []).find(
               (r) =>
                 (r as { priceKey?: string | null }).priceKey === "alloy" ||
                 (r.restorationType ?? "").trim().toLowerCase() === "alloy",
             );
+            const hasAlloyCharge = !!alloyLine;
+            const alloyUnpriced =
+              !!alloyLine &&
+              Number(
+                (alloyLine as { unitPrice?: string | number | null })
+                  .unitPrice ?? 0,
+              ) <= 0;
             const overviewNotes = data?.notes ?? [];
             const latestNote = [...overviewNotes].sort((a, b) => {
               const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
@@ -5245,6 +5274,62 @@ export function CaseDrawer({
                 </div>
                 );
               })()}
+              {alloyUnpriced && isAdmin && (
+                <div className="flex items-start gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2.5">
+                  <AlertTriangle size={16} className="text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-amber-800 dark:text-amber-200">
+                      Alloy charge added at $0 — no alloy price is set for this case's pricing tier.
+                    </p>
+                    <form
+                      className="mt-2 flex flex-wrap items-center gap-2"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        const parsed = Number(alloyPriceInput);
+                        if (!Number.isFinite(parsed) || parsed <= 0) return;
+                        setAlloyPriceMutation.mutate(parsed);
+                      }}
+                    >
+                      <div className="relative">
+                        <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-xs text-amber-700 dark:text-amber-300">
+                          $
+                        </span>
+                        <input
+                          type="number"
+                          min="0.01"
+                          step="0.01"
+                          inputMode="decimal"
+                          value={alloyPriceInput}
+                          onChange={(e) => setAlloyPriceInput(e.target.value)}
+                          placeholder="0.00"
+                          aria-label="Alloy price"
+                          className="w-24 rounded border border-amber-500/50 bg-white/70 dark:bg-black/20 pl-5 pr-2 py-1 text-sm tabular-nums text-amber-900 dark:text-amber-100 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                        />
+                      </div>
+                      <button
+                        type="submit"
+                        disabled={
+                          setAlloyPriceMutation.isPending ||
+                          !(Number(alloyPriceInput) > 0)
+                        }
+                        className="rounded bg-amber-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-amber-700 disabled:opacity-50"
+                      >
+                        {setAlloyPriceMutation.isPending ? "Saving…" : "Set alloy price"}
+                      </button>
+                    </form>
+                    {setAlloyPriceMutation.isError && (
+                      <p className="mt-1 text-xs text-red-600 dark:text-red-400">
+                        Couldn't set the alloy price. Please try again.
+                      </p>
+                    )}
+                    {setAlloyPriceMutation.isSuccess && setAlloyPriceMutation.data?.target && (
+                      <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                        Saved to {setAlloyPriceMutation.data.target.kind === "tier" ? "tier" : "override"} “{setAlloyPriceMutation.data.target.name}”.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
               {!data?.viewerIsLabMember && data?.statusHistory && data.statusHistory.length > 0 && (
                 <section>
                   <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-3">

@@ -39,6 +39,7 @@ import {
   addAlloyChargeToCase,
   removeAlloyChargeFromCase,
   resolveAlloyPricePreview,
+  setAlloyPriceForCase,
 } from "../lib/alloy-charge";
 import { invoiceDueDate } from "../lib/invoice-due-date";
 import {
@@ -6775,6 +6776,66 @@ router.get(
     return ok(res, preview);
   })
 );
+
+// Inline "set alloy price" from the PFM reminder (Task #2077). When the alloy
+// line was added at $0 (no tier/override has an alloy price), a lab admin can
+// set the price right from the case drawer. We write it to the tier/override
+// the case resolves to and re-price the line + invoice. Admin-only.
+router.post(
+  "/:caseId/alloy-price",
+  asyncHandler(async (req, res) => {
+    const input = z
+      .object({ price: z.coerce.number().min(0.01).max(1_000_000) })
+      .parse(req.body);
+
+    const found = await assertCaseAccessOrPromote(
+      (req as any).auth.userId,
+      req.params.caseId
+    );
+    await requireAnyRole(
+      (req as any).auth.userId,
+      found.labOrganizationId,
+      ADMIN_ROLES
+    );
+
+    const result = await setAlloyPriceForCase({
+      caseRow: {
+        id: found.id,
+        labOrganizationId: found.labOrganizationId,
+        doctorName: found.doctorName,
+        providerOrganizationId: found.providerOrganizationId,
+      },
+      price: input.price,
+      actorUserId: (req as any).auth.userId,
+      actorInitials: (req as any).user?.initials,
+    });
+
+    await writeAuditLog({
+      req,
+      organizationId: found.labOrganizationId,
+      action:
+        result.target.kind === "tier"
+          ? "pricing_tier_updated"
+          : "pricing_override_updated",
+      entityType:
+        result.target.kind === "tier" ? "pricing_tier" : "pricing_override",
+      entityId: result.target.id,
+      beforeJson: { prices: result.beforePrices },
+      afterJson: {
+        prices: result.afterPrices,
+        alloyPriceSetFromCaseId: found.id,
+      },
+    });
+
+    return ok(res, {
+      ok: true,
+      target: result.target,
+      amount: result.amount,
+      restorationId: result.restorationId,
+    });
+  })
+);
+
 
 router.delete(
   "/:caseId/restorations/:restorationId",

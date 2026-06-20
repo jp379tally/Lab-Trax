@@ -306,6 +306,89 @@ export async function resolveServerPriceWithSource(
   return tryTier(sortedTiers[0], "default");
 }
 
+export interface AlloyPriceTarget {
+  kind: "tier" | "override";
+  id: string;
+  name: string;
+}
+
+/**
+ * Determine which pricing tier (or per-doctor override) a price set from the
+ * case-level "set alloy price" affordance should be written to.
+ *
+ * This mirrors the destination chain in {@link resolveServerPriceWithSource}:
+ * the price is written wherever resolution would read it back for this case.
+ * We prefer the tier the case resolves to (doctor tier → practice/connection
+ * tier → caller tier → "Standard" → oldest), because alloy is a per-tier
+ * material price just like every other key. Only when the lab has no tier at
+ * all do we fall back to the doctor's per-doctor override (if one exists).
+ * Returns `null` when there is neither a tier nor an override to target — the
+ * caller is then responsible for creating one.
+ */
+export async function resolveAlloyPriceTarget(
+  ctx: ResolvedPriceContext,
+): Promise<AlloyPriceTarget | null> {
+  let doctorTierName: string | null = null;
+  const override = await findDoctorOverride(
+    ctx.labOrganizationId,
+    ctx.doctorName,
+  );
+  if (override?.tierName) doctorTierName = override.tierName;
+
+  let connectionTierName: string | null = null;
+  if (ctx.providerOrganizationId) {
+    const connection = await db.query.organizationConnections.findFirst({
+      where: and(
+        eq(
+          organizationConnections.labOrganizationId,
+          ctx.labOrganizationId,
+        ),
+        eq(
+          organizationConnections.providerOrganizationId,
+          ctx.providerOrganizationId,
+        ),
+      ),
+    });
+    if (connection?.tierName) connectionTierName = connection.tierName;
+  }
+
+  const tiers = await db.query.pricingTiers.findMany({
+    where: eq(pricingTiers.labOrganizationId, ctx.labOrganizationId),
+  });
+  const sortedTiers = [...tiers].sort((a, b) => {
+    const at = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+    const bt = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+    return at - bt;
+  });
+  const findByName = (name: string) =>
+    sortedTiers.find(
+      (t) => t.name.trim().toLowerCase() === name.trim().toLowerCase(),
+    );
+
+  const candidateNames = [
+    doctorTierName,
+    connectionTierName,
+    ctx.tierName ?? null,
+  ].filter((n): n is string => !!n);
+  for (const name of candidateNames) {
+    const tier = findByName(name);
+    if (tier) return { kind: "tier", id: tier.id, name: tier.name };
+  }
+  const standardTier = findByName("Standard");
+  if (standardTier)
+    return { kind: "tier", id: standardTier.id, name: standardTier.name };
+  if (sortedTiers[0])
+    return {
+      kind: "tier",
+      id: sortedTiers[0].id,
+      name: sortedTiers[0].name,
+    };
+
+  if (override)
+    return { kind: "override", id: override.id, name: override.doctorName };
+  return null;
+}
+
 /**
  * Resolve the per-doctor effective unit price for every standard item
  * key in one pass. Returns one row per `DEFAULT_TIER_ITEMS` entry, with

@@ -1,7 +1,16 @@
 import { eq } from "drizzle-orm";
 import { db } from "@workspace/db";
-import { caseEvents, caseRestorations } from "@workspace/db";
-import { resolveServerPriceWithSource } from "./pricing";
+import {
+  caseEvents,
+  caseRestorations,
+  pricingOverrides,
+  pricingTiers,
+} from "@workspace/db";
+import {
+  resolveAlloyPriceTarget,
+  resolveServerPriceWithSource,
+  type AlloyPriceTarget,
+} from "./pricing";
 import { syncInvoiceFromRestorations } from "./invoice-sync";
 
 /**
@@ -276,5 +285,172 @@ export async function removeAlloyChargeFromCase(args: {
     removed: true,
     alreadyAbsent: false,
     removedRestorationIds,
+  };
+}
+
+export interface SetAlloyPriceResult {
+  /** The tier/override the price was written to. */
+  target: AlloyPriceTarget;
+  /** The resolved unit price now applied to the case's alloy line. */
+  amount: number;
+  /** The alloy restoration row on the case (created if it was missing). */
+  restorationId: string | null;
+  /** Prices map before the edit, for audit logging. */
+  beforePrices: Record<string, number>;
+  /** Prices map after the edit, for audit logging. */
+  afterPrices: Record<string, number>;
+}
+
+function toPricesMap(json: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(
+    (json ?? {}) as Record<string, unknown>,
+  )) {
+    const n = Number(v);
+    if (Number.isFinite(n) && n >= 0) out[k] = n;
+  }
+  return out;
+}
+
+/**
+ * Set the alloy price for the tier/override a case resolves to, then re-price
+ * the case's alloy line and re-sync its invoice. Powers the "set alloy price"
+ * affordance on the PFM reminder when {@link addAlloyChargeToCase} added the
+ * line at $0 (`priced: false`).
+ *
+ * The destination is chosen by {@link resolveAlloyPriceTarget} so the price is
+ * written exactly where pricing resolution will read it back. When the lab has
+ * no tier or override at all, a "Standard" tier is created to hold the price.
+ */
+export async function setAlloyPriceForCase(args: {
+  caseRow: AlloyCaseRow;
+  price: number;
+  actorUserId: string | null;
+  actorInitials?: string | null;
+}): Promise<SetAlloyPriceResult> {
+  const { caseRow, actorUserId } = args;
+  const price = Math.round(args.price * 100) / 100;
+
+  const ctx = {
+    labOrganizationId: caseRow.labOrganizationId,
+    doctorName: caseRow.doctorName,
+    providerOrganizationId: caseRow.providerOrganizationId,
+  };
+
+  let target = await resolveAlloyPriceTarget(ctx);
+  let beforePrices: Record<string, number>;
+  let afterPrices: Record<string, number>;
+
+  if (!target) {
+    // Lab has no tier or override to hold the price — create a "Standard"
+    // tier so resolution can read it back (matches the default fallback).
+    beforePrices = {};
+    afterPrices = { [ALLOY_PRICE_KEY]: price };
+    const [created] = await db
+      .insert(pricingTiers)
+      .values({
+        labOrganizationId: caseRow.labOrganizationId,
+        name: "Standard",
+        pricesJson: afterPrices,
+        createdByUserId: actorUserId,
+      })
+      .returning();
+    target = { kind: "tier", id: created.id, name: created.name };
+  } else if (target.kind === "tier") {
+    const tier = await db.query.pricingTiers.findFirst({
+      where: eq(pricingTiers.id, target.id),
+    });
+    beforePrices = toPricesMap(tier?.pricesJson);
+    afterPrices = { ...beforePrices, [ALLOY_PRICE_KEY]: price };
+    await db
+      .update(pricingTiers)
+      .set({ pricesJson: afterPrices, updatedAt: new Date() })
+      .where(eq(pricingTiers.id, target.id));
+  } else {
+    const override = await db.query.pricingOverrides.findFirst({
+      where: eq(pricingOverrides.id, target.id),
+    });
+    beforePrices = toPricesMap(override?.pricesJson);
+    afterPrices = { ...beforePrices, [ALLOY_PRICE_KEY]: price };
+    await db
+      .update(pricingOverrides)
+      .set({ pricesJson: afterPrices, updatedAt: new Date() })
+      .where(eq(pricingOverrides.id, target.id));
+  }
+
+  // Re-resolve so the case's alloy line reflects the price we just set,
+  // carrying the proper price source (tier/override) for traceability.
+  const resolved = await resolveServerPriceWithSource(
+    ctx,
+    ALLOY_RESTORATION_TYPE,
+    ALLOY_RESTORATION_TYPE,
+  );
+  const unit = resolved?.amount ?? price;
+
+  const existing = await db.query.caseRestorations.findMany({
+    where: eq(caseRestorations.caseId, caseRow.id),
+  });
+  let alloyRow = existing.find((r) => isAlloyRestoration(r)) ?? null;
+
+  if (alloyRow) {
+    await db
+      .update(caseRestorations)
+      .set({
+        unitPrice: unit.toFixed(2),
+        priceSource: resolved?.source ?? null,
+        priceSourceId: resolved?.sourceId ?? null,
+        priceSourceName: resolved?.sourceName ?? null,
+        priceKey: ALLOY_PRICE_KEY,
+      })
+      .where(eq(caseRestorations.id, alloyRow.id));
+  } else {
+    const [created] = await db
+      .insert(caseRestorations)
+      .values({
+        caseId: caseRow.id,
+        toothNumber: "N/A",
+        restorationType: ALLOY_RESTORATION_TYPE,
+        material: null,
+        shade: null,
+        notes: null,
+        quantity: 1,
+        unitPrice: unit.toFixed(2),
+        priceSource: resolved?.source ?? null,
+        priceSourceId: resolved?.sourceId ?? null,
+        priceSourceName: resolved?.sourceName ?? null,
+        priceKey: ALLOY_PRICE_KEY,
+      })
+      .returning();
+    alloyRow = created;
+  }
+
+  await db.insert(caseEvents).values({
+    caseId: caseRow.id,
+    eventType: "case_restoration_price_updated",
+    actorUserId,
+    actorOrganizationId: caseRow.labOrganizationId,
+    actorInitials: args.actorInitials || "SYS",
+    metadataJson: {
+      restorationId: alloyRow.id,
+      restorationType: ALLOY_RESTORATION_TYPE,
+      unitPrice: unit.toFixed(2),
+      alloySurcharge: true,
+      alloyPriceSet: true,
+      target: target.kind,
+      targetName: target.name,
+    },
+  });
+
+  await syncInvoiceFromRestorations({
+    caseId: caseRow.id,
+    actorUserId,
+  });
+
+  return {
+    target,
+    amount: unit,
+    restorationId: alloyRow.id,
+    beforePrices,
+    afterPrices,
   };
 }

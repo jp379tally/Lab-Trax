@@ -1280,6 +1280,7 @@ export default function CaseDetailScreen() {
             c={c}
             caseId={c.id}
             canEdit={canEdit}
+            isAdmin={isAdminOfCase}
             labName={labName}
             onSaved={() => caseQuery.refetch()}
             styles={styles}
@@ -1439,6 +1440,7 @@ function OverviewSection({
   c,
   caseId,
   canEdit,
+  isAdmin,
   labName,
   onSaved,
   styles,
@@ -1447,6 +1449,7 @@ function OverviewSection({
   c: DetailedCase;
   caseId: string;
   canEdit: boolean;
+  isAdmin: boolean;
   labName: string | null;
   onSaved: () => void | Promise<unknown>;
   styles: Styles;
@@ -1471,13 +1474,19 @@ function OverviewSection({
   const hasPfmRestoration = (c.restorations ?? []).some((r) =>
     /pfm/i.test(r.material ?? ""),
   );
-  const hasAlloyCharge = (c.restorations ?? []).some(
+  const alloyLine = (c.restorations ?? []).find(
     (r) =>
       ((r as { priceKey?: string | null }).priceKey ?? "") === "alloy" ||
       ((r as { restorationType?: string | null }).restorationType ?? "")
         .trim()
         .toLowerCase() === "alloy",
   );
+  const hasAlloyCharge = !!alloyLine;
+  const alloyUnpriced =
+    !!alloyLine &&
+    Number(
+      (alloyLine as { unitPrice?: string | number | null }).unitPrice ?? 0,
+    ) <= 0;
   const [pfmReminderDismissed, setPfmReminderDismissed] = useState(true);
   useEffect(() => {
     let cancelled = false;
@@ -1585,6 +1594,44 @@ function OverviewSection({
       setAddingAlloy(false);
     }
   }, [caseId, onSaved]);
+
+  // Inline "set alloy price" from the PFM reminder (Task #2077). When the
+  // alloy line was added at $0 (no tier/override has an alloy price), an admin
+  // can set it right here; the server writes it to the tier/override the case
+  // resolves to and re-prices the line + invoice.
+  const [alloyPriceInput, setAlloyPriceInput] = useState("");
+  const [settingAlloyPrice, setSettingAlloyPrice] = useState(false);
+  const setAlloyPrice = useCallback(async () => {
+    const parsed = Number(alloyPriceInput);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      Alert.alert("Enter a price", "Please enter an alloy price above $0.");
+      return;
+    }
+    setSettingAlloyPrice(true);
+    try {
+      const res = await resilientFetch(`/api/cases/${caseId}/alloy-price`, {
+        method: "POST",
+        body: JSON.stringify({ price: parsed }),
+      });
+      if (!res.ok) throw new Error("Request failed");
+      const body = (await res.json().catch(() => null)) as {
+        data?: { target?: { kind?: string; name?: string } };
+      } | null;
+      const target = body?.data?.target;
+      setAlloyPriceInput("");
+      await onSaved();
+      if (target?.name) {
+        Alert.alert(
+          "Alloy price set",
+          `Saved to ${target.kind === "tier" ? "tier" : "override"} “${target.name}”.`,
+        );
+      }
+    } catch (e) {
+      Alert.alert("Couldn't set the alloy price", errorMessage(e));
+    } finally {
+      setSettingAlloyPrice(false);
+    }
+  }, [alloyPriceInput, caseId, onSaved]);
 
   // ── Barcode conflict check — debounced, fires 400 ms after last keystroke ──
   const [editBarcodeConflict, setEditBarcodeConflict] = useState<{ caseNumber?: string | null } | null>(null);
@@ -1971,6 +2018,49 @@ function OverviewSection({
                 >
                   <Ionicons name="close" size={16} color={colors.warningStrong} />
                 </Pressable>
+              </View>
+            )}
+            {alloyUnpriced && isAdmin && (
+              <View style={styles.pfmReminder}>
+                <Ionicons
+                  name="warning-outline"
+                  size={18}
+                  color={colors.warningStrong}
+                  style={{ marginTop: 1 }}
+                />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.pfmReminderText}>
+                    Alloy charge added at $0 — no alloy price is set for this case's pricing tier.
+                  </Text>
+                  <View style={styles.alloyPriceRow}>
+                    <View style={styles.alloyPriceInputWrap}>
+                      <Text style={styles.alloyPriceCurrency}>$</Text>
+                      <TextInput
+                        style={styles.alloyPriceInput}
+                        value={alloyPriceInput}
+                        onChangeText={setAlloyPriceInput}
+                        placeholder="0.00"
+                        placeholderTextColor={colors.textSecondary}
+                        keyboardType="decimal-pad"
+                        editable={!settingAlloyPrice}
+                        accessibilityLabel="Alloy price"
+                      />
+                    </View>
+                    <Pressable
+                      hitSlop={8}
+                      onPress={setAlloyPrice}
+                      disabled={settingAlloyPrice || !(Number(alloyPriceInput) > 0)}
+                      style={[
+                        styles.alloyPriceButton,
+                        (settingAlloyPrice || !(Number(alloyPriceInput) > 0)) && { opacity: 0.5 },
+                      ]}
+                    >
+                      <Text style={styles.alloyPriceButtonText}>
+                        {settingAlloyPrice ? "Saving…" : "Set alloy price"}
+                      </Text>
+                    </Pressable>
+                  </View>
+                </View>
               </View>
             )}
             <View style={styles.fieldRow}>
@@ -3937,6 +4027,36 @@ function makeStyles(c: ThemeColors) {
     pfmReminderAdd: { ...Typography.captionSemibold, color: c.warningText },
     pfmReminderDismiss: { ...Typography.captionSemibold, color: c.warningStrong },
     pfmReminderDontShow: { ...Typography.caption, color: c.warningStrong },
+    alloyPriceRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.sm,
+      marginTop: Spacing.sm,
+    },
+    alloyPriceInputWrap: {
+      flexDirection: "row",
+      alignItems: "center",
+      backgroundColor: c.surface,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: c.warning,
+      borderRadius: Radius.sm,
+      paddingHorizontal: Spacing.sm,
+    },
+    alloyPriceCurrency: { ...Typography.bodyMedium, color: c.warningStrong },
+    alloyPriceInput: {
+      ...Typography.bodyMedium,
+      color: c.text,
+      minWidth: 70,
+      paddingVertical: Spacing.xs,
+      paddingLeft: 2,
+    },
+    alloyPriceButton: {
+      backgroundColor: c.warningStrong,
+      borderRadius: Radius.sm,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Spacing.xs + 2,
+    },
+    alloyPriceButtonText: { ...Typography.captionSemibold, color: c.surface },
     teethLabel: { ...Typography.bodyMedium, color: c.tint, marginBottom: Spacing.md },
     toothChartWrap: { alignItems: "center" },
     restHeaderRow: {
