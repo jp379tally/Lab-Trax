@@ -29,6 +29,7 @@ export const DEFAULT_TIER_ITEMS = [
   { key: "retainer_lingual", label: "Retainer - Lingual" },
   { key: "snore_guard", label: "Snore Guard" },
   { key: "sports_guard", label: "Sports Guard" },
+  { key: "alloy", label: "Alloy" },
 ] as const;
 
 export type PriceKey = (typeof DEFAULT_TIER_ITEMS)[number]["key"];
@@ -140,6 +141,10 @@ export function materialToPriceKey(
   )
     return "emax_crown";
   if (m.includes("pfm")) return "pfm_crown";
+  // The alloy surcharge added to PFM cases. Checked before the
+  // gold/cast-metal → pfm_crown fallthrough so an explicit "Alloy"
+  // line resolves to its own price key rather than the PFM crown price.
+  if (m.includes("alloy") || rt.includes("alloy")) return "alloy";
   if (
     m.includes("gold") ||
     m.includes("full cast") ||

@@ -1914,6 +1914,7 @@ function OrganizationsPanel() {
                   <DuplicateThresholdRow lab={selectedOrg} />
                   <DefaultCaseDueDaysRow lab={selectedOrg} />
                   <CapCaseDueToggleRow lab={selectedOrg} />
+                  <AutoAddAlloyToggleRow lab={selectedOrg} />
                 </div>
               )}
 
@@ -2749,6 +2750,75 @@ function CapCaseDueToggleRow({ lab }: { lab: Organization }) {
           aria-checked={enabled}
           onClick={toggle}
           disabled={saveMutation.isPending || !hasTurnaround}
+          className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:opacity-50 ${enabled ? "bg-primary" : "bg-input"}`}
+        >
+          <span
+            className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${enabled ? "translate-x-4" : "translate-x-0"}`}
+          />
+        </button>
+      </div>
+      {savedFlag && (
+        <span className="text-[11px] text-success inline-flex items-center gap-1">
+          <Check size={11} />
+          Saved
+        </span>
+      )}
+      {saveError && (
+        <div className="mt-1">
+          <Alert tone="danger">{saveError}</Alert>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AutoAddAlloyToggleRow({ lab }: { lab: Organization }) {
+  const queryClient = useQueryClient();
+  const [enabled, setEnabled] = useState<boolean>(lab.autoAddAlloyOnPfm ?? false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [savedFlag, setSavedFlag] = useState(false);
+
+  useEffect(() => {
+    setEnabled(lab.autoAddAlloyOnPfm ?? false);
+  }, [lab.autoAddAlloyOnPfm]);
+
+  const saveMutation = useMutation({
+    mutationFn: (value: boolean) =>
+      apiFetch(`/organizations/${lab.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ autoAddAlloyOnPfm: value }),
+      }),
+    onSuccess: () => {
+      setSaveError(null);
+      setSavedFlag(true);
+      setTimeout(() => setSavedFlag(false), 2000);
+      queryClient.invalidateQueries({ queryKey: ["organizations"] });
+    },
+    onError: (err: Error) => setSaveError(err.message || "Failed to save."),
+  });
+
+  function toggle() {
+    const next = !enabled;
+    setEnabled(next);
+    saveMutation.mutate(next);
+  }
+
+  return (
+    <div className="rounded-md border border-border bg-background p-3 space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-xs font-semibold">Auto-add alloy charge on PFM</div>
+          <div className="text-[11px] text-muted-foreground max-w-sm">
+            When a PFM restoration is added to a case, automatically add an Alloy line
+            priced from your fee schedule. You can still add it manually from the case.
+          </div>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={enabled}
+          onClick={toggle}
+          disabled={saveMutation.isPending}
           className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:opacity-50 ${enabled ? "bg-primary" : "bg-input"}`}
         >
           <span

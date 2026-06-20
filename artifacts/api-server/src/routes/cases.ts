@@ -35,6 +35,7 @@ import { writeAuditLog } from "../lib/audit";
 import { resolveCaseDueDate } from "../lib/case-due-date";
 import { calculateLineTotal, sumMoney } from "../lib/case";
 import { syncInvoiceFromRestorations, buildGroupedLineItemsForInvoice } from "../lib/invoice-sync";
+import { addAlloyChargeToCase } from "../lib/alloy-charge";
 import { invoiceDueDate } from "../lib/invoice-due-date";
 import {
   classifyMatch,
@@ -6607,7 +6608,67 @@ router.post(
       actorUserId: (req as any).auth.userId,
     });
 
+    // ── Auto-add alloy surcharge on PFM ──────────────────────────────────
+    // When the lab has opted into `autoAddAlloyOnPfm`, a newly added PFM
+    // restoration automatically appends an "Alloy" line (idempotent) so the
+    // alloy charge is never forgotten. Best-effort: a failure here must not
+    // fail the restoration write the user just made.
+    if (priceKey === "pfm_crown" || /pfm/i.test(effectiveMaterial ?? "")) {
+      try {
+        const labOrg = await db.query.organizations.findFirst({
+          where: eq(organizations.id, found.labOrganizationId),
+        });
+        if (labOrg?.autoAddAlloyOnPfm) {
+          await addAlloyChargeToCase({
+            caseRow: {
+              id: found.id,
+              labOrganizationId: found.labOrganizationId,
+              doctorName: found.doctorName,
+              providerOrganizationId: found.providerOrganizationId,
+            },
+            actorUserId: (req as any).auth.userId,
+            actorInitials: restorationActor?.initials,
+          });
+        }
+      } catch (err) {
+        req.log.error(
+          { err, caseId: found.id },
+          "auto-add alloy charge failed",
+        );
+      }
+    }
+
     return ok(res, restoration, 201);
+  })
+);
+
+// One-click "add alloy charge" from the PFM reminder (Task #2067). Adds an
+// alloy surcharge line to the case (idempotent) priced through the lab's
+// tier/override cascade, and re-syncs the invoice.
+router.post(
+  "/:caseId/alloy-charge",
+  asyncHandler(async (req, res) => {
+    const found = await assertCaseAccessOrPromote(
+      (req as any).auth.userId,
+      req.params.caseId
+    );
+    await requireMembership(
+      (req as any).auth.userId,
+      found.labOrganizationId
+    );
+
+    const result = await addAlloyChargeToCase({
+      caseRow: {
+        id: found.id,
+        labOrganizationId: found.labOrganizationId,
+        doctorName: found.doctorName,
+        providerOrganizationId: found.providerOrganizationId,
+      },
+      actorUserId: (req as any).auth.userId,
+      actorInitials: (req as any).user?.initials,
+    });
+
+    return ok(res, result, result.added ? 201 : 200);
   })
 );
 

@@ -1423,6 +1423,13 @@ function OverviewSection({
   const hasPfmRestoration = (c.restorations ?? []).some((r) =>
     /pfm/i.test(r.material ?? ""),
   );
+  const hasAlloyCharge = (c.restorations ?? []).some(
+    (r) =>
+      ((r as { priceKey?: string | null }).priceKey ?? "") === "alloy" ||
+      ((r as { restorationType?: string | null }).restorationType ?? "")
+        .trim()
+        .toLowerCase() === "alloy",
+  );
   const [pfmReminderDismissed, setPfmReminderDismissed] = useState(true);
   useEffect(() => {
     let cancelled = false;
@@ -1477,6 +1484,24 @@ function OverviewSection({
       /* ignore persistence failures */
     }
   }, []);
+  // One-tap "Add alloy charge" from the PFM reminder (Task #2067). Adds a
+  // priced Alloy line server-side (idempotent), then refetches so the
+  // reminder gives way to the new line.
+  const [addingAlloy, setAddingAlloy] = useState(false);
+  const addAlloyCharge = useCallback(async () => {
+    setAddingAlloy(true);
+    try {
+      const res = await resilientFetch(`/api/cases/${caseId}/alloy-charge`, {
+        method: "POST",
+      });
+      if (!res.ok) throw new Error("Request failed");
+      await onSaved();
+    } catch (e) {
+      Alert.alert("Couldn't add alloy charge", errorMessage(e));
+    } finally {
+      setAddingAlloy(false);
+    }
+  }, [caseId, onSaved]);
 
   // ── Barcode conflict check — debounced, fires 400 ms after last keystroke ──
   const [editBarcodeConflict, setEditBarcodeConflict] = useState<{ caseNumber?: string | null } | null>(null);
@@ -1803,7 +1828,7 @@ function OverviewSection({
           </View>
         ) : (
           <View>
-            {hasPfmRestoration && !pfmReminderDismissed && (
+            {hasPfmRestoration && !hasAlloyCharge && !pfmReminderDismissed && (
               <View style={styles.pfmReminder}>
                 <Ionicons
                   name="warning-outline"
@@ -1816,6 +1841,11 @@ function OverviewSection({
                     PFM detected — don't forget to charge for alloy.
                   </Text>
                   <View style={styles.pfmReminderActions}>
+                    <Pressable hitSlop={8} onPress={addAlloyCharge} disabled={addingAlloy}>
+                      <Text style={styles.pfmReminderAdd}>
+                        {addingAlloy ? "Adding…" : "Add alloy charge"}
+                      </Text>
+                    </Pressable>
                     <Pressable hitSlop={8} onPress={dismissPfmReminderThisCase}>
                       <Text style={styles.pfmReminderDismiss}>Dismiss</Text>
                     </Pressable>
@@ -3794,6 +3824,7 @@ function makeStyles(c: ThemeColors) {
       gap: Spacing.lg,
       marginTop: Spacing.xs,
     },
+    pfmReminderAdd: { ...Typography.captionSemibold, color: c.warningText },
     pfmReminderDismiss: { ...Typography.captionSemibold, color: c.warningStrong },
     pfmReminderDontShow: { ...Typography.caption, color: c.warningStrong },
     teethLabel: { ...Typography.bodyMedium, color: c.tint, marginBottom: Spacing.md },

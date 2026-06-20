@@ -1277,6 +1277,7 @@ export const DEFAULT_TIER_ITEMS = [
   { key: "retainer_lingual", label: "Retainer - Lingual" },
   { key: "snore_guard", label: "Snore Guard" },
   { key: "sports_guard", label: "Sports Guard" },
+  { key: "alloy", label: "Alloy" },
 ];
 
 export interface InventoryItem {

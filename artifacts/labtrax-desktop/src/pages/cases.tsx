@@ -3901,6 +3901,18 @@ export function CaseDrawer({
     }
   }
 
+  // One-click "add alloy charge" from the PFM reminder (Task #2067). Adds a
+  // priced Alloy line to the case (idempotent server-side) and refreshes the
+  // case so the reminder gives way to the new line.
+  const addAlloyMutation = useMutation({
+    mutationFn: () =>
+      apiFetch(`/cases/${labCase.id}/alloy-charge`, { method: "POST" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+      qc.invalidateQueries({ queryKey: ["cases"] });
+    },
+  });
+
   const addNoteMutation = useMutation({
     mutationFn: ({ text, shared }: { text: string; shared: boolean }) =>
       apiFetch<{ id: string; visibility: string; noteText: string }>(`/cases/${labCase.id}/notes`, {
@@ -5091,6 +5103,11 @@ export function CaseDrawer({
                 (r as { priceKey?: string | null }).priceKey === "pfm_crown" ||
                 /pfm/i.test(r.material ?? ""),
             );
+            const hasAlloyCharge = (data?.restorations ?? []).some(
+              (r) =>
+                (r as { priceKey?: string | null }).priceKey === "alloy" ||
+                (r.restorationType ?? "").trim().toLowerCase() === "alloy",
+            );
             const overviewNotes = data?.notes ?? [];
             const latestNote = [...overviewNotes].sort((a, b) => {
               const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
@@ -5105,7 +5122,7 @@ export function CaseDrawer({
             const shadeLabel = summary.shades.length > 0 ? summary.shades.join(", ") : "—";
             return (
             <div className="px-5 py-5 space-y-6">
-              {hasPfmRestoration && !pfmReminderDismissed && (
+              {hasPfmRestoration && !hasAlloyCharge && !pfmReminderDismissed && (
                 <div className="flex items-start gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2.5">
                   <AlertTriangle size={16} className="text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
                   <div className="flex-1 min-w-0">
@@ -5113,6 +5130,14 @@ export function CaseDrawer({
                       PFM detected — don't forget to charge for alloy.
                     </p>
                     <div className="mt-1.5 flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => addAlloyMutation.mutate()}
+                        disabled={addAlloyMutation.isPending}
+                        className="text-xs font-semibold text-amber-800 dark:text-amber-200 hover:underline disabled:opacity-50"
+                      >
+                        {addAlloyMutation.isPending ? "Adding…" : "Add alloy charge"}
+                      </button>
                       <button
                         type="button"
                         onClick={dismissPfmReminderThisCase}

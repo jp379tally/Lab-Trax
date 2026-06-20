@@ -660,6 +660,11 @@ function buildBasicDescription(
   r: { restorationType: string; toothNumber: string; material?: string | null },
   noChargeRemake: boolean,
 ): string {
+  // The alloy surcharge isn't tied to a tooth — render it as a plain "Alloy"
+  // line instead of "Alloy - Tooth N/A".
+  if (r.restorationType.trim().toLowerCase() === "alloy") {
+    return noChargeRemake ? "Alloy (no-charge remake)" : "Alloy";
+  }
   const base = r.material
     ? `${r.material} ${r.restorationType} - Tooth ${r.toothNumber}`
     : `${r.restorationType} - Tooth ${r.toothNumber}`;

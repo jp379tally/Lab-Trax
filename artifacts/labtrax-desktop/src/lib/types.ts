@@ -394,6 +394,7 @@ export interface Organization {
   duplicateSuggestionThreshold?: string | number | null;
   defaultCaseDueDays?: number | null;
   capCaseDueToDefault?: boolean | null;
+  autoAddAlloyOnPfm?: boolean | null;
   licenseNumber?: string | null;
 }
 

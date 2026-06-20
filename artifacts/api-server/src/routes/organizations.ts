@@ -109,6 +109,9 @@ const createOrgSchema = z.object({
   // When true, new case due dates are capped at (received date + defaultCaseDueDays).
   // Dates sooner than the turnaround are kept as-is (treated as rush). Lab orgs only.
   capCaseDueToDefault: z.boolean().nullable().optional(),
+  // When true, adding a PFM restoration auto-appends an "Alloy" surcharge line
+  // (priced via tier/override logic). Lab orgs only.
+  autoAddAlloyOnPfm: z.boolean().optional(),
   // Lab license / registration number (Account epic Phase 3). Required when
   // creating a lab environment; ignored on provider orgs.
   licenseNumber: z.string().optional(),

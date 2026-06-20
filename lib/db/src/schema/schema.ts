@@ -262,6 +262,14 @@ export const organizations = pgTable(
     // turnaround are kept as-is (treated as rush). Null / false = off
     // (existing behaviour). Only meaningful on type="lab" rows.
     capCaseDueToDefault: boolean("cap_case_due_to_default"),
+    // When true, adding a PFM restoration to a case automatically appends an
+    // "Alloy" surcharge line (priced via the lab's tier/override logic) so
+    // staff don't have to remember to charge for alloy on PFM cases. Off by
+    // default — labs opt in from Settings → Profile. Only meaningful on
+    // type="lab" rows; ignored on provider organizations.
+    autoAddAlloyOnPfm: boolean("auto_add_alloy_on_pfm")
+      .default(false)
+      .notNull(),
     // Lab license / registration number captured at lab-environment creation
     // (Account epic Phase 3). Required for type="lab" rows created through the
     // canonical create-lab flow; null on provider orgs and legacy lab rows.

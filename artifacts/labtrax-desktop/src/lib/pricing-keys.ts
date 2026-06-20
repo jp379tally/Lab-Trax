@@ -25,6 +25,7 @@ export const PRICE_KEY_LABELS: Record<string, string> = {
   retainer_lingual: "Retainer - Lingual",
   snore_guard: "Snore Guard",
   sports_guard: "Sports Guard",
+  alloy: "Alloy",
 };
 
 export const DEFAULT_PRICE_KEYS = Object.keys(PRICE_KEY_LABELS);
@@ -59,6 +60,7 @@ export function materialToPriceKey(
   if (m.includes("emax") || m.includes("e.max") || m.includes("e max"))
     return "emax_crown";
   if (m.includes("pfm")) return "pfm_crown";
+  if (m.includes("alloy") || rt.includes("alloy")) return "alloy";
   if (
     m.includes("gold") ||
     m.includes("full cast") ||
