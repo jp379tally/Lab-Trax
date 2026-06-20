@@ -3919,6 +3919,30 @@ export function CaseDrawer({
     },
   });
 
+  // Resolved alloy price preview (Task #2075) so the reminder can show what
+  // the charge will be before it's added. Only fetched when the reminder is
+  // actually showing (PFM present, no alloy line yet, not dismissed).
+  const showPfmReminder =
+    (data?.restorations ?? []).some(
+      (r) =>
+        (r as { priceKey?: string | null }).priceKey === "pfm_crown" ||
+        /pfm/i.test(r.material ?? ""),
+    ) &&
+    !(data?.restorations ?? []).some(
+      (r) =>
+        (r as { priceKey?: string | null }).priceKey === "alloy" ||
+        (r.restorationType ?? "").trim().toLowerCase() === "alloy",
+    ) &&
+    !pfmReminderDismissed;
+  const alloyPreviewQuery = useQuery({
+    queryKey: ["case", labCase.id, "alloy-preview"],
+    enabled: showPfmReminder,
+    queryFn: () =>
+      apiFetch<{ amount: number; priced: boolean; source: string | null }>(
+        `/cases/${labCase.id}/alloy-charge/preview`,
+      ),
+  });
+
   const addNoteMutation = useMutation({
     mutationFn: ({ text, shared }: { text: string; shared: boolean }) =>
       apiFetch<{ id: string; visibility: string; noteText: string }>(`/cases/${labCase.id}/notes`, {
@@ -5150,22 +5174,50 @@ export function CaseDrawer({
             const shadeLabel = summary.shades.length > 0 ? summary.shades.join(", ") : "—";
             return (
             <div className="px-5 py-5 space-y-6">
-              {hasPfmRestoration && !hasAlloyCharge && !pfmReminderDismissed && (
+              {hasPfmRestoration && !hasAlloyCharge && !pfmReminderDismissed && (() => {
+                const preview = alloyPreviewQuery.data;
+                const previewReady = !alloyPreviewQuery.isLoading;
+                const noAlloyPrice = previewReady && preview != null && !preview.priced;
+                const priceLabel =
+                  preview != null && preview.priced
+                    ? ` ($${preview.amount.toFixed(2)})`
+                    : "";
+                return (
                 <div className="flex items-start gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2.5">
                   <AlertTriangle size={16} className="text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
                   <div className="flex-1 min-w-0">
                     <p className="text-sm text-amber-800 dark:text-amber-200">
-                      PFM detected — don't forget to charge for alloy.
+                      {noAlloyPrice
+                        ? "PFM detected — no alloy price set in your fee schedule."
+                        : "PFM detected — don't forget to charge for alloy."}
                     </p>
                     <div className="mt-1.5 flex items-center gap-3">
-                      <button
-                        type="button"
-                        onClick={() => addAlloyMutation.mutate()}
-                        disabled={addAlloyMutation.isPending}
-                        className="text-xs font-semibold text-amber-800 dark:text-amber-200 hover:underline disabled:opacity-50"
-                      >
-                        {addAlloyMutation.isPending ? "Adding…" : "Add alloy charge"}
-                      </button>
+                      {noAlloyPrice ? (
+                        <a
+                          href="/pricing"
+                          onClick={onClose}
+                          className="text-xs font-semibold text-amber-800 dark:text-amber-200 hover:underline"
+                        >
+                          Set up fee schedule
+                        </a>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => addAlloyMutation.mutate()}
+                          disabled={
+                            addAlloyMutation.isPending ||
+                            !preview ||
+                            !preview.priced
+                          }
+                          className="text-xs font-semibold text-amber-800 dark:text-amber-200 hover:underline disabled:opacity-50"
+                        >
+                          {addAlloyMutation.isPending
+                            ? "Adding…"
+                            : !previewReady
+                              ? "Checking alloy price…"
+                              : `Add alloy charge${priceLabel}`}
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={dismissPfmReminderThisCase}
@@ -5191,7 +5243,8 @@ export function CaseDrawer({
                     <X size={14} />
                   </button>
                 </div>
-              )}
+                );
+              })()}
               {!data?.viewerIsLabMember && data?.statusHistory && data.statusHistory.length > 0 && (
                 <section>
                   <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-3">

@@ -45,7 +45,50 @@ export interface AddAlloyChargeResult {
   alreadyPresent: boolean;
   /** True when a non-zero price resolved from the tier/override cascade. */
   priced: boolean;
+  /**
+   * True when the add was refused because no alloy price is configured and
+   * the caller passed `requirePriced` (manual reminder add). Prevents a
+   * silent $0 line from being created.
+   */
+  skippedUnpriced: boolean;
   restorationId: string | null;
+}
+
+export interface AlloyPricePreview {
+  /** Resolved unit price (0 when no alloy price is configured). */
+  amount: number;
+  /** True when a non-zero price resolved from the tier/override cascade. */
+  priced: boolean;
+  /** Where the price came from ("tier" | "override" | "default"), or null. */
+  source: string | null;
+}
+
+/**
+ * Resolve what the alloy surcharge *would* cost for a case without adding
+ * it — used by the PFM reminder banner so the user sees the price (or a
+ * "no alloy price set" warning) before clicking "Add alloy charge".
+ */
+export async function resolveAlloyPricePreview(
+  caseRow: Pick<
+    AlloyCaseRow,
+    "labOrganizationId" | "doctorName" | "providerOrganizationId"
+  >,
+): Promise<AlloyPricePreview> {
+  const resolved = await resolveServerPriceWithSource(
+    {
+      labOrganizationId: caseRow.labOrganizationId,
+      doctorName: caseRow.doctorName,
+      providerOrganizationId: caseRow.providerOrganizationId,
+    },
+    ALLOY_RESTORATION_TYPE,
+    ALLOY_RESTORATION_TYPE,
+  );
+  const amount = resolved?.amount ?? 0;
+  return {
+    amount,
+    priced: amount > 0,
+    source: resolved?.source ?? null,
+  };
 }
 
 /**
@@ -54,16 +97,25 @@ export interface AddAlloyChargeResult {
  * a no-op and returns `{ added: false, alreadyPresent: true }`.
  *
  * The unit price is resolved through {@link resolveServerPriceWithSource}
- * using the `alloy` price key. When the lab hasn't configured an alloy
- * price in any tier/override the line is still added at $0 (so the reminder
- * is satisfied and the lab can fill in the price), with `priced: false`.
+ * using the `alloy` price key.
+ *
+ * When the lab hasn't configured an alloy price in any tier/override:
+ * - with `requirePriced: true` (the manual reminder add) the line is NOT
+ *   created — the call returns `{ added: false, skippedUnpriced: true }` so
+ *   the caller can steer the user to the fee schedule instead of silently
+ *   creating a $0 line.
+ * - otherwise (e.g. the `autoAddAlloyOnPfm` path) the line is still added at
+ *   $0 with `priced: false` so the reminder is satisfied and the lab can
+ *   fill in the price later.
  */
 export async function addAlloyChargeToCase(args: {
   caseRow: AlloyCaseRow;
   actorUserId: string | null;
   actorInitials?: string | null;
+  /** Refuse to add a $0 line when no alloy price is configured. */
+  requirePriced?: boolean;
 }): Promise<AddAlloyChargeResult> {
-  const { caseRow, actorUserId } = args;
+  const { caseRow, actorUserId, requirePriced = false } = args;
 
   const existing = await db.query.caseRestorations.findMany({
     where: eq(caseRestorations.caseId, caseRow.id),
@@ -73,6 +125,7 @@ export async function addAlloyChargeToCase(args: {
       added: false,
       alreadyPresent: true,
       priced: false,
+      skippedUnpriced: false,
       restorationId: null,
     };
   }
@@ -88,6 +141,19 @@ export async function addAlloyChargeToCase(args: {
   );
 
   const unit = resolved?.amount ?? 0;
+
+  // Server-side backstop: never create a silent $0 alloy line from the manual
+  // reminder add. UI timing (clicking before the price preview loads) can't
+  // reintroduce a $0 line because the resolution happens here too.
+  if (requirePriced && unit <= 0) {
+    return {
+      added: false,
+      alreadyPresent: false,
+      priced: false,
+      skippedUnpriced: true,
+      restorationId: null,
+    };
+  }
 
   const [restoration] = await db
     .insert(caseRestorations)
@@ -133,6 +199,7 @@ export async function addAlloyChargeToCase(args: {
     added: true,
     alreadyPresent: false,
     priced: unit > 0,
+    skippedUnpriced: false,
     restorationId: restoration.id,
   };
 }

@@ -35,7 +35,11 @@ import { writeAuditLog } from "../lib/audit";
 import { resolveCaseDueDate } from "../lib/case-due-date";
 import { calculateLineTotal, sumMoney } from "../lib/case";
 import { syncInvoiceFromRestorations, buildGroupedLineItemsForInvoice } from "../lib/invoice-sync";
-import { addAlloyChargeToCase, removeAlloyChargeFromCase } from "../lib/alloy-charge";
+import {
+  addAlloyChargeToCase,
+  removeAlloyChargeFromCase,
+  resolveAlloyPricePreview,
+} from "../lib/alloy-charge";
 import { invoiceDueDate } from "../lib/invoice-due-date";
 import {
   classifyMatch,
@@ -6686,7 +6690,17 @@ router.post(
       },
       actorUserId: (req as any).auth.userId,
       actorInitials: (req as any).user?.initials,
+      // Manual reminder add must never silently create a $0 line — reject
+      // when no alloy price is configured so the UI can point at pricing.
+      requirePriced: true,
     });
+
+    if (result.skippedUnpriced) {
+      throw new HttpError(
+        422,
+        "No alloy price is configured for this case. Set an alloy price in your fee schedule first."
+      );
+    }
 
     return ok(res, result, result.added ? 201 : 200);
   })
@@ -6734,6 +6748,31 @@ router.delete(
     }
 
     return ok(res, result);
+  })
+);
+
+// Preview the alloy surcharge price for a case without adding it (Task #2075).
+// Powers the PFM reminder banner so the user sees the resolved amount (or a
+// "no alloy price set" warning) before clicking "Add alloy charge".
+router.get(
+  "/:caseId/alloy-charge/preview",
+  asyncHandler(async (req, res) => {
+    const found = await assertCaseAccessOrPromote(
+      (req as any).auth.userId,
+      req.params.caseId
+    );
+    await requireMembership(
+      (req as any).auth.userId,
+      found.labOrganizationId
+    );
+
+    const preview = await resolveAlloyPricePreview({
+      labOrganizationId: found.labOrganizationId,
+      doctorName: found.doctorName,
+      providerOrganizationId: found.providerOrganizationId,
+    });
+
+    return ok(res, preview);
   })
 );
 

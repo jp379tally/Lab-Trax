@@ -1532,6 +1532,41 @@ function OverviewSection({
       /* ignore persistence failures */
     }
   }, []);
+  // Resolved alloy price preview (Task #2075) so the reminder can show what
+  // the charge will be before it's tapped. Fetched only while the reminder is
+  // actually showing (PFM present, no alloy line yet, not dismissed).
+  const showPfmReminder =
+    hasPfmRestoration && !hasAlloyCharge && !pfmReminderDismissed;
+  const [alloyPreview, setAlloyPreview] = useState<{
+    amount: number;
+    priced: boolean;
+  } | null>(null);
+  const [alloyPreviewLoaded, setAlloyPreviewLoaded] = useState(false);
+  useEffect(() => {
+    if (!showPfmReminder) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await resilientFetch(
+          `/api/cases/${caseId}/alloy-charge/preview`,
+        );
+        if (!res.ok) return;
+        const body = await res.json();
+        const data = body?.data ?? body;
+        if (!cancelled && data && typeof data.amount === "number") {
+          setAlloyPreview({ amount: data.amount, priced: !!data.priced });
+        }
+      } catch {
+        /* leave preview null — banner falls back to generic copy */
+      } finally {
+        if (!cancelled) setAlloyPreviewLoaded(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [showPfmReminder, caseId]);
+
   // One-tap "Add alloy charge" from the PFM reminder (Task #2067). Adds a
   // priced Alloy line server-side (idempotent), then refetches so the
   // reminder gives way to the new line.
@@ -1886,14 +1921,41 @@ function OverviewSection({
                 />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.pfmReminderText}>
-                    PFM detected — don't forget to charge for alloy.
+                    {alloyPreviewLoaded && alloyPreview && !alloyPreview.priced
+                      ? "PFM detected — no alloy price set in your fee schedule."
+                      : "PFM detected — don't forget to charge for alloy."}
                   </Text>
                   <View style={styles.pfmReminderActions}>
-                    <Pressable hitSlop={8} onPress={addAlloyCharge} disabled={addingAlloy}>
-                      <Text style={styles.pfmReminderAdd}>
-                        {addingAlloy ? "Adding…" : "Add alloy charge"}
-                      </Text>
-                    </Pressable>
+                    {alloyPreviewLoaded && alloyPreview && !alloyPreview.priced ? (
+                      <Pressable hitSlop={8} onPress={() => router.push("/manage/pricing")}>
+                        <Text style={styles.pfmReminderAdd}>Set up fee schedule</Text>
+                      </Pressable>
+                    ) : (
+                      <Pressable
+                        hitSlop={8}
+                        onPress={addAlloyCharge}
+                        disabled={
+                          addingAlloy ||
+                          !alloyPreview ||
+                          !alloyPreview.priced
+                        }
+                      >
+                        <Text
+                          style={[
+                            styles.pfmReminderAdd,
+                            (!alloyPreview || !alloyPreview.priced) && { opacity: 0.5 },
+                          ]}
+                        >
+                          {addingAlloy
+                            ? "Adding…"
+                            : !alloyPreviewLoaded
+                              ? "Checking alloy price…"
+                              : alloyPreview && alloyPreview.priced
+                                ? `Add alloy charge ($${alloyPreview.amount.toFixed(2)})`
+                                : "Add alloy charge"}
+                        </Text>
+                      </Pressable>
+                    )}
                     <Pressable hitSlop={8} onPress={dismissPfmReminderThisCase}>
                       <Text style={styles.pfmReminderDismiss}>Dismiss</Text>
                     </Pressable>
