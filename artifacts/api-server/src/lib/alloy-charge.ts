@@ -136,3 +136,78 @@ export async function addAlloyChargeToCase(args: {
     restorationId: restoration.id,
   };
 }
+
+export interface RemoveAlloyChargeResult {
+  removed: boolean;
+  alreadyAbsent: boolean;
+  /** IDs of the alloy restoration rows that were deleted. */
+  removedRestorationIds: string[];
+}
+
+/**
+ * Remove the alloy surcharge line(s) from a case's restorations (and re-sync
+ * its invoice). This is the dedicated "remove alloy charge" affordance for
+ * correcting a wrongly added (manual or auto-added) alloy line.
+ *
+ * Idempotent: if the case carries no alloy line this is a no-op and returns
+ * `{ removed: false, alreadyAbsent: true, removedRestorationIds: [] }`.
+ *
+ * Defensive against the (unexpected) presence of more than one alloy row — it
+ * removes every alloy restoration so the case is left in a clean state. A
+ * `restoration_deleted` case event carrying the `alloySurcharge` marker is
+ * written for each removed row before the invoice is re-synced.
+ */
+export async function removeAlloyChargeFromCase(args: {
+  caseRow: AlloyCaseRow;
+  actorUserId: string | null;
+  actorInitials?: string | null;
+}): Promise<RemoveAlloyChargeResult> {
+  const { caseRow, actorUserId } = args;
+
+  const existing = await db.query.caseRestorations.findMany({
+    where: eq(caseRestorations.caseId, caseRow.id),
+  });
+  const alloyRows = existing.filter((r) => isAlloyRestoration(r));
+
+  if (alloyRows.length === 0) {
+    return {
+      removed: false,
+      alreadyAbsent: true,
+      removedRestorationIds: [],
+    };
+  }
+
+  const removedRestorationIds: string[] = [];
+  for (const row of alloyRows) {
+    await db.delete(caseRestorations).where(eq(caseRestorations.id, row.id));
+    removedRestorationIds.push(row.id);
+
+    await db.insert(caseEvents).values({
+      caseId: caseRow.id,
+      eventType: "restoration_deleted",
+      actorUserId,
+      actorOrganizationId: caseRow.labOrganizationId,
+      actorInitials: args.actorInitials || "SYS",
+      metadataJson: {
+        restorationId: row.id,
+        restorationType: row.restorationType,
+        toothNumber: row.toothNumber,
+        material: row.material,
+        quantity: row.quantity,
+        unitPrice: row.unitPrice,
+        alloySurcharge: true,
+      },
+    });
+  }
+
+  await syncInvoiceFromRestorations({
+    caseId: caseRow.id,
+    actorUserId,
+  });
+
+  return {
+    removed: true,
+    alreadyAbsent: false,
+    removedRestorationIds,
+  };
+}

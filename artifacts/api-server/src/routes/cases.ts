@@ -35,7 +35,7 @@ import { writeAuditLog } from "../lib/audit";
 import { resolveCaseDueDate } from "../lib/case-due-date";
 import { calculateLineTotal, sumMoney } from "../lib/case";
 import { syncInvoiceFromRestorations, buildGroupedLineItemsForInvoice } from "../lib/invoice-sync";
-import { addAlloyChargeToCase } from "../lib/alloy-charge";
+import { addAlloyChargeToCase, removeAlloyChargeFromCase } from "../lib/alloy-charge";
 import { invoiceDueDate } from "../lib/invoice-due-date";
 import {
   classifyMatch,
@@ -6689,6 +6689,51 @@ router.post(
     });
 
     return ok(res, result, result.added ? 201 : 200);
+  })
+);
+
+// One-click "remove alloy charge" (Task #2078). Deletes the alloy surcharge
+// restoration line(s) from a case (idempotent), re-syncs the invoice, and
+// records a restoration_deleted case event + an audit log entry. Removing
+// when no alloy line is present is a no-op.
+router.delete(
+  "/:caseId/alloy-charge",
+  asyncHandler(async (req, res) => {
+    const found = await assertCaseAccessOrPromote(
+      (req as any).auth.userId,
+      req.params.caseId
+    );
+    await requireMembership(
+      (req as any).auth.userId,
+      found.labOrganizationId
+    );
+
+    const result = await removeAlloyChargeFromCase({
+      caseRow: {
+        id: found.id,
+        labOrganizationId: found.labOrganizationId,
+        doctorName: found.doctorName,
+        providerOrganizationId: found.providerOrganizationId,
+      },
+      actorUserId: (req as any).auth.userId,
+      actorInitials: (req as any).user?.initials,
+    });
+
+    if (result.removed) {
+      await writeAuditLog({
+        req,
+        organizationId: found.labOrganizationId,
+        action: "alloy_charge_removed",
+        entityType: "case",
+        entityId: found.id,
+        metadataJson: {
+          caseId: found.id,
+          removedRestorationIds: result.removedRestorationIds,
+        },
+      });
+    }
+
+    return ok(res, result);
   })
 );
 

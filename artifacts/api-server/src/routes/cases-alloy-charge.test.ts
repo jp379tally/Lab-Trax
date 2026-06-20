@@ -501,6 +501,138 @@ maybe("Alloy surcharge feature (db integration)", () => {
     expect(alloyRow.priceSource).toBe("tier");
   }, 20000);
 
+  // ── (4) remove alloy-charge endpoint: deletes line + event, idempotent ────
+
+  it("(4) DELETE /:caseId/alloy-charge removes the Alloy restoration + line, writes events/audit, and is idempotent", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const { db, caseRestorations, caseEvents, invoiceLineItems, auditLogs } =
+      dbMod as any;
+
+    const caseId = await createCase(access); // Dr. Default + providerOrgId → Standard default
+    const invoice = await waitForInvoice(caseId);
+
+    // Seed an alloy charge to remove.
+    const add = await request(appMod.default)
+      .post(`/api/cases/${caseId}/alloy-charge`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({});
+    expect(add.status).toBe(201);
+    expect(add.body.data.added).toBe(true);
+
+    // Sanity: one alloy row + one alloy invoice line present before removal.
+    let alloyRows = await db
+      .select()
+      .from(caseRestorations)
+      .where(
+        and(
+          eq(caseRestorations.caseId, caseId),
+          eq(caseRestorations.priceKey, "alloy"),
+        ),
+      );
+    expect(alloyRows).toHaveLength(1);
+    const seededAlloyId = alloyRows[0].id;
+
+    // First remove → removed.
+    const r1 = await request(appMod.default)
+      .delete(`/api/cases/${caseId}/alloy-charge`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({});
+    expect(r1.status).toBe(200);
+    expect(r1.body.data.removed).toBe(true);
+    expect(r1.body.data.alreadyAbsent).toBe(false);
+    expect(r1.body.data.removedRestorationIds).toContain(seededAlloyId);
+
+    // No alloy restoration rows remain.
+    alloyRows = await db
+      .select()
+      .from(caseRestorations)
+      .where(
+        and(
+          eq(caseRestorations.caseId, caseId),
+          eq(caseRestorations.priceKey, "alloy"),
+        ),
+      );
+    expect(alloyRows).toHaveLength(0);
+
+    // A restoration_deleted event carrying the alloySurcharge marker exists.
+    const deletedEvents = await db
+      .select()
+      .from(caseEvents)
+      .where(
+        and(
+          eq(caseEvents.caseId, caseId),
+          eq(caseEvents.eventType, "restoration_deleted"),
+        ),
+      );
+    const alloyDeletedEvents = deletedEvents.filter(
+      (e: any) => e.metadataJson?.alloySurcharge === true,
+    );
+    expect(
+      alloyDeletedEvents,
+      "exactly one restoration_deleted event with alloySurcharge marker",
+    ).toHaveLength(1);
+
+    // An audit log entry was written.
+    const audits = await db
+      .select()
+      .from(auditLogs)
+      .where(
+        and(
+          eq(auditLogs.organizationId, labOrgId),
+          eq(auditLogs.action, "alloy_charge_removed"),
+        ),
+      );
+    const auditForCase = audits.filter(
+      (a: any) => a.entityId === caseId || a.metadataJson?.caseId === caseId,
+    );
+    expect(auditForCase.length).toBeGreaterThanOrEqual(1);
+
+    // Invoice was re-synced: no Alloy line item remains.
+    const linesAfterRemove = await db
+      .select()
+      .from(invoiceLineItems)
+      .where(eq(invoiceLineItems.invoiceId, invoice.id));
+    expect(
+      linesAfterRemove.filter((l: any) => l.description === "Alloy"),
+    ).toHaveLength(0);
+
+    // Second remove → idempotent no-op.
+    const r2 = await request(appMod.default)
+      .delete(`/api/cases/${caseId}/alloy-charge`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({});
+    expect(r2.status).toBe(200);
+    expect(r2.body.data.removed).toBe(false);
+    expect(r2.body.data.alreadyAbsent).toBe(true);
+    expect(r2.body.data.removedRestorationIds).toHaveLength(0);
+  }, 25000);
+
+  it("(4) DELETE /:caseId/alloy-charge on a case with no alloy line is a no-op", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const { db, caseRestorations } = dbMod as any;
+
+    const caseId = await createCase(access);
+
+    const r = await request(appMod.default)
+      .delete(`/api/cases/${caseId}/alloy-charge`)
+      .set("Authorization", `Bearer ${access}`)
+      .send({});
+    expect(r.status).toBe(200);
+    expect(r.body.data.removed).toBe(false);
+    expect(r.body.data.alreadyAbsent).toBe(true);
+
+    const alloyRows = await db
+      .select()
+      .from(caseRestorations)
+      .where(
+        and(
+          eq(caseRestorations.caseId, caseId),
+          eq(caseRestorations.priceKey, "alloy"),
+        ),
+      );
+    expect(alloyRows).toHaveLength(0);
+  }, 20000);
+
   it("(3) alloy price resolves via a per-doctor override, beating tier and default", async () => {
     const { access } = await makeSession(labOwnerId);
     const { db, caseRestorations } = dbMod as any;
