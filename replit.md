@@ -8,6 +8,8 @@ pnpm workspace monorepo using TypeScript. Each package manages its own dependenc
 
 All protected workflows are documented in [`REGRESSION_GUARDRAILS.md`](./REGRESSION_GUARDRAILS.md). Once a workflow is listed there, no code change may be merged or published unless every protected workflow still passes. See that file for the full list of protected workflows, the zero-regression process, and the test coverage map.
 
+Start with the **Stable Beta Protected Workflows** section near the top of that file: it is the single consolidated matrix of every protected desktop, mobile, and backend workflow with its test coverage and release gate, plus the Required Pre-Release Checklist, manual smoke checklists, the backup/restore blocking gate, the manual-only build policy, and the keep-tests-permanently regression policy. Run that checklist before any release, build, publish, or TestFlight submission.
+
 ## Stack
 
 - **Monorepo tool**: pnpm workspaces

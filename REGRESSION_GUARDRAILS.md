@@ -4,6 +4,183 @@ When the user confirms that a feature or workflow is working, that behavior beco
 
 ---
 
+## Stable Beta Protected Workflows
+
+LabTrax desktop and mobile are in a stable, working beta. This section is the **single consolidated index** of every protected workflow across desktop, mobile, and backend, mapped to its test coverage, platform, and release gate. The per-workflow detail sections later in this file are still authoritative for *behavioral* specifics; the matrix below cross-references them and is the checklist to run before any release.
+
+### The Rule
+
+**If a workflow currently works in desktop or mobile, it is protected.** No change — feature, bug fix, refactor, AI Reader, mobile, desktop, billing, auth, or DB migration — may be **merged, published, or built** if it breaks a protected workflow. This applies to every change type, not just the one that introduced the workflow. When in doubt whether a behavior is protected, treat it as protected.
+
+How a row is gated:
+
+- **Automated** — guarded by the listed test file(s). The relevant suite must pass before release (see Required Pre-Release Checklist).
+- **Manual** — verified by walking the matching Manual Smoke Checklist below; no automated test fully covers it yet.
+- **`_(pending)_`** — no automated coverage exists for this workflow (or for its client-UI layer); it is covered by the manual checklist only until a test is written. These are collected as Coverage Gaps for follow-up test tasks.
+
+All test paths below are relative to the repo root unless already prefixed. Server tests live under `artifacts/api-server/src/`, desktop tests under `artifacts/labtrax-desktop/src/`, mobile tests under `artifacts/labtrax/`.
+
+### Protected Workflow Matrix — Desktop (22)
+
+| # | Workflow | Platform | Test file(s) / checklist | Release gate |
+|---|----------|----------|--------------------------|--------------|
+| 1 | Login / logout | desktop | `routes/auth.test.ts` (server login/session) + Desktop manual smoke | Yes — API tests |
+| 2 | Dashboard loads | desktop | _(pending)_ — Desktop manual smoke | Manual |
+| 3 | Desktop AI prescription intake | desktop | `routes/analyze-prescription.test.ts`, `routes/cases-ai-reader.test.ts` (server endpoints) + Desktop manual smoke | Yes — API tests |
+| 4 | Drag / drop prescription upload | desktop | `routes/analyze-prescription.test.ts` (server) ; DropZone UI _(pending)_ + Desktop manual smoke | Yes — API tests / Manual |
+| 5 | New provider / practice save from AI intake | desktop | `routes/organizations.test.ts` (org/provider create) ; intake-specific save _(pending)_ + Desktop manual smoke | Yes — API tests / Manual |
+| 6 | Case creation from AI intake | desktop | `routes/cases-ai-reader.test.ts`, `routes/cases-ai-intake-carry-through.test.ts` | Yes — API tests |
+| 7 | AI intake data carry-through (patient, doctor/practice, due date, tooth #, shade, material, restorative type, notes, case pan barcode) | desktop | `routes/cases-ai-intake-carry-through.test.ts` | Yes — API tests |
+| 8 | Invoice auto-generation after intake | desktop | `routes/cases-ai-reader.test.ts`, `routes/cases-invoice-creation.test.ts`, `routes/invoices.test.ts` | Yes — API tests |
+| 9 | Lab slip production data | desktop | _(pending)_ — Desktop manual smoke | Manual |
+| 10 | Lab slip optional invoice data | desktop | _(pending)_ automated — see "Lab Slip Optional Invoice Fields" section (manual behaviors) | Manual |
+| 11 | Case overview display | desktop | `routes/cases-core.test.ts` (server read) ; overview UI _(pending)_ + Desktop manual smoke | Yes — API tests / Manual |
+| 12 | Tooth chart approved layout | desktop | _(pending)_ — Desktop manual smoke | Manual |
+| 13 | Case pan barcode leading-zero preservation | desktop | `routes/cases-core.test.ts`, `routes/cases-search.test.ts`, `routes/cases-ai-intake-carry-through.test.ts` | Yes — API tests |
+| 14 | Locate case | desktop | `routes/cases-location-sync.test.ts` (server bridge) ; locate UI _(pending)_ + Desktop manual smoke | Yes — API tests / Manual |
+| 15 | Case history | desktop | `routes/cases-canonical-mobile.test.ts` (event history), `src/__tests__/notification-case-navigation.test.tsx` (View → case drawer) ; history-panel UI _(pending)_ | Yes — API + desktop tests |
+| 16 | Attachments / files / photos | desktop | `routes/cases-attachments.test.ts`, `routes/cases-prescription-photo.test.ts` | Yes — API tests |
+| 17 | Invoice editor | desktop | `routes/invoices.test.ts` (server) ; editor UI _(pending)_ + Desktop manual smoke | Yes — API tests / Manual |
+| 18 | Pricing tiers + standard default pricing | desktop | `src/pages/__tests__/bulk-price-tools.test.tsx`, `src/lib/__tests__/pricing-keys.test.ts`, `src/pages/__tests__/pricing-fields.test.tsx` ; standard-default-pricing resolution _(pending)_ | Yes — desktop tests |
+| 19 | Provider / practice records | desktop | `routes/organizations.test.ts`, `routes/cases-provider-portal.test.ts` | Yes — API tests |
+| 20 | Organizations / membership / roles | desktop | `routes/organizations.test.ts`, `routes/account-epic-contract.test.ts` | Yes — API tests |
+| 21 | Desktop installer availability | desktop | `installer-settings-status.test.ts`, `installer-publish-e2e.test.ts` (gated on real App Storage env) | Yes — API tests + desktop publish gate |
+| 22 | Signed desktop build verification | desktop | `bash scripts/test-signing-verification.sh` | Yes — **blocks desktop release** |
+
+### Protected Workflow Matrix — Mobile (21)
+
+Mobile rows marked **real-device** cannot be fully verified by unit tests; the TestFlight Smoke Test Checklist (Mobile Beta — Phase 2) above must also pass.
+
+| # | Workflow | Platform | Test file(s) / checklist | Release gate |
+|---|----------|----------|--------------------------|--------------|
+| 1 | Login / logout | mobile | `lib/__tests__/auth-hydration.test.ts`, `app/__tests__/auth-hydration.smoke.ts` | Yes — mobile tests + real-device |
+| 2 | Cases list from canonical DB | mobile | `lib/__tests__/screens/cases.smoke.test.tsx`, `routes/cases-canonical-mobile.test.ts` | Yes — mobile + API tests |
+| 3 | Case search / lookup | mobile | `lib/__tests__/screens/cases.smoke.test.tsx` | Yes — mobile tests |
+| 4 | Case detail opens | mobile | `lib/__tests__/screens/case-detail.smoke.test.tsx` | Yes — mobile tests |
+| 5 | Overview display | mobile | `lib/__tests__/screens/case-detail.smoke.test.tsx` | Yes — mobile tests |
+| 6 | Locate case (desktop-matching stations) | mobile | `lib/__tests__/terminology-parity.test.ts`, `lib/__tests__/screens/case-detail.smoke.test.tsx` | Yes — mobile tests + real-device |
+| 7 | Case history | mobile | `lib/__tests__/screens/case-detail.smoke.test.tsx` | Yes — mobile tests + real-device |
+| 8 | Invoice section | mobile | `lib/__tests__/screens/invoice-editor.smoke.test.tsx`, `routes/invoices.test.ts` | Yes — mobile + API tests + real-device |
+| 9 | Files / photos / documents open | mobile | `lib/__tests__/open-attachment.test.ts`, `lib/__tests__/screens/pdf-viewer.smoke.test.tsx` | Yes — mobile tests + real-device |
+| 10 | Tooth chart approved layout | mobile | _(pending)_ — Mobile TestFlight checklist (row 12) | Manual — real-device |
+| 11 | Lab slip / case label display + print | mobile | `lib/__tests__/case-pdf.test.ts` _(HTML structure only)_ ; native print real-device | Yes — mobile tests (HTML) + real-device |
+| 12 | Desktop / mobile sync | mobile | `routes/cases-canonical-mobile.test.ts`, `routes/mobile-sync-invoice.test.ts` | Yes — API tests + real-device |
+| 13 | Mobile / desktop barcode lookup | mobile | `lib/__tests__/screens/scan-barcode-modal.smoke.test.tsx`, `__tests__/ai-reader.smoke.test.ts` | Yes — mobile tests + real-device |
+| 14 | Batch locate | mobile | `lib/__tests__/screens/batch-locate.smoke.test.tsx`, `lib/__tests__/screens/cases.smoke.test.tsx` (multi-select) | Yes — mobile tests + real-device |
+| 15 | Scanner leading-zero preservation | mobile | `routes/cases-search.test.ts`, `routes/cases-core.test.ts` (server stores verbatim) | Yes — API tests + real-device |
+| 16 | Scanner no double-read | mobile | `lib/__tests__/screens/scan-barcode-modal.smoke.test.tsx` (debounce), `lib/__tests__/screens/batch-locate.smoke.test.tsx` (no duplicate append) | Yes — mobile tests + real-device |
+| 17 | Scanner targeted-window read | mobile | `lib/__tests__/screens/scan-barcode-modal.smoke.test.tsx`, `lib/__tests__/screens/batch-locate.smoke.test.tsx` (guide-box / `pickBestBarcode` filter) | Yes — mobile tests + real-device |
+| 18 | No `/api/legacy/cases` in mobile source | mobile | `pnpm --filter @workspace/scripts run lint-mobile-legacy-paths`, `scripts/src/__tests__/lint-mobile-legacy-paths.test.ts` | Yes — legacy-path fence |
+| 19 | No local-only mobile saves | mobile | `lint-mobile-legacy-paths`, `routes/cases-canonical-mobile.test.ts`, `routes/legacy-case-mobile-guard.test.ts` | Yes — fence + API tests |
+| 20 | No duplicate invoices | mobile | `routes/mobile-sync-invoice.test.ts` | Yes — API tests + real-device |
+| 21 | No blank / unauthorized media regressions | mobile | `lib/__tests__/authed-media-cache.test.ts`, `routes/cases-prescription-photo.test.ts` | Yes — mobile + API tests + real-device |
+
+### Protected Workflow Matrix — Backend / Data (13)
+
+Backend tests that touch the database require `DATABASE_URL` to be set; they auto-skip when it is absent, so a release run must set it.
+
+| # | Workflow | Platform | Test file(s) / checklist | Release gate |
+|---|----------|----------|--------------------------|--------------|
+| 1 | API auth / session stability | backend | `routes/auth.test.ts` | Yes — API tests |
+| 2 | Sessions survive normal use | backend | `routes/auth.test.ts` (refresh rotation), `routes/restore-session.test.ts` | Yes — API tests |
+| 3 | Backup creates complete export | backend | `routes/backup-restore.test.ts` | Yes — **backup/restore blocking gate** |
+| 4 | Restore does not break login | backend | `routes/backup-restore.test.ts`, `routes/restore-session.test.ts` | Yes — **backup/restore blocking gate** |
+| 5 | Restore clears / rebuilds sessions safely | backend | `routes/backup-restore.test.ts`, `routes/restore-session.test.ts` | Yes — **backup/restore blocking gate** |
+| 6 | Restore preserves data (users, orgs, memberships, roles, providers/practices, cases, invoices, payments, notes, history, attachment metadata, pricing/settings/templates) | backend | `routes/backup-restore.test.ts` (manifest count + post-restore validation) | Yes — **backup/restore blocking gate** |
+| 7 | Restore validates schema compatibility | backend | `routes/backup-restore.test.ts` (schema-version gate test) | Yes — **backup/restore blocking gate** |
+| 8 | Restore creates pre-restore safety snapshot | backend | `routes/backup-restore.test.ts` (pre-restore snapshot test) | Yes — **backup/restore blocking gate** |
+| 9 | Restore reports clear success / failure | backend | `routes/backup-restore.test.ts` (`phase = done` / `phase = error`) | Yes — **backup/restore blocking gate** |
+| 10 | No raw SQL / Drizzle / Postgres errors shown to users | backend | `lib/http.test.ts` (`wrapDbError` / `extractPgCode` safe fallback) | Yes — API tests |
+| 11 | Verification-code endpoints rate-limited | backend | `routes/account-epic-verification.test.ts` | Yes — API tests |
+| 12 | Provider case isolation | backend | `routes/cases-provider-portal.test.ts` | Yes — API tests |
+| 13 | Account / signup / invitation flows | backend | `routes/auth.test.ts`, `routes/organizations.test.ts`, `routes/account-epic-phase2.test.ts`, `routes/account-epic-contract.test.ts` | Yes — API tests |
+
+### Required Pre-Release Checklist
+
+Run these commands and record the result before **any** release, build, publish, TestFlight submission, or desktop installer push. Stop on the first failure — a failing gate blocks the release.
+
+```bash
+# 1. Full typecheck across all packages
+pnpm run typecheck
+
+# 2. API server integration + contract tests (set DATABASE_URL for DB-gated suites)
+pnpm --filter @workspace/api-server run test
+
+# 3. Desktop unit tests
+pnpm --filter @workspace/labtrax-desktop run test
+
+# 4. Mobile unit + smoke tests
+pnpm --filter @workspace/labtrax run test
+
+# 5. Scripts tests (includes the legacy-path-fence unit tests)
+pnpm --filter @workspace/scripts run test
+
+# 6. Backup / restore integrity (REQUIRES DATABASE_URL) — hard blocking gate
+pnpm --filter @workspace/api-server run test -- --reporter=verbose src/routes/backup-restore.test.ts src/routes/restore-session.test.ts
+
+# 7. Mobile legacy-path fence — zero violations
+pnpm --filter @workspace/scripts run lint-mobile-legacy-paths
+
+# 8. Protected-tables lint — no hard-delete of protected tables / case-media
+pnpm --filter @workspace/scripts run lint-protected-tables
+
+# 9. Signed desktop build verification — ONLY when shipping a desktop release
+bash scripts/test-signing-verification.sh
+```
+
+> Step 9 is required only when the release includes a desktop installer. Steps 1–8 are required for every release. The mobile real-device TestFlight checklist (above) must also pass for any mobile build.
+
+### Manual Smoke Checklists
+
+Walk the checklist that matches the change. These cover the workflows whose client-UI or native behavior cannot be fully verified by automated tests.
+
+**After a desktop change:**
+1. Log in, then log out and back in — session restores; dashboard loads.
+2. Drag/drop or upload a prescription on the dashboard — AI intake parses patient, doctor/practice, due date, tooth number, shade, material, restorative type, notes, and case pan barcode.
+3. Create a case from the AI intake — case appears in Cases; an invoice auto-generates.
+4. Open the case — overview, tooth chart (approved layout), history, attachments/files/photos all render.
+5. Print a lab slip and a case label — production data (and any opted-in invoice fields) render correctly; barcodes with leading zeros are preserved exactly.
+6. Use Locate Case — the station updates and matches what mobile shows.
+7. Edit an invoice in the invoice editor — change persists; no duplicate invoice.
+8. Open Pricing — tiers and standard default pricing show two-decimal values; bulk edit preview is correct.
+9. Confirm the installer download is available (Settings → Desktop App) after a publish.
+
+**After a mobile change:**
+- Walk the full **TestFlight Smoke Test Checklist (Mobile Beta — Phase 2)** above (21 rows) on a physical iOS device, plus the **AI Reader TestFlight checklist** when AI Reader is in scope. Pay special attention to camera/barcode (single read, targeted guide-box window, leading-zero preservation), media loading (no blanks / 401), printing, biometric lock, and desktop↔mobile sync.
+
+**After a backend / data change:**
+1. Sign up a new account and accept an organization invitation — flows succeed.
+2. Log in, use the app normally, leave it idle, return — the session survives.
+3. Trigger a backup — it completes and the manifest counts match live data.
+4. Restore the backup into a scratch instance — login still works, sessions are rebuilt cleanly, and users/orgs/memberships/roles/cases/invoices/attachments are intact.
+5. Force a DB constraint error (e.g. duplicate) — the user sees a clean message, never raw SQL/Drizzle/Postgres text.
+6. Hammer a verification-code endpoint — it rate-limits (429) before sending.
+7. As a provider, confirm you see only your own cases (no cross-provider leakage).
+
+### Backup / Restore Special Rule (Hard Blocking Gate)
+
+Backup and restore protect every customer's data, so they are a **hard blocking gate**:
+
+- **No change to schema, auth, organizations, cases, invoices, attachments, or any persistent-data shape may merge unless the backup/restore integrity tests pass** — `routes/backup-restore.test.ts` (all behaviors) and `routes/restore-session.test.ts`, with `DATABASE_URL` set.
+- The only exception is a change explicitly verified to **not touch persistent data** (e.g. a pure UI/style change or a docs change like this one). State that exemption explicitly in the change notes.
+- **A backup or restore failure blocks the release outright** — it is never downgraded to a warning or deferred. See the **Backup Restore Integrity** section below for the full list of protected restore behaviors (empty `user_sessions` after restore, pre-restore snapshot, schema-version gate, post-restore validation, phase ordering).
+
+### Build Policy (Manual-Only, Explicit Approval)
+
+Paid builds and releases never run automatically:
+
+- **EAS / TestFlight builds are manual-only.** The `EAS iOS Build + Submit` workflow auto-restarts after merges and installs, but a one-shot sentinel (`touch .local/.eas-build-approved`) gates the build so auto-restarts exit cleanly without consuming a credit. One token = one build. See **EAS / TestFlight Build Rules** above.
+- **Desktop release publishing is manual / merge-gated.** A desktop installer is rebuilt and republished only via `post-merge.sh` (on a merge that changed desktop/lib/api source), the manual "Desktop Build + Publish" workflow, or `bash scripts/desktop-build-publish.sh` — and only after **Signed desktop build verification** passes. See **Desktop / Web Parity Rule** and **Protected Workflow: Desktop Signed Build Verification** below.
+- No automatic paid build or release runs without explicit approval. If a release is needed, run the Required Pre-Release Checklist first, then approve the build deliberately.
+
+### Regression Test Policy (Keep Tests Permanently)
+
+- **Every fixed bug gets a regression test that fails before the fix and passes after it** — this proves the test actually guards the behavior (see the Zero-Regression Process below).
+- **Protected tests are kept permanently.** A test that guards a protected workflow is never deleted, skipped, `.skip`-ed, or `it.only`-narrowed without explicit user approval recorded in the change notes. Retiring a test is only valid when the underlying feature is intentionally removed (see the "Retired pending Phase 2 rebuild" section for the precedent and how it is documented).
+- **New confirmed workflows get added here.** When the user confirms a new workflow works, add it to the appropriate matrix above and to the detailed Test Coverage Map, with a real test file or a `_(pending)_` marker plus a follow-up to write the test.
+
+---
+
 ## Mobile Beta Protected Workflows
 
 The mobile app (`artifacts/labtrax`) reached beta quality after Task #1493 (Mobile UI and Workflow Parity With Desktop). The 18 workflows below are confirmed working in TestFlight and are **permanently protected**. No future change — feature addition, UI refactor, API change, pricing change, invoice change, media change, or cleanup — may be merged or built if it breaks any of these workflows.
