@@ -3,10 +3,20 @@ import { View, Text, ScrollView, StyleSheet } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import {
+  useGetAiMemoryCandidates,
+  getGetAiMemoryCandidatesQueryKey,
+} from "@workspace/api-client-react";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
-import { useMe, canEditAnyLab, canAdminAnyLab, primaryLabOrgId } from "@/lib/auth-me";
+import {
+  useMe,
+  canEditAnyLab,
+  canAdminAnyLab,
+  primaryLabOrgId,
+  adminLabMemberships,
+} from "@/lib/auth-me";
 
 type IconName = React.ComponentProps<typeof Ionicons>["name"];
 
@@ -21,6 +31,8 @@ interface MenuItem {
   requiresAdmin?: boolean;
   // any active lab member — reads open to all members, writes gated in-screen
   requiresLabMember?: boolean;
+  // show the pending AI-suggestion count badge (admin-only) on this row
+  showAiCandidateBadge?: boolean;
 }
 
 const ITEMS: MenuItem[] = [
@@ -77,6 +89,7 @@ const ITEMS: MenuItem[] = [
     icon: "sparkles-outline",
     route: "/manage/ai-knowledge",
     requiresLabMember: true,
+    showAiCandidateBadge: true,
   },
 ];
 
@@ -87,7 +100,28 @@ export default function MoreMenuScreen() {
   const meQuery = useMe();
   const canEdit = canEditAnyLab(meQuery.data);
   const canAdmin = canAdminAnyLab(meQuery.data);
-  const hasLab = !!primaryLabOrgId(meQuery.data);
+  const labOrgId = primaryLabOrgId(meQuery.data);
+  const hasLab = !!labOrgId;
+
+  // Pending AI suggestions awaiting admin review. The GET endpoint is
+  // lab-admin-only, so mirror the ai-knowledge screen: scope to the primary lab
+  // and only run for owners/admins of that lab. Sharing the query key means the
+  // badge clears automatically once the admin approves/dismisses on that screen.
+  const canManageLab = useMemo(
+    () => adminLabMemberships(meQuery.data).some((m) => m.organizationId === labOrgId),
+    [meQuery.data, labOrgId],
+  );
+  const candidatesQ = useGetAiMemoryCandidates(
+    { labOrganizationId: labOrgId ?? "" },
+    {
+      query: {
+        queryKey: getGetAiMemoryCandidatesQueryKey({ labOrganizationId: labOrgId ?? "" }),
+        enabled: !!labOrgId && canManageLab,
+        staleTime: 30_000,
+      },
+    },
+  );
+  const candidateCount = canManageLab ? (candidatesQ.data?.data?.length ?? 0) : 0;
 
   const visible = ITEMS.filter(
     (item) =>
@@ -114,6 +148,11 @@ export default function MoreMenuScreen() {
                 {item.subtitle}
               </Text>
             </View>
+            {item.showAiCandidateBadge && candidateCount > 0 ? (
+              <View style={styles.badge} testID="ai-candidate-badge">
+                <Text style={styles.badgeText}>{candidateCount > 99 ? "99+" : candidateCount}</Text>
+              </View>
+            ) : null}
             <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
           </Card>
         ))}
@@ -140,5 +179,15 @@ function makeStyles(c: ThemeColors) {
     rowMain: { flex: 1, gap: 2 },
     rowTitle: { ...Typography.bodyLgMedium, color: c.text },
     rowSubtitle: { ...Typography.caption, color: c.textSecondary },
+    badge: {
+      minWidth: 22,
+      height: 22,
+      borderRadius: Radius.full,
+      paddingHorizontal: 7,
+      backgroundColor: c.tint,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    badgeText: { ...Typography.captionSemibold, color: c.textInverse },
   });
 }
