@@ -82,7 +82,7 @@ describe("ToothActionSheet — crown wizard", () => {
   it("advances to the shade step after selecting material and pressing Next", () => {
     const { getByTestId, queryByTestId } = renderSheet();
     fireEvent.press(getByTestId("tooth-kind-crown"));
-    fireEvent.press(getByTestId("tooth-material-E.max"));
+    fireEvent.press(getByTestId("tooth-material-Lithium Disilicate (Emax)"));
     fireEvent.press(getByTestId("tooth-material-next"));
     // Material chips gone; shade chips present.
     expect(queryByTestId("tooth-material-next")).toBeNull();

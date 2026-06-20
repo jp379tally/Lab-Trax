@@ -200,7 +200,7 @@ maybe("Vocabulary (db integration)", () => {
       const values: string[] = res.body.data.map((v: any) => v.value);
       expect(values).toContain("Zirconia");
       expect(values).toContain("PFM");
-      expect(values).toContain("E.max");
+      expect(values).toContain("Lithium Disilicate (Emax)");
       expect(values).toContain("Other");
       const defaults = res.body.data.filter((v: any) => v.isDefault);
       expect(defaults.length).toBeGreaterThan(0);
