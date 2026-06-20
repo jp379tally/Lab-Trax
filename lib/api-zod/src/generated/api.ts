@@ -809,6 +809,12 @@ export const ListCasesResponse = zod.object({
         suggestedProviderOrgId: zod.string().nullish(),
         suggestedPracticeName: zod.string().nullish(),
         suggestedDoctorName: zod.string().nullish(),
+        unrecognizedMaterials: zod
+          .array(zod.string())
+          .nullish()
+          .describe(
+            'Distinct restoration material names on this case that could not\nbe mapped to a standard price key, so they silently resolve to a\n$0 line on the auto-draft invoice. The \"needs AI review\" banner\nsurfaces these (desktop + mobile) so a lab admin can fix pricing\nbefore billing. Only populated on the case-detail response.\n',
+          ),
         photos: zod.array(zod.string()).nullish(),
         videos: zod.array(zod.string()).nullish(),
         activityLog: zod
@@ -976,6 +982,12 @@ export const ListProviderCasesResponse = zod.object({
         suggestedProviderOrgId: zod.string().nullish(),
         suggestedPracticeName: zod.string().nullish(),
         suggestedDoctorName: zod.string().nullish(),
+        unrecognizedMaterials: zod
+          .array(zod.string())
+          .nullish()
+          .describe(
+            'Distinct restoration material names on this case that could not\nbe mapped to a standard price key, so they silently resolve to a\n$0 line on the auto-draft invoice. The \"needs AI review\" banner\nsurfaces these (desktop + mobile) so a lab admin can fix pricing\nbefore billing. Only populated on the case-detail response.\n',
+          ),
         photos: zod.array(zod.string()).nullish(),
         videos: zod.array(zod.string()).nullish(),
         activityLog: zod
@@ -1725,6 +1737,12 @@ export const GetCaseResponse = zod.object({
       suggestedProviderOrgId: zod.string().nullish(),
       suggestedPracticeName: zod.string().nullish(),
       suggestedDoctorName: zod.string().nullish(),
+      unrecognizedMaterials: zod
+        .array(zod.string())
+        .nullish()
+        .describe(
+          'Distinct restoration material names on this case that could not\nbe mapped to a standard price key, so they silently resolve to a\n$0 line on the auto-draft invoice. The \"needs AI review\" banner\nsurfaces these (desktop + mobile) so a lab admin can fix pricing\nbefore billing. Only populated on the case-detail response.\n',
+        ),
       photos: zod.array(zod.string()).nullish(),
       videos: zod.array(zod.string()).nullish(),
       activityLog: zod

@@ -135,6 +135,14 @@ interface DetailedCase {
   remakeReason?: string | null;
   organizationId?: string | null;
   labOrganizationId?: string | null;
+  needsAiReview?: boolean | null;
+  aiImportSource?: string | null;
+  /**
+   * Distinct restoration material names that couldn't be mapped to a price
+   * key (so they resolve to a $0 invoice line). Surfaced as a warning so an
+   * admin can fix pricing before billing.
+   */
+  unrecognizedMaterials?: string[] | null;
 }
 
 // Shape returned by GET /api/organizations/:id/case-print-template
@@ -1227,6 +1235,46 @@ export default function CaseDetailScreen() {
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.tint} />
         }
       >
+        {c.unrecognizedMaterials && c.unrecognizedMaterials.length > 0 && (
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "flex-start",
+              gap: Spacing.sm,
+              backgroundColor: colors.errorSurface,
+              borderWidth: 1,
+              borderColor: colors.errorLight,
+              borderRadius: 10,
+              padding: Spacing.md,
+              marginBottom: Spacing.md,
+            }}
+            testID="unrecognized-material-warning"
+          >
+            <Ionicons
+              name="alert-circle-outline"
+              size={18}
+              color={colors.error}
+              style={{ marginTop: 1 }}
+            />
+            <View style={{ flex: 1 }}>
+              <Text
+                style={{ fontSize: 13, fontWeight: "700", color: colors.errorText }}
+              >
+                Unrecognized {c.unrecognizedMaterials.length === 1 ? "material" : "materials"}:{" "}
+                {c.unrecognizedMaterials.join(", ")}
+              </Text>
+              <Text
+                style={{ fontSize: 12, color: colors.errorText, marginTop: 2, opacity: 0.85 }}
+              >
+                {c.unrecognizedMaterials.length === 1 ? "This material" : "These materials"}{" "}
+                couldn't be matched to a price, so the affected{" "}
+                {c.unrecognizedMaterials.length === 1 ? "restoration was" : "restorations were"}{" "}
+                added to the draft invoice at $0. Fix the material name or set the price manually before billing.
+              </Text>
+            </View>
+          </View>
+        )}
+
         {active === "overview" && (
           <OverviewSection
             c={c}

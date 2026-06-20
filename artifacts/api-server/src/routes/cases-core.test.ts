@@ -217,6 +217,70 @@ maybe("Cases core lifecycle (db integration)", () => {
     expect(get.body.data.patientFirstName).toBe("Jane");
   });
 
+  it("GET /api/cases/:id flags restorations with unrecognized materials", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const caseNumber = rid("UM");
+
+    const create = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber,
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Unknown",
+        patientLastName: "Material",
+        doctorName: "Dr. Mystery",
+        restorations: [
+          // Maps to a known price key (zirconia_crown) — must NOT be flagged.
+          { toothNumber: "14", restorationType: "Crown & Bridge", material: "Zirconia" },
+          // Unmappable material — silently $0, must be flagged by name.
+          { toothNumber: "15", restorationType: "Crown & Bridge", material: "Unobtanium" },
+        ],
+      });
+    expect(create.status).toBe(201);
+    const caseId = create.body.data.id;
+    createdCaseIds.push(caseId);
+
+    const get = await request(appMod.default)
+      .get(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${access}`);
+    expect(get.status).toBe(200);
+    const unrecognized: string[] = get.body.data.unrecognizedMaterials ?? [];
+    expect(unrecognized).toContain("Unobtanium");
+    expect(unrecognized).not.toContain("Zirconia");
+  });
+
+  it("GET /api/cases/:id has empty unrecognizedMaterials when all map", async () => {
+    const { access } = await makeSession(labOwnerId);
+    const caseNumber = rid("KM");
+
+    const create = await request(appMod.default)
+      .post("/api/cases")
+      .set("Authorization", `Bearer ${access}`)
+      .send({
+        caseNumber,
+        labOrganizationId: labOrgId,
+        providerOrganizationId: providerOrgId,
+        patientFirstName: "Known",
+        patientLastName: "Material",
+        doctorName: "Dr. Known",
+        restorations: [
+          { toothNumber: "8", restorationType: "Crown & Bridge", material: "Zirconia" },
+          { toothNumber: "9", restorationType: "Crown & Bridge", material: "E.max" },
+        ],
+      });
+    expect(create.status).toBe(201);
+    const caseId = create.body.data.id;
+    createdCaseIds.push(caseId);
+
+    const get = await request(appMod.default)
+      .get(`/api/cases/${caseId}`)
+      .set("Authorization", `Bearer ${access}`);
+    expect(get.status).toBe(200);
+    expect(get.body.data.unrecognizedMaterials).toEqual([]);
+  });
+
   it("GET /api/cases/:id for unknown case returns 404", async () => {
     const { access } = await makeSession(labOwnerId);
 

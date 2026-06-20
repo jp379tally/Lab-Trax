@@ -4771,12 +4771,32 @@ router.get(
         return { ...ev, metadataJson: { ...meta, note } };
       });
 
+    // Surface restorations whose material couldn't be mapped to a standard
+    // price key. These resolve to a $0 line on the auto-draft invoice and
+    // are otherwise silent — the "needs AI review" banner calls them out by
+    // name so an admin can fix pricing before billing. We skip rows a human
+    // already priced manually (priceSource === "manual"), since those are
+    // intentional, and rows without any material (nothing to recognize).
+    const unrecognizedMaterials = Array.from(
+      new Set(
+        (restorations as any[])
+          .filter((r) => {
+            const mat = (r.material ?? "").trim();
+            if (!mat) return false;
+            if (r.priceSource === "manual") return false;
+            return materialToPriceKey(r.material, r.restorationType) === null;
+          })
+          .map((r) => (r.material as string).trim()),
+      ),
+    );
+
     return ok(res, {
       ...found,
       caseNotes: (found as any).rxNotes ?? (enrichedNotes.length > 0 ? enrichedNotes.map((n: any) => n.noteText).join("\n\n") : null),
       suggestedPracticeName,
       providerOrganizationContact,
       restorations,
+      unrecognizedMaterials,
       notes: enrichedNotes,
       attachments: visibleAttachmentsFor(enrichedAttachments, isLabMember),
       events: enrichEventsWithNote(events),

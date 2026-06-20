@@ -2897,6 +2897,12 @@ type DetailedCase = LabCase & {
   attachments: CaseAttachment[];
   viewerIsLabMember?: boolean;
   viewerCanManageAttachments?: boolean;
+  /**
+   * Distinct restoration material names that couldn't be mapped to a price
+   * key (so they resolve to a $0 invoice line). Surfaced in the AI-review
+   * banner so an admin can fix pricing before billing.
+   */
+  unrecognizedMaterials?: string[] | null;
   /** Serialized bridge connector pairs, e.g. "13-14,14-15". Null when none. */
   bridgeConnectors?: string | null;
   expectedDeliveryDate?: string | null;
@@ -4862,6 +4868,28 @@ export function CaseDrawer({
                 Mark as reviewed
               </button>
             </div>
+
+            {/* Unrecognized-material warning: these restorations couldn't be
+                priced and silently became $0 lines on the draft invoice. */}
+            {data.unrecognizedMaterials && data.unrecognizedMaterials.length > 0 && (
+              <div className="mt-3 ml-7 rounded-md border border-red-500/40 bg-red-500/5 px-3 py-2.5 flex items-start gap-2.5">
+                <AlertTriangle size={14} className="text-red-600 dark:text-red-400 mt-0.5 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-semibold text-red-700 dark:text-red-300">
+                    Unrecognized {data.unrecognizedMaterials.length === 1 ? "material" : "materials"}:{" "}
+                    <span className="font-bold">
+                      {data.unrecognizedMaterials.join(", ")}
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-red-700/70 dark:text-red-200/60 mt-0.5">
+                    {data.unrecognizedMaterials.length === 1 ? "This material" : "These materials"}{" "}
+                    couldn't be matched to a price, so the affected{" "}
+                    {data.unrecognizedMaterials.length === 1 ? "restoration was" : "restorations were"}{" "}
+                    added to the draft invoice at $0. Fix the material name or set the price manually before billing.
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* "Did you mean?" doctor suggestion banner */}
             {data.suggestedDoctorName && (

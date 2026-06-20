@@ -43,6 +43,13 @@ export interface CanonicalCase {
   suggestedProviderOrgId?: string | null;
   suggestedPracticeName?: string | null;
   suggestedDoctorName?: string | null;
+  /** Distinct restoration material names on this case that could not
+be mapped to a standard price key, so they silently resolve to a
+$0 line on the auto-draft invoice. The "needs AI review" banner
+surfaces these (desktop + mobile) so a lab admin can fix pricing
+before billing. Only populated on the case-detail response.
+ */
+  unrecognizedMaterials?: string[] | null;
   photos?: string[] | null;
   videos?: string[] | null;
   activityLog?: CanonicalActivityEntry[] | null;

@@ -3459,6 +3459,16 @@ components:
         suggestedProviderOrgId: { type: string, nullable: true }
         suggestedPracticeName: { type: string, nullable: true }
         suggestedDoctorName: { type: string, nullable: true }
+        unrecognizedMaterials:
+          type: array
+          items: { type: string }
+          nullable: true
+          description: |
+            Distinct restoration material names on this case that could not
+            be mapped to a standard price key, so they silently resolve to a
+            $0 line on the auto-draft invoice. The "needs AI review" banner
+            surfaces these (desktop + mobile) so a lab admin can fix pricing
+            before billing. Only populated on the case-detail response.
         photos:
           type: array
           items: { type: string }
