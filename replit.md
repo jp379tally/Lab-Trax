@@ -75,6 +75,10 @@ Run `pnpm --filter @workspace/db run push` to apply schema changes.
 - `BACKUP_HISTORY_RETENTION_DAYS` — days of `backup_runs` to keep (default: `90`; overridable per-lab)
 - `BACKUP_HISTORY_MAX_ROWS` — max `backup_runs` rows (default: `500`; overridable per-lab)
 
+**AI memory candidate cleanup:**
+- `AI_MEMORY_CANDIDATE_RETENTION_DAYS` — reviewed (approved/rejected) `ai_memory_candidates` rows older than this are pruned by the nightly billing job (default: `90`). De-dup (skip re-proposing rejected keys) is preserved within this window; rejected rows only become eligible for re-proposal after they age out.
+- `AI_MEMORY_CANDIDATE_MAX_PENDING_PER_LAB` — max pending candidates kept per lab; oldest pending rows beyond the cap are dropped (default: `500`).
+
 **Cleanup:**
 - `CLEANUP_HOUR_UTC` — UTC hour for nightly orphaned media cleanup (default: `8`)
 - `CLEANUP_ALERT_MIN_REMOVED` — min files removed before alert email (default: `1`)

@@ -12,6 +12,7 @@ import {
   checkAndAlertInstallerHealth,
   startInstallerHealthCheckJob,
 } from "./installer-health-job";
+import { cleanupAiMemoryCandidates } from "./ai-memory-cleanup";
 
 const GRACE_DAYS = () =>
   Math.max(1, parseInt(process.env.SUBSCRIPTION_GRACE_DAYS ?? "7", 10));
@@ -274,6 +275,14 @@ async function runBillingJobOnce() {
     logger.error(
       { err: err?.message },
       "[billing] Installer health check failed",
+    );
+  }
+  try {
+    await cleanupAiMemoryCandidates();
+  } catch (err: any) {
+    logger.error(
+      { err: err?.message },
+      "[billing] AI memory candidate cleanup failed",
     );
   }
 }
