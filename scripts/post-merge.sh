@@ -1,37 +1,21 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
+# Post-merge reconciliation.
+#
+# Runs automatically after a task is merged to bring the workspace into a
+# runnable state. Keep this FAST, idempotent, and NON-INTERACTIVE — stdin is
+# closed (/dev/null), so any command that prompts will get EOF and fail.
+#
+# NOTE: Desktop installer builds/publishes are intentionally NOT performed here.
+# That pipeline needs Wine (for the NSIS installer) and a running, reachable
+# server (for the post-publish download check), neither of which exists in the
+# merge sandbox. Desktop releases are handled by GitHub Actions
+# (auto-tag-desktop-release.yml -> release.yml). Doing it here only produced a
+# guaranteed failure (Wine missing + HTTP 502 on the reachability probe).
+
+# 1. Install dependencies for every workspace package, exactly per the lockfile.
 pnpm install --frozen-lockfile
-pnpm --filter db push
 
-# ── Desktop Build + Publish ──────────────────────────────────────────────────
-# If the most recent commit touches desktop-relevant source files, rebuild
-# and republish the LabTrax Desktop installer so the web and desktop clients
-# always ship the same code.
-#
-# Desktop-relevant paths (any change here triggers a rebuild):
-#   artifacts/labtrax-desktop/**   — Electron renderer + main process
-#   lib/**                         — Shared TS libraries (db schema, api client)
-#   artifacts/api-server/src/**    — API contracts desktop talks to
-#
-# To skip the desktop rebuild on a specific merge, include
-# [skip desktop-release] in the merge commit message.
-
-COMMIT_MSG=$(git log -1 --pretty=%B 2>/dev/null || echo "")
-
-if echo "$COMMIT_MSG" | grep -q '\[skip desktop-release\]\|\[skip ci\]'; then
-  echo "[post-merge] Desktop rebuild skipped ([skip desktop-release] in commit message)."
-else
-  # ORIG_HEAD is set by git after a merge and points to the pre-merge HEAD,
-  # so diff ORIG_HEAD..HEAD covers ALL commits pulled in by the merge, not
-  # just the last one.  Fall back to HEAD~1 when ORIG_HEAD is absent (e.g.
-  # the very first commit or a manual script invocation).
-  BASE_REF=$(git rev-parse ORIG_HEAD 2>/dev/null || git rev-parse HEAD~1 2>/dev/null || echo "")
-  CHANGED_FILES=$([ -n "$BASE_REF" ] && git diff --name-only "$BASE_REF" HEAD 2>/dev/null || echo "")
-  if echo "$CHANGED_FILES" | grep -qE '^(artifacts/labtrax-desktop/|lib/|artifacts/api-server/src/)'; then
-    echo "[post-merge] Desktop-relevant files changed — rebuilding desktop app ..."
-    bash scripts/desktop-build-publish.sh
-  else
-    echo "[post-merge] No desktop-relevant files changed — skipping desktop rebuild."
-  fi
-fi
+# 2. Apply any Drizzle schema changes brought in by the merge (non-interactive).
+pnpm --filter @workspace/db run push-force
