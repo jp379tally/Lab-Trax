@@ -20,7 +20,7 @@ import { resilientFetch } from "@/lib/query-client";
 const DEFAULT_CROWN_MATERIALS = [
   "Zirconia",
   "PFM",
-  "E.max",
+  "Lithium Disilicate (Emax)",
   "Full Cast",
   "Composite",
   "Acrylic",

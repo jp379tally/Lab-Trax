@@ -40,6 +40,7 @@ import {
 import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
 import * as Print from "expo-print";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { resilientFetch } from "@/lib/query-client";
 import { uploadCaseAttachment } from "@/lib/uploadCaseAttachment";
 import {
@@ -1416,6 +1417,67 @@ function OverviewSection({
   const [rxPreviewOpen, setRxPreviewOpen] = useState(false);
   const insets = useSafeAreaInsets();
 
+  // ── PFM "don't forget to charge for alloy" reminder ──────────────────
+  // Shows whenever any restoration on the case is PFM. Dismissible for just
+  // this case, or permanently via "Don't show again" (persisted).
+  const hasPfmRestoration = (c.restorations ?? []).some((r) =>
+    /pfm/i.test(r.material ?? ""),
+  );
+  const [pfmReminderDismissed, setPfmReminderDismissed] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const dontShow = await AsyncStorage.getItem(
+          "labtrax_pfm_alloy_reminder_dontshow_v1",
+        );
+        if (dontShow === "1") {
+          if (!cancelled) setPfmReminderDismissed(true);
+          return;
+        }
+        const raw = await AsyncStorage.getItem(
+          "labtrax_pfm_alloy_reminder_dismissed_cases_v1",
+        );
+        const ids: string[] = raw ? JSON.parse(raw) : [];
+        if (!cancelled)
+          setPfmReminderDismissed(Array.isArray(ids) && ids.includes(caseId));
+      } catch {
+        if (!cancelled) setPfmReminderDismissed(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [caseId]);
+  const dismissPfmReminderThisCase = useCallback(async () => {
+    setPfmReminderDismissed(true);
+    try {
+      const raw = await AsyncStorage.getItem(
+        "labtrax_pfm_alloy_reminder_dismissed_cases_v1",
+      );
+      const ids: string[] = raw ? JSON.parse(raw) : [];
+      const next = Array.isArray(ids) ? ids : [];
+      if (!next.includes(caseId)) next.push(caseId);
+      await AsyncStorage.setItem(
+        "labtrax_pfm_alloy_reminder_dismissed_cases_v1",
+        JSON.stringify(next),
+      );
+    } catch {
+      /* ignore persistence failures */
+    }
+  }, [caseId]);
+  const dismissPfmReminderForever = useCallback(async () => {
+    setPfmReminderDismissed(true);
+    try {
+      await AsyncStorage.setItem(
+        "labtrax_pfm_alloy_reminder_dontshow_v1",
+        "1",
+      );
+    } catch {
+      /* ignore persistence failures */
+    }
+  }, []);
+
   // ── Barcode conflict check — debounced, fires 400 ms after last keystroke ──
   const [editBarcodeConflict, setEditBarcodeConflict] = useState<{ caseNumber?: string | null } | null>(null);
   const [editBarcodeChecking, setEditBarcodeChecking] = useState(false);
@@ -1741,6 +1803,36 @@ function OverviewSection({
           </View>
         ) : (
           <View>
+            {hasPfmRestoration && !pfmReminderDismissed && (
+              <View style={styles.pfmReminder}>
+                <Ionicons
+                  name="warning-outline"
+                  size={18}
+                  color={colors.warningStrong}
+                  style={{ marginTop: 1 }}
+                />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.pfmReminderText}>
+                    PFM detected — don't forget to charge for alloy.
+                  </Text>
+                  <View style={styles.pfmReminderActions}>
+                    <Pressable hitSlop={8} onPress={dismissPfmReminderThisCase}>
+                      <Text style={styles.pfmReminderDismiss}>Dismiss</Text>
+                    </Pressable>
+                    <Pressable hitSlop={8} onPress={dismissPfmReminderForever}>
+                      <Text style={styles.pfmReminderDontShow}>Don't show again</Text>
+                    </Pressable>
+                  </View>
+                </View>
+                <Pressable
+                  hitSlop={8}
+                  onPress={dismissPfmReminderThisCase}
+                  accessibilityLabel="Dismiss reminder"
+                >
+                  <Ionicons name="close" size={16} color={colors.warningStrong} />
+                </Pressable>
+              </View>
+            )}
             <View style={styles.fieldRow}>
               <Text style={styles.fieldLabel}>Patient</Text>
               <View style={{ flexDirection: "row", alignItems: "center", gap: Spacing.xs, flexShrink: 1, justifyContent: "flex-end" }}>
@@ -3684,6 +3776,26 @@ function makeStyles(c: ThemeColors) {
     },
     fieldLabel: { ...Typography.bodyMedium, color: c.textSecondary },
     fieldValue: { ...Typography.bodyMedium, color: c.text, flexShrink: 1, textAlign: "right" },
+    pfmReminder: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: Spacing.sm,
+      backgroundColor: c.warningSurface,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: c.warning,
+      borderRadius: Radius.md,
+      padding: Spacing.sm + 2,
+      marginBottom: Spacing.md,
+    },
+    pfmReminderText: { ...Typography.bodyMedium, color: c.warningText },
+    pfmReminderActions: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.lg,
+      marginTop: Spacing.xs,
+    },
+    pfmReminderDismiss: { ...Typography.captionSemibold, color: c.warningStrong },
+    pfmReminderDontShow: { ...Typography.caption, color: c.warningStrong },
     teethLabel: { ...Typography.bodyMedium, color: c.tint, marginBottom: Spacing.md },
     toothChartWrap: { alignItems: "center" },
     restHeaderRow: {

@@ -71,3 +71,4 @@
 - [isPlatformAdmin is inline in labtrax-routes](labtrax-routes-isPlatformAdmin-inline.md) — mocking auth.js does NOT affect it; test mocks must set req.user.role="admin" for the secret-header check to even run.
 - [Backup-restore session gap fix](backup-restore-session-gap.md) — gap-free restore: drop FK, filter TOC via pg_restore --list, run pg_restore --use-list skipping all user_sessions entries; no DROP ever runs on user_sessions.
 - [Drizzle write .catch vs then-only test mocks](drizzle-write-catch-test-mock.md) — routes chaining .catch(wrapDbError) on db.insert/update 500 under fully-mocked @workspace/db tests whose chain mock implements only `then`.
+- [Material naming rules](material-naming-rules.md) — normalizeMaterialName() canonicalizes synonyms in ALL AI ingest paths; vocab renamed "Lithium Disilicate (Emax)" but internal price key stays emax_crown (renaming orphans tiers).

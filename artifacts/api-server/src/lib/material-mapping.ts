@@ -39,6 +39,80 @@ export const DEFAULT_TIER_KEYS: PriceKey[] = DEFAULT_TIER_ITEMS.map(
 
 const VALID_KEYS = new Set<string>(DEFAULT_TIER_KEYS);
 
+/**
+ * Canonical material vocabulary the AI reader and pricing should converge on.
+ * These are the *display* names stored on a restoration, not the internal
+ * pricing-tier keys (which never change — see `materialToPriceKey`).
+ */
+export const CANONICAL_ZIRCONIA = "Zirconia";
+export const CANONICAL_LITHIUM_DISILICATE = "Lithium Disilicate";
+export const CANONICAL_PFM = "PFM";
+
+/**
+ * Synonym tables encoding the three material-naming rules. Short
+ * abbreviations (zr, zirc, brux, bzr, pfz) are matched on word boundaries
+ * by `normalizeMaterialName` so they never accidentally fire inside a
+ * larger alphanumeric run.
+ */
+const ZIRCONIA_SYNONYMS = [
+  "zirconia",
+  "zirc",
+  "zr",
+  "brux",
+  "bruxz",
+  "bruxzir",
+  "bzr",
+  "pfz",
+];
+const LITHIUM_DISILICATE_SYNONYMS = [
+  "emax",
+  "e.max",
+  "e max",
+  "lithium disilicate",
+  "lithium silicate",
+];
+const PFM_SYNONYMS = ["pfm", "porcelain fused to metal"];
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function matchesSynonym(haystack: string, synonyms: string[]): boolean {
+  return synonyms.some((syn) => {
+    const re = new RegExp(`(^|[^a-z0-9])${escapeRegExp(syn)}([^a-z0-9]|$)`, "i");
+    return re.test(haystack);
+  });
+}
+
+/**
+ * Normalize a free-form material string to LabTrax's canonical material
+ * vocabulary, encoding the three reader rules:
+ *   - zirconia + brand names (BruxZir, Brux, Zirc, Zr, BZR, PFZ) → "Zirconia"
+ *   - Emax / E.max / lithium disilicate / lithium silicate → "Lithium Disilicate"
+ *   - PFM / porcelain fused to metal → "PFM"
+ *
+ * Anything that matches none of the rules is returned trimmed but otherwise
+ * unchanged (so Gold, Acrylic, Composite, etc. keep their original wording).
+ * A leading "Ceramic:" prefix (as seen on iTero Rxs) is stripped first.
+ */
+export function normalizeMaterialName(
+  raw?: string | null,
+): string | null | undefined {
+  if (raw === null || raw === undefined) return raw;
+  const original = raw.trim();
+  if (!original) return original;
+  const s = original
+    .toLowerCase()
+    .replace(/^ceramic\s*:\s*/, "")
+    .trim();
+  // Lithium disilicate first: its multi-word phrases must not be shadowed.
+  if (matchesSynonym(s, LITHIUM_DISILICATE_SYNONYMS))
+    return CANONICAL_LITHIUM_DISILICATE;
+  if (matchesSynonym(s, ZIRCONIA_SYNONYMS)) return CANONICAL_ZIRCONIA;
+  if (matchesSynonym(s, PFM_SYNONYMS)) return CANONICAL_PFM;
+  return original;
+}
+
 export function materialToPriceKey(
   material?: string | null,
   restorationType?: string | null,
@@ -48,9 +122,22 @@ export function materialToPriceKey(
 
   // PFZ (porcelain fused to zirconia) historically returned a key that
   // wasn't in DEFAULT_TIER_KEYS, so resolution silently failed. Treat
-  // PFZ as a zirconia crown for pricing purposes.
-  if (m.includes("zirconia") || m.includes("pfz")) return "zirconia_crown";
-  if (m.includes("emax") || m.includes("e.max") || m.includes("e max"))
+  // PFZ as a zirconia crown for pricing purposes. The brand synonyms
+  // (BruxZir/Brux/Zirc/Zr/BZR) are a safety net so an un-normalized string
+  // still resolves to the zirconia price key.
+  if (
+    m.includes("zirconia") ||
+    m.includes("pfz") ||
+    matchesSynonym(m, ZIRCONIA_SYNONYMS)
+  )
+    return "zirconia_crown";
+  if (
+    m.includes("emax") ||
+    m.includes("e.max") ||
+    m.includes("e max") ||
+    m.includes("lithium disilicate") ||
+    m.includes("lithium silicate")
+  )
     return "emax_crown";
   if (m.includes("pfm")) return "pfm_crown";
   if (

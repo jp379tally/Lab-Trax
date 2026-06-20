@@ -10,12 +10,14 @@ import {
   DEFAULT_TIER_ITEMS,
   DEFAULT_TIER_KEYS,
   materialToPriceKey,
+  normalizeMaterialName,
 } from "./material-mapping.js";
 
 export {
   DEFAULT_TIER_ITEMS,
   DEFAULT_TIER_KEYS,
   materialToPriceKey,
+  normalizeMaterialName,
 } from "./material-mapping.js";
 
 /**

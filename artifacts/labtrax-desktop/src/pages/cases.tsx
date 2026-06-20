@@ -2954,7 +2954,7 @@ const RESTORATION_TYPES = [
 const MATERIALS = [
   "Zirconia",
   "PFM",
-  "E.max",
+  "Lithium Disilicate (Emax)",
   "Full Cast",
   "Composite",
   "Acrylic",
@@ -3859,6 +3859,47 @@ export function CaseDrawer({
   }
 
   const COMM_PREF_KEY = "labtrax_note_comm_pref_v1";
+
+  // ── PFM "don't forget to charge for alloy" reminder ──────────────────
+  // The reminder shows on the lab slip whenever any restoration on the case
+  // is PFM. It can be dismissed for just this case, or permanently via
+  // "don't show again" (persisted in localStorage).
+  const PFM_REMINDER_DONTSHOW_KEY = "labtrax_pfm_alloy_reminder_dontshow_v1";
+  const PFM_REMINDER_CASES_KEY = "labtrax_pfm_alloy_reminder_dismissed_cases_v1";
+  const [pfmReminderDismissed, setPfmReminderDismissed] = useState(false);
+  useEffect(() => {
+    try {
+      if (localStorage.getItem(PFM_REMINDER_DONTSHOW_KEY) === "1") {
+        setPfmReminderDismissed(true);
+        return;
+      }
+      const raw = localStorage.getItem(PFM_REMINDER_CASES_KEY);
+      const ids: string[] = raw ? JSON.parse(raw) : [];
+      setPfmReminderDismissed(Array.isArray(ids) && ids.includes(labCase.id));
+    } catch {
+      setPfmReminderDismissed(false);
+    }
+  }, [labCase.id]);
+  function dismissPfmReminderThisCase() {
+    setPfmReminderDismissed(true);
+    try {
+      const raw = localStorage.getItem(PFM_REMINDER_CASES_KEY);
+      const ids: string[] = raw ? JSON.parse(raw) : [];
+      const next = Array.isArray(ids) ? ids : [];
+      if (!next.includes(labCase.id)) next.push(labCase.id);
+      localStorage.setItem(PFM_REMINDER_CASES_KEY, JSON.stringify(next));
+    } catch {
+      /* ignore persistence failures */
+    }
+  }
+  function dismissPfmReminderForever() {
+    setPfmReminderDismissed(true);
+    try {
+      localStorage.setItem(PFM_REMINDER_DONTSHOW_KEY, "1");
+    } catch {
+      /* ignore persistence failures */
+    }
+  }
 
   const addNoteMutation = useMutation({
     mutationFn: ({ text, shared }: { text: string; shared: boolean }) =>
@@ -5045,6 +5086,11 @@ export function CaseDrawer({
           {/* ── OVERVIEW ── */}
           {activeTab === "lab-slip" && (() => {
             const summary = deriveRxSummary(data?.restorations);
+            const hasPfmRestoration = (data?.restorations ?? []).some(
+              (r) =>
+                (r as { priceKey?: string | null }).priceKey === "pfm_crown" ||
+                /pfm/i.test(r.material ?? ""),
+            );
             const overviewNotes = data?.notes ?? [];
             const latestNote = [...overviewNotes].sort((a, b) => {
               const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
@@ -5059,6 +5105,40 @@ export function CaseDrawer({
             const shadeLabel = summary.shades.length > 0 ? summary.shades.join(", ") : "—";
             return (
             <div className="px-5 py-5 space-y-6">
+              {hasPfmRestoration && !pfmReminderDismissed && (
+                <div className="flex items-start gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2.5">
+                  <AlertTriangle size={16} className="text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-amber-800 dark:text-amber-200">
+                      PFM detected — don't forget to charge for alloy.
+                    </p>
+                    <div className="mt-1.5 flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={dismissPfmReminderThisCase}
+                        className="text-xs font-medium text-amber-700 dark:text-amber-300 hover:underline"
+                      >
+                        Dismiss
+                      </button>
+                      <button
+                        type="button"
+                        onClick={dismissPfmReminderForever}
+                        className="text-xs text-amber-700/80 dark:text-amber-300/80 hover:underline"
+                      >
+                        Don't show again
+                      </button>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={dismissPfmReminderThisCase}
+                    className="text-amber-600/70 dark:text-amber-400/70 hover:text-amber-700 dark:hover:text-amber-300 shrink-0"
+                    aria-label="Dismiss reminder"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              )}
               {!data?.viewerIsLabMember && data?.statusHistory && data.statusHistory.length > 0 && (
                 <section>
                   <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-3">

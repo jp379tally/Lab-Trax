@@ -53,6 +53,7 @@ import {
   buildLineItemDescription,
   fetchLabItemLabels,
   materialToPriceKey,
+  normalizeMaterialName,
   resolveAllPricesForContext,
   resolveItemLabelFromMap,
   resolveServerPriceWithSource,
@@ -7068,7 +7069,7 @@ const ITERO_RX_SYSTEM_PROMPT = `You are a dental laboratory prescription reader.
   "patientFirstName": "First",
   "patientLastName": "Last",
   "caseType": "one of EXACTLY: Crown & Bridge, Removable, Appliance, Other",
-  "material": "one of: Zirconia, PFM, E.max, Lithium Disilicate, Full Cast, Composite, Acrylic, Resin, Valplast, Flexible, Metal, PMMA, Other",
+  "material": "one of: Zirconia, PFM, Lithium Disilicate, Full Cast, Composite, Acrylic, Resin, Valplast, Flexible, Metal, PMMA, Other",
   "shade": "shade value like A2 or BL2",
   "teeth": "see rules below — comma-separated Universal numbers (e.g. \\"29,30,31\\") OR an arch token for full-arch removables (\\"Upper\\", \\"Lower\\", \\"U/D\\", \\"U/P\\", \\"L/D\\", \\"L/P\\")",
   "dueDate": "YYYY-MM-DD or null",
@@ -7090,7 +7091,12 @@ iTero-specific field mappings (IMPORTANT — iTero uses different field names th
     "Fixed Restorative" → "Crown & Bridge"
     "Removable Prosthetics" or "Removable" → "Removable"
     "Orthodontics" or "Appliance" → "Appliance"
-- The "Treatment Information" table is the authoritative source for teeth, treatment type, and material. Read every row. The "Tooth No." column gives the Universal tooth number. The "Treatment" column (Crown, Bridge, Veneer, Inlay, Onlay, etc.) determines caseType. The "Material" column gives the material — strip the "Ceramic:" prefix if present (e.g. "Ceramic: Zirconia" → "Zirconia", "Ceramic: E.max" → "E.max", "Ceramic: Lithium Disilicate" → "Lithium Disilicate").
+- The "Treatment Information" table is the authoritative source for teeth, treatment type, and material. Read every row. The "Tooth No." column gives the Universal tooth number. The "Treatment" column (Crown, Bridge, Veneer, Inlay, Onlay, etc.) determines caseType. The "Material" column gives the material — strip the "Ceramic:" prefix if present (e.g. "Ceramic: Zirconia" → "Zirconia", "Ceramic: E.max" → "Lithium Disilicate", "Ceramic: Lithium Disilicate" → "Lithium Disilicate").
+
+MATERIAL NAMING RULES (apply consistently — output the canonical name on the right):
+- "Zirconia", "Zirc", "Zr", "Brux", "BruxZ", "Bruxzir", "BZR", "Ceramic: Zirconia" → "Zirconia"
+- "Emax", "E.max", "lithium disilicate", "lithium silicate" → "Lithium Disilicate" (NEVER output "E.max" — always use "Lithium Disilicate")
+- "PFM", "porcelain fused to metal" → "PFM"
 - Shade columns may be split into Incisal/Body/Gingival (e.g. "-/A2/-"). Extract the first non-dash segment as the shade (e.g. "-/A2/-" → "A2", "BL2/BL2/-" → "BL2").
 
 caseType bucketing rules — pick exactly one:
@@ -7547,6 +7553,10 @@ router.post(
     if (!extracted.material && body.materialHint) extracted.material = body.materialHint;
     if (!extracted.caseType && body.caseTypeHint) extracted.caseType = body.caseTypeHint;
     if (!extracted.notes && body.notesHint) extracted.notes = body.notesHint;
+    // Canonicalize the material name (zirconia / Emax→Lithium Disilicate / PFM
+    // rules) BEFORE it is stored and before price resolution, so the lab-slip
+    // material and the invoice price always agree.
+    extracted.material = normalizeMaterialName(extracted.material) ?? extracted.material;
     if (!extracted.isRush && body.isRushHint === "true") extracted.isRush = true;
 
     const patientFirstName =
@@ -8669,6 +8679,9 @@ router.post(
     // Fall back to hint values when AI didn't extract them.
     if (!extracted.shade && body.shadeHint) extracted.shade = body.shadeHint;
     if (!extracted.material && body.materialHint) extracted.material = body.materialHint;
+    // Canonicalize the material name (zirconia / Emax→Lithium Disilicate / PFM
+    // rules) before it is stored and before price resolution.
+    extracted.material = normalizeMaterialName(extracted.material) ?? extracted.material;
     // Route notesHint into extracted.notes so it persists to cases.rxNotes (not
     // just the case-note row) when server-side AI extraction is unavailable.
     if (!extracted.notes && body.notesHint) extracted.notes = body.notesHint;
@@ -9340,6 +9353,10 @@ async function processOneIteroZipFile(
       req.log?.warn?.({ err: (err as Error)?.message }, "iTero ZIP batch: Rx AI extraction failed; creating stub case");
     }
   }
+
+  // Canonicalize the material name (zirconia / Emax→Lithium Disilicate / PFM
+  // rules) before it is stored and before price resolution.
+  extracted.material = normalizeMaterialName(extracted.material) ?? extracted.material;
 
   const patientFirstName = extracted.patientFirstName?.trim() || body.patientFirstNameHint?.trim() || "Unknown";
   const patientLastName  = extracted.patientLastName?.trim()  || body.patientLastNameHint?.trim()  || "Patient";

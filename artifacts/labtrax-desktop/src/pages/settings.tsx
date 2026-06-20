@@ -9338,13 +9338,13 @@ const VOCAB_KIND_LABELS: Record<string, string> = {
 };
 
 const VOCAB_KIND_DESCRIPTIONS: Record<string, string> = {
-  material: "Appears as selectable options when your team adds restorations to a case (e.g. Zirconia, E.max).",
+  material: "Appears as selectable options when your team adds restorations to a case (e.g. Zirconia, Lithium Disilicate).",
   shade: "Appears when entering shade information on case restorations and invoices (e.g. A2, BL1).",
   restoration_type: "Appears when choosing the type of restoration on a case (e.g. Crown, Bridge, Veneer).",
 };
 
 const VOCAB_BUILTIN_DEFAULTS: Record<string, string[]> = {
-  material: ["Zirconia", "PFM", "E.max", "Full Cast", "Composite", "Acrylic", "Metal", "PMMA", "Other"],
+  material: ["Zirconia", "PFM", "Lithium Disilicate (Emax)", "Full Cast", "Composite", "Acrylic", "Metal", "PMMA", "Other"],
   shade: ["A1", "A2", "A3", "A3.5", "A4", "B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D2", "D3", "D4", "BL1", "BL2", "BL3", "BL4"],
   restoration_type: ["Crown", "Bridge", "Veneer", "Implant Crown", "Inlay", "Onlay", "Full Denture", "Partial Denture", "Night Guard", "Retainer", "Sports Guard", "Snore Guard", "Other"],
 };

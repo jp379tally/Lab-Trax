@@ -6,7 +6,7 @@ import { parseToothField } from "@/components/ToothChart";
 const CROWN_MATERIALS = [
   "Zirconia",
   "PFM",
-  "E.max",
+  "Lithium Disilicate (Emax)",
   "Full Cast",
   "Composite",
   "Acrylic",

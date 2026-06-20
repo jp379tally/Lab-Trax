@@ -1,9 +1,13 @@
 import { describe, it, expect } from "vitest";
 import {
+  CANONICAL_LITHIUM_DISILICATE,
+  CANONICAL_PFM,
+  CANONICAL_ZIRCONIA,
   DEFAULT_TIER_ITEMS,
   DEFAULT_TIER_KEYS,
   isKnownPriceKey,
   materialToPriceKey,
+  normalizeMaterialName,
 } from "./material-mapping.js";
 
 describe("materialToPriceKey", () => {
@@ -116,5 +120,83 @@ describe("materialToPriceKey", () => {
   it("DEFAULT_TIER_ITEMS and DEFAULT_TIER_KEYS stay in sync", () => {
     expect(DEFAULT_TIER_KEYS).toEqual(DEFAULT_TIER_ITEMS.map((i) => i.key));
     expect(new Set(DEFAULT_TIER_KEYS).size).toBe(DEFAULT_TIER_KEYS.length);
+  });
+});
+
+describe("normalizeMaterialName", () => {
+  it("passes through null/undefined/empty unchanged", () => {
+    expect(normalizeMaterialName(null)).toBeNull();
+    expect(normalizeMaterialName(undefined)).toBeUndefined();
+    expect(normalizeMaterialName("")).toBe("");
+    expect(normalizeMaterialName("   ")).toBe("");
+  });
+
+  it("maps all zirconia synonyms to canonical Zirconia", () => {
+    for (const v of [
+      "Zirconia",
+      "Zirc",
+      "Zr",
+      "Brux",
+      "BruxZ",
+      "Bruxzir",
+      "BZR",
+      "PFZ",
+      "BruxZir Solid Zirconia",
+      "Ceramic: Zirconia",
+    ]) {
+      expect(normalizeMaterialName(v)).toBe(CANONICAL_ZIRCONIA);
+    }
+  });
+
+  it("maps all lithium disilicate synonyms to canonical Lithium Disilicate", () => {
+    for (const v of [
+      "Emax",
+      "E.max",
+      "E max",
+      "lithium disilicate",
+      "Lithium Silicate",
+      "Ceramic: E.max",
+      "Lithium Disilicate (Emax)",
+    ]) {
+      expect(normalizeMaterialName(v)).toBe(CANONICAL_LITHIUM_DISILICATE);
+    }
+  });
+
+  it("maps PFM synonyms to canonical PFM", () => {
+    expect(normalizeMaterialName("PFM")).toBe(CANONICAL_PFM);
+    expect(normalizeMaterialName("porcelain fused to metal")).toBe(
+      CANONICAL_PFM,
+    );
+  });
+
+  it("leaves unmatched materials untouched (trimmed)", () => {
+    expect(normalizeMaterialName("Gold")).toBe("Gold");
+    expect(normalizeMaterialName("  Acrylic  ")).toBe("Acrylic");
+    expect(normalizeMaterialName("Composite")).toBe("Composite");
+  });
+
+  it("does not fire on substrings inside larger words", () => {
+    // "zr" / "zirc" must be word-boundary matched, not substring matched.
+    expect(normalizeMaterialName("Bizarre")).toBe("Bizarre");
+  });
+
+  it("the renamed vocab entry still resolves to the emax price key", () => {
+    // The user-facing vocab entry was renamed to "Lithium Disilicate (Emax)";
+    // it must still normalize and price as the (internal) emax_crown key.
+    const normalized = normalizeMaterialName("Lithium Disilicate (Emax)");
+    expect(normalized).toBe(CANONICAL_LITHIUM_DISILICATE);
+    expect(materialToPriceKey(normalized, "Crown")).toBe("emax_crown");
+  });
+
+  it("normalized names resolve to the expected price keys", () => {
+    expect(materialToPriceKey(normalizeMaterialName("BruxZ"), "Crown")).toBe(
+      "zirconia_crown",
+    );
+    expect(
+      materialToPriceKey(normalizeMaterialName("lithium silicate"), "Crown"),
+    ).toBe("emax_crown");
+    expect(materialToPriceKey(normalizeMaterialName("PFM"), "Crown")).toBe(
+      "pfm_crown",
+    );
   });
 });

@@ -8,6 +8,7 @@ import {
   setDbAdminPin,
 } from "../lib/admin-pin";
 import { normalizePhoneE164 } from "../lib/account-link-sms";
+import { normalizeMaterialName } from "../lib/material-mapping";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as fs from "node:fs";
@@ -3640,7 +3641,7 @@ export async function registerRoutes(): Promise<IRouter> {
   "caseType": "one of: Crown & Bridge, Removable, Implant, Orthodontic, Other",
   "toothIndices": "comma-separated tooth numbers like 3,5,14",
   "shade": "shade value like A2, B1, etc.",
-  "material": "one of: Zirconia, E max, PFM, Gold, Composite, Acrylic, Flexible, PMMA, Metal Framework, Titanium, Other",
+  "material": "one of: Zirconia, Lithium Disilicate, PFM, Gold, Composite, Acrylic, Flexible, PMMA, Metal Framework, Titanium, Other",
   "dueDate": "MM/DD/YYYY format",
   "isRush": false,
   "notes": "any additional notes or special instructions",
@@ -3658,7 +3659,7 @@ Important rules:
 - Only set isRush to true if explicitly marked as rush/urgent/STAT — including handwritten "rush" notes or red stamps
 - For caseType, match to the closest category listed above. Accept handwritten abbreviations (e.g. "PFM", "Zirc", "E.max", "BU", "CB", "FPD", "RPD")
 - Extract the shade exactly as written on the prescription, including handwritten shade values
-- MATERIAL: Common handwritten abbreviations — "PFM" = PFM, "Zirc", "Zr", "Brux", "Bruxzir", "BZR", or "bruxism" = Zirconia (full-contour strong zirconia for bruxism patients), "GC" or "Gold" = Gold, "Emax" or "E.max" = E max
+- MATERIAL: output the canonical material name. Mapping rules — "PFM" or "porcelain fused to metal" = PFM; "Zirc", "Zr", "Brux", "BruxZ", "Bruxzir", "BZR", or "bruxism" = Zirconia (full-contour strong zirconia for bruxism patients); "GC" or "Gold" = Gold; "Emax", "E.max", "lithium disilicate", or "lithium silicate" = Lithium Disilicate (NEVER output "E.max" or "E max" — always use "Lithium Disilicate")
 - SHADE FALLBACK: If the shade field is blank or not clearly marked, scan the handwritten notes/comments area for common shade values (A1–D4, BL1–BL4, OM1–OM4, T, NW, etc.) and record the first recognisable shade found there.
 - NAME FORMAT: If a patient name or doctor name contains a comma (e.g. "Kidder, Daniel"), it is Last, First format. Swap to First Last and remove the comma.
 - CONFIDENCE: set "confidence" to a number from 0 to 1 reflecting your overall certainty that the extracted fields are correct (1 = fully legible and certain; below 0.5 = blurry, partial, or mostly illegible). Be honest — the app uses this to decide whether a live-camera read is good enough to keep.
@@ -3807,6 +3808,11 @@ Important rules:
         if (value !== null && value !== undefined && value !== "" && value !== "null") {
           if ((key === "doctorName" || key === "patientName") && typeof value === "string") {
             cleanedData[key] = fixNameOrder(value) ?? value;
+          } else if (key === "material" && typeof value === "string") {
+            // Canonicalize material naming (zirconia / Emax→Lithium Disilicate /
+            // PFM rules) before the client stores it on the new case, so the
+            // material and its resolved price stay consistent.
+            cleanedData[key] = normalizeMaterialName(value) ?? value;
           } else {
             cleanedData[key] = value;
           }

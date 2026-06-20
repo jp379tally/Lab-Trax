@@ -14,7 +14,7 @@ const VOCAB_DEFAULTS: Record<string, string[]> = {
   material: [
     "Zirconia",
     "PFM",
-    "E.max",
+    "Lithium Disilicate (Emax)",
     "Full Cast",
     "Composite",
     "Acrylic",
