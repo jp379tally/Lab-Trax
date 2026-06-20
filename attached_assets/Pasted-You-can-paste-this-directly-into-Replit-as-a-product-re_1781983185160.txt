@@ -1,0 +1,342 @@
+You can paste this directly into Replit as a product requirements document / project brief:
+
+# LabTrax AI Assistant Vision & Product Specification
+
+## Overview
+
+The LabTrax AI Assistant will be a deeply integrated, proactive artificial intelligence system embedded throughout the LabTrax platform. Unlike a traditional chatbot that only responds when asked, the LabTrax AI Assistant will actively assist users, learn from workflow patterns, understand dental laboratory terminology, provide intelligent recommendations, identify potential issues, and help users operate more efficiently.
+
+The goal is to create an AI assistant that becomes a knowledgeable virtual employee for every dental laboratory using LabTrax.
+
+---
+
+# Core Objectives
+
+The AI Assistant should:
+
+* Understand all LabTrax functionality and workflows.
+* Possess extensive knowledge of dental laboratory operations.
+* Understand dental terminology, materials, workflows, and restorations.
+* Understand HIPAA compliance and healthcare data handling requirements.
+* Learn customer-specific nomenclature and business practices.
+* Provide proactive recommendations rather than waiting for questions.
+* Help reduce errors and missed steps.
+* Improve efficiency and user productivity.
+* Continuously learn from user behavior and system activity.
+
+---
+
+# Knowledge Domains
+
+## LabTrax Platform Knowledge
+
+The AI should understand:
+
+* Case management
+* Prescription workflows
+* Invoicing
+* Scheduling
+* Customer management
+* Production workflows
+* Status tracking
+* Notifications
+* Reporting
+* Billing
+* Mobile workflows
+* User permissions
+* Task management
+* Audit logs
+* AI Reader functionality
+* Existing AI Chat functionality
+
+The assistant should be capable of answering any LabTrax-related question in natural language.
+
+Examples:
+
+"How do I add a remake?"
+
+"Why is this invoice showing unpaid?"
+
+"Where do I update customer pricing?"
+
+"What does this status mean?"
+
+---
+
+## Dental Laboratory Knowledge
+
+The AI should possess expert-level knowledge of:
+
+* Crown and bridge
+* Dentures
+* Partials
+* Implants
+* Surgical guides
+* All-on-X restorations
+* Digital workflows
+* Milling processes
+* Printing workflows
+* Zirconia
+* Emax
+* PMMA
+* PFM restorations
+* Shade systems
+* Occlusion concepts
+* CAD/CAM workflows
+* Scanner integrations
+* Lab communication best practices
+
+---
+
+## HIPAA Compliance Knowledge
+
+The AI must understand:
+
+* Protected Health Information (PHI)
+* HIPAA regulations
+* Secure data handling
+* Privacy requirements
+* User permissions
+* Data retention policies
+* Compliance recommendations
+
+The AI should actively identify potential compliance risks and notify users when appropriate.
+
+---
+
+# Proactive Intelligence System
+
+## Smart Suggestions
+
+The AI should analyze activity in real time and provide contextual suggestions.
+
+Examples:
+
+* Missing shade information
+* Missing due dates
+* Missing doctor instructions
+* Potential pricing discrepancies
+* Unusual material selections
+* Incomplete prescriptions
+* Missing attachments
+* Missing approvals
+
+Suggestions should appear as small, non-intrusive assistant bubbles.
+
+Example:
+
+"Case #1042 appears to be missing shade information. Would you like me to flag it for review?"
+
+---
+
+## Workflow Recommendations
+
+The assistant should identify opportunities for improvement.
+
+Examples:
+
+* Recommend faster workflows
+* Suggest automation opportunities
+* Identify bottlenecks
+* Recommend commonly used materials
+* Suggest preferred vendors
+* Identify overdue tasks
+
+---
+
+## Risk Detection
+
+The AI should identify:
+
+* Cases at risk of missing due dates
+* Missing required information
+* Unusual pricing activity
+* Potential compliance issues
+* Production bottlenecks
+* Customer communication gaps
+
+---
+
+# Personalized Learning Engine
+
+## Behavioral Learning
+
+The assistant should learn:
+
+* Frequently used terminology
+* Customer naming conventions
+* Preferred materials
+* User workflow habits
+* Lab-specific abbreviations
+* Common restoration types
+* Pricing patterns
+
+Examples:
+
+The AI learns that a particular laboratory uses:
+
+"Zirc" = Zirconia
+
+"AOX" = All-On-X
+
+"Temp PMMA" = Temporary PMMA Restoration
+
+The assistant automatically understands and utilizes these terms.
+
+---
+
+## Adaptive Intelligence
+
+Over time the AI should become increasingly personalized.
+
+The assistant should remember:
+
+* User preferences
+* Frequently performed actions
+* Common customer requests
+* Preferred workflows
+* Historical decisions
+
+The system should become smarter with continued usage.
+
+---
+
+# Conversational AI Assistant
+
+Users should be able to ask questions naturally.
+
+Examples:
+
+"Show me all cases due tomorrow."
+
+"Which doctors have the highest remake rate?"
+
+"Why is this case delayed?"
+
+"Which invoices are over 30 days past due?"
+
+"How many implant cases did we complete this month?"
+
+The AI should retrieve and analyze data before providing answers.
+
+---
+
+# Notification System
+
+The assistant should utilize:
+
+* In-app notifications
+* Mobile push notifications
+* Desktop notifications
+* Assistant pop-up bubbles
+
+Notification priorities:
+
+## High Priority
+
+* HIPAA concerns
+* Missed due dates
+* Critical production delays
+
+## Medium Priority
+
+* Missing case information
+* Invoice issues
+* Approval reminders
+
+## Low Priority
+
+* Workflow recommendations
+* Efficiency suggestions
+* General insights
+
+---
+
+# AI Memory Architecture
+
+The assistant should learn from:
+
+* Audit logs
+* User actions
+* Case history
+* Chat history
+* Customer history
+* Workflow activity
+* Notification interactions
+
+All learning should be permission-aware and HIPAA compliant.
+
+---
+
+# Future Capabilities
+
+## Voice Assistant
+
+Users can speak naturally:
+
+"Find all implant cases due this week."
+
+"Create a follow-up reminder for Dr. Smith."
+
+"Show overdue invoices."
+
+---
+
+## Predictive Analytics
+
+Predict:
+
+* Remake risk
+* Delivery delays
+* Production bottlenecks
+* Revenue forecasts
+* Staffing needs
+
+---
+
+## AI Operations Manager
+
+Long-term vision:
+
+The AI becomes a virtual operations manager capable of:
+
+* Monitoring the entire laboratory
+* Identifying problems before they occur
+* Suggesting operational improvements
+* Assisting management decisions
+* Increasing profitability and efficiency
+
+---
+
+# MVP Recommendation
+
+Phase 1:
+
+* AI knowledge base
+* LabTrax expertise
+* Dental lab expertise
+* HIPAA knowledge
+* AI memory foundation
+
+Phase 2:
+
+* Smart suggestions
+* Missing information detection
+* Workflow recommendations
+* Notification integration
+
+Phase 3:
+
+* Behavioral learning
+* Personalization engine
+* Predictive analytics
+
+Phase 4:
+
+* Full proactive AI assistant
+* Voice interactions
+* Advanced operational intelligence
+
+End Goal:
+
+Create the most intelligent AI-powered dental laboratory management assistant in the industry, deeply integrated into LabTrax and capable of acting as a knowledgeable, proactive, and personalized virtual team member.
