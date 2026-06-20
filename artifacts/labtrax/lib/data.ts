@@ -167,7 +167,7 @@ export interface ToothEntry {
 
 export const MATERIAL_PRICES: Record<string, number> = {
   "Zirconia": 250,
-  "E.max": 300,
+  "Lithium Disilicate (Emax)": 300,
   "PFM": 200,
   "Gold": 400,
   "Semi Precious": 275,
@@ -417,7 +417,7 @@ export const SAMPLE_CASES: LabCase[] = [
     patientInitials: "M.K.",
     toothIndices: "#8, #9, #10",
     shade: "A2",
-    material: "E.max",
+    material: "Lithium Disilicate (Emax)",
     status: "in_design",
     isRush: false,
     notes: "Bridge prep - verify margins",
@@ -650,7 +650,7 @@ export const SAMPLE_CASES: LabCase[] = [
     patientInitials: "T.H.",
     toothIndices: "#6, #7, #8, #9, #10, #11",
     shade: "BL2",
-    material: "E.max",
+    material: "Lithium Disilicate (Emax)",
     status: "in_design",
     isRush: true,
     notes: "RUSH - Full anterior veneers. Minimal prep.",
@@ -947,7 +947,7 @@ export const SAMPLE_INVOICES: Invoice[] = [
     shade: "A2",
     caseNotes: "Bridge prep - verify margins on #9",
     lineItems: [
-      { qty: 3, item: "E.max Crown", description: "Anterior bridge units #8-#10", rate: 895.00, amount: 2685.00 },
+      { qty: 3, item: "Lithium Disilicate (Emax) Crown", description: "Anterior bridge units #8-#10", rate: 895.00, amount: 2685.00 },
       { qty: 1, item: "Custom Shade", description: "Vita A2 shade match", rate: 145.00, amount: 145.00 },
       { qty: 1, item: "Rush Fee", description: "Expedited turnaround", rate: 500.00, amount: 500.00 },
       { qty: 1, item: "Model Work", description: "Diagnostic models and articulation", rate: 500.00, amount: 500.00 },
@@ -1264,7 +1264,7 @@ export const SHADE_OPTIONS = ["A2", "A3", "A3.5", "A4", "B1", "B2", "B3", "B4", 
 
 export const DEFAULT_TIER_ITEMS = [
   { key: "zirconia_crown", label: "Zirconia Crown" },
-  { key: "emax_crown", label: "E.max Crown" },
+  { key: "emax_crown", label: "Lithium Disilicate (Emax) Crown" },
   { key: "pfm_crown", label: "PFM Crown" },
   { key: "denture", label: "Denture" },
   { key: "partial", label: "Partial" },
