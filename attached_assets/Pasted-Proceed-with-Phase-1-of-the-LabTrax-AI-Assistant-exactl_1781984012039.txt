@@ -1,0 +1,56 @@
+Proceed with Phase 1 of the LabTrax AI Assistant exactly as documented in:
+
+docs/superpowers/specs/2026-06-20-labtrax-ai-assistant-design.md
+
+You have approval to move forward with the following defaults:
+
+* Glossary management will live under Settings → AI Assistant.
+* Glossary editing permissions will be restricted to Lab Admins.
+* The AI memory/glossary table will be protected, soft-delete only, and included in regression protection.
+
+Before beginning implementation, first resolve and verify the post-merge setup failure that occurred after Task #2066. Ensure the build environment is stable and that all future task merges will function normally.
+
+Requirements:
+
+1. Absolutely no regression of any existing LabTrax functionality.
+2. Follow all Stable Beta regression guardrails.
+3. Preserve all existing AI functionality, including:
+
+   * AI Chat
+   * AI Agent
+   * AI Reader
+   * Rx Parsing
+   * Notifications
+   * Mobile functionality
+   * Existing APIs and integrations
+4. Use additive architecture only. Do not replace or rewrite working systems unless absolutely necessary.
+5. Run all protected regression gates before marking the task complete.
+6. Document all schema changes, new tables, migrations, and configuration updates.
+7. Ensure all new AI memory features are HIPAA-aware and do not store unnecessary PHI.
+8. Maintain backward compatibility for existing users and existing data.
+
+Phase 1 Scope Only:
+
+* LabTrax knowledge foundation
+* Dental laboratory knowledge foundation
+* HIPAA knowledge foundation
+* AI memory/glossary foundation
+* AI prompt and context upgrades
+* Integration with existing AI Chat and AI Agent
+
+Do NOT implement Phase 2, 3, or 4 features at this time, including:
+
+* Proactive pop-up assistant bubbles
+* Automated behavioral learning
+* Predictive analytics
+* Voice assistant features
+
+Once the build is complete, provide:
+
+* A detailed implementation summary
+* Files changed
+* Database changes
+* Regression test results
+* Any risks or follow-up recommendations
+
+Begin with fixing the post-merge setup failure, then proceed with Phase 1 implementation.

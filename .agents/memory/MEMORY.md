@@ -72,3 +72,4 @@
 - [Backup-restore session gap fix](backup-restore-session-gap.md) — gap-free restore: drop FK, filter TOC via pg_restore --list, run pg_restore --use-list skipping all user_sessions entries; no DROP ever runs on user_sessions.
 - [Drizzle write .catch vs then-only test mocks](drizzle-write-catch-test-mock.md) — routes chaining .catch(wrapDbError) on db.insert/update 500 under fully-mocked @workspace/db tests whose chain mock implements only `then`.
 - [Material naming rules](material-naming-rules.md) — normalizeMaterialName() canonicalizes synonyms in ALL AI ingest paths; vocab renamed "Lithium Disilicate (Emax)" but internal price key stays emax_crown (renaming orphans tiers).
+- [Post-merge scope + session FK drift](post-merge-scope-and-session-fk-drift.md) — post-merge = deps + db push-force only (no desktop build, that's CI); user_sessions→users FK absent in DB, push logs 23503 but exits 0, don't force-apply (risks uadmin_ sessions).
