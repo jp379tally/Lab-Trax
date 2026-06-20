@@ -1970,6 +1970,65 @@ export interface UpdateVocabularyInput {
   value: string;
 }
 
+export type AiMemoryItemKind =
+  (typeof AiMemoryItemKind)[keyof typeof AiMemoryItemKind];
+
+export const AiMemoryItemKind = {
+  glossary: "glossary",
+  preference: "preference",
+  fact: "fact",
+} as const;
+
+export type AiMemoryItemSource =
+  (typeof AiMemoryItemSource)[keyof typeof AiMemoryItemSource];
+
+export const AiMemoryItemSource = {
+  manual: "manual",
+  learned: "learned",
+} as const;
+
+export interface AiMemoryItem {
+  id: string;
+  labOrganizationId: string;
+  kind: AiMemoryItemKind;
+  key: string;
+  value: string;
+  source: AiMemoryItemSource;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AiMemoryListResult {
+  ok: boolean;
+  data: AiMemoryItem[];
+}
+
+export interface AiMemoryItemResult {
+  ok: boolean;
+  data: AiMemoryItem;
+}
+
+export type CreateAiMemoryInputKind =
+  (typeof CreateAiMemoryInputKind)[keyof typeof CreateAiMemoryInputKind];
+
+export const CreateAiMemoryInputKind = {
+  glossary: "glossary",
+  preference: "preference",
+  fact: "fact",
+} as const;
+
+export interface CreateAiMemoryInput {
+  labOrganizationId: string;
+  kind: CreateAiMemoryInputKind;
+  key: string;
+  value: string;
+}
+
+export interface UpdateAiMemoryInput {
+  key?: string;
+  value?: string;
+}
+
 export type GetLocationsParams = {
   organizationId: string;
   activeOnly?: boolean;
@@ -1996,6 +2055,29 @@ export type DeleteVocabularyItem200Data = {
 export type DeleteVocabularyItem200 = {
   ok: boolean;
   data: DeleteVocabularyItem200Data;
+};
+
+export type GetAiMemoryParams = {
+  labOrganizationId: string;
+  kind?: GetAiMemoryKind;
+};
+
+export type GetAiMemoryKind =
+  (typeof GetAiMemoryKind)[keyof typeof GetAiMemoryKind];
+
+export const GetAiMemoryKind = {
+  glossary: "glossary",
+  preference: "preference",
+  fact: "fact",
+} as const;
+
+export type DeleteAiMemory200Data = {
+  deleted: boolean;
+};
+
+export type DeleteAiMemory200 = {
+  ok: boolean;
+  data: DeleteAiMemory200Data;
 };
 
 export type DeleteLocation200Data = {

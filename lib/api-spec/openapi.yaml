@@ -202,6 +202,101 @@ paths:
                       deleted: { type: boolean }
         "404":
           description: Not found
+  /ai-memory:
+    get:
+      operationId: getAiMemory
+      tags: [ai]
+      summary: List AI memory entries for a lab org (any active member)
+      parameters:
+        - in: query
+          name: labOrganizationId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: kind
+          required: false
+          schema:
+            type: string
+            enum: [glossary, preference, fact]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiMemoryListResult"
+    post:
+      operationId: createAiMemory
+      tags: [ai]
+      summary: Create an AI memory entry (lab admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAiMemoryInput"
+      responses:
+        "201":
+          description: Newly created entry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiMemoryItemResult"
+        "409":
+          description: Conflict (duplicate key)
+  /ai-memory/{id}:
+    patch:
+      operationId: updateAiMemory
+      tags: [ai]
+      summary: Update an AI memory entry (lab admin only)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAiMemoryInput"
+      responses:
+        "200":
+          description: Updated entry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiMemoryItemResult"
+        "404":
+          description: Not found
+        "409":
+          description: Conflict (duplicate key)
+    delete:
+      operationId: deleteAiMemory
+      tags: [ai]
+      summary: Soft-delete an AI memory entry (lab admin only)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, data]
+                properties:
+                  ok: { type: boolean }
+                  data:
+                    type: object
+                    required: [deleted]
+                    properties:
+                      deleted: { type: boolean }
+        "404":
+          description: Not found
   /locations/{id}:
     patch:
       operationId: updateLocation
@@ -5083,5 +5178,52 @@ components:
       type: object
       required: [value]
       properties:
+        value: { type: string }
+    AiMemoryItem:
+      type: object
+      required: [id, labOrganizationId, kind, key, value, source, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        labOrganizationId: { type: string }
+        kind:
+          type: string
+          enum: [glossary, preference, fact]
+        key: { type: string }
+        value: { type: string }
+        source:
+          type: string
+          enum: [manual, learned]
+        createdAt: { type: string }
+        updatedAt: { type: string }
+    AiMemoryListResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AiMemoryItem"
+    AiMemoryItemResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          $ref: "#/components/schemas/AiMemoryItem"
+    CreateAiMemoryInput:
+      type: object
+      required: [labOrganizationId, kind, key, value]
+      properties:
+        labOrganizationId: { type: string }
+        kind:
+          type: string
+          enum: [glossary, preference, fact]
+        key: { type: string }
+        value: { type: string }
+    UpdateAiMemoryInput:
+      type: object
+      properties:
+        key: { type: string }
         value: { type: string }
 

@@ -18,6 +18,7 @@ import { getProviderOrgIdsForUserAndLinks } from "../lib/cross-lab-doctor";
 import { requireAuth } from "../middlewares/auth";
 import { normalizeDoctor } from "../lib/pricing";
 import { wrapDbError } from "../lib/http";
+import { buildKnowledgeBlock, buildLabMemoryBlock } from "../lib/ai-knowledge-augment";
 import { randomBytes } from "node:crypto";
 
 // Per-user sliding-window rate limiter (in-memory)
@@ -696,6 +697,13 @@ export function registerAiChatRoutes(router: IRouter): void {
     let contextBlock: string;
     let systemPrompt: string;
 
+    // Additive prompt augmentation: curated reference knowledge selected from
+    // the user's latest message, plus admin-curated per-lab memory. Both are
+    // empty strings when nothing relevant exists, so the prompt is unchanged
+    // in that case. This does not alter the request/response contract.
+    const userMessage = String(lastMsg.content || "");
+    const knowledgeBlock = buildKnowledgeBlock(userMessage);
+
     try {
       if (userType === "provider") {
         contextBlock = await buildProviderContext(userId);
@@ -708,7 +716,7 @@ You have access to the provider's real-time case data and pricing from all their
 Answer questions about case status, estimated delivery, restorations, and what this provider is charged per item type accurately using only the data provided below.
 Be concise and professional. If asked about a case or patient not in the data, say so clearly rather than guessing.
 Today's date: ${new Date().toLocaleDateString()}.
-
+${knowledgeBlock}
 ${pinnedCaseCtx ? `${pinnedCaseCtx}\n` : ""}${contextBlock}`;
       } else {
         const labIds = await getActiveLabIds(userId);
@@ -717,6 +725,7 @@ ${pinnedCaseCtx ? `${pinnedCaseCtx}\n` : ""}${contextBlock}`;
         } else {
           contextBlock = await buildLabContext(labIds[0]);
         }
+        const memoryBlock = await buildLabMemoryBlock(labIds);
         let pinnedCaseCtx = "";
         if (requestedCaseIds.length > 0) {
           pinnedCaseCtx = await buildMultiCaseContext(requestedCaseIds, userId, userType);
@@ -726,7 +735,7 @@ You have access to real-time data about this lab's cases, pricing tiers, and lab
 Answer questions about case status, patient cases, doctor pricing, estimated turnaround, and lab information accurately using only the data provided below.
 Be concise and professional. If a case is not in the data, say so clearly rather than guessing.
 Today's date: ${new Date().toLocaleDateString()}.
-
+${knowledgeBlock}${memoryBlock}
 ${pinnedCaseCtx ? `${pinnedCaseCtx}\n` : ""}${contextBlock}`;
       }
     } catch (err: any) {

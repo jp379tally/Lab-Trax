@@ -54,9 +54,9 @@ interface AdminUser {
   lastLoginAt?: string | null;
 }
 
-type TabKey = "profile" | "password" | "sessions" | "organizations" | "users" | "backup" | "desktop" | "mobile" | "itero" | "platform-admin" | "subscriptions" | "notifications" | "templates" | "statement-layout" | "statement-email" | "correspondence-layout" | "invoice-layout" | "deleted-cases" | "deletion-audit" | "vocabulary";
+type TabKey = "profile" | "password" | "sessions" | "organizations" | "users" | "backup" | "desktop" | "mobile" | "itero" | "platform-admin" | "subscriptions" | "notifications" | "templates" | "statement-layout" | "statement-email" | "correspondence-layout" | "invoice-layout" | "deleted-cases" | "deletion-audit" | "vocabulary" | "ai-assistant";
 
-const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "sessions", "organizations", "users", "backup", "desktop", "mobile", "itero", "platform-admin", "subscriptions", "notifications", "templates", "statement-layout", "statement-email", "correspondence-layout", "invoice-layout", "deleted-cases", "deletion-audit", "vocabulary"];
+const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "sessions", "organizations", "users", "backup", "desktop", "mobile", "itero", "platform-admin", "subscriptions", "notifications", "templates", "statement-layout", "statement-email", "correspondence-layout", "invoice-layout", "deleted-cases", "deletion-audit", "vocabulary", "ai-assistant"];
 
 function readInitialTab(): TabKey {
   if (typeof window === "undefined") return "profile";
@@ -85,6 +85,7 @@ export default function SettingsPage() {
     { key: "deleted-cases", label: "Deleted Cases", icon: Trash2, show: isAdmin },
     { key: "deletion-audit", label: "Deletion Audit Log", icon: History, show: isAdmin },
     { key: "vocabulary", label: "Lab Catalog", icon: BookOpen, show: isAdmin },
+    { key: "ai-assistant", label: "AI Assistant", icon: Sparkles, show: isAdmin },
     { key: "desktop", label: "Desktop app", icon: Download, show: true },
     { key: "templates", label: "Templates", icon: LayoutList, show: isAdmin },
     { key: "invoice-layout", label: "Invoice layout", icon: LayoutList, show: isAdmin, parentKey: "templates" },
@@ -197,6 +198,7 @@ export default function SettingsPage() {
           {tab === "deleted-cases" && isAdmin && <DeletedCasesPanel />}
           {tab === "deletion-audit" && isAdmin && <DeletionAuditPanel />}
           {tab === "vocabulary" && isAdmin && <VocabularyPanel />}
+          {tab === "ai-assistant" && isAdmin && <AiAssistantPanel />}
         </div>
       </div>
     </div>
@@ -9420,6 +9422,393 @@ const VOCAB_BUILTIN_DEFAULTS: Record<string, string[]> = {
 };
 const VOCAB_KINDS = ["material", "shade", "restoration_type"] as const;
 type VocabKind = (typeof VOCAB_KINDS)[number];
+
+const AI_MEMORY_KINDS = ["glossary", "preference", "fact"] as const;
+type AiMemoryKind = (typeof AI_MEMORY_KINDS)[number];
+
+interface AiMemoryItem {
+  id: string;
+  labOrganizationId: string;
+  kind: AiMemoryKind;
+  key: string;
+  value: string;
+  source: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+const AI_MEMORY_KIND_META: Record<
+  AiMemoryKind,
+  { label: string; description: string; keyLabel: string; valueLabel: string }
+> = {
+  glossary: {
+    label: "Glossary",
+    description:
+      "Lab-specific terms or abbreviations the AI should understand (e.g. \"PFZ\" → \"Porcelain fused to zirconia\").",
+    keyLabel: "Term",
+    valueLabel: "Definition",
+  },
+  preference: {
+    label: "Preferences",
+    description:
+      "How this lab likes things done — tone, defaults, or conventions the AI should follow.",
+    keyLabel: "Name",
+    valueLabel: "Preference",
+  },
+  fact: {
+    label: "Facts",
+    description: "Durable facts about this lab the AI should always know.",
+    keyLabel: "Name",
+    valueLabel: "Fact",
+  },
+};
+
+function AiAssistantPanel() {
+  const qc = useQueryClient();
+
+  const meQuery = useQuery<MeResponse>({
+    queryKey: ["auth", "me"],
+    queryFn: () => apiFetch("/auth/me"),
+    staleTime: 60_000,
+  });
+
+  const adminLabs = useMemo(() => {
+    return (meQuery.data?.memberships ?? []).filter(
+      (m) =>
+        m.organization?.type === "lab" &&
+        m.status === "active" &&
+        (m.role === "admin" || m.role === "owner"),
+    );
+  }, [meQuery.data]);
+
+  const [selectedLabId, setSelectedLabId] = useState<string | null>(null);
+  const effectiveLabId = selectedLabId ?? adminLabs[0]?.organizationId ?? null;
+
+  const memoryQuery = useQuery<AiMemoryItem[]>({
+    enabled: !!effectiveLabId,
+    queryKey: ["ai-memory", effectiveLabId],
+    queryFn: () =>
+      apiFetch<AiMemoryItem[]>(
+        `/ai-memory?labOrganizationId=${encodeURIComponent(effectiveLabId!)}`,
+      ),
+    staleTime: 30_000,
+  });
+
+  // Add-new form state, keyed per kind.
+  const [addKind, setAddKind] = useState<AiMemoryKind>("glossary");
+  const [addKey, setAddKey] = useState("");
+  const [addValue, setAddValue] = useState("");
+  const [addError, setAddError] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+
+  // Edit state.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editKey, setEditKey] = useState("");
+  const [editValue, setEditValue] = useState("");
+  const [editError, setEditError] = useState<string | null>(null);
+  const [savingId, setSavingId] = useState<string | null>(null);
+
+  // Delete state.
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  async function addEntry() {
+    const key = addKey.trim();
+    const value = addValue.trim();
+    if (!key || !value) {
+      setAddError("Both fields are required.");
+      return;
+    }
+    if (!effectiveLabId) return;
+    setAdding(true);
+    setAddError(null);
+    try {
+      await apiFetch("/ai-memory", {
+        method: "POST",
+        body: JSON.stringify({
+          labOrganizationId: effectiveLabId,
+          kind: addKind,
+          key,
+          value,
+        }),
+      });
+      await qc.invalidateQueries({ queryKey: ["ai-memory", effectiveLabId] });
+      setAddKey("");
+      setAddValue("");
+    } catch (err: unknown) {
+      if (err instanceof ApiError && err.status === 409) {
+        setAddError("An entry with that key already exists.");
+      } else {
+        setAddError(err instanceof Error ? err.message : "Could not add entry.");
+      }
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  function startEdit(item: AiMemoryItem) {
+    setEditingId(item.id);
+    setEditKey(item.key);
+    setEditValue(item.value);
+    setEditError(null);
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setEditKey("");
+    setEditValue("");
+    setEditError(null);
+  }
+
+  async function saveEdit(item: AiMemoryItem) {
+    const key = editKey.trim();
+    const value = editValue.trim();
+    if (!key || !value) {
+      setEditError("Both fields are required.");
+      return;
+    }
+    setSavingId(item.id);
+    setEditError(null);
+    try {
+      await apiFetch(`/ai-memory/${encodeURIComponent(item.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ key, value }),
+      });
+      await qc.invalidateQueries({ queryKey: ["ai-memory", effectiveLabId] });
+      cancelEdit();
+    } catch (err: unknown) {
+      if (err instanceof ApiError && err.status === 409) {
+        setEditError("An entry with that key already exists.");
+      } else {
+        setEditError(err instanceof Error ? err.message : "Could not save entry.");
+      }
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  async function deleteEntry(item: AiMemoryItem) {
+    setDeletingId(item.id);
+    setDeleteError(null);
+    try {
+      await apiFetch(`/ai-memory/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+      await qc.invalidateQueries({ queryKey: ["ai-memory", effectiveLabId] });
+    } catch (err: unknown) {
+      setDeleteError(err instanceof Error ? err.message : "Could not delete entry.");
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  const itemsByKind = useMemo(() => {
+    const map: Record<AiMemoryKind, AiMemoryItem[]> = {
+      glossary: [],
+      preference: [],
+      fact: [],
+    };
+    for (const item of memoryQuery.data ?? []) {
+      if (map[item.kind]) map[item.kind].push(item);
+    }
+    return map;
+  }, [memoryQuery.data]);
+
+  const addMeta = AI_MEMORY_KIND_META[addKind];
+
+  return (
+    <PanelShell
+      title="AI Assistant"
+      subtitle="Teach the LabTrax AI about your lab. Glossary terms, preferences, and facts you add here are included in the AI's context so its answers match how your lab works."
+    >
+      {adminLabs.length > 1 && (
+        <div className="mb-2">
+          <select
+            value={effectiveLabId ?? ""}
+            onChange={(e) => setSelectedLabId(e.target.value || null)}
+            className="h-9 px-3 rounded-md bg-secondary text-sm border border-border focus:outline-none"
+          >
+            {adminLabs.map((m) => (
+              <option key={m.organizationId} value={m.organizationId}>
+                {m.organization?.name ?? m.organizationId}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {!effectiveLabId && !meQuery.isLoading && (
+        <p className="text-sm text-muted-foreground text-center py-10">No lab available.</p>
+      )}
+
+      {effectiveLabId && (
+        <>
+          <div className="rounded-lg border border-border p-4 space-y-3">
+            <h3 className="text-sm font-semibold">Add memory entry</h3>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Type">
+                <select
+                  value={addKind}
+                  onChange={(e) => {
+                    setAddKind(e.target.value as AiMemoryKind);
+                    setAddError(null);
+                  }}
+                  className="w-full h-9 px-3 rounded-md bg-secondary text-sm border border-border focus:outline-none"
+                >
+                  {AI_MEMORY_KINDS.map((k) => (
+                    <option key={k} value={k}>
+                      {AI_MEMORY_KIND_META[k].label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label={addMeta.keyLabel}>
+                <input
+                  value={addKey}
+                  onChange={(e) => setAddKey(e.target.value)}
+                  maxLength={200}
+                  className="w-full h-9 px-3 rounded-md bg-secondary text-sm border border-border focus:outline-none"
+                  placeholder={addMeta.keyLabel}
+                />
+              </Field>
+              <Field label={addMeta.valueLabel} full>
+                <textarea
+                  value={addValue}
+                  onChange={(e) => setAddValue(e.target.value)}
+                  maxLength={2000}
+                  rows={2}
+                  className="w-full px-3 py-2 rounded-md bg-secondary text-sm border border-border focus:outline-none resize-y"
+                  placeholder={addMeta.valueLabel}
+                />
+              </Field>
+            </div>
+            <p className="text-xs text-muted-foreground">{addMeta.description}</p>
+            {addError && <Alert tone="danger">{addError}</Alert>}
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => void addEntry()}
+                disabled={adding}
+                className="inline-flex items-center gap-1.5 h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium disabled:opacity-50"
+              >
+                {adding ? <Loader2 size={14} className="animate-spin" /> : <UserPlus className="w-3.5 h-3.5" />}
+                Add entry
+              </button>
+            </div>
+          </div>
+
+          {deleteError && <Alert tone="danger">{deleteError}</Alert>}
+
+          {memoryQuery.isLoading && (
+            <div className="flex items-center gap-2 text-muted-foreground text-sm py-8 justify-center">
+              <Loader2 size={14} className="animate-spin" />
+              Loading…
+            </div>
+          )}
+
+          {!memoryQuery.isLoading && (
+            <div className="space-y-8">
+              {AI_MEMORY_KINDS.map((kind) => {
+                const meta = AI_MEMORY_KIND_META[kind];
+                const items = itemsByKind[kind];
+                return (
+                  <div key={kind}>
+                    <h3 className="text-sm font-semibold mb-0.5">{meta.label}</h3>
+                    <p className="text-xs text-muted-foreground mb-2">{meta.description}</p>
+                    {items.length === 0 ? (
+                      <p className="text-sm text-muted-foreground py-3">No {meta.label.toLowerCase()} yet.</p>
+                    ) : (
+                      <ul className="space-y-1.5">
+                        {items.map((item) => {
+                          const isEditing = editingId === item.id;
+                          return (
+                            <li
+                              key={item.id}
+                              className="rounded-md border border-border px-3 py-2"
+                            >
+                              {isEditing ? (
+                                <div className="space-y-2">
+                                  <input
+                                    value={editKey}
+                                    onChange={(e) => setEditKey(e.target.value)}
+                                    maxLength={200}
+                                    className="w-full h-9 px-3 rounded-md bg-secondary text-sm border border-border focus:outline-none"
+                                    placeholder={meta.keyLabel}
+                                  />
+                                  <textarea
+                                    value={editValue}
+                                    onChange={(e) => setEditValue(e.target.value)}
+                                    maxLength={2000}
+                                    rows={2}
+                                    className="w-full px-3 py-2 rounded-md bg-secondary text-sm border border-border focus:outline-none resize-y"
+                                    placeholder={meta.valueLabel}
+                                  />
+                                  {editError && <Alert tone="danger">{editError}</Alert>}
+                                  <div className="flex gap-2 justify-end">
+                                    <button
+                                      type="button"
+                                      onClick={cancelEdit}
+                                      className="h-8 px-3 rounded-md bg-secondary text-sm font-medium"
+                                    >
+                                      Cancel
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => void saveEdit(item)}
+                                      disabled={savingId === item.id}
+                                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-sm font-medium disabled:opacity-50"
+                                    >
+                                      {savingId === item.id && <Loader2 size={13} className="animate-spin" />}
+                                      Save
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="flex items-start gap-3">
+                                  <div className="min-w-0 flex-1">
+                                    <div className="text-sm font-medium break-words">{item.key}</div>
+                                    <div className="text-sm text-muted-foreground break-words whitespace-pre-wrap">
+                                      {item.value}
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-1 shrink-0">
+                                    <button
+                                      type="button"
+                                      onClick={() => startEdit(item)}
+                                      className="p-1.5 rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground"
+                                      title="Edit"
+                                    >
+                                      <Pencil size={14} />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => void deleteEntry(item)}
+                                      disabled={deletingId === item.id}
+                                      className="p-1.5 rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                                      title="Delete"
+                                    >
+                                      {deletingId === item.id ? (
+                                        <Loader2 size={14} className="animate-spin" />
+                                      ) : (
+                                        <Trash2 size={14} />
+                                      )}
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+    </PanelShell>
+  );
+}
 
 interface VocabItem {
   id: string;

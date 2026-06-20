@@ -219,6 +219,7 @@ vi.mock("@workspace/db", () => {
     pricingTiers: { __table: "pricingTiers" },
     pricingOverrides: { __table: "pricingOverrides" },
     vendorTypes: { __table: "vendorTypes" },
+    aiMemory: { __table: "aiMemory" },
     systemSettings: { __table: "systemSettings" },
     installerChangelog: { __table: "installerChangelog" },
     installerUploads: { __table: "installerUploads" },

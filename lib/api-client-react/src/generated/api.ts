@@ -24,6 +24,8 @@ import type {
   AiChatHistoryResult,
   AiChatInput,
   AiChatResult,
+  AiMemoryItemResult,
+  AiMemoryListResult,
   AnalyzePrescriptionInput,
   AnalyzePrescriptionResult,
   AuditLogListResult,
@@ -48,6 +50,7 @@ import type {
   ChangeCaseLocationInput,
   ChatMessageResult,
   ConversationListResult,
+  CreateAiMemoryInput,
   CreateCaseAttachmentInput,
   CreateCaseInput,
   CreateCategoryInput,
@@ -59,6 +62,7 @@ import type {
   CreateVendorInput,
   CreateVocabularyInput,
   CurrentUserResult,
+  DeleteAiMemory200,
   DeleteLocation200,
   DeleteVocabularyItem200,
   DeletedResult,
@@ -73,6 +77,7 @@ import type {
   EmailPreferencesInput,
   EmailPreferencesResult,
   GenerateInvoiceForCaseBody,
+  GetAiMemoryParams,
   GetCaseByBarcode200,
   GetCaseByBarcodeParams,
   GetConversationMessagesParams,
@@ -148,6 +153,7 @@ import type {
   SuccessResult,
   TransactionCategoryListResult,
   TransactionCategoryResult,
+  UpdateAiMemoryInput,
   UpdateCase200,
   UpdateCaseInput,
   UpdateCaseRestorationInput,
@@ -866,6 +872,357 @@ export const useDeleteVocabularyItem = <
   TContext
 > => {
   return useMutation(getDeleteVocabularyItemMutationOptions(options));
+};
+
+/**
+ * @summary List AI memory entries for a lab org (any active member)
+ */
+export const getGetAiMemoryUrl = (params: GetAiMemoryParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/ai-memory?${stringifiedParams}`
+    : `/api/ai-memory`;
+};
+
+export const getAiMemory = async (
+  params: GetAiMemoryParams,
+  options?: RequestInit,
+): Promise<AiMemoryListResult> => {
+  return customFetch<AiMemoryListResult>(getGetAiMemoryUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetAiMemoryQueryKey = (params?: GetAiMemoryParams) => {
+  return [`/api/ai-memory`, ...(params ? [params] : [])] as const;
+};
+
+export const getGetAiMemoryQueryOptions = <
+  TData = Awaited<ReturnType<typeof getAiMemory>>,
+  TError = ErrorType<unknown>,
+>(
+  params: GetAiMemoryParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getAiMemory>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetAiMemoryQueryKey(params);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getAiMemory>>> = ({
+    signal,
+  }) => getAiMemory(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getAiMemory>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetAiMemoryQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getAiMemory>>
+>;
+export type GetAiMemoryQueryError = ErrorType<unknown>;
+
+/**
+ * @summary List AI memory entries for a lab org (any active member)
+ */
+
+export function useGetAiMemory<
+  TData = Awaited<ReturnType<typeof getAiMemory>>,
+  TError = ErrorType<unknown>,
+>(
+  params: GetAiMemoryParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getAiMemory>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetAiMemoryQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Create an AI memory entry (lab admin only)
+ */
+export const getCreateAiMemoryUrl = () => {
+  return `/api/ai-memory`;
+};
+
+export const createAiMemory = async (
+  createAiMemoryInput: CreateAiMemoryInput,
+  options?: RequestInit,
+): Promise<AiMemoryItemResult> => {
+  return customFetch<AiMemoryItemResult>(getCreateAiMemoryUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(createAiMemoryInput),
+  });
+};
+
+export const getCreateAiMemoryMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createAiMemory>>,
+    TError,
+    { data: BodyType<CreateAiMemoryInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof createAiMemory>>,
+  TError,
+  { data: BodyType<CreateAiMemoryInput> },
+  TContext
+> => {
+  const mutationKey = ["createAiMemory"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof createAiMemory>>,
+    { data: BodyType<CreateAiMemoryInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return createAiMemory(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type CreateAiMemoryMutationResult = NonNullable<
+  Awaited<ReturnType<typeof createAiMemory>>
+>;
+export type CreateAiMemoryMutationBody = BodyType<CreateAiMemoryInput>;
+export type CreateAiMemoryMutationError = ErrorType<void>;
+
+/**
+ * @summary Create an AI memory entry (lab admin only)
+ */
+export const useCreateAiMemory = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createAiMemory>>,
+    TError,
+    { data: BodyType<CreateAiMemoryInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof createAiMemory>>,
+  TError,
+  { data: BodyType<CreateAiMemoryInput> },
+  TContext
+> => {
+  return useMutation(getCreateAiMemoryMutationOptions(options));
+};
+
+/**
+ * @summary Update an AI memory entry (lab admin only)
+ */
+export const getUpdateAiMemoryUrl = (id: string) => {
+  return `/api/ai-memory/${id}`;
+};
+
+export const updateAiMemory = async (
+  id: string,
+  updateAiMemoryInput: UpdateAiMemoryInput,
+  options?: RequestInit,
+): Promise<AiMemoryItemResult> => {
+  return customFetch<AiMemoryItemResult>(getUpdateAiMemoryUrl(id), {
+    ...options,
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(updateAiMemoryInput),
+  });
+};
+
+export const getUpdateAiMemoryMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateAiMemory>>,
+    TError,
+    { id: string; data: BodyType<UpdateAiMemoryInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof updateAiMemory>>,
+  TError,
+  { id: string; data: BodyType<UpdateAiMemoryInput> },
+  TContext
+> => {
+  const mutationKey = ["updateAiMemory"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof updateAiMemory>>,
+    { id: string; data: BodyType<UpdateAiMemoryInput> }
+  > = (props) => {
+    const { id, data } = props ?? {};
+
+    return updateAiMemory(id, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UpdateAiMemoryMutationResult = NonNullable<
+  Awaited<ReturnType<typeof updateAiMemory>>
+>;
+export type UpdateAiMemoryMutationBody = BodyType<UpdateAiMemoryInput>;
+export type UpdateAiMemoryMutationError = ErrorType<void>;
+
+/**
+ * @summary Update an AI memory entry (lab admin only)
+ */
+export const useUpdateAiMemory = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateAiMemory>>,
+    TError,
+    { id: string; data: BodyType<UpdateAiMemoryInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof updateAiMemory>>,
+  TError,
+  { id: string; data: BodyType<UpdateAiMemoryInput> },
+  TContext
+> => {
+  return useMutation(getUpdateAiMemoryMutationOptions(options));
+};
+
+/**
+ * @summary Soft-delete an AI memory entry (lab admin only)
+ */
+export const getDeleteAiMemoryUrl = (id: string) => {
+  return `/api/ai-memory/${id}`;
+};
+
+export const deleteAiMemory = async (
+  id: string,
+  options?: RequestInit,
+): Promise<DeleteAiMemory200> => {
+  return customFetch<DeleteAiMemory200>(getDeleteAiMemoryUrl(id), {
+    ...options,
+    method: "DELETE",
+  });
+};
+
+export const getDeleteAiMemoryMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof deleteAiMemory>>,
+    TError,
+    { id: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof deleteAiMemory>>,
+  TError,
+  { id: string },
+  TContext
+> => {
+  const mutationKey = ["deleteAiMemory"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof deleteAiMemory>>,
+    { id: string }
+  > = (props) => {
+    const { id } = props ?? {};
+
+    return deleteAiMemory(id, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type DeleteAiMemoryMutationResult = NonNullable<
+  Awaited<ReturnType<typeof deleteAiMemory>>
+>;
+
+export type DeleteAiMemoryMutationError = ErrorType<void>;
+
+/**
+ * @summary Soft-delete an AI memory entry (lab admin only)
+ */
+export const useDeleteAiMemory = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof deleteAiMemory>>,
+    TError,
+    { id: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof deleteAiMemory>>,
+  TError,
+  { id: string },
+  TContext
+> => {
+  return useMutation(getDeleteAiMemoryMutationOptions(options));
 };
 
 /**

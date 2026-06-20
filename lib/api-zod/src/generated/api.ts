@@ -138,6 +138,80 @@ export const DeleteVocabularyItemResponse = zod.object({
 });
 
 /**
+ * @summary List AI memory entries for a lab org (any active member)
+ */
+export const GetAiMemoryQueryParams = zod.object({
+  labOrganizationId: zod.coerce.string(),
+  kind: zod.enum(["glossary", "preference", "fact"]).optional(),
+});
+
+export const GetAiMemoryResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.array(
+    zod.object({
+      id: zod.string(),
+      labOrganizationId: zod.string(),
+      kind: zod.enum(["glossary", "preference", "fact"]),
+      key: zod.string(),
+      value: zod.string(),
+      source: zod.enum(["manual", "learned"]),
+      createdAt: zod.string(),
+      updatedAt: zod.string(),
+    }),
+  ),
+});
+
+/**
+ * @summary Create an AI memory entry (lab admin only)
+ */
+export const CreateAiMemoryBody = zod.object({
+  labOrganizationId: zod.string(),
+  kind: zod.enum(["glossary", "preference", "fact"]),
+  key: zod.string(),
+  value: zod.string(),
+});
+
+/**
+ * @summary Update an AI memory entry (lab admin only)
+ */
+export const UpdateAiMemoryParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const UpdateAiMemoryBody = zod.object({
+  key: zod.string().optional(),
+  value: zod.string().optional(),
+});
+
+export const UpdateAiMemoryResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.object({
+    id: zod.string(),
+    labOrganizationId: zod.string(),
+    kind: zod.enum(["glossary", "preference", "fact"]),
+    key: zod.string(),
+    value: zod.string(),
+    source: zod.enum(["manual", "learned"]),
+    createdAt: zod.string(),
+    updatedAt: zod.string(),
+  }),
+});
+
+/**
+ * @summary Soft-delete an AI memory entry (lab admin only)
+ */
+export const DeleteAiMemoryParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const DeleteAiMemoryResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.object({
+    deleted: zod.boolean(),
+  }),
+});
+
+/**
  * @summary Update a lab location
  */
 export const UpdateLocationParams = zod.object({

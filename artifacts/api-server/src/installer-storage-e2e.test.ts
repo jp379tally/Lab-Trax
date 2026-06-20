@@ -182,6 +182,7 @@ vi.mock("@workspace/db", () => {
     installerUploads: T,
     // Billing / subscriptions
     subscriptions: T,
+    aiMemory: T,
     subscriptionEvents: T,
     // Vendor types (referenced transitively by lib/soft-delete)
     vendorTypes: T,

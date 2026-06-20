@@ -154,6 +154,7 @@ import financeRoutes, { generateForOrganization, runVendorLinkBackfill } from ".
 import listsRoutes from "./lists";
 import locationsRoutes from "./locations";
 import vocabularyRoutes from "./vocabulary";
+import aiMemoryRoutes from "./ai-memory";
 import pricingRoutes from "./pricing";
 import statementRoutes from "./statements";
 import billingRoutes from "./billing";
@@ -1350,6 +1351,7 @@ export async function registerRoutes(): Promise<IRouter> {
   router.use("/lists", listsRoutes);
   router.use("/locations", locationsRoutes);
   router.use("/vocabulary", vocabularyRoutes);
+  router.use("/ai-memory", aiMemoryRoutes);
   router.use("/pricing", pricingRoutes);
   router.use("/lab-orgs", statementRoutes);
   router.use("/billing", billingRoutes);

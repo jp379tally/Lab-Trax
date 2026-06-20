@@ -27,6 +27,7 @@ import { db } from "@workspace/db";
 import { organizations, organizationMemberships, pricingTiers } from "@workspace/db";
 import { eq, and, inArray } from "drizzle-orm";
 import { getProviderOrgIdsForUserAndLinks } from "../lib/cross-lab-doctor";
+import { buildKnowledgeBlock, buildLabMemoryBlock } from "../lib/ai-knowledge-augment";
 
 // ─── Shared rate limiter (same window as ai-chat) ───────────────────────────
 
@@ -95,8 +96,14 @@ function cleanExpiredActions(): void {
 
 // ─── Context assembly (minimal — just lab org) ─────────────────────────────
 
-async function buildSystemPrompt(userId: string, userType: string): Promise<string> {
+async function buildSystemPrompt(
+  userId: string,
+  userType: string,
+  userMessage = "",
+): Promise<string> {
   let contextBlock = "";
+  // Track lab org ids in scope so we can append admin-curated per-lab memory.
+  const memoryLabIds: string[] = [];
 
   if (userType === "provider") {
     // Provider users: give them a read-only view of their linked labs.
@@ -138,6 +145,7 @@ You can look up cases and invoices for this provider. Write operations (mark pai
         where: eq(organizations.id, labId),
       });
       if (org) {
+        memoryLabIds.push(labId);
         const tiers = await db.query.pricingTiers.findMany({
           where: eq(pricingTiers.labOrganizationId, labId),
         });
@@ -149,10 +157,17 @@ PRICING TIERS: ${tiers.map((t) => t.name).join(", ") || "none"}`;
 
   const isProvider = userType === "provider";
 
+  // Additive prompt augmentation: curated reference knowledge selected from the
+  // user's message and admin-curated per-lab memory. Both resolve to empty
+  // strings when nothing relevant exists, leaving the prompt unchanged.
+  const knowledgeBlock = buildKnowledgeBlock(userMessage);
+  const memoryBlock = await buildLabMemoryBlock(memoryLabIds);
+
   return `You are LabTrax AI Agent, an action-taking assistant for dental lab management.
 You can answer questions AND perform real operations using the tools available to you.
 Today's date: ${new Date().toLocaleDateString()}.
 ${contextBlock}
+${knowledgeBlock}${memoryBlock}
 
 IMPORTANT RULES:
 - For factual questions, answer directly using your tools or known context.
@@ -230,7 +245,11 @@ export function registerAiAgentRoutes(router: IRouter): void {
 
     const toolCtx: ToolContext = { userId, req, userType, labOrganizationId, providerOrgIds };
 
-    const systemPrompt = await buildSystemPrompt(userId, userType);
+    const systemPrompt = await buildSystemPrompt(
+      userId,
+      userType,
+      String(lastMsg.content ?? ""),
+    );
     const safeMessages = body.messages.slice(-20).map((m) => ({
       role: m.role as "user" | "assistant",
       content: String(m.content ?? "").slice(0, 4000),

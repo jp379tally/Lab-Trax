@@ -2231,6 +2231,42 @@ export const labVocabulary = pgTable(
   }),
 );
 
+export const aiMemory = pgTable(
+  "ai_memory",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    labOrganizationId: varchar("lab_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(), // 'glossary' | 'preference' | 'fact'
+    key: text("key").notNull(),
+    value: text("value").notNull(),
+    source: text("source").notNull().default("manual"), // 'manual' | 'learned' (Phase 1: 'manual' only)
+    createdByUserId: varchar("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    deletedByUserId: varchar("deleted_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+  },
+  (table) => ({
+    orgKindIdx: index("ai_memory_org_kind_idx").on(
+      table.labOrganizationId,
+      table.kind,
+    ),
+    orgKindKeyUnique: uniqueIndex("ai_memory_org_kind_key_uniq").on(
+      table.labOrganizationId,
+      table.kind,
+      table.key,
+    ),
+  }),
+);
+
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 export type LabCaseRow = typeof labCases.$inferSelect;
@@ -2242,3 +2278,4 @@ export type Message = typeof messages.$inferSelect;
 export type AiChatHistoryRow = typeof aiChatHistory.$inferSelect;
 export type LabLocation = typeof labLocations.$inferSelect;
 export type LabVocabularyRow = typeof labVocabulary.$inferSelect;
+export type AiMemoryRow = typeof aiMemory.$inferSelect;

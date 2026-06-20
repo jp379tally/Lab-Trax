@@ -13,6 +13,7 @@ import {
   users,
   subscriptions,
   vendorTypes,
+  aiMemory,
 } from "@workspace/db";
 import { writeAuditLog } from "./audit";
 import type { Request } from "express";
@@ -42,6 +43,7 @@ export const PROTECTED_TABLES = {
   users,
   subscriptions,
   vendor_types: vendorTypes,
+  ai_memory: aiMemory,
 } as const;
 
 export type ProtectedTableName = keyof typeof PROTECTED_TABLES;
@@ -71,6 +73,7 @@ export const PROTECTED_DRIZZLE_EXPORTS: ReadonlyArray<string> = [
   "users",
   "subscriptions",
   "vendorTypes",
+  "aiMemory",
 ];
 
 type SoftDeletableTable = (typeof PROTECTED_TABLES)[ProtectedTableName];

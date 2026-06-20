@@ -14,6 +14,7 @@
     "@google-cloud/storage": "^7.19.0",
     "@microsoft/microsoft-graph-client": "^3.0.7",
     "@types/pdfkit": "^0.17.6",
+    "@workspace/ai-knowledge": "workspace:*",
     "@workspace/api-zod": "workspace:*",
     "@workspace/db": "workspace:*",
     "adm-zip": "^0.5.17",

@@ -128,7 +128,7 @@ vi.mock("@workspace/db", () => {
     organizationMemberships: {}, cases: {}, caseAttachments: {}, caseEvents: {},
     mediaCleanupRuns: {}, subscriptions: {}, backupRuns: {}, rxPracticeNameAliases: {},
     invoices: {}, invoiceAttachments: {}, bankTransactions: {}, pricingTiers: {},
-    pricingOverrides: {}, vendorTypes: {},
+    pricingOverrides: {}, vendorTypes: {}, aiMemory: {},
   };
 });
 

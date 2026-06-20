@@ -108,6 +108,7 @@ vi.mock("@workspace/db", () => {
     // Referenced transitively by lib/soft-delete (PROTECTED_TABLES).
     subscriptions: { __table: "subscriptions" },
     vendorTypes: { __table: "vendorTypes" },
+    aiMemory: { __table: "aiMemory" },
   };
 
   const rowsByTable: RowsByTable = {
