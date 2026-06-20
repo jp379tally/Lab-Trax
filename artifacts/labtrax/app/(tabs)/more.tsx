@@ -6,7 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { Card } from "@/components/ui/Card";
-import { useMe, canEditAnyLab, canAdminAnyLab } from "@/lib/auth-me";
+import { useMe, canEditAnyLab, canAdminAnyLab, primaryLabOrgId } from "@/lib/auth-me";
 
 type IconName = React.ComponentProps<typeof Ionicons>["name"];
 
@@ -19,6 +19,8 @@ interface MenuItem {
   requiresEdit?: boolean;
   // owner/admin only — pricing, billed report, item-label writes
   requiresAdmin?: boolean;
+  // any active lab member — reads open to all members, writes gated in-screen
+  requiresLabMember?: boolean;
 }
 
 const ITEMS: MenuItem[] = [
@@ -69,6 +71,13 @@ const ITEMS: MenuItem[] = [
     route: "/manage/deleted-cases",
     requiresAdmin: true,
   },
+  {
+    title: "AI Knowledge",
+    subtitle: "Glossary, preferences, and facts for the AI",
+    icon: "sparkles-outline",
+    route: "/manage/ai-knowledge",
+    requiresLabMember: true,
+  },
 ];
 
 export default function MoreMenuScreen() {
@@ -78,9 +87,13 @@ export default function MoreMenuScreen() {
   const meQuery = useMe();
   const canEdit = canEditAnyLab(meQuery.data);
   const canAdmin = canAdminAnyLab(meQuery.data);
+  const hasLab = !!primaryLabOrgId(meQuery.data);
 
   const visible = ITEMS.filter(
-    (item) => (!item.requiresEdit || canEdit) && (!item.requiresAdmin || canAdmin),
+    (item) =>
+      (!item.requiresEdit || canEdit) &&
+      (!item.requiresAdmin || canAdmin) &&
+      (!item.requiresLabMember || hasLab),
   );
 
   return (
