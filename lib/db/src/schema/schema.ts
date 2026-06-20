@@ -2267,6 +2267,45 @@ export const aiMemory = pgTable(
   }),
 );
 
+// Auto-learned candidate memory entries extracted from AI chats. These are
+// proposals only — they never feed the AI prompt and never become real
+// `ai_memory` until a lab admin approves them. Approving copies the candidate
+// into `ai_memory`; rejecting marks it 'rejected'. Not a protected table:
+// candidates are transient suggestions, so status transitions (not soft-delete)
+// are the audit trail.
+export const aiMemoryCandidates = pgTable(
+  "ai_memory_candidates",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    labOrganizationId: varchar("lab_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(), // 'glossary' | 'preference' | 'fact'
+    key: text("key").notNull(),
+    value: text("value").notNull(),
+    status: text("status").notNull().default("pending"), // 'pending' | 'approved' | 'rejected'
+    sourceUserId: varchar("source_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    reviewedByUserId: varchar("reviewed_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => ({
+    orgStatusIdx: index("ai_memory_candidates_org_status_idx").on(
+      table.labOrganizationId,
+      table.status,
+    ),
+  }),
+);
+
+export type AiMemoryCandidateRow = typeof aiMemoryCandidates.$inferSelect;
+
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 export type LabCaseRow = typeof labCases.$inferSelect;

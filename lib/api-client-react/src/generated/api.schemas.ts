@@ -2029,6 +2029,53 @@ export interface UpdateAiMemoryInput {
   value?: string;
 }
 
+export type AiMemoryCandidateItemKind =
+  (typeof AiMemoryCandidateItemKind)[keyof typeof AiMemoryCandidateItemKind];
+
+export const AiMemoryCandidateItemKind = {
+  glossary: "glossary",
+  preference: "preference",
+  fact: "fact",
+} as const;
+
+export type AiMemoryCandidateItemStatus =
+  (typeof AiMemoryCandidateItemStatus)[keyof typeof AiMemoryCandidateItemStatus];
+
+export const AiMemoryCandidateItemStatus = {
+  pending: "pending",
+  approved: "approved",
+  rejected: "rejected",
+} as const;
+
+export interface AiMemoryCandidateItem {
+  id: string;
+  labOrganizationId: string;
+  kind: AiMemoryCandidateItemKind;
+  key: string;
+  value: string;
+  status: AiMemoryCandidateItemStatus;
+  sourceUserId?: string | null;
+  reviewedByUserId?: string | null;
+  reviewedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AiMemoryCandidateListResult {
+  ok: boolean;
+  data: AiMemoryCandidateItem[];
+}
+
+export interface AiMemoryCandidateItemResult {
+  ok: boolean;
+  data: AiMemoryCandidateItem;
+}
+
+export interface ApproveAiMemoryCandidateInput {
+  key?: string;
+  value?: string;
+}
+
 export type GetLocationsParams = {
   organizationId: string;
   activeOnly?: boolean;
@@ -2069,6 +2116,20 @@ export const GetAiMemoryKind = {
   glossary: "glossary",
   preference: "preference",
   fact: "fact",
+} as const;
+
+export type GetAiMemoryCandidatesParams = {
+  labOrganizationId: string;
+  status?: GetAiMemoryCandidatesStatus;
+};
+
+export type GetAiMemoryCandidatesStatus =
+  (typeof GetAiMemoryCandidatesStatus)[keyof typeof GetAiMemoryCandidatesStatus];
+
+export const GetAiMemoryCandidatesStatus = {
+  pending: "pending",
+  approved: "approved",
+  rejected: "rejected",
 } as const;
 
 export type DeleteAiMemory200Data = {

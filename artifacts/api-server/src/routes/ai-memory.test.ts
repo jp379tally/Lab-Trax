@@ -130,7 +130,11 @@ maybe("AI memory (db integration)", () => {
 
   afterAll(async () => {
     if (!dbMod) return;
-    const { db, aiMemory, organizations, users, organizationMemberships } = dbMod;
+    const { db, aiMemory, aiMemoryCandidates, organizations, users, organizationMemberships } =
+      dbMod;
+    await db
+      .delete(aiMemoryCandidates)
+      .where(eq(aiMemoryCandidates.labOrganizationId, labOrgId));
     await db.delete(aiMemory).where(eq(aiMemory.labOrganizationId, labOrgId));
     await db.delete(organizationMemberships).where(
       and(
@@ -368,6 +372,179 @@ maybe("AI memory (db integration)", () => {
         .delete("/api/ai-memory/00000000-0000-0000-0000-000000000000")
         .set("Authorization", `Bearer ${access}`);
       expect(res.status).toBe(404);
+    });
+  });
+
+  describe("AI memory candidates", () => {
+    async function seedCandidate(
+      overrides: Partial<{ kind: string; key: string; value: string; status: string }> = {},
+    ): Promise<string> {
+      const { db, aiMemoryCandidates } = dbMod as any;
+      const [row] = await db
+        .insert(aiMemoryCandidates)
+        .values({
+          labOrganizationId: labOrgId,
+          kind: overrides.kind ?? "glossary",
+          key: overrides.key ?? `Cand_${rid("k")}`,
+          value: overrides.value ?? "A learned definition.",
+          status: overrides.status ?? "pending",
+          sourceUserId: staffId,
+        })
+        .returning();
+      return row.id as string;
+    }
+
+    describe("GET /api/ai-memory/candidates", () => {
+      it("returns 401 without auth", async () => {
+        const res = await request(appMod.default).get(
+          `/api/ai-memory/candidates?labOrganizationId=${labOrgId}`,
+        );
+        expect(res.status).toBe(401);
+      });
+
+      it("returns 400 when labOrganizationId is missing", async () => {
+        const { access } = await makeSession(adminId);
+        const res = await request(appMod.default)
+          .get("/api/ai-memory/candidates")
+          .set("Authorization", `Bearer ${access}`);
+        expect(res.status).toBe(400);
+      });
+
+      it("returns 403 for a non-admin lab member", async () => {
+        const { access } = await makeSession(staffId);
+        const res = await request(appMod.default)
+          .get(`/api/ai-memory/candidates?labOrganizationId=${labOrgId}`)
+          .set("Authorization", `Bearer ${access}`);
+        expect(res.status).toBe(403);
+      });
+
+      it("lists pending candidates for an admin", async () => {
+        const { access } = await makeSession(adminId);
+        const id = await seedCandidate();
+        const res = await request(appMod.default)
+          .get(`/api/ai-memory/candidates?labOrganizationId=${labOrgId}`)
+          .set("Authorization", `Bearer ${access}`);
+        expect(res.status).toBe(200);
+        expect(res.body.ok).toBe(true);
+        const ids: string[] = res.body.data.map((r: any) => r.id);
+        expect(ids).toContain(id);
+      });
+    });
+
+    describe("POST /api/ai-memory/candidates/:id/approve", () => {
+      it("copies the candidate into ai_memory (source learned) and marks it approved", async () => {
+        const { access } = await makeSession(adminId);
+        const key = `Appr_${rid("k")}`;
+        const id = await seedCandidate({ key, value: "Approved value." });
+
+        const res = await request(appMod.default)
+          .post(`/api/ai-memory/candidates/${id}/approve`)
+          .set("Authorization", `Bearer ${access}`)
+          .send({});
+        expect([200, 201]).toContain(res.status);
+        expect(res.body.data.key).toBe(key);
+        expect(res.body.data.source).toBe("learned");
+
+        // Now present in the memory list.
+        const listRes = await request(appMod.default)
+          .get(`/api/ai-memory?labOrganizationId=${labOrgId}`)
+          .set("Authorization", `Bearer ${access}`);
+        const keys: string[] = listRes.body.data.map((r: any) => r.key);
+        expect(keys).toContain(key);
+
+        // No longer a pending candidate.
+        const candRes = await request(appMod.default)
+          .get(`/api/ai-memory/candidates?labOrganizationId=${labOrgId}`)
+          .set("Authorization", `Bearer ${access}`);
+        const candIds: string[] = candRes.body.data.map((r: any) => r.id);
+        expect(candIds).not.toContain(id);
+      });
+
+      it("honors admin key/value edits on approve", async () => {
+        const { access } = await makeSession(adminId);
+        const id = await seedCandidate({ value: "original" });
+        const editedKey = `Edited_${rid("k")}`;
+
+        const res = await request(appMod.default)
+          .post(`/api/ai-memory/candidates/${id}/approve`)
+          .set("Authorization", `Bearer ${access}`)
+          .send({ key: editedKey, value: "edited value" });
+        expect([200, 201]).toContain(res.status);
+        expect(res.body.data.key).toBe(editedKey);
+        expect(res.body.data.value).toBe("edited value");
+      });
+
+      it("returns 409 when the candidate was already reviewed", async () => {
+        const { access } = await makeSession(adminId);
+        const id = await seedCandidate();
+        await request(appMod.default)
+          .post(`/api/ai-memory/candidates/${id}/approve`)
+          .set("Authorization", `Bearer ${access}`)
+          .send({});
+        const again = await request(appMod.default)
+          .post(`/api/ai-memory/candidates/${id}/approve`)
+          .set("Authorization", `Bearer ${access}`)
+          .send({});
+        expect(again.status).toBe(409);
+      });
+
+      it("returns 403 for a non-admin lab member", async () => {
+        const { access } = await makeSession(staffId);
+        const id = await seedCandidate();
+        const res = await request(appMod.default)
+          .post(`/api/ai-memory/candidates/${id}/approve`)
+          .set("Authorization", `Bearer ${access}`)
+          .send({});
+        expect(res.status).toBe(403);
+      });
+
+      it("returns 404 for an unknown candidate", async () => {
+        const { access } = await makeSession(adminId);
+        const res = await request(appMod.default)
+          .post("/api/ai-memory/candidates/00000000-0000-0000-0000-000000000000/approve")
+          .set("Authorization", `Bearer ${access}`)
+          .send({});
+        expect(res.status).toBe(404);
+      });
+    });
+
+    describe("POST /api/ai-memory/candidates/:id/reject", () => {
+      it("marks the candidate rejected so it leaves the pending list", async () => {
+        const { access } = await makeSession(adminId);
+        const id = await seedCandidate();
+
+        const res = await request(appMod.default)
+          .post(`/api/ai-memory/candidates/${id}/reject`)
+          .set("Authorization", `Bearer ${access}`)
+          .send({});
+        expect(res.status).toBe(200);
+        expect(res.body.data.status).toBe("rejected");
+
+        const candRes = await request(appMod.default)
+          .get(`/api/ai-memory/candidates?labOrganizationId=${labOrgId}`)
+          .set("Authorization", `Bearer ${access}`);
+        const candIds: string[] = candRes.body.data.map((r: any) => r.id);
+        expect(candIds).not.toContain(id);
+      });
+
+      it("returns 403 for a non-admin lab member", async () => {
+        const { access } = await makeSession(staffId);
+        const id = await seedCandidate();
+        const res = await request(appMod.default)
+          .post(`/api/ai-memory/candidates/${id}/reject`)
+          .set("Authorization", `Bearer ${access}`)
+          .send({});
+        expect(res.status).toBe(403);
+      });
+
+      it("returns 404 for an unknown candidate", async () => {
+        const { access } = await makeSession(adminId);
+        const res = await request(appMod.default)
+          .post("/api/ai-memory/candidates/00000000-0000-0000-0000-000000000000/reject")
+          .set("Authorization", `Bearer ${access}`)
+          .send({});
+        expect(res.status).toBe(404);
+      });
     });
   });
 });

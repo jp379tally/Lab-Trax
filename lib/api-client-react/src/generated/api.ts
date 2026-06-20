@@ -24,10 +24,13 @@ import type {
   AiChatHistoryResult,
   AiChatInput,
   AiChatResult,
+  AiMemoryCandidateItemResult,
+  AiMemoryCandidateListResult,
   AiMemoryItemResult,
   AiMemoryListResult,
   AnalyzePrescriptionInput,
   AnalyzePrescriptionResult,
+  ApproveAiMemoryCandidateInput,
   AuditLogListResult,
   AuthResult,
   AuthTokensResult,
@@ -77,6 +80,7 @@ import type {
   EmailPreferencesInput,
   EmailPreferencesResult,
   GenerateInvoiceForCaseBody,
+  GetAiMemoryCandidatesParams,
   GetAiMemoryParams,
   GetCaseByBarcode200,
   GetCaseByBarcodeParams,
@@ -1052,6 +1056,284 @@ export const useCreateAiMemory = <
   TContext
 > => {
   return useMutation(getCreateAiMemoryMutationOptions(options));
+};
+
+/**
+ * @summary List pending AI-learned memory candidates for a lab org (lab admin only)
+ */
+export const getGetAiMemoryCandidatesUrl = (
+  params: GetAiMemoryCandidatesParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/ai-memory/candidates?${stringifiedParams}`
+    : `/api/ai-memory/candidates`;
+};
+
+export const getAiMemoryCandidates = async (
+  params: GetAiMemoryCandidatesParams,
+  options?: RequestInit,
+): Promise<AiMemoryCandidateListResult> => {
+  return customFetch<AiMemoryCandidateListResult>(
+    getGetAiMemoryCandidatesUrl(params),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetAiMemoryCandidatesQueryKey = (
+  params?: GetAiMemoryCandidatesParams,
+) => {
+  return [`/api/ai-memory/candidates`, ...(params ? [params] : [])] as const;
+};
+
+export const getGetAiMemoryCandidatesQueryOptions = <
+  TData = Awaited<ReturnType<typeof getAiMemoryCandidates>>,
+  TError = ErrorType<unknown>,
+>(
+  params: GetAiMemoryCandidatesParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getAiMemoryCandidates>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetAiMemoryCandidatesQueryKey(params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getAiMemoryCandidates>>
+  > = ({ signal }) =>
+    getAiMemoryCandidates(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getAiMemoryCandidates>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetAiMemoryCandidatesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getAiMemoryCandidates>>
+>;
+export type GetAiMemoryCandidatesQueryError = ErrorType<unknown>;
+
+/**
+ * @summary List pending AI-learned memory candidates for a lab org (lab admin only)
+ */
+
+export function useGetAiMemoryCandidates<
+  TData = Awaited<ReturnType<typeof getAiMemoryCandidates>>,
+  TError = ErrorType<unknown>,
+>(
+  params: GetAiMemoryCandidatesParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getAiMemoryCandidates>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetAiMemoryCandidatesQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Approve a candidate into AI memory (lab admin only)
+ */
+export const getApproveAiMemoryCandidateUrl = (id: string) => {
+  return `/api/ai-memory/candidates/${id}/approve`;
+};
+
+export const approveAiMemoryCandidate = async (
+  id: string,
+  approveAiMemoryCandidateInput?: ApproveAiMemoryCandidateInput,
+  options?: RequestInit,
+): Promise<AiMemoryItemResult> => {
+  return customFetch<AiMemoryItemResult>(getApproveAiMemoryCandidateUrl(id), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(approveAiMemoryCandidateInput),
+  });
+};
+
+export const getApproveAiMemoryCandidateMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof approveAiMemoryCandidate>>,
+    TError,
+    { id: string; data: BodyType<ApproveAiMemoryCandidateInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof approveAiMemoryCandidate>>,
+  TError,
+  { id: string; data: BodyType<ApproveAiMemoryCandidateInput> },
+  TContext
+> => {
+  const mutationKey = ["approveAiMemoryCandidate"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof approveAiMemoryCandidate>>,
+    { id: string; data: BodyType<ApproveAiMemoryCandidateInput> }
+  > = (props) => {
+    const { id, data } = props ?? {};
+
+    return approveAiMemoryCandidate(id, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ApproveAiMemoryCandidateMutationResult = NonNullable<
+  Awaited<ReturnType<typeof approveAiMemoryCandidate>>
+>;
+export type ApproveAiMemoryCandidateMutationBody =
+  BodyType<ApproveAiMemoryCandidateInput>;
+export type ApproveAiMemoryCandidateMutationError = ErrorType<void>;
+
+/**
+ * @summary Approve a candidate into AI memory (lab admin only)
+ */
+export const useApproveAiMemoryCandidate = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof approveAiMemoryCandidate>>,
+    TError,
+    { id: string; data: BodyType<ApproveAiMemoryCandidateInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof approveAiMemoryCandidate>>,
+  TError,
+  { id: string; data: BodyType<ApproveAiMemoryCandidateInput> },
+  TContext
+> => {
+  return useMutation(getApproveAiMemoryCandidateMutationOptions(options));
+};
+
+/**
+ * @summary Reject an AI-learned memory candidate (lab admin only)
+ */
+export const getRejectAiMemoryCandidateUrl = (id: string) => {
+  return `/api/ai-memory/candidates/${id}/reject`;
+};
+
+export const rejectAiMemoryCandidate = async (
+  id: string,
+  options?: RequestInit,
+): Promise<AiMemoryCandidateItemResult> => {
+  return customFetch<AiMemoryCandidateItemResult>(
+    getRejectAiMemoryCandidateUrl(id),
+    {
+      ...options,
+      method: "POST",
+    },
+  );
+};
+
+export const getRejectAiMemoryCandidateMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof rejectAiMemoryCandidate>>,
+    TError,
+    { id: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof rejectAiMemoryCandidate>>,
+  TError,
+  { id: string },
+  TContext
+> => {
+  const mutationKey = ["rejectAiMemoryCandidate"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof rejectAiMemoryCandidate>>,
+    { id: string }
+  > = (props) => {
+    const { id } = props ?? {};
+
+    return rejectAiMemoryCandidate(id, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type RejectAiMemoryCandidateMutationResult = NonNullable<
+  Awaited<ReturnType<typeof rejectAiMemoryCandidate>>
+>;
+
+export type RejectAiMemoryCandidateMutationError = ErrorType<void>;
+
+/**
+ * @summary Reject an AI-learned memory candidate (lab admin only)
+ */
+export const useRejectAiMemoryCandidate = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof rejectAiMemoryCandidate>>,
+    TError,
+    { id: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof rejectAiMemoryCandidate>>,
+  TError,
+  { id: string },
+  TContext
+> => {
+  return useMutation(getRejectAiMemoryCandidateMutationOptions(options));
 };
 
 /**

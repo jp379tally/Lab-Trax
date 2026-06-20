@@ -244,6 +244,73 @@ paths:
                 $ref: "#/components/schemas/AiMemoryItemResult"
         "409":
           description: Conflict (duplicate key)
+  /ai-memory/candidates:
+    get:
+      operationId: getAiMemoryCandidates
+      tags: [ai]
+      summary: List pending AI-learned memory candidates for a lab org (lab admin only)
+      parameters:
+        - in: query
+          name: labOrganizationId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: status
+          required: false
+          schema:
+            type: string
+            enum: [pending, approved, rejected]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiMemoryCandidateListResult"
+  /ai-memory/candidates/{id}/approve:
+    post:
+      operationId: approveAiMemoryCandidate
+      tags: [ai]
+      summary: Approve a candidate into AI memory (lab admin only)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApproveAiMemoryCandidateInput"
+      responses:
+        "200":
+          description: Created/updated memory entry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiMemoryItemResult"
+        "404":
+          description: Not found
+  /ai-memory/candidates/{id}/reject:
+    post:
+      operationId: rejectAiMemoryCandidate
+      tags: [ai]
+      summary: Reject an AI-learned memory candidate (lab admin only)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Rejected candidate
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiMemoryCandidateItemResult"
+        "404":
+          description: Not found
   /ai-memory/{id}:
     patch:
       operationId: updateAiMemory
@@ -5222,6 +5289,52 @@ components:
         key: { type: string }
         value: { type: string }
     UpdateAiMemoryInput:
+      type: object
+      properties:
+        key: { type: string }
+        value: { type: string }
+    AiMemoryCandidateItem:
+      type: object
+      required: [id, labOrganizationId, kind, key, value, status, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        labOrganizationId: { type: string }
+        kind:
+          type: string
+          enum: [glossary, preference, fact]
+        key: { type: string }
+        value: { type: string }
+        status:
+          type: string
+          enum: [pending, approved, rejected]
+        sourceUserId:
+          type: string
+          nullable: true
+        reviewedByUserId:
+          type: string
+          nullable: true
+        reviewedAt:
+          type: string
+          nullable: true
+        createdAt: { type: string }
+        updatedAt: { type: string }
+    AiMemoryCandidateListResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AiMemoryCandidateItem"
+    AiMemoryCandidateItemResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          $ref: "#/components/schemas/AiMemoryCandidateItem"
+    ApproveAiMemoryCandidateInput:
       type: object
       properties:
         key: { type: string }

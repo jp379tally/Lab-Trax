@@ -172,6 +172,83 @@ export const CreateAiMemoryBody = zod.object({
 });
 
 /**
+ * @summary List pending AI-learned memory candidates for a lab org (lab admin only)
+ */
+export const GetAiMemoryCandidatesQueryParams = zod.object({
+  labOrganizationId: zod.coerce.string(),
+  status: zod.enum(["pending", "approved", "rejected"]).optional(),
+});
+
+export const GetAiMemoryCandidatesResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.array(
+    zod.object({
+      id: zod.string(),
+      labOrganizationId: zod.string(),
+      kind: zod.enum(["glossary", "preference", "fact"]),
+      key: zod.string(),
+      value: zod.string(),
+      status: zod.enum(["pending", "approved", "rejected"]),
+      sourceUserId: zod.string().nullish(),
+      reviewedByUserId: zod.string().nullish(),
+      reviewedAt: zod.string().nullish(),
+      createdAt: zod.string(),
+      updatedAt: zod.string(),
+    }),
+  ),
+});
+
+/**
+ * @summary Approve a candidate into AI memory (lab admin only)
+ */
+export const ApproveAiMemoryCandidateParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const ApproveAiMemoryCandidateBody = zod.object({
+  key: zod.string().optional(),
+  value: zod.string().optional(),
+});
+
+export const ApproveAiMemoryCandidateResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.object({
+    id: zod.string(),
+    labOrganizationId: zod.string(),
+    kind: zod.enum(["glossary", "preference", "fact"]),
+    key: zod.string(),
+    value: zod.string(),
+    source: zod.enum(["manual", "learned"]),
+    createdAt: zod.string(),
+    updatedAt: zod.string(),
+  }),
+});
+
+/**
+ * @summary Reject an AI-learned memory candidate (lab admin only)
+ */
+export const RejectAiMemoryCandidateParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const RejectAiMemoryCandidateResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.object({
+    id: zod.string(),
+    labOrganizationId: zod.string(),
+    kind: zod.enum(["glossary", "preference", "fact"]),
+    key: zod.string(),
+    value: zod.string(),
+    status: zod.enum(["pending", "approved", "rejected"]),
+    sourceUserId: zod.string().nullish(),
+    reviewedByUserId: zod.string().nullish(),
+    reviewedAt: zod.string().nullish(),
+    createdAt: zod.string(),
+    updatedAt: zod.string(),
+  }),
+});
+
+/**
  * @summary Update an AI memory entry (lab admin only)
  */
 export const UpdateAiMemoryParams = zod.object({

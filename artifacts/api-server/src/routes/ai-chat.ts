@@ -19,6 +19,7 @@ import { requireAuth } from "../middlewares/auth";
 import { normalizeDoctor } from "../lib/pricing";
 import { wrapDbError } from "../lib/http";
 import { buildKnowledgeBlock, buildLabMemoryBlock } from "../lib/ai-knowledge-augment";
+import { learnFromExchange } from "../lib/ai-memory-learn";
 import { randomBytes } from "node:crypto";
 
 // Per-user sliding-window rate limiter (in-memory)
@@ -704,6 +705,11 @@ export function registerAiChatRoutes(router: IRouter): void {
     const userMessage = String(lastMsg.content || "");
     const knowledgeBlock = buildKnowledgeBlock(userMessage);
 
+    // Lab orgs in scope for this turn — used to auto-learn candidate memory
+    // entries from the exchange (lab users only). Captured here so it survives
+    // outside the context-assembly try/catch below.
+    let learnLabIds: string[] = [];
+
     try {
       if (userType === "provider") {
         contextBlock = await buildProviderContext(userId);
@@ -720,6 +726,7 @@ ${knowledgeBlock}
 ${pinnedCaseCtx ? `${pinnedCaseCtx}\n` : ""}${contextBlock}`;
       } else {
         const labIds = await getActiveLabIds(userId);
+        learnLabIds = labIds;
         if (labIds.length === 0) {
           contextBlock = "This user is not a member of any active lab organization.";
         } else {
@@ -761,6 +768,18 @@ ${pinnedCaseCtx ? `${pinnedCaseCtx}\n` : ""}${contextBlock}`;
       const userContent = String(lastMsg.content || "").slice(0, 2000);
       persistExchange(userId, userContent, reply).catch((err) => {
         req.log?.error({ err }, "AI chat history persist error");
+      });
+
+      // Auto-learn candidate memory entries from this exchange (lab users
+      // only). Fire-and-forget; never blocks or alters the response.
+      learnFromExchange({
+        openai,
+        labIds: learnLabIds,
+        userMessage,
+        assistantMessage: reply,
+        userId,
+      }).catch((err) => {
+        req.log?.error({ err }, "AI chat memory-learn error");
       });
 
       return res.json({ reply });

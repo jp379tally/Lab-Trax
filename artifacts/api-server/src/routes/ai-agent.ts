@@ -28,6 +28,7 @@ import { organizations, organizationMemberships, pricingTiers } from "@workspace
 import { eq, and, inArray } from "drizzle-orm";
 import { getProviderOrgIdsForUserAndLinks } from "../lib/cross-lab-doctor";
 import { buildKnowledgeBlock, buildLabMemoryBlock } from "../lib/ai-knowledge-augment";
+import { learnFromExchange } from "../lib/ai-memory-learn";
 
 // ─── Shared rate limiter (same window as ai-chat) ───────────────────────────
 
@@ -245,6 +246,22 @@ export function registerAiAgentRoutes(router: IRouter): void {
 
     const toolCtx: ToolContext = { userId, req, userType, labOrganizationId, providerOrgIds };
 
+    // Auto-learn candidate memory entries from the exchange (lab users only).
+    // Fire-and-forget; never blocks or alters the response contract.
+    const learnUserMessage = String(lastMsg.content ?? "");
+    const fireLearn = (replyContent: string) => {
+      if (userType === "provider" || !labOrganizationId) return;
+      learnFromExchange({
+        openai,
+        labIds: [labOrganizationId],
+        userMessage: learnUserMessage,
+        assistantMessage: replyContent,
+        userId,
+      }).catch((err) => {
+        req.log?.error({ err }, "[AI AGENT] memory-learn error");
+      });
+    };
+
     const systemPrompt = await buildSystemPrompt(
       userId,
       userType,
@@ -290,9 +307,11 @@ export function registerAiAgentRoutes(router: IRouter): void {
 
         // No tool calls → return the text reply (with any accumulated tool outputs)
         if (!msg.tool_calls || msg.tool_calls.length === 0) {
+          const replyContent = msg.content ?? "I'm not sure how to help with that.";
+          fireLearn(replyContent);
           return res.json({
             type: "reply",
-            content: msg.content ?? "I'm not sure how to help with that.",
+            content: replyContent,
             ...(accumulatedToolOutputs.length > 0 ? { toolOutputs: accumulatedToolOutputs } : {}),
           });
         }
@@ -397,6 +416,7 @@ export function registerAiAgentRoutes(router: IRouter): void {
       // Loop exhausted — return final message if present
       const last = loopMessages[loopMessages.length - 1] as any;
       const content = last?.content ?? "I completed the requested lookups. Is there anything else?";
+      fireLearn(content);
       return res.json({
         type: "reply",
         content,

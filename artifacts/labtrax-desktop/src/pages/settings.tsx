@@ -9437,6 +9437,20 @@ interface AiMemoryItem {
   updatedAt: string;
 }
 
+interface AiMemoryCandidate {
+  id: string;
+  labOrganizationId: string;
+  kind: AiMemoryKind;
+  key: string;
+  value: string;
+  status: string;
+  sourceUserId: string | null;
+  reviewedByUserId: string | null;
+  reviewedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 const AI_MEMORY_KIND_META: Record<
   AiMemoryKind,
   { label: string; description: string; keyLabel: string; valueLabel: string }
@@ -9493,6 +9507,54 @@ function AiAssistantPanel() {
       ),
     staleTime: 30_000,
   });
+
+  const candidatesQuery = useQuery<AiMemoryCandidate[]>({
+    enabled: !!effectiveLabId,
+    queryKey: ["ai-memory-candidates", effectiveLabId],
+    queryFn: () =>
+      apiFetch<AiMemoryCandidate[]>(
+        `/ai-memory/candidates?labOrganizationId=${encodeURIComponent(effectiveLabId!)}`,
+      ),
+    staleTime: 30_000,
+  });
+
+  const [candidateActionId, setCandidateActionId] = useState<string | null>(null);
+  const [candidateError, setCandidateError] = useState<string | null>(null);
+
+  async function approveCandidate(candidate: AiMemoryCandidate) {
+    setCandidateActionId(candidate.id);
+    setCandidateError(null);
+    try {
+      await apiFetch(`/ai-memory/candidates/${encodeURIComponent(candidate.id)}/approve`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["ai-memory", effectiveLabId] }),
+        qc.invalidateQueries({ queryKey: ["ai-memory-candidates", effectiveLabId] }),
+      ]);
+    } catch (err: unknown) {
+      setCandidateError(err instanceof Error ? err.message : "Could not approve suggestion.");
+    } finally {
+      setCandidateActionId(null);
+    }
+  }
+
+  async function rejectCandidate(candidate: AiMemoryCandidate) {
+    setCandidateActionId(candidate.id);
+    setCandidateError(null);
+    try {
+      await apiFetch(`/ai-memory/candidates/${encodeURIComponent(candidate.id)}/reject`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      await qc.invalidateQueries({ queryKey: ["ai-memory-candidates", effectiveLabId] });
+    } catch (err: unknown) {
+      setCandidateError(err instanceof Error ? err.message : "Could not reject suggestion.");
+    } finally {
+      setCandidateActionId(null);
+    }
+  }
 
   // Add-new form state, keyed per kind.
   const [addKind, setAddKind] = useState<AiMemoryKind>("glossary");
@@ -9696,6 +9758,69 @@ function AiAssistantPanel() {
           </div>
 
           {deleteError && <Alert tone="danger">{deleteError}</Alert>}
+
+          {(candidatesQuery.data?.length ?? 0) > 0 && (
+            <div className="rounded-lg border border-amber-300/60 bg-amber-50/50 dark:bg-amber-500/5 p-4 space-y-3">
+              <div>
+                <h3 className="text-sm font-semibold flex items-center gap-1.5">
+                  <Sparkles size={14} className="text-amber-500" />
+                  Suggested by AI
+                </h3>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  The AI noticed these from recent chats. Approve to add them to your lab's memory, or dismiss.
+                </p>
+              </div>
+              {candidateError && <Alert tone="danger">{candidateError}</Alert>}
+              <ul className="space-y-1.5">
+                {candidatesQuery.data!.map((candidate) => {
+                  const meta = AI_MEMORY_KIND_META[candidate.kind];
+                  const busy = candidateActionId === candidate.id;
+                  return (
+                    <li
+                      key={candidate.id}
+                      className="rounded-md border border-border bg-background px-3 py-2"
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] uppercase tracking-wide font-medium text-muted-foreground">
+                              {meta.label}
+                            </span>
+                          </div>
+                          <div className="text-sm font-medium break-words">{candidate.key}</div>
+                          <div className="text-sm text-muted-foreground break-words whitespace-pre-wrap">
+                            {candidate.value}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => void approveCandidate(candidate)}
+                            disabled={busy}
+                            className="inline-flex items-center gap-1 h-8 px-3 rounded-md bg-primary text-primary-foreground text-sm font-medium disabled:opacity-50"
+                            title="Approve"
+                          >
+                            {busy ? <Loader2 size={13} className="animate-spin" /> : <Check size={14} />}
+                            Approve
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void rejectCandidate(candidate)}
+                            disabled={busy}
+                            className="inline-flex items-center gap-1 h-8 px-3 rounded-md bg-secondary text-sm font-medium text-muted-foreground hover:text-foreground disabled:opacity-50"
+                            title="Dismiss"
+                          >
+                            <X size={14} />
+                            Dismiss
+                          </button>
+                        </div>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
 
           {memoryQuery.isLoading && (
             <div className="flex items-center gap-2 text-muted-foreground text-sm py-8 justify-center">
