@@ -3,6 +3,7 @@ import { useAiPanel } from "@/lib/ai-panel-context";
 import { useColumnWidths } from "@/hooks/useColumnWidths";
 import { useLocation, useSearch } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import {
   AlertTriangle,
   ArrowDown,
@@ -7377,6 +7378,55 @@ function RestorationRow({
   const hasHistorySource =
     source === "tier" || source === "override" || source === "default";
 
+  // ── Inline "set price in fee schedule" (Task #2084) ──────────────────────
+  // Shown on any unpriced ($0) restoration whose material/type maps to a
+  // fee-schedule key. Writes the price into the tier/override the case resolves
+  // to (so it persists for future cases), then re-prices the line + invoice.
+  // The alloy line is excluded — it has its own banner affordance.
+  const isAlloyLine =
+    (r.priceKey ?? "") === "alloy" ||
+    (r.restorationType ?? "").trim().toLowerCase() === "alloy";
+  const isUnpriced = Number(r.unitPrice ?? 0) <= 0;
+  const showFeeScheduleSet =
+    !!canEditPrice && isUnpriced && !isAlloyLine && !isPendingDelete;
+  const [feeScheduleInput, setFeeScheduleInput] = useState("");
+  const [savingFeeSchedule, setSavingFeeSchedule] = useState(false);
+  const [feeScheduleError, setFeeScheduleError] = useState<string | null>(null);
+
+  async function saveFeeSchedulePrice() {
+    const parsed = parseFloat(feeScheduleInput);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      setFeeScheduleError("Enter a price above $0.");
+      return;
+    }
+    setSavingFeeSchedule(true);
+    setFeeScheduleError(null);
+    try {
+      const res = await apiFetch<{
+        target?: { kind?: string; name?: string };
+      }>(`/cases/${caseId}/restorations/${r.id}/fee-schedule-price`, {
+        method: "POST",
+        body: JSON.stringify({ price: parsed }),
+      });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["case", caseId] }),
+        queryClient.invalidateQueries({ queryKey: ["invoice-for-case", caseId] }),
+        queryClient.invalidateQueries({ queryKey: ["cases"] }),
+      ]);
+      setFeeScheduleInput("");
+      const target = res?.target;
+      if (target?.name) {
+        toast.success(
+          `Price saved to ${target.kind === "tier" ? "tier" : "override"} “${target.name}”.`,
+        );
+      }
+    } catch (err: any) {
+      setFeeScheduleError(err?.message ?? "Failed to set the price.");
+    } finally {
+      setSavingFeeSchedule(false);
+    }
+  }
+
   function openPriceEditor() {
     setPriceInput(r.unitPrice != null ? Number(r.unitPrice).toFixed(2) : "0.00");
     setReasonInput("");
@@ -7565,6 +7615,44 @@ function RestorationRow({
           </div>
           {priceError && (
             <div className="text-xs text-destructive">{priceError}</div>
+          )}
+        </div>
+      )}
+      {showFeeScheduleSet && (
+        <div className="mt-2.5 border border-amber-500/40 rounded-md bg-amber-500/5 px-3 py-2.5 space-y-2">
+          <div className="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-300">
+            <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+            <span>
+              No price is set for this item in this case's pricing tier. Set it
+              to price this line and future cases.
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="relative w-28 shrink-0">
+              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">$</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={feeScheduleInput}
+                onChange={(e) => setFeeScheduleInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") saveFeeSchedulePrice(); }}
+                className="w-full h-7 rounded border border-input bg-background pl-5 pr-2 text-sm tabular-nums focus:outline-none focus:ring-1 focus:ring-ring"
+                placeholder="0.00"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={saveFeeSchedulePrice}
+              disabled={savingFeeSchedule}
+              className="h-7 px-2.5 rounded bg-primary text-primary-foreground text-[11px] font-medium hover:bg-primary/90 disabled:opacity-50 inline-flex items-center gap-1"
+            >
+              {savingFeeSchedule && <Loader2 size={10} className="animate-spin" />}
+              Set price
+            </button>
+          </div>
+          {feeScheduleError && (
+            <div className="text-xs text-destructive">{feeScheduleError}</div>
           )}
         </div>
       )}

@@ -1296,6 +1296,7 @@ export default function CaseDetailScreen() {
             caseId={c.id}
             labOrganizationId={c.labOrganizationId ?? c.organizationId ?? null}
             canEdit={canEdit}
+            isAdmin={isAdminOfCase}
             onSaved={() => caseQuery.refetch()}
             styles={styles}
             colors={colors}
@@ -2524,6 +2525,7 @@ function RestorationsSection({
   caseId,
   labOrganizationId,
   canEdit,
+  isAdmin,
   onSaved,
   styles,
   colors,
@@ -2534,6 +2536,7 @@ function RestorationsSection({
   caseId: string;
   labOrganizationId?: string | null;
   canEdit: boolean;
+  isAdmin: boolean;
   onSaved: () => void | Promise<unknown>;
   styles: Styles;
   colors: ThemeColors;
@@ -2542,6 +2545,62 @@ function RestorationsSection({
   const deleteRestoration = useDeleteCaseRestoration();
   const updateRestoration = useUpdateCaseRestoration();
   const [activeTooth, setActiveTooth] = useState<string | null>(null);
+  // ── Inline "set price in fee schedule" (Task #2084) ──────────────────────
+  // Admin-only control on any unpriced ($0) restoration card. Writes the price
+  // into the tier/override the case resolves to, then re-prices the line +
+  // invoice. The alloy line is excluded — it has its own banner affordance.
+  const [feeScheduleInputs, setFeeScheduleInputs] = useState<
+    Record<string, string>
+  >({});
+  const [savingFeeScheduleId, setSavingFeeScheduleId] = useState<string | null>(
+    null,
+  );
+  const setFeeSchedulePrice = useCallback(
+    async (restorationId: string) => {
+      const parsed = Number(feeScheduleInputs[restorationId] ?? "");
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        Alert.alert("Enter a price", "Please enter a price above $0.");
+        return;
+      }
+      setSavingFeeScheduleId(restorationId);
+      try {
+        const res = await resilientFetch(
+          `/api/cases/${caseId}/restorations/${restorationId}/fee-schedule-price`,
+          { method: "POST", body: JSON.stringify({ price: parsed }) },
+        );
+        if (!res.ok) {
+          const body = (await res.json().catch(() => null)) as {
+            error?: { message?: string };
+            message?: string;
+          } | null;
+          throw new Error(
+            body?.error?.message ?? body?.message ?? "Request failed",
+          );
+        }
+        const body = (await res.json().catch(() => null)) as {
+          data?: { target?: { kind?: string; name?: string } };
+        } | null;
+        const target = body?.data?.target;
+        setFeeScheduleInputs((prev) => {
+          const next = { ...prev };
+          delete next[restorationId];
+          return next;
+        });
+        await onSaved();
+        if (target?.name) {
+          Alert.alert(
+            "Price set",
+            `Saved to ${target.kind === "tier" ? "tier" : "override"} “${target.name}”.`,
+          );
+        }
+      } catch (e) {
+        Alert.alert("Couldn't set the price", errorMessage(e));
+      } finally {
+        setSavingFeeScheduleId(null);
+      }
+    },
+    [feeScheduleInputs, caseId, onSaved],
+  );
   const [sheetError, setSheetError] = useState<string | null>(null);
 
   // Vocabulary: fetch lab-specific materials and shades for the ToothActionSheet.
@@ -2762,6 +2821,87 @@ function RestorationsSection({
           {typeof r.quantity === "number" ? (
             <FieldRow label="Quantity" value={String(r.quantity)} styles={styles} />
           ) : null}
+          {(() => {
+            const unit = Number(
+              (r as { unitPrice?: string | number | null }).unitPrice ?? 0,
+            );
+            const priceKey =
+              (r as { priceKey?: string | null }).priceKey ?? "";
+            const isAlloyLine =
+              priceKey === "alloy" ||
+              (r.restorationType ?? "").trim().toLowerCase() === "alloy";
+            const unpriced = !(unit > 0);
+            if (!unpriced) {
+              return (
+                <FieldRow
+                  label="Price"
+                  value={`$${unit.toFixed(2)}`}
+                  styles={styles}
+                />
+              );
+            }
+            if (!isAdmin || isAlloyLine || !r.id) {
+              return (
+                <FieldRow label="Price" value="Not set" styles={styles} />
+              );
+            }
+            const restId = r.id;
+            const saving = savingFeeScheduleId === restId;
+            return (
+              <View style={[styles.pfmReminder, { marginTop: Spacing.sm }]}>
+                <Ionicons
+                  name="warning-outline"
+                  size={18}
+                  color={colors.warningStrong}
+                  style={{ marginTop: 1 }}
+                />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.pfmReminderText}>
+                    No price is set for this item in this case's pricing tier.
+                    Set it to price this line and future cases.
+                  </Text>
+                  <View style={styles.alloyPriceRow}>
+                    <View style={styles.alloyPriceInputWrap}>
+                      <Text style={styles.alloyPriceCurrency}>$</Text>
+                      <TextInput
+                        style={styles.alloyPriceInput}
+                        value={feeScheduleInputs[restId] ?? ""}
+                        onChangeText={(t) =>
+                          setFeeScheduleInputs((prev) => ({
+                            ...prev,
+                            [restId]: t,
+                          }))
+                        }
+                        placeholder="0.00"
+                        placeholderTextColor={colors.textSecondary}
+                        keyboardType="decimal-pad"
+                        editable={!saving}
+                        accessibilityLabel="Restoration price"
+                      />
+                    </View>
+                    <Pressable
+                      hitSlop={8}
+                      onPress={() => setFeeSchedulePrice(restId)}
+                      disabled={
+                        saving || !(Number(feeScheduleInputs[restId] ?? "") > 0)
+                      }
+                      style={[
+                        styles.alloyPriceButton,
+                        (saving ||
+                          !(Number(feeScheduleInputs[restId] ?? "") > 0)) && {
+                          opacity: 0.5,
+                        },
+                      ]}
+                    >
+                      <Text style={styles.alloyPriceButtonText}>
+                        {saving ? "Saving…" : "Set price"}
+                      </Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+            );
+          })()}
           {r.notes && r.notes.trim() ? (
             <Text style={[styles.bodyText, { marginTop: Spacing.sm }]}>{r.notes.trim()}</Text>
           ) : null}

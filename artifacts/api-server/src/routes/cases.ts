@@ -40,6 +40,7 @@ import {
   removeAlloyChargeFromCase,
   resolveAlloyPricePreview,
   setAlloyPriceForCase,
+  setRestorationPriceForCase,
 } from "../lib/alloy-charge";
 import { invoiceDueDate } from "../lib/invoice-due-date";
 import {
@@ -6831,6 +6832,69 @@ router.post(
       ok: true,
       target: result.target,
       amount: result.amount,
+      restorationId: result.restorationId,
+    });
+  })
+);
+
+// Generic per-restoration "set price" (Task #2084). Writes a price for the
+// restoration's resolved fee-schedule key into the tier/override the case
+// resolves to, then re-prices the line + invoice. Admin-only, audit-logged
+// like the alloy flow. Distinct from PATCH /restorations/:id/price, which sets
+// a one-off manual unitPrice on a single line without touching the fee schedule.
+router.post(
+  "/:caseId/restorations/:restorationId/fee-schedule-price",
+  asyncHandler(async (req, res) => {
+    const input = z
+      .object({ price: z.coerce.number().min(0.01).max(1_000_000) })
+      .parse(req.body);
+
+    const found = await assertCaseAccessOrPromote(
+      (req as any).auth.userId,
+      req.params.caseId
+    );
+    await requireAnyRole(
+      (req as any).auth.userId,
+      found.labOrganizationId,
+      ADMIN_ROLES
+    );
+
+    const result = await setRestorationPriceForCase({
+      caseRow: {
+        id: found.id,
+        labOrganizationId: found.labOrganizationId,
+        doctorName: found.doctorName,
+        providerOrganizationId: found.providerOrganizationId,
+      },
+      restorationId: req.params.restorationId,
+      price: input.price,
+      actorUserId: (req as any).auth.userId,
+      actorInitials: (req as any).user?.initials,
+    });
+
+    await writeAuditLog({
+      req,
+      organizationId: found.labOrganizationId,
+      action:
+        result.target.kind === "tier"
+          ? "pricing_tier_updated"
+          : "pricing_override_updated",
+      entityType:
+        result.target.kind === "tier" ? "pricing_tier" : "pricing_override",
+      entityId: result.target.id,
+      beforeJson: { prices: result.beforePrices },
+      afterJson: {
+        prices: result.afterPrices,
+        priceSetFromCaseId: found.id,
+        priceKey: result.priceKey,
+      },
+    });
+
+    return ok(res, {
+      ok: true,
+      target: result.target,
+      amount: result.amount,
+      priceKey: result.priceKey,
       restorationId: result.restorationId,
     });
   })
