@@ -1,0 +1,214 @@
+Create a permanent regression guardrail task:
+
+# LabTrax Stable Beta Regression Guardrails
+
+## What & Why
+
+LabTrax desktop and mobile are currently in a good working state. The biggest remaining uncertainty is backup/restore reliability, but the core desktop/mobile workflows are now working well enough that they must be protected permanently.
+
+From this point forward, every future feature, bug fix, refactor, AI Reader change, mobile change, desktop change, billing change, auth change, or database migration must prove it does not regress the protected workflows.
+
+## Rule
+
+If a workflow is currently working in desktop or mobile, it becomes protected.
+
+No future change may merge, publish, or trigger TestFlight/Desktop release if it breaks a protected workflow.
+
+## Protected Desktop Workflows
+
+1. Login/logout
+2. Dashboard loads
+3. Desktop AI prescription intake
+4. Drag/drop prescription upload
+5. New provider/practice save from AI intake
+6. Case creation from AI intake
+7. AI intake data carry-through:
+
+   * patient
+   * doctor/practice
+   * due date
+   * tooth number
+   * shade
+   * material
+   * restorative type
+   * notes
+   * case pan barcode
+8. Invoice auto-generation after intake
+9. Lab slip shows correct production data
+10. Lab slip optional invoice data
+11. Case overview displays correct data
+12. Tooth chart uses approved layout
+13. Case pan barcode assignment preserves leading zeros
+14. Locate case workflow
+15. Case history
+16. Attachments/files/photos
+17. Invoice editor
+18. Pricing tiers and standard default pricing
+19. Provider/practice records
+20. Organizations/membership/roles
+21. Desktop installer availability
+22. Signed desktop build verification
+
+## Protected Mobile Workflows
+
+1. Login/logout
+2. Cases list loads from canonical database
+3. Case search/lookup
+4. Case detail opens
+5. Overview displays correctly
+6. Locate case uses desktop-matching locations/stations
+7. Case history displays correctly
+8. Invoice section displays correctly
+9. Files/photos/documents open correctly
+10. Tooth chart uses approved layout
+11. Lab slip/case label display and print where enabled
+12. Desktop/mobile sync
+13. Mobile/desktop barcode lookup
+14. Batch locate workflow
+15. Scanner preserves leading zeros
+16. Scanner does not double-read barcode
+17. Scanner reads only targeted barcode/scan window where possible
+18. No `/api/legacy/cases`
+19. No local-only mobile saves
+20. No duplicate invoices
+21. No blank/unauthorized media regressions
+
+## Protected Backend / Data Workflows
+
+1. API auth/session stability
+2. User sessions survive normal use
+3. Backup creates complete data export
+4. Restore does not break login
+5. Restore clears/rebuilds sessions safely
+6. Restore preserves:
+
+   * users
+   * organizations
+   * memberships
+   * roles
+   * providers/practices
+   * cases
+   * invoices
+   * payments
+   * notes
+   * history
+   * attachments metadata
+   * pricing/settings/templates
+7. Restore validates schema compatibility
+8. Restore creates pre-restore safety snapshot
+9. Restore reports clear success/failure status
+10. No raw SQL/Drizzle/Postgres errors shown to users
+11. Verification-code endpoints are rate-limited
+12. Provider case isolation
+13. Account/signup/invitation flows once enabled
+
+## Required Enforcement
+
+Update `REGRESSION_GUARDRAILS.md` with a new section:
+
+“Stable Beta Protected Workflows”
+
+For each protected workflow, map:
+
+* workflow name
+* test file or manual checklist
+* platform: desktop/mobile/backend
+* release gate required
+
+## Required Pre-Release Checklist
+
+Before any release/build/publish/TestFlight/desktop installer:
+
+Run and document:
+
+1. Typecheck
+2. API server tests
+3. Desktop tests
+4. Mobile tests
+5. Regression tests
+6. Backup/restore tests
+7. Legacy mobile path lint
+8. Signed desktop build verification if desktop release
+9. Manual smoke checklist for changed platform
+
+## Manual Smoke Checklist
+
+After any change affecting desktop:
+
+* login
+* dashboard
+* drag/drop AI intake
+* create case
+* save new practice
+* verify lab slip data
+* verify invoice generated
+* verify case overview
+* verify barcode
+* verify locate case
+* verify desktop installer if publishing
+
+After any change affecting mobile:
+
+* login
+* cases list
+* open case
+* search case
+* locate case
+* open files/photos/documents
+* open invoice
+* open history
+* scan barcode
+* batch locate if changed
+* verify sync with desktop
+
+After any change affecting backend/database/auth:
+
+* login
+* refresh token/session
+* create case
+* create invoice
+* restore from backup in test environment
+* verify no raw database errors
+* verify memberships/roles
+
+## Backup/Restore Special Rule
+
+Backup and restore is business-critical.
+
+No schema migration, auth change, organization change, case change, invoice change, or file/attachment change may merge unless backup/restore integrity tests pass or the change is explicitly marked as not touching persistent data.
+
+Backup/restore failures block release.
+
+## Regression Test Policy
+
+When a bug is fixed:
+
+1. Add a regression test that fails before the fix.
+2. Add it to the protected workflow map if it affects core business data.
+3. Keep that test permanently.
+4. Do not delete or skip protected tests without explicit approval.
+
+## Build Policy
+
+EAS/TestFlight builds are manual only.
+
+Desktop release publishing is manual only.
+
+No automatic paid build or release should run without explicit approval.
+
+## Acceptance
+
+This task is complete when:
+
+1. `REGRESSION_GUARDRAILS.md` is updated.
+2. Protected workflow matrix exists.
+3. Backup/restore is listed as a blocking protected workflow.
+4. Pre-release checklist exists.
+5. Manual smoke checklist exists.
+6. CI/test commands are documented.
+7. Any missing tests are proposed as follow-up tasks.
+8. No code feature changes are bundled into this guardrail task.
+
+Checkpoint:
+
+“LabTrax Stable Beta Regression Guardrails”
