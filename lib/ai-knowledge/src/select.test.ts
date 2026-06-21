@@ -166,6 +166,30 @@ describe("selectKnowledge", () => {
     expect(ids).toContain("hipaa.case-media-minimum-necessary");
   });
 
+  it("returns retention-dental-lab for a state record-retention query", () => {
+    const sections = selectKnowledgeSections(
+      "How long do I need to keep dental lab records and case Rx forms in California and Texas?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.retention-dental-lab");
+  });
+
+  it("returns retention-dental-lab for a minor-patient retention question", () => {
+    const sections = selectKnowledgeSections(
+      "What are the record retention rules for minor patients in the dental lab?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.retention-dental-lab");
+  });
+
+  it("returns retention-dental-lab when asking about the federal HIPAA retention baseline", () => {
+    const sections = selectKnowledgeSections(
+      "Does federal HIPAA law specify how long a dental lab must retain records?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.retention-dental-lab");
+  });
+
   it("every curated section has a unique id and non-empty content", () => {
     const ids = ALL_SECTIONS.map((s) => s.id);
     expect(new Set(ids).size).toBe(ids.length);

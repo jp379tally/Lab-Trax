@@ -108,6 +108,39 @@ export const HIPAA_SECTIONS: KnowledgeSection[] = [
     body: "Never use real patient data for software demos, staff training, screenshots, or marketing materials. Properly de-identified data has all 18 HIPAA Safe Harbor identifiers removed (name, dates, geographic data below state level, phone, email, SSN, MRN, photos, etc.) OR has been certified de-identified by a qualified statistician. In practice, the safest approach is to create synthetic/fictional cases for demos. If you must use real cases for training, redact or replace patient-identifying fields before sharing. LabTrax's demo-seed feature creates fictional cases with no real PHI — use it instead of copying production data.",
   },
   {
+    id: "hipaa.retention-dental-lab",
+    group: "hipaa",
+    title: "Dental-lab record retention rules by state",
+    keywords: [
+      "retention", "retain", "records", "keep", "how long", "years",
+      "state law", "state rules", "state requirements", "record retention",
+      "dental records", "case records", "rx records", "lab records",
+      "minor", "minors", "adult", "adults", "majority",
+      "california", "ca", "texas", "tx", "new york", "ny", "florida", "fl",
+      "illinois", "il", "ohio", "oh", "georgia", "ga", "pennsylvania", "pa",
+      "federal", "baseline", "destroy", "disposal",
+    ],
+    body: `Dental-lab record retention varies by state. HIPAA itself sets no explicit minimum retention period for labs — the covered entity's BAA terms and applicable state dental-records laws govern. Below is a practical reference; always verify current rules with counsel before disposing of records.
+
+**Federal baseline:** HIPAA requires covered entities to retain certain HIPAA-related documentation (policies, BAAs, notices) for 6 years from creation or last effective date, but does not specify how long dental records or lab work orders must be kept. Labs inherit retention obligations from their BAA with each practice.
+
+**Representative state minimums (dental/lab records — adult patients):**
+- California: 10 years from the date of service; records for minors must be kept until the patient turns 19 or for 10 years from last service, whichever is longer. (CA Business & Professions Code § 1680.5)
+- Texas: 10 years from the date the record was created or the date of last treatment. (TX Occupations Code § 258.004)
+- New York: 6 years from the date of service or from the date of last entry; 6 years after a minor turns 18 (i.e., until age 24). (NY Education Law § 6530(32))
+- Florida: 4 years (general); some liability-driven practices keep 7 years. Minors: 4 years after the patient turns 18. (FL § 466.028(1)(m))
+- Illinois: 10 years from date of service; for minors, until age 23 or 10 years, whichever is later. (IL Professional Code)
+- Georgia: No explicit dental-specific statute; general medical records guidance suggests 10 years; minors until age 21.
+- Ohio: 6 years from last treatment date; minors until age 21 or 6 years from last treatment, whichever is later.
+- Pennsylvania: 7 years from date of last service; for minors, until age 18 plus 7 years.
+
+**Minor patients (general rule across most states):** Retain records until the patient reaches the age of majority (typically 18) PLUS the standard adult retention period — commonly resulting in records being kept until the patient is 23–28 years old, depending on state.
+
+**Rx forms and work orders:** In most states the lab Rx / work order is considered part of the dental record and subject to the same retention rules as clinical notes. Keep the Rx together with the case record.
+
+**Practical LabTrax guidance:** Retaining the case record, attachments, and scanned Rx within LabTrax satisfies auditability requirements: each case is timestamped, access is logged, and soft-delete with audit trail preserves recoverability. When the retention period ends, coordinate with the referring practice before disposing of any shared PHI, and use a secure (irreversible) deletion process. This is general reference only — consult your compliance officer or legal counsel for the specific requirements in every state where you operate.`,
+  },
+  {
     id: "hipaa.baa-lab-practice",
     group: "hipaa",
     title: "BAA obligations between a lab and a dental practice",
