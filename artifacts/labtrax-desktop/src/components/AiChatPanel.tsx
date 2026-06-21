@@ -163,6 +163,30 @@ function getSessionPreview(session: StoredSession): string {
   return text.length > 60 ? text.slice(0, 57) + "…" : text;
 }
 
+/**
+ * Splits a message that contains a "NOT LEGAL ADVICE" disclaimer into two
+ * parts: the disclaimer paragraph (rendered as an amber callout) and the
+ * remaining prose. Returns `callout: null` when no disclaimer is present.
+ */
+function parseDisclaimerContent(content: string): { callout: string | null; rest: string } {
+  if (!content.includes("NOT LEGAL ADVICE")) {
+    return { callout: null, rest: content };
+  }
+  const paragraphs = content.split(/\n\n+/);
+  const disclaimerIdx = paragraphs.findIndex((p) => p.includes("NOT LEGAL ADVICE"));
+  if (disclaimerIdx === -1) {
+    return { callout: null, rest: content };
+  }
+  const callout = paragraphs[disclaimerIdx].trim();
+  const rest = [
+    ...paragraphs.slice(0, disclaimerIdx),
+    ...paragraphs.slice(disclaimerIdx + 1),
+  ]
+    .join("\n\n")
+    .trim();
+  return { callout, rest };
+}
+
 // ─── Suggested prompts ──────────────────────────────────────────────────────
 
 const DEFAULT_SUGGESTED_PROMPTS = [
@@ -1386,6 +1410,13 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
           const draftText = draftOutput?.draft;
           const isCopied = copiedMsgId === msg.id;
 
+          // Parse disclaimer callout for assistant messages
+          const { callout: disclaimerCallout, rest: disclaimerRest } = !isUser
+            ? parseDisclaimerContent(msg.content ?? "")
+            : { callout: null as null, rest: msg.content ?? "" };
+          const bubbleContent = disclaimerCallout ? disclaimerRest : (msg.content ?? "");
+          const showBubble = isUser || !disclaimerCallout || !!disclaimerRest;
+
           return (
             <div
               key={msg.id}
@@ -1397,6 +1428,17 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
                 </div>
               )}
               <div className={`flex flex-col gap-1 ${isUser ? "items-end" : "items-start"} max-w-[80%]`}>
+                {disclaimerCallout && (
+                  <div className="w-full rounded-xl border border-amber-400 bg-amber-50 dark:bg-amber-950/30 px-3 py-2.5">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle size={14} className="text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                      <p className="text-xs font-medium text-amber-800 dark:text-amber-300 leading-snug">
+                        {disclaimerCallout.replace(/^⚠️\s*/, "")}
+                      </p>
+                    </div>
+                  </div>
+                )}
+                {showBubble && (
                 <div
                   className={`px-3 py-2 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap ${
                     isUser
@@ -1404,8 +1446,9 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
                       : "bg-secondary text-foreground rounded-bl-sm"
                   }`}
                 >
-                  {msg.content}
+                  {bubbleContent}
                 </div>
+                )}
                 {draftText && (
                   <div className="w-full rounded-xl border border-primary/25 bg-primary/5 px-3 py-2.5 mt-0.5">
                     <div className="flex items-center justify-between mb-1.5">

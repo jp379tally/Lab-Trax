@@ -352,6 +352,32 @@ const confirmStyles = StyleSheet.create({
   },
 });
 
+// ─── Disclaimer parser ───────────────────────────────────────────────────────
+
+/**
+ * Splits a message that contains a "NOT LEGAL ADVICE" disclaimer into two
+ * parts: the disclaimer paragraph (rendered as an amber callout) and the
+ * remaining prose. Returns `callout: null` when no disclaimer is present.
+ */
+function parseDisclaimerContent(content: string): { callout: string | null; rest: string } {
+  if (!content.includes("NOT LEGAL ADVICE")) {
+    return { callout: null, rest: content };
+  }
+  const paragraphs = content.split(/\n\n+/);
+  const disclaimerIdx = paragraphs.findIndex((p) => p.includes("NOT LEGAL ADVICE"));
+  if (disclaimerIdx === -1) {
+    return { callout: null, rest: content };
+  }
+  const callout = paragraphs[disclaimerIdx].trim();
+  const rest = [
+    ...paragraphs.slice(0, disclaimerIdx),
+    ...paragraphs.slice(disclaimerIdx + 1),
+  ]
+    .join("\n\n")
+    .trim();
+  return { callout, rest };
+}
+
 // ─── Message bubble ───────────────────────────────────────────────────────────
 
 interface BubbleProps {
@@ -369,6 +395,13 @@ function MessageBubble({ msg, colors, onConfirm, onReject, onTryAgain, sending }
     | { draft?: string }
     | undefined;
   const [copied, setCopied] = useState(false);
+
+  // Parse disclaimer callout for assistant messages
+  const { callout: disclaimerCallout, rest: disclaimerRest } = !isUser
+    ? parseDisclaimerContent(msg.content)
+    : { callout: null as null, rest: msg.content };
+  const bubbleContent = disclaimerCallout ? disclaimerRest : msg.content;
+  const showBubble = isUser || !disclaimerCallout || !!disclaimerRest;
 
   const handleCopy = useCallback(async (text: string) => {
     try {
@@ -411,6 +444,15 @@ function MessageBubble({ msg, colors, onConfirm, onReject, onTryAgain, sending }
         </View>
       )}
       <View style={[styles.bubbleGroup, isUser ? styles.bubbleGroupUser : styles.bubbleGroupAssistant]}>
+        {disclaimerCallout && (
+          <View style={styles.disclaimerCallout}>
+            <Ionicons name="warning" size={14} color="#92400e" style={styles.disclaimerIcon} />
+            <Text style={styles.disclaimerText}>
+              {disclaimerCallout.replace(/^⚠️\s*/, "")}
+            </Text>
+          </View>
+        )}
+        {showBubble && (
         <View
           style={[
             styles.bubble,
@@ -433,9 +475,10 @@ function MessageBubble({ msg, colors, onConfirm, onReject, onTryAgain, sending }
               msg.isError && { color: "#9b2c2c" },
             ]}
           >
-            {msg.content}
+            {bubbleContent}
           </Text>
         </View>
+        )}
         {draftTool?.draft && (
           <View style={[styles.draftBox, { borderColor: colors.tint + "40", backgroundColor: colors.tint + "0D" }]}>
             <View style={styles.draftHeader}>
@@ -906,6 +949,29 @@ const styles = StyleSheet.create({
   copyBtnText: {
     fontSize: 11,
     fontWeight: "500",
+  },
+  disclaimerCallout: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    borderWidth: 1.5,
+    borderColor: "#fbbf24",
+    borderRadius: Radius.md,
+    backgroundColor: "#fffbeb",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    maxWidth: "100%",
+  },
+  disclaimerIcon: {
+    marginTop: 1,
+    flexShrink: 0,
+  },
+  disclaimerText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#92400e",
+    lineHeight: 18,
   },
 });
 
