@@ -143,6 +143,45 @@ describe("ProfilePanel — phone verification OTP flow", () => {
     ).toBeDisabled();
   });
 
+  it("resend button is disabled during countdown and a click on it while disabled does not send a second request", async () => {
+    renderProfile();
+    await openOtpPanel();
+
+    // Advance past the initial 60-second countdown so the button becomes active.
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /^resend code$/i }),
+      ).not.toBeDisabled(),
+    );
+
+    // Successful resend — starts a fresh 60-second countdown.
+    apiFetchMock.mockResolvedValueOnce({ success: true });
+    fireEvent.click(screen.getByRole("button", { name: /^resend code$/i }));
+
+    // Wait for the resend to complete and the countdown to restart.
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /resend in \d+s/i }),
+      ).toBeInTheDocument(),
+    );
+
+    // Button must be disabled while the countdown is running.
+    const resendBtn = screen.getByRole("button", { name: /resend in \d+s/i });
+    expect(resendBtn).toBeDisabled();
+
+    // Record how many times apiFetch has been called so far.
+    const callsBefore = apiFetchMock.mock.calls.length;
+
+    // Attempt to click the disabled button — it must be a no-op.
+    fireEvent.click(resendBtn);
+
+    // apiFetch must NOT have been called again.
+    expect(apiFetchMock.mock.calls.length).toBe(callsBefore);
+  });
+
   it("resend failure shows an error inside the OTP panel, not idle state", async () => {
     renderProfile();
     await openOtpPanel();
