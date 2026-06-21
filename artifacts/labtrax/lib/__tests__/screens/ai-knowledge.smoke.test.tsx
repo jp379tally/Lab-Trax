@@ -247,6 +247,98 @@ describe("AiKnowledgeScreen — AI suggestion review (admin only)", () => {
       id: "cand-1",
     });
   });
+
+  it("opens an editor pre-filled with the candidate and approves only the changed override", async () => {
+    setMockAppState({
+      meMemberships: labMembership("admin"),
+      aiMemory: [],
+      aiCandidates: [GLOSSARY_CANDIDATE],
+    });
+
+    const { getByTestId, getByText, getByDisplayValue } = render(
+      <AiKnowledgeScreen />,
+    );
+
+    fireEvent.press(getByTestId("candidate-edit-cand-1"));
+
+    await waitFor(() =>
+      expect(getByText("Review glossary suggestion")).toBeTruthy(),
+    );
+
+    // Pre-filled with the candidate's key/value.
+    expect(getByDisplayValue("Zr")).toBeTruthy();
+    expect(getByDisplayValue("Zirconia")).toBeTruthy();
+
+    // Reword the definition, leave the term untouched.
+    fireEvent.changeText(getByDisplayValue("Zirconia"), "Zirconium dioxide");
+    fireEvent.press(getByTestId("form-save"));
+
+    await waitFor(() => {
+      expect(mockApproveAiMemoryCandidateMutateAsync).toHaveBeenCalledTimes(1);
+    });
+    // Only the edited field is sent as an override.
+    expect(mockApproveAiMemoryCandidateMutateAsync).toHaveBeenCalledWith({
+      id: "cand-1",
+      data: { value: "Zirconium dioxide" },
+    });
+  });
+
+  it("approves with no overrides when the candidate is unedited", async () => {
+    setMockAppState({
+      meMemberships: labMembership("admin"),
+      aiMemory: [],
+      aiCandidates: [GLOSSARY_CANDIDATE],
+    });
+
+    const { getByTestId, getByText } = render(<AiKnowledgeScreen />);
+
+    fireEvent.press(getByTestId("candidate-edit-cand-1"));
+    await waitFor(() =>
+      expect(getByText("Review glossary suggestion")).toBeTruthy(),
+    );
+
+    fireEvent.press(getByTestId("form-save"));
+
+    await waitFor(() => {
+      expect(mockApproveAiMemoryCandidateMutateAsync).toHaveBeenCalledTimes(1);
+    });
+    expect(mockApproveAiMemoryCandidateMutateAsync).toHaveBeenCalledWith({
+      id: "cand-1",
+      data: {},
+    });
+  });
+
+  it("lets an admin dismiss from the editor", async () => {
+    setMockAppState({
+      meMemberships: labMembership("admin"),
+      aiMemory: [],
+      aiCandidates: [GLOSSARY_CANDIDATE],
+    });
+
+    const { getByTestId, getByText } = render(<AiKnowledgeScreen />);
+
+    fireEvent.press(getByTestId("candidate-edit-cand-1"));
+    await waitFor(() =>
+      expect(getByText("Review glossary suggestion")).toBeTruthy(),
+    );
+
+    fireEvent.press(getByTestId("form-delete"));
+
+    // Dismiss is gated behind a confirm dialog.
+    expect(Alert.alert).toHaveBeenCalledTimes(1);
+    const buttons = vi.mocked(Alert.alert).mock.calls[0][2] as
+      | Array<{ text?: string; style?: string; onPress?: () => void }>
+      | undefined;
+    const dismissBtn = buttons?.find((b) => b.style === "destructive");
+    expect(dismissBtn).toBeTruthy();
+    dismissBtn?.onPress?.();
+
+    await waitFor(() => {
+      expect(mockRejectAiMemoryCandidateMutateAsync).toHaveBeenCalledWith({
+        id: "cand-1",
+      });
+    });
+  });
 });
 
 describe("AiKnowledgeScreen — provider-only user", () => {

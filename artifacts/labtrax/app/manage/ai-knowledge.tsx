@@ -174,6 +174,9 @@ export default function AiKnowledgeScreen() {
     { mode: "new"; kind: AiMemoryItemKind } | { mode: "edit"; item: AiMemoryItem } | null
   >(null);
 
+  // Candidate under review in the edit-before-approve sheet.
+  const [candidateEditor, setCandidateEditor] = useState<AiMemoryCandidateItem | null>(null);
+
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
       <View style={styles.header}>
@@ -235,9 +238,22 @@ export default function AiKnowledgeScreen() {
                   const busy = candidateActionId === candidate.id;
                   return (
                     <View key={candidate.id} style={styles.candidateRow} testID={`candidate-${candidate.id}`}>
-                      <Text style={styles.candidateKind}>{meta.label.toUpperCase()}</Text>
-                      <Text style={styles.name}>{candidate.key}</Text>
-                      <Text style={styles.value}>{candidate.value}</Text>
+                      <Pressable
+                        onPress={() => setCandidateEditor(candidate)}
+                        disabled={busy}
+                        testID={`candidate-edit-${candidate.id}`}
+                        style={styles.candidateMain}
+                      >
+                        <View style={styles.candidateKindRow}>
+                          <Text style={styles.candidateKind}>{meta.label.toUpperCase()}</Text>
+                          <View style={styles.candidateEditHint}>
+                            <Ionicons name="pencil" size={12} color={colors.tint} />
+                            <Text style={styles.candidateEditHintText}>Edit</Text>
+                          </View>
+                        </View>
+                        <Text style={styles.name}>{candidate.key}</Text>
+                        <Text style={styles.value}>{candidate.value}</Text>
+                      </Pressable>
                       <View style={styles.candidateActions}>
                         <Pressable
                           style={[styles.approveBtn, busy && styles.btnDisabled]}
@@ -325,6 +341,14 @@ export default function AiKnowledgeScreen() {
           kind={editor.mode === "new" ? editor.kind : editor.item.kind}
           item={editor.mode === "edit" ? editor.item : null}
           onClose={() => setEditor(null)}
+        />
+      ) : null}
+
+      {candidateEditor ? (
+        <CandidateEditor
+          candidate={candidateEditor}
+          onClose={() => setCandidateEditor(null)}
+          onReviewed={invalidateCandidates}
         />
       ) : null}
     </View>
@@ -436,6 +460,106 @@ function EntryEditor({
   );
 }
 
+function CandidateEditor({
+  candidate,
+  onClose,
+  onReviewed,
+}: {
+  candidate: AiMemoryCandidateItem;
+  onClose: () => void;
+  onReviewed: () => Promise<unknown>;
+}) {
+  const { colors } = useTheme();
+  const meta = KIND_META[candidate.kind];
+  const [key, setKey] = useState(candidate.key);
+  const [value, setValue] = useState(candidate.value);
+
+  // Re-seed when a different candidate is opened so the sheet reflects the
+  // current candidate rather than a stale snapshot.
+  useEffect(() => {
+    setKey(candidate.key);
+    setValue(candidate.value);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [candidate.id]);
+
+  const approve = useApproveAiMemoryCandidate();
+  const reject = useRejectAiMemoryCandidate();
+  const submitting = approve.isPending || reject.isPending;
+
+  async function approveEdited() {
+    const trimmedKey = key.trim();
+    const trimmedValue = value.trim();
+    if (!trimmedKey || !trimmedValue) return;
+    // Only send overrides that actually changed so an unedited approval keeps
+    // the original candidate values (and the server's idempotent merge path).
+    const data: { key?: string; value?: string } = {};
+    if (trimmedKey !== candidate.key) data.key = trimmedKey;
+    if (trimmedValue !== candidate.value) data.value = trimmedValue;
+    try {
+      await approve.mutateAsync({ id: candidate.id, data });
+      await onReviewed();
+      onClose();
+    } catch (e) {
+      Alert.alert("Couldn’t approve", friendlyError(e, "Please try again."));
+    }
+  }
+
+  function confirmDismiss() {
+    Alert.alert("Dismiss suggestion", `Dismiss “${candidate.key}”?`, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Dismiss",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await reject.mutateAsync({ id: candidate.id });
+            await onReviewed();
+            onClose();
+          } catch (e) {
+            Alert.alert("Couldn’t dismiss", friendlyError(e, "Please try again."));
+          }
+        },
+      },
+    ]);
+  }
+
+  return (
+    <FormSheet
+      visible
+      title={`Review ${meta.label.toLowerCase()} suggestion`}
+      onClose={onClose}
+      onSubmit={() => void approveEdited()}
+      submitting={submitting}
+      submitLabel="Approve"
+      submitDisabled={key.trim().length === 0 || value.trim().length === 0}
+      onDelete={confirmDismiss}
+      deleteLabel="Dismiss"
+    >
+      <Text style={{ ...Typography.caption, color: colors.textSecondary }}>
+        The AI suggested this from recent chats. Edit it if needed, then approve to add it to your
+        lab’s memory.
+      </Text>
+      <TextField
+        label={meta.keyLabel}
+        required
+        value={key}
+        onChangeText={setKey}
+        maxLength={200}
+        placeholder={meta.keyLabel}
+      />
+      <TextField
+        label={meta.valueLabel}
+        required
+        value={value}
+        onChangeText={setValue}
+        maxLength={2000}
+        multiline
+        placeholder={meta.valueLabel}
+      />
+    </FormSheet>
+  );
+}
+
 function makeStyles(c: ThemeColors) {
   return StyleSheet.create({
     screen: { flex: 1, backgroundColor: c.backgroundSolid },
@@ -501,7 +625,11 @@ function makeStyles(c: ThemeColors) {
       borderColor: c.border,
       backgroundColor: c.backgroundSolid,
     },
+    candidateMain: { gap: 2 },
+    candidateKindRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
     candidateKind: { ...Typography.captionSemibold, color: c.textTertiary, letterSpacing: 0.5 },
+    candidateEditHint: { flexDirection: "row", alignItems: "center", gap: 2 },
+    candidateEditHintText: { ...Typography.captionSemibold, color: c.tint },
     candidateActions: { flexDirection: "row", gap: Spacing.sm, marginTop: Spacing.sm },
     approveBtn: {
       flexDirection: "row",
