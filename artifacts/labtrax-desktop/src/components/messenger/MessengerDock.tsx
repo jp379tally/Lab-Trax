@@ -53,7 +53,7 @@ export function MessengerDock() {
 
   return (
     <>
-      <div className="fixed bottom-4 right-4 z-[9000] flex flex-col items-end gap-2 pointer-events-none">
+      <div className="fixed bottom-4 left-4 z-[9000] flex flex-col items-start gap-2 pointer-events-none">
         {inboxOpen && (
           <div className="pointer-events-auto">
             <MessengerInbox />
@@ -94,7 +94,7 @@ export function MessengerDock() {
       </div>
 
       {openPanels.length > 0 && (
-        <div className="fixed bottom-[88px] right-4 z-[8999] flex items-end gap-3 pointer-events-none">
+        <div className="fixed bottom-[88px] left-4 z-[8999] flex items-end gap-3 pointer-events-none">
           {[...openPanels].reverse().map((panel, idx) => (
             <div key={panel.conversationId} className="pointer-events-auto">
               <ChatPanel
