@@ -77,6 +77,10 @@ export type SessionUser = {
   // work), "break", "lunch", or "out_of_office". Defaults to
   // "available" server-side when unset.
   workStatus?: "available" | "break" | "lunch" | "out_of_office" | string | null;
+  // ISO timestamp set by the server when the user's phone number was
+  // confirmed via SMS OTP. Null when the current phone has not been
+  // verified (or the number was changed after the last verification).
+  phoneVerifiedAt?: string | null;
 };
 
 type SessionListener = (user: SessionUser | null) => void;

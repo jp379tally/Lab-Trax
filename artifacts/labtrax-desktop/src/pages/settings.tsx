@@ -278,13 +278,109 @@ function ProfilePanel() {
   const [placementsSelection, setPlacementsSelection] = useState<string[]>([]);
   const [placementsError, setPlacementsError] = useState<string | null>(null);
 
+  const [phoneVerifyStep, setPhoneVerifyStep] = useState<"idle" | "sending" | "otp">("idle");
+  const [otpCode, setOtpCode] = useState("");
+  const [otpError, setOtpError] = useState<string | null>(null);
+  const [resendCountdown, setResendCountdown] = useState(0);
+  const resendTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (resendTimerRef.current) clearInterval(resendTimerRef.current);
+    };
+  }, []);
+
   useEffect(() => {
     setFirstName(user?.firstName ?? "");
     setLastName(user?.lastName ?? "");
     setEmail(user?.email ?? "");
     setPhone(user?.phone ?? "");
     setPracticeName(user?.practiceName ?? "");
+    setPhoneVerifyStep("idle");
+    setOtpCode("");
+    setOtpError(null);
   }, [user?.id]);
+
+  const isPhoneVerified = !!(
+    user?.phoneVerifiedAt &&
+    user?.phone &&
+    phone.trim() !== "" &&
+    phone === user.phone
+  );
+
+  function startResendTimer() {
+    setResendCountdown(60);
+    if (resendTimerRef.current) clearInterval(resendTimerRef.current);
+    resendTimerRef.current = setInterval(() => {
+      setResendCountdown((c) => {
+        if (c <= 1) {
+          clearInterval(resendTimerRef.current!);
+          resendTimerRef.current = null;
+          return 0;
+        }
+        return c - 1;
+      });
+    }, 1000);
+  }
+
+  async function handleSendVerificationCode() {
+    const phoneToVerify = phone.trim();
+    if (!phoneToVerify || !user?.id) return;
+    setPhoneVerifyStep("sending");
+    setOtpError(null);
+    try {
+      if (phone !== (user?.phone ?? "")) {
+        await apiFetch(`/auth/users/${user.id}/profile`, {
+          method: "PUT",
+          body: JSON.stringify({ firstName, lastName, email, phone, practiceName }),
+        });
+        await refresh();
+      }
+      await apiFetch("/send-phone-code", {
+        method: "POST",
+        body: JSON.stringify({ phone: phoneToVerify }),
+      });
+      setPhoneVerifyStep("otp");
+      setOtpCode("");
+      startResendTimer();
+    } catch (err: unknown) {
+      setOtpError((err as Error).message || "Failed to send verification code.");
+      setPhoneVerifyStep("idle");
+    }
+  }
+
+  async function handleVerifyOtp() {
+    setOtpError(null);
+    try {
+      const result = await apiFetch<{ verified: boolean; error?: string }>("/verify-phone-code", {
+        method: "POST",
+        body: JSON.stringify({ phone: phone.trim(), code: otpCode }),
+      });
+      if (!result.verified) {
+        setOtpError(result.error || "Incorrect code. Please try again.");
+        return;
+      }
+      setPhoneVerifyStep("idle");
+      setOtpCode("");
+      if (resendTimerRef.current) {
+        clearInterval(resendTimerRef.current);
+        resendTimerRef.current = null;
+      }
+      await refresh();
+    } catch (err: unknown) {
+      setOtpError((err as Error).message || "Verification failed. Please try again.");
+    }
+  }
+
+  function cancelPhoneVerify() {
+    setPhoneVerifyStep("idle");
+    setOtpCode("");
+    setOtpError(null);
+    if (resendTimerRef.current) {
+      clearInterval(resendTimerRef.current);
+      resendTimerRef.current = null;
+    }
+  }
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -303,8 +399,27 @@ function ProfilePanel() {
     onSuccess: async () => {
       setSuccess(true);
       setError(null);
+      const phoneChanged = phone !== (user?.phone ?? "");
       await refresh();
       setTimeout(() => setSuccess(false), 2500);
+      // If the phone number changed, auto-start the SMS verification flow so
+      // the admin can verify the new number without a separate "Verify" click.
+      if (phoneChanged && phone.trim()) {
+        setPhoneVerifyStep("sending");
+        setOtpError(null);
+        try {
+          await apiFetch("/send-phone-code", {
+            method: "POST",
+            body: JSON.stringify({ phone: phone.trim() }),
+          });
+          setPhoneVerifyStep("otp");
+          setOtpCode("");
+          startResendTimer();
+        } catch (err: unknown) {
+          setOtpError((err as Error).message || "Failed to send verification code.");
+          setPhoneVerifyStep("idle");
+        }
+      }
     },
     onError: (err: Error) => {
       setSuccess(false);
@@ -691,14 +806,97 @@ function ProfilePanel() {
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className={inputCls} />
         </Field>
         <Field label="Phone">
-          <input
-            type="tel"
-            value={phone}
-            onChange={(e) => setPhone(formatPhone(e.target.value))}
-            placeholder="000-000-0000"
-            className={inputCls}
-          />
+          <div className="space-y-1.5">
+            <input
+              type="tel"
+              value={phone}
+              onChange={(e) => {
+                const newVal = formatPhone(e.target.value);
+                setPhone(newVal);
+                if (phoneVerifyStep !== "idle") cancelPhoneVerify();
+              }}
+              placeholder="000-000-0000"
+              className={inputCls}
+            />
+            {phone.trim() && (
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 min-h-[20px]">
+                  {isPhoneVerified ? (
+                    <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600">
+                      <Check size={12} />
+                      Verified
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => void handleSendVerificationCode()}
+                      disabled={phoneVerifyStep === "sending" || phoneVerifyStep === "otp"}
+                      className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:text-primary/80 disabled:opacity-60 transition-colors"
+                    >
+                      {phoneVerifyStep === "sending" ? (
+                        <><Loader2 size={12} className="animate-spin" />Sending…</>
+                      ) : (
+                        "Verify"
+                      )}
+                    </button>
+                  )}
+                </div>
+                {phoneVerifyStep === "idle" && otpError && (
+                  <p className="text-xs text-destructive">{otpError}</p>
+                )}
+              </div>
+            )}
+          </div>
         </Field>
+        {phoneVerifyStep === "otp" && (
+          <div className="col-span-2">
+            <div className="rounded-lg border border-border bg-secondary/20 p-4">
+              <p className="text-sm font-medium mb-1">Enter verification code</p>
+              <p className="text-xs text-muted-foreground mb-3">
+                We sent a 6-digit code to {phone}. Enter it below to verify your number.
+              </p>
+              {otpError && (
+                <p className="text-xs text-destructive mb-2">{otpError}</p>
+              )}
+              <div className="flex items-center gap-3 flex-wrap">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={otpCode}
+                  onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                  onKeyDown={(e) => { if (e.key === "Enter" && otpCode.length === 6) void handleVerifyOtp(); }}
+                  placeholder="000000"
+                  className={`${inputCls} w-28 font-mono tracking-widest text-center`}
+                  autoFocus
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleVerifyOtp()}
+                  disabled={otpCode.length < 6}
+                  className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
+                >
+                  Confirm
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleSendVerificationCode()}
+                  disabled={resendCountdown > 0}
+                  className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {resendCountdown > 0 ? `Resend in ${resendCountdown}s` : "Resend code"}
+                </button>
+                <button
+                  type="button"
+                  onClick={cancelPhoneVerify}
+                  className="text-xs text-muted-foreground hover:text-foreground transition-colors ml-auto"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         <Field label="Practice / lab name" full>
           <input value={practiceName} onChange={(e) => setPracticeName(e.target.value)} className={inputCls} />
         </Field>
