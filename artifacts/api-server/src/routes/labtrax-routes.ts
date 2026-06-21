@@ -4627,10 +4627,14 @@ Important rules:
           return null;
         })
       : null;
-    // For locally-served downloads we know whether the file exists in App
-    // Storage; for external https:// URLs we can't check without a HEAD request,
-    // so report them as available and let the browser handle a 404.
-    const available = isLocalDownload ? installerObject !== null : true;
+    // `available` means "a URL is configured and we can hand users a link to
+    // click" — true whenever validateInstallerUrl passed above.
+    // `fileFound` narrows it further: for locally-served /downloads/ paths we
+    // check whether the file actually exists in App Storage (admins use this
+    // for diagnostics). For external https:// URLs we can't check without a
+    // round-trip, so report true and let the browser handle a 404.
+    const fileFound = isLocalDownload ? installerObject !== null : true;
+    const available = true;
     return res.json({
       version,
       downloadUrl: rawUrl,
@@ -4638,6 +4642,7 @@ Important rules:
       releaseNotes,
       installerObject,
       available,
+      fileFound,
     });
   });
 

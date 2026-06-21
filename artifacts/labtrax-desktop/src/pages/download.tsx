@@ -37,6 +37,7 @@ interface DesktopInstallerPublicInfo {
   fileName: string;
   releaseNotes: string | null;
   available?: boolean;
+  fileFound?: boolean;
   installerObject?: { size: number; uploadedAt: string } | null;
 }
 

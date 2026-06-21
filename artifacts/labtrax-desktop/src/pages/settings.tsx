@@ -4430,6 +4430,7 @@ interface DesktopInstallerPublicInfo {
   releaseNotes: string | null;
   installerObject: { size: number; uploadedAt: string } | null;
   available: boolean;
+  fileFound: boolean;
 }
 
 interface DesktopInstallerInfo {
@@ -5084,7 +5085,7 @@ function DesktopInstallerPanel() {
                     : null}
                 </div>
               </div>
-              {publicInfo.available ? (
+              {publicInfo.downloadUrl ? (
                 <a
                   href={absDownloadUrl}
                   download
@@ -5108,6 +5109,12 @@ function DesktopInstallerPanel() {
               <p className="text-sm text-muted-foreground">
                 The desktop app installer is temporarily unavailable. Please contact support.
               </p>
+            )}
+            {isPlatformAdmin && publicInfo.available && !publicInfo.fileFound && publicInfo.downloadUrl.startsWith("/downloads/") && (
+              <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 dark:border-amber-800/40 dark:bg-amber-950/30 px-3 py-2.5 text-sm text-amber-800 dark:text-amber-200">
+                <AlertTriangle size={14} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                <span>No installer file found in storage. Upload one in the section below.</span>
+              </div>
             )}
             {publicInfo.releaseNotes && (
               <div className="rounded-md border border-border bg-background px-4 py-3 space-y-1">
