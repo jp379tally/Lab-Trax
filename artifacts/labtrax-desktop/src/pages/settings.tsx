@@ -848,6 +848,16 @@ function ProfilePanel() {
             )}
           </div>
         </Field>
+        {(user?.role === "admin" || user?.role === "owner") && phone.trim() && !isPhoneVerified && (
+          <div className="col-span-2">
+            <div className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-700 px-3 py-2.5 flex items-start gap-2.5">
+              <AlertTriangle size={15} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+              <p className="text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
+                Your phone number isn&apos;t verified yet. Some admin actions — like bulk case deletion — require a verified phone. Click <strong>Verify</strong> above to complete verification.
+              </p>
+            </div>
+          </div>
+        )}
         {phoneVerifyStep === "otp" && (
           <div className="col-span-2">
             <div className="rounded-lg border border-border bg-secondary/20 p-4">
