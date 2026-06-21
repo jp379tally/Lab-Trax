@@ -1002,7 +1002,12 @@ router.put(
     if (practiceAddress !== undefined) updates.practiceAddress = practiceAddress;
     if (practicePhone !== undefined) updates.practicePhone = practicePhone;
     if (email !== undefined) updates.email = email;
-    if (phone !== undefined) updates.phone = phone;
+    if (phone !== undefined) {
+      updates.phone = phone;
+      if (phone !== user.phone) {
+        updates.phoneVerifiedAt = null;
+      }
+    }
     if (firstName !== undefined) updates.firstName = firstName;
     if (lastName !== undefined) updates.lastName = lastName;
     if (profilePhotoUrl !== undefined) updates.profilePhotoUrl = profilePhotoUrl || null;
