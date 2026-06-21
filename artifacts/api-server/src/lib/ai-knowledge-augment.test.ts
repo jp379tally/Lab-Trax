@@ -15,11 +15,59 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { randomBytes } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { buildKnowledgeBlock, buildLabMemoryBlock } from "./ai-knowledge-augment";
+import { buildKnowledgeBlock, buildLabMemoryBlock, buildMaterialSuggestionBlock } from "./ai-knowledge-augment";
 
 function rid(prefix: string) {
   return `${prefix}_${randomBytes(8).toString("hex")}`;
 }
+
+describe("buildMaterialSuggestionBlock (pure)", () => {
+  it("returns empty string when no tooth number is mentioned", () => {
+    expect(buildMaterialSuggestionBlock("What material should I use for a crown?")).toBe("");
+  });
+
+  it("returns empty string when tooth number is mentioned but no restoration term", () => {
+    expect(buildMaterialSuggestionBlock("Patient has a problem with tooth #9")).toBe("");
+  });
+
+  it("returns a guidance block for an anterior tooth + restoration type", () => {
+    const block = buildMaterialSuggestionBlock("Dr. Smith wants a crown on tooth #9");
+    expect(block).toContain("MATERIAL & SHADE SUGGESTION GUIDANCE");
+    expect(block).toContain("ANTERIOR");
+    expect(block).toContain("#9");
+    expect(block).toContain("Emax");
+    expect(block).toContain("shade");
+  });
+
+  it("returns a guidance block for a posterior tooth + restoration type", () => {
+    const block = buildMaterialSuggestionBlock("Need a bridge on #30 and #31");
+    expect(block).toContain("MATERIAL & SHADE SUGGESTION GUIDANCE");
+    expect(block).toContain("POSTERIOR");
+    expect(block).toContain("#30");
+    expect(block).toContain("zirconia");
+  });
+
+  it("handles both anterior and posterior teeth in the same query", () => {
+    const block = buildMaterialSuggestionBlock("crown on #9 and implant crown on #30");
+    expect(block).toContain("ANTERIOR");
+    expect(block).toContain("POSTERIOR");
+  });
+
+  it("recognises tooth number ranges", () => {
+    const block = buildMaterialSuggestionBlock("veneer case for teeth #8-10");
+    expect(block).toContain("ANTERIOR");
+    expect(block).toContain("MATERIAL & SHADE SUGGESTION GUIDANCE");
+  });
+
+  it("recognises hash-prefixed standalone tooth numbers", () => {
+    const block = buildMaterialSuggestionBlock("inlay on #14");
+    expect(block).toContain("POSTERIOR");
+  });
+
+  it("returns empty string for unrelated queries", () => {
+    expect(buildMaterialSuggestionBlock("How do I send an invoice?")).toBe("");
+  });
+});
 
 describe("buildKnowledgeBlock (pure)", () => {
   it("returns a labelled block for a relevant query", () => {

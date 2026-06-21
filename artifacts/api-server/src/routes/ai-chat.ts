@@ -18,7 +18,7 @@ import { getProviderOrgIdsForUserAndLinks } from "../lib/cross-lab-doctor";
 import { requireAuth } from "../middlewares/auth";
 import { normalizeDoctor } from "../lib/pricing";
 import { wrapDbError } from "../lib/http";
-import { buildKnowledgeBlock, buildLabMemoryBlock } from "../lib/ai-knowledge-augment";
+import { buildKnowledgeBlock, buildLabMemoryBlock, buildMaterialSuggestionBlock } from "../lib/ai-knowledge-augment";
 import { learnFromExchange } from "../lib/ai-memory-learn";
 import { randomBytes } from "node:crypto";
 
@@ -704,6 +704,7 @@ export function registerAiChatRoutes(router: IRouter): void {
     // in that case. This does not alter the request/response contract.
     const userMessage = String(lastMsg.content || "");
     const knowledgeBlock = buildKnowledgeBlock(userMessage);
+    const materialBlock = buildMaterialSuggestionBlock(userMessage);
 
     // Lab orgs in scope for this turn — used to auto-learn candidate memory
     // entries from the exchange (lab users only). Captured here so it survives
@@ -722,7 +723,7 @@ You have access to the provider's real-time case data and pricing from all their
 Answer questions about case status, estimated delivery, restorations, and what this provider is charged per item type accurately using only the data provided below.
 Be concise and professional. If asked about a case or patient not in the data, say so clearly rather than guessing.
 Today's date: ${new Date().toLocaleDateString()}.
-${knowledgeBlock}
+${knowledgeBlock}${materialBlock}
 ${pinnedCaseCtx ? `${pinnedCaseCtx}\n` : ""}${contextBlock}`;
       } else {
         const labIds = await getActiveLabIds(userId);
@@ -742,7 +743,7 @@ You have access to real-time data about this lab's cases, pricing tiers, and lab
 Answer questions about case status, patient cases, doctor pricing, estimated turnaround, and lab information accurately using only the data provided below.
 Be concise and professional. If a case is not in the data, say so clearly rather than guessing.
 Today's date: ${new Date().toLocaleDateString()}.
-${knowledgeBlock}${memoryBlock}
+${knowledgeBlock}${materialBlock}${memoryBlock}
 ${pinnedCaseCtx ? `${pinnedCaseCtx}\n` : ""}${contextBlock}`;
       }
     } catch (err: any) {

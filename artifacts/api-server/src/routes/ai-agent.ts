@@ -27,7 +27,7 @@ import { db } from "@workspace/db";
 import { organizations, organizationMemberships, pricingTiers } from "@workspace/db";
 import { eq, and, inArray } from "drizzle-orm";
 import { getProviderOrgIdsForUserAndLinks } from "../lib/cross-lab-doctor";
-import { buildKnowledgeBlock, buildLabMemoryBlock } from "../lib/ai-knowledge-augment";
+import { buildKnowledgeBlock, buildLabMemoryBlock, buildMaterialSuggestionBlock } from "../lib/ai-knowledge-augment";
 import { learnFromExchange } from "../lib/ai-memory-learn";
 
 // ─── Shared rate limiter (same window as ai-chat) ───────────────────────────
@@ -158,17 +158,18 @@ PRICING TIERS: ${tiers.map((t) => t.name).join(", ") || "none"}`;
 
   const isProvider = userType === "provider";
 
-  // Additive prompt augmentation: curated reference knowledge selected from the
-  // user's message and admin-curated per-lab memory. Both resolve to empty
+  // Additive prompt augmentation: curated reference knowledge, material/shade
+  // suggestion guidance, and admin-curated per-lab memory. All resolve to empty
   // strings when nothing relevant exists, leaving the prompt unchanged.
   const knowledgeBlock = buildKnowledgeBlock(userMessage);
+  const materialBlock = buildMaterialSuggestionBlock(userMessage);
   const memoryBlock = await buildLabMemoryBlock(memoryLabIds);
 
   return `You are LabTrax AI Agent, an action-taking assistant for dental lab management.
 You can answer questions AND perform real operations using the tools available to you.
 Today's date: ${new Date().toLocaleDateString()}.
 ${contextBlock}
-${knowledgeBlock}${memoryBlock}
+${knowledgeBlock}${materialBlock}${memoryBlock}
 
 IMPORTANT RULES:
 - For factual questions, answer directly using your tools or known context.
