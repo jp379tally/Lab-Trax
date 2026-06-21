@@ -197,7 +197,7 @@ const WELCOME_MSG: ChatMsg = {
   id: "welcome",
   role: "assistant",
   content:
-    "Hi! I'm LabTrax AI Agent. I can answer questions and take actions — like marking invoices paid, updating case status, merging doctors, and sending statements. How can I help?",
+    "Hi! I'm Maynard. I can answer questions and take actions — like marking invoices paid, updating case status, merging doctors, and sending statements. How can I help?",
 };
 
 function buildWelcome(cases: AiCaseContext[]): ChatMsg {
@@ -207,14 +207,14 @@ function buildWelcome(cases: AiCaseContext[]): ChatMsg {
     return {
       id: "welcome",
       role: "assistant",
-      content: `Hi! I'm LabTrax AI Agent, ready to help with case ${c.caseNumber}${c.patientName ? ` (${c.patientName})` : ""}. I can answer questions or take actions. What would you like to do?`,
+      content: `Hi! I'm Maynard, ready to help with case ${c.caseNumber}${c.patientName ? ` (${c.patientName})` : ""}. I can answer questions or take actions. What would you like to do?`,
     };
   }
   const nums = cases.map((c) => c.caseNumber).join(", ");
   return {
     id: "welcome",
     role: "assistant",
-    content: `Hi! I'm LabTrax AI Agent. I have ${cases.length} cases pinned: ${nums}. Ask me anything or tell me what action to take.`,
+    content: `Hi! I'm Maynard. I have ${cases.length} cases pinned: ${nums}. Ask me anything or tell me what action to take.`,
   };
 }
 
@@ -874,7 +874,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
             <Sparkles size={16} className="text-primary" />
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-sm font-semibold">AI Agent</div>
+            <div className="text-sm font-semibold">Maynard</div>
             {pinnedCases.length === 0 ? (
               <div className="text-[11px] text-muted-foreground">Can answer & take actions</div>
             ) : (

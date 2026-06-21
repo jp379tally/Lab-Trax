@@ -67,7 +67,7 @@ const WELCOME_MSG: ChatMessage = {
   id: "welcome",
   role: "assistant",
   content:
-    "Hi! I'm your LabTrax AI assistant. I can help you look up cases and invoices, check due dates, draft messages, and more. What can I help you with?",
+    "Hi! I'm Maynard. I can help you look up cases and invoices, check due dates, draft messages, and more. What can I help you with?",
 };
 
 const SUGGESTED_PROMPTS = [

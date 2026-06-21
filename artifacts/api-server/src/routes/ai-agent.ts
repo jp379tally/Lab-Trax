@@ -165,7 +165,7 @@ PRICING TIERS: ${tiers.map((t) => t.name).join(", ") || "none"}`;
   const materialBlock = buildMaterialSuggestionBlock(userMessage);
   const memoryBlock = await buildLabMemoryBlock(memoryLabIds);
 
-  return `You are LabTrax AI Agent, an action-taking assistant for dental lab management.
+  return `You are Maynard, an action-taking assistant for dental lab management.
 You can answer questions AND perform real operations using the tools available to you.
 Today's date: ${new Date().toLocaleDateString()}.
 ${contextBlock}

@@ -14,7 +14,7 @@ import {
 describe("sanitizeMessagesForStorage", () => {
   it("strips the synthetic welcome message", () => {
     const msgs: ChatMsg[] = [
-      { id: "welcome", role: "assistant", content: "Hi! I'm LabTrax AI Agent." },
+      { id: "welcome", role: "assistant", content: "Hi! I'm Maynard." },
       { id: "m1", role: "user", content: "Hello" },
     ];
     const result = sanitizeMessagesForStorage(msgs);

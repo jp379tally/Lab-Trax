@@ -213,7 +213,7 @@ export default function AiKnowledgeScreen() {
           }
         >
           <Text style={styles.intro}>
-            Teach the LabTrax AI about your lab. Glossary terms, preferences, and facts you add here are included in
+            Teach Maynard about your lab. Glossary terms, preferences, and facts you add here are included in
             the AI’s context so its answers match how your lab works.
           </Text>
 

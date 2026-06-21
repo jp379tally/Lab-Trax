@@ -9679,7 +9679,7 @@ function AiAssistantPanel() {
   return (
     <PanelShell
       title="AI Assistant"
-      subtitle="Teach the LabTrax AI about your lab. Glossary terms, preferences, and facts you add here are included in the AI's context so its answers match how your lab works."
+      subtitle="Teach Maynard about your lab. Glossary terms, preferences, and facts you add here are included in the AI's context so its answers match how your lab works."
     >
       {adminLabs.length > 1 && (
         <div className="mb-2">

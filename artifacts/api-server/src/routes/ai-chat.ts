@@ -718,7 +718,7 @@ export function registerAiChatRoutes(router: IRouter): void {
         if (requestedCaseIds.length > 0) {
           pinnedCaseCtx = await buildMultiCaseContext(requestedCaseIds, userId, userType);
         }
-        systemPrompt = `You are LabTrax AI, a helpful assistant for dental providers (doctors and practices).
+        systemPrompt = `You are Maynard, a helpful assistant for dental providers (doctors and practices).
 You have access to the provider's real-time case data and pricing from all their linked dental labs.
 Answer questions about case status, estimated delivery, restorations, and what this provider is charged per item type accurately using only the data provided below.
 Be concise and professional. If asked about a case or patient not in the data, say so clearly rather than guessing.
@@ -738,7 +738,7 @@ ${pinnedCaseCtx ? `${pinnedCaseCtx}\n` : ""}${contextBlock}`;
         if (requestedCaseIds.length > 0) {
           pinnedCaseCtx = await buildMultiCaseContext(requestedCaseIds, userId, userType);
         }
-        systemPrompt = `You are LabTrax AI, a helpful assistant for dental lab staff.
+        systemPrompt = `You are Maynard, a helpful assistant for dental lab staff.
 You have access to real-time data about this lab's cases, pricing tiers, and lab profile.
 Answer questions about case status, patient cases, doctor pricing, estimated turnaround, and lab information accurately using only the data provided below.
 Be concise and professional. If a case is not in the data, say so clearly rather than guessing.
