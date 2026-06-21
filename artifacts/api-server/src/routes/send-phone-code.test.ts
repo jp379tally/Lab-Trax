@@ -1,0 +1,203 @@
+/**
+ * Unit tests for POST /api/send-phone-code — covering the four key branching
+ * paths without requiring a live database or real Twilio credentials.
+ *
+ * createVerificationCode is mocked so the DB is never touched, and
+ * globalThis.fetch is stubbed per-test to simulate Twilio responses.
+ *
+ * Coverage:
+ *  - 400 when phone is missing from the request body
+ *  - 503 when Twilio vars are absent in production (NODE_ENV=production)
+ *  - 400 when the phone string cannot be normalised to E.164 (invalid format)
+ *  - 200 when Twilio succeeds — code is persisted ONLY after SMS success
+ *  - 500 when Twilio returns an error — code is NOT persisted
+ */
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import request from "supertest";
+import * as path from "node:path";
+import type { Express } from "express";
+
+vi.mock("../lib/backup.js", () => ({
+  restartScheduledBackupJob: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));
+vi.mock("../lib/statements.js", () => ({ startStatementScheduler: vi.fn() }));
+vi.mock("../lib/case-media.js", () => ({
+  startDailyOrphanedMediaCleanup: vi.fn(),
+  caseMediaDir: path.join(
+    require("os").tmpdir(),
+    "labtrax-test-send-phone-code",
+  ),
+  extractMediaFileName: () => null,
+}));
+
+const createVerificationCodeMock = vi.fn().mockResolvedValue(undefined);
+
+vi.mock("../lib/verification.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../lib/verification.js")>();
+  return {
+    ...actual,
+    createVerificationCode: (...args: unknown[]) =>
+      createVerificationCodeMock(...args),
+  };
+});
+
+function makeTwilioSuccessResponse() {
+  return new Response(
+    JSON.stringify({ sid: "SM_test_123", status: "queued" }),
+    { status: 200, headers: { "Content-Type": "application/json" } },
+  );
+}
+
+function makeTwilioErrorResponse() {
+  return new Response(
+    JSON.stringify({
+      error_code: 21211,
+      message: "Invalid phone number: To",
+    }),
+    { status: 400, headers: { "Content-Type": "application/json" } },
+  );
+}
+
+describe("POST /api/send-phone-code", () => {
+  let app: Express;
+
+  let savedNodeEnv: string | undefined;
+  let savedSid: string | undefined;
+  let savedToken: string | undefined;
+  let savedFrom: string | undefined;
+
+  beforeAll(async () => {
+    process.env["JWT_SECRET"] =
+      process.env["JWT_SECRET"] ?? "labtrax-test-secret-send-phone-code";
+    const appMod = await import("../app.js");
+    app = appMod.default;
+  });
+
+  beforeEach(() => {
+    createVerificationCodeMock.mockClear();
+
+    savedNodeEnv = process.env["NODE_ENV"];
+    savedSid = process.env["TWILIO_ACCOUNT_SID"];
+    savedToken = process.env["TWILIO_AUTH_TOKEN"];
+    savedFrom = process.env["TWILIO_PHONE_NUMBER"];
+
+    // Default: Twilio credentials present + Twilio call succeeds.
+    // Individual tests override these as needed.
+    process.env["TWILIO_ACCOUNT_SID"] = "ACtest_sid";
+    process.env["TWILIO_AUTH_TOKEN"] = "test_auth_token";
+    process.env["TWILIO_PHONE_NUMBER"] = "+15550001111";
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: unknown, _opts: unknown) =>
+        makeTwilioSuccessResponse(),
+      ),
+    );
+  });
+
+  afterEach(() => {
+    if (savedNodeEnv !== undefined) process.env["NODE_ENV"] = savedNodeEnv;
+    else delete process.env["NODE_ENV"];
+
+    if (savedSid !== undefined) process.env["TWILIO_ACCOUNT_SID"] = savedSid;
+    else delete process.env["TWILIO_ACCOUNT_SID"];
+
+    if (savedToken !== undefined)
+      process.env["TWILIO_AUTH_TOKEN"] = savedToken;
+    else delete process.env["TWILIO_AUTH_TOKEN"];
+
+    if (savedFrom !== undefined)
+      process.env["TWILIO_PHONE_NUMBER"] = savedFrom;
+    else delete process.env["TWILIO_PHONE_NUMBER"];
+  });
+
+  afterAll(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns 400 when phone is missing from the request body", async () => {
+    const r = await request(app).post("/api/send-phone-code").send({});
+    expect(r.status).toBe(400);
+    expect(r.body.error).toMatch(/phone/i);
+    expect(createVerificationCodeMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 503 when Twilio is not configured in production", async () => {
+    process.env["NODE_ENV"] = "production";
+    delete process.env["TWILIO_ACCOUNT_SID"];
+    delete process.env["TWILIO_AUTH_TOKEN"];
+    delete process.env["TWILIO_PHONE_NUMBER"];
+
+    // Unique phone per test to avoid the per-identifier cooldown window in
+    // createSendCodeThrottle, which is intentionally NOT disabled under VITEST.
+    const r = await request(app)
+      .post("/api/send-phone-code")
+      .send({ phone: "5550001001" });
+
+    expect(r.status).toBe(503);
+    expect(r.body.error).toMatch(/not configured/i);
+    // No code should be persisted — SMS was never attempted.
+    expect(createVerificationCodeMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when the phone number cannot be normalised to E.164", async () => {
+    // "abc" strips to zero digits — below the 7-digit floor for E.164.
+    // The throttle passes requests through when it cannot extract an identifier,
+    // so a non-digit-only value is safe to use across tests without collisions.
+    const r = await request(app)
+      .post("/api/send-phone-code")
+      .send({ phone: "abc" });
+
+    expect(r.status).toBe(400);
+    expect(r.body.error).toMatch(/invalid phone/i);
+    expect(createVerificationCodeMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 200 and persists the code only after Twilio succeeds", async () => {
+    // Unique phone — avoids the 30-second per-identifier cooldown gate in
+    // createSendCodeThrottle which is active even under VITEST.
+    // Default fetch stub already returns a Twilio success.
+    const r = await request(app)
+      .post("/api/send-phone-code")
+      .send({ phone: "5550002002" });
+
+    expect(r.status).toBe(200);
+    expect(r.body.success).toBe(true);
+
+    // Code MUST have been stored exactly once, and only after SMS success.
+    expect(createVerificationCodeMock).toHaveBeenCalledOnce();
+    expect(createVerificationCodeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: "sms" }),
+    );
+  });
+
+  it("returns 500 and does NOT persist a code when Twilio returns an error", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: unknown, _opts: unknown) =>
+        makeTwilioErrorResponse(),
+      ),
+    );
+
+    // Unique phone to avoid the per-identifier cooldown.
+    const r = await request(app)
+      .post("/api/send-phone-code")
+      .send({ phone: "5550003003" });
+
+    expect(r.status).toBe(500);
+    expect(r.body.error).toMatch(/failed to send/i);
+    // Critical invariant: no code must be persisted when the SMS was not sent.
+    expect(createVerificationCodeMock).not.toHaveBeenCalled();
+  });
+});
