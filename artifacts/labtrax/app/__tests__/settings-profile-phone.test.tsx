@@ -555,3 +555,86 @@ describe("ProfileScreen — editing an unrelated field does not dismiss the OTP 
     expect(Alert.alert).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Suite: Resend button is disabled during countdown and pressing it while
+// disabled does NOT fire a second /send-phone-code request
+// ---------------------------------------------------------------------------
+
+describe("ProfileScreen — Resend button disabled during countdown is a no-op", () => {
+  beforeEach(() => {
+    vi.mocked(Alert.alert).mockClear();
+    resetMockFetchHandler();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    resetMockFetchHandler();
+  });
+
+  it("does not fire a second /send-phone-code when the Resend button is pressed during the countdown", async () => {
+    renderProfile();
+
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText("000-000-0000")).toBeTruthy(),
+    );
+
+    // Open the OTP panel — this fires the first /send-phone-code (for verification).
+    await openOtpPanelViaVerifyButton();
+
+    // Advance past the initial 60-second countdown so the Resend button becomes enabled.
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText("Resend")).toBeTruthy(),
+    );
+
+    // Track /send-phone-code calls from here onwards (after the initial send).
+    let resendCallCount = 0;
+    setMockFetchHandler((url) => {
+      if (url.includes("/send-phone-code")) {
+        resendCallCount += 1;
+        return jsonOk({ success: true });
+      }
+      return jsonOk({ ok: true });
+    });
+
+    // Press Resend once — this is the legitimate resend.
+    fireEvent.press(screen.getByText("Resend"));
+
+    // Wait for the countdown to restart after the successful resend.
+    await waitFor(() =>
+      expect(screen.getByText(/^Resend \(\d+s\)$/)).toBeTruthy(),
+    );
+
+    // The Resend Pressable must report disabled=true while the countdown runs.
+    const resendPressable = screen.getByTestId("resend-otp-btn");
+    expect(resendPressable.props.disabled).toBe(true);
+
+    // Record the call count after the one legitimate resend.
+    const countAfterLegitimateResend = resendCallCount;
+    expect(countAfterLegitimateResend).toBe(1);
+
+    // Press the button again while the countdown is active — this must be a no-op.
+    fireEvent.press(resendPressable);
+
+    // Give any async work a chance to settle.
+    await act(async () => {
+      vi.advanceTimersByTime(100);
+    });
+
+    // No additional /send-phone-code request should have been made.
+    expect(resendCallCount).toBe(countAfterLegitimateResend);
+
+    // The OTP panel must still be visible and the countdown still running.
+    expect(screen.getByText("Enter verification code")).toBeTruthy();
+    expect(screen.getByText(/^Resend \(\d+s\)$/)).toBeTruthy();
+    expect(screen.getByPlaceholderText("000000")).toBeTruthy();
+
+    // No Alert should have been shown.
+    expect(Alert.alert).not.toHaveBeenCalled();
+  });
+});

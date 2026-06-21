@@ -620,6 +620,7 @@ export default function ProfileScreen() {
                       <Text style={styles.otpConfirmText}>Confirm</Text>
                     </Pressable>
                     <Pressable
+                      testID="resend-otp-btn"
                       style={[styles.otpSecondaryBtn, { borderColor: colors.border }]}
                       onPress={resendCountdown > 0 || resending ? undefined : handleSendVerificationCode}
                       disabled={resendCountdown > 0 || resending}
