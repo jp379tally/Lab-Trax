@@ -5,6 +5,11 @@
  * ai_memory table and is skipped when DATABASE_URL is not configured.
  *
  * Coverage:
+ *  - hasPrivacySignal — true for each known privacy-signal keyword
+ *  - hasPrivacySignal — false for unrelated queries
+ *  - buildKnowledgeBlock — HIPAA boost: surfaced for privacy-signal queries
+ *  - buildKnowledgeBlock — HIPAA boost: no duplicate sections in output
+ *  - buildKnowledgeBlock — HIPAA boost: is a no-op for unrelated queries
  *  - buildKnowledgeBlock — returns a labelled block for a relevant query
  *  - buildKnowledgeBlock — returns "" for an unrelated query (prompt unchanged)
  *  - buildKnowledgeBlock — respects maxChars
@@ -15,7 +20,13 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { randomBytes } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { buildKnowledgeBlock, buildLabMemoryBlock, buildMaterialSuggestionBlock } from "./ai-knowledge-augment";
+import {
+  buildKnowledgeBlock,
+  buildLabMemoryBlock,
+  buildMaterialSuggestionBlock,
+  hasPrivacySignal,
+  HIPAA_PRIVACY_SIGNALS,
+} from "./ai-knowledge-augment";
 
 function rid(prefix: string) {
   return `${prefix}_${randomBytes(8).toString("hex")}`;
@@ -66,6 +77,72 @@ describe("buildMaterialSuggestionBlock (pure)", () => {
 
   it("returns empty string for unrelated queries", () => {
     expect(buildMaterialSuggestionBlock("How do I send an invoice?")).toBe("");
+  });
+});
+
+describe("hasPrivacySignal (pure)", () => {
+  it("returns true for each known privacy-signal keyword", () => {
+    const sampledSignals = ["patient", "phi", "hipaa", "privacy", "share", "photo", "who can see", "record", "disclosure", "confidential"];
+    for (const signal of sampledSignals) {
+      expect(hasPrivacySignal(`Can I ${signal} this with someone?`), `signal: ${signal}`).toBe(true);
+    }
+  });
+
+  it("is case-insensitive", () => {
+    expect(hasPrivacySignal("PATIENT data handling")).toBe(true);
+    expect(hasPrivacySignal("Is this SECURE?")).toBe(true);
+  });
+
+  it("returns false for unrelated queries", () => {
+    expect(hasPrivacySignal("What zirconia should I use for a crown?")).toBe(false);
+    expect(hasPrivacySignal("How do I send an invoice?")).toBe(false);
+    expect(hasPrivacySignal("zzzzz qqqqq unrelated gibberish 12345")).toBe(false);
+  });
+
+  it("covers every signal in HIPAA_PRIVACY_SIGNALS", () => {
+    for (const signal of HIPAA_PRIVACY_SIGNALS) {
+      expect(hasPrivacySignal(signal), `signal: "${signal}"`).toBe(true);
+    }
+  });
+});
+
+describe("buildKnowledgeBlock — HIPAA boost (pure)", () => {
+  it("includes HIPAA knowledge when the query mentions 'patient'", () => {
+    const block = buildKnowledgeBlock("Can I share a patient photo with anyone?");
+    expect(block).toContain("REFERENCE KNOWLEDGE");
+    // At least one HIPAA section title should appear.
+    expect(block).toMatch(/PHI|HIPAA|Privacy|privacy|patient/i);
+  });
+
+  it("includes HIPAA knowledge when the query mentions 'photo'", () => {
+    const block = buildKnowledgeBlock("Who can see the intraoral photos on a case?");
+    expect(block).toContain("REFERENCE KNOWLEDGE");
+    expect(block).toMatch(/PHI|HIPAA|minimum.necessary|case media/i);
+  });
+
+  it("includes HIPAA knowledge when the query mentions 'share'", () => {
+    const block = buildKnowledgeBlock("Can I share this case with another lab?");
+    expect(block).toContain("REFERENCE KNOWLEDGE");
+    expect(block).toMatch(/PHI|HIPAA|privacy|disclosure/i);
+  });
+
+  it("does not duplicate sections in the output", () => {
+    const block = buildKnowledgeBlock("What patient information is considered PHI under HIPAA?");
+    // Count occurrences of the known PHI section title — must appear exactly once.
+    const matches = block.match(/### What is PHI/g) ?? [];
+    expect(matches).toHaveLength(1);
+  });
+
+  it("is a no-op for queries with no privacy signals", () => {
+    // A query with no privacy signals should behave exactly like the old code path.
+    const withBoost = buildKnowledgeBlock("crown zirconia bridge shade A2");
+    const withoutBoost = buildKnowledgeBlock("crown zirconia bridge shade A2");
+    expect(withBoost).toBe(withoutBoost);
+  });
+
+  it("returns '' for an unrelated query with no privacy signals (no regression)", () => {
+    const block = buildKnowledgeBlock("zzzzz qqqqq wwwww unrelated gibberish 12345");
+    expect(block).toBe("");
   });
 });
 

@@ -1,6 +1,7 @@
 import { and, eq, inArray, isNull, asc } from "drizzle-orm";
 import { db, aiMemory } from "@workspace/db";
-import { selectKnowledge } from "@workspace/ai-knowledge";
+import { selectKnowledge, selectKnowledgeSections } from "@workspace/ai-knowledge";
+import type { KnowledgeSection } from "@workspace/ai-knowledge";
 
 const KIND_LABELS: Record<string, string> = {
   glossary: "Glossary",
@@ -9,12 +10,96 @@ const KIND_LABELS: Record<string, string> = {
 };
 
 /**
+ * Privacy-sensitive keywords that indicate a query is asking about patient
+ * data handling. When any of these appear, HIPAA knowledge sections are
+ * guaranteed a share of the prompt budget so staff always receive compliance
+ * guidance without having to know to ask for it.
+ *
+ * Lowercase; matched as substrings of the lowercased query.
+ */
+export const HIPAA_PRIVACY_SIGNALS: readonly string[] = [
+  "patient",
+  "phi",
+  "hipaa",
+  "privacy",
+  "share",
+  "photo",
+  "photos",
+  "who can see",
+  "attachment",
+  "attachments",
+  "image",
+  "images",
+  "record",
+  "records",
+  "disclosure",
+  "disclose",
+  "confidential",
+  "personal information",
+  "health information",
+  "secure",
+  "security",
+];
+
+/**
+ * Returns true when the query contains at least one privacy-signal keyword
+ * that warrants surfacing HIPAA compliance guidance.
+ */
+export function hasPrivacySignal(query: string): boolean {
+  const lower = query.toLowerCase();
+  return HIPAA_PRIVACY_SIGNALS.some((signal) => lower.includes(signal));
+}
+
+/** Render one section into prompt form — matches the format used by selectKnowledge. */
+function renderKnowledgeSection(section: KnowledgeSection): string {
+  return `### ${section.title}\n${section.body}`;
+}
+
+/**
  * Build a curated knowledge block for the given user query. Returns an empty
  * string when nothing relevant is found so callers can append it
  * unconditionally without altering the prompt when there is no match.
+ *
+ * When the query contains a privacy-signal keyword (e.g. "patient", "photo",
+ * "share"), up to half the character budget is reserved for HIPAA knowledge
+ * sections so compliance guidance is always surfaced proactively. The
+ * remaining budget is filled by the normal relevance-scored selection across
+ * all groups, with HIPAA sections already included skipped to avoid
+ * duplication.
  */
 export function buildKnowledgeBlock(query: string, maxChars = 2000): string {
-  const knowledge = selectKnowledge(query, { maxChars });
+  if (!hasPrivacySignal(query)) {
+    const knowledge = selectKnowledge(query, { maxChars });
+    if (!knowledge) return "";
+    return `\nREFERENCE KNOWLEDGE (curated; use only if relevant to the question):\n${knowledge}`;
+  }
+
+  // Privacy signal detected: reserve a budget share for HIPAA sections.
+  const hipaaReserved = Math.min(Math.floor(maxChars * 0.5), 1500);
+  const hipaaSections = selectKnowledgeSections(query, {
+    maxChars: hipaaReserved,
+    groups: ["hipaa"],
+  });
+
+  const hipaaIds = new Set(hipaaSections.map((s) => s.id));
+
+  // Calculate characters consumed by HIPAA sections (including separators).
+  const hipaaUsed = hipaaSections.reduce(
+    (n, s, i) => n + renderKnowledgeSection(s).length + (i > 0 ? 2 : 0),
+    0,
+  );
+  const remainingBudget = maxChars - hipaaUsed;
+
+  // Fill remaining budget from all groups, skipping already-included sections.
+  const generalSections =
+    remainingBudget > 0
+      ? selectKnowledgeSections(query, { maxChars: remainingBudget }).filter(
+          (s) => !hipaaIds.has(s.id),
+        )
+      : [];
+
+  const allSections = [...hipaaSections, ...generalSections];
+  const knowledge = allSections.map(renderKnowledgeSection).join("\n\n");
   if (!knowledge) return "";
   return `\nREFERENCE KNOWLEDGE (curated; use only if relevant to the question):\n${knowledge}`;
 }
