@@ -349,4 +349,33 @@ describe("ProfilePanel — auto-save OTP path (phone changed on Save)", () => {
       screen.getByRole("button", { name: /^Verify$/i }),
     ).toBeDisabled();
   });
+
+  it("PUT profile failure keeps OTP panel absent and surfaces the profile-level error", async () => {
+    renderProfile();
+
+    // The PUT /auth/users/:id/profile call rejects (network error, 422, etc.).
+    apiFetchMock.mockRejectedValueOnce(new Error("Validation failed"));
+
+    // Change the phone to a new value and attempt to save.
+    const phoneInput = screen.getByPlaceholderText("000-000-0000");
+    fireEvent.change(phoneInput, { target: { value: "555-987-6543" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Save profile$/i }));
+
+    // The profile-level error must appear.
+    await waitFor(() =>
+      expect(screen.getByText(/Validation failed/i)).toBeInTheDocument(),
+    );
+
+    // The OTP panel must NOT appear — onSuccess was never reached, so no SMS
+    // send was attempted and no code-entry UI should be visible.
+    expect(
+      screen.queryByText(/enter verification code/i),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("000000")).not.toBeInTheDocument();
+
+    // The Verify button is present but enabled (idle state, not OTP state).
+    expect(
+      screen.getByRole("button", { name: /^Verify$/i }),
+    ).not.toBeDisabled();
+  });
 });
