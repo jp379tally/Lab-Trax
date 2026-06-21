@@ -108,7 +108,20 @@ function renderKnowledgeSection(section: KnowledgeSection): string {
 }
 
 /**
- * Build a curated knowledge block for the given user query. Returns an empty
+ * Metadata returned alongside the knowledge block.
+ * sectionIds — IDs of every knowledge section included in the block.
+ * retentionDisclaimer — true when the legal-advice disclaimer was injected.
+ */
+export interface KnowledgeBlockMeta {
+  block: string;
+  sectionIds: string[];
+  retentionDisclaimer: boolean;
+}
+
+/**
+ * Build a curated knowledge block for the given user query. Returns metadata
+ * including the formatted block, the list of section IDs that were selected,
+ * and whether the retention disclaimer was injected. The block is an empty
  * string when nothing relevant is found so callers can append it
  * unconditionally without altering the prompt when there is no match.
  *
@@ -119,16 +132,23 @@ function renderKnowledgeSection(section: KnowledgeSection): string {
  * all groups, with HIPAA sections already included skipped to avoid
  * duplication.
  */
-export function buildKnowledgeBlock(query: string, maxChars = 2000): string {
-  const retentionQuery = hasRetentionSignal(query);
+export function buildKnowledgeBlockWithMeta(
+  query: string,
+  maxChars = 2000,
+): KnowledgeBlockMeta {
+  const retentionDisclaimer = hasRetentionSignal(query);
 
   if (!hasPrivacySignal(query)) {
-    const knowledge = selectKnowledge(query, { maxChars });
-    if (!knowledge) return "";
-    const prefix = retentionQuery
+    const sections = selectKnowledgeSections(query, { maxChars });
+    if (sections.length === 0) {
+      return { block: "", sectionIds: [], retentionDisclaimer: false };
+    }
+    const knowledge = sections.map(renderKnowledgeSection).join("\n\n");
+    const prefix = retentionDisclaimer
       ? `${RETENTION_LEGAL_DISCLAIMER}\n\n`
       : "";
-    return `\nREFERENCE KNOWLEDGE (curated; use only if relevant to the question):\n${prefix}${knowledge}`;
+    const block = `\nREFERENCE KNOWLEDGE (curated; use only if relevant to the question):\n${prefix}${knowledge}`;
+    return { block, sectionIds: sections.map((s) => s.id), retentionDisclaimer };
   }
 
   // Privacy signal detected: reserve a budget share for HIPAA sections.
@@ -157,15 +177,29 @@ export function buildKnowledgeBlock(query: string, maxChars = 2000): string {
 
   const allSections = [...hipaaSections, ...generalSections];
   const knowledge = allSections.map(renderKnowledgeSection).join("\n\n");
-  if (!knowledge) return "";
+  if (!knowledge) {
+    return { block: "", sectionIds: [], retentionDisclaimer: false };
+  }
 
   // When the query asks about retention, inject the legal disclaimer before
   // the knowledge sections so it appears at the top of the AI's reference
   // block — visible even if the user reads only part of the response.
-  const prefix = retentionQuery
+  const prefix = retentionDisclaimer
     ? `${RETENTION_LEGAL_DISCLAIMER}\n\n`
     : "";
-  return `\nREFERENCE KNOWLEDGE (curated; use only if relevant to the question):\n${prefix}${knowledge}`;
+  const block = `\nREFERENCE KNOWLEDGE (curated; use only if relevant to the question):\n${prefix}${knowledge}`;
+  return { block, sectionIds: allSections.map((s) => s.id), retentionDisclaimer };
+}
+
+/**
+ * Build a curated knowledge block for the given user query. Returns an empty
+ * string when nothing relevant is found so callers can append it
+ * unconditionally without altering the prompt when there is no match.
+ *
+ * @deprecated Prefer buildKnowledgeBlockWithMeta when you need the section IDs.
+ */
+export function buildKnowledgeBlock(query: string, maxChars = 2000): string {
+  return buildKnowledgeBlockWithMeta(query, maxChars).block;
 }
 
 // ─── Material & shade suggestion block ──────────────────────────────────────

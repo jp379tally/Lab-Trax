@@ -12,6 +12,10 @@ export interface ChatMsg {
   role: "user" | "assistant";
   content?: string;
   toolOutputs?: ToolOutput[];
+  /** IDs of the curated knowledge sections included in the prompt for this reply. Admin-only audit field. */
+  knowledgeSectionIds?: string[];
+  /** Whether the retention legal disclaimer was injected into the prompt. Admin-only audit field. */
+  retentionDisclaimer?: boolean;
   proposedAction?: {
     actionId: string;
     toolName: string;

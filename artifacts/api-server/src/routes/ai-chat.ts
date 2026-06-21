@@ -18,7 +18,7 @@ import { getProviderOrgIdsForUserAndLinks } from "../lib/cross-lab-doctor";
 import { requireAuth } from "../middlewares/auth";
 import { normalizeDoctor } from "../lib/pricing";
 import { wrapDbError } from "../lib/http";
-import { buildKnowledgeBlock, buildLabMemoryBlock, buildMaterialSuggestionBlock } from "../lib/ai-knowledge-augment";
+import { buildKnowledgeBlockWithMeta, buildLabMemoryBlock, buildMaterialSuggestionBlock } from "../lib/ai-knowledge-augment";
 import { learnFromExchange } from "../lib/ai-memory-learn";
 import { randomBytes } from "node:crypto";
 
@@ -703,7 +703,8 @@ export function registerAiChatRoutes(router: IRouter): void {
     // empty strings when nothing relevant exists, so the prompt is unchanged
     // in that case. This does not alter the request/response contract.
     const userMessage = String(lastMsg.content || "");
-    const knowledgeBlock = buildKnowledgeBlock(userMessage);
+    const knowledgeMeta = buildKnowledgeBlockWithMeta(userMessage);
+    const knowledgeBlock = knowledgeMeta.block;
     const materialBlock = buildMaterialSuggestionBlock(userMessage);
 
     // Lab orgs in scope for this turn — used to auto-learn candidate memory
@@ -765,6 +766,17 @@ ${pinnedCaseCtx ? `${pinnedCaseCtx}\n` : ""}${contextBlock}`;
         completion.choices[0]?.message?.content ||
         "I couldn't generate a response. Please try again.";
 
+      // Log which knowledge sections were used for audit purposes.
+      if (knowledgeMeta.sectionIds.length > 0 || knowledgeMeta.retentionDisclaimer) {
+        req.log?.info(
+          {
+            knowledgeSectionIds: knowledgeMeta.sectionIds,
+            retentionDisclaimer: knowledgeMeta.retentionDisclaimer,
+          },
+          "[AI CHAT] knowledge sections used in prompt",
+        );
+      }
+
       // Persist the exchange in the background; don't block the response
       const userContent = String(lastMsg.content || "").slice(0, 2000);
       persistExchange(userId, userContent, reply).catch((err) => {
@@ -783,7 +795,15 @@ ${pinnedCaseCtx ? `${pinnedCaseCtx}\n` : ""}${contextBlock}`;
         req.log?.error({ err }, "AI chat memory-learn error");
       });
 
-      return res.json({ reply });
+      return res.json({
+        reply,
+        ...(knowledgeMeta.sectionIds.length > 0
+          ? { knowledgeSectionIds: knowledgeMeta.sectionIds }
+          : {}),
+        ...(knowledgeMeta.retentionDisclaimer
+          ? { retentionDisclaimer: true }
+          : {}),
+      });
     } catch (err: any) {
       req.log?.error({ err }, "AI chat OpenAI error");
       return res

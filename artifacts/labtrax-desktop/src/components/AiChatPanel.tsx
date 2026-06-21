@@ -381,15 +381,63 @@ function ConfirmCard({ actionId, summary, state, resultText, error, expiresAt, o
   );
 }
 
+// ─── Admin: knowledge source badge ──────────────────────────────────────────
+
+/**
+ * Collapsible admin-only panel shown under each AI reply that lists the
+ * curated knowledge section IDs that were injected into the prompt.
+ * Visible only when the parent passes isAdmin={true}.
+ */
+function KnowledgeSourceBadge({
+  sectionIds,
+  retentionDisclaimer,
+}: {
+  sectionIds: string[];
+  retentionDisclaimer?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-0.5">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 text-[10px] text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+        title="Admin: curated knowledge sections used in this reply"
+      >
+        <Sparkles size={9} />
+        <span>{sectionIds.length} knowledge section{sectionIds.length !== 1 ? "s" : ""} used</span>
+        <span className="text-[9px]">{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div className="mt-1 rounded-lg border border-border/60 bg-muted/40 px-2.5 py-2 max-w-[280px]">
+          <p className="text-[10px] font-semibold text-muted-foreground mb-1.5">Knowledge sections (admin)</p>
+          <ul className="space-y-0.5">
+            {sectionIds.map((id) => (
+              <li key={id} className="text-[10px] font-mono text-foreground/70 truncate">{id}</li>
+            ))}
+          </ul>
+          {retentionDisclaimer && (
+            <p className="text-[10px] text-amber-600 dark:text-amber-500 mt-1.5 font-medium">
+              ⚠ Retention legal disclaimer was injected
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main component ─────────────────────────────────────────────────────────
 
 interface Props {
   onClose: () => void;
   initialCases?: AiCaseContext[];
   labOrganizationId?: string | null;
+  /** When true, shows a collapsed knowledge-source audit panel on assistant replies. */
+  isAdmin?: boolean;
 }
 
-export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: Props) {
+export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isAdmin = false }: Props) {
   const sessionKey =
     initialCases.length > 0
       ? [...initialCases].map((c) => c.caseId).sort().join("_")
@@ -830,6 +878,8 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
         summary?: string;
         error?: string;
         toolOutputs?: Array<{ name: string; result: unknown }>;
+        knowledgeSectionIds?: string[];
+        retentionDisclaimer?: boolean;
       }>("/ai-agent", { method: "POST", body: JSON.stringify(body) });
 
       let assistantMsg: ChatMsg;
@@ -851,6 +901,10 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
           role: "assistant",
           content: data.content || "I couldn't generate a response. Please try again.",
           ...(data.toolOutputs && data.toolOutputs.length > 0 ? { toolOutputs: data.toolOutputs } : {}),
+          ...(data.knowledgeSectionIds && data.knowledgeSectionIds.length > 0
+            ? { knowledgeSectionIds: data.knowledgeSectionIds }
+            : {}),
+          ...(data.retentionDisclaimer ? { retentionDisclaimer: true } : {}),
         };
       }
 
@@ -1383,6 +1437,12 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
                     <Printer size={12} />
                     Print case history
                   </button>
+                )}
+                {isAdmin && !isUser && msg.knowledgeSectionIds && msg.knowledgeSectionIds.length > 0 && (
+                  <KnowledgeSourceBadge
+                    sectionIds={msg.knowledgeSectionIds}
+                    retentionDisclaimer={msg.retentionDisclaimer}
+                  />
                 )}
               </div>
             </div>

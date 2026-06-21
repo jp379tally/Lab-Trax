@@ -27,7 +27,7 @@ import { db } from "@workspace/db";
 import { organizations, organizationMemberships, pricingTiers } from "@workspace/db";
 import { eq, and, inArray } from "drizzle-orm";
 import { getProviderOrgIdsForUserAndLinks } from "../lib/cross-lab-doctor";
-import { buildKnowledgeBlock, buildLabMemoryBlock, buildMaterialSuggestionBlock } from "../lib/ai-knowledge-augment";
+import { buildKnowledgeBlockWithMeta, buildLabMemoryBlock, buildMaterialSuggestionBlock } from "../lib/ai-knowledge-augment";
 import { learnFromExchange } from "../lib/ai-memory-learn";
 
 // ─── Shared rate limiter (same window as ai-chat) ───────────────────────────
@@ -97,11 +97,17 @@ function cleanExpiredActions(): void {
 
 // ─── Context assembly (minimal — just lab org) ─────────────────────────────
 
+interface SystemPromptResult {
+  prompt: string;
+  knowledgeSectionIds: string[];
+  retentionDisclaimer: boolean;
+}
+
 async function buildSystemPrompt(
   userId: string,
   userType: string,
   userMessage = "",
-): Promise<string> {
+): Promise<SystemPromptResult> {
   let contextBlock = "";
   // Track lab org ids in scope so we can append admin-curated per-lab memory.
   const memoryLabIds: string[] = [];
@@ -161,15 +167,15 @@ PRICING TIERS: ${tiers.map((t) => t.name).join(", ") || "none"}`;
   // Additive prompt augmentation: curated reference knowledge, material/shade
   // suggestion guidance, and admin-curated per-lab memory. All resolve to empty
   // strings when nothing relevant exists, leaving the prompt unchanged.
-  const knowledgeBlock = buildKnowledgeBlock(userMessage);
+  const knowledgeMeta = buildKnowledgeBlockWithMeta(userMessage);
   const materialBlock = buildMaterialSuggestionBlock(userMessage);
   const memoryBlock = await buildLabMemoryBlock(memoryLabIds);
 
-  return `You are Maynard, an action-taking assistant for dental lab management.
+  const prompt = `You are Maynard, an action-taking assistant for dental lab management.
 You can answer questions AND perform real operations using the tools available to you.
 Today's date: ${new Date().toLocaleDateString()}.
 ${contextBlock}
-${knowledgeBlock}${materialBlock}${memoryBlock}
+${knowledgeMeta.block}${materialBlock}${memoryBlock}
 
 IMPORTANT RULES:
 - For factual questions, answer directly using your tools or known context.
@@ -178,6 +184,8 @@ IMPORTANT RULES:
 - Handle ONE impactful action per turn. If the user asks for multiple impactful actions, propose the first one and tell the user to confirm it before you proceed with the next.
 - Be concise and action-oriented. After calling tools, summarize what happened or what is proposed.
 - If you cannot complete a request with the available tools, explain clearly what you can and cannot do.`;
+
+  return { prompt, knowledgeSectionIds: knowledgeMeta.sectionIds, retentionDisclaimer: knowledgeMeta.retentionDisclaimer };
 }
 
 // ─── Route registration ──────────────────────────────────────────────────────
@@ -263,11 +271,21 @@ export function registerAiAgentRoutes(router: IRouter): void {
       });
     };
 
-    const systemPrompt = await buildSystemPrompt(
+    const systemPromptResult = await buildSystemPrompt(
       userId,
       userType,
       String(lastMsg.content ?? ""),
     );
+    const { prompt: systemPrompt, knowledgeSectionIds, retentionDisclaimer } = systemPromptResult;
+
+    // Log which knowledge sections were included for audit purposes.
+    if (knowledgeSectionIds.length > 0 || retentionDisclaimer) {
+      req.log?.info(
+        { knowledgeSectionIds, retentionDisclaimer },
+        "[AI AGENT] knowledge sections used in prompt",
+      );
+    }
+
     const safeMessages = body.messages.slice(-20).map((m) => ({
       role: m.role as "user" | "assistant",
       content: String(m.content ?? "").slice(0, 4000),
@@ -314,6 +332,8 @@ export function registerAiAgentRoutes(router: IRouter): void {
             type: "reply",
             content: replyContent,
             ...(accumulatedToolOutputs.length > 0 ? { toolOutputs: accumulatedToolOutputs } : {}),
+            ...(knowledgeSectionIds.length > 0 ? { knowledgeSectionIds } : {}),
+            ...(retentionDisclaimer ? { retentionDisclaimer } : {}),
           });
         }
 
@@ -422,6 +442,8 @@ export function registerAiAgentRoutes(router: IRouter): void {
         type: "reply",
         content,
         ...(accumulatedToolOutputs.length > 0 ? { toolOutputs: accumulatedToolOutputs } : {}),
+        ...(knowledgeSectionIds.length > 0 ? { knowledgeSectionIds } : {}),
+        ...(retentionDisclaimer ? { retentionDisclaimer } : {}),
       });
     } catch (err: any) {
       req.log?.error({ err }, "[AI AGENT] OpenAI error");

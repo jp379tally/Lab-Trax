@@ -733,6 +733,7 @@ export function AppLayout({ children }: Props) {
         <AiChatPanel
           initialCases={aiPanelCases}
           labOrganizationId={user?.practiceOrganizationId}
+          isAdmin={isAdmin}
           onClose={() => {
             setAiPanelOpen(false);
             setAiPanelCases([]);
