@@ -100,6 +100,7 @@ export default function ProfileScreen() {
   const [otpError, setOtpError] = useState<string | null>(null);
   const [resendCountdown, setResendCountdown] = useState(0);
   const [resending, setResending] = useState(false);
+  const [isVerifying, setIsVerifying] = useState(false);
   const resendTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -199,8 +200,9 @@ export default function ProfileScreen() {
   }
 
   async function handleVerifyOtp() {
-    if (!otpCode.trim()) return;
+    if (!otpCode.trim() || isVerifying) return;
     setOtpError(null);
+    setIsVerifying(true);
     try {
       const res = await resilientFetch("/api/verify-phone-code", {
         method: "POST",
@@ -221,6 +223,8 @@ export default function ProfileScreen() {
       qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
     } catch (err: unknown) {
       setOtpError((err as Error).message || "Verification failed. Please try again.");
+    } finally {
+      setIsVerifying(false);
     }
   }
 
@@ -613,11 +617,12 @@ export default function ProfileScreen() {
                   )}
                   <View style={styles.otpActions}>
                     <Pressable
+                      testID="confirm-otp-btn"
                       style={[styles.otpConfirmBtn, { backgroundColor: colors.tint }]}
-                      onPress={handleVerifyOtp}
-                      disabled={otpCode.trim().length !== 6}
+                      onPress={otpCode.trim().length !== 6 || isVerifying ? undefined : handleVerifyOtp}
+                      disabled={otpCode.trim().length !== 6 || isVerifying}
                     >
-                      <Text style={styles.otpConfirmText}>Confirm</Text>
+                      <Text style={styles.otpConfirmText}>{isVerifying ? "Verifying…" : "Confirm"}</Text>
                     </Pressable>
                     <Pressable
                       testID="resend-otp-btn"

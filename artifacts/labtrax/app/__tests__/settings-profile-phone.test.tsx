@@ -557,6 +557,80 @@ describe("ProfileScreen — editing an unrelated field does not dismiss the OTP 
 });
 
 // ---------------------------------------------------------------------------
+// Suite: Confirm button is disabled while a verify request is in-flight;
+// double-tapping does NOT fire a second /verify-phone-code request
+// ---------------------------------------------------------------------------
+
+describe("ProfileScreen — Confirm button disabled while verification is in-flight", () => {
+  beforeEach(() => {
+    vi.mocked(Alert.alert).mockClear();
+    resetMockFetchHandler();
+  });
+
+  afterEach(() => {
+    resetMockFetchHandler();
+  });
+
+  it("does not fire a second /verify-phone-code when Confirm is tapped twice while the first request is in-flight", async () => {
+    renderProfile();
+
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText("000-000-0000")).toBeTruthy(),
+    );
+
+    // Open the OTP panel.
+    await openOtpPanelViaVerifyButton();
+
+    // Enter a 6-digit code so the button is enabled.
+    fireEvent.changeText(screen.getByPlaceholderText("000000"), "123456");
+
+    // Wire /verify-phone-code to a never-resolving promise so the request
+    // stays in-flight indefinitely — this is the stall that triggers isVerifying.
+    let verifyCallCount = 0;
+    setMockFetchHandler((url) => {
+      if (url.includes("/verify-phone-code")) {
+        verifyCallCount += 1;
+        return new Promise<never>(() => {}) as unknown as Response;
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    // First tap — starts the in-flight request.
+    const confirmBtn = screen.getByTestId("confirm-otp-btn");
+    fireEvent.press(confirmBtn);
+
+    // Wait for the button to become disabled (isVerifying=true).
+    await waitFor(() =>
+      expect(screen.getByTestId("confirm-otp-btn").props.disabled).toBe(true),
+    );
+
+    // Record the count after the first press.
+    expect(verifyCallCount).toBe(1);
+
+    // Second tap — must be a no-op because disabled=true / onPress=undefined.
+    fireEvent.press(screen.getByTestId("confirm-otp-btn"));
+
+    // Give any async work a tick to settle.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    // No additional /verify-phone-code request should have been fired.
+    expect(verifyCallCount).toBe(1);
+
+    // The OTP panel must still be open and the code input still present.
+    expect(screen.getByText("Enter verification code")).toBeTruthy();
+    expect(screen.getByPlaceholderText("000000")).toBeTruthy();
+
+    // No Alert should have been shown — the request is still pending, not errored.
+    expect(Alert.alert).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Suite: Resend button is disabled during countdown and pressing it while
 // disabled does NOT fire a second /send-phone-code request
 // ---------------------------------------------------------------------------
