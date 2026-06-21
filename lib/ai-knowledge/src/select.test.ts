@@ -190,6 +190,30 @@ describe("selectKnowledge", () => {
     expect(ids).toContain("hipaa.retention-dental-lab");
   });
 
+  it("returns retention-dental-lab for a Washington state retention query", () => {
+    const sections = selectKnowledgeSections(
+      "How long do I need to keep dental lab records in Washington state?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.retention-dental-lab");
+  });
+
+  it("returns retention-dental-lab for a Michigan minor-patient retention query", () => {
+    const sections = selectKnowledgeSections(
+      "What are the record retention rules for minor patients in Michigan?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.retention-dental-lab");
+  });
+
+  it("returns retention-dental-lab for a Virginia, Massachusetts, or Colorado retention query", () => {
+    const sections = selectKnowledgeSections(
+      "How many years must a dental lab keep records in Virginia, Massachusetts, and Colorado?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.retention-dental-lab");
+  });
+
   it("every curated section has a unique id and non-empty content", () => {
     const ids = ALL_SECTIONS.map((s) => s.id);
     expect(new Set(ids).size).toBe(ids.length);

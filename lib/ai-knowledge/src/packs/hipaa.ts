@@ -118,6 +118,9 @@ export const HIPAA_SECTIONS: KnowledgeSection[] = [
       "minor", "minors", "adult", "adults", "majority",
       "california", "ca", "texas", "tx", "new york", "ny", "florida", "fl",
       "illinois", "il", "ohio", "oh", "georgia", "ga", "pennsylvania", "pa",
+      "washington", "wa", "colorado", "co", "arizona", "az",
+      "new jersey", "nj", "north carolina", "nc", "michigan", "mi",
+      "virginia", "va", "massachusetts", "ma", "minnesota", "mn", "missouri", "mo",
       "federal", "baseline", "destroy", "disposal",
     ],
     body: `Dental-lab record retention varies by state. HIPAA itself sets no explicit minimum retention period for labs — the covered entity's BAA terms and applicable state dental-records laws govern. Below is a practical reference; always verify current rules with counsel before disposing of records.
@@ -133,6 +136,16 @@ export const HIPAA_SECTIONS: KnowledgeSection[] = [
 - Georgia: No explicit dental-specific statute; general medical records guidance suggests 10 years; minors until age 21.
 - Ohio: 6 years from last treatment date; minors until age 21 or 6 years from last treatment, whichever is later.
 - Pennsylvania: 7 years from date of last service; for minors, until age 18 plus 7 years.
+- Washington: 7 years from the date of last service; minors until age 21 or 7 years from last service, whichever is later. (RCW 70.02.160)
+- Colorado: 7 years from the date of last service; for minors, until age 18 plus 7 years (i.e., until age 25). (CO Board of Dental Examiners rules)
+- Arizona: 7 years from the date of service; for minors, until the patient reaches age 21 or 7 years, whichever is longer. (A.A.C. R4-11-1602)
+- New Jersey: 7 years from the date of last service; for minors, until age 21 or 7 years from last service, whichever is later. (N.J.A.C. 13:30-8.7)
+- North Carolina: 10 years from the date of last entry; for minors, until age 21 or 10 years, whichever is later. (21 NCAC 16P .0110)
+- Michigan: 10 years from the date of last treatment; for minors, until age 21 or 10 years from last treatment, whichever is later. (Michigan dental practice regulations)
+- Virginia: 6 years from the date of last service; for minors, 6 years after the patient turns 18 (i.e., until age 24). (18 VAC 60-21-90)
+- Massachusetts: 7 years from the date of last entry; for minors, until age 18 plus 7 years (i.e., until age 25). (234 CMR 5.13)
+- Minnesota: 7 years from the date of service; for minors, until age 19 or 7 years, whichever is later. (Minn. Stat. § 144.292)
+- Missouri: 10 years from the date of last treatment; for minors, until age 18 plus 10 years. (20 CSR 2110-2.200)
 
 **Minor patients (general rule across most states):** Retain records until the patient reaches the age of majority (typically 18) PLUS the standard adult retention period — commonly resulting in records being kept until the patient is 23–28 years old, depending on state.
 
