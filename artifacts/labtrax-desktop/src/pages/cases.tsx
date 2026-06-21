@@ -23,6 +23,7 @@ import {
   ImageOff,
   Loader2,
   Lock,
+  Mic,
   Paperclip,
   Pencil,
   Plus,
@@ -3231,6 +3232,45 @@ export function CaseDrawer({
   const [noteText, setNoteText] = useState("");
   const [shareWithProvider, setShareWithProvider] = useState(false);
   const [noteError, setNoteError] = useState<string | null>(null);
+  const [isListeningNote, setIsListeningNote] = useState(false);
+  const noteRecognitionRef = useRef<any>(null);
+
+  const startNoteListening = useCallback(() => {
+    const SR = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+    if (!SR) return;
+    const r = new SR();
+    r.continuous = true;
+    r.interimResults = true;
+    r.lang = "en-US";
+    let finalSoFar = "";
+    r.onresult = (e: any) => {
+      let interim = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) {
+          finalSoFar += e.results[i][0].transcript;
+        } else {
+          interim = e.results[i][0].transcript;
+        }
+      }
+      setNoteText((prev) => {
+        const base = prev.trimEnd();
+        const combined = finalSoFar + interim;
+        return base ? base + " " + combined : combined;
+      });
+      setNoteError(null);
+    };
+    r.onerror = () => { setIsListeningNote(false); };
+    r.onend = () => { setIsListeningNote(false); };
+    noteRecognitionRef.current = r;
+    r.start();
+    setIsListeningNote(true);
+  }, []);
+
+  const stopNoteListening = useCallback(() => {
+    noteRecognitionRef.current?.stop();
+    noteRecognitionRef.current = null;
+    setIsListeningNote(false);
+  }, []);
   const [notifyModal, setNotifyModal] = useState<{
     open: boolean;
     noteId: string;
@@ -6342,7 +6382,15 @@ export function CaseDrawer({
                   />
                   <span className="text-xs text-muted-foreground">Share note with provider</span>
                 </label>
-                <div className="flex items-center justify-end gap-2 pt-1.5 border-t border-border">
+                <div className="flex items-center justify-between pt-1.5 border-t border-border">
+                  <button
+                    type="button"
+                    title={isListeningNote ? "Stop dictation" : "Dictate note"}
+                    onClick={isListeningNote ? stopNoteListening : startNoteListening}
+                    className={`h-7 w-7 rounded inline-flex items-center justify-center transition-colors ${isListeningNote ? "bg-destructive text-destructive-foreground animate-pulse" : "bg-secondary text-muted-foreground hover:text-foreground hover:bg-secondary/80"}`}
+                  >
+                    <Mic size={13} />
+                  </button>
                   <button
                     type="button"
                     disabled={!noteText.trim() || addNoteMutation.isPending}
