@@ -1350,8 +1350,7 @@ Requirements:
     const completion = await openai.chat.completions.create({
       model: "gpt-5-mini",
       messages: [{ role: "user", content: prompt }],
-      max_tokens: 200,
-      temperature: 0.4,
+      max_completion_tokens: 200,
     });
 
     const draft = completion.choices[0]?.message?.content?.trim() ?? "";

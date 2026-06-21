@@ -991,12 +991,19 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
         void speakText(assistantMsg.content);
       }
     } catch (err: any) {
-      const msg =
-        err?.status === 429
-          ? "Please slow down — try again in a moment."
-          : err?.status === 503
-          ? "AI assistant is not configured on this server. Please contact your administrator."
-          : "Sorry, I'm having trouble connecting right now. Please try again.";
+      let msg: string;
+      if (err?.status === 429) {
+        msg = "Please slow down — try again in a moment.";
+      } else if (err?.status === 503) {
+        msg = "AI assistant is not configured on this server. Please contact your administrator.";
+      } else if (err?.status === 500) {
+        const detail = err?.body?.error || err?.data?.error;
+        msg = detail
+          ? `AI assistant encountered a server error: ${detail}`
+          : "AI assistant encountered a server error. Please try again or contact your administrator.";
+      } else {
+        msg = "Sorry, I'm having trouble connecting right now. Please try again.";
+      }
       const errMsg: ChatMsg = { id: generateId(), role: "assistant", content: msg };
       const finalMessages = [...currentMessages, errMsg];
       setMessages(finalMessages);

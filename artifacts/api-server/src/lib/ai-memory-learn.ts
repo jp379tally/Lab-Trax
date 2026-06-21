@@ -69,8 +69,7 @@ export async function extractMemoryCandidates(
     completion = await openai.chat.completions.create({
       model: "gpt-5-mini",
       response_format: { type: "json_object" },
-      max_tokens: 600,
-      temperature: 0,
+      max_completion_tokens: 600,
       messages: [
         { role: "system", content: EXTRACTION_SYSTEM_PROMPT },
         {
