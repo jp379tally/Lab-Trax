@@ -350,6 +350,62 @@ describe("selectKnowledge", () => {
     expect(ids).toContain("hipaa.disposal-methods");
   });
 
+  it("surfaces breach-response for a stolen laptop query", () => {
+    const sections = selectKnowledgeSections(
+      "A laptop with patient data was stolen — what do we do?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.breach-response");
+  });
+
+  it("surfaces breach-response for a reportable breach / HHS notification query", () => {
+    const sections = selectKnowledgeSections(
+      "Do we need to report this breach to HHS and OCR, and what is the notification deadline?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.breach-response");
+  });
+
+  it("surfaces breach-response for an unauthorized access incident query", () => {
+    const sections = selectKnowledgeSections(
+      "We detected unauthorized access to our case management system — what steps do we need to take?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.breach-response");
+  });
+
+  it("surfaces breach-response for a compromised shred bin incident query", () => {
+    const sections = selectKnowledgeSections(
+      "Our shred bin was compromised and patient records were exposed — do we need to report this breach and notify HHS?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.breach-response");
+  });
+
+  it("surfaces breach-response for a 60-day notification timeline query", () => {
+    const sections = selectKnowledgeSections(
+      "What is the 60-day notification timeline for a HIPAA breach and who must be notified?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.breach-response");
+  });
+
+  it("surfaces breach-response for a state-specific breach notification window query", () => {
+    const sections = selectKnowledgeSections(
+      "Does California have a shorter breach notification window than the federal 60-day HIPAA rule?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.breach-response");
+  });
+
+  it("surfaces breach-response for a ransomware incident query", () => {
+    const sections = selectKnowledgeSections(
+      "We got hit with ransomware — is this a reportable HIPAA breach and what do we document?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.breach-response");
+  });
+
   it("every curated section has a unique id and non-empty content", () => {
     const ids = ALL_SECTIONS.map((s) => s.id);
     expect(new Set(ids).size).toBe(ids.length);

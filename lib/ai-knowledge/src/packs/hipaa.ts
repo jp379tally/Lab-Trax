@@ -30,8 +30,9 @@ export const HIPAA_SECTIONS: KnowledgeSection[] = [
     group: "hipaa",
     title: "Secure data handling",
     keywords: [
-      "secure", "security", "encryption", "encrypt", "access control",
+      "secure", "securely", "security", "encryption", "encrypt", "access control",
       "password", "safeguard", "storage", "transmission", "backup",
+      "handle", "handling", "safely", "protect", "protecting",
     ],
     body: "Safeguard ePHI with access controls (unique logins, least privilege), encryption in transit and at rest, strong authentication, audit logging, and secure backups. Don't email PHI in the clear, reuse passwords, or share accounts. Lock screens, keep software patched, and restrict who can export or download patient data. Ensure backups are encrypted and access-controlled, and that deleted data handling still meets retention and recoverability obligations.",
   },
@@ -201,6 +202,47 @@ NIST SP 800-88 (Guidelines for Media Sanitization) is the recognized federal fra
 5. LabTrax soft-delete preserves records for audit recovery. When you are ready for final disposal after the retention window, use the export-and-delete workflow and confirm ePHI removal from backups in accordance with your BAA and disaster-recovery policy.
 
 This is general compliance reference, not legal advice. State requirements can change — verify current rules with your compliance officer or legal counsel before disposing of records.`,
+  },
+  {
+    id: "hipaa.breach-response",
+    group: "hipaa",
+    title: "Data breach response for dental labs",
+    keywords: [
+      "breach", "data breach", "security incident", "incident", "incident response",
+      "notification", "notify", "report", "reporting", "reportable",
+      "stolen", "lost", "unauthorized access", "unauthorized",
+      "hhs", "ocr", "office for civil rights",
+      "60 day", "60-day", "72 hour", "72-hour", "72h",
+      "laptop stolen", "laptop lost", "device stolen", "device lost",
+      "shred bin", "compromised", "ransomware", "phishing",
+      "media breach", "large breach", "500", "media notice",
+      "state notification", "state breach", "california breach", "texas breach",
+      "ca breach", "tx breach",
+      "breach log", "breach documentation", "document breach",
+      "risk assessment", "low probability", "hipaa breach rule",
+    ],
+    body: `When a dental lab suspects or confirms that PHI was improperly accessed, used, or disclosed, the HIPAA Breach Notification Rule requires a structured incident response. This is general guidance — consult your compliance officer or legal counsel immediately.
+
+**What qualifies as a reportable breach**
+A breach is any impermissible use or disclosure of unsecured PHI. Apply the four-factor risk assessment: (1) nature and extent of PHI involved, (2) who could have accessed it, (3) whether it was actually acquired or viewed, (4) whether risk has been mitigated. If you cannot demonstrate a low probability of compromise across all four factors, treat it as a reportable breach.
+
+**Notification timeline (60-day federal rule)**
+- **Lab → covered entity (dental practice):** Notify "without unreasonable delay," no later than 60 days after discovery. The BAA may require shorter notice.
+- **Covered entity → affected patients:** Within 60 days of discovery.
+- **Covered entity → HHS/OCR:** Breaches affecting <500 individuals: log and report annually. Breaches affecting 500+ individuals: report to HHS OCR within 60 days (posted publicly on the HHS breach portal).
+- **Media notice:** Breaches affecting 500+ residents of a state require prominent media notification in that state within 60 days.
+
+**State-specific windows (shorter than 60 days)**
+California: 72 hours (CMIA, healthcare operators). Florida, Colorado, Washington: 30 days. Texas: 60 days (matches federal). New York, Illinois: "most expedient time possible." Check state law for every state where affected individuals reside.
+
+**Common scenarios**
+- *Stolen or lost device:* Encrypted device with no evidence of access → document low probability. Unencrypted → reportable.
+- *Compromised shred bin or unsecured paper records:* Paper PHI exposed to unauthorized parties → reportable unless low probability is clearly documented.
+- *Ransomware:* HHS presumes a breach — treat as reportable unless PHI non-exfiltration is proven.
+- *Unauthorized account access or phishing:* Investigate scope, preserve logs, report unless low-probability analysis is complete.
+
+**What to document (retain 6 years)**
+Date of discovery; description of the incident; PHI types and number of individuals affected; four-factor risk assessment and conclusion; containment and mitigation steps taken; notifications sent to the practice, patients, HHS, and media with dates; corrective actions.`,
   },
   {
     id: "hipaa.baa-lab-practice",
