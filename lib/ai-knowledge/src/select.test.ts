@@ -134,6 +134,38 @@ describe("selectKnowledge", () => {
     expect(sections[0]!.id).toBe("dental.orthodontic-appliances");
   });
 
+  it("surfaces lab-slip-rx-phi for a lab slip PHI query", () => {
+    const sections = selectKnowledgeSections(
+      "what PHI is included on a dental lab slip or Rx work order?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.lab-slip-rx-phi");
+  });
+
+  it("surfaces deidentification-demos for a demo de-identification query", () => {
+    const sections = selectKnowledgeSections(
+      "can I use a real patient photo for a software demo or training?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.deidentification-demos");
+  });
+
+  it("surfaces baa-lab-practice for a BAA query", () => {
+    const sections = selectKnowledgeSections(
+      "do I need a business associate agreement with every dental practice I work with?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.baa-lab-practice");
+  });
+
+  it("surfaces case-media-minimum-necessary for a case media / photo query", () => {
+    const sections = selectKnowledgeSections(
+      "what counts as minimum necessary when sharing case photos and attachments?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.case-media-minimum-necessary");
+  });
+
   it("every curated section has a unique id and non-empty content", () => {
     const ids = ALL_SECTIONS.map((s) => s.id);
     expect(new Set(ids).size).toBe(ids.length);
