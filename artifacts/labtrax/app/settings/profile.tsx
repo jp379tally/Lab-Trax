@@ -30,6 +30,7 @@ interface MeUser {
   lastName?: string | null;
   email?: string | null;
   phone?: string | null;
+  phoneVerifiedAt?: string | null;
   practiceName?: string | null;
   role?: string | null;
   workStatus?: string | null;
@@ -93,6 +94,19 @@ export default function ProfileScreen() {
   const [logoUploading, setLogoUploading] = useState(false);
   const logoXhrRef = useRef<XMLHttpRequest | null>(null);
 
+  // Phone verification state
+  const [phoneVerifyStep, setPhoneVerifyStep] = useState<"idle" | "sending" | "otp">("idle");
+  const [otpCode, setOtpCode] = useState("");
+  const [otpError, setOtpError] = useState<string | null>(null);
+  const [resendCountdown, setResendCountdown] = useState(0);
+  const resendTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (resendTimerRef.current) clearInterval(resendTimerRef.current);
+    };
+  }, []);
+
   useEffect(() => {
     if (user) {
       setFirstName(user.firstName ?? "");
@@ -103,8 +117,108 @@ export default function ProfileScreen() {
       setUsername(user.username ?? "");
       setLogoPlacements(user.practiceLogoplacements ?? ["invoices", "statements", "lab_reports"]);
       setLogoSize(user.practiceLogoSize ?? "medium");
+      setPhoneVerifyStep("idle");
+      setOtpCode("");
+      setOtpError(null);
     }
   }, [user?.id]);
+
+  // A phone is considered verified only when the stored verifiedAt is set AND
+  // the field hasn't been edited away from the server-confirmed value.
+  const isPhoneVerified = !!(
+    user?.phoneVerifiedAt &&
+    user?.phone &&
+    phone.trim() !== "" &&
+    phone === user.phone
+  );
+
+  function startResendTimer() {
+    setResendCountdown(60);
+    if (resendTimerRef.current) clearInterval(resendTimerRef.current);
+    resendTimerRef.current = setInterval(() => {
+      setResendCountdown((c) => {
+        if (c <= 1) {
+          clearInterval(resendTimerRef.current!);
+          resendTimerRef.current = null;
+          return 0;
+        }
+        return c - 1;
+      });
+    }, 1000);
+  }
+
+  async function handleSendVerificationCode() {
+    const phoneToVerify = phone.trim();
+    if (!phoneToVerify || !user?.id) return;
+    setPhoneVerifyStep("sending");
+    setOtpError(null);
+    try {
+      // If phone was edited, save it first so the server can bind the code to the user's account.
+      if (phone !== (user?.phone ?? "")) {
+        const saveRes = await resilientFetch(`/api/auth/users/${user.id}/profile`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ firstName, lastName, email, phone, practiceName, username }),
+        });
+        if (!saveRes.ok) {
+          const e = await saveRes.json().catch(() => ({}));
+          throw new Error((e as any)?.error || `Save failed (${saveRes.status})`);
+        }
+        qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
+      }
+      const codeRes = await resilientFetch("/api/send-phone-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone: phoneToVerify }),
+      });
+      if (!codeRes.ok) {
+        const e = await codeRes.json().catch(() => ({}));
+        throw new Error((e as any)?.error || "Failed to send verification code.");
+      }
+      setPhoneVerifyStep("otp");
+      setOtpCode("");
+      startResendTimer();
+    } catch (err: unknown) {
+      setOtpError((err as Error).message || "Failed to send verification code.");
+      setPhoneVerifyStep("idle");
+    }
+  }
+
+  async function handleVerifyOtp() {
+    if (!otpCode.trim()) return;
+    setOtpError(null);
+    try {
+      const res = await resilientFetch("/api/verify-phone-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone: phone.trim(), code: otpCode.trim() }),
+      });
+      const result = await res.json() as { verified: boolean; error?: string };
+      if (!result.verified) {
+        setOtpError(result.error || "Incorrect code. Please try again.");
+        return;
+      }
+      setPhoneVerifyStep("idle");
+      setOtpCode("");
+      if (resendTimerRef.current) {
+        clearInterval(resendTimerRef.current);
+        resendTimerRef.current = null;
+      }
+      qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
+    } catch (err: unknown) {
+      setOtpError((err as Error).message || "Verification failed. Please try again.");
+    }
+  }
+
+  function cancelPhoneVerify() {
+    setPhoneVerifyStep("idle");
+    setOtpCode("");
+    setOtpError(null);
+    if (resendTimerRef.current) {
+      clearInterval(resendTimerRef.current);
+      resendTimerRef.current = null;
+    }
+  }
 
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -119,10 +233,33 @@ export default function ProfileScreen() {
         throw new Error((e as any)?.error || `Save failed (${res.status})`);
       }
     },
-    onSuccess: () => {
+    onSuccess: async () => {
+      const phoneChanged = phone !== (user?.phone ?? "");
       setSaved(true);
       qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
       setTimeout(() => setSaved(false), 2500);
+      // Auto-start SMS verification when the phone number changes on save.
+      if (phoneChanged && phone.trim()) {
+        setPhoneVerifyStep("sending");
+        setOtpError(null);
+        try {
+          const codeRes = await resilientFetch("/api/send-phone-code", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ phone: phone.trim() }),
+          });
+          if (!codeRes.ok) {
+            const e = await codeRes.json().catch(() => ({}));
+            throw new Error((e as any)?.error || "Failed to send verification code.");
+          }
+          setPhoneVerifyStep("otp");
+          setOtpCode("");
+          startResendTimer();
+        } catch (err: unknown) {
+          setOtpError((err as Error).message || "Failed to send verification code.");
+          setPhoneVerifyStep("idle");
+        }
+      }
     },
     onError: (err: Error) => Alert.alert("Could not save profile", err.message),
   });
@@ -381,17 +518,106 @@ export default function ProfileScreen() {
                   placeholder="you@example.com"
                 />
               </View>
+
+              {/* Phone field with verification */}
               <View style={[styles.fieldWrap, styles.fieldDivider, { borderTopColor: colors.border }]}>
-                <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Phone</Text>
+                <View style={styles.phoneRow}>
+                  <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Phone</Text>
+                  {isPhoneVerified && (
+                    <View style={[styles.verifiedBadge, { backgroundColor: colors.success + "18", borderColor: colors.success + "40" }]}>
+                      <Ionicons name="checkmark-circle" size={12} color={colors.success} />
+                      <Text style={[styles.verifiedText, { color: colors.success }]}>Verified</Text>
+                    </View>
+                  )}
+                </View>
                 <TextInput
                   value={phone}
-                  onChangeText={setPhone}
+                  onChangeText={(v) => {
+                    setPhone(v);
+                    if (phoneVerifyStep !== "idle") cancelPhoneVerify();
+                  }}
                   keyboardType="phone-pad"
-                  style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]}
+                  editable={phoneVerifyStep === "idle"}
+                  style={[
+                    styles.input,
+                    { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface },
+                    phoneVerifyStep !== "idle" && { opacity: 0.6 },
+                  ]}
                   placeholderTextColor={colors.textTertiary}
                   placeholder="000-000-0000"
                 />
+
+                {/* Verify button — shown when phone is set and not yet verified (or edited) */}
+                {phoneVerifyStep === "idle" && phone.trim() !== "" && !isPhoneVerified && (
+                  <Pressable
+                    style={[styles.verifyBtn, { borderColor: colors.tint, backgroundColor: colors.tint + "12" }]}
+                    onPress={handleSendVerificationCode}
+                  >
+                    <Ionicons name="shield-checkmark-outline" size={14} color={colors.tint} />
+                    <Text style={[styles.verifyBtnText, { color: colors.tint }]}>Verify phone number</Text>
+                  </Pressable>
+                )}
+
+                {/* Sending spinner */}
+                {phoneVerifyStep === "sending" && (
+                  <View style={styles.verifyRow}>
+                    <ActivityIndicator size={14} color={colors.tint} />
+                    <Text style={[styles.verifyHint, { color: colors.textSecondary }]}>Sending code…</Text>
+                  </View>
+                )}
+
+                {otpError && phoneVerifyStep === "idle" && (
+                  <Text style={[styles.otpError, { color: colors.error }]}>{otpError}</Text>
+                )}
               </View>
+
+              {/* OTP entry — rendered below the phone row */}
+              {phoneVerifyStep === "otp" && (
+                <View style={[styles.otpSection, { borderTopColor: colors.border, backgroundColor: colors.surfaceAlt }]}>
+                  <Text style={[styles.otpTitle, { color: colors.text }]}>Enter verification code</Text>
+                  <Text style={[styles.otpSubtitle, { color: colors.textSecondary }]}>
+                    We sent a 6-digit code to {phone}. Enter it below to verify your number.
+                  </Text>
+                  <TextInput
+                    value={otpCode}
+                    onChangeText={setOtpCode}
+                    keyboardType="number-pad"
+                    maxLength={6}
+                    placeholder="000000"
+                    placeholderTextColor={colors.textTertiary}
+                    style={[styles.otpInput, { color: colors.text, borderColor: colors.tint, backgroundColor: colors.surface }]}
+                    autoFocus
+                  />
+                  {otpError && (
+                    <Text style={[styles.otpError, { color: colors.error }]}>{otpError}</Text>
+                  )}
+                  <View style={styles.otpActions}>
+                    <Pressable
+                      style={[styles.otpConfirmBtn, { backgroundColor: colors.tint }]}
+                      onPress={handleVerifyOtp}
+                      disabled={otpCode.trim().length !== 6}
+                    >
+                      <Text style={styles.otpConfirmText}>Confirm</Text>
+                    </Pressable>
+                    <Pressable
+                      style={[styles.otpSecondaryBtn, { borderColor: colors.border }]}
+                      onPress={resendCountdown > 0 ? undefined : handleSendVerificationCode}
+                      disabled={resendCountdown > 0}
+                    >
+                      <Text style={[styles.otpSecondaryText, { color: resendCountdown > 0 ? colors.textTertiary : colors.tint }]}>
+                        {resendCountdown > 0 ? `Resend (${resendCountdown}s)` : "Resend"}
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      style={[styles.otpSecondaryBtn, { borderColor: colors.border }]}
+                      onPress={cancelPhoneVerify}
+                    >
+                      <Text style={[styles.otpSecondaryText, { color: colors.textSecondary }]}>Cancel</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              )}
+
               <View style={[styles.fieldWrap, styles.fieldDivider, { borderTopColor: colors.border }]}>
                 <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Practice / lab name</Text>
                 <TextInput
@@ -627,6 +853,79 @@ function makeStyles(c: ThemeColors) {
       ...Typography.body,
     },
     readOnly: { ...Typography.body, paddingTop: 2 },
+
+    // Phone verification styles
+    phoneRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.sm,
+    },
+    verifiedBadge: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 4,
+      paddingHorizontal: 6,
+      paddingVertical: 2,
+      borderRadius: Radius.full,
+      borderWidth: 1,
+    },
+    verifiedText: { ...Typography.tiny, fontWeight: "600" },
+    verifyBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      alignSelf: "flex-start",
+      borderWidth: 1,
+      borderRadius: Radius.sm,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Spacing.xs,
+      marginTop: Spacing.xs,
+    },
+    verifyBtnText: { ...Typography.captionMedium },
+    verifyRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.sm,
+      marginTop: Spacing.xs,
+    },
+    verifyHint: { ...Typography.caption },
+
+    otpSection: {
+      padding: Spacing.lg,
+      gap: Spacing.sm,
+      borderTopWidth: StyleSheet.hairlineWidth,
+    },
+    otpTitle: { ...Typography.bodyMedium },
+    otpSubtitle: { ...Typography.caption },
+    otpInput: {
+      borderWidth: 2,
+      borderRadius: Radius.sm,
+      padding: Spacing.md,
+      ...Typography.h2,
+      textAlign: "center",
+      letterSpacing: 6,
+    },
+    otpError: { ...Typography.caption },
+    otpActions: {
+      flexDirection: "row",
+      gap: Spacing.sm,
+      marginTop: Spacing.xs,
+    },
+    otpConfirmBtn: {
+      flex: 1,
+      borderRadius: Radius.sm,
+      padding: Spacing.sm,
+      alignItems: "center",
+    },
+    otpConfirmText: { ...Typography.captionSemibold, color: "#fff" },
+    otpSecondaryBtn: {
+      borderWidth: 1,
+      borderRadius: Radius.sm,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Spacing.sm,
+      alignItems: "center",
+    },
+    otpSecondaryText: { ...Typography.captionMedium },
 
     logoRow: {
       flexDirection: "row",
