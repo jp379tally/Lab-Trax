@@ -177,6 +177,21 @@ describe("ProfilePanel — phone verification OTP flow", () => {
     ).toBeDisabled();
   });
 
+  it("editing an unrelated field (firstName) while OTP panel is open does not dismiss the panel", async () => {
+    renderProfile();
+    await openOtpPanel();
+
+    // The OTP panel is open; now touch the First name input without changing the phone.
+    const firstNameInput = screen.getByDisplayValue("Test");
+    fireEvent.change(firstNameInput, { target: { value: "Testing" } });
+
+    // The OTP panel must remain visible — phone value did not change.
+    expect(screen.getByText(/enter verification code/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /^Verify$/i }),
+    ).toBeDisabled();
+  });
+
   it("cancel while resend is in-flight clears resending state so the button is not stuck after reopening", async () => {
     renderProfile();
     await openOtpPanel();

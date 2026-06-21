@@ -856,7 +856,7 @@ function ProfilePanel() {
                 const newVal = formatPhone(e.target.value);
                 setPhone(newVal);
                 setSmsUnavailable(false);
-                if (phoneVerifyStep !== "idle") cancelPhoneVerify();
+                if (phoneVerifyStep !== "idle" && newVal !== phone) cancelPhoneVerify();
               }}
               placeholder="000-000-0000"
               className={inputCls}
