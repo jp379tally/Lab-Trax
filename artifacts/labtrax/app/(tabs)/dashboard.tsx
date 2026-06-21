@@ -427,19 +427,20 @@ export default function DashboardScreen() {
         ) : null}
       </Pressable>
 
+      <View style={styles.greetingRow}>
+        <Text style={styles.title}>{getGreeting(meUser?.firstName)}</Text>
+        <Text style={styles.subtitle}>Your lab at a glance</Text>
+      </View>
+
       <View style={styles.header}>
         <Pressable
           style={styles.maynardBtn}
           onPress={() => router.push("/ai-assistant" as never)}
           testID="dashboard-ai-assistant-btn"
         >
-          <Ionicons name="sparkles" size={22} color="#fff" />
-          <Text style={styles.maynardBtnText}>Maynard</Text>
+          <Ionicons name="sparkles" size={18} color="#fff" />
+          <Text style={styles.actionBtnText}>Maynard</Text>
         </Pressable>
-        <View style={styles.headerText}>
-          <Text style={styles.title}>{getGreeting(meUser?.firstName)}</Text>
-          <Text style={styles.subtitle}>Your lab at a glance</Text>
-        </View>
         <View style={styles.headerActions}>
           <Pressable style={styles.arrangeBtn} onPress={swapSections} hitSlop={8}>
             <Ionicons name="swap-vertical-outline" size={18} color={colors.textSecondary} />
@@ -452,15 +453,15 @@ export default function DashboardScreen() {
           >
             <Ionicons name="layers-outline" size={18} color={colors.tint} />
           </Pressable>
-          <Pressable
-            style={styles.aiReaderBtn}
-            onPress={() => router.push("/ai-reader/capture?new=1" as never)}
-            testID="dashboard-ai-reader-btn"
-          >
-            <Ionicons name="sparkles" size={16} color="#fff" />
-            <Text style={styles.aiReaderBtnText}>Scan Rx</Text>
-          </Pressable>
         </View>
+        <Pressable
+          style={styles.scanRxBtn}
+          onPress={() => router.push("/ai-reader/capture?new=1" as never)}
+          testID="dashboard-ai-reader-btn"
+        >
+          <Ionicons name="sparkles" size={18} color="#fff" />
+          <Text style={styles.actionBtnText}>Scan Rx</Text>
+        </Pressable>
       </View>
 
       {casesQuery.isLoading ? (
@@ -533,6 +534,11 @@ function makeStyles(c: ThemeColors) {
     profileName: { ...Typography.h3, textAlign: "center" },
     profileLab: { ...Typography.body, textAlign: "center" },
     profileRole: { ...Typography.caption, textAlign: "center" },
+    greetingRow: {
+      paddingHorizontal: Spacing.lg,
+      paddingTop: Spacing.xs,
+      paddingBottom: 2,
+    },
     header: {
       flexDirection: "row",
       alignItems: "center",
@@ -541,7 +547,6 @@ function makeStyles(c: ThemeColors) {
       paddingTop: Spacing.xs,
       paddingBottom: Spacing.xs,
     },
-    headerText: { flex: 1 },
     headerActions: {
       flexDirection: "row",
       alignItems: "center",
@@ -550,16 +555,30 @@ function makeStyles(c: ThemeColors) {
     title: { ...Typography.h1, color: c.text },
     subtitle: { ...Typography.caption, color: c.textSecondary, marginTop: 2 },
     maynardBtn: {
+      flex: 1,
       flexDirection: "row",
       alignItems: "center",
+      justifyContent: "center",
       gap: Spacing.xs,
       backgroundColor: c.tint,
       paddingHorizontal: Spacing.md,
       paddingVertical: 10,
       borderRadius: Radius.md,
-      minHeight: 48,
+      minHeight: 44,
     },
-    maynardBtnText: { ...Typography.bodySemibold, color: "#fff" },
+    scanRxBtn: {
+      flex: 1,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: Spacing.xs,
+      backgroundColor: c.tint,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: 10,
+      borderRadius: Radius.md,
+      minHeight: 44,
+    },
+    actionBtnText: { ...Typography.bodySemibold, color: "#fff" },
     arrangeBtn: {
       width: 36,
       height: 36,
@@ -568,16 +587,6 @@ function makeStyles(c: ThemeColors) {
       alignItems: "center",
       justifyContent: "center",
     },
-    aiReaderBtn: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: Spacing.xs,
-      backgroundColor: c.tint,
-      paddingHorizontal: Spacing.md,
-      paddingVertical: Spacing.sm,
-      borderRadius: Radius.md,
-    },
-    aiReaderBtnText: { ...Typography.captionSemibold, color: "#fff" },
     center: { flex: 1, alignItems: "center", justifyContent: "center", padding: Spacing.xl, minHeight: 280 },
     content: { padding: Spacing.lg, paddingTop: Spacing.sm, gap: Spacing.lg },
     section: { gap: Spacing.md },
