@@ -13,6 +13,12 @@
  *  - buildKnowledgeBlock — returns a labelled block for a relevant query
  *  - buildKnowledgeBlock — returns "" for an unrelated query (prompt unchanged)
  *  - buildKnowledgeBlock — respects maxChars
+ *  - buildKnowledgeBlockWithMeta — sectionIds empty for unrelated query
+ *  - buildKnowledgeBlockWithMeta — sectionIds non-empty for privacy-signal query
+ *  - buildKnowledgeBlockWithMeta — sectionIds match selectKnowledgeSections for non-privacy path
+ *  - buildKnowledgeBlockWithMeta — retentionDisclaimer false for non-retention query
+ *  - buildKnowledgeBlockWithMeta — retentionDisclaimer true for retention-signal query
+ *  - buildKnowledgeBlockWithMeta — block non-empty iff sectionIds non-empty
  *  - buildLabMemoryBlock — "" for empty lab list (no DB needed)
  *  - buildLabMemoryBlock — "" when a lab has no memory
  *  - buildLabMemoryBlock — groups entries by kind and honors soft-delete
@@ -20,8 +26,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { randomBytes } from "node:crypto";
 import { eq } from "drizzle-orm";
+import { selectKnowledgeSections } from "@workspace/ai-knowledge";
 import {
   buildKnowledgeBlock,
+  buildKnowledgeBlockWithMeta,
   buildLabMemoryBlock,
   buildMaterialSuggestionBlock,
   hasPrivacySignal,
@@ -402,6 +410,104 @@ describe("buildKnowledgeBlock (pure)", () => {
     const small = buildKnowledgeBlock("crown bridge zirconia shade margin", 120);
     // Allow for the header prefix; the selected knowledge body honors maxChars.
     expect(small.length).toBeLessThan(400);
+  });
+});
+
+describe("buildKnowledgeBlockWithMeta (pure)", () => {
+  it("returns empty sectionIds and empty block for an unrelated query", () => {
+    const meta = buildKnowledgeBlockWithMeta("zzzzz qqqqq wwwww unrelated gibberish 12345");
+    expect(meta.block).toBe("");
+    expect(meta.sectionIds).toEqual([]);
+    expect(meta.retentionDisclaimer).toBe(false);
+  });
+
+  it("returns non-empty sectionIds for a privacy-signal query", () => {
+    const meta = buildKnowledgeBlockWithMeta("Can I share a patient photo with anyone?");
+    expect(meta.sectionIds.length).toBeGreaterThan(0);
+    expect(meta.block).not.toBe("");
+  });
+
+  it("sectionIds are strings", () => {
+    const meta = buildKnowledgeBlockWithMeta("Can I share a patient photo with anyone?");
+    for (const id of meta.sectionIds) {
+      expect(typeof id).toBe("string");
+      expect(id.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("sectionIds match the sections selectKnowledgeSections would pick for a non-privacy query", () => {
+    // The default maxChars in buildKnowledgeBlockWithMeta is 2000; pass the
+    // same budget to selectKnowledgeSections so the selection is identical.
+    const query = "What zirconia material should I use for a molar crown?";
+    const meta = buildKnowledgeBlockWithMeta(query);
+    const expected = selectKnowledgeSections(query, { maxChars: 2000 }).map((s) => s.id);
+    expect(meta.sectionIds).toEqual(expected);
+  });
+
+  it("sectionIds contain the HIPAA sections selectKnowledgeSections picks within the HIPAA budget", () => {
+    // buildKnowledgeBlockWithMeta reserves hipaaReserved = min(floor(2000*0.5), 1500) = 1000
+    // chars for HIPAA sections. Verify sectionIds includes every section that
+    // fits within that same budget (not the unconstrained default of 6000).
+    const query = "Who can see patient attachments on a case?";
+    const hipaaReserved = Math.min(Math.floor(2000 * 0.5), 1500);
+    const meta = buildKnowledgeBlockWithMeta(query);
+    const hipaaSections = selectKnowledgeSections(query, {
+      groups: ["hipaa"],
+      maxChars: hipaaReserved,
+    });
+    const metaIdSet = new Set(meta.sectionIds);
+    for (const s of hipaaSections) {
+      expect(metaIdSet.has(s.id), `expected sectionId "${s.id}" in meta`).toBe(true);
+    }
+  });
+
+  it("block and sectionIds are consistent: block is empty iff sectionIds is empty", () => {
+    const relevant = buildKnowledgeBlockWithMeta("Can I share patient photos with anyone?");
+    expect(relevant.sectionIds.length > 0).toBe(relevant.block.length > 0);
+
+    const irrelevant = buildKnowledgeBlockWithMeta("zzzzz qqqqq wwwww unrelated gibberish 12345");
+    expect(irrelevant.sectionIds.length).toBe(0);
+    expect(irrelevant.block).toBe("");
+  });
+
+  it("retentionDisclaimer is false for a privacy-only query (no retention signal)", () => {
+    const meta = buildKnowledgeBlockWithMeta("Can I share a patient photo with anyone?");
+    expect(meta.retentionDisclaimer).toBe(false);
+  });
+
+  it("retentionDisclaimer is false for an unrelated query", () => {
+    const meta = buildKnowledgeBlockWithMeta("What zirconia should I use for a molar crown?");
+    expect(meta.retentionDisclaimer).toBe(false);
+  });
+
+  it("retentionDisclaimer is true for a record-retention query", () => {
+    const meta = buildKnowledgeBlockWithMeta("How long do I need to keep dental records in California?");
+    expect(meta.retentionDisclaimer).toBe(true);
+  });
+
+  it("retentionDisclaimer is true for a query containing a retention signal", () => {
+    const meta = buildKnowledgeBlockWithMeta("What are the state law requirements for record retention?");
+    expect(meta.retentionDisclaimer).toBe(true);
+  });
+
+  it("block contains the disclaimer when retentionDisclaimer is true", () => {
+    const meta = buildKnowledgeBlockWithMeta("How long must I retain records for minor patients?");
+    expect(meta.retentionDisclaimer).toBe(true);
+    expect(meta.block).toContain("NOT LEGAL ADVICE");
+  });
+
+  it("block does not contain the disclaimer when retentionDisclaimer is false", () => {
+    const meta = buildKnowledgeBlockWithMeta("Can I share a patient photo?");
+    expect(meta.retentionDisclaimer).toBe(false);
+    expect(meta.block).not.toContain("NOT LEGAL ADVICE");
+  });
+
+  it("maxChars budget is respected for sectionIds count", () => {
+    const tinyMeta = buildKnowledgeBlockWithMeta("crown bridge zirconia shade margin", 120);
+    // Block may be non-empty but must fit within a tight budget.
+    // sectionIds count is bounded by the small char budget (likely 0 or 1 section).
+    expect(tinyMeta.sectionIds.length).toBeLessThanOrEqual(3);
+    expect(tinyMeta.block.length).toBeLessThan(400);
   });
 });
 

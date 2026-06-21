@@ -15,8 +15,14 @@
  * - POST /ai-agent/reject silently ignores another user's action (no removal)
  * - Tool classification: readonly tools have kind "readonly", impactful tools have kind "impactful"
  * - Tool registry completeness
+ * - POST /ai-agent knowledge audit: knowledgeSectionIds present for privacy-signal query
+ * - POST /ai-agent knowledge audit: retentionDisclaimer present for retention-signal query
+ * - POST /ai-agent knowledge audit: knowledgeSectionIds absent for unrelated query
+ * - POST /ai-chat knowledge audit: knowledgeSectionIds present for privacy-signal query
+ * - POST /ai-chat knowledge audit: retentionDisclaimer present for retention-signal query
+ * - POST /ai-chat knowledge audit: knowledgeSectionIds absent for unrelated query
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import request from "supertest";
 import express from "express";
 import bodyParser from "body-parser";
@@ -27,6 +33,86 @@ import {
   type ToolContext,
 } from "../lib/ai-agent-tools";
 import { registerAiAgentRoutes, _testInjectPendingAction } from "./ai-agent";
+import { registerAiChatRoutes } from "./ai-chat";
+
+// ─── OpenAI mock (hoisted so the module-level singleton is initialised with it)
+// Returns a minimal text completion with no tool_calls so routes take the
+// "direct reply" code path without invoking any real AI service.
+
+const { mockCompletionsCreate } = vi.hoisted(() => {
+  const mockCompletionsCreate = vi.fn().mockResolvedValue({
+    choices: [
+      {
+        message: { content: "Mocked AI reply.", tool_calls: undefined },
+        finish_reason: "stop",
+      },
+    ],
+  });
+  return { mockCompletionsCreate };
+});
+
+vi.mock("openai", () => {
+  const create = mockCompletionsCreate;
+  function OpenAI(this: any) {
+    this.chat = { completions: { create } };
+  }
+  return { default: OpenAI };
+});
+
+// ─── @workspace/db mock — chainable query builder that resolves to [] ────────
+// Uses importOriginal so all real table references pass through unchanged
+// (avoiding the "No X export" error for every table imported by transitive
+// dependencies). Only the `db` runtime object is replaced with a chainable
+// mock that resolves every query to an empty array.
+
+const createDbChain = (): any => {
+  const resolved = Promise.resolve([]);
+  const chain: any = {
+    from: () => chain,
+    innerJoin: () => chain,
+    leftJoin: () => chain,
+    where: () => chain,
+    orderBy: () => chain,
+    limit: () => Promise.resolve([]),
+    offset: () => chain,
+    // Make the chain itself awaitable (for await db.select().from().where())
+    then: resolved.then.bind(resolved),
+    catch: resolved.catch.bind(resolved),
+    finally: resolved.finally.bind(resolved),
+  };
+  return chain;
+};
+
+vi.mock("@workspace/db", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@workspace/db")>();
+  return {
+    ...actual,
+    db: {
+      select: () => createDbChain(),
+      insert: () => ({ values: vi.fn().mockResolvedValue(undefined) }),
+      update: () => ({ set: () => ({ where: vi.fn().mockResolvedValue(undefined) }) }),
+      delete: () => ({ where: vi.fn().mockResolvedValue(undefined) }),
+      query: {
+        organizations: {
+          findFirst: vi.fn().mockResolvedValue(undefined),
+          findMany: vi.fn().mockResolvedValue([]),
+        },
+        pricingTiers: { findMany: vi.fn().mockResolvedValue([]) },
+        aiChatHistory: { findMany: vi.fn().mockResolvedValue([]) },
+      },
+    },
+  };
+});
+
+// ─── cross-lab-doctor mock — return no provider org IDs ──────────────────────
+vi.mock("../lib/cross-lab-doctor", () => ({
+  getProviderOrgIdsForUserAndLinks: vi.fn().mockResolvedValue({ providerOrgIds: [] }),
+}));
+
+// ─── ai-memory-learn mock — fire-and-forget, just swallow calls ──────────────
+vi.mock("../lib/ai-memory-learn", () => ({
+  learnFromExchange: vi.fn().mockResolvedValue(undefined),
+}));
 
 // ─── Auth middleware stub (must be at module top level for Vitest hoisting) ──
 
@@ -38,7 +124,7 @@ vi.mock("../middlewares/auth", () => ({
   optionalAuth: (_req: any, _res: any, next: any) => next(),
 }));
 
-// ─── Minimal Express app for tests ─────────────────────────────────────────
+// ─── Minimal Express app helpers ─────────────────────────────────────────────
 
 function makeApp(userId?: string) {
   const app = express();
@@ -54,6 +140,20 @@ function makeApp(userId?: string) {
 
   const router = express.Router();
   registerAiAgentRoutes(router);
+  app.use("/api", router);
+  return app;
+}
+
+/** Minimal Express app for ai-chat route tests. */
+function makeAiChatApp(userId?: string, userType = "lab") {
+  const app = express();
+  app.use(bodyParser.json());
+  app.use((req: any, _res, next) => {
+    if (userId) req.user = { id: userId, userType };
+    next();
+  });
+  const router = express.Router();
+  registerAiChatRoutes(router);
   app.use("/api", router);
   return app;
 }
@@ -472,5 +572,185 @@ describe("POST /api/ai-agent/reject — success path and ownership", () => {
       .post("/api/ai-agent/confirm")
       .send({ actionId: "action-reject-foreign" });
     expect(confirmRes.status).toBe(403);
+  });
+});
+
+// ─── Knowledge audit metadata: POST /api/ai-agent ────────────────────────────
+//
+// Verifies that the route (a) calls the metadata path (buildKnowledgeBlockWithMeta)
+// and (b) surfaces knowledgeSectionIds / retentionDisclaimer in the JSON reply
+// when the knowledge selection produces results.
+//
+// The DB mock returns empty memberships so buildSystemPrompt takes the
+// no-lab-context fast path. OpenAI is mocked to return a direct text reply
+// (no tool_calls) so the route exits via the "reply" branch which serialises
+// the metadata fields.
+//
+// getAiClient() requires a truthy API key env var. We set a sentinel here so
+// the suite runs unconditionally regardless of whether the real integration
+// key is present in this environment. The OpenAI constructor is mocked above,
+// so the value is never sent to a real endpoint.
+
+describe("POST /api/ai-agent — knowledge audit metadata", () => {
+  beforeAll(() => {
+    process.env["AI_INTEGRATIONS_OPENAI_API_KEY"] ??= "test-key-for-knowledge-audit";
+  });
+
+  beforeEach(() => {
+    mockCompletionsCreate.mockClear();
+    mockCompletionsCreate.mockResolvedValue({
+      choices: [
+        {
+          message: { content: "Mocked AI reply.", tool_calls: undefined },
+          finish_reason: "stop",
+        },
+      ],
+    });
+  });
+
+  it("includes knowledgeSectionIds for a privacy-signal query", async () => {
+    const app = makeApp("user-ka-1");
+    const res = await request(app)
+      .post("/api/ai-agent")
+      .send({ messages: [{ role: "user", content: "Can I share a patient photo with anyone?" }] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.type).toBe("reply");
+    expect(Array.isArray(res.body.knowledgeSectionIds)).toBe(true);
+    expect(res.body.knowledgeSectionIds.length).toBeGreaterThan(0);
+    for (const id of res.body.knowledgeSectionIds) {
+      expect(typeof id).toBe("string");
+    }
+  });
+
+  it("includes retentionDisclaimer:true for a retention-signal query", async () => {
+    const app = makeApp("user-ka-2");
+    const res = await request(app)
+      .post("/api/ai-agent")
+      .send({
+        messages: [
+          { role: "user", content: "How long do I need to keep dental lab records?" },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.type).toBe("reply");
+    expect(res.body.retentionDisclaimer).toBe(true);
+  });
+
+  it("omits knowledgeSectionIds for an unrelated query", async () => {
+    const app = makeApp("user-ka-3");
+    const res = await request(app)
+      .post("/api/ai-agent")
+      .send({
+        messages: [
+          { role: "user", content: "zzzzz qqqqq wwwww unrelated gibberish 12345" },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.type).toBe("reply");
+    expect(res.body.knowledgeSectionIds).toBeUndefined();
+    expect(res.body.retentionDisclaimer).toBeUndefined();
+  });
+
+  it("knowledgeSectionIds contains string IDs, not objects", async () => {
+    const app = makeApp("user-ka-4");
+    const res = await request(app)
+      .post("/api/ai-agent")
+      .send({ messages: [{ role: "user", content: "Who can see patient records on a case?" }] });
+
+    expect(res.status).toBe(200);
+    if (res.body.knowledgeSectionIds) {
+      for (const id of res.body.knowledgeSectionIds) {
+        expect(typeof id).toBe("string");
+        expect(id.length).toBeGreaterThan(0);
+      }
+    }
+  });
+});
+
+// ─── Knowledge audit metadata: POST /api/ai-chat ─────────────────────────────
+//
+// Same guard rail for the ai-chat route. The DB mock returns empty memberships
+// (user is "not a member of any active lab") so context assembly succeeds.
+// OpenAI returns a mocked text reply so res.body.reply is populated.
+
+describe("POST /api/ai-chat — knowledge audit metadata", () => {
+  beforeAll(() => {
+    process.env["AI_INTEGRATIONS_OPENAI_API_KEY"] ??= "test-key-for-knowledge-audit";
+  });
+
+  beforeEach(() => {
+    mockCompletionsCreate.mockClear();
+    mockCompletionsCreate.mockResolvedValue({
+      choices: [{ message: { content: "Mocked chat reply." } }],
+    });
+  });
+
+  it("includes knowledgeSectionIds for a privacy-signal query", async () => {
+    const app = makeAiChatApp("user-chat-ka-1");
+    const res = await request(app)
+      .post("/api/ai-chat")
+      .send({
+        messages: [{ role: "user", content: "Can I share a patient photo with anyone?" }],
+      });
+
+    expect(res.status).toBe(200);
+    expect(typeof res.body.reply).toBe("string");
+    expect(Array.isArray(res.body.knowledgeSectionIds)).toBe(true);
+    expect(res.body.knowledgeSectionIds.length).toBeGreaterThan(0);
+    for (const id of res.body.knowledgeSectionIds) {
+      expect(typeof id).toBe("string");
+    }
+  });
+
+  it("includes retentionDisclaimer:true for a retention-signal query", async () => {
+    const app = makeAiChatApp("user-chat-ka-2");
+    const res = await request(app)
+      .post("/api/ai-chat")
+      .send({
+        messages: [
+          {
+            role: "user",
+            content: "What are the state law requirements for how long I must retain dental records?",
+          },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(typeof res.body.reply).toBe("string");
+    expect(res.body.retentionDisclaimer).toBe(true);
+  });
+
+  it("omits knowledgeSectionIds for an unrelated query", async () => {
+    const app = makeAiChatApp("user-chat-ka-3");
+    const res = await request(app)
+      .post("/api/ai-chat")
+      .send({
+        messages: [
+          { role: "user", content: "zzzzz qqqqq wwwww unrelated gibberish 12345" },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(typeof res.body.reply).toBe("string");
+    expect(res.body.knowledgeSectionIds).toBeUndefined();
+    expect(res.body.retentionDisclaimer).toBeUndefined();
+  });
+
+  it("knowledgeSectionIds is absent when retentionDisclaimer is absent (pure non-knowledge query)", async () => {
+    const app = makeAiChatApp("user-chat-ka-4");
+    const res = await request(app)
+      .post("/api/ai-chat")
+      .send({
+        // Random gibberish that matches no dental/HIPAA knowledge section keywords.
+        messages: [{ role: "user", content: "aaabbb cccddd eeefff 99887766" }],
+      });
+
+    expect(res.status).toBe(200);
+    // Gibberish carries no HIPAA/retention signal — both fields must be absent.
+    expect(res.body.knowledgeSectionIds).toBeUndefined();
+    expect(res.body.retentionDisclaimer).toBeUndefined();
   });
 });
