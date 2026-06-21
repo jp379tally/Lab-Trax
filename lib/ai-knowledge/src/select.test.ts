@@ -81,6 +81,59 @@ describe("selectKnowledge", () => {
     expect(out).toContain("### What is PHI");
   });
 
+  it("returns gypsum-materials for a die-stone selection query", () => {
+    const sections = selectKnowledgeSections(
+      "what gypsum type should I use to pour an accurate die for a crown preparation?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("dental.gypsum-materials");
+  });
+
+  it("returns investment-materials for a burnout and casting query", () => {
+    const sections = selectKnowledgeSections(
+      "what burnout temperature and investment material do I need for casting a high-fusing base metal alloy?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("dental.investment-materials");
+  });
+
+  it("returns dental-alloys for a chrome cobalt framework query", () => {
+    const sections = selectKnowledgeSections(
+      "which cobalt chromium alloy is used for casting an RPD framework?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("dental.dental-alloys");
+  });
+
+  it("ranks infection-control-lab first for a disinfection and PPE query", () => {
+    const sections = selectKnowledgeSections(
+      "what PPE and disinfection steps are required in the lab receiving area?",
+    );
+    expect(sections[0]!.id).toBe("dental.infection-control-lab");
+  });
+
+  it("ranks complete-denture-fabrication first for a flasking and packing query", () => {
+    const sections = selectKnowledgeSections(
+      "describe the flasking and packing steps when processing a complete denture",
+    );
+    expect(sections[0]!.id).toBe("dental.complete-denture-fabrication");
+  });
+
+  it("returns rpd-fabrication for a surveying and path-of-insertion query", () => {
+    const sections = selectKnowledgeSections(
+      "how does surveying determine the path of insertion when designing an RPD framework?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("dental.rpd-fabrication");
+  });
+
+  it("ranks orthodontic-appliances first for a Hawley retainer query", () => {
+    const sections = selectKnowledgeSections(
+      "how do I fabricate a Hawley retainer for an orthodontic patient?",
+    );
+    expect(sections[0]!.id).toBe("dental.orthodontic-appliances");
+  });
+
   it("every curated section has a unique id and non-empty content", () => {
     const ids = ALL_SECTIONS.map((s) => s.id);
     expect(new Set(ids).size).toBe(ids.length);
