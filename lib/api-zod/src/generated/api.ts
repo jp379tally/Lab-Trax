@@ -48,6 +48,17 @@ export const UploadLabInboxFileBody = zod.object({
 });
 
 /**
+ * @summary Register a chunked-upload session as a lab inbox file (lab members only)
+ */
+export const FinalizeLabInboxSessionBody = zod.object({
+  storagePath: zod.string(),
+  originalFilename: zod.string(),
+  mimeType: zod.string(),
+  sizeBytes: zod.number(),
+  labOrganizationId: zod.string(),
+});
+
+/**
  * @summary Assign an inbox file to a case (lab members only)
  */
 export const AssignLabInboxFileParams = zod.object({

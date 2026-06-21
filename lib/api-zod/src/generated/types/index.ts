@@ -131,6 +131,7 @@ export * from "./emailPreferences";
 export * from "./emailPreferencesInput";
 export * from "./emailPreferencesResult";
 export * from "./extractedRxData";
+export * from "./finalizeLabInboxSessionInput";
 export * from "./generateInvoiceForCaseBody";
 export * from "./getAiMemoryCandidatesParams";
 export * from "./getAiMemoryCandidatesStatus";

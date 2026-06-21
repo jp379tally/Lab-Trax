@@ -91,6 +91,28 @@ paths:
           description: Invalid request
         "403":
           description: Not a lab member
+  /lab-inbox/finalize-session:
+    post:
+      operationId: finalizeLabInboxSession
+      tags: [lab-inbox]
+      summary: Register a chunked-upload session as a lab inbox file (lab members only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FinalizeLabInboxSessionInput"
+      responses:
+        "201":
+          description: Registered inbox file record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LabInboxFileResult"
+        "400":
+          description: Invalid request
+        "403":
+          description: Not a lab member
   /lab-inbox/{fileId}/assign:
     post:
       operationId: assignLabInboxFile
@@ -5483,6 +5505,15 @@ components:
         ok: { type: boolean }
         data:
           $ref: "#/components/schemas/LabInboxFile"
+    FinalizeLabInboxSessionInput:
+      type: object
+      required: [storagePath, originalFilename, mimeType, sizeBytes, labOrganizationId]
+      properties:
+        storagePath: { type: string }
+        originalFilename: { type: string }
+        mimeType: { type: string }
+        sizeBytes: { type: integer }
+        labOrganizationId: { type: string }
     AssignLabInboxFileInput:
       type: object
       required: [caseId]

@@ -81,6 +81,7 @@ import type {
   EmailInvoiceBody,
   EmailPreferencesInput,
   EmailPreferencesResult,
+  FinalizeLabInboxSessionInput,
   GenerateInvoiceForCaseBody,
   GetAiMemoryCandidatesParams,
   GetAiMemoryParams,
@@ -384,6 +385,93 @@ export const useUploadLabInboxFile = <
   TContext
 > => {
   return useMutation(getUploadLabInboxFileMutationOptions(options));
+};
+
+/**
+ * @summary Register a chunked-upload session as a lab inbox file (lab members only)
+ */
+export const getFinalizeLabInboxSessionUrl = () => {
+  return `/api/lab-inbox/finalize-session`;
+};
+
+export const finalizeLabInboxSession = async (
+  finalizeLabInboxSessionInput: FinalizeLabInboxSessionInput,
+  options?: RequestInit,
+): Promise<LabInboxFileResult> => {
+  return customFetch<LabInboxFileResult>(getFinalizeLabInboxSessionUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(finalizeLabInboxSessionInput),
+  });
+};
+
+export const getFinalizeLabInboxSessionMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof finalizeLabInboxSession>>,
+    TError,
+    { data: BodyType<FinalizeLabInboxSessionInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof finalizeLabInboxSession>>,
+  TError,
+  { data: BodyType<FinalizeLabInboxSessionInput> },
+  TContext
+> => {
+  const mutationKey = ["finalizeLabInboxSession"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof finalizeLabInboxSession>>,
+    { data: BodyType<FinalizeLabInboxSessionInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return finalizeLabInboxSession(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type FinalizeLabInboxSessionMutationResult = NonNullable<
+  Awaited<ReturnType<typeof finalizeLabInboxSession>>
+>;
+export type FinalizeLabInboxSessionMutationBody =
+  BodyType<FinalizeLabInboxSessionInput>;
+export type FinalizeLabInboxSessionMutationError = ErrorType<void>;
+
+/**
+ * @summary Register a chunked-upload session as a lab inbox file (lab members only)
+ */
+export const useFinalizeLabInboxSession = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof finalizeLabInboxSession>>,
+    TError,
+    { data: BodyType<FinalizeLabInboxSessionInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof finalizeLabInboxSession>>,
+  TError,
+  { data: BodyType<FinalizeLabInboxSessionInput> },
+  TContext
+> => {
+  return useMutation(getFinalizeLabInboxSessionMutationOptions(options));
 };
 
 /**

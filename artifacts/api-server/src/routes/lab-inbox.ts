@@ -171,6 +171,50 @@ router.get(
   }),
 );
 
+const finalizeSessionSchema = z.object({
+  storagePath: z.string().min(1),
+  originalFilename: z.string().min(1),
+  mimeType: z.string().min(1),
+  sizeBytes: z.number().int().positive(),
+  labOrganizationId: z.string().min(1),
+});
+
+router.post(
+  "/finalize-session",
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = (req as any).auth.userId as string;
+    const parsed = finalizeSessionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new HttpError(400, "Invalid request: " + parsed.error.issues.map((i) => i.message).join(", "));
+    }
+    const { storagePath, originalFilename, mimeType, sizeBytes, labOrganizationId } = parsed.data;
+
+    await assertLabMembership(userId, labOrganizationId);
+
+    // The file is already on disk + object storage from the chunked upload session.
+    // We just need to register it in the inbox so it appears in the unassigned list.
+    const objectStorageKey = storagePath; // chunked session always mirrors to object storage
+
+    const [row] = await db
+      .insert(labInboxFiles)
+      .values({
+        labOrganizationId,
+        uploadedByUserId: userId,
+        originalFilename,
+        mimeType,
+        sizeBytes,
+        storagePath,
+        objectStorageKey,
+      })
+      .returning()
+      .catch((err: unknown): never =>
+        wrapDbError(err, { fallback: "Failed to save inbox file." }),
+      );
+
+    return ok(res, row, 201);
+  }),
+);
+
 router.post(
   "/:fileId/assign",
   asyncHandler(async (req: Request, res: Response) => {

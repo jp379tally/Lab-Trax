@@ -2108,6 +2108,14 @@ export interface LabInboxFileResult {
   data: LabInboxFile;
 }
 
+export interface FinalizeLabInboxSessionInput {
+  storagePath: string;
+  originalFilename: string;
+  mimeType: string;
+  sizeBytes: number;
+  labOrganizationId: string;
+}
+
 export interface AssignLabInboxFileInput {
   caseId: string;
 }

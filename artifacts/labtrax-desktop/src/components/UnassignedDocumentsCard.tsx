@@ -14,15 +14,45 @@ import {
 } from "lucide-react";
 import {
   useListLabInboxFiles,
-  useUploadLabInboxFile,
   useAssignLabInboxFile,
   getListLabInboxFilesQueryKey,
 } from "@workspace/api-client-react";
 import type { LabInboxFile } from "@workspace/api-client-react";
-import { apiFetch } from "@/lib/api";
+import {
+  apiFetch,
+  ApiError,
+  createUploadSession,
+  sendUploadChunk,
+} from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { relativeTime } from "@/lib/format";
 import type { LabCase } from "@/lib/types";
+
+const MAX_FILE_BYTES = 200 * 1024 * 1024;
+const SIZE_ERROR = "File is too large. Max upload size is 200 MB.";
+const GENERIC_ERROR = "Upload failed. Please try again.";
+
+function sanitizeUploadError(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.status === 413) return SIZE_ERROR;
+    const msg = err.message ?? "";
+    if (isHtml(msg)) return GENERIC_ERROR;
+    return msg || GENERIC_ERROR;
+  }
+  if (err instanceof Error) {
+    const msg = err.message ?? "";
+    if (isHtml(msg)) return GENERIC_ERROR;
+    return msg || GENERIC_ERROR;
+  }
+  const msg = String(err ?? "");
+  if (isHtml(msg)) return GENERIC_ERROR;
+  return msg || GENERIC_ERROR;
+}
+
+function isHtml(s: string): boolean {
+  const t = s.trimStart().toLowerCase();
+  return t.startsWith("<html") || t.startsWith("<!doctype");
+}
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
@@ -199,14 +229,19 @@ function InboxFileRow({
   );
 }
 
+type FileUploadState = {
+  progress: number;
+  error: string | null;
+};
+
 export function UnassignedDocumentsCard() {
   const { user } = useAuth();
   const labOrganizationId = user?.practiceOrganizationId ?? "";
   const qc = useQueryClient();
 
   const [isDragging, setIsDragging] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<Record<string, FileUploadState>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const filesQuery = useListLabInboxFiles(
@@ -234,37 +269,102 @@ export function UnassignedDocumentsCard() {
       .finally(() => setCasesLoading(false));
   }, []);
 
-  const uploadMutation = useUploadLabInboxFile({
-    mutation: {
-      onSuccess: () => {
-        void qc.invalidateQueries({
-          queryKey: getListLabInboxFilesQueryKey({ labOrganizationId }),
-        });
-        setUploadError(null);
-      },
-      onError: (err: Error) => {
-        setUploadError(err.message || "Upload failed.");
-      },
+  const setFileProgress = useCallback(
+    (key: string, state: FileUploadState | null) => {
+      setUploadProgress((prev) => {
+        if (state === null) {
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        }
+        return { ...prev, [key]: state };
+      });
     },
-  });
+    [],
+  );
+
+  const uploadFileInChunks = useCallback(
+    async (file: File) => {
+      const key = `${file.name}-${file.size}`;
+
+      // Client-side size guard: show friendly error before hitting the network.
+      if (file.size > MAX_FILE_BYTES) {
+        setFileProgress(key, { progress: 0, error: SIZE_ERROR });
+        return;
+      }
+
+      if (!labOrganizationId) {
+        setFileProgress(key, { progress: 0, error: "No lab organization found." });
+        return;
+      }
+
+      setFileProgress(key, { progress: 0, error: null });
+
+      try {
+        // 1. Create a resumable session.
+        const session = await createUploadSession({
+          fileName: file.name,
+          fileSize: file.size,
+          mimeType: file.type || "application/octet-stream",
+        });
+
+        let offset = session.uploadedBytes ?? 0;
+        const CHUNK = 8 * 1024 * 1024;
+
+        // 2. Send chunks.
+        while (offset < file.size) {
+          const end = Math.min(offset + CHUNK, file.size);
+          const blob = file.slice(offset, end);
+
+          const result = await sendUploadChunk(session.sessionId, blob, offset, {
+            onChunkProgress: (bytesInChunk) => {
+              const totalSoFar = offset + bytesInChunk;
+              setFileProgress(key, {
+                progress: Math.min(98, Math.round((totalSoFar / file.size) * 100)),
+                error: null,
+              });
+            },
+          });
+
+          offset = result.uploadedBytes;
+
+          if (result.complete) {
+            // 3. Register the completed file in the inbox.
+            setFileProgress(key, { progress: 99, error: null });
+            await apiFetch("/lab-inbox/finalize-session", {
+              method: "POST",
+              body: JSON.stringify({
+                storagePath: result.filename,
+                originalFilename: file.name,
+                mimeType: file.type || "application/octet-stream",
+                sizeBytes: file.size,
+                labOrganizationId,
+              }),
+            });
+
+            // 4. Success: remove progress entry and refresh inbox list.
+            setFileProgress(key, null);
+            void qc.invalidateQueries({
+              queryKey: getListLabInboxFilesQueryKey({ labOrganizationId }),
+            });
+            return;
+          }
+        }
+      } catch (err: unknown) {
+        setFileProgress(key, { progress: 0, error: sanitizeUploadError(err) });
+      }
+    },
+    [labOrganizationId, qc, setFileProgress],
+  );
 
   const handleFiles = useCallback(
     (files: FileList | File[]) => {
-      setUploadError(null);
-      if (!labOrganizationId) {
-        setUploadError("No lab organization found.");
-        return;
-      }
       const arr = Array.from(files);
       for (const file of arr) {
-        if (file.size > 200 * 1024 * 1024) {
-          setUploadError(`${file.name} exceeds 200 MB limit.`);
-          continue;
-        }
-        uploadMutation.mutate({ data: { file, labOrganizationId } });
+        void uploadFileInChunks(file);
       }
     },
-    [labOrganizationId, uploadMutation],
+    [uploadFileInChunks],
   );
 
   const handleDrop = useCallback(
@@ -313,6 +413,9 @@ export function UnassignedDocumentsCard() {
 
   const files = filesQuery.data?.data ?? [];
   const count = files.length;
+
+  const inFlightEntries = Object.entries(uploadProgress);
+  const isUploading = inFlightEntries.some(([, s]) => s.error === null);
 
   return (
     <section className="bg-card border border-border rounded-xl">
@@ -372,7 +475,7 @@ export function UnassignedDocumentsCard() {
               className="sr-only"
               onChange={handleFileInput}
             />
-            {uploadMutation.isPending ? (
+            {isUploading ? (
               <Loader2
                 size={18}
                 className="animate-spin text-muted-foreground"
@@ -381,7 +484,7 @@ export function UnassignedDocumentsCard() {
               <FileText size={18} className="text-muted-foreground" />
             )}
             <p className="text-xs text-muted-foreground text-center">
-              {uploadMutation.isPending
+              {isUploading
                 ? "Uploading…"
                 : isDragging
                 ? "Drop to upload"
@@ -389,10 +492,43 @@ export function UnassignedDocumentsCard() {
             </p>
           </div>
 
-          {uploadError && (
-            <div className="flex items-start gap-1.5 text-xs text-destructive">
-              <AlertCircle size={12} className="shrink-0 mt-0.5" />
-              {uploadError}
+          {/* Per-file upload progress */}
+          {inFlightEntries.length > 0 && (
+            <div className="space-y-2">
+              {inFlightEntries.map(([key, state]) => {
+                const displayName = key.replace(/-\d+$/, "");
+                return (
+                  <div key={key} className="space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] text-muted-foreground truncate flex-1 min-w-0">
+                        {displayName}
+                      </span>
+                      {state.error ? (
+                        <span className="text-[10px] text-destructive shrink-0">
+                          Error
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">
+                          {state.progress}%
+                        </span>
+                      )}
+                    </div>
+                    {state.error ? (
+                      <div className="flex items-start gap-1.5 text-xs text-destructive">
+                        <AlertCircle size={12} className="shrink-0 mt-0.5" />
+                        {state.error}
+                      </div>
+                    ) : (
+                      <div className="h-1.5 rounded-full bg-secondary overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-primary transition-all duration-200"
+                          style={{ width: `${state.progress}%` }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
 
