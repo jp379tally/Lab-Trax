@@ -787,9 +787,14 @@ export default function ProfileScreen() {
             )}
 
             <Pressable
-              style={[styles.saveBtn, { backgroundColor: colors.tint }, saveMutation.isPending && { opacity: 0.6 }]}
+              testID="save-profile-btn"
+              style={[
+                styles.saveBtn,
+                { backgroundColor: colors.tint },
+                (saveMutation.isPending || phoneVerifyStep === "otp") && { opacity: 0.6 },
+              ]}
               onPress={() => saveMutation.mutate()}
-              disabled={saveMutation.isPending}
+              disabled={saveMutation.isPending || phoneVerifyStep === "otp"}
             >
               <Text style={styles.saveBtnText}>
                 {saveMutation.isPending ? "Saving…" : "Save profile"}

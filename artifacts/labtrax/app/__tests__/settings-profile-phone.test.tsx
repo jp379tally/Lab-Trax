@@ -413,6 +413,48 @@ describe("ProfileScreen — cancel mid-resend clears resending state", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Suite: Save button is disabled while the OTP panel is open
+// ---------------------------------------------------------------------------
+
+describe("ProfileScreen — Save button is disabled while OTP panel is open", () => {
+  beforeEach(() => {
+    vi.mocked(Alert.alert).mockClear();
+    resetMockFetchHandler();
+  });
+
+  afterEach(() => {
+    resetMockFetchHandler();
+  });
+
+  it("disables the Save profile button while phoneVerifyStep is otp", async () => {
+    renderProfile();
+
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText("000-000-0000")).toBeTruthy(),
+    );
+
+    // Open the OTP panel via the Verify button (phone is set + unverified).
+    await openOtpPanelViaVerifyButton();
+
+    // The OTP panel must be open.
+    expect(screen.getByText("Enter verification code")).toBeTruthy();
+
+    // The Save profile button must be disabled.
+    // fireEvent.press bypasses the disabled prop in RNTL, so we inspect the
+    // Pressable element's props directly via its testID.
+    const pressable = screen.getByTestId("save-profile-btn");
+    expect(pressable.props.disabled).toBe(true);
+
+    // The OTP panel must still be visible.
+    expect(screen.getByText("Enter verification code")).toBeTruthy();
+    expect(screen.getByPlaceholderText("000000")).toBeTruthy();
+
+    // No Alert should have been shown.
+    expect(Alert.alert).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Suite: editing an unrelated field while the OTP panel is open does not
 // dismiss the panel
 // ---------------------------------------------------------------------------
