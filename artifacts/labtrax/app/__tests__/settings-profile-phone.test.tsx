@@ -23,7 +23,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import React from "react";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react-native";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react-native";
 import { Alert } from "react-native";
 
 import ProfileScreen from "../settings/profile";
@@ -255,6 +255,197 @@ describe("ProfileScreen — OTP panel absent when PUT profile rejects", () => {
     );
 
     expect(screen.getByPlaceholderText("000000")).toBeTruthy();
+    expect(Alert.alert).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Helper: open OTP panel via the "Verify phone number" button.
+// The test user has an unverified phone, so the Verify button is visible
+// immediately without changing any field or saving.
+// ---------------------------------------------------------------------------
+
+async function openOtpPanelViaVerifyButton() {
+  setMockFetchHandler((url) => {
+    if (url.includes("/send-phone-code")) return jsonOk({ success: true });
+    return jsonOk({ ok: true });
+  });
+  fireEvent.press(screen.getByText("Verify phone number"));
+  await waitFor(() =>
+    expect(screen.getByText("Enter verification code")).toBeTruthy(),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Suite: resend failure shows inline error and keeps OTP panel open
+// ---------------------------------------------------------------------------
+
+describe("ProfileScreen — resend failure keeps OTP panel visible with inline error", () => {
+  beforeEach(() => {
+    vi.mocked(Alert.alert).mockClear();
+    resetMockFetchHandler();
+    // shouldAdvanceTime: true lets waitFor retries fire normally while still
+    // allowing vi.advanceTimersByTime() to skip the 60-second countdown.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    resetMockFetchHandler();
+  });
+
+  it("shows the resend error inside the OTP panel and does not close it", async () => {
+    renderProfile();
+
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText("000-000-0000")).toBeTruthy(),
+    );
+
+    // Open the OTP panel.
+    await openOtpPanelViaVerifyButton();
+
+    // Advance past the 60-second countdown so the Resend button is enabled.
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText("Resend")).toBeTruthy(),
+    );
+
+    // Wire the resend call to fail.
+    setMockFetchHandler((url) => {
+      if (url.includes("/send-phone-code")) {
+        return Promise.reject(new Error("SMS service unavailable")) as unknown as Response;
+      }
+      return jsonOk({ ok: true });
+    });
+
+    fireEvent.press(screen.getByText("Resend"));
+
+    // The OTP panel must remain visible — user must not be dropped to idle.
+    await waitFor(() =>
+      expect(screen.getByText("Enter verification code")).toBeTruthy(),
+    );
+
+    // The error must appear inside the panel (not as an Alert).
+    await waitFor(() =>
+      expect(screen.getByText(/SMS service unavailable/i)).toBeTruthy(),
+    );
+
+    // The OTP code input must still be present.
+    expect(screen.getByPlaceholderText("000000")).toBeTruthy();
+
+    // No Alert.alert should have been called — the error is inline.
+    expect(Alert.alert).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Suite: cancel mid-resend clears stuck state so button is not stuck after
+// reopening the OTP panel
+// ---------------------------------------------------------------------------
+
+describe("ProfileScreen — cancel mid-resend clears resending state", () => {
+  beforeEach(() => {
+    vi.mocked(Alert.alert).mockClear();
+    resetMockFetchHandler();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    resetMockFetchHandler();
+  });
+
+  it("does not leave the resend button stuck disabled after cancelling mid-resend", async () => {
+    renderProfile();
+
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText("000-000-0000")).toBeTruthy(),
+    );
+
+    // Open the OTP panel.
+    await openOtpPanelViaVerifyButton();
+
+    // Advance past the initial 60-second resend countdown.
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText("Resend")).toBeTruthy(),
+    );
+
+    // Start a resend whose promise never resolves — the button enters "Sending…"
+    // state (resending=true) but the OTP panel stays open.
+    setMockFetchHandler((url) => {
+      if (url.includes("/send-phone-code")) {
+        return new Promise<never>(() => {}) as unknown as Response;
+      }
+      return jsonOk({ ok: true });
+    });
+
+    fireEvent.press(screen.getByText("Resend"));
+
+    // The OTP panel must still be open (step remains "otp") while resending.
+    await waitFor(() =>
+      expect(screen.getByText("Enter verification code")).toBeTruthy(),
+    );
+
+    // Cancel while resend is in-flight — must clear resending state and close panel.
+    fireEvent.press(screen.getByText("Cancel"));
+    expect(screen.queryByText("Enter verification code")).toBeNull();
+
+    // Reopen the OTP panel with a fresh successful send.
+    await openOtpPanelViaVerifyButton();
+
+    // Advance past the new 60-second countdown.
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    // The Resend button must be enabled — stale resending=true must NOT block it.
+    await waitFor(() =>
+      expect(screen.getByText("Resend")).toBeTruthy(),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Suite: editing an unrelated field while the OTP panel is open does not
+// dismiss the panel
+// ---------------------------------------------------------------------------
+
+describe("ProfileScreen — editing an unrelated field does not dismiss the OTP panel", () => {
+  beforeEach(() => {
+    vi.mocked(Alert.alert).mockClear();
+    resetMockFetchHandler();
+  });
+
+  afterEach(() => {
+    resetMockFetchHandler();
+  });
+
+  it("keeps the OTP panel open when the user edits firstName while the panel is visible", async () => {
+    renderProfile();
+
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText("000-000-0000")).toBeTruthy(),
+    );
+
+    // Open the OTP panel via the Verify button.
+    await openOtpPanelViaVerifyButton();
+
+    // The OTP panel is open; now edit the First name field — an unrelated field.
+    const firstNameInput = screen.getByPlaceholderText("First name");
+    fireEvent.changeText(firstNameInput, "Testing");
+
+    // The OTP panel must still be visible — phone value did not change.
+    expect(screen.getByText("Enter verification code")).toBeTruthy();
+    expect(screen.getByPlaceholderText("000000")).toBeTruthy();
+
+    // No Alert should have fired.
     expect(Alert.alert).not.toHaveBeenCalled();
   });
 });

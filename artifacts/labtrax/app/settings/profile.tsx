@@ -99,6 +99,7 @@ export default function ProfileScreen() {
   const [otpCode, setOtpCode] = useState("");
   const [otpError, setOtpError] = useState<string | null>(null);
   const [resendCountdown, setResendCountdown] = useState(0);
+  const [resending, setResending] = useState(false);
   const resendTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -150,7 +151,14 @@ export default function ProfileScreen() {
   async function handleSendVerificationCode() {
     const phoneToVerify = phone.trim();
     if (!phoneToVerify || !user?.id) return;
-    setPhoneVerifyStep("sending");
+    // When called as a resend (OTP panel already open), keep the panel visible
+    // throughout the request so errors surface inline and Cancel still works.
+    const isResend = phoneVerifyStep === "otp";
+    if (isResend) {
+      setResending(true);
+    } else {
+      setPhoneVerifyStep("sending");
+    }
     setOtpError(null);
     try {
       // If phone was edited, save it first so the server can bind the code to the user's account.
@@ -180,7 +188,13 @@ export default function ProfileScreen() {
       startResendTimer();
     } catch (err: unknown) {
       setOtpError((err as Error).message || "Failed to send verification code.");
-      setPhoneVerifyStep("idle");
+      // For a resend, stay in the OTP panel so the user sees the error inline
+      // and can retry or cancel. Only drop back to idle for the initial send.
+      if (!isResend) {
+        setPhoneVerifyStep("idle");
+      }
+    } finally {
+      setResending(false);
     }
   }
 
@@ -212,6 +226,7 @@ export default function ProfileScreen() {
 
   function cancelPhoneVerify() {
     setPhoneVerifyStep("idle");
+    setResending(false);
     setOtpCode("");
     setOtpError(null);
     if (resendTimerRef.current) {
@@ -606,11 +621,11 @@ export default function ProfileScreen() {
                     </Pressable>
                     <Pressable
                       style={[styles.otpSecondaryBtn, { borderColor: colors.border }]}
-                      onPress={resendCountdown > 0 ? undefined : handleSendVerificationCode}
-                      disabled={resendCountdown > 0}
+                      onPress={resendCountdown > 0 || resending ? undefined : handleSendVerificationCode}
+                      disabled={resendCountdown > 0 || resending}
                     >
-                      <Text style={[styles.otpSecondaryText, { color: resendCountdown > 0 ? colors.textTertiary : colors.tint }]}>
-                        {resendCountdown > 0 ? `Resend (${resendCountdown}s)` : "Resend"}
+                      <Text style={[styles.otpSecondaryText, { color: resendCountdown > 0 || resending ? colors.textTertiary : colors.tint }]}>
+                        {resending ? "Sending…" : resendCountdown > 0 ? `Resend (${resendCountdown}s)` : "Resend"}
                       </Text>
                     </Pressable>
                     <Pressable
