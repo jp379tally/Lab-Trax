@@ -1,4 +1,4 @@
-export type KnowledgeGroup = "labtrax" | "dental" | "hipaa";
+export type KnowledgeGroup = "labtrax" | "dental" | "hipaa" | "osha";
 
 /**
  * A single curated knowledge section. Sections are the unit of retrieval:

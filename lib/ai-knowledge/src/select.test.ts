@@ -406,6 +406,78 @@ describe("selectKnowledge", () => {
     expect(ids).toContain("hipaa.breach-response");
   });
 
+  it("returns osha.epa-amalgam-rule for an EPA amalgam wastewater query", () => {
+    const sections = selectKnowledgeSections(
+      "Does our dental lab need an amalgam separator for wastewater discharge under the EPA rule?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("osha.epa-amalgam-rule");
+  });
+
+  it("returns osha.amalgam-separator-maintenance for a separator cartridge replacement query", () => {
+    const sections = selectKnowledgeSections(
+      "How often do we need to replace the amalgam separator cartridge and what records do we keep?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("osha.amalgam-separator-maintenance");
+  });
+
+  it("returns osha.mercury-disposal for a mercury scrap disposal query", () => {
+    const sections = selectKnowledgeSections(
+      "How do we dispose of mercury amalgam scrap from trimming restorations?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("osha.mercury-disposal");
+  });
+
+  it("returns osha.beryllium for a beryllium exposure limit query", () => {
+    const sections = selectKnowledgeSections(
+      "What are OSHA's exposure limits for beryllium alloys when grinding in the lab?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("osha.beryllium");
+  });
+
+  it("returns osha.silica-dust for a silica dust control query", () => {
+    const sections = selectKnowledgeSections(
+      "What ventilation controls are required for respirable crystalline silica dust when sandblasting investment models?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("osha.silica-dust");
+  });
+
+  it("returns osha.acid-solvent-disposal for a hydrofluoric acid disposal query", () => {
+    const sections = selectKnowledgeSections(
+      "How should we dispose of hydrofluoric acid waste from etching ceramics?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("osha.acid-solvent-disposal");
+  });
+
+  it("returns osha.ppe-lab-chemical for a PPE and SDS query", () => {
+    const sections = selectKnowledgeSections(
+      "What PPE and safety data sheets do we need when handling solvents and acids in the lab?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("osha.ppe-lab-chemical");
+  });
+
+  it("returns osha.hazardous-waste-storage for a RCRA generator category query", () => {
+    const sections = selectKnowledgeSections(
+      "What RCRA hazardous waste generator category applies to our lab and how long can we store waste on-site?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("osha.hazardous-waste-storage");
+  });
+
+  it("returns osha sections when querying about chemical disposal in the dental lab", () => {
+    const sections = selectKnowledgeSections(
+      "What are the chemical disposal requirements for hazardous waste in a dental lab?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids.some((id) => id.startsWith("osha."))).toBe(true);
+  });
+
   it("every curated section has a unique id and non-empty content", () => {
     const ids = ALL_SECTIONS.map((s) => s.id);
     expect(new Set(ids).size).toBe(ids.length);
