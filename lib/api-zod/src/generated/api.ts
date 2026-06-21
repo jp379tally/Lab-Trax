@@ -17,6 +17,8 @@ export const GetAiChatHistoryResponse = zod.object({
       role: zod.enum(["user", "assistant"]),
       content: zod.string(),
       createdAt: zod.coerce.date(),
+      knowledgeSectionIds: zod.array(zod.string()).nullish(),
+      retentionDisclaimer: zod.boolean().nullish(),
     }),
   ),
 });

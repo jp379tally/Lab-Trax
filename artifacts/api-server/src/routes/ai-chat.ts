@@ -79,6 +79,8 @@ async function persistExchange(
   userId: string,
   userContent: string,
   assistantContent: string,
+  knowledgeSectionIds?: string[],
+  retentionDisclaimer?: boolean,
 ): Promise<void> {
   const now = new Date();
   await db.insert(aiChatHistory).values([
@@ -94,6 +96,10 @@ async function persistExchange(
       userId,
       role: "assistant",
       content: assistantContent,
+      ...(knowledgeSectionIds && knowledgeSectionIds.length > 0
+        ? { knowledgeSectionIds }
+        : {}),
+      ...(retentionDisclaimer ? { retentionDisclaimer: true } : {}),
       createdAt: new Date(now.getTime() + 1),
     },
   ]).catch((err: unknown): never => wrapDbError(err, {
@@ -121,12 +127,14 @@ async function persistExchange(
 /** Load recent history for a user, oldest-first for chat display */
 async function loadHistory(
   userId: string,
-): Promise<Array<{ id: string; role: string; content: string; createdAt: Date }>> {
+): Promise<Array<{ id: string; role: string; content: string; knowledgeSectionIds: string[] | null; retentionDisclaimer: boolean | null; createdAt: Date }>> {
   const rows = await db
     .select({
       id: aiChatHistory.id,
       role: aiChatHistory.role,
       content: aiChatHistory.content,
+      knowledgeSectionIds: aiChatHistory.knowledgeSectionIds,
+      retentionDisclaimer: aiChatHistory.retentionDisclaimer,
       createdAt: aiChatHistory.createdAt,
     })
     .from(aiChatHistory)
@@ -780,7 +788,13 @@ ${pinnedCaseCtx ? `${pinnedCaseCtx}\n` : ""}${contextBlock}`;
 
       // Persist the exchange in the background; don't block the response
       const userContent = String(lastMsg.content || "").slice(0, 2000);
-      persistExchange(userId, userContent, reply).catch((err) => {
+      persistExchange(
+        userId,
+        userContent,
+        reply,
+        knowledgeMeta.sectionIds.length > 0 ? knowledgeMeta.sectionIds : undefined,
+        knowledgeMeta.retentionDisclaimer || undefined,
+      ).catch((err) => {
         req.log?.error({ err }, "AI chat history persist error");
       });
 

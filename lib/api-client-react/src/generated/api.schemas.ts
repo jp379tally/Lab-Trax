@@ -1804,6 +1804,8 @@ export interface AiChatHistoryMessage {
   role: AiChatHistoryMessageRole;
   content: string;
   createdAt: string;
+  knowledgeSectionIds?: string[] | null;
+  retentionDisclaimer?: boolean | null;
 }
 
 export interface AiChatHistoryResult {

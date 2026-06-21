@@ -580,6 +580,29 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
       setPinnedCases(cases);
       setMessages([buildWelcome(cases), ...latest.messages]);
       setPromptsDismissed(latest.messages.some((m) => m.role === "user"));
+    } else {
+      // No localStorage session for this key — try to restore from server history so that
+      // knowledge-section audit fields (knowledgeSectionIds, retentionDisclaimer) survive
+      // beyond the 7-day localStorage TTL.
+      apiFetch<{ messages: Array<{ id: string; role: string; content: string; knowledgeSectionIds?: string[] | null; retentionDisclaimer?: boolean | null; createdAt: string }> }>(
+        "/ai-chat/history",
+      ).then((data) => {
+        const serverMsgs = data.messages ?? [];
+        if (serverMsgs.length === 0) return;
+        const chatMsgs: ChatMsg[] = serverMsgs.map((m) => ({
+          id: m.id,
+          role: m.role as "user" | "assistant",
+          content: m.content,
+          ...(m.knowledgeSectionIds && m.knowledgeSectionIds.length > 0
+            ? { knowledgeSectionIds: m.knowledgeSectionIds }
+            : {}),
+          ...(m.retentionDisclaimer ? { retentionDisclaimer: true } : {}),
+        }));
+        setMessages([buildWelcome(initialCases), ...chatMsgs]);
+        setPromptsDismissed(chatMsgs.some((m) => m.role === "user"));
+      }).catch(() => {
+        // Server history unavailable; leave the welcome message as-is.
+      });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

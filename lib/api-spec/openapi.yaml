@@ -5063,6 +5063,14 @@ components:
         createdAt:
           type: string
           format: date-time
+        knowledgeSectionIds:
+          type: array
+          items:
+            type: string
+          nullable: true
+        retentionDisclaimer:
+          type: boolean
+          nullable: true
     AiChatHistoryResult:
       type: object
       required: [messages]

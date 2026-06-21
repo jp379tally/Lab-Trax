@@ -2151,6 +2151,10 @@ export const aiChatHistory = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     role: text("role").notNull(), // "user" | "assistant"
     content: text("content").notNull(),
+    /** IDs of the curated knowledge sections injected into the prompt for this reply (assistant rows only). */
+    knowledgeSectionIds: text("knowledge_section_ids").array(),
+    /** Whether the retention legal disclaimer was injected into the prompt (assistant rows only). */
+    retentionDisclaimer: boolean("retention_disclaimer"),
     createdAt: createdAt(),
   },
   (table) => ({

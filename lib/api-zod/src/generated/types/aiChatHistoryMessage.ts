@@ -12,4 +12,6 @@ export interface AiChatHistoryMessage {
   role: AiChatHistoryMessageRole;
   content: string;
   createdAt: Date;
+  knowledgeSectionIds?: string[] | null;
+  retentionDisclaimer?: boolean | null;
 }
