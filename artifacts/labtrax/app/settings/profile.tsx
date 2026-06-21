@@ -523,12 +523,17 @@ export default function ProfileScreen() {
               <View style={[styles.fieldWrap, styles.fieldDivider, { borderTopColor: colors.border }]}>
                 <View style={styles.phoneRow}>
                   <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Phone</Text>
-                  {isPhoneVerified && (
+                  {isPhoneVerified ? (
                     <View style={[styles.verifiedBadge, { backgroundColor: colors.success + "18", borderColor: colors.success + "40" }]}>
                       <Ionicons name="checkmark-circle" size={12} color={colors.success} />
                       <Text style={[styles.verifiedText, { color: colors.success }]}>Verified</Text>
                     </View>
-                  )}
+                  ) : phone.trim() !== "" && phoneVerifyStep === "idle" ? (
+                    <View style={[styles.verifiedBadge, { backgroundColor: "#F59E0B18", borderColor: "#F59E0B40" }]}>
+                      <Ionicons name="alert-circle-outline" size={12} color="#F59E0B" />
+                      <Text style={[styles.verifiedText, { color: "#F59E0B" }]}>Not verified</Text>
+                    </View>
+                  ) : null}
                 </View>
                 <TextInput
                   value={phone}
