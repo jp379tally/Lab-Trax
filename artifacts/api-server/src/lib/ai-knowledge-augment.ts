@@ -1,6 +1,6 @@
 import { and, eq, inArray, isNull, asc } from "drizzle-orm";
 import { db, aiMemory } from "@workspace/db";
-import { selectKnowledge, selectKnowledgeSections } from "@workspace/ai-knowledge";
+import { selectKnowledgeSections } from "@workspace/ai-knowledge";
 import type { KnowledgeSection } from "@workspace/ai-knowledge";
 
 const KIND_LABELS: Record<string, string> = {
@@ -62,6 +62,99 @@ const RETENTION_LEGAL_DISCLAIMER =
   "legal counsel before disposing of any records.";
 
 /**
+ * Keywords that indicate a query is asking about Business Associate Agreements
+ * (BAAs) or business associate obligations under HIPAA. When any of these
+ * appear, a prominent legal-advice disclaimer is injected so staff do not act
+ * on AI guidance alone when negotiating or signing BAAs.
+ *
+ * Lowercase; matched as substrings of the lowercased query.
+ */
+export const BAA_SIGNALS: readonly string[] = [
+  "baa",
+  "business associate",
+  "business associate agreement",
+  "covered entity",
+  "covered entities",
+  "subcontractor",
+  "vendor agreement",
+  "hipaa agreement",
+  "hipaa contract",
+  "sign a baa",
+  "require a baa",
+  "need a baa",
+  "baa required",
+  "baa signed",
+  "baa in place",
+  "associate contract",
+  "data processing agreement",
+];
+
+/**
+ * Returns true when the query contains at least one BAA-signal keyword that
+ * warrants surfacing the BAA legal-advice disclaimer.
+ */
+export function hasBaaSignal(query: string): boolean {
+  const lower = query.toLowerCase();
+  return BAA_SIGNALS.some((signal) => lower.includes(signal));
+}
+
+/** Prominent disclaimer injected when a query concerns BAA obligations. */
+const BAA_LEGAL_DISCLAIMER =
+  "⚠️ NOT LEGAL ADVICE — Business Associate Agreement requirements depend on " +
+  "your specific relationships, services, and applicable law. The guidance " +
+  "below is a general reference only. Consult qualified legal counsel before " +
+  "drafting, signing, or declining any Business Associate Agreement.";
+
+/**
+ * Keywords that indicate a query is asking about HIPAA breach notification
+ * obligations, timelines, or state-specific privacy breach rules. When any of
+ * these appear, a prominent legal-advice disclaimer is injected.
+ *
+ * Lowercase; matched as substrings of the lowercased query.
+ */
+export const BREACH_SIGNALS: readonly string[] = [
+  "breach",
+  "breach notification",
+  "notify patients",
+  "notify hhs",
+  "report a breach",
+  "report the breach",
+  "data breach",
+  "security incident",
+  "unauthorized access",
+  "unauthorized disclosure",
+  "impermissible disclosure",
+  "60 day",
+  "60-day",
+  "breach timeline",
+  "notification deadline",
+  "breach report",
+  "state breach",
+  "state notification",
+  "safe harbor",
+  "risk assessment",
+  "low probability",
+  "four-factor",
+  "four factor",
+];
+
+/**
+ * Returns true when the query contains at least one breach-signal keyword that
+ * warrants surfacing the breach-notification legal-advice disclaimer.
+ */
+export function hasBreachSignal(query: string): boolean {
+  const lower = query.toLowerCase();
+  return BREACH_SIGNALS.some((signal) => lower.includes(signal));
+}
+
+/** Prominent disclaimer injected when a query concerns breach notification. */
+const BREACH_LEGAL_DISCLAIMER =
+  "⚠️ NOT LEGAL ADVICE — HIPAA breach notification timelines and state-law " +
+  "requirements vary and carry legal consequences. The information below is a " +
+  "general reference only. Contact qualified legal counsel and, if applicable, " +
+  "your compliance officer immediately when a potential breach is identified.";
+
+/**
  * Privacy-sensitive keywords that indicate a query is asking about patient
  * data handling. When any of these appear, HIPAA knowledge sections are
  * guaranteed a share of the prompt budget so staff always receive compliance
@@ -110,18 +203,22 @@ function renderKnowledgeSection(section: KnowledgeSection): string {
 /**
  * Metadata returned alongside the knowledge block.
  * sectionIds — IDs of every knowledge section included in the block.
- * retentionDisclaimer — true when the legal-advice disclaimer was injected.
+ * retentionDisclaimer — true when the retention legal-advice disclaimer was injected.
+ * baaDisclaimer — true when the BAA legal-advice disclaimer was injected.
+ * breachDisclaimer — true when the breach-notification legal-advice disclaimer was injected.
  */
 export interface KnowledgeBlockMeta {
   block: string;
   sectionIds: string[];
   retentionDisclaimer: boolean;
+  baaDisclaimer: boolean;
+  breachDisclaimer: boolean;
 }
 
 /**
  * Build a curated knowledge block for the given user query. Returns metadata
  * including the formatted block, the list of section IDs that were selected,
- * and whether the retention disclaimer was injected. The block is an empty
+ * and which compliance disclaimers were injected. The block is an empty
  * string when nothing relevant is found so callers can append it
  * unconditionally without altering the prompt when there is no match.
  *
@@ -131,24 +228,40 @@ export interface KnowledgeBlockMeta {
  * remaining budget is filled by the normal relevance-scored selection across
  * all groups, with HIPAA sections already included skipped to avoid
  * duplication.
+ *
+ * Compliance disclaimers (retention, BAA, breach) are injected at the top
+ * of the block when the query matches their respective signal arrays so they
+ * are visible even if the user reads only the first part of the AI response.
  */
 export function buildKnowledgeBlockWithMeta(
   query: string,
   maxChars = 2000,
 ): KnowledgeBlockMeta {
   const retentionDisclaimer = hasRetentionSignal(query);
+  const baaDisclaimer = hasBaaSignal(query);
+  const breachDisclaimer = hasBreachSignal(query);
+
+  // Build a combined disclaimer prefix for all matching compliance topics.
+  const disclaimers: string[] = [];
+  if (retentionDisclaimer) disclaimers.push(RETENTION_LEGAL_DISCLAIMER);
+  if (baaDisclaimer) disclaimers.push(BAA_LEGAL_DISCLAIMER);
+  if (breachDisclaimer) disclaimers.push(BREACH_LEGAL_DISCLAIMER);
+  const prefix = disclaimers.length > 0 ? `${disclaimers.join("\n\n")}\n\n` : "";
+
+  const emptyMeta: KnowledgeBlockMeta = {
+    block: "",
+    sectionIds: [],
+    retentionDisclaimer: false,
+    baaDisclaimer: false,
+    breachDisclaimer: false,
+  };
 
   if (!hasPrivacySignal(query)) {
     const sections = selectKnowledgeSections(query, { maxChars });
-    if (sections.length === 0) {
-      return { block: "", sectionIds: [], retentionDisclaimer: false };
-    }
+    if (sections.length === 0) return emptyMeta;
     const knowledge = sections.map(renderKnowledgeSection).join("\n\n");
-    const prefix = retentionDisclaimer
-      ? `${RETENTION_LEGAL_DISCLAIMER}\n\n`
-      : "";
     const block = `\nREFERENCE KNOWLEDGE (curated; use only if relevant to the question):\n${prefix}${knowledge}`;
-    return { block, sectionIds: sections.map((s) => s.id), retentionDisclaimer };
+    return { block, sectionIds: sections.map((s) => s.id), retentionDisclaimer, baaDisclaimer, breachDisclaimer };
   }
 
   // Privacy signal detected: reserve a budget share for HIPAA sections.
@@ -177,18 +290,10 @@ export function buildKnowledgeBlockWithMeta(
 
   const allSections = [...hipaaSections, ...generalSections];
   const knowledge = allSections.map(renderKnowledgeSection).join("\n\n");
-  if (!knowledge) {
-    return { block: "", sectionIds: [], retentionDisclaimer: false };
-  }
+  if (!knowledge) return emptyMeta;
 
-  // When the query asks about retention, inject the legal disclaimer before
-  // the knowledge sections so it appears at the top of the AI's reference
-  // block — visible even if the user reads only part of the response.
-  const prefix = retentionDisclaimer
-    ? `${RETENTION_LEGAL_DISCLAIMER}\n\n`
-    : "";
   const block = `\nREFERENCE KNOWLEDGE (curated; use only if relevant to the question):\n${prefix}${knowledge}`;
-  return { block, sectionIds: allSections.map((s) => s.id), retentionDisclaimer };
+  return { block, sectionIds: allSections.map((s) => s.id), retentionDisclaimer, baaDisclaimer, breachDisclaimer };
 }
 
 /**
@@ -196,7 +301,7 @@ export function buildKnowledgeBlockWithMeta(
  * string when nothing relevant is found so callers can append it
  * unconditionally without altering the prompt when there is no match.
  *
- * @deprecated Prefer buildKnowledgeBlockWithMeta when you need the section IDs.
+ * @deprecated Prefer buildKnowledgeBlockWithMeta when you need the section IDs or disclaimer flags.
  */
 export function buildKnowledgeBlock(query: string, maxChars = 2000): string {
   return buildKnowledgeBlockWithMeta(query, maxChars).block;

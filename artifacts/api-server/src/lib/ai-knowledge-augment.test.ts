@@ -26,8 +26,12 @@ import {
   buildMaterialSuggestionBlock,
   hasPrivacySignal,
   hasRetentionSignal,
+  hasBaaSignal,
+  hasBreachSignal,
   HIPAA_PRIVACY_SIGNALS,
   RETENTION_SIGNALS,
+  BAA_SIGNALS,
+  BREACH_SIGNALS,
 } from "./ai-knowledge-augment";
 
 function rid(prefix: string) {
@@ -131,6 +135,169 @@ describe("hasRetentionSignal (pure)", () => {
     for (const signal of RETENTION_SIGNALS) {
       expect(hasRetentionSignal(signal), `signal: "${signal}"`).toBe(true);
     }
+  });
+});
+
+describe("hasBaaSignal (pure)", () => {
+  it("returns true for each known BAA-signal keyword", () => {
+    const samples = ["baa", "business associate", "covered entity", "subcontractor", "hipaa agreement", "data processing agreement"];
+    for (const signal of samples) {
+      expect(hasBaaSignal(`Do I need a ${signal} for this vendor?`), `signal: ${signal}`).toBe(true);
+    }
+  });
+
+  it("is case-insensitive", () => {
+    expect(hasBaaSignal("Do I need a BAA for this software?")).toBe(true);
+    expect(hasBaaSignal("Is this a COVERED ENTITY?")).toBe(true);
+  });
+
+  it("returns false for unrelated queries", () => {
+    expect(hasBaaSignal("What zirconia shade should I use?")).toBe(false);
+    expect(hasBaaSignal("How do I send an invoice?")).toBe(false);
+    expect(hasBaaSignal("Can I share a patient photo?")).toBe(false);
+  });
+
+  it("covers every signal in BAA_SIGNALS", () => {
+    for (const signal of BAA_SIGNALS) {
+      expect(hasBaaSignal(signal), `signal: "${signal}"`).toBe(true);
+    }
+  });
+});
+
+describe("hasBreachSignal (pure)", () => {
+  it("returns true for each known breach-signal keyword", () => {
+    const samples = ["breach", "data breach", "security incident", "notify hhs", "breach notification", "unauthorized access", "60 day", "safe harbor"];
+    for (const signal of samples) {
+      expect(hasBreachSignal(`Tell me about ${signal} requirements`), `signal: ${signal}`).toBe(true);
+    }
+  });
+
+  it("is case-insensitive", () => {
+    expect(hasBreachSignal("How do I report a BREACH?")).toBe(true);
+    expect(hasBreachSignal("What is the BREACH NOTIFICATION deadline?")).toBe(true);
+  });
+
+  it("returns false for unrelated queries", () => {
+    expect(hasBreachSignal("What zirconia shade should I use?")).toBe(false);
+    expect(hasBreachSignal("How do I send an invoice?")).toBe(false);
+    expect(hasBreachSignal("How long should I retain records?")).toBe(false);
+  });
+
+  it("covers every signal in BREACH_SIGNALS", () => {
+    for (const signal of BREACH_SIGNALS) {
+      expect(hasBreachSignal(signal), `signal: "${signal}"`).toBe(true);
+    }
+  });
+});
+
+describe("buildKnowledgeBlock — BAA disclaimer (pure)", () => {
+  it("includes the BAA disclaimer when query asks about business associate agreements", () => {
+    const block = buildKnowledgeBlock("Do I need a business associate agreement with my software vendor?");
+    expect(block).toContain("NOT LEGAL ADVICE");
+    expect(block).toContain("Business Associate Agreement");
+    expect(block).toContain("legal counsel");
+  });
+
+  it("includes the BAA disclaimer for covered entity queries", () => {
+    const block = buildKnowledgeBlock("Are dental labs considered covered entities under HIPAA?");
+    expect(block).toContain("NOT LEGAL ADVICE");
+    expect(block).toContain("Business Associate Agreement");
+  });
+
+  it("includes the BAA disclaimer for subcontractor queries", () => {
+    const block = buildKnowledgeBlock("Does my subcontractor need a BAA?");
+    expect(block).toContain("NOT LEGAL ADVICE");
+    expect(block).toContain("Business Associate Agreement");
+  });
+
+  it("places the BAA disclaimer before the knowledge sections", () => {
+    const block = buildKnowledgeBlock("Do we need a BAA with our cloud storage provider?");
+    const disclaimerIdx = block.indexOf("NOT LEGAL ADVICE");
+    const knowledgeIdx = block.indexOf("###");
+    if (knowledgeIdx > -1) {
+      expect(disclaimerIdx).toBeLessThan(knowledgeIdx);
+    }
+    expect(disclaimerIdx).toBeGreaterThan(-1);
+  });
+
+  it("does not include the BAA disclaimer for unrelated queries", () => {
+    const block = buildKnowledgeBlock("What is the best material for an anterior crown?");
+    expect(block).not.toContain("Business Associate Agreement");
+  });
+
+  it("does not include the BAA disclaimer for retention-only queries", () => {
+    const block = buildKnowledgeBlock("How long do I keep dental records in Texas?");
+    expect(block).not.toContain("Business Associate Agreement");
+  });
+});
+
+describe("buildKnowledgeBlock — breach disclaimer (pure)", () => {
+  it("includes the breach disclaimer when query asks about a data breach", () => {
+    const block = buildKnowledgeBlock("We had a data breach — what do we need to do to notify patients?");
+    expect(block).toContain("NOT LEGAL ADVICE");
+    expect(block).toContain("breach notification");
+    expect(block).toContain("legal counsel");
+  });
+
+  it("includes the breach disclaimer for HHS notification queries", () => {
+    const block = buildKnowledgeBlock("How do I notify HHS about a security incident?");
+    expect(block).toContain("NOT LEGAL ADVICE");
+    expect(block).toContain("breach notification");
+  });
+
+  it("includes the breach disclaimer for 60-day timeline queries", () => {
+    const block = buildKnowledgeBlock("Is there a 60-day deadline for breach notification?");
+    expect(block).toContain("NOT LEGAL ADVICE");
+    expect(block).toContain("breach notification");
+  });
+
+  it("includes the breach disclaimer for unauthorized access queries", () => {
+    const block = buildKnowledgeBlock("Someone had unauthorized access to our patient files.");
+    expect(block).toContain("NOT LEGAL ADVICE");
+    expect(block).toContain("breach notification");
+  });
+
+  it("places the breach disclaimer before the knowledge sections", () => {
+    const block = buildKnowledgeBlock("What is the breach notification timeline under HIPAA?");
+    const disclaimerIdx = block.indexOf("NOT LEGAL ADVICE");
+    const knowledgeIdx = block.indexOf("###");
+    if (knowledgeIdx > -1) {
+      expect(disclaimerIdx).toBeLessThan(knowledgeIdx);
+    }
+    expect(disclaimerIdx).toBeGreaterThan(-1);
+  });
+
+  it("does not include the breach disclaimer for unrelated queries", () => {
+    const block = buildKnowledgeBlock("What is the best material for an anterior crown?");
+    expect(block).not.toContain("breach notification");
+  });
+
+  it("does not include the breach disclaimer for BAA-only queries", () => {
+    const block = buildKnowledgeBlock("Do I need a business associate agreement with my lab software?");
+    expect(block).not.toContain("breach notification");
+  });
+});
+
+describe("buildKnowledgeBlock — multiple disclaimers (pure)", () => {
+  it("includes both retention and breach disclaimers when a query matches both", () => {
+    const block = buildKnowledgeBlock("We had a data breach — do we need to retain the breach records?");
+    expect(block).toContain("Record-retention periods vary by state");
+    expect(block).toContain("breach notification");
+  });
+
+  it("includes both BAA and breach disclaimers when a query matches both", () => {
+    const block = buildKnowledgeBlock("We had a security incident with our business associate — do we need to notify HHS?");
+    expect(block).toContain("Business Associate Agreement");
+    expect(block).toContain("breach notification");
+  });
+
+  it("all three disclaimers appear when query matches all three topics", () => {
+    const block = buildKnowledgeBlock(
+      "Our business associate had a breach — what are the retention and notification requirements?",
+    );
+    expect(block).toContain("Record-retention periods vary by state");
+    expect(block).toContain("Business Associate Agreement");
+    expect(block).toContain("breach notification");
   });
 });
 
