@@ -279,6 +279,8 @@ function ProfilePanel() {
   const [placementsError, setPlacementsError] = useState<string | null>(null);
 
   const [phoneVerifyStep, setPhoneVerifyStep] = useState<"idle" | "sending" | "otp">("idle");
+  const [resending, setResending] = useState(false);
+  const [phoneBeingVerified, setPhoneBeingVerified] = useState("");
   const [otpCode, setOtpCode] = useState("");
   const [otpError, setOtpError] = useState<string | null>(null);
   const [resendCountdown, setResendCountdown] = useState(0);
@@ -326,26 +328,48 @@ function ProfilePanel() {
   async function handleSendVerificationCode() {
     const phoneToVerify = phone.trim();
     if (!phoneToVerify || !user?.id) return;
-    setPhoneVerifyStep("sending");
+
+    const isResend = phoneVerifyStep === "otp";
+
+    if (isResend) {
+      setResending(true);
+    } else {
+      setPhoneVerifyStep("sending");
+    }
     setOtpError(null);
+
     try {
-      if (phone !== (user?.phone ?? "")) {
+      if (!isResend && phone !== (user?.phone ?? "")) {
         await apiFetch(`/auth/users/${user.id}/profile`, {
           method: "PUT",
           body: JSON.stringify({ firstName, lastName, email, phone, practiceName }),
         });
         await refresh();
       }
+      // phoneToVerify is the canonical trimmed value sent to the API; store it in
+      // state so the OTP panel displays the exact number that was passed to Twilio.
       await apiFetch("/send-phone-code", {
         method: "POST",
         body: JSON.stringify({ phone: phoneToVerify }),
       });
-      setPhoneVerifyStep("otp");
-      setOtpCode("");
-      startResendTimer();
+      setPhoneBeingVerified(phoneToVerify);
+      if (isResend) {
+        setResending(false);
+        setOtpCode("");
+        startResendTimer();
+      } else {
+        setPhoneVerifyStep("otp");
+        setOtpCode("");
+        startResendTimer();
+      }
     } catch (err: unknown) {
-      setOtpError((err as Error).message || "Failed to send verification code.");
-      setPhoneVerifyStep("idle");
+      const msg = (err as Error).message || "Failed to send verification code.";
+      setOtpError(msg);
+      if (isResend) {
+        setResending(false);
+      } else {
+        setPhoneVerifyStep("idle");
+      }
     }
   }
 
@@ -374,6 +398,8 @@ function ProfilePanel() {
 
   function cancelPhoneVerify() {
     setPhoneVerifyStep("idle");
+    setResending(false);
+    setPhoneBeingVerified("");
     setOtpCode("");
     setOtpError(null);
     if (resendTimerRef.current) {
@@ -405,13 +431,15 @@ function ProfilePanel() {
       // If the phone number changed, auto-start the SMS verification flow so
       // the admin can verify the new number without a separate "Verify" click.
       if (phoneChanged && phone.trim()) {
+        const phoneToVerify = phone.trim();
         setPhoneVerifyStep("sending");
         setOtpError(null);
         try {
           await apiFetch("/send-phone-code", {
             method: "POST",
-            body: JSON.stringify({ phone: phone.trim() }),
+            body: JSON.stringify({ phone: phoneToVerify }),
           });
+          setPhoneBeingVerified(phoneToVerify);
           setPhoneVerifyStep("otp");
           setOtpCode("");
           startResendTimer();
@@ -863,7 +891,7 @@ function ProfilePanel() {
             <div className="rounded-lg border border-border bg-secondary/20 p-4">
               <p className="text-sm font-medium mb-1">Enter verification code</p>
               <p className="text-xs text-muted-foreground mb-3">
-                We sent a 6-digit code to {phone}. Enter it below to verify your number.
+                We sent a 6-digit code to {phoneBeingVerified}. Enter it below to verify your number.
               </p>
               {otpError && (
                 <p className="text-xs text-destructive mb-2">{otpError}</p>
@@ -891,10 +919,16 @@ function ProfilePanel() {
                 <button
                   type="button"
                   onClick={() => void handleSendVerificationCode()}
-                  disabled={resendCountdown > 0}
-                  className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  disabled={resendCountdown > 0 || resending}
+                  className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed transition-colors inline-flex items-center gap-1"
                 >
-                  {resendCountdown > 0 ? `Resend in ${resendCountdown}s` : "Resend code"}
+                  {resending ? (
+                    <><Loader2 size={12} className="animate-spin" />Sending…</>
+                  ) : resendCountdown > 0 ? (
+                    `Resend in ${resendCountdown}s`
+                  ) : (
+                    "Resend code"
+                  )}
                 </button>
                 <button
                   type="button"

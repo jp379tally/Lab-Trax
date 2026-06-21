@@ -3305,7 +3305,71 @@ export async function registerRoutes(): Promise<IRouter> {
     if (!phone || typeof phone !== "string") {
       return res.status(400).json({ error: "Phone number required" });
     }
+
+    const twilioSid = process.env.TWILIO_ACCOUNT_SID;
+    const twilioToken = process.env.TWILIO_AUTH_TOKEN;
+    const twilioFrom = process.env.TWILIO_PHONE_NUMBER;
+    const isDev = process.env.NODE_ENV === "development";
+
+    if (!twilioSid || !twilioToken || !twilioFrom) {
+      if (!isDev) {
+        req.log.error({ phone: `***${phone.slice(-4)}` }, "SMS verification failed: Twilio not configured");
+        return res.status(503).json({ error: "SMS delivery is not configured on this server." });
+      }
+      req.log.info({ phone: `***${phone.slice(-4)}` }, "SMS verification: Twilio not configured, returning demo code (dev only)");
+      const code = generateCode();
+      await createVerificationCode({
+        channel: "sms",
+        target: normalizePhoneTarget(phone),
+        code,
+        userId: (req as any).auth?.userId ?? null,
+      });
+      return res.json({ success: true, message: "Verification code sent via SMS.", demoCode: code });
+    }
+
     const code = generateCode();
+    const phoneE164 = normalizePhoneE164(phone);
+    if (!phoneE164) {
+      return res.status(400).json({ error: "Invalid phone number format." });
+    }
+
+    req.log.info({ phone: `***${phone.slice(-4)}` }, "SMS verification: sending code via Twilio");
+
+    let twilioStatus: string | undefined;
+    try {
+      const authHeader = "Basic " + Buffer.from(`${twilioSid}:${twilioToken}`).toString("base64");
+      const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`;
+      const params = new URLSearchParams();
+      params.append("To", phoneE164);
+      params.append("From", twilioFrom);
+      params.append("Body", `Your LabTrax verification code is: ${code}. It expires in 10 minutes.`);
+      const twilioResp = await globalThis.fetch(twilioUrl, {
+        method: "POST",
+        headers: { "Authorization": authHeader, "Content-Type": "application/x-www-form-urlencoded" },
+        body: params.toString(),
+      });
+      const twilioData = await twilioResp.json() as any;
+      if (!twilioResp.ok || twilioData.error_code) {
+        req.log.error(
+          {
+            phone: `***${phone.slice(-4)}`,
+            twilioHttpStatus: twilioResp.status,
+            twilioErrorCode: twilioData.error_code,
+            twilioMessage: twilioData.message,
+          },
+          "SMS verification: Twilio returned error"
+        );
+        return res.status(500).json({ error: "Failed to send verification code. Please try again." });
+      }
+      twilioStatus = twilioData.status as string | undefined;
+    } catch (err: any) {
+      req.log.error(
+        { phone: `***${phone.slice(-4)}`, err: err?.message || String(err) },
+        "SMS verification: Twilio request failed"
+      );
+      return res.status(500).json({ error: "Failed to send verification code. Please try again." });
+    }
+
     await createVerificationCode({
       channel: "sms",
       target: normalizePhoneTarget(phone),
@@ -3313,40 +3377,8 @@ export async function registerRoutes(): Promise<IRouter> {
       userId: (req as any).auth?.userId ?? null,
     });
 
-    const twilioSid = process.env.TWILIO_ACCOUNT_SID;
-    const twilioToken = process.env.TWILIO_AUTH_TOKEN;
-    const twilioFrom = process.env.TWILIO_PHONE_NUMBER;
-
-    if (twilioSid && twilioToken && twilioFrom) {
-      try {
-        const authHeader = "Basic " + Buffer.from(`${twilioSid}:${twilioToken}`).toString("base64");
-        const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`;
-        const params = new URLSearchParams();
-        const phoneE164 = normalizePhoneE164(phone);
-        if (!phoneE164) throw new Error(`Invalid phone number: ${phone}`);
-        params.append("To", phoneE164);
-        params.append("From", twilioFrom);
-        params.append("Body", `Your LabTrax verification code is: ${code}. It expires in 10 minutes.`);
-        const twilioResp = await globalThis.fetch(twilioUrl, {
-          method: "POST",
-          headers: { "Authorization": authHeader, "Content-Type": "application/x-www-form-urlencoded" },
-          body: params.toString(),
-        });
-        const twilioData = await twilioResp.json() as any;
-        if (twilioData.error_code) {
-          console.error(`[SMS VERIFICATION] Twilio error: ${twilioData.message}`);
-          return res.status(500).json({ error: "Failed to send verification code. Please try again." });
-        }
-      } catch (err: any) {
-        console.error(`[SMS VERIFICATION] Failed:`, err?.message || err);
-        return res.status(500).json({ error: "Failed to send verification code. Please try again." });
-      }
-    } else {
-      console.log(`[SMS VERIFICATION] Twilio not configured. Dev mode only — code masked for security.`);
-    }
-
-    const isDev = process.env.NODE_ENV === "development";
-    return res.json({ success: true, message: "Verification code sent via SMS.", ...(isDev && (!twilioSid || !twilioToken || !twilioFrom) ? { demoCode: code } : {}) });
+    req.log.info({ phone: `***${phone.slice(-4)}`, twilioStatus }, "SMS verification: code dispatched successfully");
+    return res.json({ success: true, message: "Verification code sent via SMS." });
   });
 
   router.post("/verify-phone-code", optionalAuth, async (req, res) => {
