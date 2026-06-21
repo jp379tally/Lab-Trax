@@ -1353,6 +1353,7 @@ function CaseDeleteModal({
   onClose: () => void;
   onSuccess: (deletedCount: number) => void;
 }) {
+  const { user } = useAuth();
   const [step, setStep] = useState<"pin" | "confirm" | "otp">("pin");
   const [pin, setPin] = useState("");
   const [otp, setOtp] = useState("");
@@ -1489,6 +1490,25 @@ function CaseDeleteModal({
                   </div>
                 </div>
               )}
+              {user?.role === "owner" && !user?.phoneVerifiedAt && (
+                <div className="flex items-start gap-2.5 rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3.5 py-3 text-amber-800 dark:text-amber-300">
+                  <AlertTriangle size={15} className="shrink-0 mt-0.5" />
+                  <div className="space-y-1 text-xs leading-relaxed">
+                    <p className="font-medium">Phone not verified</p>
+                    <p>
+                      Case deletion sends an SMS code to the lab owner to confirm. Your phone number isn't verified yet.{" "}
+                      <a
+                        href="/settings?tab=profile"
+                        className="underline hover:no-underline"
+                        onClick={onClose}
+                      >
+                        Go to Settings → Profile to verify it
+                      </a>
+                      {" "}before proceeding.
+                    </p>
+                  </div>
+                </div>
+              )}
               <p className="text-sm text-muted-foreground">Enter the admin PIN to begin. A verification code will be sent to the lab owner's phone.</p>
               <div className="space-y-1.5">
                 <label htmlFor="cdm-pin" className="text-xs font-medium text-muted-foreground">Admin PIN</label>
@@ -1504,7 +1524,24 @@ function CaseDeleteModal({
                   disabled={isPending}
                 />
               </div>
-              {error && <p className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md">{error}</p>}
+              {error && (
+                <div className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md">
+                  {error.toLowerCase().includes("verified phone") ? (
+                    <>
+                      {error}{" "}
+                      <a
+                        href="/settings?tab=profile"
+                        className="underline hover:no-underline font-medium"
+                        onClick={onClose}
+                      >
+                        Go to Settings → Profile
+                      </a>
+                    </>
+                  ) : (
+                    error
+                  )}
+                </div>
+              )}
             </div>
             <div className="flex gap-3 px-6 pb-5">
               <button type="button" onClick={onClose} disabled={isPending} className="flex-1 h-9 rounded-lg bg-secondary text-sm font-medium text-muted-foreground hover:text-foreground">Cancel</button>
