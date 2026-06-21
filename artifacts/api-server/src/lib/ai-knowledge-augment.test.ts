@@ -25,7 +25,9 @@ import {
   buildLabMemoryBlock,
   buildMaterialSuggestionBlock,
   hasPrivacySignal,
+  hasRetentionSignal,
   HIPAA_PRIVACY_SIGNALS,
+  RETENTION_SIGNALS,
 } from "./ai-knowledge-augment";
 
 function rid(prefix: string) {
@@ -103,6 +105,77 @@ describe("hasPrivacySignal (pure)", () => {
     for (const signal of HIPAA_PRIVACY_SIGNALS) {
       expect(hasPrivacySignal(signal), `signal: "${signal}"`).toBe(true);
     }
+  });
+});
+
+describe("hasRetentionSignal (pure)", () => {
+  it("returns true for each known retention-signal keyword", () => {
+    const samples = ["retention", "how long", "record retention", "disposal", "state law", "dental records", "minor patient"];
+    for (const signal of samples) {
+      expect(hasRetentionSignal(`Tell me about ${signal} requirements`), `signal: ${signal}`).toBe(true);
+    }
+  });
+
+  it("is case-insensitive", () => {
+    expect(hasRetentionSignal("RECORD RETENTION rules")).toBe(true);
+    expect(hasRetentionSignal("How Long do I keep records")).toBe(true);
+  });
+
+  it("returns false for unrelated queries", () => {
+    expect(hasRetentionSignal("What zirconia shade should I use?")).toBe(false);
+    expect(hasRetentionSignal("How do I send an invoice?")).toBe(false);
+    expect(hasRetentionSignal("Can I share a patient photo?")).toBe(false);
+  });
+
+  it("covers every signal in RETENTION_SIGNALS", () => {
+    for (const signal of RETENTION_SIGNALS) {
+      expect(hasRetentionSignal(signal), `signal: "${signal}"`).toBe(true);
+    }
+  });
+});
+
+describe("buildKnowledgeBlock — retention disclaimer (pure)", () => {
+  it("includes the legal disclaimer when query asks about record retention", () => {
+    const block = buildKnowledgeBlock("How long do I need to keep dental records in California?");
+    expect(block).toContain("NOT LEGAL ADVICE");
+    expect(block).toContain("state dental board");
+    expect(block).toContain("legal counsel");
+  });
+
+  it("places the disclaimer before the knowledge sections", () => {
+    const block = buildKnowledgeBlock("What are the retention rules for dental lab records?");
+    const disclaimerIdx = block.indexOf("NOT LEGAL ADVICE");
+    const knowledgeIdx = block.indexOf("###");
+    expect(disclaimerIdx).toBeGreaterThan(-1);
+    expect(knowledgeIdx).toBeGreaterThan(-1);
+    expect(disclaimerIdx).toBeLessThan(knowledgeIdx);
+  });
+
+  it("includes the disclaimer for state-specific retention queries", () => {
+    const block = buildKnowledgeBlock("What are the state law requirements for how long a dental lab must keep records?");
+    expect(block).toContain("NOT LEGAL ADVICE");
+    expect(block).toContain("REFERENCE KNOWLEDGE");
+  });
+
+  it("includes the disclaimer for minor patient retention queries", () => {
+    const block = buildKnowledgeBlock("How long must I retain records for minor patients?");
+    expect(block).toContain("NOT LEGAL ADVICE");
+  });
+
+  it("does not include the retention disclaimer for non-retention queries", () => {
+    const block = buildKnowledgeBlock("Can I share a patient photo with anyone?");
+    expect(block).not.toContain("NOT LEGAL ADVICE");
+  });
+
+  it("does not include the retention disclaimer for unrelated queries", () => {
+    const block = buildKnowledgeBlock("What is the best zirconia for a molar crown?");
+    expect(block).not.toContain("NOT LEGAL ADVICE");
+  });
+
+  it("includes both the disclaimer and retention-section content", () => {
+    const block = buildKnowledgeBlock("How long do I need to retain dental lab case records?");
+    expect(block).toContain("NOT LEGAL ADVICE");
+    expect(block).toContain("Retention");
   });
 });
 

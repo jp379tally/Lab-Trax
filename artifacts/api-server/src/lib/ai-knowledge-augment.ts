@@ -10,6 +10,58 @@ const KIND_LABELS: Record<string, string> = {
 };
 
 /**
+ * Keywords that indicate a query is asking about record-retention periods or
+ * disposal rules. When any of these appear, a prominent legal-advice disclaimer
+ * is injected at the top of the knowledge block so staff cannot miss it even
+ * if they read only the first part of the AI reply.
+ *
+ * Lowercase; matched as substrings of the lowercased query.
+ */
+export const RETENTION_SIGNALS: readonly string[] = [
+  "retention",
+  "retain",
+  "how long",
+  "record retention",
+  "keep records",
+  "keep for",
+  "must keep",
+  "years",
+  "state law",
+  "state rules",
+  "state requirements",
+  "state board",
+  "dispose",
+  "disposal",
+  "destroy records",
+  "delete records",
+  "lab records",
+  "dental records",
+  "case records",
+  "rx records",
+  "minor patient",
+  "adult patient",
+  "age of majority",
+];
+
+/**
+ * Returns true when the query contains at least one retention-signal keyword
+ * that warrants surfacing the legal-advice disclaimer prominently.
+ */
+export function hasRetentionSignal(query: string): boolean {
+  const lower = query.toLowerCase();
+  return RETENTION_SIGNALS.some((signal) => lower.includes(signal));
+}
+
+/** Prominent disclaimer injected at the top of any knowledge block that draws
+ *  on retention content. Placed first so it is visible even if the user reads
+ *  only part of the AI response. */
+const RETENTION_LEGAL_DISCLAIMER =
+  "⚠️ NOT LEGAL ADVICE — Record-retention periods vary by state and are " +
+  "updated by legislation. The figures below are a general reference only. " +
+  "Verify current requirements with your state dental board and qualified " +
+  "legal counsel before disposing of any records.";
+
+/**
  * Privacy-sensitive keywords that indicate a query is asking about patient
  * data handling. When any of these appear, HIPAA knowledge sections are
  * guaranteed a share of the prompt budget so staff always receive compliance
@@ -68,10 +120,15 @@ function renderKnowledgeSection(section: KnowledgeSection): string {
  * duplication.
  */
 export function buildKnowledgeBlock(query: string, maxChars = 2000): string {
+  const retentionQuery = hasRetentionSignal(query);
+
   if (!hasPrivacySignal(query)) {
     const knowledge = selectKnowledge(query, { maxChars });
     if (!knowledge) return "";
-    return `\nREFERENCE KNOWLEDGE (curated; use only if relevant to the question):\n${knowledge}`;
+    const prefix = retentionQuery
+      ? `${RETENTION_LEGAL_DISCLAIMER}\n\n`
+      : "";
+    return `\nREFERENCE KNOWLEDGE (curated; use only if relevant to the question):\n${prefix}${knowledge}`;
   }
 
   // Privacy signal detected: reserve a budget share for HIPAA sections.
@@ -101,7 +158,14 @@ export function buildKnowledgeBlock(query: string, maxChars = 2000): string {
   const allSections = [...hipaaSections, ...generalSections];
   const knowledge = allSections.map(renderKnowledgeSection).join("\n\n");
   if (!knowledge) return "";
-  return `\nREFERENCE KNOWLEDGE (curated; use only if relevant to the question):\n${knowledge}`;
+
+  // When the query asks about retention, inject the legal disclaimer before
+  // the knowledge sections so it appears at the top of the AI's reference
+  // block — visible even if the user reads only part of the response.
+  const prefix = retentionQuery
+    ? `${RETENTION_LEGAL_DISCLAIMER}\n\n`
+    : "";
+  return `\nREFERENCE KNOWLEDGE (curated; use only if relevant to the question):\n${prefix}${knowledge}`;
 }
 
 // ─── Material & shade suggestion block ──────────────────────────────────────
