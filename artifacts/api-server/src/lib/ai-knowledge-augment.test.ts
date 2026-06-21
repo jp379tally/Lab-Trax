@@ -122,7 +122,7 @@ describe("hasPrivacySignal (pure)", () => {
 
 describe("hasRetentionSignal (pure)", () => {
   it("returns true for each known retention-signal keyword", () => {
-    const samples = ["retention", "how long", "record retention", "disposal", "state law", "dental records", "minor patient"];
+    const samples = ["retention", "record retention", "disposal", "state law", "dental records", "minor patient"];
     for (const signal of samples) {
       expect(hasRetentionSignal(`Tell me about ${signal} requirements`), `signal: ${signal}`).toBe(true);
     }
@@ -137,6 +137,12 @@ describe("hasRetentionSignal (pure)", () => {
     expect(hasRetentionSignal("What zirconia shade should I use?")).toBe(false);
     expect(hasRetentionSignal("How do I send an invoice?")).toBe(false);
     expect(hasRetentionSignal("Can I share a patient photo?")).toBe(false);
+  });
+
+  it("does NOT trigger for procedure timing questions", () => {
+    expect(hasRetentionSignal("How long should I wait before pouring a model?")).toBe(false);
+    expect(hasRetentionSignal("How long does a PFM take to fire?")).toBe(false);
+    expect(hasRetentionSignal("How long should I cure the resin?")).toBe(false);
   });
 
   it("covers every signal in RETENTION_SIGNALS", () => {

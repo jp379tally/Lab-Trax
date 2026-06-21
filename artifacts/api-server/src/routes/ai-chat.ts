@@ -766,12 +766,43 @@ ${pinnedCaseCtx ? `${pinnedCaseCtx}\n` : ""}${contextBlock}`;
       const completion = await openai.chat.completions.create({
         model: "gpt-5-mini",
         messages: [{ role: "system", content: systemPrompt }, ...safeMessages],
-        max_completion_tokens: 800,
+        max_completion_tokens: 4000,
       });
 
-      const reply =
-        completion.choices[0]?.message?.content ||
-        "I couldn't generate a response. Please try again.";
+      const choice = completion.choices[0];
+      const rawContent = choice?.message?.content ?? null;
+
+      // Log the full completion details when the model returns empty content so
+      // the exact failure reason is visible in server logs.
+      if (!rawContent) {
+        req.log?.error(
+          {
+            finishReason: choice?.finish_reason,
+            usage: completion.usage,
+            knowledgeSectionIds: knowledgeMeta.sectionIds,
+            systemPromptLength: systemPrompt.length,
+          },
+          "[AI CHAT] model returned empty content",
+        );
+      }
+
+      // Fallback: if the model returned nothing but we have knowledge sections,
+      // synthesise a direct answer from the retrieved sections rather than
+      // returning a generic error.
+      let reply: string;
+      if (rawContent) {
+        reply = rawContent;
+      } else if (knowledgeMeta.sectionIds.length > 0 && knowledgeMeta.block) {
+        // Strip the "REFERENCE KNOWLEDGE" header and render the sections directly.
+        const sections = knowledgeMeta.block
+          .replace(/^\nREFERENCE KNOWLEDGE \(curated;[^\n]*\):\n/, "")
+          .trim();
+        reply =
+          `Here is the relevant information from the reference knowledge:\n\n${sections}\n\n` +
+          `_(Generation failed — showing raw handbook sections. Try rephrasing your question for a more tailored answer.)_`;
+      } else {
+        reply = "I couldn't generate a response. Please try again.";
+      }
 
       // Log which knowledge sections were used for audit purposes.
       if (knowledgeMeta.sectionIds.length > 0 || knowledgeMeta.retentionDisclaimer || knowledgeMeta.privacyDisclaimer) {
