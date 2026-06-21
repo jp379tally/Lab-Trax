@@ -214,6 +214,110 @@ describe("selectKnowledge", () => {
     expect(ids).toContain("hipaa.retention-dental-lab");
   });
 
+  it("returns retention-dental-lab for an Oregon and Nevada retention query", () => {
+    const sections = selectKnowledgeSections(
+      "How long must I keep dental lab records in Oregon and Nevada?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.retention-dental-lab");
+  });
+
+  it("returns retention-dental-lab for a Tennessee and South Carolina retention query", () => {
+    const sections = selectKnowledgeSections(
+      "What are the dental record retention rules in Tennessee and South Carolina?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.retention-dental-lab");
+  });
+
+  it("returns retention-dental-lab for a Wisconsin, Indiana, and Maryland retention query", () => {
+    const sections = selectKnowledgeSections(
+      "How many years do I need to retain dental lab records in Wisconsin, Indiana, and Maryland?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.retention-dental-lab");
+  });
+
+  it("returns retention-dental-lab for a Connecticut and Kentucky retention query", () => {
+    const sections = selectKnowledgeSections(
+      "What is the record retention period for a dental lab in Connecticut and Kentucky?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.retention-dental-lab");
+  });
+
+  it("returns retention-dental-lab for an Oklahoma, Louisiana, and Alabama retention query", () => {
+    const sections = selectKnowledgeSections(
+      "How long should dental lab records be kept in Oklahoma, Louisiana, and Alabama?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.retention-dental-lab");
+  });
+
+  it("returns retention-dental-lab for a Utah and New Mexico retention query", () => {
+    const sections = selectKnowledgeSections(
+      "What are the retention requirements for dental records in Utah and New Mexico?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.retention-dental-lab");
+  });
+
+  it("returns retention-dental-lab for an Idaho, Montana, and Wyoming retention query", () => {
+    const sections = selectKnowledgeSections(
+      "How long do I keep lab case records in Idaho, Montana, and Wyoming?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.retention-dental-lab");
+  });
+
+  it("returns retention-dental-lab for a North Dakota and South Dakota retention query", () => {
+    const sections = selectKnowledgeSections(
+      "What dental record retention rules apply in North Dakota and South Dakota?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.retention-dental-lab");
+  });
+
+  it("returns retention-dental-lab for a Nebraska, Kansas, and Iowa retention query", () => {
+    const sections = selectKnowledgeSections(
+      "How many years must dental lab records be kept in Nebraska, Kansas, and Iowa?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.retention-dental-lab");
+  });
+
+  it("returns retention-dental-lab for an Arkansas and Mississippi retention query", () => {
+    const sections = selectKnowledgeSections(
+      "What are the record retention requirements for dental labs in Arkansas and Mississippi?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.retention-dental-lab");
+  });
+
+  it("returns retention-dental-lab for a West Virginia and Delaware retention query", () => {
+    const sections = selectKnowledgeSections(
+      "How long should I retain dental case records in West Virginia and Delaware?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.retention-dental-lab");
+  });
+
+  it("returns retention-dental-lab for a New Hampshire, Vermont, and Maine retention query", () => {
+    const sections = selectKnowledgeSections(
+      "What dental record retention periods apply in New Hampshire, Vermont, and Maine?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.retention-dental-lab");
+  });
+
+  it("returns retention-dental-lab for a Rhode Island, Hawaii, and Alaska retention query", () => {
+    const sections = selectKnowledgeSections(
+      "How long must a dental lab keep patient records in Rhode Island, Hawaii, and Alaska?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.retention-dental-lab");
+  });
+
   it("every curated section has a unique id and non-empty content", () => {
     const ids = ALL_SECTIONS.map((s) => s.id);
     expect(new Set(ids).size).toBe(ids.length);

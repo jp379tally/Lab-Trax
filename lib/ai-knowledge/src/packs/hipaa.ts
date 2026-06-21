@@ -121,37 +121,29 @@ export const HIPAA_SECTIONS: KnowledgeSection[] = [
       "washington", "wa", "colorado", "co", "arizona", "az",
       "new jersey", "nj", "north carolina", "nc", "michigan", "mi",
       "virginia", "va", "massachusetts", "ma", "minnesota", "mn", "missouri", "mo",
+      "oregon", "or", "nevada", "nv", "tennessee", "tn", "south carolina", "sc",
+      "wisconsin", "wi", "indiana", "in", "maryland", "md", "connecticut", "ct",
+      "kentucky", "ky", "oklahoma", "ok", "louisiana", "la", "alabama", "al",
+      "utah", "ut", "new mexico", "nm", "idaho", "id", "montana", "mt",
+      "wyoming", "wy", "north dakota", "nd", "south dakota", "sd", "nebraska", "ne",
+      "kansas", "ks", "iowa", "ia", "arkansas", "ar", "mississippi", "ms",
+      "west virginia", "wv", "delaware", "de", "new hampshire", "nh",
+      "vermont", "vt", "maine", "me", "rhode island", "ri", "hawaii", "hi",
+      "alaska", "ak",
       "federal", "baseline", "destroy", "disposal",
     ],
-    body: `Dental-lab record retention varies by state. HIPAA itself sets no explicit minimum retention period for labs — the covered entity's BAA terms and applicable state dental-records laws govern. Below is a practical reference; always verify current rules with counsel before disposing of records.
+    body: `Dental-lab record retention varies by state. HIPAA itself sets no explicit minimum — the covered entity's BAA terms and applicable state dental-records laws govern. Always verify current rules with counsel before disposing of records.
 
-**Federal baseline:** HIPAA requires covered entities to retain certain HIPAA-related documentation (policies, BAAs, notices) for 6 years from creation or last effective date, but does not specify how long dental records or lab work orders must be kept. Labs inherit retention obligations from their BAA with each practice.
+**Federal baseline:** HIPAA requires covered entities to retain HIPAA-related documentation (policies, BAAs, notices) for 6 years from creation or last effective date, but sets no specific retention period for dental records or lab work orders. Labs inherit retention obligations from their BAA with each practice.
 
-**Representative state minimums (dental/lab records — adult patients):**
-- California: 10 years from the date of service; records for minors must be kept until the patient turns 19 or for 10 years from last service, whichever is longer. (CA Business & Professions Code § 1680.5)
-- Texas: 10 years from the date the record was created or the date of last treatment. (TX Occupations Code § 258.004)
-- New York: 6 years from the date of service or from the date of last entry; 6 years after a minor turns 18 (i.e., until age 24). (NY Education Law § 6530(32))
-- Florida: 4 years (general); some liability-driven practices keep 7 years. Minors: 4 years after the patient turns 18. (FL § 466.028(1)(m))
-- Illinois: 10 years from date of service; for minors, until age 23 or 10 years, whichever is later. (IL Professional Code)
-- Georgia: No explicit dental-specific statute; general medical records guidance suggests 10 years; minors until age 21.
-- Ohio: 6 years from last treatment date; minors until age 21 or 6 years from last treatment, whichever is later.
-- Pennsylvania: 7 years from date of last service; for minors, until age 18 plus 7 years.
-- Washington: 7 years from the date of last service; minors until age 21 or 7 years from last service, whichever is later. (RCW 70.02.160)
-- Colorado: 7 years from the date of last service; for minors, until age 18 plus 7 years (i.e., until age 25). (CO Board of Dental Examiners rules)
-- Arizona: 7 years from the date of service; for minors, until the patient reaches age 21 or 7 years, whichever is longer. (A.A.C. R4-11-1602)
-- New Jersey: 7 years from the date of last service; for minors, until age 21 or 7 years from last service, whichever is later. (N.J.A.C. 13:30-8.7)
-- North Carolina: 10 years from the date of last entry; for minors, until age 21 or 10 years, whichever is later. (21 NCAC 16P .0110)
-- Michigan: 10 years from the date of last treatment; for minors, until age 21 or 10 years from last treatment, whichever is later. (Michigan dental practice regulations)
-- Virginia: 6 years from the date of last service; for minors, 6 years after the patient turns 18 (i.e., until age 24). (18 VAC 60-21-90)
-- Massachusetts: 7 years from the date of last entry; for minors, until age 18 plus 7 years (i.e., until age 25). (234 CMR 5.13)
-- Minnesota: 7 years from the date of service; for minors, until age 19 or 7 years, whichever is later. (Minn. Stat. § 144.292)
-- Missouri: 10 years from the date of last treatment; for minors, until age 18 plus 10 years. (20 CSR 2110-2.200)
+**State minimums — adult patients (minors: add the adult period to age 18 unless noted):**
+AL: 10 yr (no explicit statute; general guidance) | AK: 10 yr | AZ: 7 yr (minors until 21 or 7 yr) | AR: 10 yr | CA: 10 yr (minors until 19 or 10 yr) | CO: 7 yr | CT: 7 yr | DE: 7 yr | FL: 4 yr (minors: 4 yr after 18) | GA: 10 yr (no explicit statute) | HI: 7 yr | ID: 10 yr (minors until 21 or 10 yr) | IL: 10 yr (minors until 23 or 10 yr) | IN: 7 yr | IA: 7 yr | KS: 10 yr | KY: 5 yr | LA: 10 yr | ME: 7 yr | MD: 5 yr (minors until 21 or 5 yr) | MA: 7 yr | MI: 10 yr (minors until 21 or 10 yr) | MN: 7 yr (minors until 19 or 7 yr) | MS: 10 yr (minors until 21 or 10 yr) | MO: 10 yr | MT: 10 yr | NE: 10 yr | NV: 5 yr | NH: 7 yr | NJ: 7 yr (minors until 21 or 7 yr) | NM: 10 yr | NY: 6 yr (minors until 24) | NC: 10 yr (minors until 21 or 10 yr) | ND: 6 yr | OH: 6 yr (minors until 21 or 6 yr) | OK: 7 yr | OR: 7 yr (minors until 21 or 7 yr) | PA: 7 yr | RI: 5 yr | SC: 10 yr (minors until 21 or 10 yr) | SD: 7 yr (minors until 21 or 7 yr) | TN: 10 yr (minors until 21 or 10 yr) | TX: 10 yr | UT: 7 yr (minors until 21 or 7 yr) | VT: 10 yr | VA: 6 yr (minors until 24) | WA: 7 yr (minors until 21 or 7 yr) | WV: 10 yr | WI: 5 yr | WY: 7 yr (no explicit statute)
 
-**Minor patients (general rule across most states):** Retain records until the patient reaches the age of majority (typically 18) PLUS the standard adult retention period — commonly resulting in records being kept until the patient is 23–28 years old, depending on state.
+**Minor patients:** In most states retain records until the patient reaches the age of majority (18) plus the standard adult retention period — typically until age 23–28 depending on state.
 
-**Rx forms and work orders:** In most states the lab Rx / work order is considered part of the dental record and subject to the same retention rules as clinical notes. Keep the Rx together with the case record.
+**Rx forms and work orders:** In most states the lab Rx / work order is part of the dental record, subject to the same retention rules as clinical notes. Keep the Rx with the case record.
 
-**Practical LabTrax guidance:** Retaining the case record, attachments, and scanned Rx within LabTrax satisfies auditability requirements: each case is timestamped, access is logged, and soft-delete with audit trail preserves recoverability. When the retention period ends, coordinate with the referring practice before disposing of any shared PHI, and use a secure (irreversible) deletion process. This is general reference only — consult your compliance officer or legal counsel for the specific requirements in every state where you operate.`,
+**Practical guidance:** Retaining the case record, attachments, and scanned Rx within LabTrax satisfies auditability requirements: cases are timestamped, access is logged, and soft-delete with audit trail preserves recoverability. Coordinate with the referring practice before disposing of shared PHI, and use a secure (irreversible) deletion process. This is general reference only — consult your compliance officer or legal counsel for the specific requirements in every state where you operate.`,
   },
   {
     id: "hipaa.baa-lab-practice",
