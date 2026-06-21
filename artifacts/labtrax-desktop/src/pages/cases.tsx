@@ -6940,6 +6940,7 @@ export function CaseDrawer({
                       const isStatus = eventType === "status_changed";
                       const isNote = eventType === "note_added";
                       const isAttachment = eventType.includes("attachment");
+                      const isInboxAssign = eventType === "file_assigned_from_inbox";
                       const isInvoice = eventType.includes("invoice");
                       const isRestoration = eventType.includes("restoration");
                       const metadata: Record<string, unknown> =
@@ -6952,7 +6953,7 @@ export function CaseDrawer({
                         ? "#3B82F6"
                         : isNote
                         ? "#F59E0B"
-                        : isAttachment
+                        : isAttachment || isInboxAssign
                         ? "#8B5CF6"
                         : isInvoice
                         ? "#10B981"
@@ -7039,6 +7040,11 @@ export function CaseDrawer({
                               {isNote && (metadata.noteText || metadata.description) && (
                                 <div className="mt-1.5 text-sm bg-secondary/50 border border-border rounded-md px-3 py-2 whitespace-pre-wrap break-words">
                                   {String(metadata.noteText ?? metadata.description)}
+                                </div>
+                              )}
+                              {isInboxAssign && metadata.description && (
+                                <div className="mt-1 text-xs text-muted-foreground">
+                                  {String(metadata.description)}
                                 </div>
                               )}
                               {isAttachment && (() => {

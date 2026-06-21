@@ -2271,6 +2271,52 @@ export const aiMemory = pgTable(
   }),
 );
 
+/**
+ * Unassigned Documents inbox — files dropped by lab staff that haven't yet
+ * been assigned to a case. Files sit here until a staff member manually
+ * assigns them. On assignment the row is marked (assigned_at is set) and a
+ * caseAttachments row is created.
+ */
+export const labInboxFiles = pgTable(
+  "lab_inbox_files",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    labOrganizationId: varchar("lab_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    uploadedByUserId: varchar("uploaded_by_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    originalFilename: text("original_filename").notNull(),
+    mimeType: text("mime_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    storagePath: text("storage_path").notNull(),
+    objectStorageKey: text("object_storage_key"),
+    assignedAt: timestamp("assigned_at", { withTimezone: true }),
+    assignedToCaseId: varchar("assigned_to_case_id").references(
+      () => cases.id,
+      { onDelete: "set null" }
+    ),
+    assignedByUserId: varchar("assigned_by_user_id").references(
+      () => users.id,
+      { onDelete: "set null" }
+    ),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => ({
+    labInboxLabIdx: index("lab_inbox_files_lab_idx").on(
+      table.labOrganizationId
+    ),
+    labInboxUnassignedIdx: index("lab_inbox_files_unassigned_idx").on(
+      table.labOrganizationId,
+      table.assignedAt
+    ),
+  })
+);
+
 // Auto-learned candidate memory entries extracted from AI chats. These are
 // proposals only — they never feed the AI prompt and never become real
 // `ai_memory` until a lab admin approves them. Approving copies the candidate

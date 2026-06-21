@@ -38,7 +38,90 @@ tags:
     description: Organization, membership, and invitation operations (LabTrax)
   - name: audit
     description: Audit-log read operations (LabTrax)
+  - name: lab-inbox
+    description: Unassigned Documents inbox operations (LabTrax)
 paths:
+  /lab-inbox:
+    get:
+      operationId: listLabInboxFiles
+      tags: [lab-inbox]
+      summary: List unassigned inbox files for a lab (lab members only)
+      parameters:
+        - in: query
+          name: labOrganizationId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Unassigned inbox files
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LabInboxFileListResult"
+        "400":
+          description: Missing labOrganizationId
+        "403":
+          description: Not a lab member
+  /lab-inbox/upload:
+    post:
+      operationId: uploadLabInboxFile
+      tags: [lab-inbox]
+      summary: Upload a file to the lab inbox (lab members only)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, labOrganizationId]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                labOrganizationId:
+                  type: string
+      responses:
+        "201":
+          description: Uploaded file record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LabInboxFileResult"
+        "400":
+          description: Invalid request
+        "403":
+          description: Not a lab member
+  /lab-inbox/{fileId}/assign:
+    post:
+      operationId: assignLabInboxFile
+      tags: [lab-inbox]
+      summary: Assign an inbox file to a case (lab members only)
+      parameters:
+        - in: path
+          name: fileId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssignLabInboxFileInput"
+      responses:
+        "200":
+          description: Assignment result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssignLabInboxFileResult"
+        "400":
+          description: Invalid request
+        "403":
+          description: Not a lab member
+        "404":
+          description: File or case not found
+        "409":
+          description: File already assigned
   /ai-chat/history:
     get:
       operationId: getAiChatHistory
@@ -5347,4 +5430,73 @@ components:
       properties:
         key: { type: string }
         value: { type: string }
+    LabInboxFile:
+      type: object
+      required: [id, labOrganizationId, uploadedByUserId, originalFilename, mimeType, sizeBytes, storagePath, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        labOrganizationId: { type: string }
+        uploadedByUserId: { type: string }
+        originalFilename: { type: string }
+        mimeType: { type: string }
+        sizeBytes: { type: integer }
+        storagePath: { type: string }
+        objectStorageKey:
+          type: string
+          nullable: true
+        assignedAt:
+          type: string
+          nullable: true
+        assignedToCaseId:
+          type: string
+          nullable: true
+        assignedByUserId:
+          type: string
+          nullable: true
+        createdAt: { type: string }
+        updatedAt: { type: string }
+        uploaderUsername:
+          type: string
+          nullable: true
+        uploaderInitials:
+          type: string
+          nullable: true
+        uploaderFirstName:
+          type: string
+          nullable: true
+        uploaderLastName:
+          type: string
+          nullable: true
+    LabInboxFileListResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/LabInboxFile"
+    LabInboxFileResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          $ref: "#/components/schemas/LabInboxFile"
+    AssignLabInboxFileInput:
+      type: object
+      required: [caseId]
+      properties:
+        caseId: { type: string }
+    AssignLabInboxFileResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          required: [attachmentId, caseId]
+          properties:
+            attachmentId: { type: string }
+            caseId: { type: string }
 

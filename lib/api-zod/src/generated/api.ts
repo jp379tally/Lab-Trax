@@ -8,6 +8,65 @@
 import * as zod from "zod";
 
 /**
+ * @summary List unassigned inbox files for a lab (lab members only)
+ */
+export const ListLabInboxFilesQueryParams = zod.object({
+  labOrganizationId: zod.coerce.string(),
+});
+
+export const ListLabInboxFilesResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.array(
+    zod.object({
+      id: zod.string(),
+      labOrganizationId: zod.string(),
+      uploadedByUserId: zod.string(),
+      originalFilename: zod.string(),
+      mimeType: zod.string(),
+      sizeBytes: zod.number(),
+      storagePath: zod.string(),
+      objectStorageKey: zod.string().nullish(),
+      assignedAt: zod.string().nullish(),
+      assignedToCaseId: zod.string().nullish(),
+      assignedByUserId: zod.string().nullish(),
+      createdAt: zod.string(),
+      updatedAt: zod.string(),
+      uploaderUsername: zod.string().nullish(),
+      uploaderInitials: zod.string().nullish(),
+      uploaderFirstName: zod.string().nullish(),
+      uploaderLastName: zod.string().nullish(),
+    }),
+  ),
+});
+
+/**
+ * @summary Upload a file to the lab inbox (lab members only)
+ */
+export const UploadLabInboxFileBody = zod.object({
+  file: zod.instanceof(File),
+  labOrganizationId: zod.string(),
+});
+
+/**
+ * @summary Assign an inbox file to a case (lab members only)
+ */
+export const AssignLabInboxFileParams = zod.object({
+  fileId: zod.coerce.string(),
+});
+
+export const AssignLabInboxFileBody = zod.object({
+  caseId: zod.string(),
+});
+
+export const AssignLabInboxFileResponse = zod.object({
+  ok: zod.boolean(),
+  data: zod.object({
+    attachmentId: zod.string(),
+    caseId: zod.string(),
+  }),
+});
+
+/**
  * @summary Fetch recent AI chat history for the authenticated user
  */
 export const GetAiChatHistoryResponse = zod.object({

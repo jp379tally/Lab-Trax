@@ -31,6 +31,8 @@ import type {
   AnalyzePrescriptionInput,
   AnalyzePrescriptionResult,
   ApproveAiMemoryCandidateInput,
+  AssignLabInboxFileInput,
+  AssignLabInboxFileResult,
   AuditLogListResult,
   AuthResult,
   AuthTokensResult,
@@ -105,6 +107,8 @@ import type {
   IteroImportResult,
   IteroZipBatchImportResult,
   IteroZipImportResult,
+  LabInboxFileListResult,
+  LabInboxFileResult,
   LabLocationListResult,
   LabLocationResult,
   LabProviderList,
@@ -114,6 +118,7 @@ import type {
   ListDeletedCases200,
   ListDeletedCasesParams,
   ListInvoicesParams,
+  ListLabInboxFilesParams,
   ListOpenInvoicesParams,
   ListVendorsParams,
   LoginInput,
@@ -170,6 +175,7 @@ import type {
   UpdateOrganizationLogoPlacementsBody,
   UpdateVendorInput,
   UpdateVocabularyInput,
+  UploadLabInboxFileBody,
   VendorEmployeeImportInput,
   VendorImportResult,
   VendorListResult,
@@ -190,6 +196,285 @@ type AwaitedInput<T> = PromiseLike<T> | T;
 type Awaited<O> = O extends AwaitedInput<infer T> ? T : never;
 
 type SecondParameter<T extends (...args: never) => unknown> = Parameters<T>[1];
+
+/**
+ * @summary List unassigned inbox files for a lab (lab members only)
+ */
+export const getListLabInboxFilesUrl = (params: ListLabInboxFilesParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/lab-inbox?${stringifiedParams}`
+    : `/api/lab-inbox`;
+};
+
+export const listLabInboxFiles = async (
+  params: ListLabInboxFilesParams,
+  options?: RequestInit,
+): Promise<LabInboxFileListResult> => {
+  return customFetch<LabInboxFileListResult>(getListLabInboxFilesUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getListLabInboxFilesQueryKey = (
+  params?: ListLabInboxFilesParams,
+) => {
+  return [`/api/lab-inbox`, ...(params ? [params] : [])] as const;
+};
+
+export const getListLabInboxFilesQueryOptions = <
+  TData = Awaited<ReturnType<typeof listLabInboxFiles>>,
+  TError = ErrorType<void>,
+>(
+  params: ListLabInboxFilesParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listLabInboxFiles>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getListLabInboxFilesQueryKey(params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof listLabInboxFiles>>
+  > = ({ signal }) => listLabInboxFiles(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof listLabInboxFiles>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ListLabInboxFilesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listLabInboxFiles>>
+>;
+export type ListLabInboxFilesQueryError = ErrorType<void>;
+
+/**
+ * @summary List unassigned inbox files for a lab (lab members only)
+ */
+
+export function useListLabInboxFiles<
+  TData = Awaited<ReturnType<typeof listLabInboxFiles>>,
+  TError = ErrorType<void>,
+>(
+  params: ListLabInboxFilesParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listLabInboxFiles>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getListLabInboxFilesQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Upload a file to the lab inbox (lab members only)
+ */
+export const getUploadLabInboxFileUrl = () => {
+  return `/api/lab-inbox/upload`;
+};
+
+export const uploadLabInboxFile = async (
+  uploadLabInboxFileBody: UploadLabInboxFileBody,
+  options?: RequestInit,
+): Promise<LabInboxFileResult> => {
+  const formData = new FormData();
+  formData.append(`file`, uploadLabInboxFileBody.file);
+  formData.append(
+    `labOrganizationId`,
+    uploadLabInboxFileBody.labOrganizationId,
+  );
+
+  return customFetch<LabInboxFileResult>(getUploadLabInboxFileUrl(), {
+    ...options,
+    method: "POST",
+    body: formData,
+  });
+};
+
+export const getUploadLabInboxFileMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof uploadLabInboxFile>>,
+    TError,
+    { data: BodyType<UploadLabInboxFileBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof uploadLabInboxFile>>,
+  TError,
+  { data: BodyType<UploadLabInboxFileBody> },
+  TContext
+> => {
+  const mutationKey = ["uploadLabInboxFile"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof uploadLabInboxFile>>,
+    { data: BodyType<UploadLabInboxFileBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return uploadLabInboxFile(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UploadLabInboxFileMutationResult = NonNullable<
+  Awaited<ReturnType<typeof uploadLabInboxFile>>
+>;
+export type UploadLabInboxFileMutationBody = BodyType<UploadLabInboxFileBody>;
+export type UploadLabInboxFileMutationError = ErrorType<void>;
+
+/**
+ * @summary Upload a file to the lab inbox (lab members only)
+ */
+export const useUploadLabInboxFile = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof uploadLabInboxFile>>,
+    TError,
+    { data: BodyType<UploadLabInboxFileBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof uploadLabInboxFile>>,
+  TError,
+  { data: BodyType<UploadLabInboxFileBody> },
+  TContext
+> => {
+  return useMutation(getUploadLabInboxFileMutationOptions(options));
+};
+
+/**
+ * @summary Assign an inbox file to a case (lab members only)
+ */
+export const getAssignLabInboxFileUrl = (fileId: string) => {
+  return `/api/lab-inbox/${fileId}/assign`;
+};
+
+export const assignLabInboxFile = async (
+  fileId: string,
+  assignLabInboxFileInput: AssignLabInboxFileInput,
+  options?: RequestInit,
+): Promise<AssignLabInboxFileResult> => {
+  return customFetch<AssignLabInboxFileResult>(
+    getAssignLabInboxFileUrl(fileId),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(assignLabInboxFileInput),
+    },
+  );
+};
+
+export const getAssignLabInboxFileMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof assignLabInboxFile>>,
+    TError,
+    { fileId: string; data: BodyType<AssignLabInboxFileInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof assignLabInboxFile>>,
+  TError,
+  { fileId: string; data: BodyType<AssignLabInboxFileInput> },
+  TContext
+> => {
+  const mutationKey = ["assignLabInboxFile"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof assignLabInboxFile>>,
+    { fileId: string; data: BodyType<AssignLabInboxFileInput> }
+  > = (props) => {
+    const { fileId, data } = props ?? {};
+
+    return assignLabInboxFile(fileId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type AssignLabInboxFileMutationResult = NonNullable<
+  Awaited<ReturnType<typeof assignLabInboxFile>>
+>;
+export type AssignLabInboxFileMutationBody = BodyType<AssignLabInboxFileInput>;
+export type AssignLabInboxFileMutationError = ErrorType<void>;
+
+/**
+ * @summary Assign an inbox file to a case (lab members only)
+ */
+export const useAssignLabInboxFile = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof assignLabInboxFile>>,
+    TError,
+    { fileId: string; data: BodyType<AssignLabInboxFileInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof assignLabInboxFile>>,
+  TError,
+  { fileId: string; data: BodyType<AssignLabInboxFileInput> },
+  TContext
+> => {
+  return useMutation(getAssignLabInboxFileMutationOptions(options));
+};
 
 /**
  * @summary Fetch recent AI chat history for the authenticated user

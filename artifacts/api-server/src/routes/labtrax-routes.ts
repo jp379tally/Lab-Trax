@@ -164,6 +164,7 @@ import messengerRoutes from "./messenger";
 import { registerAiChatRoutes } from "./ai-chat";
 import { registerAiAgentRoutes } from "./ai-agent";
 import { registerAiTtsRoutes } from "./ai-tts";
+import labInboxRoutes from "./lab-inbox";
 
 const passwordResetTokens = new Map<string, { userId: string; expiresAt: number }>();
 const DEMO_SEED_USERS_ENABLED = process.env.LABTRAX_ENABLE_DEMO_SEEDS === "true";
@@ -1353,6 +1354,7 @@ export async function registerRoutes(): Promise<IRouter> {
   router.use("/locations", locationsRoutes);
   router.use("/vocabulary", vocabularyRoutes);
   router.use("/ai-memory", aiMemoryRoutes);
+  router.use("/lab-inbox", labInboxRoutes);
   router.use("/pricing", pricingRoutes);
   router.use("/lab-orgs", statementRoutes);
   router.use("/billing", billingRoutes);

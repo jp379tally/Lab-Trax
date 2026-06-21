@@ -2078,6 +2078,59 @@ export interface ApproveAiMemoryCandidateInput {
   value?: string;
 }
 
+export interface LabInboxFile {
+  id: string;
+  labOrganizationId: string;
+  uploadedByUserId: string;
+  originalFilename: string;
+  mimeType: string;
+  sizeBytes: number;
+  storagePath: string;
+  objectStorageKey?: string | null;
+  assignedAt?: string | null;
+  assignedToCaseId?: string | null;
+  assignedByUserId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  uploaderUsername?: string | null;
+  uploaderInitials?: string | null;
+  uploaderFirstName?: string | null;
+  uploaderLastName?: string | null;
+}
+
+export interface LabInboxFileListResult {
+  ok: boolean;
+  data: LabInboxFile[];
+}
+
+export interface LabInboxFileResult {
+  ok: boolean;
+  data: LabInboxFile;
+}
+
+export interface AssignLabInboxFileInput {
+  caseId: string;
+}
+
+export type AssignLabInboxFileResultData = {
+  attachmentId: string;
+  caseId: string;
+};
+
+export interface AssignLabInboxFileResult {
+  ok: boolean;
+  data: AssignLabInboxFileResultData;
+}
+
+export type ListLabInboxFilesParams = {
+  labOrganizationId: string;
+};
+
+export type UploadLabInboxFileBody = {
+  file: Blob;
+  labOrganizationId: string;
+};
+
 export type GetLocationsParams = {
   organizationId: string;
   activeOnly?: boolean;

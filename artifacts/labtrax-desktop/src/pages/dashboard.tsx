@@ -29,6 +29,7 @@ import type { LabCase } from "@/lib/types";
 import { formatDate, formatDateTime, relativeTime } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
 import { DashboardDropZone } from "@/components/DashboardDropZone";
+import { UnassignedDocumentsCard } from "@/components/UnassignedDocumentsCard";
 import { NewCaseModal, CaseDrawer } from "./cases";
 import { useAuth } from "@/lib/auth-context";
 import { DashboardSubscriptionBanner } from "@/components/TrialBanner";
@@ -973,7 +974,7 @@ export default function DashboardPage() {
             <DashboardDropZone />
           </div>
 
-          {isAdmin && <MediaCleanupCard />}
+          <UnassignedDocumentsCard />
 
           <section className="bg-card border border-border rounded-xl">
             <header className="px-5 py-3.5 border-b border-border">
@@ -993,6 +994,8 @@ export default function DashboardPage() {
               onSelect={setSelectedCase}
             />
           </section>
+
+          {isAdmin && <MediaCleanupCard />}
         </div>
 
         <div className="lg:col-span-2 flex flex-col gap-6">
