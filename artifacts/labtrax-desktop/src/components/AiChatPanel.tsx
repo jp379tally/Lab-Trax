@@ -169,6 +169,10 @@ function getSessionPreview(session: StoredSession): string {
  *   - "NOT LEGAL ADVICE" → retention legal disclaimer callout
  *   - "NOT COMPLIANCE ADVICE" → HIPAA/privacy disclaimer callout
  * Returns `null` for each callout when no matching marker is present.
+ *
+ * @deprecated Prefer the structured `disclaimer` field on ChatMsg for the
+ *   retention disclaimer. This fallback handles messages stored before the
+ *   structured field was added and remains the only path for the privacy disclaimer.
  */
 function parseDisclaimerContent(content: string): {
   retentionCallout: string | null;
@@ -949,6 +953,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
         knowledgeSectionIds?: string[];
         retentionDisclaimer?: boolean;
         privacyDisclaimer?: boolean;
+        disclaimer?: string;
       }>("/ai-agent", { method: "POST", body: JSON.stringify(body) });
 
       let assistantMsg: ChatMsg;
@@ -975,6 +980,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
             : {}),
           ...(data.retentionDisclaimer ? { retentionDisclaimer: true } : {}),
           ...(data.privacyDisclaimer ? { privacyDisclaimer: true } : {}),
+          ...(data.disclaimer ? { disclaimer: data.disclaimer } : {}),
         };
       }
 
@@ -1456,10 +1462,26 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
           const draftText = draftOutput?.draft;
           const isCopied = copiedMsgId === msg.id;
 
-          // Parse disclaimer callouts for assistant messages
-          const { retentionCallout, privacyCallout, rest: disclaimerRest } = !isUser
-            ? parseDisclaimerContent(msg.content ?? "")
-            : { retentionCallout: null as null, privacyCallout: null as null, rest: msg.content ?? "" };
+          // Determine disclaimer callouts for assistant messages.
+          // For the retention disclaimer: prefer the structured field from the API (reliable,
+          // model-independent). Fall back to text-scanning for old stored messages.
+          // For the privacy disclaimer: use text-scanning (no structured field yet).
+          let retentionCallout: string | null = null;
+          let privacyCallout: string | null = null;
+          let disclaimerRest: string = msg.content ?? "";
+          if (!isUser) {
+            if (msg.disclaimer) {
+              retentionCallout = msg.disclaimer;
+              const parsed = parseDisclaimerContent(msg.content ?? "");
+              privacyCallout = parsed.privacyCallout;
+              disclaimerRest = privacyCallout ? parsed.rest : (msg.content ?? "");
+            } else {
+              const parsed = parseDisclaimerContent(msg.content ?? "");
+              retentionCallout = parsed.retentionCallout;
+              privacyCallout = parsed.privacyCallout;
+              disclaimerRest = parsed.rest;
+            }
+          }
           const anyCallout = retentionCallout || privacyCallout;
           const bubbleContent = anyCallout ? disclaimerRest : (msg.content ?? "");
           const showBubble = isUser || !anyCallout || !!disclaimerRest;

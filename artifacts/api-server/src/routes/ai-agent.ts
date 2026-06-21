@@ -27,7 +27,7 @@ import { db } from "@workspace/db";
 import { organizations, organizationMemberships, pricingTiers } from "@workspace/db";
 import { eq, and, inArray } from "drizzle-orm";
 import { getProviderOrgIdsForUserAndLinks } from "../lib/cross-lab-doctor";
-import { buildKnowledgeBlockWithMeta, buildLabMemoryBlock, buildMaterialSuggestionBlock } from "../lib/ai-knowledge-augment";
+import { buildKnowledgeBlockWithMeta, buildLabMemoryBlock, buildMaterialSuggestionBlock, RETENTION_LEGAL_DISCLAIMER } from "../lib/ai-knowledge-augment";
 import { learnFromExchange } from "../lib/ai-memory-learn";
 
 // ─── Shared rate limiter (same window as ai-chat) ───────────────────────────
@@ -334,7 +334,7 @@ export function registerAiAgentRoutes(router: IRouter): void {
             content: replyContent,
             ...(accumulatedToolOutputs.length > 0 ? { toolOutputs: accumulatedToolOutputs } : {}),
             ...(knowledgeSectionIds.length > 0 ? { knowledgeSectionIds } : {}),
-            ...(retentionDisclaimer ? { retentionDisclaimer } : {}),
+            ...(retentionDisclaimer ? { retentionDisclaimer, disclaimer: RETENTION_LEGAL_DISCLAIMER } : {}),
             ...(privacyDisclaimer ? { privacyDisclaimer } : {}),
           });
         }
@@ -445,7 +445,7 @@ export function registerAiAgentRoutes(router: IRouter): void {
         content,
         ...(accumulatedToolOutputs.length > 0 ? { toolOutputs: accumulatedToolOutputs } : {}),
         ...(knowledgeSectionIds.length > 0 ? { knowledgeSectionIds } : {}),
-        ...(retentionDisclaimer ? { retentionDisclaimer } : {}),
+        ...(retentionDisclaimer ? { retentionDisclaimer, disclaimer: RETENTION_LEGAL_DISCLAIMER } : {}),
         ...(privacyDisclaimer ? { privacyDisclaimer } : {}),
       });
     } catch (err: any) {

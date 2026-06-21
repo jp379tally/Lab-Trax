@@ -54,8 +54,9 @@ export function hasRetentionSignal(query: string): boolean {
 
 /** Prominent disclaimer injected at the top of any knowledge block that draws
  *  on retention content. Placed first so it is visible even if the user reads
- *  only part of the AI response. */
-const RETENTION_LEGAL_DISCLAIMER =
+ *  only part of the AI response. Also returned as a structured field in the
+ *  API response so clients can render it reliably regardless of model output. */
+export const RETENTION_LEGAL_DISCLAIMER =
   "⚠️ NOT LEGAL ADVICE — Record-retention periods vary by state and are " +
   "updated by legislation. The figures below are a general reference only. " +
   "Verify current requirements with your state dental board and qualified " +

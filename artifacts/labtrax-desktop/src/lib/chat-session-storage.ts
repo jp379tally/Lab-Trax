@@ -18,6 +18,9 @@ export interface ChatMsg {
   retentionDisclaimer?: boolean;
   /** Whether the HIPAA/compliance disclaimer was injected into the prompt. Admin-only audit field. */
   privacyDisclaimer?: boolean;
+  /** Structured disclaimer text returned by the API for retention-related queries.
+   *  Rendered as an amber callout independent of whether the model echoes it. */
+  disclaimer?: string;
   proposedAction?: {
     actionId: string;
     toolName: string;

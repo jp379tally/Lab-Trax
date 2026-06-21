@@ -44,6 +44,9 @@ interface ChatMessage {
   toolOutputs?: ToolOutput[];
   isError?: boolean;
   proposedAction?: ProposedActionState;
+  /** Structured disclaimer text from the API for retention-related queries.
+   *  Shown as an amber callout regardless of whether the model echoes it. */
+  disclaimer?: string;
 }
 
 interface ApiReply {
@@ -53,6 +56,8 @@ interface ApiReply {
   toolName?: string;
   actionId?: string;
   toolOutputs?: ToolOutput[];
+  /** Structured disclaimer text for retention-related queries. */
+  disclaimer?: string;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -410,10 +415,26 @@ function MessageBubble({ msg, colors, onConfirm, onReject, onTryAgain, sending }
     | undefined;
   const [copied, setCopied] = useState(false);
 
-  // Parse disclaimer callouts for assistant messages
-  const { retentionCallout, privacyCallout, rest: disclaimerRest } = !isUser
-    ? parseDisclaimerContent(msg.content)
-    : { retentionCallout: null as null, privacyCallout: null as null, rest: msg.content };
+  // Determine disclaimer callouts for assistant messages.
+  // For the retention disclaimer: prefer the structured field from the API (reliable,
+  // model-independent). Fall back to text-scanning for old stored messages.
+  // For the privacy disclaimer: use text-scanning (no structured field yet).
+  let retentionCallout: string | null = null;
+  let privacyCallout: string | null = null;
+  let disclaimerRest: string = msg.content;
+  if (!isUser) {
+    if (msg.disclaimer) {
+      retentionCallout = msg.disclaimer;
+      const parsed = parseDisclaimerContent(msg.content);
+      privacyCallout = parsed.privacyCallout;
+      disclaimerRest = privacyCallout ? parsed.rest : msg.content;
+    } else {
+      const parsed = parseDisclaimerContent(msg.content);
+      retentionCallout = parsed.retentionCallout;
+      privacyCallout = parsed.privacyCallout;
+      disclaimerRest = parsed.rest;
+    }
+  }
   const anyCallout = retentionCallout || privacyCallout;
   const bubbleContent = anyCallout ? disclaimerRest : msg.content;
   const showBubble = isUser || !anyCallout || !!disclaimerRest;
@@ -625,6 +646,7 @@ export default function AiAssistantScreen() {
             ...(data.toolOutputs && data.toolOutputs.length > 0
               ? { toolOutputs: data.toolOutputs }
               : {}),
+            ...(data.disclaimer ? { disclaimer: data.disclaimer } : {}),
           };
         }
 

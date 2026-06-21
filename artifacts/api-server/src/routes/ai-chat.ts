@@ -18,7 +18,7 @@ import { getProviderOrgIdsForUserAndLinks } from "../lib/cross-lab-doctor";
 import { requireAuth } from "../middlewares/auth";
 import { normalizeDoctor } from "../lib/pricing";
 import { wrapDbError } from "../lib/http";
-import { buildKnowledgeBlockWithMeta, buildLabMemoryBlock, buildMaterialSuggestionBlock } from "../lib/ai-knowledge-augment";
+import { buildKnowledgeBlockWithMeta, buildLabMemoryBlock, buildMaterialSuggestionBlock, RETENTION_LEGAL_DISCLAIMER } from "../lib/ai-knowledge-augment";
 import { learnFromExchange } from "../lib/ai-memory-learn";
 import { randomBytes } from "node:crypto";
 
@@ -816,7 +816,7 @@ ${pinnedCaseCtx ? `${pinnedCaseCtx}\n` : ""}${contextBlock}`;
           ? { knowledgeSectionIds: knowledgeMeta.sectionIds }
           : {}),
         ...(knowledgeMeta.retentionDisclaimer
-          ? { retentionDisclaimer: true }
+          ? { retentionDisclaimer: true, disclaimer: RETENTION_LEGAL_DISCLAIMER }
           : {}),
         ...(knowledgeMeta.privacyDisclaimer
           ? { privacyDisclaimer: true }
