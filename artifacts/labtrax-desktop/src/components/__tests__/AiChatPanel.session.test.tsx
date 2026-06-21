@@ -107,7 +107,7 @@ describe("AiChatPanel — session restore on mount", () => {
   it("renders the welcome message when there is no stored session", async () => {
     renderPanel();
     await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
-    expect(screen.getByText(/Maynard/i)).toBeTruthy();
+    expect(screen.getAllByText(/Maynard/i).length).toBeGreaterThan(0);
   });
 
   it("restores a plain user message from the stored session", async () => {
@@ -151,7 +151,7 @@ describe("AiChatPanel — session restore on mount", () => {
     await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
 
     await waitFor(() => {
-      expect(screen.getByText(/Maynard/i)).toBeTruthy();
+      expect(screen.getAllByText(/Maynard/i).length).toBeGreaterThan(0);
       expect(screen.getByText("Show rush cases")).toBeTruthy();
     });
   });
