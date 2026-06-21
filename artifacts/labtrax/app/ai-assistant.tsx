@@ -16,9 +16,12 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import { Audio } from "expo-av";
 import * as FileSystem from "expo-file-system/legacy";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { resilientFetch, getApiUrl, refreshAndGetAccessToken } from "@/lib/query-client";
+
+const AI_VOICE_MODE_KEY = "labtrax_ai_voice_mode_v1";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -627,12 +630,32 @@ export default function AiAssistantScreen() {
   const webAudioRef = useRef<HTMLAudioElement | null>(null);
   // Ref so stopRecording (defined before sendMessage) can call it.
   const sendMessageRef = useRef<((text: string) => Promise<void>) | null>(null);
+  // Tracks whether the AsyncStorage load has completed so we don't write false on mount.
+  const voiceModeLoadedRef = useRef(false);
 
   const showPrompts = messages.length === 1;
 
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  // Load voice mode preference from AsyncStorage on mount.
+  useEffect(() => {
+    AsyncStorage.getItem(AI_VOICE_MODE_KEY)
+      .then((val) => {
+        voiceModeLoadedRef.current = true;
+        if (val === "true") setVoiceMode(true);
+      })
+      .catch(() => {
+        voiceModeLoadedRef.current = true;
+      });
+  }, []);
+
+  // Persist voice mode preference whenever it changes (skip writes before load completes).
+  useEffect(() => {
+    if (!voiceModeLoadedRef.current) return;
+    AsyncStorage.setItem(AI_VOICE_MODE_KEY, voiceMode ? "true" : "false").catch(() => {});
+  }, [voiceMode]);
 
   const scrollToBottom = useCallback(() => {
     setTimeout(() => {

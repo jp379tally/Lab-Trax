@@ -477,6 +477,43 @@ function KnowledgeSourceBadge({
   );
 }
 
+// ─── Voice preference persistence ───────────────────────────────────────────
+
+const VOICE_PREFS_KEY = "labtrax_ai_voice_prefs_v1";
+
+type TtsVoice = "alloy" | "echo" | "fable" | "onyx" | "nova" | "shimmer";
+
+const TTS_VOICES: { value: TtsVoice; label: string }[] = [
+  { value: "alloy", label: "Alloy" },
+  { value: "echo", label: "Echo" },
+  { value: "fable", label: "Fable" },
+  { value: "nova", label: "Nova" },
+  { value: "onyx", label: "Onyx" },
+  { value: "shimmer", label: "Shimmer" },
+];
+
+function readVoicePrefs(): { voiceMode: boolean; ttsVoice: TtsVoice } {
+  try {
+    const raw = localStorage.getItem(VOICE_PREFS_KEY);
+    if (!raw) return { voiceMode: false, ttsVoice: "onyx" };
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return {
+      voiceMode: typeof parsed.voiceMode === "boolean" ? parsed.voiceMode : false,
+      ttsVoice: TTS_VOICES.some((v) => v.value === parsed.ttsVoice)
+        ? (parsed.ttsVoice as TtsVoice)
+        : "onyx",
+    };
+  } catch {
+    return { voiceMode: false, ttsVoice: "onyx" };
+  }
+}
+
+function writeVoicePrefs(voiceMode: boolean, ttsVoice: TtsVoice): void {
+  try {
+    localStorage.setItem(VOICE_PREFS_KEY, JSON.stringify({ voiceMode, ttsVoice }));
+  } catch { /* ignore — storage unavailable */ }
+}
+
 // ─── Main component ─────────────────────────────────────────────────────────
 
 interface Props {
@@ -524,10 +561,12 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
   const [micState, setMicState] = useState<MicState>("idle");
   const [micErrorMsg, setMicErrorMsg] = useState<string | null>(null);
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const [voiceMode, setVoiceMode] = useState(false);
+  const [voiceMode, setVoiceMode] = useState<boolean>(() => readVoicePrefs().voiceMode);
+  const [ttsVoice, setTtsVoice] = useState<TtsVoice>(() => readVoicePrefs().ttsVoice);
   const recognitionRef = useRef<any>(null);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const voiceModeRef = useRef(false);
+  const ttsVoiceRef = useRef<TtsVoice>(ttsVoice);
   const prevIsSpeakingRef = useRef(false);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionsDropdownRef = useRef<HTMLDivElement>(null);
@@ -687,6 +726,14 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
     voiceModeRef.current = voiceMode;
   }, [voiceMode]);
 
+  useEffect(() => {
+    ttsVoiceRef.current = ttsVoice;
+  }, [ttsVoice]);
+
+  useEffect(() => {
+    writeVoicePrefs(voiceMode, ttsVoice);
+  }, [voiceMode, ttsVoice]);
+
   // Auto-listen after Maynard finishes speaking (voice mode only, idle only)
   useEffect(() => {
     if (prevIsSpeakingRef.current && !isSpeaking && voiceModeRef.current && !sending && micState === "idle") {
@@ -844,7 +891,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
           "Content-Type": "application/json",
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify({ text: stripped }),
+        body: JSON.stringify({ text: stripped, voice: ttsVoiceRef.current }),
       });
       if (!resp.ok) { setIsSpeaking(false); return; }
       const blob = await resp.blob();
@@ -1268,6 +1315,19 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
             >
               <PenSquare size={15} />
             </button>
+
+            {voiceMode && (
+              <select
+                value={ttsVoice}
+                onChange={(e) => setTtsVoice(e.target.value as TtsVoice)}
+                title="TTS voice"
+                className="h-8 rounded-md border border-input bg-background px-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                {TTS_VOICES.map((v) => (
+                  <option key={v.value} value={v.value}>{v.label}</option>
+                ))}
+              </select>
+            )}
 
             <button
               type="button"
