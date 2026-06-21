@@ -455,6 +455,70 @@ describe("ProfileScreen — Save button is disabled while OTP panel is open", ()
 });
 
 // ---------------------------------------------------------------------------
+// Suite: successful resend resets the countdown and keeps the OTP panel open
+// ---------------------------------------------------------------------------
+
+describe("ProfileScreen — successful resend resets countdown and keeps OTP panel open", () => {
+  beforeEach(() => {
+    vi.mocked(Alert.alert).mockClear();
+    resetMockFetchHandler();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    resetMockFetchHandler();
+  });
+
+  it("keeps the OTP panel open and disables Resend for 60 s after a successful resend", async () => {
+    renderProfile();
+
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText("000-000-0000")).toBeTruthy(),
+    );
+
+    // Open the OTP panel via the Verify button.
+    await openOtpPanelViaVerifyButton();
+
+    // Advance past the initial 60-second resend countdown so the button is enabled.
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText("Resend")).toBeTruthy(),
+    );
+
+    // Wire the resend call to succeed.
+    setMockFetchHandler((url) => {
+      if (url.includes("/send-phone-code")) return jsonOk({ success: true });
+      return jsonOk({ ok: true });
+    });
+
+    fireEvent.press(screen.getByText("Resend"));
+
+    // The OTP panel must remain open — step must NOT go back to "idle".
+    await waitFor(() =>
+      expect(screen.getByText("Enter verification code")).toBeTruthy(),
+    );
+
+    // The countdown must have restarted: "Resend (60s)" (or any Xs > 0).
+    // The plain "Resend" text must NOT be present — the button is disabled.
+    await waitFor(() =>
+      expect(screen.getByText(/^Resend \(\d+s\)$/)).toBeTruthy(),
+    );
+
+    expect(screen.queryByText("Resend")).toBeNull();
+
+    // The OTP code input must still be present for the user to enter their code.
+    expect(screen.getByPlaceholderText("000000")).toBeTruthy();
+
+    // No alert should have been shown — this is a success path.
+    expect(Alert.alert).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Suite: editing an unrelated field while the OTP panel is open does not
 // dismiss the panel
 // ---------------------------------------------------------------------------
