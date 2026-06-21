@@ -767,7 +767,6 @@ ${pinnedCaseCtx ? `${pinnedCaseCtx}\n` : ""}${contextBlock}`;
         model: "gpt-5-mini",
         messages: [{ role: "system", content: systemPrompt }, ...safeMessages],
         max_completion_tokens: 800,
-        temperature: 0.3,
       });
 
       const reply =

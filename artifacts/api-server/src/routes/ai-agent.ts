@@ -316,7 +316,6 @@ export function registerAiAgentRoutes(router: IRouter): void {
           tools: openAiTools,
           tool_choice: "auto",
           max_completion_tokens: 1200,
-          temperature: 0.2,
         });
 
         const choice = completion.choices[0];
