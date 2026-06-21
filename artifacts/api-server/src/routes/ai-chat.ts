@@ -767,11 +767,12 @@ ${pinnedCaseCtx ? `${pinnedCaseCtx}\n` : ""}${contextBlock}`;
         "I couldn't generate a response. Please try again.";
 
       // Log which knowledge sections were used for audit purposes.
-      if (knowledgeMeta.sectionIds.length > 0 || knowledgeMeta.retentionDisclaimer) {
+      if (knowledgeMeta.sectionIds.length > 0 || knowledgeMeta.retentionDisclaimer || knowledgeMeta.privacyDisclaimer) {
         req.log?.info(
           {
             knowledgeSectionIds: knowledgeMeta.sectionIds,
             retentionDisclaimer: knowledgeMeta.retentionDisclaimer,
+            privacyDisclaimer: knowledgeMeta.privacyDisclaimer,
           },
           "[AI CHAT] knowledge sections used in prompt",
         );
@@ -802,6 +803,9 @@ ${pinnedCaseCtx ? `${pinnedCaseCtx}\n` : ""}${contextBlock}`;
           : {}),
         ...(knowledgeMeta.retentionDisclaimer
           ? { retentionDisclaimer: true }
+          : {}),
+        ...(knowledgeMeta.privacyDisclaimer
+          ? { privacyDisclaimer: true }
           : {}),
       });
     } catch (err: any) {

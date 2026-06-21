@@ -164,27 +164,41 @@ function getSessionPreview(session: StoredSession): string {
 }
 
 /**
- * Splits a message that contains a "NOT LEGAL ADVICE" disclaimer into two
- * parts: the disclaimer paragraph (rendered as an amber callout) and the
- * remaining prose. Returns `callout: null` when no disclaimer is present.
+ * Splits a message into disclaimer callouts and the remaining prose.
+ * Detects two independent markers:
+ *   - "NOT LEGAL ADVICE" → retention legal disclaimer callout
+ *   - "NOT COMPLIANCE ADVICE" → HIPAA/privacy disclaimer callout
+ * Returns `null` for each callout when no matching marker is present.
  */
-function parseDisclaimerContent(content: string): { callout: string | null; rest: string } {
-  if (!content.includes("NOT LEGAL ADVICE")) {
-    return { callout: null, rest: content };
+function parseDisclaimerContent(content: string): {
+  retentionCallout: string | null;
+  privacyCallout: string | null;
+  rest: string;
+} {
+  let paragraphs = content.split(/\n\n+/);
+  let retentionCallout: string | null = null;
+  let privacyCallout: string | null = null;
+
+  const retentionIdx = paragraphs.findIndex((p) => p.includes("NOT LEGAL ADVICE"));
+  if (retentionIdx !== -1) {
+    retentionCallout = paragraphs[retentionIdx].trim();
+    paragraphs = [
+      ...paragraphs.slice(0, retentionIdx),
+      ...paragraphs.slice(retentionIdx + 1),
+    ];
   }
-  const paragraphs = content.split(/\n\n+/);
-  const disclaimerIdx = paragraphs.findIndex((p) => p.includes("NOT LEGAL ADVICE"));
-  if (disclaimerIdx === -1) {
-    return { callout: null, rest: content };
+
+  const privacyIdx = paragraphs.findIndex((p) => p.includes("NOT COMPLIANCE ADVICE"));
+  if (privacyIdx !== -1) {
+    privacyCallout = paragraphs[privacyIdx].trim();
+    paragraphs = [
+      ...paragraphs.slice(0, privacyIdx),
+      ...paragraphs.slice(privacyIdx + 1),
+    ];
   }
-  const callout = paragraphs[disclaimerIdx].trim();
-  const rest = [
-    ...paragraphs.slice(0, disclaimerIdx),
-    ...paragraphs.slice(disclaimerIdx + 1),
-  ]
-    .join("\n\n")
-    .trim();
-  return { callout, rest };
+
+  const rest = paragraphs.join("\n\n").trim();
+  return { retentionCallout, privacyCallout, rest };
 }
 
 // ─── Suggested prompts ──────────────────────────────────────────────────────
@@ -415,9 +429,11 @@ function ConfirmCard({ actionId, summary, state, resultText, error, expiresAt, o
 function KnowledgeSourceBadge({
   sectionIds,
   retentionDisclaimer,
+  privacyDisclaimer,
 }: {
   sectionIds: string[];
   retentionDisclaimer?: boolean;
+  privacyDisclaimer?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -443,6 +459,11 @@ function KnowledgeSourceBadge({
           {retentionDisclaimer && (
             <p className="text-[10px] text-amber-600 dark:text-amber-500 mt-1.5 font-medium">
               ⚠ Retention legal disclaimer was injected
+            </p>
+          )}
+          {privacyDisclaimer && (
+            <p className="text-[10px] text-amber-600 dark:text-amber-500 mt-1 font-medium">
+              ⚠ HIPAA/compliance disclaimer was injected
             </p>
           )}
         </div>
@@ -904,6 +925,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
         toolOutputs?: Array<{ name: string; result: unknown }>;
         knowledgeSectionIds?: string[];
         retentionDisclaimer?: boolean;
+        privacyDisclaimer?: boolean;
       }>("/ai-agent", { method: "POST", body: JSON.stringify(body) });
 
       let assistantMsg: ChatMsg;
@@ -929,6 +951,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
             ? { knowledgeSectionIds: data.knowledgeSectionIds }
             : {}),
           ...(data.retentionDisclaimer ? { retentionDisclaimer: true } : {}),
+          ...(data.privacyDisclaimer ? { privacyDisclaimer: true } : {}),
         };
       }
 
@@ -1410,12 +1433,13 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
           const draftText = draftOutput?.draft;
           const isCopied = copiedMsgId === msg.id;
 
-          // Parse disclaimer callout for assistant messages
-          const { callout: disclaimerCallout, rest: disclaimerRest } = !isUser
+          // Parse disclaimer callouts for assistant messages
+          const { retentionCallout, privacyCallout, rest: disclaimerRest } = !isUser
             ? parseDisclaimerContent(msg.content ?? "")
-            : { callout: null as null, rest: msg.content ?? "" };
-          const bubbleContent = disclaimerCallout ? disclaimerRest : (msg.content ?? "");
-          const showBubble = isUser || !disclaimerCallout || !!disclaimerRest;
+            : { retentionCallout: null as null, privacyCallout: null as null, rest: msg.content ?? "" };
+          const anyCallout = retentionCallout || privacyCallout;
+          const bubbleContent = anyCallout ? disclaimerRest : (msg.content ?? "");
+          const showBubble = isUser || !anyCallout || !!disclaimerRest;
 
           return (
             <div
@@ -1428,12 +1452,22 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
                 </div>
               )}
               <div className={`flex flex-col gap-1 ${isUser ? "items-end" : "items-start"} max-w-[80%]`}>
-                {disclaimerCallout && (
+                {retentionCallout && (
                   <div className="w-full rounded-xl border border-amber-400 bg-amber-50 dark:bg-amber-950/30 px-3 py-2.5">
                     <div className="flex items-start gap-2">
                       <AlertTriangle size={14} className="text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
                       <p className="text-xs font-medium text-amber-800 dark:text-amber-300 leading-snug">
-                        {disclaimerCallout.replace(/^⚠️\s*/, "")}
+                        {retentionCallout.replace(/^⚠️\s*/, "")}
+                      </p>
+                    </div>
+                  </div>
+                )}
+                {privacyCallout && (
+                  <div className="w-full rounded-xl border border-amber-400 bg-amber-50 dark:bg-amber-950/30 px-3 py-2.5">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle size={14} className="text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                      <p className="text-xs font-medium text-amber-800 dark:text-amber-300 leading-snug">
+                        {privacyCallout.replace(/^⚠️\s*/, "")}
                       </p>
                     </div>
                   </div>
@@ -1485,6 +1519,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
                   <KnowledgeSourceBadge
                     sectionIds={msg.knowledgeSectionIds}
                     retentionDisclaimer={msg.retentionDisclaimer}
+                    privacyDisclaimer={msg.privacyDisclaimer}
                   />
                 )}
               </div>

@@ -61,6 +61,14 @@ const RETENTION_LEGAL_DISCLAIMER =
   "Verify current requirements with your state dental board and qualified " +
   "legal counsel before disposing of any records.";
 
+/** Prominent disclaimer injected when the knowledge block includes HIPAA /
+ *  privacy guidance. Placed first so staff cannot miss it even if they only
+ *  skim the first paragraph of the AI reply. */
+const HIPAA_PRIVACY_DISCLAIMER =
+  "⚠️ NOT COMPLIANCE ADVICE — This is general HIPAA guidance only. " +
+  "Requirements vary by covered entity and situation. Consult your compliance " +
+  "officer before making patient-data decisions.";
+
 /**
  * Keywords that indicate a query is asking about Business Associate Agreements
  * (BAAs) or business associate obligations under HIPAA. When any of these
@@ -206,6 +214,7 @@ function renderKnowledgeSection(section: KnowledgeSection): string {
  * retentionDisclaimer — true when the retention legal-advice disclaimer was injected.
  * baaDisclaimer — true when the BAA legal-advice disclaimer was injected.
  * breachDisclaimer — true when the breach-notification legal-advice disclaimer was injected.
+ * privacyDisclaimer — true when the HIPAA/compliance disclaimer was injected.
  */
 export interface KnowledgeBlockMeta {
   block: string;
@@ -213,6 +222,7 @@ export interface KnowledgeBlockMeta {
   retentionDisclaimer: boolean;
   baaDisclaimer: boolean;
   breachDisclaimer: boolean;
+  privacyDisclaimer: boolean;
 }
 
 /**
@@ -240,12 +250,16 @@ export function buildKnowledgeBlockWithMeta(
   const retentionDisclaimer = hasRetentionSignal(query);
   const baaDisclaimer = hasBaaSignal(query);
   const breachDisclaimer = hasBreachSignal(query);
+  const privacySignal = hasPrivacySignal(query);
 
   // Build a combined disclaimer prefix for all matching compliance topics.
+  // Retention/BAA/breach apply unconditionally when their signals fire;
+  // the HIPAA compliance disclaimer is added when a privacy signal is detected.
   const disclaimers: string[] = [];
   if (retentionDisclaimer) disclaimers.push(RETENTION_LEGAL_DISCLAIMER);
   if (baaDisclaimer) disclaimers.push(BAA_LEGAL_DISCLAIMER);
   if (breachDisclaimer) disclaimers.push(BREACH_LEGAL_DISCLAIMER);
+  if (privacySignal) disclaimers.push(HIPAA_PRIVACY_DISCLAIMER);
   const prefix = disclaimers.length > 0 ? `${disclaimers.join("\n\n")}\n\n` : "";
 
   const emptyMeta: KnowledgeBlockMeta = {
@@ -254,14 +268,15 @@ export function buildKnowledgeBlockWithMeta(
     retentionDisclaimer: false,
     baaDisclaimer: false,
     breachDisclaimer: false,
+    privacyDisclaimer: false,
   };
 
-  if (!hasPrivacySignal(query)) {
+  if (!privacySignal) {
     const sections = selectKnowledgeSections(query, { maxChars });
     if (sections.length === 0) return emptyMeta;
     const knowledge = sections.map(renderKnowledgeSection).join("\n\n");
     const block = `\nREFERENCE KNOWLEDGE (curated; use only if relevant to the question):\n${prefix}${knowledge}`;
-    return { block, sectionIds: sections.map((s) => s.id), retentionDisclaimer, baaDisclaimer, breachDisclaimer };
+    return { block, sectionIds: sections.map((s) => s.id), retentionDisclaimer, baaDisclaimer, breachDisclaimer, privacyDisclaimer: false };
   }
 
   // Privacy signal detected: reserve a budget share for HIPAA sections.
@@ -293,7 +308,7 @@ export function buildKnowledgeBlockWithMeta(
   if (!knowledge) return emptyMeta;
 
   const block = `\nREFERENCE KNOWLEDGE (curated; use only if relevant to the question):\n${prefix}${knowledge}`;
-  return { block, sectionIds: allSections.map((s) => s.id), retentionDisclaimer, baaDisclaimer, breachDisclaimer };
+  return { block, sectionIds: allSections.map((s) => s.id), retentionDisclaimer, baaDisclaimer, breachDisclaimer, privacyDisclaimer: true };
 }
 
 /**

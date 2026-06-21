@@ -101,6 +101,7 @@ interface SystemPromptResult {
   prompt: string;
   knowledgeSectionIds: string[];
   retentionDisclaimer: boolean;
+  privacyDisclaimer: boolean;
 }
 
 async function buildSystemPrompt(
@@ -185,7 +186,7 @@ IMPORTANT RULES:
 - Be concise and action-oriented. After calling tools, summarize what happened or what is proposed.
 - If you cannot complete a request with the available tools, explain clearly what you can and cannot do.`;
 
-  return { prompt, knowledgeSectionIds: knowledgeMeta.sectionIds, retentionDisclaimer: knowledgeMeta.retentionDisclaimer };
+  return { prompt, knowledgeSectionIds: knowledgeMeta.sectionIds, retentionDisclaimer: knowledgeMeta.retentionDisclaimer, privacyDisclaimer: knowledgeMeta.privacyDisclaimer };
 }
 
 // ─── Route registration ──────────────────────────────────────────────────────
@@ -276,12 +277,12 @@ export function registerAiAgentRoutes(router: IRouter): void {
       userType,
       String(lastMsg.content ?? ""),
     );
-    const { prompt: systemPrompt, knowledgeSectionIds, retentionDisclaimer } = systemPromptResult;
+    const { prompt: systemPrompt, knowledgeSectionIds, retentionDisclaimer, privacyDisclaimer } = systemPromptResult;
 
     // Log which knowledge sections were included for audit purposes.
-    if (knowledgeSectionIds.length > 0 || retentionDisclaimer) {
+    if (knowledgeSectionIds.length > 0 || retentionDisclaimer || privacyDisclaimer) {
       req.log?.info(
-        { knowledgeSectionIds, retentionDisclaimer },
+        { knowledgeSectionIds, retentionDisclaimer, privacyDisclaimer },
         "[AI AGENT] knowledge sections used in prompt",
       );
     }
@@ -334,6 +335,7 @@ export function registerAiAgentRoutes(router: IRouter): void {
             ...(accumulatedToolOutputs.length > 0 ? { toolOutputs: accumulatedToolOutputs } : {}),
             ...(knowledgeSectionIds.length > 0 ? { knowledgeSectionIds } : {}),
             ...(retentionDisclaimer ? { retentionDisclaimer } : {}),
+            ...(privacyDisclaimer ? { privacyDisclaimer } : {}),
           });
         }
 
@@ -444,6 +446,7 @@ export function registerAiAgentRoutes(router: IRouter): void {
         ...(accumulatedToolOutputs.length > 0 ? { toolOutputs: accumulatedToolOutputs } : {}),
         ...(knowledgeSectionIds.length > 0 ? { knowledgeSectionIds } : {}),
         ...(retentionDisclaimer ? { retentionDisclaimer } : {}),
+        ...(privacyDisclaimer ? { privacyDisclaimer } : {}),
       });
     } catch (err: any) {
       req.log?.error({ err }, "[AI AGENT] OpenAI error");

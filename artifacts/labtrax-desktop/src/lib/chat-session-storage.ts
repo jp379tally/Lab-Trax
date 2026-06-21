@@ -16,6 +16,8 @@ export interface ChatMsg {
   knowledgeSectionIds?: string[];
   /** Whether the retention legal disclaimer was injected into the prompt. Admin-only audit field. */
   retentionDisclaimer?: boolean;
+  /** Whether the HIPAA/compliance disclaimer was injected into the prompt. Admin-only audit field. */
+  privacyDisclaimer?: boolean;
   proposedAction?: {
     actionId: string;
     toolName: string;

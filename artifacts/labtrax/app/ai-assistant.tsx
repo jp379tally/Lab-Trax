@@ -355,27 +355,41 @@ const confirmStyles = StyleSheet.create({
 // ─── Disclaimer parser ───────────────────────────────────────────────────────
 
 /**
- * Splits a message that contains a "NOT LEGAL ADVICE" disclaimer into two
- * parts: the disclaimer paragraph (rendered as an amber callout) and the
- * remaining prose. Returns `callout: null` when no disclaimer is present.
+ * Splits a message into disclaimer callouts and the remaining prose.
+ * Detects two independent markers:
+ *   - "NOT LEGAL ADVICE" → retention legal disclaimer callout
+ *   - "NOT COMPLIANCE ADVICE" → HIPAA/privacy disclaimer callout
+ * Returns `null` for each callout when no matching marker is present.
  */
-function parseDisclaimerContent(content: string): { callout: string | null; rest: string } {
-  if (!content.includes("NOT LEGAL ADVICE")) {
-    return { callout: null, rest: content };
+function parseDisclaimerContent(content: string): {
+  retentionCallout: string | null;
+  privacyCallout: string | null;
+  rest: string;
+} {
+  let paragraphs = content.split(/\n\n+/);
+  let retentionCallout: string | null = null;
+  let privacyCallout: string | null = null;
+
+  const retentionIdx = paragraphs.findIndex((p) => p.includes("NOT LEGAL ADVICE"));
+  if (retentionIdx !== -1) {
+    retentionCallout = paragraphs[retentionIdx].trim();
+    paragraphs = [
+      ...paragraphs.slice(0, retentionIdx),
+      ...paragraphs.slice(retentionIdx + 1),
+    ];
   }
-  const paragraphs = content.split(/\n\n+/);
-  const disclaimerIdx = paragraphs.findIndex((p) => p.includes("NOT LEGAL ADVICE"));
-  if (disclaimerIdx === -1) {
-    return { callout: null, rest: content };
+
+  const privacyIdx = paragraphs.findIndex((p) => p.includes("NOT COMPLIANCE ADVICE"));
+  if (privacyIdx !== -1) {
+    privacyCallout = paragraphs[privacyIdx].trim();
+    paragraphs = [
+      ...paragraphs.slice(0, privacyIdx),
+      ...paragraphs.slice(privacyIdx + 1),
+    ];
   }
-  const callout = paragraphs[disclaimerIdx].trim();
-  const rest = [
-    ...paragraphs.slice(0, disclaimerIdx),
-    ...paragraphs.slice(disclaimerIdx + 1),
-  ]
-    .join("\n\n")
-    .trim();
-  return { callout, rest };
+
+  const rest = paragraphs.join("\n\n").trim();
+  return { retentionCallout, privacyCallout, rest };
 }
 
 // ─── Message bubble ───────────────────────────────────────────────────────────
@@ -396,12 +410,13 @@ function MessageBubble({ msg, colors, onConfirm, onReject, onTryAgain, sending }
     | undefined;
   const [copied, setCopied] = useState(false);
 
-  // Parse disclaimer callout for assistant messages
-  const { callout: disclaimerCallout, rest: disclaimerRest } = !isUser
+  // Parse disclaimer callouts for assistant messages
+  const { retentionCallout, privacyCallout, rest: disclaimerRest } = !isUser
     ? parseDisclaimerContent(msg.content)
-    : { callout: null as null, rest: msg.content };
-  const bubbleContent = disclaimerCallout ? disclaimerRest : msg.content;
-  const showBubble = isUser || !disclaimerCallout || !!disclaimerRest;
+    : { retentionCallout: null as null, privacyCallout: null as null, rest: msg.content };
+  const anyCallout = retentionCallout || privacyCallout;
+  const bubbleContent = anyCallout ? disclaimerRest : msg.content;
+  const showBubble = isUser || !anyCallout || !!disclaimerRest;
 
   const handleCopy = useCallback(async (text: string) => {
     try {
@@ -444,11 +459,19 @@ function MessageBubble({ msg, colors, onConfirm, onReject, onTryAgain, sending }
         </View>
       )}
       <View style={[styles.bubbleGroup, isUser ? styles.bubbleGroupUser : styles.bubbleGroupAssistant]}>
-        {disclaimerCallout && (
+        {retentionCallout && (
           <View style={styles.disclaimerCallout}>
             <Ionicons name="warning" size={14} color="#92400e" style={styles.disclaimerIcon} />
             <Text style={styles.disclaimerText}>
-              {disclaimerCallout.replace(/^⚠️\s*/, "")}
+              {retentionCallout.replace(/^⚠️\s*/, "")}
+            </Text>
+          </View>
+        )}
+        {privacyCallout && (
+          <View style={styles.disclaimerCallout}>
+            <Ionicons name="warning" size={14} color="#92400e" style={styles.disclaimerIcon} />
+            <Text style={styles.disclaimerText}>
+              {privacyCallout.replace(/^⚠️\s*/, "")}
             </Text>
           </View>
         )}
