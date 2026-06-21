@@ -296,7 +296,7 @@ export function registerAiAgentRoutes(router: IRouter): void {
           messages: loopMessages,
           tools: openAiTools,
           tool_choice: "auto",
-          max_tokens: 1200,
+          max_completion_tokens: 1200,
           temperature: 0.2,
         });
 
