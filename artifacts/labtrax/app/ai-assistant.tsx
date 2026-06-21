@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Animated,
   FlatList,
   KeyboardAvoidingView,
   Platform,
@@ -127,6 +128,53 @@ async function uploadAudioForTranscript(fileUri: string, mimeType: string): Prom
     xhr.onerror = () => reject(new Error("Network error"));
     xhr.send(formData as any);
   });
+}
+
+// ─── Waveform animation ───────────────────────────────────────────────────────
+
+/**
+ * Animated 4-bar waveform for React Native. Each bar pulses its scaleY
+ * with a staggered delay so the bars appear to ripple.
+ */
+function VoiceWaveformNative({ color }: { color: string }) {
+  const anims = useRef([
+    new Animated.Value(0.25),
+    new Animated.Value(0.25),
+    new Animated.Value(0.25),
+    new Animated.Value(0.25),
+  ]).current;
+
+  useEffect(() => {
+    const delays = [0, 150, 75, 225];
+    const loops = anims.map((anim, i) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(delays[i]!),
+          Animated.timing(anim, { toValue: 1, duration: 400, useNativeDriver: true }),
+          Animated.timing(anim, { toValue: 0.25, duration: 400, useNativeDriver: true }),
+        ]),
+      ),
+    );
+    loops.forEach((l) => l.start());
+    return () => loops.forEach((l) => l.stop());
+  }, [anims]);
+
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 2, height: 18 }}>
+      {anims.map((anim, i) => (
+        <Animated.View
+          key={i}
+          style={{
+            width: 3,
+            height: 14,
+            borderRadius: 1.5,
+            backgroundColor: color,
+            transform: [{ scaleY: anim }],
+          }}
+        />
+      ))}
+    </View>
+  );
 }
 
 const WELCOME_MSG: ChatMessage = {
@@ -1215,13 +1263,15 @@ export default function AiAssistantScreen() {
               }
             >
               {micState === "listening" ? (
-                <Ionicons name="stop-circle" size={18} color="#c53030" />
+                <VoiceWaveformNative color="#c53030" />
               ) : micState === "processing" ? (
                 <ActivityIndicator size="small" color={colors.textSecondary} />
               ) : micState === "error" ? (
                 <Ionicons name="mic-off-outline" size={18} color="#c53030" />
+              ) : isSpeaking ? (
+                <VoiceWaveformNative color={colors.tint} />
               ) : (
-                <Ionicons name="mic-outline" size={18} color={isSpeaking ? colors.tint : colors.textSecondary} />
+                <Ionicons name="mic-outline" size={18} color={colors.textSecondary} />
               )}
             </Pressable>
             <Pressable

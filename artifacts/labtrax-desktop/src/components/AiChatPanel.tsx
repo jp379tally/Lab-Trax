@@ -14,7 +14,6 @@ import {
   RotateCcw,
   Send,
   Sparkles,
-  Square,
   Trash2,
   Volume2,
   X,
@@ -31,6 +30,51 @@ import {
   writeStoredSessions,
   sanitizeMessagesForStorage,
 } from "@/lib/chat-session-storage";
+
+// ─── Waveform animation ──────────────────────────────────────────────────────
+
+if (typeof document !== "undefined") {
+  const WAVEFORM_STYLE_ID = "labtrax-waveform-anim";
+  if (!document.getElementById(WAVEFORM_STYLE_ID)) {
+    const s = document.createElement("style");
+    s.id = WAVEFORM_STYLE_ID;
+    s.textContent = `
+      @keyframes wf-bar {
+        0%, 100% { transform: scaleY(0.25); }
+        50%       { transform: scaleY(1);    }
+      }
+    `;
+    document.head.appendChild(s);
+  }
+}
+
+/**
+ * Animated 4-bar waveform using CSS keyframes + scaleY. Inherits `currentColor`
+ * from the parent so it adapts to any button colour scheme.
+ */
+function VoiceWaveform() {
+  const delays = ["0s", "0.15s", "0.075s", "0.225s"];
+  return (
+    <svg width="18" height="14" viewBox="0 0 18 14" aria-hidden="true">
+      {delays.map((delay, i) => (
+        <rect
+          key={i}
+          x={i * 5}
+          y={0}
+          width={3}
+          height={14}
+          rx={1.5}
+          fill="currentColor"
+          style={{
+            transformBox: "fill-box" as React.CSSProperties["transformBox"],
+            transformOrigin: "center",
+            animation: `wf-bar 0.8s ease-in-out ${delay} infinite`,
+          }}
+        />
+      ))}
+    </svg>
+  );
+}
 
 // ─── Case history ────────────────────────────────────────────────────────────
 
@@ -1766,11 +1810,13 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
             }`}
           >
             {micState === "listening" ? (
-              <Square size={13} fill="currentColor" />
+              <VoiceWaveform />
             ) : micState === "processing" ? (
               <Loader2 size={14} className="animate-spin" />
             ) : micState === "error" ? (
               <MicOff size={15} />
+            ) : isSpeaking ? (
+              <VoiceWaveform />
             ) : (
               <Mic size={15} />
             )}
