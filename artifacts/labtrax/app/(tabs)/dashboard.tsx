@@ -428,6 +428,14 @@ export default function DashboardScreen() {
       </Pressable>
 
       <View style={styles.header}>
+        <Pressable
+          style={styles.maynardBtn}
+          onPress={() => router.push("/ai-assistant" as never)}
+          testID="dashboard-ai-assistant-btn"
+        >
+          <Ionicons name="sparkles" size={22} color="#fff" />
+          <Text style={styles.maynardBtnText}>Maynard</Text>
+        </Pressable>
         <View style={styles.headerText}>
           <Text style={styles.title}>{getGreeting(meUser?.firstName)}</Text>
           <Text style={styles.subtitle}>Your lab at a glance</Text>
@@ -435,14 +443,6 @@ export default function DashboardScreen() {
         <View style={styles.headerActions}>
           <Pressable style={styles.arrangeBtn} onPress={swapSections} hitSlop={8}>
             <Ionicons name="swap-vertical-outline" size={18} color={colors.textSecondary} />
-          </Pressable>
-          <Pressable
-            style={styles.arrangeBtn}
-            onPress={() => router.push("/ai-assistant" as never)}
-            testID="dashboard-ai-assistant-btn"
-            hitSlop={8}
-          >
-            <Ionicons name="chatbubble-ellipses-outline" size={18} color={colors.tint} />
           </Pressable>
           <Pressable
             style={styles.arrangeBtn}
@@ -549,6 +549,17 @@ function makeStyles(c: ThemeColors) {
     },
     title: { ...Typography.h1, color: c.text },
     subtitle: { ...Typography.caption, color: c.textSecondary, marginTop: 2 },
+    maynardBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.xs,
+      backgroundColor: c.tint,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: 10,
+      borderRadius: Radius.md,
+      minHeight: 48,
+    },
+    maynardBtnText: { ...Typography.bodySemibold, color: "#fff" },
     arrangeBtn: {
       width: 36,
       height: 36,

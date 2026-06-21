@@ -13,11 +13,13 @@ import {
   Loader2,
   Play,
   Plus,
+  Sparkles,
   Upload,
   X,
   XCircle,
 } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
+import { useAiPanel } from "@/lib/ai-panel-context";
 import { usePlatformAdminGate, PlatformAdminSetupNotice } from "@/lib/platform-admin-gate";
 import { formatNextCleanupTime } from "@/lib/cleanup-schedule";
 import { TriggeredByBadge } from "@/components/TriggeredByBadge";
@@ -868,6 +870,7 @@ export default function DashboardPage() {
   const [dueTodayOpen, setDueTodayOpen] = useState(true);
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
+  const { openPanel: openAiPanel } = useAiPanel();
 
   const casesQuery = useQuery({
     queryKey: ["cases"],
@@ -913,14 +916,24 @@ export default function DashboardPage() {
       <DashboardSubscriptionBanner />
       <div className="flex items-end justify-between mb-7">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">
-            Dashboard
-            {user?.practiceName && (
-              <span className="ml-2 text-muted-foreground font-normal">
-                — {user.practiceName}
-              </span>
-            )}
-          </h1>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => openAiPanel()}
+              className="inline-flex items-center gap-2 h-12 px-5 rounded-xl bg-primary text-primary-foreground text-base font-semibold hover:bg-primary/90 transition-colors shadow-sm"
+            >
+              <Sparkles size={20} />
+              Maynard
+            </button>
+            <h1 className="text-2xl font-semibold tracking-tight">
+              Dashboard
+              {user?.practiceName && (
+                <span className="ml-2 text-muted-foreground font-normal">
+                  — {user.practiceName}
+                </span>
+              )}
+            </h1>
+          </div>
           <p className="text-sm text-muted-foreground mt-1">
             Your lab at a glance.
           </p>
