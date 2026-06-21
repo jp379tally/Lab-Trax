@@ -14,9 +14,11 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
+import { Audio } from "expo-av";
+import * as FileSystem from "expo-file-system/legacy";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
-import { resilientFetch } from "@/lib/query-client";
+import { resilientFetch, getApiUrl, refreshAndGetAccessToken } from "@/lib/query-client";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -66,6 +68,62 @@ let _msgCounter = 0;
 function genId() {
   _msgCounter += 1;
   return `msg-${Date.now()}-${_msgCounter}`;
+}
+
+// ─── Voice helpers ────────────────────────────────────────────────────────────
+
+function stripMarkdownForSpeech(text: string): string {
+  return text
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/\*(.*?)\*/g, "$1")
+    .replace(/`{1,3}([\s\S]*?)`{1,3}/g, "$1")
+    .replace(/\[(.*?)\]\(.*?\)/g, "$1")
+    .replace(/^#+\s+/gm, "")
+    .replace(/^[\-\*•]\s+/gm, "")
+    .replace(/^\d+\.\s+/gm, "")
+    .replace(/\n{2,}/g, ". ")
+    .replace(/\n/g, " ")
+    .trim()
+    .slice(0, 2000);
+}
+
+/** Upload audio blob/URI to /api/ai-stt via XHR (supports native file descriptors). */
+async function uploadAudioForTranscript(fileUri: string, mimeType: string): Promise<string> {
+  const token = await refreshAndGetAccessToken();
+  const baseUrl = getApiUrl();
+  const url = new URL("api/ai-stt", baseUrl).toString();
+
+  const headers: Record<string, string> = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const formData = new FormData();
+  if (Platform.OS === "web") {
+    const blob = await globalThis.fetch(fileUri).then((r) => r.blob());
+    formData.append("audio", blob, "audio.webm");
+  } else {
+    (formData as any).append("audio", { uri: fileUri, name: "audio.m4a", type: mimeType });
+  }
+
+  return new Promise<string>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    if (Platform.OS === "web") xhr.withCredentials = true;
+    for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
+    xhr.onload = () => {
+      try {
+        const body = JSON.parse(xhr.responseText) as { ok?: boolean; transcript?: string };
+        if (xhr.status >= 200 && xhr.status < 300 && body.transcript != null) {
+          resolve(body.transcript);
+        } else {
+          reject(new Error("STT failed"));
+        }
+      } catch {
+        reject(new Error("STT parse error"));
+      }
+    };
+    xhr.onerror = () => reject(new Error("Network error"));
+    xhr.send(formData as any);
+  });
 }
 
 const WELCOME_MSG: ChatMessage = {
@@ -558,6 +616,18 @@ export default function AiAssistantScreen() {
   const listRef = useRef<FlatList<ChatMessage>>(null);
   const messagesRef = useRef<ChatMessage[]>([WELCOME_MSG]);
 
+  // ─── Voice state ───────────────────────────────────────────────────────────
+  type MicState = "idle" | "listening" | "processing" | "error";
+  const [voiceMode, setVoiceMode] = useState(false);
+  const [micState, setMicState] = useState<MicState>("idle");
+  const [micErrorMsg, setMicErrorMsg] = useState<string | null>(null);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const recordingRef = useRef<Audio.Recording | null>(null);
+  const soundRef = useRef<Audio.Sound | null>(null);
+  const webAudioRef = useRef<HTMLAudioElement | null>(null);
+  // Ref so stopRecording (defined before sendMessage) can call it.
+  const sendMessageRef = useRef<((text: string) => Promise<void>) | null>(null);
+
   const showPrompts = messages.length === 1;
 
   useEffect(() => {
@@ -570,9 +640,169 @@ export default function AiAssistantScreen() {
     }, 80);
   }, []);
 
-  /** Serialise message list to history array for the AI API.
-   *  Completed proposed-actions become assistant text entries so the AI knows
-   *  what already happened and can propose the next action in a sequence. */
+  // ─── Voice helpers ─────────────────────────────────────────────────────────
+
+  const stopSpeaking = useCallback(() => {
+    if (Platform.OS === "web") {
+      if (webAudioRef.current) {
+        webAudioRef.current.pause();
+        webAudioRef.current.src = "";
+        webAudioRef.current = null;
+      }
+    } else {
+      if (soundRef.current) {
+        soundRef.current.stopAsync().catch(() => {});
+        soundRef.current.unloadAsync().catch(() => {});
+        soundRef.current = null;
+      }
+    }
+    setIsSpeaking(false);
+  }, []);
+
+  const speakText = useCallback(
+    async (text: string) => {
+      if (!text.trim()) return;
+      stopSpeaking();
+      const stripped = stripMarkdownForSpeech(text);
+      try {
+        setIsSpeaking(true);
+        const res = await resilientFetch("/api/ai-tts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: stripped, voice: "alloy" }),
+        });
+        if (!res.ok) { setIsSpeaking(false); return; }
+
+        if (Platform.OS === "web") {
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const audio = new (globalThis as any).Audio(url) as HTMLAudioElement;
+          webAudioRef.current = audio;
+          audio.onended = () => { URL.revokeObjectURL(url); webAudioRef.current = null; setIsSpeaking(false); };
+          audio.onerror = () => { URL.revokeObjectURL(url); webAudioRef.current = null; setIsSpeaking(false); };
+          await audio.play();
+        } else {
+          const blob = await res.blob();
+          const reader = new FileReader();
+          const base64 = await new Promise<string>((resolve, reject) => {
+            reader.onloadend = () => {
+              const result = reader.result as string;
+              resolve(result.split(",")[1] ?? "");
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+          const tmpUri = `${FileSystem.cacheDirectory}tts-${Date.now()}.mp3`;
+          await FileSystem.writeAsStringAsync(tmpUri, base64, { encoding: FileSystem.EncodingType.Base64 });
+          await Audio.setAudioModeAsync({ playsInSilentModeIOS: true, staysActiveInBackground: false });
+          const { sound } = await Audio.Sound.createAsync({ uri: tmpUri });
+          soundRef.current = sound;
+          sound.setOnPlaybackStatusUpdate((status) => {
+            if (!status.isLoaded) return;
+            if (status.didJustFinish) {
+              sound.unloadAsync().catch(() => {});
+              if (soundRef.current === sound) { soundRef.current = null; setIsSpeaking(false); }
+            }
+          });
+          await sound.playAsync();
+        }
+      } catch {
+        setIsSpeaking(false);
+      }
+    },
+    [stopSpeaking],
+  );
+
+  const startRecording = useCallback(async () => {
+    setMicErrorMsg(null);
+    try {
+      if (Platform.OS !== "web") {
+        const { status } = await Audio.requestPermissionsAsync();
+        if (status !== "granted") {
+          setMicState("error");
+          setMicErrorMsg("Microphone permission is required. Please grant access in Settings and try again.");
+          return;
+        }
+        await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
+        const { recording } = await Audio.Recording.createAsync(
+          Audio.RecordingOptionsPresets.HIGH_QUALITY,
+        );
+        recordingRef.current = recording;
+        setMicState("listening");
+      } else {
+        // Web — use MediaRecorder
+        const stream = await (navigator as any).mediaDevices.getUserMedia({ audio: true });
+        const mr = new (globalThis as any).MediaRecorder(stream);
+        const chunks: BlobPart[] = [];
+        mr.ondataavailable = (e: any) => { if (e.data.size > 0) chunks.push(e.data); };
+        mr.onstop = async () => {
+          stream.getTracks().forEach((t: any) => t.stop());
+          const blob = new Blob(chunks, { type: "audio/webm" });
+          const uri = URL.createObjectURL(blob);
+          setMicState("processing");
+          try {
+            const transcript = await uploadAudioForTranscript(uri, "audio/webm");
+            URL.revokeObjectURL(uri);
+            if (transcript.trim()) {
+              // Keep micState="processing" through the full AI reply cycle.
+              await sendMessageRef.current?.(transcript.trim());
+            }
+          } catch {
+            setMicState("error");
+            setMicErrorMsg("Could not transcribe audio. Please try again.");
+            return;
+          }
+          setMicState("idle");
+        };
+        (recordingRef.current as any) = mr;
+        mr.start();
+        setMicState("listening");
+      }
+    } catch (e: any) {
+      const msg = e?.message ?? "";
+      if (msg.includes("Permission") || msg.includes("permission") || msg.includes("NotAllowed")) {
+        setMicState("error");
+        setMicErrorMsg("Microphone permission is required. Please grant access in Settings and try again.");
+      } else {
+        setMicState("error");
+        setMicErrorMsg("Could not start recording. Please try again.");
+      }
+    }
+  }, []);
+
+  const stopRecording = useCallback(async () => {
+    const rec = recordingRef.current;
+    recordingRef.current = null;
+    if (!rec) { setMicState("idle"); return; }
+
+    if (Platform.OS !== "web") {
+      try {
+        await (rec as Audio.Recording).stopAndUnloadAsync();
+        await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
+        const uri = (rec as Audio.Recording).getURI();
+        if (!uri) { setMicState("idle"); return; }
+        setMicState("processing");
+        try {
+          const transcript = await uploadAudioForTranscript(uri, "audio/m4a");
+          if (transcript.trim()) {
+            // Keep micState="processing" through the full AI reply cycle.
+            await sendMessageRef.current?.(transcript.trim());
+          }
+        } catch {
+          setMicState("error");
+          setMicErrorMsg("Could not transcribe audio. Please try again.");
+          return;
+        }
+        setMicState("idle");
+      } catch {
+        setMicState("idle");
+      }
+    } else {
+      // Web — stop fires onstop which handles processing
+      try { (rec as any).stop(); } catch { setMicState("idle"); }
+    }
+  }, []);
+
   const buildHistory = useCallback(
     (msgs: ChatMessage[]): Array<{ role: "user" | "assistant"; content: string }> =>
       msgs
@@ -652,6 +882,10 @@ export default function AiAssistantScreen() {
 
         setMessages((prev) => [...prev, assistantMsg]);
         scrollToBottom();
+        // Auto-play TTS in voice mode for plain text replies
+        if (voiceMode && assistantMsg.content && !assistantMsg.proposedAction) {
+          void speakText(assistantMsg.content);
+        }
       } catch {
         setMessages((prev) => [
           ...prev,
@@ -667,7 +901,7 @@ export default function AiAssistantScreen() {
         setSending(false);
       }
     },
-    [buildHistory, scrollToBottom],
+    [buildHistory, scrollToBottom, voiceMode, speakText],
   );
 
   const confirmAction = useCallback(async (actionId: string) => {
@@ -768,6 +1002,12 @@ export default function AiAssistantScreen() {
     [messages, sending, dispatchAiRequest, scrollToBottom],
   );
 
+  // Keep the ref current so stopRecording (defined earlier) can always call
+  // the latest sendMessage without needing it in its dependency array.
+  useEffect(() => {
+    sendMessageRef.current = sendMessage;
+  }, [sendMessage]);
+
   const handleSend = useCallback(() => {
     sendMessage(input);
   }, [input, sendMessage]);
@@ -821,14 +1061,31 @@ export default function AiAssistantScreen() {
             </Text>
           </View>
         </View>
-        <Pressable
-          onPress={() => setMessages([WELCOME_MSG])}
-          hitSlop={10}
-          style={s.clearBtn}
-          accessibilityLabel="Clear chat"
-        >
-          <Ionicons name="refresh-outline" size={20} color={colors.textSecondary} />
-        </Pressable>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+          <Pressable
+            onPress={() => {
+              if (voiceMode) { stopSpeaking(); setVoiceMode(false); }
+              else { setVoiceMode(true); }
+            }}
+            hitSlop={10}
+            style={[s.clearBtn, voiceMode && { backgroundColor: colors.tint + "1A", borderRadius: 8, padding: 4 }]}
+            accessibilityLabel={voiceMode ? "Disable voice mode" : "Enable voice mode"}
+          >
+            <Ionicons
+              name={voiceMode ? "volume-high" : "volume-medium-outline"}
+              size={20}
+              color={voiceMode ? colors.tint : colors.textSecondary}
+            />
+          </Pressable>
+          <Pressable
+            onPress={() => setMessages([WELCOME_MSG])}
+            hitSlop={10}
+            style={s.clearBtn}
+            accessibilityLabel="Clear chat"
+          >
+            <Ionicons name="refresh-outline" size={20} color={colors.textSecondary} />
+          </Pressable>
+        </View>
       </View>
 
       {/* Messages */}
@@ -880,27 +1137,79 @@ export default function AiAssistantScreen() {
 
         {/* Input bar */}
         <View style={[s.inputBar, { borderTopColor: colors.border, backgroundColor: colors.backgroundSolid, paddingBottom: insets.bottom + 8 }]}>
-          <TextInput
-            style={[s.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surfaceSecondary }]}
-            value={input}
-            onChangeText={setInput}
-            placeholder="Ask me anything…"
-            placeholderTextColor={colors.textSecondary}
-            multiline
-            maxLength={800}
-            returnKeyType="send"
-            blurOnSubmit={false}
-            onSubmitEditing={handleSend}
-            editable={!sending}
-          />
-          <Pressable
-            style={[s.sendBtn, { backgroundColor: colors.tint, opacity: (!input.trim() || sending) ? 0.45 : 1 }]}
-            onPress={handleSend}
-            disabled={!input.trim() || sending}
-            accessibilityLabel="Send message"
-          >
-            <Ionicons name="send" size={16} color="#fff" />
-          </Pressable>
+          {micErrorMsg ? (
+            <View style={[s.micErrorBanner, { backgroundColor: "#fff5f5", borderColor: "#fed7d7" }]}>
+              <Ionicons name="mic-off-outline" size={13} color="#c53030" style={{ marginTop: 1 }} />
+              <Text style={[s.micErrorText, { color: "#742a2a", flex: 1 }]}>{micErrorMsg}</Text>
+              <Pressable onPress={() => { setMicErrorMsg(null); setMicState("idle"); }} hitSlop={6}>
+                <Ionicons name="close" size={13} color="#c53030" />
+              </Pressable>
+            </View>
+          ) : null}
+          <View style={s.inputRow}>
+            <TextInput
+              style={[s.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surfaceSecondary }]}
+              value={input}
+              onChangeText={setInput}
+              placeholder="Ask me anything…"
+              placeholderTextColor={colors.textSecondary}
+              multiline
+              maxLength={800}
+              returnKeyType="send"
+              blurOnSubmit={false}
+              onSubmitEditing={handleSend}
+              editable={!sending}
+            />
+            <Pressable
+              onPress={() => {
+                if (micState === "listening") {
+                  void stopRecording();
+                } else if (micState === "error") {
+                  setMicErrorMsg(null);
+                  setMicState("idle");
+                } else if (micState === "processing") {
+                  // no-op
+                } else {
+                  void startRecording();
+                }
+              }}
+              disabled={sending || micState === "processing"}
+              style={[
+                s.micBtn,
+                micState === "listening" && { backgroundColor: "#fed7d7", borderColor: "#fc8181" },
+                micState === "processing" && { backgroundColor: colors.surfaceSecondary, borderColor: colors.border },
+                micState === "error" && { backgroundColor: "#fff5f5", borderColor: "#fed7d7" },
+                micState === "idle" && isSpeaking && { backgroundColor: colors.tint + "1A", borderColor: colors.tint + "33" },
+              ]}
+              accessibilityLabel={
+                micState === "listening"
+                  ? "Stop recording"
+                  : micState === "processing"
+                  ? "Processing…"
+                  : micState === "error"
+                  ? "Microphone blocked — tap to dismiss"
+                  : "Speak to Maynard"
+              }
+            >
+              {micState === "listening" ? (
+                <Ionicons name="stop-circle" size={18} color="#c53030" />
+              ) : micState === "processing" ? (
+                <ActivityIndicator size="small" color={colors.textSecondary} />
+              ) : micState === "error" ? (
+                <Ionicons name="mic-off-outline" size={18} color="#c53030" />
+              ) : (
+                <Ionicons name="mic-outline" size={18} color={isSpeaking ? colors.tint : colors.textSecondary} />
+              )}
+            </Pressable>
+            <Pressable
+              style={[s.sendBtn, { backgroundColor: colors.tint, opacity: (!input.trim() || sending) ? 0.45 : 1 }]}
+              onPress={handleSend}
+              disabled={!input.trim() || sending}
+              accessibilityLabel="Send message"
+            >
+              <Ionicons name="send" size={16} color="#fff" />
+            </Pressable>
+          </View>
         </View>
       </KeyboardAvoidingView>
     </View>
@@ -1099,11 +1408,15 @@ function makeStyles(colors: ThemeColors) {
       fontWeight: "500",
     },
     inputBar: {
-      flexDirection: "row",
-      alignItems: "flex-end",
+      flexDirection: "column",
       paddingHorizontal: Spacing.md,
       paddingTop: Spacing.sm,
       borderTopWidth: StyleSheet.hairlineWidth,
+      gap: 4,
+    },
+    inputRow: {
+      flexDirection: "row",
+      alignItems: "flex-end",
       gap: 8,
     },
     input: {
@@ -1116,6 +1429,17 @@ function makeStyles(colors: ThemeColors) {
       maxHeight: 120,
       minHeight: 42,
     },
+    micBtn: {
+      width: 40,
+      height: 40,
+      borderRadius: 20,
+      alignItems: "center",
+      justifyContent: "center",
+      flexShrink: 0,
+      borderWidth: 1,
+      borderColor: "transparent",
+      backgroundColor: "transparent",
+    },
     sendBtn: {
       width: 40,
       height: 40,
@@ -1123,6 +1447,19 @@ function makeStyles(colors: ThemeColors) {
       alignItems: "center",
       justifyContent: "center",
       flexShrink: 0,
+    },
+    micErrorBanner: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: 6,
+      padding: 8,
+      borderRadius: Radius.md,
+      borderWidth: 1,
+      marginBottom: 2,
+    },
+    micErrorText: {
+      fontSize: Typography.tiny.fontSize,
+      lineHeight: 16,
     },
   });
 }

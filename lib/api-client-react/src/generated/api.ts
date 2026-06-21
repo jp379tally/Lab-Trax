@@ -159,10 +159,12 @@ import type {
   SmsPreferencesResult,
   StatementScheduleInput,
   StatementScheduleResult,
+  SttResult,
   SuccessEnvelope,
   SuccessResult,
   TransactionCategoryListResult,
   TransactionCategoryResult,
+  TranscribeAudioBody,
   UpdateAiMemoryInput,
   UpdateCase200,
   UpdateCaseInput,
@@ -2135,6 +2137,94 @@ export const usePostAiChat = <
   TContext
 > => {
   return useMutation(getPostAiChatMutationOptions(options));
+};
+
+/**
+ * @summary Transcribe audio to text via OpenAI Whisper (STT)
+ */
+export const getTranscribeAudioUrl = () => {
+  return `/api/ai-stt`;
+};
+
+export const transcribeAudio = async (
+  transcribeAudioBody: TranscribeAudioBody,
+  options?: RequestInit,
+): Promise<SttResult> => {
+  const formData = new FormData();
+  formData.append(`audio`, transcribeAudioBody.audio);
+
+  return customFetch<SttResult>(getTranscribeAudioUrl(), {
+    ...options,
+    method: "POST",
+    body: formData,
+  });
+};
+
+export const getTranscribeAudioMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof transcribeAudio>>,
+    TError,
+    { data: BodyType<TranscribeAudioBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof transcribeAudio>>,
+  TError,
+  { data: BodyType<TranscribeAudioBody> },
+  TContext
+> => {
+  const mutationKey = ["transcribeAudio"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof transcribeAudio>>,
+    { data: BodyType<TranscribeAudioBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return transcribeAudio(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type TranscribeAudioMutationResult = NonNullable<
+  Awaited<ReturnType<typeof transcribeAudio>>
+>;
+export type TranscribeAudioMutationBody = BodyType<TranscribeAudioBody>;
+export type TranscribeAudioMutationError = ErrorType<void>;
+
+/**
+ * @summary Transcribe audio to text via OpenAI Whisper (STT)
+ */
+export const useTranscribeAudio = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof transcribeAudio>>,
+    TError,
+    { data: BodyType<TranscribeAudioBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof transcribeAudio>>,
+  TError,
+  { data: BodyType<TranscribeAudioBody> },
+  TContext
+> => {
+  return useMutation(getTranscribeAudioMutationOptions(options));
 };
 
 /**

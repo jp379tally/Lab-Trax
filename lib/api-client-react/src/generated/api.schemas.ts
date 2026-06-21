@@ -5,6 +5,10 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+export interface SttResult {
+  transcript: string;
+}
+
 /**
  * User fields safe to return to clients (no password/secret material).
  */
@@ -2211,6 +2215,10 @@ export type DeleteLocation200Data = {
 export type DeleteLocation200 = {
   ok: boolean;
   data: DeleteLocation200Data;
+};
+
+export type TranscribeAudioBody = {
+  audio: Blob;
 };
 
 export type ListVendorsParams = {

@@ -7,6 +7,7 @@ import {
   Copy,
   Loader2,
   Mic,
+  MicOff,
   PenSquare,
   Plus,
   Printer,
@@ -518,8 +519,10 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const caseSearchRef = useRef<HTMLInputElement>(null);
 
-  // Voice state
-  const [isListening, setIsListening] = useState(false);
+  // Voice state — explicit 4-state machine for mic
+  type MicState = "idle" | "listening" | "processing" | "error";
+  const [micState, setMicState] = useState<MicState>("idle");
+  const [micErrorMsg, setMicErrorMsg] = useState<string | null>(null);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voiceMode, setVoiceMode] = useState(false);
   const recognitionRef = useRef<any>(null);
@@ -684,14 +687,14 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
     voiceModeRef.current = voiceMode;
   }, [voiceMode]);
 
-  // Auto-listen after Maynard finishes speaking (voice mode only)
+  // Auto-listen after Maynard finishes speaking (voice mode only, idle only)
   useEffect(() => {
-    if (prevIsSpeakingRef.current && !isSpeaking && voiceModeRef.current && !sending) {
+    if (prevIsSpeakingRef.current && !isSpeaking && voiceModeRef.current && !sending && micState === "idle") {
       startListening();
     }
     prevIsSpeakingRef.current = isSpeaking;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSpeaking, sending]);
+  }, [isSpeaking, sending, micState]);
 
   useEffect(() => {
     if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
@@ -876,12 +879,17 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
     const SpeechRecog =
       (window as any).SpeechRecognition ||
       (window as any).webkitSpeechRecognition;
-    if (!SpeechRecog) return;
+    if (!SpeechRecog) {
+      setMicState("error");
+      setMicErrorMsg("Speech recognition is not supported in this browser. Try Chrome or Edge.");
+      return;
+    }
     stopSpeaking();
     if (recognitionRef.current) {
       try { recognitionRef.current.abort(); } catch { /* ignore */ }
       recognitionRef.current = null;
     }
+    setMicErrorMsg(null);
     const recognition = new SpeechRecog();
     recognition.continuous = false;
     recognition.interimResults = true;
@@ -902,20 +910,36 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
     };
     recognition.onend = () => {
       recognitionRef.current = null;
-      setIsListening(false);
       if (finalTranscript.trim()) {
-        void sendMessage(finalTranscript.trim());
+        setMicState("processing");
+        sendMessage(finalTranscript.trim())
+          .then(() => setMicState("idle"))
+          .catch(() => setMicState("idle"));
+      } else {
+        setMicState("idle");
       }
     };
     recognition.onerror = (event: any) => {
-      if (event.error !== "no-speech") {
-        console.error("[Voice] speech recognition error:", event.error);
-      }
       recognitionRef.current = null;
-      setIsListening(false);
+      if (event.error === "not-allowed" || event.error === "permission-denied") {
+        setMicState("error");
+        setMicErrorMsg(
+          "Microphone access is blocked. Please allow microphone access in your browser or OS settings, then try again.",
+        );
+      } else if (event.error === "no-speech") {
+        setMicState("idle");
+      } else {
+        setMicState("error");
+        setMicErrorMsg("Speech recognition encountered an error. Please try again.");
+      }
     };
-    recognition.start();
-    setIsListening(true);
+    try {
+      recognition.start();
+      setMicState("listening");
+    } catch {
+      setMicState("error");
+      setMicErrorMsg("Could not start speech recognition. Please try again.");
+    }
   }
 
   function stopListening() {
@@ -923,7 +947,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
       try { recognitionRef.current.abort(); } catch { /* ignore */ }
       recognitionRef.current = null;
     }
-    setIsListening(false);
+    setMicState("idle");
   }
 
   /** Call the AI endpoint with a given message list and append the response.
@@ -1632,27 +1656,64 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
           <button
             type="button"
             onClick={() => {
-              if (isListening) stopListening();
-              else if (isSpeaking) { stopSpeaking(); startListening(); }
-              else startListening();
+              if (micState === "listening") {
+                stopListening();
+              } else if (micState === "processing") {
+                // no-op while waiting for AI
+              } else if (micState === "error") {
+                setMicState("idle");
+                setMicErrorMsg(null);
+              } else if (isSpeaking) {
+                stopSpeaking();
+                startListening();
+              } else {
+                startListening();
+              }
             }}
-            disabled={sending}
-            title={
-              isListening
+            disabled={sending || micState === "processing"}
+            aria-label={
+              micState === "listening"
                 ? "Stop listening"
+                : micState === "processing"
+                ? "Processing…"
+                : micState === "error"
+                ? "Microphone blocked — click to dismiss"
+                : isSpeaking
+                ? "Interrupt Maynard and speak"
+                : "Speak to Maynard"
+            }
+            title={
+              micState === "listening"
+                ? "Stop listening"
+                : micState === "processing"
+                ? "Processing…"
+                : micState === "error"
+                ? "Microphone blocked — click to dismiss"
                 : isSpeaking
                 ? "Interrupt Maynard and speak"
                 : "Speak to Maynard"
             }
             className={`h-9 w-9 rounded-lg flex items-center justify-center shrink-0 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-              isListening
+              micState === "listening"
                 ? "bg-destructive text-destructive-foreground animate-pulse"
+                : micState === "processing"
+                ? "bg-secondary border border-input text-muted-foreground"
+                : micState === "error"
+                ? "bg-destructive/10 border border-destructive/30 text-destructive"
                 : isSpeaking
                 ? "bg-primary/20 text-primary"
                 : "bg-secondary border border-input text-muted-foreground hover:text-foreground"
             }`}
           >
-            {isListening ? <Square size={13} fill="currentColor" /> : <Mic size={15} />}
+            {micState === "listening" ? (
+              <Square size={13} fill="currentColor" />
+            ) : micState === "processing" ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : micState === "error" ? (
+              <MicOff size={15} />
+            ) : (
+              <Mic size={15} />
+            )}
           </button>
 
           <button
@@ -1665,6 +1726,23 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
             <Send size={15} />
           </button>
         </div>
+
+        {/* Microphone permission / error banner */}
+        {micErrorMsg && (
+          <div className="mt-2 flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
+            <MicOff size={13} className="text-destructive shrink-0 mt-0.5" />
+            <p className="flex-1 text-[11px] text-destructive leading-snug">{micErrorMsg}</p>
+            <button
+              type="button"
+              onClick={() => { setMicErrorMsg(null); setMicState("idle"); }}
+              className="shrink-0 text-destructive/60 hover:text-destructive"
+              aria-label="Dismiss"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        )}
+
         <p className="text-[10px] text-muted-foreground/50 mt-1.5 text-center">
           {voiceMode
             ? "Voice mode on — Maynard will speak and listen automatically"

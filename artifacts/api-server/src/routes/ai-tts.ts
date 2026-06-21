@@ -41,12 +41,18 @@ export function registerAiTtsRoutes(router: IRouter): void {
         response_format: "mp3",
       });
 
+      const buffer = Buffer.from(await speech.arrayBuffer());
+      if (!buffer.length) {
+        req.log.error({ textLength: parsed.data.text.length }, "[AI TTS] OpenAI returned empty audio buffer");
+        res.status(500).json({ ok: false, error: "TTS synthesis returned no audio" });
+        return;
+      }
+
       res.setHeader("Content-Type", "audio/mpeg");
       res.setHeader("Cache-Control", "no-cache");
-      const buffer = Buffer.from(await speech.arrayBuffer());
       res.send(buffer);
     } catch (err: unknown) {
-      req.log.error({ err }, "[AI TTS] OpenAI error");
+      req.log.error({ err, textLength: parsed.data.text.length }, "[AI TTS] OpenAI API error");
       res.status(500).json({ ok: false, error: "TTS synthesis failed" });
     }
   });

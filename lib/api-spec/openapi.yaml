@@ -538,6 +538,33 @@ paths:
           description: Bad request
         "503":
           description: AI not configured
+  /ai-stt:
+    post:
+      operationId: transcribeAudio
+      tags: [ai]
+      summary: Transcribe audio to text via OpenAI Whisper (STT)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [audio]
+              properties:
+                audio:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Transcription result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SttResult"
+        "400":
+          description: No audio file provided
+        "503":
+          description: AI not configured
   /finance/vendors:
     get:
       operationId: listVendors
@@ -3210,6 +3237,12 @@ paths:
           description: Insufficient role
 components:
   schemas:
+    SttResult:
+      type: object
+      required: [transcript]
+      properties:
+        transcript:
+          type: string
     SafeUser:
       type: object
       description: User fields safe to return to clients (no password/secret material).

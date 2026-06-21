@@ -164,6 +164,7 @@ import messengerRoutes from "./messenger";
 import { registerAiChatRoutes } from "./ai-chat";
 import { registerAiAgentRoutes } from "./ai-agent";
 import { registerAiTtsRoutes } from "./ai-tts";
+import { registerAiSttRoutes } from "./ai-stt";
 import labInboxRoutes from "./lab-inbox";
 
 const passwordResetTokens = new Map<string, { userId: string; expiresAt: number }>();
@@ -1363,6 +1364,7 @@ export async function registerRoutes(): Promise<IRouter> {
   registerAiChatRoutes(router);
   registerAiAgentRoutes(router);
   registerAiTtsRoutes(router);
+  registerAiSttRoutes(router);
 
   router.post("/audit-log", requireAuth, (_req, res) => {
     res.json({ ok: true });

@@ -426,6 +426,17 @@ export const PostAiChatResponse = zod.object({
 });
 
 /**
+ * @summary Transcribe audio to text via OpenAI Whisper (STT)
+ */
+export const TranscribeAudioBody = zod.object({
+  audio: zod.instanceof(File),
+});
+
+export const TranscribeAudioResponse = zod.object({
+  transcript: zod.string(),
+});
+
+/**
  * @summary List vendors / employees / items for a lab
  */
 export const ListVendorsQueryParams = zod.object({
