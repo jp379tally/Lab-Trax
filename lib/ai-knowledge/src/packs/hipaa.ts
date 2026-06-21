@@ -75,4 +75,47 @@ export const HIPAA_SECTIONS: KnowledgeSection[] = [
     ],
     body: "Practical steps: sign BAAs with every practice, train staff on PHI handling, use unique accounts with least-privilege roles, encrypt devices and backups, keep an audit trail, and have an incident-response plan so a suspected breach is reported promptly. Limit PHI in chat/AI tools to what's necessary, and never paste PHI into systems not covered by your safeguards. This is general guidance, not legal advice — consult your compliance officer or counsel for specifics.",
   },
+  {
+    id: "hipaa.lab-slip-rx-phi",
+    group: "hipaa",
+    title: "PHI on lab slips and Rx",
+    keywords: [
+      "lab slip", "rx", "prescription", "work order", "pan number", "barcode",
+      "patient name", "case rx", "rx form", "lab order", "dental rx",
+    ],
+    body: "A dental lab Rx (work order / lab slip) is a HIPAA-covered document whenever it can be tied to an identifiable patient. PHI elements commonly found on an Rx include: patient name or initials, date of birth, tooth number(s) and treatment dates, doctor/practice name and address, and case notes that reference a specific patient's clinical situation. Even a PAN barcode that maps to a patient record is a PHI identifier. Handle physical Rx forms like paper PHI: store them securely, shred before disposal, and do not photograph or scan them to non-secured systems. Within LabTrax, the Rx content and attached files are stored as case-level PHI — access is scoped to authorized members of the owning lab.",
+  },
+  {
+    id: "hipaa.case-media-minimum-necessary",
+    group: "hipaa",
+    title: "Minimum-necessary for case media",
+    keywords: [
+      "case media", "photo", "photos", "attachment", "attachments", "scan",
+      "impression", "intraoral", "x-ray", "xray", "radiograph", "image",
+      "minimum necessary", "media access",
+    ],
+    body: "Intraoral photographs, radiographs, digital scans, and any other case media attached to a case are ePHI. Apply the minimum-necessary principle: share case media only with staff who have a direct need for that specific case, and only to the referring practice for treatment-related purposes. Do not bulk-download or export media beyond what a workflow requires. When using external services (e.g., for AI shade analysis or shade matching), confirm those services operate under your BAA before transmitting patient-identifiable images. Within LabTrax, case media access is enforced by the lab's membership and role controls — photos are not publicly accessible by URL alone.",
+  },
+  {
+    id: "hipaa.deidentification-demos",
+    group: "hipaa",
+    title: "De-identification for demos and training",
+    keywords: [
+      "demo", "demonstration", "training", "test case", "sample case",
+      "de-identify", "deidentify", "de-identification", "anonymize",
+      "anonymise", "anonymous", "fake patient", "mock data",
+    ],
+    body: "Never use real patient data for software demos, staff training, screenshots, or marketing materials. Properly de-identified data has all 18 HIPAA Safe Harbor identifiers removed (name, dates, geographic data below state level, phone, email, SSN, MRN, photos, etc.) OR has been certified de-identified by a qualified statistician. In practice, the safest approach is to create synthetic/fictional cases for demos. If you must use real cases for training, redact or replace patient-identifying fields before sharing. LabTrax's demo-seed feature creates fictional cases with no real PHI — use it instead of copying production data.",
+  },
+  {
+    id: "hipaa.baa-lab-practice",
+    group: "hipaa",
+    title: "BAA obligations between a lab and a dental practice",
+    keywords: [
+      "baa", "business associate", "business associate agreement",
+      "covered entity", "subcontractor", "vendor", "contract", "agreement",
+      "obligation", "liability", "practice agreement", "lab agreement",
+    ],
+    body: "A dental practice is a HIPAA covered entity; a dental lab that receives patient PHI to fabricate restorations is a business associate and must sign a Business Associate Agreement (BAA) with every practice it serves. Key BAA obligations for the lab: (1) Use and disclose PHI only as permitted by the BAA and HIPAA rules. (2) Implement HIPAA-required administrative, physical, and technical safeguards for the PHI received. (3) Report any breach or security incident to the covered entity without unreasonable delay. (4) Ensure any subcontractors who touch PHI (e.g., a milling center, a third-party courier) also sign BAAs. (5) Return or securely destroy PHI at termination of the agreement. When a doctor is linked to multiple labs inside LabTrax, each lab independently holds its own data — PHI from Lab A is never shared with Lab B without a separate authorization. Cross-lab access is limited strictly to the provider's own records across their linked practices.",
+  },
 ];
