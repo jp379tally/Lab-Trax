@@ -11,6 +11,12 @@
  *  3. The Cancel button left a stale `resending: true` flag that disabled the
  *     Resend button when the panel was re-opened on the same render.
  *
+ * A second suite below covers the auto-save OTP path: when a user saves their
+ * profile with a changed phone number, the mutation onSuccess handler
+ * auto-triggers the SMS send without a separate "Verify" click.  The OTP
+ * panel behaviour (resend stays visible, errors stay inside the panel) mirrors
+ * the manual-verify suite above.
+ *
  * Strategy:
  *  - apiFetch is mocked at the module level so no network calls are made.
  *  - vi.useFakeTimers({ shouldAdvanceTime: true }) lets waitFor poll normally
@@ -212,5 +218,120 @@ describe("ProfilePanel — phone verification OTP flow", () => {
         screen.getByRole("button", { name: /^resend code$/i }),
       ).not.toBeDisabled(),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Auto-save OTP path
+// ---------------------------------------------------------------------------
+// When the user saves their profile with a changed phone number the mutation
+// onSuccess handler calls /send-phone-code automatically — without the user
+// having clicked "Verify".  This suite guards that the OTP panel:
+//   a) appears after Save (no "Verify" click required), and
+//   b) behaves identically to the manual-verify path for resend + error cases.
+// ---------------------------------------------------------------------------
+
+/**
+ * Change the phone input to a new value and click "Save profile", with the
+ * PUT profile and POST /send-phone-code calls both mocked to succeed.
+ * Waits until the OTP panel is visible before returning.
+ */
+async function openOtpPanelViaSave() {
+  // PUT /auth/users/:id/profile succeeds (mutation resolves).
+  apiFetchMock.mockResolvedValueOnce({});
+  // POST /send-phone-code succeeds (auto-triggered by onSuccess).
+  apiFetchMock.mockResolvedValueOnce({ success: true });
+
+  // Change the phone to a value that differs from the user's stored phone
+  // ("555-123-4567") so that onSuccess detects phoneChanged === true.
+  const phoneInput = screen.getByPlaceholderText("000-000-0000");
+  fireEvent.change(phoneInput, { target: { value: "555-987-6543" } });
+
+  fireEvent.click(screen.getByRole("button", { name: /^Save profile$/i }));
+
+  await waitFor(() =>
+    expect(screen.getByText(/enter verification code/i)).toBeInTheDocument(),
+  );
+}
+
+describe("ProfilePanel — auto-save OTP path (phone changed on Save)", () => {
+  it("shows the OTP panel automatically after saving with a new phone (no Verify click)", async () => {
+    renderProfile();
+
+    await openOtpPanelViaSave();
+
+    expect(screen.getByText(/enter verification code/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("000000")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /^Cancel$/i }),
+    ).toBeInTheDocument();
+    // The Verify button is rendered but disabled while the OTP panel is open.
+    expect(
+      screen.getByRole("button", { name: /^Verify$/i }),
+    ).toBeDisabled();
+  });
+
+  it("resend keeps the OTP panel visible on success (auto-save path)", async () => {
+    renderProfile();
+    await openOtpPanelViaSave();
+
+    // Fast-forward the 60-second resend countdown so the button is enabled.
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /^resend code$/i }),
+      ).not.toBeDisabled(),
+    );
+
+    apiFetchMock.mockResolvedValueOnce({ success: true });
+    fireEvent.click(screen.getByRole("button", { name: /^resend code$/i }));
+
+    // OTP panel must remain visible after a successful resend.
+    await waitFor(() =>
+      expect(
+        screen.getByText(/enter verification code/i),
+      ).toBeInTheDocument(),
+    );
+
+    // Verify button disabled confirms we have NOT dropped back to idle.
+    expect(
+      screen.getByRole("button", { name: /^Verify$/i }),
+    ).toBeDisabled();
+  });
+
+  it("resend failure shows an error inside the OTP panel, not idle state (auto-save path)", async () => {
+    renderProfile();
+    await openOtpPanelViaSave();
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /^resend code$/i }),
+      ).not.toBeDisabled(),
+    );
+
+    apiFetchMock.mockRejectedValueOnce(new Error("SMS service unavailable"));
+    fireEvent.click(screen.getByRole("button", { name: /^resend code$/i }));
+
+    // OTP panel must remain visible — user must not be dropped to idle.
+    await waitFor(() =>
+      expect(
+        screen.getByText(/enter verification code/i),
+      ).toBeInTheDocument(),
+    );
+
+    // Error text must appear within the panel.
+    expect(screen.getByText(/SMS service unavailable/i)).toBeInTheDocument();
+
+    // Verify button disabled confirms we have NOT dropped back to idle.
+    expect(
+      screen.getByRole("button", { name: /^Verify$/i }),
+    ).toBeDisabled();
   });
 });
