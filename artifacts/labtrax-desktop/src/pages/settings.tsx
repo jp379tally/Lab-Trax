@@ -283,6 +283,7 @@ function ProfilePanel() {
   const [phoneBeingVerified, setPhoneBeingVerified] = useState("");
   const [otpCode, setOtpCode] = useState("");
   const [otpError, setOtpError] = useState<string | null>(null);
+  const [smsUnavailable, setSmsUnavailable] = useState(false);
   const [resendCountdown, setResendCountdown] = useState(0);
   const resendTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -364,7 +365,13 @@ function ProfilePanel() {
       }
     } catch (err: unknown) {
       const msg = (err as Error).message || "Failed to send verification code.";
-      setOtpError(msg);
+      const is503 = err instanceof ApiError && err.status === 503 && msg.toLowerCase().includes("sms delivery");
+      if (is503) {
+        setSmsUnavailable(true);
+        setOtpError(null);
+      } else {
+        setOtpError(msg);
+      }
       if (isResend) {
         setResending(false);
       } else {
@@ -402,6 +409,7 @@ function ProfilePanel() {
     setPhoneBeingVerified("");
     setOtpCode("");
     setOtpError(null);
+    setSmsUnavailable(false);
     if (resendTimerRef.current) {
       clearInterval(resendTimerRef.current);
       resendTimerRef.current = null;
@@ -444,7 +452,13 @@ function ProfilePanel() {
           setOtpCode("");
           startResendTimer();
         } catch (err: unknown) {
-          setOtpError((err as Error).message || "Failed to send verification code.");
+          const msg = (err as Error).message || "Failed to send verification code.";
+          const is503 = err instanceof ApiError && err.status === 503 && msg.toLowerCase().includes("sms delivery");
+          if (is503) {
+            setSmsUnavailable(true);
+          } else {
+            setOtpError(msg);
+          }
           setPhoneVerifyStep("idle");
         }
       }
@@ -841,6 +855,7 @@ function ProfilePanel() {
               onChange={(e) => {
                 const newVal = formatPhone(e.target.value);
                 setPhone(newVal);
+                setSmsUnavailable(false);
                 if (phoneVerifyStep !== "idle") cancelPhoneVerify();
               }}
               placeholder="000-000-0000"
@@ -869,14 +884,22 @@ function ProfilePanel() {
                     </button>
                   )}
                 </div>
-                {phoneVerifyStep === "idle" && otpError && (
+                {phoneVerifyStep === "idle" && smsUnavailable && (
+                  <div className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-700 px-3 py-2 flex items-start gap-2 mt-1">
+                    <AlertTriangle size={13} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+                    <p className="text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
+                      Phone verification is not available on this server — SMS delivery has not been configured. Contact your platform administrator to enable it.
+                    </p>
+                  </div>
+                )}
+                {phoneVerifyStep === "idle" && !smsUnavailable && otpError && (
                   <p className="text-xs text-destructive">{otpError}</p>
                 )}
               </div>
             )}
           </div>
         </Field>
-        {(user?.role === "admin" || user?.role === "owner") && phone.trim() && !isPhoneVerified && (
+        {(user?.role === "admin" || user?.role === "owner") && phone.trim() && !isPhoneVerified && !smsUnavailable && (
           <div className="col-span-2">
             <div className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-700 px-3 py-2.5 flex items-start gap-2.5">
               <AlertTriangle size={15} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
