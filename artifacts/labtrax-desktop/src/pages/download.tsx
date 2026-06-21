@@ -116,7 +116,6 @@ export default function DownloadPage() {
   const isExe = downloadUrl.toLowerCase().endsWith(".exe");
   const isZip = downloadUrl.toLowerCase().endsWith(".zip");
   const isDmg = downloadUrl.toLowerCase().endsWith(".dmg");
-  const unavailable = info?.available === false;
   const queryFailed = !info && query.isError;
   const queryError = query.error as Error | undefined;
   const is503 =
@@ -124,7 +123,7 @@ export default function DownloadPage() {
     queryError &&
     "status" in queryError &&
     (queryError as { status?: number }).status === 503;
-  const showDownloadButton = !!info && !unavailable;
+  const showDownloadButton = !!info?.downloadUrl;
 
   const latestVersion = versionQuery.data?.version ?? null;
   const updateAvailable =
@@ -236,7 +235,7 @@ export default function DownloadPage() {
                     : "Desktop download."}
             </p>
 
-            {unavailable || queryFailed ? (
+            {queryFailed ? (
               <div className="mt-4 space-y-3">
                 <div className="rounded-md border border-amber-300 bg-amber-50 dark:border-amber-800/40 dark:bg-amber-950/30 px-4 py-3 flex items-start gap-2.5 text-sm">
                   <AlertTriangle size={16} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
