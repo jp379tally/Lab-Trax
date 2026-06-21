@@ -123,7 +123,11 @@ export default function DownloadPage() {
     queryError &&
     "status" in queryError &&
     (queryError as { status?: number }).status === 503;
-  const showDownloadButton = !!info?.downloadUrl;
+  // fileNotFound: the API responded successfully but reported the installer
+  // file is missing from storage (fileFound === false). Only possible for
+  // /downloads/ paths — external https:// URLs are always reported as found.
+  const fileNotFound = info !== undefined && info.fileFound === false;
+  const showDownloadButton = !!info?.downloadUrl && !fileNotFound;
 
   const latestVersion = versionQuery.data?.version ?? null;
   const updateAvailable =
@@ -235,7 +239,46 @@ export default function DownloadPage() {
                     : "Desktop download."}
             </p>
 
-            {queryFailed ? (
+            {fileNotFound ? (
+              <div className="mt-4 space-y-3">
+                <div className="rounded-md border border-amber-300 bg-amber-50 dark:border-amber-800/40 dark:bg-amber-950/30 px-4 py-3 flex items-start gap-2.5 text-sm">
+                  <AlertTriangle size={16} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+                  <div className="flex-1 text-amber-800 dark:text-amber-200">
+                    <div className="font-semibold">Installer temporarily unavailable</div>
+                    <p className="text-xs mt-1 text-amber-700 dark:text-amber-300/90 leading-relaxed">
+                      The installer file could not be found on the server right now. Your lab admin has been notified — check back soon, or use the web app in the meantime.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => query.refetch()}
+                      disabled={query.isFetching}
+                      className="mt-2.5 inline-flex items-center gap-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 underline underline-offset-2 hover:no-underline disabled:opacity-50"
+                    >
+                      {query.isFetching ? (
+                        <>
+                          <Loader2 size={11} className="animate-spin" />
+                          Checking…
+                        </>
+                      ) : (
+                        <>
+                          <RefreshCw size={11} />
+                          Check again
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+                <div className="rounded-md border border-border bg-secondary/40 px-4 py-3 flex items-start gap-2.5">
+                  <Globe size={15} className="text-muted-foreground mt-0.5 shrink-0" />
+                  <div>
+                    <div className="text-sm font-medium">Use the web app instead</div>
+                    <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                      LabTrax works in any modern browser — Chrome, Edge, Firefox, or Safari. Open it from the link your lab admin shared and bookmark it for quick access. No download required.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ) : queryFailed ? (
               <div className="mt-4 space-y-3">
                 <div className="rounded-md border border-amber-300 bg-amber-50 dark:border-amber-800/40 dark:bg-amber-950/30 px-4 py-3 flex items-start gap-2.5 text-sm">
                   <AlertTriangle size={16} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
