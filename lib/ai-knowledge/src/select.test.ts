@@ -318,6 +318,38 @@ describe("selectKnowledge", () => {
     expect(ids).toContain("hipaa.retention-dental-lab");
   });
 
+  it("surfaces disposal-methods for a shredding query", () => {
+    const sections = selectKnowledgeSections(
+      "How should we shred and destroy paper Rx forms and lab slips when the retention period ends?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.disposal-methods");
+  });
+
+  it("surfaces disposal-methods for a certificate of destruction query", () => {
+    const sections = selectKnowledgeSections(
+      "Do we need a certificate of destruction when a vendor shreds our dental records?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.disposal-methods");
+  });
+
+  it("surfaces disposal-methods for a degauss / ePHI purge query", () => {
+    const sections = selectKnowledgeSections(
+      "How do we securely wipe or degauss hard drives that contain ePHI before disposing of them?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.disposal-methods");
+  });
+
+  it("surfaces disposal-methods for a state-specific disposal method query", () => {
+    const sections = selectKnowledgeSections(
+      "What are the approved disposal methods for paper dental records in California and Texas?",
+    );
+    const ids = sections.map((s) => s.id);
+    expect(ids).toContain("hipaa.disposal-methods");
+  });
+
   it("every curated section has a unique id and non-empty content", () => {
     const ids = ALL_SECTIONS.map((s) => s.id);
     expect(new Set(ids).size).toBe(ids.length);

@@ -146,6 +146,63 @@ AL: 10 yr (no explicit statute; general guidance) | AK: 10 yr | AZ: 7 yr (minors
 **Practical guidance:** Retaining the case record, attachments, and scanned Rx within LabTrax satisfies auditability requirements: cases are timestamped, access is logged, and soft-delete with audit trail preserves recoverability. Coordinate with the referring practice before disposing of shared PHI, and use a secure (irreversible) deletion process. This is general reference only — consult your compliance officer or legal counsel for the specific requirements in every state where you operate.`,
   },
   {
+    id: "hipaa.disposal-methods",
+    group: "hipaa",
+    title: "Secure disposal of Rx forms, paper records, and ePHI",
+    keywords: [
+      "shred", "shredding", "shredder", "cross-cut", "strip-cut", "micro-cut",
+      "destroy", "destruction", "disposal", "dispose", "paper records",
+      "certificate of destruction", "certificate", "degauss", "degaussing",
+      "purge", "wipe", "overwrite", "secure erase", "sanitize", "sanitisation",
+      "media sanitization", "nist 800-88", "hard drive", "flash drive",
+      "usb", "device disposal", "end of life", "decommission",
+      "rx disposal", "rx destruction", "paper rx", "paper disposal",
+      "lab slip disposal", "work order disposal", "record disposal",
+      "approved disposal", "compliant disposal", "hipaa disposal",
+      "california", "ca", "texas", "tx", "new york", "ny", "florida", "fl",
+      "illinois", "il", "ohio", "oh", "georgia", "ga", "pennsylvania", "pa",
+      "washington", "wa", "colorado", "co", "arizona", "az",
+      "new jersey", "nj", "north carolina", "nc", "michigan", "mi",
+      "virginia", "va", "massachusetts", "ma", "minnesota", "mn", "missouri", "mo",
+    ],
+    body: `HIPAA requires that PHI be disposed of in a manner that renders it unreadable and unrecoverable. The Privacy Rule does not prescribe a single method but sets the outcome standard; several states add explicit method or documentation requirements for dental-practice and lab records.
+
+**Paper records and physical Rx forms**
+
+*HIPAA standard:* Shred, burn, pulp, or pulverize paper so PHI cannot be reconstructed. The HHS guidance examples include locked shred bins serviced by a certified destruction vendor. Strip-cut shredders (long ribbons) are generally considered insufficient; **cross-cut or micro-cut shredders** are the accepted minimum because strips can be re-assembled.
+
+*State-specific requirements and notes:*
+- **California (CA):** Medical records containing PHI must be destroyed by shredding or other means that render them unreadable and undecipherable. California also requires labs/providers to take reasonable steps to protect customer/patient records during disposal. (CA Civ. Code § 1798.81; CA Health & Safety Code § 123111)
+- **Texas (TX):** Dental records must be destroyed in a manner that prevents reconstruction — cross-cut shredding or incineration; Texas law specifically requires a covered entity to dispose of confidential records using methods that make them unreadable. (TX Occ. Code § 258.004; TX Bus. & Com. Code § 521.052)
+- **New York (NY):** Requires appropriate safeguards including destruction of patient records in a manner that makes reconstruction impossible; the state recommends cross-cut shredding or incineration for paper PHI. (NY Public Health Law § 18; NY SHIELD Act)
+- **Florida (FL):** Requires destruction of PHI so it cannot be practicably read or reconstructed; specific methods listed include shredding, pulverizing, burning, or using a destruction service. (FL § 501.171; FL § 408.810)
+- **Illinois (IL):** Records must be disposed of in a manner that ensures their confidentiality; recommended methods include shredding or incineration. (740 ILCS 14/15)
+- **Massachusetts (MA):** Requires destruction by shredding documents containing personal information so they cannot be read or reconstructed; strip-cut shredding is explicitly discouraged in MA data-security guidance. (201 CMR 17.00)
+- **Other states (GA, OH, PA, WA, CO, AZ, NJ, NC, MI, VA, MN, MO):** All require that records be rendered unreadable or unrecoverable. Cross-cut or micro-cut shredding, incineration, or use of a certified destruction vendor satisfies these requirements in all listed states.
+
+**Certificate of destruction**
+
+Most compliance frameworks (and several state regulations) recommend — and some require — obtaining a **certificate of destruction** from the shredding or destruction vendor. The certificate should include: name and address of the destroying firm, date of destruction, description and quantity of records destroyed, and the method used. Retain these certificates as part of your compliance records for the same duration as your BAA and HIPAA policy documentation (at least 6 years under federal HIPAA).
+
+**Electronic PHI (ePHI) — digital media sanitization**
+
+NIST SP 800-88 (Guidelines for Media Sanitization) is the recognized federal framework for ePHI disposal:
+- **Clear:** Overwrite storage with non-sensitive data (acceptable for reuse within the organization).
+- **Purge:** Cryptographic erase, degaussing, or block-erase commands for internal reuse or sale to trusted parties.
+- **Destroy (recommended for disposal/decommission):** Physical destruction — shredding, disintegration, pulverizing, or incineration — renders media unrecoverable. Hard drives, SSDs, USB drives, and backup tapes all require method-appropriate destruction.
+
+*Degaussing* (strong magnetic field) is effective for magnetic hard drives but **does not work on SSDs or flash-based media** — those must be physically destroyed or cryptographically erased. Degaussing a magnetic drive also renders it unusable.
+
+**For dental labs — practical steps:**
+1. Use a cross-cut or micro-cut shredder (or a certified shredding service) for all paper Rx forms, work orders, and case printouts when the retention period ends.
+2. Obtain and file a certificate of destruction for any batch or vendor-assisted destruction.
+3. For end-of-life devices (computers, tablets, external drives) containing ePHI: use NIST-compliant cryptographic erase or physical destruction. Do not donate, sell, or discard devices without verified sanitization.
+4. Coordinate destruction with the referring dental practice — shared PHI (like patient names on Rx forms) should be disposed of consistently across both parties.
+5. LabTrax soft-delete preserves records for audit recovery. When you are ready for final disposal after the retention window, use the export-and-delete workflow and confirm ePHI removal from backups in accordance with your BAA and disaster-recovery policy.
+
+This is general compliance reference, not legal advice. State requirements can change — verify current rules with your compliance officer or legal counsel before disposing of records.`,
+  },
+  {
     id: "hipaa.baa-lab-practice",
     group: "hipaa",
     title: "BAA obligations between a lab and a dental practice",
