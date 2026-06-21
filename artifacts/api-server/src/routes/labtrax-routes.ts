@@ -163,6 +163,7 @@ import usersRoutes from "./users";
 import messengerRoutes from "./messenger";
 import { registerAiChatRoutes } from "./ai-chat";
 import { registerAiAgentRoutes } from "./ai-agent";
+import { registerAiTtsRoutes } from "./ai-tts";
 
 const passwordResetTokens = new Map<string, { userId: string; expiresAt: number }>();
 const DEMO_SEED_USERS_ENABLED = process.env.LABTRAX_ENABLE_DEMO_SEEDS === "true";
@@ -1359,6 +1360,7 @@ export async function registerRoutes(): Promise<IRouter> {
   router.use("/messenger", messengerRoutes);
   registerAiChatRoutes(router);
   registerAiAgentRoutes(router);
+  registerAiTtsRoutes(router);
 
   router.post("/audit-log", requireAuth, (_req, res) => {
     res.json({ ok: true });

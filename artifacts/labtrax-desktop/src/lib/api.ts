@@ -28,7 +28,7 @@ const _CONFIGURED_ORIGIN = (import.meta.env.VITE_API_BASE_URL as string | undefi
 const _API_ORIGIN =
   _CONFIGURED_ORIGIN || (_isElectronRenderer() ? _PROD_API_FALLBACK : "");
 
-function apiUrl(path: string): string {
+export function apiUrl(path: string): string {
   if (path.startsWith("http")) return path;
   const normalized = path.startsWith("/") ? path : `/${path}`;
   return `${_API_ORIGIN}/api${normalized}`;

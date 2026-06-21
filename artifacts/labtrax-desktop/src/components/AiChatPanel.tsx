@@ -1,18 +1,21 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, getAccessToken, apiUrl } from "@/lib/api";
 import {
   AlertTriangle,
   Check,
   Clock,
   Copy,
   Loader2,
+  Mic,
   PenSquare,
   Plus,
   Printer,
   RotateCcw,
   Send,
   Sparkles,
+  Square,
   Trash2,
+  Volume2,
   X,
   Zap,
 } from "lucide-react";
@@ -417,6 +420,15 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const caseSearchRef = useRef<HTMLInputElement>(null);
+
+  // Voice state
+  const [isListening, setIsListening] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [voiceMode, setVoiceMode] = useState(false);
+  const recognitionRef = useRef<any>(null);
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const voiceModeRef = useRef(false);
+  const prevIsSpeakingRef = useRef(false);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionsDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -549,6 +561,19 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
   }, [showCasePicker]);
 
   useEffect(() => {
+    voiceModeRef.current = voiceMode;
+  }, [voiceMode]);
+
+  // Auto-listen after Maynard finishes speaking (voice mode only)
+  useEffect(() => {
+    if (prevIsSpeakingRef.current && !isSpeaking && voiceModeRef.current && !sending) {
+      startListening();
+    }
+    prevIsSpeakingRef.current = isSpeaking;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSpeaking, sending]);
+
+  useEffect(() => {
     if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
     if (!caseSearchQuery.trim() || caseSearchQuery.trim().length < 2) {
       setCaseSearchResults([]);
@@ -666,6 +691,121 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
       });
   }
 
+  // ── Voice helpers ──────────────────────────────────────────────────────────
+
+  function stripMarkdownForSpeech(text: string): string {
+    return text
+      .replace(/\*\*(.*?)\*\*/g, "$1")
+      .replace(/\*(.*?)\*/g, "$1")
+      .replace(/`{1,3}([\s\S]*?)`{1,3}/g, "$1")
+      .replace(/\[(.*?)\]\(.*?\)/g, "$1")
+      .replace(/^#+\s+/gm, "")
+      .replace(/^[\-\*•]\s+/gm, "")
+      .replace(/^\d+\.\s+/gm, "")
+      .replace(/\n{2,}/g, ". ")
+      .replace(/\n/g, " ")
+      .trim()
+      .slice(0, 2000);
+  }
+
+  async function speakText(text: string) {
+    const stripped = stripMarkdownForSpeech(text);
+    if (!stripped) return;
+    stopSpeaking();
+    setIsSpeaking(true);
+    try {
+      const token = getAccessToken();
+      const resp = await fetch(apiUrl("/ai-tts"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ text: stripped }),
+      });
+      if (!resp.ok) { setIsSpeaking(false); return; }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      currentAudioRef.current = audio;
+      audio.onended = () => {
+        setIsSpeaking(false);
+        URL.revokeObjectURL(url);
+        currentAudioRef.current = null;
+      };
+      audio.onerror = () => {
+        setIsSpeaking(false);
+        currentAudioRef.current = null;
+      };
+      await audio.play();
+    } catch {
+      setIsSpeaking(false);
+    }
+  }
+
+  function stopSpeaking() {
+    const audio = currentAudioRef.current;
+    if (audio) {
+      audio.pause();
+      currentAudioRef.current = null;
+    }
+    setIsSpeaking(false);
+  }
+
+  function startListening() {
+    const SpeechRecog =
+      (window as any).SpeechRecognition ||
+      (window as any).webkitSpeechRecognition;
+    if (!SpeechRecog) return;
+    stopSpeaking();
+    if (recognitionRef.current) {
+      try { recognitionRef.current.abort(); } catch { /* ignore */ }
+      recognitionRef.current = null;
+    }
+    const recognition = new SpeechRecog();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+    recognitionRef.current = recognition;
+    let finalTranscript = "";
+    recognition.onresult = (event: any) => {
+      let interim = "";
+      finalTranscript = "";
+      for (let i = 0; i < event.results.length; i++) {
+        if (event.results[i].isFinal) {
+          finalTranscript += event.results[i][0].transcript;
+        } else {
+          interim += event.results[i][0].transcript;
+        }
+      }
+      setInput(finalTranscript || interim);
+    };
+    recognition.onend = () => {
+      recognitionRef.current = null;
+      setIsListening(false);
+      if (finalTranscript.trim()) {
+        void sendMessage(finalTranscript.trim());
+      }
+    };
+    recognition.onerror = (event: any) => {
+      if (event.error !== "no-speech") {
+        console.error("[Voice] speech recognition error:", event.error);
+      }
+      recognitionRef.current = null;
+      setIsListening(false);
+    };
+    recognition.start();
+    setIsListening(true);
+  }
+
+  function stopListening() {
+    if (recognitionRef.current) {
+      try { recognitionRef.current.abort(); } catch { /* ignore */ }
+      recognitionRef.current = null;
+    }
+    setIsListening(false);
+  }
+
   /** Call the AI endpoint with a given message list and append the response.
    *  Used both by sendMessage and by auto-continuation after a confirmed action. */
   async function dispatchAiContinuation(
@@ -717,6 +857,9 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
       const finalMessages = [...currentMessages, assistantMsg];
       setMessages(finalMessages);
       persistSession(finalMessages, sessionId, snapshotPinnedCases);
+      if (voiceModeRef.current && typeof assistantMsg.content === "string" && assistantMsg.content) {
+        void speakText(assistantMsg.content);
+      }
     } catch (err: any) {
       const msg =
         err?.status === 429
@@ -963,6 +1106,23 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
               }`}
             >
               <PenSquare size={15} />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                const next = !voiceMode;
+                setVoiceMode(next);
+                if (!next) { stopListening(); stopSpeaking(); }
+              }}
+              title={voiceMode ? "Exit voice mode" : "Voice mode — Maynard speaks and listens hands-free"}
+              className={`h-8 w-8 rounded-md flex items-center justify-center transition-colors ${
+                voiceMode
+                  ? "text-primary bg-primary/10"
+                  : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+              }`}
+            >
+              <Volume2 size={15} />
             </button>
 
             <button
@@ -1281,6 +1441,32 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
           />
           <button
             type="button"
+            onClick={() => {
+              if (isListening) stopListening();
+              else if (isSpeaking) { stopSpeaking(); startListening(); }
+              else startListening();
+            }}
+            disabled={sending}
+            title={
+              isListening
+                ? "Stop listening"
+                : isSpeaking
+                ? "Interrupt Maynard and speak"
+                : "Speak to Maynard"
+            }
+            className={`h-9 w-9 rounded-lg flex items-center justify-center shrink-0 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+              isListening
+                ? "bg-destructive text-destructive-foreground animate-pulse"
+                : isSpeaking
+                ? "bg-primary/20 text-primary"
+                : "bg-secondary border border-input text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {isListening ? <Square size={13} fill="currentColor" /> : <Mic size={15} />}
+          </button>
+
+          <button
+            type="button"
             onClick={() => sendMessage(input)}
             disabled={!input.trim() || sending}
             className="h-9 w-9 rounded-lg bg-primary text-primary-foreground flex items-center justify-center hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
@@ -1290,7 +1476,9 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId }: P
           </button>
         </div>
         <p className="text-[10px] text-muted-foreground/50 mt-1.5 text-center">
-          Shift+Enter for new line · Enter to send
+          {voiceMode
+            ? "Voice mode on — Maynard will speak and listen automatically"
+            : "Shift+Enter for new line · Enter to send · Mic to speak"}
         </p>
       </div>
     </div>
