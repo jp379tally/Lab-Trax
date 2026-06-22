@@ -1,0 +1,158 @@
+### Replit Build Brief
+
+**Objective**
+Add the same **Unassigned Documents** window to the **top-left of the mobile layout** that already exists on desktop, and connect mobile picture capture into that window.
+
+**User-visible problem**
+On mobile, the user cannot quickly take a picture and have it appear in the Unassigned Documents area the way desktop users can manage unassigned documents.
+
+**Likely root cause**
+The desktop layout has an Unassigned Documents component/queue, but the mobile layout either hides it, moves it out of reach, or uses a different upload flow that does not route newly captured images into the same unassigned-document state.
+
+**Exact areas to inspect/change**
+
+Search the app for:
+
+* `Unassigned Documents`
+* `unassigned`
+* `documents`
+* `upload`
+* `dropzone`
+* `Add file`
+* `Add picture`
+* `camera`
+* mobile layout components or responsive breakpoints
+
+Likely surfaces:
+
+* The desktop dashboard/layout component that renders the Unassigned Documents window
+* The mobile dashboard/layout component
+* The file upload or image upload component
+* The document queue/state/store/API used for unassigned documents
+* Any modal/dialog system used for renaming files
+
+**Implementation plan**
+
+1. Reuse the existing desktop Unassigned Documents component on mobile instead of creating a separate duplicate flow.
+2. Place it at the top-left of the mobile screen, above or beside the main mobile work area depending on the current responsive layout.
+3. Add a mobile upload/take-picture target inside or near that window.
+4. Use a hidden file input for camera capture:
+
+```tsx
+<input
+  type="file"
+  accept="image/*"
+  capture="environment"
+/>
+```
+
+5. When the user taps the “add a file or picture” area on mobile, trigger that input.
+6. After the camera returns an image, show a rename prompt/modal before finalizing the upload.
+7. If the user renames it, use the new filename while preserving the image extension.
+8. If the user skips renaming, keep the default generated filename.
+9. Add the captured image into the same Unassigned Documents list/queue used by desktop.
+10. Make sure existing desktop behavior is unchanged.
+
+**Guardrails**
+
+* Do not build a separate mobile-only document system.
+* Reuse the existing unassigned-document state and upload API.
+* Preserve file extensions when renaming.
+* Sanitize filenames to avoid slashes, special path characters, or blank names.
+* Handle cancel cases cleanly:
+
+  * user cancels camera
+  * user cancels rename
+  * upload fails
+* On mobile browsers, `capture="environment"` usually opens the rear camera, but some browsers may show a camera/photo picker. That is normal browser behavior.
+
+**Acceptance criteria**
+
+* On mobile, an Unassigned Documents window is visible at the top-left.
+* Tapping the add file/picture area opens the mobile camera or camera/photo picker.
+* After taking a picture, the app asks whether the user wants to rename the file.
+* If renamed, the new name appears in Unassigned Documents.
+* If not renamed, the image still appears in Unassigned Documents with a sensible default name.
+* Desktop Unassigned Documents behavior still works.
+* Existing drag/drop or file upload behavior is not broken.
+
+**Regression risks to check**
+
+* Desktop upload/dropzone behavior
+* Mobile layout overflow or overlapping controls
+* iPhone Safari camera capture
+* Android Chrome camera capture
+* Filename handling with spaces and special characters
+* Upload progress/error states
+* Assigning a newly captured unassigned document to a case/order afterward
+
+---
+
+### Copy-Ready Replit Prompt
+
+Please update the LabTrax mobile document upload experience.
+
+On the desktop version, there is an **Unassigned Documents** window. I need that same Unassigned Documents window visible in the **top-left corner of the mobile version** too.
+
+Desired behavior:
+
+1. On mobile, show the Unassigned Documents window at the top-left of the screen, matching the desktop feature as closely as possible.
+2. When I tap the “add a file” or “add picture” area on mobile, open the phone camera so I can take a picture.
+3. After I take the picture, ask me if I want to rename the file.
+4. If I rename it, use that new filename.
+5. If I do not rename it, keep a default filename.
+6. The captured picture should appear in the Unassigned Documents window.
+7. The mobile flow should use the same unassigned-document state, queue, API, and assignment behavior as desktop.
+
+Please inspect the existing desktop implementation first. Search for the Unassigned Documents component, upload/dropzone logic, mobile layout, and file/document state management. Reuse existing code where possible instead of creating a separate mobile-only document system.
+
+For camera capture, use the correct mobile file input behavior, likely:
+
+```tsx
+<input type="file" accept="image/*" capture="environment" />
+```
+
+Please also add a rename modal/prompt after capture. Preserve the image file extension when renaming, sanitize the filename, and handle cancel states cleanly.
+
+Before finishing, test/check:
+
+* desktop Unassigned Documents still works
+* mobile Unassigned Documents appears at the top-left
+* tapping the mobile add file/picture area opens camera/photo capture
+* captured photo appears in Unassigned Documents
+* rename and skip-rename flows both work
+* no layout overlap on mobile
+
+If you find that the app already has a rename modal, upload helper, or unassigned document queue, reuse it and explain what you reused. If there is a tradeoff or browser limitation with camera behavior, explain it clearly.
+
+---
+
+### Debug Analysis
+
+The most likely issue is not a backend problem. This sounds like a responsive UI gap: desktop has the Unassigned Documents window and upload flow, while mobile either hides that component or routes uploads through a different flow.
+
+The best fix is to reuse the desktop Unassigned Documents component and connect mobile camera capture into the same queue. That avoids having desktop and mobile documents behave differently.
+
+Alternate things Replit should check:
+
+* The mobile layout may intentionally hide the desktop side panel at small breakpoints.
+* The upload component may accept normal files but not use mobile camera capture attributes.
+* The rename flow may already exist elsewhere and just needs to be called after capture.
+* The unassigned document list may be tied to drag/drop events only, so mobile file input events need to feed into the same handler.
+
+Confidence: medium-high on the product behavior and fix direction, but exact file names need Replit to inspect the repo. I found the likely app context from the LabTrax App Store listing, which describes adding pictures/videos/notes for labs: [https://apps.apple.com/us/app/labtrax/id6760672646](https://apps.apple.com/us/app/labtrax/id6760672646)
+
+---
+
+### Step-by-Step Fix Plan
+
+1. Find the desktop Unassigned Documents component.
+2. Find where it is hidden or omitted on mobile.
+3. Add it into the mobile layout at the top-left.
+4. Find the existing upload handler that creates unassigned documents.
+5. Add a mobile camera file input using `accept="image/*"` and `capture="environment"`.
+6. Trigger that input when the user taps the mobile add file/picture area.
+7. After capture, open a rename dialog before upload/queue insertion.
+8. Apply the chosen filename safely.
+9. Add the image to the same unassigned documents list used by desktop.
+10. Test desktop, mobile, rename, cancel, and upload failure behavior.

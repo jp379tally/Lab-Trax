@@ -5,7 +5,7 @@ import { and, desc, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 import multer from "multer";
 import { randomBytes, randomUUID } from "node:crypto";
-import { copyFile, readFile } from "node:fs/promises";
+import { copyFile, readFile, writeFile } from "node:fs/promises";
 import { db } from "@workspace/db";
 import {
   caseAttachments,
@@ -22,6 +22,7 @@ import { HttpError, ok, wrapDbError } from "../lib/http";
 import { notDeleted } from "../lib/soft-delete";
 import {
   caseMediaObjectStorageAvailable,
+  openCaseMediaObjectStream,
   writeCaseMediaToObjectStorage,
 } from "../lib/case-media-object-storage";
 
@@ -230,23 +231,40 @@ router.get(
     await assertLabMembership(userId, inboxFile.labOrganizationId);
 
     const diskPath = path.resolve(caseMediaDir, inboxFile.storagePath);
+    const safeName = encodeURIComponent(inboxFile.originalFilename).replace(/'/g, "%27");
 
-    if (!fs.existsSync(diskPath)) {
+    if (fs.existsSync(diskPath)) {
+      res.setHeader("Content-Type", inboxFile.mimeType || "application/octet-stream");
+      res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${safeName}`);
+      res.setHeader("Cache-Control", "private, max-age=300");
+      const stream = fs.createReadStream(diskPath);
+      stream.on("error", () => {
+        if (!res.headersSent) {
+          res.status(404).json({ ok: false, error: "File not found." });
+        }
+      });
+      stream.pipe(res);
+      return;
+    }
+
+    // Disk file missing — try object storage (chunked-upload path).
+    const objStream = inboxFile.objectStorageKey
+      ? await openCaseMediaObjectStream(inboxFile.objectStorageKey, inboxFile.mimeType ?? undefined)
+      : null;
+
+    if (!objStream) {
       throw new HttpError(404, "File not found on storage.");
     }
 
-    const safeName = encodeURIComponent(inboxFile.originalFilename).replace(/'/g, "%27");
-    res.setHeader("Content-Type", inboxFile.mimeType || "application/octet-stream");
+    res.setHeader("Content-Type", objStream.contentType);
     res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${safeName}`);
     res.setHeader("Cache-Control", "private, max-age=300");
-
-    const stream = fs.createReadStream(diskPath);
-    stream.on("error", () => {
+    objStream.stream.on("error", () => {
       if (!res.headersSent) {
         res.status(404).json({ ok: false, error: "File not found." });
       }
     });
-    stream.pipe(res);
+    objStream.stream.pipe(res);
   }),
 );
 
@@ -307,10 +325,35 @@ router.post(
       const attachmentDiskFilename = `${Date.now()}-${randomUUID()}${ext}`;
       const srcPath = path.resolve(caseMediaDir, inboxFile.storagePath);
       const dstPath = path.resolve(caseMediaDir, attachmentDiskFilename);
-      await copyFile(srcPath, dstPath);
 
-      // Mirror the copy to object storage (best-effort).
-      if (inboxFile.objectStorageKey && caseMediaObjectStorageAvailable()) {
+      if (fs.existsSync(srcPath)) {
+        await copyFile(srcPath, dstPath);
+      } else {
+        // Disk file missing — file was uploaded via the chunked/mobile path and
+        // only lives in object storage.  Download it so the attachment gets its
+        // own local copy for the object-storage mirror step below.
+        if (!inboxFile.objectStorageKey || !caseMediaObjectStorageAvailable()) {
+          throw new HttpError(404, "Inbox file not found on disk or object storage.");
+        }
+        const objStream = await openCaseMediaObjectStream(
+          inboxFile.objectStorageKey,
+          inboxFile.mimeType ?? undefined,
+        );
+        if (!objStream) {
+          throw new HttpError(404, "Inbox file not found on disk or object storage.");
+        }
+        const chunks: Buffer[] = [];
+        await new Promise<void>((resolve, reject) => {
+          objStream.stream.on("data", (chunk: Buffer) => chunks.push(chunk));
+          objStream.stream.on("end", resolve);
+          objStream.stream.on("error", reject);
+        });
+        fs.mkdirSync(caseMediaDir, { recursive: true });
+        await writeFile(dstPath, Buffer.concat(chunks));
+      }
+
+      // Mirror the new attachment key to object storage (best-effort).
+      if (caseMediaObjectStorageAvailable()) {
         try {
           const buffer = await readFile(dstPath);
           await writeCaseMediaToObjectStorage(
