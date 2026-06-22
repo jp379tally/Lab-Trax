@@ -682,7 +682,7 @@ export default function LoginScreen() {
                   } else if (userType === "lab" && labIntent === "join") {
                     setSignUpStep("role_select");
                   } else {
-                    setSignUpStep("join_group");
+                    setSignUpStep(claimMode && claimLab ? "role_select" : "join_group");
                   }
                 } else if (signUpStep === "join_group") {
                   setSignUpStep("role_select");
@@ -759,8 +759,12 @@ export default function LoginScreen() {
                 const labCreateSteps: SignUpStep[] = ["credentials", "user_type", "lab_intent", "lab_name", "lab_info", "email_verify", "updates_opt_in", "hipaa_disclaimer"];
                 const labJoinSteps: SignUpStep[] = ["credentials", "user_type", "lab_intent", "lab_name", "email_verify", "updates_opt_in", "role_select", "hipaa_disclaimer"];
                 const providerSteps: SignUpStep[] = wantsUpdates
-                  ? ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "join_group", "hipaa_disclaimer"]
-                  : ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "join_group", "hipaa_disclaimer"];
+                  ? (claimMode && claimLab
+                    ? ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "role_select", "hipaa_disclaimer"]
+                    : ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "join_group", "hipaa_disclaimer"])
+                  : (claimMode && claimLab
+                    ? ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "role_select", "hipaa_disclaimer"]
+                    : ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "join_group", "hipaa_disclaimer"]);
                 const allSteps = userType === "lab" ? (labIntent === "join" ? labJoinSteps : labCreateSteps) : providerSteps;
                 const currentIdx = allSteps.indexOf(signUpStep);
                 return allSteps.map((s) => {
@@ -1837,7 +1841,7 @@ export default function LoginScreen() {
           onPress={() => {
             setSelectedRole("user");
             if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            setSignUpStep(userType === "lab" && labIntent === "join" ? "hipaa_disclaimer" : "join_group");
+            setSignUpStep((userType === "lab" && labIntent === "join") || (claimMode && claimLab) ? "hipaa_disclaimer" : "join_group");
           }}
           style={({ pressed }) => [
             styles.optionCard,
@@ -1869,7 +1873,7 @@ export default function LoginScreen() {
           onPress={() => {
             setSelectedRole("admin");
             if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            setSignUpStep(userType === "lab" && labIntent === "join" ? "hipaa_disclaimer" : "join_group");
+            setSignUpStep((userType === "lab" && labIntent === "join") || (claimMode && claimLab) ? "hipaa_disclaimer" : "join_group");
           }}
           style={({ pressed }) => [
             styles.optionCard,
