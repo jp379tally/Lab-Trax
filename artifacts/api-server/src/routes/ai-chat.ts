@@ -13,14 +13,13 @@ import {
   caseNotes,
   caseAttachments,
 } from "@workspace/db";
-import { eq, and, inArray, isNull, desc, sql } from "drizzle-orm";
+import { eq, and, inArray, isNull } from "drizzle-orm";
 import { getProviderOrgIdsForUserAndLinks } from "../lib/cross-lab-doctor";
 import { requireAuth } from "../middlewares/auth";
 import { normalizeDoctor } from "../lib/pricing";
-import { wrapDbError } from "../lib/http";
 import { buildKnowledgeBlockWithMeta, buildLabMemoryBlock, buildMaterialSuggestionBlock, RETENTION_LEGAL_DISCLAIMER } from "../lib/ai-knowledge-augment";
 import { learnFromExchange } from "../lib/ai-memory-learn";
-import { randomBytes } from "node:crypto";
+import { persistAiChatExchange, loadAiChatHistory } from "../lib/ai-chat-history";
 import { createUserRateLimit } from "../lib/rate-limit";
 
 // 20 messages per minute per user
@@ -44,17 +43,11 @@ function getAiClient(): OpenAI | null {
   return _cachedOpenAI;
 }
 
-/** Max stored messages per user (50 turns = 100 messages) */
-const MAX_HISTORY_ROWS = 100;
-
-/** Number of recent messages to load and send to the AI as context */
-const HISTORY_LOAD_LIMIT = 50;
-
-function generateHistoryId(): string {
-  return randomBytes(16).toString("hex");
-}
-
-/** Persist a user+assistant exchange and trim old rows */
+/**
+ * History persistence + loading lives in a shared lib so the agentic endpoints
+ * (`/ai-agent`, `/ai-agent/stream`) write to the same `ai_chat_history` store
+ * this route reads from — giving every client a single cross-device history.
+ */
 async function persistExchange(
   userId: string,
   userContent: string,
@@ -62,68 +55,13 @@ async function persistExchange(
   knowledgeSectionIds?: string[],
   retentionDisclaimer?: boolean,
 ): Promise<void> {
-  const now = new Date();
-  await db.insert(aiChatHistory).values([
-    {
-      id: generateHistoryId(),
-      userId,
-      role: "user",
-      content: userContent,
-      createdAt: now,
-    },
-    {
-      id: generateHistoryId(),
-      userId,
-      role: "assistant",
-      content: assistantContent,
-      ...(knowledgeSectionIds && knowledgeSectionIds.length > 0
-        ? { knowledgeSectionIds }
-        : {}),
-      ...(retentionDisclaimer ? { retentionDisclaimer: true } : {}),
-      createdAt: new Date(now.getTime() + 1),
-    },
-  ]).catch((err: unknown): never => wrapDbError(err, {
-    fallback: "Failed to persist AI chat history.",
-  }));
-
-  // Keep only the most recent MAX_HISTORY_ROWS rows per user
-  const subq = db
-    .select({ id: aiChatHistory.id })
-    .from(aiChatHistory)
-    .where(eq(aiChatHistory.userId, userId))
-    .orderBy(desc(aiChatHistory.createdAt))
-    .limit(MAX_HISTORY_ROWS);
-
-  await db
-    .delete(aiChatHistory)
-    .where(
-      and(
-        eq(aiChatHistory.userId, userId),
-        sql`${aiChatHistory.id} NOT IN (${subq})`,
-      ),
-    );
+  await persistAiChatExchange(userId, userContent, assistantContent, {
+    knowledgeSectionIds,
+    retentionDisclaimer,
+  });
 }
 
-/** Load recent history for a user, oldest-first for chat display */
-async function loadHistory(
-  userId: string,
-): Promise<Array<{ id: string; role: string; content: string; knowledgeSectionIds: string[] | null; retentionDisclaimer: boolean | null; createdAt: Date }>> {
-  const rows = await db
-    .select({
-      id: aiChatHistory.id,
-      role: aiChatHistory.role,
-      content: aiChatHistory.content,
-      knowledgeSectionIds: aiChatHistory.knowledgeSectionIds,
-      retentionDisclaimer: aiChatHistory.retentionDisclaimer,
-      createdAt: aiChatHistory.createdAt,
-    })
-    .from(aiChatHistory)
-    .where(eq(aiChatHistory.userId, userId))
-    .orderBy(desc(aiChatHistory.createdAt))
-    .limit(HISTORY_LOAD_LIMIT);
-
-  return rows.reverse();
-}
+const loadHistory = loadAiChatHistory;
 
 /** Canonical terminal/completed statuses in LabTrax */
 const TERMINAL_STATUSES = new Set(["complete", "shipped", "delivered"]);

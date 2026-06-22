@@ -844,9 +844,15 @@ export default function AiAssistantScreen() {
   // the welcome message when there are none). History is keyed per user so
   // switching accounts on the same device never mixes one user's chats into
   // another's. A fresh session id is generated when there is nothing to resume.
-  // When no local session exists, fall back to the server's /ai-chat/history so
-  // conversations survive beyond the 7-day local TTL and across devices (mirrors
-  // the desktop AiChatPanel server-history branch).
+  //
+  // The server (`/ai-chat/history`) is the source of truth for cross-device
+  // sync; the local cache is only a fast-load layer. So: show the local copy
+  // instantly to avoid a blank screen, then always fetch the server copy and
+  // adopt it when it holds a longer (newer) conversation than the local cache —
+  // e.g. a second device or reinstall with a stale/empty cache. The local copy
+  // is kept when it is ahead (an exchange just sent that has not synced yet).
+  // Adopting via setMessages write-throughs to the local cache (persist effect),
+  // so the cache stays a fast-load mirror of the server.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -863,17 +869,20 @@ export default function AiAssistantScreen() {
         if (cancelled) return;
         setAllSessions(stored);
         const latest = stored[0];
+        let localMsgs: ChatMessage[] = [];
         if (latest && latest.messages.length > 0) {
           currentSessionIdRef.current = latest.id;
-          setMessages([WELCOME_MSG, ...sanitizeRestoredMessages(latest.messages)]);
+          localMsgs = sanitizeRestoredMessages(latest.messages);
+          // Fast-load: render the cached conversation immediately.
+          setMessages([WELCOME_MSG, ...localMsgs]);
         } else {
           currentSessionIdRef.current = generateSessionId();
-          // No usable local session — try restoring from the server so a
-          // conversation outlives the 7-day local TTL and crosses devices.
-          const serverMsgs = await loadServerHistory();
-          if (!cancelled && serverMsgs.length > 0) {
-            setMessages([WELCOME_MSG, ...serverMsgs]);
-          }
+        }
+        // Reconcile with the server so history follows the user across devices.
+        const serverMsgs = await loadServerHistory();
+        if (cancelled || serverMsgs.length === 0) return;
+        if (serverMsgs.length > localMsgs.length) {
+          setMessages([WELCOME_MSG, ...serverMsgs]);
         }
       } finally {
         if (!cancelled) sessionLoadedRef.current = true;

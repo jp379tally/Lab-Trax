@@ -29,6 +29,7 @@ import { eq, and, inArray, ilike } from "drizzle-orm";
 import { getProviderOrgIdsForUserAndLinks } from "../lib/cross-lab-doctor";
 import { buildKnowledgeBlockWithMeta, buildLabMemoryBlock, buildMaterialSuggestionBlock, RETENTION_LEGAL_DISCLAIMER } from "../lib/ai-knowledge-augment";
 import { learnFromExchange } from "../lib/ai-memory-learn";
+import { persistAiChatExchange } from "../lib/ai-chat-history";
 import { createUserRateLimit } from "../lib/rate-limit";
 
 // ─── Per-user rate limiter: 10 agent calls per minute ───────────────────────
@@ -338,6 +339,20 @@ export function registerAiAgentRoutes(router: IRouter): void {
     );
     const { prompt: systemPrompt, knowledgeSectionIds, retentionDisclaimer, privacyDisclaimer } = systemPromptResult;
 
+    // Persist each completed exchange to the shared cross-device chat history so
+    // it follows the user across devices (the same store `/ai-chat/history`
+    // reads). Fire-and-forget: a persistence failure never blocks or alters the
+    // reply. Only called at terminal TEXT replies — never for proposed actions.
+    const firePersist = (replyContent: string) => {
+      if (!replyContent) return;
+      persistAiChatExchange(userId, learnUserMessage, replyContent, {
+        knowledgeSectionIds,
+        retentionDisclaimer,
+      }).catch((err) => {
+        req.log?.error({ err }, "[AI AGENT] history persist error");
+      });
+    };
+
     // Log which knowledge sections were included for audit purposes.
     if (knowledgeSectionIds.length > 0 || retentionDisclaimer || privacyDisclaimer) {
       req.log?.info(
@@ -387,6 +402,7 @@ export function registerAiAgentRoutes(router: IRouter): void {
         if (!msg.tool_calls || msg.tool_calls.length === 0) {
           const replyContent = msg.content ?? "I'm not sure how to help with that.";
           fireLearn(replyContent);
+          firePersist(replyContent);
           return res.json({
             type: "reply",
             content: replyContent,
@@ -525,6 +541,7 @@ export function registerAiAgentRoutes(router: IRouter): void {
       const last = loopMessages[loopMessages.length - 1] as any;
       const content = last?.content ?? "I completed the requested lookups. Is there anything else?";
       fireLearn(content);
+      firePersist(content);
       return res.json({
         type: "reply",
         content,
@@ -631,6 +648,20 @@ export function registerAiAgentRoutes(router: IRouter): void {
 
     const { prompt: systemPrompt, knowledgeSectionIds, retentionDisclaimer, privacyDisclaimer } = systemPromptResult;
 
+    // Persist each completed exchange to the shared cross-device chat history so
+    // it follows the user across devices (the same store `/ai-chat/history`
+    // reads). Fire-and-forget: a persistence failure never blocks or alters the
+    // reply. Only called at terminal TEXT replies — never for proposed actions.
+    const firePersist = (replyContent: string) => {
+      if (!replyContent) return;
+      persistAiChatExchange(userId, learnUserMessage, replyContent, {
+        knowledgeSectionIds,
+        retentionDisclaimer,
+      }).catch((err) => {
+        req.log?.error({ err }, "[AI AGENT STREAM] history persist error");
+      });
+    };
+
     if (knowledgeSectionIds.length > 0 || retentionDisclaimer || privacyDisclaimer) {
       req.log?.info(
         { knowledgeSectionIds, retentionDisclaimer, privacyDisclaimer },
@@ -726,6 +757,7 @@ export function registerAiAgentRoutes(router: IRouter): void {
             sendEvent({ token: "I'm not sure how to help with that." });
           }
           fireLearn(fullContent || "I'm not sure how to help with that.");
+          firePersist(fullContent || "I'm not sure how to help with that.");
           sendEvent({
             done: true,
             ...(accumulatedToolOutputs.length > 0 ? { toolOutputs: accumulatedToolOutputs } : {}),
@@ -893,7 +925,10 @@ export function registerAiAgentRoutes(router: IRouter): void {
       // Loop exhausted without a terminal reply — close cleanly
       const last = loopMessages[loopMessages.length - 1] as any;
       const exhaustedContent: string = typeof last?.content === "string" ? last.content : "";
-      if (exhaustedContent) fireLearn(exhaustedContent);
+      if (exhaustedContent) {
+        fireLearn(exhaustedContent);
+        firePersist(exhaustedContent);
+      }
       sendEvent({
         done: true,
         ...(accumulatedToolOutputs.length > 0 ? { toolOutputs: accumulatedToolOutputs } : {}),
