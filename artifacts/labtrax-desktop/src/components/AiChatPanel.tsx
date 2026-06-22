@@ -1800,7 +1800,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
                 : micState === "processing"
                 ? "Processing…"
                 : micState === "error"
-                ? "Microphone blocked — click to dismiss"
+                ? (micErrorMsg?.toLowerCase().includes("blocked") ? "Microphone blocked — click to dismiss" : "Microphone error — click to dismiss")
                 : isSpeaking
                 ? "Interrupt Maynard and speak"
                 : "Speak to Maynard"
@@ -1811,7 +1811,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
                 : micState === "processing"
                 ? "Processing…"
                 : micState === "error"
-                ? "Microphone blocked — click to dismiss"
+                ? (micErrorMsg?.toLowerCase().includes("blocked") ? "Microphone blocked — click to dismiss" : "Microphone error — click to dismiss")
                 : isSpeaking
                 ? "Interrupt Maynard and speak"
                 : "Speak to Maynard"
