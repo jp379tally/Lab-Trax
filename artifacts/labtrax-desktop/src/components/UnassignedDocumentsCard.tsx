@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "@/hooks/use-toast";
 import {
@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  Eye,
   FileText,
   Inbox,
   Loader2,
@@ -19,14 +20,15 @@ import {
 } from "@workspace/api-client-react";
 import type { LabInboxFile } from "@workspace/api-client-react";
 import {
-  apiFetch,
   ApiError,
+  apiFetch,
+  apiUrl,
+  authedFetch,
   createUploadSession,
   sendUploadChunk,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { relativeTime } from "@/lib/format";
-import type { LabCase } from "@/lib/types";
 
 const MAX_FILE_BYTES = 200 * 1024 * 1024;
 const SIZE_ERROR = "File is too large. Max upload size is 200 MB.";
@@ -70,23 +72,70 @@ function fileIcon(mimeType: string): string {
   return "📎";
 }
 
+type QuickCase = {
+  id: string;
+  caseNumber: string;
+  patientFirstName: string;
+  patientLastName: string;
+  doctorName: string;
+  status: string;
+};
+
 function InboxFileRow({
   file,
-  cases,
-  casesLoading,
+  labOrganizationId,
   onAssigned,
 }: {
   file: LabInboxFile;
-  cases: LabCase[];
-  casesLoading: boolean;
+  labOrganizationId: string;
   onAssigned: (caseId: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [assigned, setAssigned] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [searchResults, setSearchResults] = useState<QuickCase[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [viewLoading, setViewLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const pendingCaseIdRef = useRef<string>("");
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const objectUrlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (!open || query.length < 2) {
+      setSearchResults([]);
+      setIsSearching(false);
+      return;
+    }
+    setIsSearching(true);
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const params = new URLSearchParams({ q: query, labOrganizationId });
+        const resp = await authedFetch(apiUrl(`/cases/quick-search?${params}`));
+        if (resp.ok) {
+          const json = (await resp.json()) as { ok: boolean; data: { cases: QuickCase[] } };
+          setSearchResults(json.data?.cases ?? []);
+        } else {
+          setSearchResults([]);
+        }
+      } catch {
+        setSearchResults([]);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 300);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [query, open, labOrganizationId]);
+
+  useEffect(() => {
+    return () => {
+      if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+    };
+  }, []);
 
   const assignMutation = useAssignLabInboxFile({
     mutation: {
@@ -100,23 +149,30 @@ function InboxFileRow({
     },
   });
 
-  const filtered = cases.filter((c) => {
-    if (!query) return true;
-    const q = query.toLowerCase();
-    return (
-      (c.caseNumber ?? "").toLowerCase().includes(q) ||
-      (c.patientFirstName ?? "").toLowerCase().includes(q) ||
-      (c.patientLastName ?? "").toLowerCase().includes(q) ||
-      (c.doctorName ?? "").toLowerCase().includes(q)
-    );
-  });
-
   const handleAssign = (caseId: string) => {
     setError(null);
     pendingCaseIdRef.current = caseId;
     assignMutation.mutate({ fileId: file.id, data: { caseId } });
     setOpen(false);
     setQuery("");
+  };
+
+  const handleView = async () => {
+    if (viewLoading) return;
+    setViewLoading(true);
+    try {
+      const resp = await authedFetch(apiUrl(`/lab-inbox/${file.id}/file`));
+      if (!resp.ok) throw new Error(`status ${resp.status}`);
+      const blob = await resp.blob();
+      if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+      const url = URL.createObjectURL(blob);
+      objectUrlRef.current = url;
+      window.open(url, "_blank", "noopener");
+    } catch {
+      toast({ title: "Could not open file", description: "Please try again.", variant: "destructive" });
+    } finally {
+      setViewLoading(false);
+    }
   };
 
   const uploaderName =
@@ -134,12 +190,22 @@ function InboxFileRow({
       </span>
 
       <div className="flex-1 min-w-0">
-        <p
-          className="text-xs font-medium truncate"
-          title={file.originalFilename}
+        <button
+          type="button"
+          onClick={handleView}
+          disabled={viewLoading}
+          className="text-xs font-medium truncate max-w-full text-left hover:underline hover:text-primary transition-colors disabled:opacity-60 disabled:cursor-wait"
+          title={`Click to view: ${file.originalFilename}`}
         >
-          {file.originalFilename}
-        </p>
+          {viewLoading ? (
+            <span className="inline-flex items-center gap-1">
+              <Loader2 size={10} className="animate-spin" />
+              {file.originalFilename}
+            </span>
+          ) : (
+            file.originalFilename
+          )}
+        </button>
         <p className="text-[10px] text-muted-foreground mt-0.5">
           {formatBytes(file.sizeBytes)} · {uploaderName} ·{" "}
           {relativeTime(file.createdAt)}
@@ -163,23 +229,27 @@ function InboxFileRow({
               ref={inputRef}
               autoFocus
               type="text"
-              placeholder="Search cases…"
+              placeholder="Type to search cases…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               className="w-full text-xs border border-border rounded-md px-2.5 py-1.5 bg-background placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring"
             />
-            {casesLoading ? (
+            {query.length < 2 ? (
+              <div className="mt-1 rounded-md border border-border bg-popover shadow-md p-2 text-xs text-muted-foreground">
+                Type at least 2 characters…
+              </div>
+            ) : isSearching ? (
               <div className="mt-1 rounded-md border border-border bg-popover shadow-md p-2 text-xs text-muted-foreground flex items-center gap-1.5">
                 <Loader2 size={11} className="animate-spin" />
-                Loading cases…
+                Searching…
               </div>
-            ) : filtered.length === 0 ? (
+            ) : searchResults.length === 0 ? (
               <div className="mt-1 rounded-md border border-border bg-popover shadow-md p-2 text-xs text-muted-foreground">
                 No cases found.
               </div>
             ) : (
               <div className="mt-1 rounded-md border border-border bg-popover shadow-md overflow-hidden max-h-44 overflow-y-auto">
-                {filtered.slice(0, 20).map((c) => (
+                {searchResults.map((c) => (
                   <button
                     key={c.id}
                     type="button"
@@ -205,25 +275,40 @@ function InboxFileRow({
       </div>
 
       {!assigned && (
-        <button
-          type="button"
-          onClick={() => {
-            setOpen((v) => !v);
-            if (!open) setTimeout(() => inputRef.current?.focus(), 50);
-          }}
-          disabled={assignMutation.isPending}
-          title={open ? "Cancel" : "Assign to case"}
-          className="shrink-0 inline-flex items-center gap-1 h-6 px-2 rounded text-[10px] font-medium border border-border bg-secondary hover:bg-secondary/70 text-foreground transition-colors disabled:opacity-60 disabled:cursor-not-allowed mt-0.5"
-        >
-          {assignMutation.isPending ? (
-            <Loader2 size={9} className="animate-spin" />
-          ) : open ? (
-            <X size={9} />
-          ) : (
-            <Paperclip size={9} />
-          )}
-          {open ? "Cancel" : "Assign"}
-        </button>
+        <div className="flex items-center gap-1 shrink-0 mt-0.5">
+          <button
+            type="button"
+            onClick={handleView}
+            disabled={viewLoading}
+            title="View file"
+            className="inline-flex items-center justify-center h-6 w-6 rounded text-muted-foreground hover:text-foreground hover:bg-secondary border border-border transition-colors disabled:opacity-60 disabled:cursor-wait"
+          >
+            {viewLoading ? (
+              <Loader2 size={9} className="animate-spin" />
+            ) : (
+              <Eye size={9} />
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setOpen((v) => !v);
+              if (!open) setTimeout(() => inputRef.current?.focus(), 50);
+            }}
+            disabled={assignMutation.isPending}
+            title={open ? "Cancel" : "Assign to case"}
+            className="shrink-0 inline-flex items-center gap-1 h-6 px-2 rounded text-[10px] font-medium border border-border bg-secondary hover:bg-secondary/70 text-foreground transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {assignMutation.isPending ? (
+              <Loader2 size={9} className="animate-spin" />
+            ) : open ? (
+              <X size={9} />
+            ) : (
+              <Paperclip size={9} />
+            )}
+            {open ? "Cancel" : "Assign"}
+          </button>
+        </div>
       )}
     </div>
   );
@@ -255,20 +340,6 @@ export function UnassignedDocumentsCard() {
     },
   );
 
-  const [cases, setCases] = useState<LabCase[]>([]);
-  const [casesLoading, setCasesLoading] = useState(false);
-  const casesLoadedRef = useRef(false);
-
-  const ensureCasesLoaded = useCallback(() => {
-    if (casesLoadedRef.current) return;
-    casesLoadedRef.current = true;
-    setCasesLoading(true);
-    apiFetch<LabCase[]>("/cases")
-      .then((data) => setCases(data))
-      .catch(() => setCases([]))
-      .finally(() => setCasesLoading(false));
-  }, []);
-
   const setFileProgress = useCallback(
     (key: string, state: FileUploadState | null) => {
       setUploadProgress((prev) => {
@@ -287,7 +358,6 @@ export function UnassignedDocumentsCard() {
     async (file: File) => {
       const key = `${file.name}-${file.size}`;
 
-      // Client-side size guard: show friendly error before hitting the network.
       if (file.size > MAX_FILE_BYTES) {
         setFileProgress(key, { progress: 0, error: SIZE_ERROR });
         return;
@@ -301,7 +371,6 @@ export function UnassignedDocumentsCard() {
       setFileProgress(key, { progress: 0, error: null });
 
       try {
-        // 1. Create a resumable session.
         const session = await createUploadSession({
           fileName: file.name,
           fileSize: file.size,
@@ -311,7 +380,6 @@ export function UnassignedDocumentsCard() {
         let offset = session.uploadedBytes ?? 0;
         const CHUNK = 8 * 1024 * 1024;
 
-        // 2. Send chunks.
         while (offset < file.size) {
           const end = Math.min(offset + CHUNK, file.size);
           const blob = file.slice(offset, end);
@@ -329,9 +397,8 @@ export function UnassignedDocumentsCard() {
           offset = result.uploadedBytes;
 
           if (result.complete) {
-            // 3. Register the completed file in the inbox.
             setFileProgress(key, { progress: 99, error: null });
-            await apiFetch("/lab-inbox/finalize-session", {
+            await apiFetch<unknown>("/lab-inbox/finalize-session", {
               method: "POST",
               body: JSON.stringify({
                 storagePath: result.filename,
@@ -342,7 +409,6 @@ export function UnassignedDocumentsCard() {
               }),
             });
 
-            // 4. Success: remove progress entry and refresh inbox list.
             setFileProgress(key, null);
             void qc.invalidateQueries({
               queryKey: getListLabInboxFilesQueryKey({ labOrganizationId }),
@@ -547,16 +613,12 @@ export function UnassignedDocumentsCard() {
           )}
 
           {count > 0 && (
-            <div
-              className="max-h-64 overflow-y-auto -mx-1 px-1"
-              onClick={ensureCasesLoaded}
-            >
+            <div className="max-h-64 overflow-y-auto -mx-1 px-1">
               {files.map((file) => (
                 <InboxFileRow
                   key={file.id}
                   file={file}
-                  cases={cases}
-                  casesLoading={casesLoading}
+                  labOrganizationId={labOrganizationId}
                   onAssigned={handleAssigned}
                 />
               ))}

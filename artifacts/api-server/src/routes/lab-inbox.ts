@@ -215,6 +215,41 @@ router.post(
   }),
 );
 
+router.get(
+  "/:fileId/file",
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = (req as any).auth.userId as string;
+    const fileId = String(req.params["fileId"] ?? "");
+
+    const inboxFile = await db.query.labInboxFiles.findFirst({
+      where: eq(labInboxFiles.id, fileId),
+    });
+
+    if (!inboxFile) throw new HttpError(404, "Inbox file not found.");
+
+    await assertLabMembership(userId, inboxFile.labOrganizationId);
+
+    const diskPath = path.resolve(caseMediaDir, inboxFile.storagePath);
+
+    if (!fs.existsSync(diskPath)) {
+      throw new HttpError(404, "File not found on storage.");
+    }
+
+    const safeName = encodeURIComponent(inboxFile.originalFilename).replace(/'/g, "%27");
+    res.setHeader("Content-Type", inboxFile.mimeType || "application/octet-stream");
+    res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${safeName}`);
+    res.setHeader("Cache-Control", "private, max-age=300");
+
+    const stream = fs.createReadStream(diskPath);
+    stream.on("error", () => {
+      if (!res.headersSent) {
+        res.status(404).json({ ok: false, error: "File not found." });
+      }
+    });
+    stream.pipe(res);
+  }),
+);
+
 router.post(
   "/:fileId/assign",
   asyncHandler(async (req: Request, res: Response) => {
