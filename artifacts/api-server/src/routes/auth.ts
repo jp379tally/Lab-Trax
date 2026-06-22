@@ -47,6 +47,7 @@ import {
   matchAndInviteCrossLabDoctors,
   resolveLabNameForUser,
 } from "../lib/match-and-invite";
+import { normalizePhoneE164 } from "../lib/account-link-sms";
 import { startBillingTrial } from "../lib/entitlement";
 import { sendSecurityAlertEmail } from "../lib/mail";
 import { normalizeEmailTarget } from "../lib/verification";
@@ -67,6 +68,11 @@ const checkEmailThrottle = createCheckEmailThrottle({
   windowMs: 60_000,
   maxPerEmail: 5,
   maxPerIp: 20,
+});
+const lookupProviderMatchesRateLimit = createRateLimit({
+  windowMs: 60_000,
+  max: 10,
+  message: "Too many lookup attempts. Please try again later.",
 });
 
 const profilePhotoUpload = multer({
@@ -304,6 +310,82 @@ const registerSchema = z.object({
     .optional(),
   clientType: z.enum(["web", "mobile", "desktop"]).optional(),
 });
+
+router.get(
+  "/lookup-provider-matches",
+  lookupProviderMatchesRateLimit,
+  asyncHandler(async (req, res) => {
+    const rawPhone =
+      typeof req.query.phone === "string" ? req.query.phone.trim() : "";
+    const rawCity =
+      typeof req.query.city === "string" ? req.query.city.trim() : "";
+
+    if (!rawPhone || !rawCity) {
+      return ok(res, { matches: [] });
+    }
+
+    const normalizedPhone = normalizePhoneE164(rawPhone);
+    const normalizedCity = rawCity.toLowerCase().trim();
+
+    if (!normalizedPhone || normalizedCity.length < 2) {
+      return ok(res, { matches: [] });
+    }
+
+    // Fetch provider orgs that have a phone and city and belong to a lab.
+    // Filter in-memory so we can normalize both sides consistently without
+    // relying on DB-level text normalization.
+    const candidates = await db
+      .select()
+      .from(organizations)
+      .where(
+        and(
+          eq(organizations.type, "provider"),
+          isNotNull(organizations.parentLabOrganizationId),
+          isNotNull(organizations.phone),
+          isNotNull(organizations.city)
+        )
+      );
+
+    const matches = candidates.filter((org) => {
+      const orgPhone = normalizePhoneE164(org.phone);
+      const orgCity = (org.city ?? "").toLowerCase().trim();
+      return orgPhone === normalizedPhone && orgCity === normalizedCity;
+    });
+
+    if (matches.length === 0) {
+      return ok(res, { matches: [] });
+    }
+
+    const labIds = [
+      ...new Set(
+        matches
+          .map((o) => o.parentLabOrganizationId)
+          .filter((id): id is string => !!id)
+      ),
+    ];
+    const labOrgs = labIds.length
+      ? await db
+          .select()
+          .from(organizations)
+          .where(inArray(organizations.id, labIds))
+      : [];
+    const labById = new Map(labOrgs.map((o) => [o.id, o]));
+
+    const result = matches.map((org) => {
+      const lab = labById.get(org.parentLabOrganizationId ?? "");
+      return {
+        orgId: org.id,
+        practiceName: org.displayName || org.name,
+        labName: lab ? lab.displayName || lab.name : null,
+        platformAccountNumber: org.platformAccountNumber ?? null,
+        city: org.city ?? null,
+        state: org.state ?? null,
+      };
+    });
+
+    return ok(res, { matches: result });
+  })
+);
 
 router.get(
   "/check-email",
@@ -574,6 +656,20 @@ router.post(
       entityType: "user",
       entityId: user.id,
     });
+
+    // Write a separate audit entry when a provider self-matched to an existing
+    // lab-created provider org (the auto phone+city match flow).
+    if (joinTargetOrg && input.userType === "provider" && !input.claimProvider) {
+      await writeAuditLog({
+        req,
+        userId: user.id,
+        organizationId: joinTargetOrg.id,
+        action: "provider_match_claim",
+        entityType: "organization",
+        entityId: joinTargetOrg.id,
+        afterJson: { orgId: joinTargetOrg.id, matchedVia: "phone_city" },
+      });
+    }
 
     // Backfill emailVerifiedAt when the user verified their email *before*
     // their account existed (the unauthenticated pre-registration OTP flow).

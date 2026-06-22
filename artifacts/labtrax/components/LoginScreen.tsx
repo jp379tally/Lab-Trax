@@ -30,7 +30,16 @@ import { generateId, GroupJoinRequest } from "@/lib/data";
 import Colors from "@/constants/colors";
 import { Typography, Spacing } from "@/constants/tokens";
 
-type SignUpStep = "welcome" | "credentials" | "user_type" | "lab_intent" | "lab_name" | "lab_info" | "license" | "practice_info" | "email_verify" | "updates_opt_in" | "phone_entry" | "phone_verify" | "phone_contact_name" | "role_select" | "join_group" | "hipaa_disclaimer" | "complete";
+type SignUpStep = "welcome" | "credentials" | "user_type" | "lab_intent" | "lab_name" | "lab_info" | "license" | "practice_info" | "provider_match" | "email_verify" | "updates_opt_in" | "phone_entry" | "phone_verify" | "phone_contact_name" | "role_select" | "join_group" | "hipaa_disclaimer" | "complete";
+
+interface ProviderMatchItem {
+  orgId: string;
+  practiceName: string;
+  labName: string | null;
+  platformAccountNumber: string | null;
+  city: string | null;
+  state: string | null;
+}
 
 function validatePassword(pw: string): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
@@ -121,16 +130,9 @@ export default function LoginScreen() {
   const [browseExistingLabs, setBrowseExistingLabs] = useState(false);
   const [allLabGroups, setAllLabGroups] = useState<{ organizationId: string; practiceName: string; username: string; practiceAddress?: string; memberCount?: number }[]>([]);
   const [labSearchFilter, setLabSearchFilter] = useState("");
-  // Claim-existing-practice flow: a provider supplies the lab they belong to
-  // and the account number their lab gave them. We submit this to the server
-  // as `claimProvider` on /auth/register, which files a join request against
-  // the existing practice org instead of creating a new one.
-  const [claimMode, setClaimMode] = useState(false);
-  const [claimLab, setClaimLab] = useState<{ id: string; displayName: string } | null>(null);
-  const [claimLabSearch, setClaimLabSearch] = useState("");
-  const [claimLabResults, setClaimLabResults] = useState<Array<{ id: string; displayName: string; city?: string | null; state?: string | null }>>([]);
-  const [claimLabLoading, setClaimLabLoading] = useState(false);
-  const [claimAccountNumber, setClaimAccountNumber] = useState("");
+  const [selectedMatchOrgId, setSelectedMatchOrgId] = useState<string | null>(null);
+  const [providerMatches, setProviderMatches] = useState<ProviderMatchItem[]>([]);
+  const [matchLookupLoading, setMatchLookupLoading] = useState(false);
 
   const codeInputRefs = useRef<(TextInput | null)[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -193,6 +195,9 @@ export default function LoginScreen() {
     setBrowseExistingLabs(false);
     setMatchingLabGroup(null);
     setLabJoinRequestSent(false);
+    setSelectedMatchOrgId(null);
+    setProviderMatches([]);
+    setMatchLookupLoading(false);
   }
 
   function switchToSignIn() {
@@ -419,6 +424,9 @@ export default function LoginScreen() {
       setSignUpStep("phone_entry");
     } else if (userType === "lab" && labIntent === "create") {
       setSignUpStep("hipaa_disclaimer");
+    } else if (!wants && selectedMatchOrgId) {
+      // Matched provider who skips updates: skip role_select, go straight to hipaa
+      setSignUpStep("hipaa_disclaimer");
     } else {
       setSignUpStep("role_select");
     }
@@ -539,11 +547,7 @@ export default function LoginScreen() {
       const resolvedPhone = isLab ? labPhone.trim() : practicePhone.trim();
       const resolvedEmail = isLab ? (labEmail.trim() || signUpEmail.trim()) : signUpEmail.trim();
 
-      // When the provider is claiming an existing practice their lab already
-      // created, we send claim info instead of asking the server to create a
-      // new organization. The server files a join request against the
-      // existing provider org.
-      const isClaim = !isLab && claimMode && !!claimLab && !!claimAccountNumber.trim();
+      const isMatchedJoin = !isLab && !!selectedMatchOrgId;
 
       const isLabCreate = isLab && labIntent === "create";
       const isLabJoin = isLab && labIntent === "join" && !!matchingLabGroup;
@@ -563,14 +567,13 @@ export default function LoginScreen() {
         phoneContactName: wantsUpdates ? phoneContactName.trim() : undefined,
         role: isLabCreate ? "admin" : (selectedRole || "user"),
         accountNumber: acctNum,
-        createOrganization: isLabJoin ? false : !isClaim,
-        joinOrganizationId: isLabJoin ? matchingLabGroup!.organizationId : undefined,
-        claimProvider: isClaim
-          ? {
-              labId: claimLab!.id,
-              accountNumber: claimAccountNumber.trim(),
-            }
+        createOrganization: isLabJoin ? false : !isMatchedJoin,
+        joinOrganizationId: isLabJoin
+          ? matchingLabGroup!.organizationId
+          : isMatchedJoin
+          ? selectedMatchOrgId
           : undefined,
+        claimProvider: undefined,
       });
       if (!result.success) {
         setSignUpError(result.error || "Registration failed.");
@@ -677,9 +680,13 @@ export default function LoginScreen() {
                   setSignUpStep("lab_intent");
                 } else if (signUpStep === "lab_info") {
                   setSignUpStep("lab_name");
+                } else if (signUpStep === "provider_match") {
+                  setSignUpStep("practice_info");
                 } else if (signUpStep === "email_verify") {
                   if (userType === "lab") {
                     setSignUpStep(labIntent === "join" ? "lab_name" : "lab_info");
+                  } else if (providerMatches.length > 0) {
+                    setSignUpStep("provider_match");
                   } else {
                     setSignUpStep("practice_info");
                   }
@@ -704,8 +711,10 @@ export default function LoginScreen() {
                     setSignUpStep("updates_opt_in");
                   } else if (userType === "lab" && labIntent === "join") {
                     setSignUpStep("role_select");
+                  } else if (selectedMatchOrgId) {
+                    setSignUpStep("updates_opt_in");
                   } else {
-                    setSignUpStep(claimMode && claimLab ? "role_select" : "join_group");
+                    setSignUpStep("join_group");
                   }
                 } else if (signUpStep === "join_group") {
                   setSignUpStep("role_select");
@@ -738,6 +747,7 @@ export default function LoginScreen() {
                 {signUpStep === "lab_info" && "Enter your lab details"}
                 {signUpStep === "license" && (userType === "lab" ? "Enter your lab license number" : "Enter your dental license number")}
                 {signUpStep === "practice_info" && "Tell us about your practice"}
+                {signUpStep === "provider_match" && "We found a matching practice"}
                 {signUpStep === "updates_opt_in" && "Stay connected with your lab"}
                 {signUpStep === "phone_entry" && "Enter your phone number"}
                 {signUpStep === "phone_verify" && "Verify your phone number"}
@@ -757,6 +767,7 @@ export default function LoginScreen() {
             {signUpStep === "lab_info" && renderLabInfo()}
             {signUpStep === "license" && renderLicense()}
             {signUpStep === "practice_info" && renderPracticeInfo()}
+            {signUpStep === "provider_match" && renderProviderMatch()}
             {signUpStep === "email_verify" && renderEmailVerify()}
             {signUpStep === "updates_opt_in" && renderUpdatesOptIn()}
             {signUpStep === "phone_entry" && renderPhoneEntry()}
@@ -782,11 +793,15 @@ export default function LoginScreen() {
                 const labCreateSteps: SignUpStep[] = ["credentials", "user_type", "lab_intent", "lab_name", "lab_info", "email_verify", "updates_opt_in", "hipaa_disclaimer"];
                 const labJoinSteps: SignUpStep[] = ["credentials", "user_type", "lab_intent", "lab_name", "email_verify", "updates_opt_in", "role_select", "hipaa_disclaimer"];
                 const providerSteps: SignUpStep[] = wantsUpdates
-                  ? (claimMode && claimLab
-                    ? ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "role_select", "hipaa_disclaimer"]
+                  ? (selectedMatchOrgId
+                    ? ["credentials", "user_type", "license", "practice_info", "provider_match", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "hipaa_disclaimer"]
+                    : providerMatches.length > 0
+                    ? ["credentials", "user_type", "license", "practice_info", "provider_match", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "join_group", "hipaa_disclaimer"]
                     : ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "join_group", "hipaa_disclaimer"])
-                  : (claimMode && claimLab
-                    ? ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "role_select", "hipaa_disclaimer"]
+                  : (selectedMatchOrgId
+                    ? ["credentials", "user_type", "license", "practice_info", "provider_match", "email_verify", "updates_opt_in", "hipaa_disclaimer"]
+                    : providerMatches.length > 0
+                    ? ["credentials", "user_type", "license", "practice_info", "provider_match", "email_verify", "updates_opt_in", "join_group", "hipaa_disclaimer"]
                     : ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "join_group", "hipaa_disclaimer"]);
                 const allSteps = userType === "lab" ? (labIntent === "join" ? labJoinSteps : labCreateSteps) : providerSteps;
                 const currentIdx = allSteps.indexOf(signUpStep);
@@ -1473,135 +1488,6 @@ export default function LoginScreen() {
     }
   }
 
-  async function searchClaimLabs(query: string) {
-    setClaimLabSearch(query);
-    setClaimLab(null);
-    if (query.trim().length < 2) {
-      setClaimLabResults([]);
-      return;
-    }
-    setClaimLabLoading(true);
-    try {
-      const res = await apiRequest(
-        "GET",
-        `/api/labs/lookup?q=${encodeURIComponent(query.trim())}`
-      );
-      const data = await res.json();
-      setClaimLabResults(Array.isArray(data?.labs) ? data.labs : []);
-    } catch {
-      setClaimLabResults([]);
-    } finally {
-      setClaimLabLoading(false);
-    }
-  }
-
-  function renderClaimPracticeForm() {
-    return (
-      <View style={styles.inputGroup}>
-        <View style={styles.inputWrapper}>
-          <Ionicons
-            name="search"
-            size={18}
-            color="rgba(255,255,255,0.4)"
-            style={styles.inputIcon}
-          />
-          <TextInput
-            style={styles.input}
-            value={claimLab ? claimLab.displayName : claimLabSearch}
-            onChangeText={(t) => {
-              if (claimLab) setClaimLab(null);
-              searchClaimLabs(t);
-              setSignUpError(null);
-            }}
-            placeholder="Find your lab by name"
-            placeholderTextColor="rgba(255,255,255,0.3)"
-            autoCapitalize="words"
-            testID="claim-lab-search"
-          />
-          {claimLabLoading && (
-            <ActivityIndicator size={16} color="rgba(255,255,255,0.6)" />
-          )}
-        </View>
-
-        {!claimLab && claimLabResults.length > 0 && (
-          <View style={{ gap: 6 }}>
-            {claimLabResults.map((lab) => (
-              <Pressable
-                key={lab.id}
-                onPress={() => {
-                  setClaimLab({ id: lab.id, displayName: lab.displayName });
-                  setClaimLabResults([]);
-                  setClaimLabSearch(lab.displayName);
-                }}
-                style={({ pressed }) => [
-                  {
-                    paddingVertical: 10,
-                    paddingHorizontal: 12,
-                    borderRadius: 8,
-                    backgroundColor: pressed
-                      ? "rgba(255,255,255,0.12)"
-                      : "rgba(255,255,255,0.06)",
-                    borderWidth: 1,
-                    borderColor: "rgba(255,255,255,0.1)",
-                  },
-                ]}
-                testID={`claim-lab-result-${lab.id}`}
-              >
-                <Text style={{ color: "#FFF", fontSize: 14, fontWeight: "600" }}>
-                  {lab.displayName}
-                </Text>
-                {(lab.city || lab.state) && (
-                  <Text
-                    style={{
-                      color: "rgba(255,255,255,0.5)",
-                      fontSize: 12,
-                      marginTop: 2,
-                    }}
-                  >
-                    {[lab.city, lab.state].filter(Boolean).join(", ")}
-                  </Text>
-                )}
-              </Pressable>
-            ))}
-          </View>
-        )}
-
-        <View style={styles.inputWrapper}>
-          <Ionicons
-            name="key-outline"
-            size={18}
-            color="rgba(255,255,255,0.4)"
-            style={styles.inputIcon}
-          />
-          <TextInput
-            style={styles.input}
-            value={claimAccountNumber}
-            onChangeText={(t) => {
-              setClaimAccountNumber(t);
-              setSignUpError(null);
-            }}
-            placeholder="Account number from your lab"
-            placeholderTextColor="rgba(255,255,255,0.3)"
-            autoCapitalize="characters"
-            autoCorrect={false}
-            testID="claim-account-number"
-          />
-        </View>
-
-        <Text
-          style={{
-            color: "rgba(255,255,255,0.5)",
-            fontSize: 12,
-            lineHeight: 18,
-          }}
-        >
-          Ask your lab for your practice's account number. Once they approve
-          your request, you'll see your existing cases automatically.
-        </Text>
-      </View>
-    );
-  }
-
   function renderPracticeInfo() {
     return (
       <View style={styles.formSection}>
@@ -1612,51 +1498,7 @@ export default function LoginScreen() {
           </View>
         )}
 
-        <Pressable
-          onPress={() => {
-            setClaimMode((v) => !v);
-            setSignUpError(null);
-          }}
-          style={({ pressed }) => [
-            {
-              paddingVertical: 10,
-              paddingHorizontal: 12,
-              borderRadius: 8,
-              backgroundColor: claimMode
-                ? "rgba(74,144,217,0.18)"
-                : "rgba(255,255,255,0.06)",
-              borderWidth: 1,
-              borderColor: claimMode
-                ? "rgba(74,144,217,0.5)"
-                : "rgba(255,255,255,0.12)",
-              flexDirection: "row",
-              alignItems: "center",
-              gap: 10,
-              opacity: pressed ? 0.85 : 1,
-            },
-          ]}
-          testID="claim-mode-toggle"
-        >
-          <Ionicons
-            name={claimMode ? "checkbox" : "square-outline"}
-            size={20}
-            color={claimMode ? "#4A90D9" : "rgba(255,255,255,0.6)"}
-          />
-          <Text
-            style={{
-              color: "#FFF",
-              fontSize: 13,
-              flex: 1,
-            }}
-          >
-            My lab already created my practice — I have an account number
-          </Text>
-        </Pressable>
-
-        {claimMode ? (
-          renderClaimPracticeForm()
-        ) : (
-          <View style={styles.inputGroup}>
+        <View style={styles.inputGroup}>
           <View style={styles.inputWrapper}>
             <Ionicons name="business-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
             <TextInput
@@ -1750,48 +1592,40 @@ export default function LoginScreen() {
             />
           </View>
         </View>
-        )}
 
         <Pressable
-          onPress={() => {
-            if (claimMode) {
-              if (!claimLab) {
-                setSignUpError("Please pick your lab from the search results.");
-                return;
-              }
-              if (!claimAccountNumber.trim()) {
-                setSignUpError("Please enter the account number your lab gave you.");
-                return;
-              }
-              setSignUpError(null);
-              sendEmailCode();
-              return;
-            }
+          onPress={async () => {
             if (!practiceName.trim() || !doctorName.trim() || !streetAddress.trim() || !city.trim() || !zipCode.trim() || !practicePhone.trim()) {
               setSignUpError("All fields are required.");
               return;
             }
-            const enteredPhone = practicePhone.trim().replace(/\D/g, "");
-            const enteredAddress = [streetAddress.trim(), city.trim(), zipCode.trim()].filter(Boolean).join(", ").toLowerCase();
-
-            const phoneMatch = registeredUsers.find(u => u.practicePhone && u.practicePhone.replace(/\D/g, "") === enteredPhone && enteredPhone.length >= 7);
-            if (phoneMatch) {
-              setSignUpError("This phone number is already associated with another account. Please enter a different phone number.");
-              return;
-            }
-            const addressMatch = registeredUsers.find(u => u.practiceAddress && u.practiceAddress.toLowerCase() === enteredAddress);
-            if (addressMatch) {
-              setSignUpError("This address is already associated with another account. Please enter a different address.");
-              return;
-            }
             setSignUpError(null);
+            setMatchLookupLoading(true);
+            try {
+              const params = new URLSearchParams({
+                phone: practicePhone.trim(),
+                city: city.trim(),
+              });
+              const res = await apiRequest("GET", `/api/auth/lookup-provider-matches?${params}`);
+              const data = await res.json();
+              const matches: ProviderMatchItem[] = Array.isArray(data?.data?.matches) ? data.data.matches : [];
+              setProviderMatches(matches);
+              if (matches.length > 0) {
+                setMatchLookupLoading(false);
+                setSignUpStep("provider_match");
+                return;
+              }
+            } catch {
+              // Lookup failure is non-blocking — proceed normally
+            }
+            setMatchLookupLoading(false);
             sendEmailCode();
           }}
-          disabled={codeSending}
-          style={({ pressed }) => [styles.loginBtn, pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }, codeSending && { opacity: 0.6 }]}
+          disabled={codeSending || matchLookupLoading}
+          style={({ pressed }) => [styles.loginBtn, pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }, (codeSending || matchLookupLoading) && { opacity: 0.6 }]}
           testID="practice-info-next-btn"
         >
-          {codeSending ? (
+          {(codeSending || matchLookupLoading) ? (
             <ActivityIndicator size="small" color="#FFF" />
           ) : (
             <>
@@ -1838,13 +1672,93 @@ export default function LoginScreen() {
               return;
             }
             setSignUpError(null);
-            setSignUpStep("role_select");
+            // Matched providers don't pick a role — go straight to hipaa
+            setSignUpStep(selectedMatchOrgId ? "hipaa_disclaimer" : "role_select");
           }}
           style={({ pressed }) => [styles.loginBtn, pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }]}
           testID="phone-contact-next-btn"
         >
           <Text style={styles.loginBtnText}>Continue</Text>
           <Ionicons name="arrow-forward" size={20} color="#FFF" />
+        </Pressable>
+      </View>
+    );
+  }
+
+  function renderProviderMatch() {
+    return (
+      <View style={styles.formSection}>
+        {signUpError && (
+          <View style={styles.errorBanner}>
+            <Ionicons name="alert-circle" size={16} color={Colors.light.error} />
+            <Text style={styles.errorText}>{signUpError}</Text>
+          </View>
+        )}
+
+        <Text style={{ color: "rgba(255,255,255,0.75)", fontSize: 14, lineHeight: 20, marginBottom: 8 }}>
+          We found {providerMatches.length === 1 ? "a practice" : "practices"} that match{providerMatches.length === 1 ? "es" : ""} your phone number and city. Is one of these your practice?
+        </Text>
+
+        {providerMatches.map((match) => (
+          <Pressable
+            key={match.orgId}
+            onPress={() => {
+              if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setSelectedMatchOrgId(match.orgId);
+              setSignUpError(null);
+              sendEmailCode();
+            }}
+            style={({ pressed }) => [
+              {
+                paddingVertical: 14,
+                paddingHorizontal: 16,
+                borderRadius: 10,
+                backgroundColor: pressed ? "rgba(74,144,217,0.18)" : "rgba(255,255,255,0.07)",
+                borderWidth: 1,
+                borderColor: "rgba(74,144,217,0.4)",
+                gap: 4,
+              },
+            ]}
+            testID={`provider-match-card-${match.orgId}`}
+          >
+            <Text style={{ color: "#FFF", fontSize: 15, fontWeight: "700" }}>{match.practiceName}</Text>
+            {match.labName && (
+              <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 12 }}>Lab: {match.labName}</Text>
+            )}
+            {(match.city || match.state) && (
+              <Text style={{ color: "rgba(255,255,255,0.5)", fontSize: 12 }}>
+                {[match.city, match.state].filter(Boolean).join(", ")}
+              </Text>
+            )}
+            {match.platformAccountNumber && (
+              <Text style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, fontFamily: "monospace" }}>
+                #{match.platformAccountNumber}
+              </Text>
+            )}
+          </Pressable>
+        ))}
+
+        <Pressable
+          onPress={() => {
+            if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            setSelectedMatchOrgId(null);
+            setSignUpError(null);
+            sendEmailCode();
+          }}
+          style={({ pressed }) => [
+            {
+              paddingVertical: 12,
+              paddingHorizontal: 16,
+              borderRadius: 10,
+              backgroundColor: pressed ? "rgba(255,255,255,0.1)" : "rgba(255,255,255,0.04)",
+              borderWidth: 1,
+              borderColor: "rgba(255,255,255,0.15)",
+              alignItems: "center",
+            },
+          ]}
+          testID="provider-match-none"
+        >
+          <Text style={{ color: "rgba(255,255,255,0.7)", fontSize: 14 }}>None of these — create a new practice</Text>
         </Pressable>
       </View>
     );
@@ -1864,7 +1778,7 @@ export default function LoginScreen() {
           onPress={() => {
             setSelectedRole("user");
             if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            setSignUpStep((userType === "lab" && labIntent === "join") || (claimMode && claimLab) ? "hipaa_disclaimer" : "join_group");
+            setSignUpStep((userType === "lab" && labIntent === "join") || selectedMatchOrgId ? "hipaa_disclaimer" : "join_group");
           }}
           style={({ pressed }) => [
             styles.optionCard,
@@ -1896,7 +1810,7 @@ export default function LoginScreen() {
           onPress={() => {
             setSelectedRole("admin");
             if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            setSignUpStep((userType === "lab" && labIntent === "join") || (claimMode && claimLab) ? "hipaa_disclaimer" : "join_group");
+            setSignUpStep((userType === "lab" && labIntent === "join") || selectedMatchOrgId ? "hipaa_disclaimer" : "join_group");
           }}
           style={({ pressed }) => [
             styles.optionCard,

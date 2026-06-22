@@ -2802,6 +2802,29 @@ paths:
       responses:
         "200":
           description: Marked as read
+  /auth/lookup-provider-matches:
+    get:
+      operationId: lookupProviderMatches
+      tags: [auth]
+      summary: Look up existing provider orgs matching phone and city (unauthenticated, rate-limited)
+      parameters:
+        - in: query
+          name: phone
+          required: false
+          schema: { type: string }
+        - in: query
+          name: city
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: Matching provider organizations (safe preview, no PHI)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderMatchListResult"
+        "429":
+          description: Rate limited
   /auth/check-email:
     get:
       operationId: checkEmailAvailability
@@ -5319,6 +5342,29 @@ components:
             totalFound:
               type: integer
               description: Total number of hits before the cap was applied. Only present when truncated is true.
+    ProviderMatchItem:
+      type: object
+      required: [orgId, practiceName]
+      properties:
+        orgId: { type: string }
+        practiceName: { type: string }
+        labName: { type: string, nullable: true }
+        platformAccountNumber: { type: string, nullable: true }
+        city: { type: string, nullable: true }
+        state: { type: string, nullable: true }
+    ProviderMatchListResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          required: [matches]
+          properties:
+            matches:
+              type: array
+              items:
+                $ref: "#/components/schemas/ProviderMatchItem"
     CheckEmailResult:
       type: object
       required: [ok, data]
