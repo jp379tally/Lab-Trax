@@ -1,0 +1,181 @@
+### Replit Build Brief
+
+**Objective**
+Fix Maynard voice so users have two clear, separate controls:
+
+1. **Voice dictation to text**: user taps a mic button, speaks, speech is transcribed into the message input.
+2. **Real-time voice conversation with Maynard**: user taps a separate button to enter a live back-and-forth voice session, similar to ChatGPT voice mode.
+
+**User-visible problem**
+The current UI does not show two distinguishable voice buttons. The screenshot shows one muted mic button beside the message box, a send button, and a small speaker icon in the header. The app also shows: `Could not transcribe audio. Please try again.` So dictation is failing, and the requested live voice conversation mode does not appear to be implemented or exposed clearly.
+
+**Likely root cause**
+The current implementation appears to have conflated three separate behaviors:
+
+* text input submission
+* speech-to-text dictation
+* full duplex/live Maynard conversation
+
+The visible “voice mode on” copy suggests the UI may be claiming live voice behavior, but the actual implementation likely only attempts audio transcription. The transcription flow itself is failing, probably because of one of these issues:
+
+* microphone permission or browser capture failure
+* unsupported `MediaRecorder` MIME type
+* bad or missing audio blob upload
+* broken `/transcribe` or assistant voice API route
+* missing OpenAI key/server-side transcription configuration
+* frontend treating any transcription failure as a generic error
+
+**Exact app/code areas to inspect**
+
+Replit should inspect likely files/components such as:
+
+* Maynard chat panel component
+* message input composer
+* voice/mic button component
+* Maynard assistant API routes
+* transcription route or server action
+* OpenAI client setup
+* any realtime voice/WebRTC/WebSocket code
+* browser permission/audio recorder utilities
+
+Likely names may include:
+
+* `MaynardChat`
+* `MaynardPanel`
+* `AssistantPanel`
+* `ChatComposer`
+* `VoiceButton`
+* `useVoiceInput`
+* `useSpeechRecognition`
+* `api/transcribe`
+* `api/maynard`
+* `api/assistant`
+* `openai.ts`
+
+**Implementation plan**
+
+Add two separate controls in the Maynard composer:
+
+* **Dictate button**
+
+  * Mic icon.
+  * Tooltip/label: `Dictate message`.
+  * Starts recording.
+  * Sends audio to the transcription route.
+  * Inserts returned transcript into the text input.
+  * Does not auto-send unless that is already an intentional product behavior.
+
+* **Live Voice button**
+
+  * Distinct icon, for example headset/waves/phone.
+  * Tooltip/label: `Talk with Maynard`.
+  * Opens or toggles a dedicated real-time conversation mode.
+  * Maynard listens and responds with audio.
+  * Shows clear session state: connecting, listening, Maynard speaking, muted, ended, error.
+
+Fix transcription before layering live voice on top. If live voice is not yet truly implemented, Replit should add the UI state honestly and wire the button to the proper real-time voice session route instead of showing misleading “voice mode on” copy.
+
+**Constraints and guardrails**
+
+* Do not reuse the same button for dictation and real-time conversation.
+* Do not label transcription as “voice mode” unless it is actually a live conversation.
+* Keep all OpenAI API calls server-side. Do not expose API keys in the browser.
+* Add clear errors for mic permission denied, no audio captured, transcription failed, and live session connection failed.
+* Use browser-supported audio formats and feature-detect `MediaRecorder`.
+* Preserve existing typed chat behavior.
+
+**Acceptance criteria**
+
+* The Maynard input area visibly contains two separate voice controls:
+
+  * one for dictating text
+  * one for starting live conversation
+* Dictation records audio, transcribes it, and places text in the message input.
+* Dictation failures show a specific actionable error, not only `Could not transcribe audio`.
+* Live voice mode starts a real session, not just a text transcription attempt.
+* Live voice mode can be ended by the user.
+* Maynard speaks responses aloud during live voice mode.
+* Existing typed chat still works.
+* Mobile layout does not crowd or hide either button.
+
+**Regression checks**
+
+* Type and send a normal Maynard message.
+* Dictate a message, edit the transcript, then send.
+* Deny microphone permission and confirm the error is clear.
+* Start live voice mode, speak, hear Maynard respond, then end the session.
+* Confirm the speaker/audio toggle does not conflict with dictation or live voice.
+* Test Chrome desktop and mobile-width layout.
+
+---
+
+### Copy-Ready Replit Prompt
+
+Please fix the Maynard voice experience. There are two separate issues:
+
+1. Voice dictation to text is failing. The UI shows `Could not transcribe audio. Please try again.`
+2. The requested real-time voice conversation mode with Maynard is not visible or usable. I need two clearly distinguishable buttons, similar to ChatGPT: one for dictating speech into the text box, and a separate one for live voice conversation with Maynard.
+
+Inspect the Maynard chat panel, message composer, voice input button, audio recording utilities, transcription API route, Maynard assistant routes, and OpenAI client setup. Likely areas include components such as `MaynardChat`, `MaynardPanel`, `ChatComposer`, `VoiceButton`, `useVoiceInput`, transcription routes like `/api/transcribe`, and any Maynard assistant or realtime voice endpoints.
+
+Please implement this safely:
+
+* Add a distinct **Dictate message** button using a mic icon.
+* Add a distinct **Talk with Maynard** or **Live voice** button using a different icon, such as headset/phone/audio waves.
+* Dictation should record the user’s speech, send it to the server-side transcription route, and insert the transcript into the text input.
+* Dictation should not be confused with live voice mode.
+* Live voice mode should start a real back-and-forth voice session where Maynard listens and responds aloud.
+* Show clear states for live voice: connecting, listening, Maynard speaking, muted, ended, and error.
+* Keep all OpenAI API calls server-side and do not expose secrets in frontend code.
+* Fix the current transcription failure by checking microphone permission, `MediaRecorder` support, audio MIME type, blob creation, request payload, server route handling, and OpenAI transcription response parsing.
+* Replace generic transcription errors with specific messages where possible.
+* Preserve existing typed chat and send-button behavior.
+* Make sure the two buttons are visible and usable on mobile and desktop.
+
+Before finishing, verify:
+
+* typed chat still works
+* dictation records and fills the input
+* denied mic permission shows a clear error
+* live voice mode starts, hears the user, and Maynard responds with audio
+* the user can end live voice mode
+* the speaker toggle does not conflict with the two new voice controls
+
+If you find that live voice was never implemented and only transcription exists, say that clearly, then implement the missing live voice path rather than only changing labels.
+
+---
+
+### Debug Analysis
+
+**Primary root-cause hypothesis**
+The app currently has a partial or broken speech-to-text implementation, but not a clearly separated real-time Maynard voice conversation feature. The screenshot shows only one mic-style control near the composer, plus a header speaker icon. It also displays a transcription failure, which means the app attempted dictation or recording but did not successfully complete the speech-to-text flow.
+
+**Supporting evidence**
+The visible error says transcription failed. The UI text says “Voice mode on — Maynard will speak and listen automatically,” but there is no obvious dedicated real-time conversation button. That mismatch strongly suggests the UI state and the actual audio implementation are out of sync.
+
+**Alternate hypotheses worth checking**
+
+* The live voice feature exists but is hidden behind the header speaker icon or an unclear toggle.
+* The frontend records audio correctly, but the server transcription route is failing.
+* The server route works, but the browser is sending an unsupported or empty audio file.
+* Microphone permission is blocked or not being handled properly.
+* OpenAI transcription or realtime configuration is missing in Replit environment variables.
+
+**Why this fix is best**
+The safest fix is to separate the product contract first: dictation and live conversation are different modes with different expectations. Once they have separate controls and state, Replit can debug each path cleanly instead of continuing to patch one ambiguous “voice” button.
+
+**Confidence level**
+Medium-high based on the screenshot and symptoms. Exact file names and route names need repository inspection inside Replit.
+
+---
+
+### Step-by-Step Fix Plan
+
+1. Inspect the Maynard chat UI and identify where the current mic/speaker controls are rendered.
+2. Trace the current audio flow from button click to browser recording to server transcription response.
+3. Fix the transcription route and browser recording path until dictation reliably fills the text input.
+4. Add a separate dictation button with clear state and error handling.
+5. Add a separate live voice button with its own state machine.
+6. Wire live voice to the app’s actual realtime voice backend. If no backend exists, add a server-side realtime session/token route and frontend session handling.
+7. Remove or revise misleading “voice mode on” copy unless Maynard is truly listening and responding live.
+8. Test typed chat, dictation, mic permission failure, live voice start/end, and mobile layout.
