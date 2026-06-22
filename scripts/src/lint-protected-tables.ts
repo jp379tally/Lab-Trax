@@ -31,6 +31,7 @@ import { fileURLToPath } from "node:url";
  * the two lists match before scanning.
  */
 const PROTECTED_DRIZZLE_EXPORTS: ReadonlyArray<string> = [
+  "aiMemory",
   "cases",
   "caseAttachments",
   "invoices",
