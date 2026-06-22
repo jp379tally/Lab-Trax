@@ -77,13 +77,12 @@ interface NavGroup {
 const NAV: (NavItem | NavGroup)[] = [
   { label: "Dashboard", path: "/", icon: LayoutDashboard },
   { label: "Cases", path: "/cases", icon: FileText },
-  { label: "Accounts", path: "/accounts", icon: Building2 },
+  { label: "Customer Center", path: "/accounts", icon: Building2 },
   {
     label: "Financial",
     icon: Wallet,
     children: [
       { label: "Invoices", path: "/invoices", icon: Receipt },
-      { label: "Customer Center", path: "/customer-center", icon: Users },
       { label: "Statements", path: "/statements", icon: CreditCard },
       { label: "Bank Register", path: "/finance", icon: Wallet },
     ],

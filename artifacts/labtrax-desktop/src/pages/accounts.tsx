@@ -10,20 +10,29 @@ import {
   CheckSquare,
   ChevronDown,
   ChevronRight,
+  Eye,
   GitMerge,
   Loader2,
   Plus,
+  Receipt,
   Search,
   Square,
   Stethoscope,
   Undo2,
   X,
 } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { StatusBadge } from "@/components/StatusBadge";
 import { useUndoDoctorMerge } from "@workspace/api-client-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { Invoice, LabCase, MeResponse, Organization, OrgMemberRow } from "@/lib/types";
-import { formatMoney, relativeTime } from "@/lib/format";
+import { formatDate, formatMoney, relativeTime } from "@/lib/format";
 import type { DoctorRow, MergeSourceInput, UndoToast, MergeDialogResult } from "@/pages/doctors";
 import { DoctorDrawer, MergeDialog } from "@/pages/doctors";
 import { PracticeEditor, AddPracticeDialog } from "@/pages/practices";
@@ -99,6 +108,9 @@ export default function AccountsPage() {
   const [caseView, setCaseView] = useState<"open" | "all">("open");
   const [, navigate] = useLocation();
   const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [selectedPracticeIds, setSelectedPracticeIds] = useState<Set<string>>(new Set());
+  const [invoicePanelOpen, setInvoicePanelOpen] = useState(false);
+  const [invoiceTab, setInvoiceTab] = useState<"all" | "open" | "closed" | "overdue">("all");
   const [mergeDialog, setMergeDialog] = useState<{
     sources: MergeSourceInput[];
     labOrganizationId: string;
@@ -386,13 +398,106 @@ export default function AccountsPage() {
     });
   }
 
+  function togglePractice(id: string) {
+    setSelectedPracticeIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  const totalSelected = picked.size + selectedPracticeIds.size;
+
+  const selectedInvoices = useMemo<Invoice[]>(() => {
+    const invoiceSet = new Set<string>();
+    const result: Invoice[] = [];
+    for (const inv of invoices) {
+      if (selectedPracticeIds.has(inv.providerOrganizationId)) {
+        if (!invoiceSet.has(inv.id)) {
+          invoiceSet.add(inv.id);
+          result.push(inv);
+        }
+      }
+    }
+    for (const doctorKey of picked) {
+      const doctor = doctorRows.find((d) => d.key === doctorKey);
+      if (!doctor) continue;
+      const doctorCaseIds = new Set(
+        cases
+          .filter(
+            (c) =>
+              (c.doctorName || "").toLowerCase() === doctor.doctorName.toLowerCase() &&
+              c.providerOrganizationId === doctor.practiceId,
+          )
+          .map((c) => c.id),
+      );
+      for (const inv of invoices) {
+        if (invoiceSet.has(inv.id)) continue;
+        const matches = inv.caseId
+          ? doctorCaseIds.has(inv.caseId)
+          : doctor.practiceId
+          ? inv.providerOrganizationId === doctor.practiceId
+          : false;
+        if (matches) {
+          invoiceSet.add(inv.id);
+          result.push(inv);
+        }
+      }
+    }
+    return result;
+  }, [invoices, selectedPracticeIds, picked, doctorRows, cases]);
+
+  const filteredInvoices = useMemo<Invoice[]>(() => {
+    const now = new Date();
+    return selectedInvoices
+      .filter((inv) => {
+        if (invoiceTab === "open") {
+          return inv.status === "open" || inv.status === "partially_paid";
+        }
+        if (invoiceTab === "overdue") {
+          const isOpen = inv.status === "open" || inv.status === "partially_paid";
+          if (!isOpen) return false;
+          const bal = Number(inv.balanceDue ?? 0);
+          if (bal <= 0) return false;
+          const due = inv.dueAt ?? inv.dueDate;
+          if (!due) return false;
+          return new Date(due) < now;
+        }
+        if (invoiceTab === "closed") {
+          if (inv.status === "paid") return true;
+          return Number(inv.balanceDue ?? 0) <= 0;
+        }
+        return true;
+      })
+      .sort((a, b) =>
+        (b.issuedAt || b.createdAt || "").localeCompare(a.issuedAt || a.createdAt || ""),
+      );
+  }, [selectedInvoices, invoiceTab]);
+
+  const invoiceTabCounts = useMemo(() => {
+    const now = new Date();
+    let open = 0, overdue = 0, closed = 0;
+    for (const inv of selectedInvoices) {
+      const isOpen = inv.status === "open" || inv.status === "partially_paid";
+      if (isOpen) {
+        open++;
+        const bal = Number(inv.balanceDue ?? 0);
+        const due = inv.dueAt ?? inv.dueDate;
+        if (bal > 0 && due && new Date(due) < now) overdue++;
+      }
+      if (inv.status === "paid" || Number(inv.balanceDue ?? 0) <= 0) closed++;
+    }
+    return { all: selectedInvoices.length, open, overdue, closed };
+  }, [selectedInvoices]);
+
   return (
     <div ref={pageRef} className="px-8 py-7">
       <div className="flex items-start justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Accounts</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">Customer Center</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Practices your lab works with, with their associated doctors.
+            Practices and doctors your lab works with. Select rows to view their invoices.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -459,16 +564,40 @@ export default function AccountsPage() {
             </button>
           </div>
 
-          {picked.size > 0 && (
-            <div className="ml-auto flex items-center gap-2">
-              <span className="text-xs text-muted-foreground">{picked.size} doctor{picked.size === 1 ? "" : "s"} selected</span>
+          <div className="ml-auto flex items-center gap-2">
+            {totalSelected > 0 && (
+              <span className="text-xs text-muted-foreground">
+                {[
+                  selectedPracticeIds.size > 0 && `${selectedPracticeIds.size} practice${selectedPracticeIds.size === 1 ? "" : "s"}`,
+                  picked.size > 0 && `${picked.size} doctor${picked.size === 1 ? "" : "s"}`,
+                ].filter(Boolean).join(", ")} selected
+              </span>
+            )}
+            <button
+              type="button"
+              disabled={totalSelected === 0}
+              onClick={() => {
+                setInvoiceTab("all");
+                setInvoicePanelOpen(true);
+              }}
+              className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Eye size={14} />
+              View invoices for selected
+            </button>
+            {totalSelected > 0 && (
               <button
                 type="button"
-                onClick={() => setPicked(new Set())}
+                onClick={() => {
+                  setPicked(new Set());
+                  setSelectedPracticeIds(new Set());
+                }}
                 className="h-9 px-3 rounded-md text-sm hover:bg-secondary"
               >
                 Clear
               </button>
+            )}
+            {picked.size > 0 && (
               <button
                 type="button"
                 onClick={() => {
@@ -486,13 +615,13 @@ export default function AccountsPage() {
                   if (!labId || sources.length === 0) return;
                   setMergeDialog({ sources, labOrganizationId: labId });
                 }}
-                className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90"
+                className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md border border-border text-sm font-semibold hover:bg-secondary"
               >
                 <GitMerge size={14} />
-                Merge selected
+                Merge doctors
               </button>
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
         <div className="overflow-x-auto">
@@ -618,21 +747,35 @@ export default function AccountsPage() {
                     className="border-t border-border cursor-pointer hover:bg-secondary/40"
                   >
                     <td
-                      className="pl-4 py-3 w-8"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (hasDoctors) toggleExpanded(org.id);
-                      }}
+                      className="pl-3 py-3 w-14"
+                      onClick={(e) => e.stopPropagation()}
                     >
-                      {hasDoctors ? (
+                      <div className="flex items-center gap-1">
                         <button
                           type="button"
-                          className="h-6 w-6 rounded hover:bg-secondary flex items-center justify-center text-muted-foreground"
-                          aria-label={isOpen ? "Collapse" : "Expand"}
+                          className="shrink-0 h-5 w-5 flex items-center justify-center"
+                          aria-label={selectedPracticeIds.has(org.id) ? "Deselect practice" : "Select practice"}
+                          onClick={() => togglePractice(org.id)}
                         >
-                          {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                          {selectedPracticeIds.has(org.id) ? (
+                            <CheckSquare size={14} className="text-primary" />
+                          ) : (
+                            <Square size={14} className="text-muted-foreground" />
+                          )}
                         </button>
-                      ) : null}
+                        {hasDoctors ? (
+                          <button
+                            type="button"
+                            onClick={() => toggleExpanded(org.id)}
+                            className="h-6 w-6 rounded hover:bg-secondary flex items-center justify-center text-muted-foreground"
+                            aria-label={isOpen ? "Collapse" : "Expand"}
+                          >
+                            {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                          </button>
+                        ) : (
+                          <div className="w-6" />
+                        )}
+                      </div>
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2.5">
@@ -884,6 +1027,122 @@ export default function AccountsPage() {
           </button>
         </div>
       )}
+
+      <Dialog open={invoicePanelOpen} onOpenChange={setInvoicePanelOpen}>
+        <DialogContent className="max-w-4xl w-full max-h-[80vh] flex flex-col p-0 gap-0">
+          <DialogHeader className="px-6 pt-5 pb-4 border-b border-border shrink-0">
+            <DialogTitle className="flex items-center gap-2 text-base font-semibold">
+              <Receipt size={16} className="text-primary" />
+              Invoices for selected
+              {selectedPracticeIds.size > 0 && (
+                <span className="text-xs font-normal text-muted-foreground">
+                  ({[...selectedPracticeIds].map((id) => {
+                    const org = orgs.find((o) => o.id === id);
+                    return org ? (org.displayName || org.name) : id;
+                  }).join(", ")}
+                  {picked.size > 0 && ` + ${picked.size} doctor${picked.size === 1 ? "" : "s"}`}
+                  )
+                </span>
+              )}
+              {selectedPracticeIds.size === 0 && picked.size > 0 && (
+                <span className="text-xs font-normal text-muted-foreground">
+                  ({picked.size} doctor{picked.size === 1 ? "" : "s"})
+                </span>
+              )}
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="px-6 pt-3 pb-2 border-b border-border shrink-0">
+            <div className="inline-flex rounded-md border border-border overflow-hidden text-xs font-medium">
+              {(["all", "open", "overdue", "closed"] as const).map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => setInvoiceTab(tab)}
+                  className={`px-3 py-1.5 border-l border-border first:border-l-0 transition-colors ${
+                    invoiceTab === tab
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-secondary text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {tab === "all" && `All (${invoiceTabCounts.all})`}
+                  {tab === "open" && `Open (${invoiceTabCounts.open})`}
+                  {tab === "overdue" && `Overdue (${invoiceTabCounts.overdue})`}
+                  {tab === "closed" && `Closed (${invoiceTabCounts.closed})`}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto min-h-0">
+            {filteredInvoices.length === 0 ? (
+              <div className="py-16 text-center text-muted-foreground text-sm">
+                <Receipt size={28} className="mx-auto mb-3 opacity-30" />
+                <p>No invoices found for this selection and filter.</p>
+              </div>
+            ) : (
+              <table className="w-full text-sm">
+                <thead className="sticky top-0 z-10">
+                  <tr className="bg-secondary/80 text-[11px] uppercase tracking-wide text-muted-foreground">
+                    <th className="text-left font-medium px-4 py-2.5">Invoice #</th>
+                    <th className="text-left font-medium py-2.5">Practice</th>
+                    <th className="text-left font-medium py-2.5">Patient</th>
+                    <th className="text-left font-medium py-2.5">Issued</th>
+                    <th className="text-left font-medium py-2.5">Due</th>
+                    <th className="text-left font-medium py-2.5">Status</th>
+                    <th className="text-right font-medium px-4 py-2.5">Total</th>
+                    <th className="text-right font-medium px-4 py-2.5">Balance</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredInvoices.map((inv) => {
+                    const meta = (inv.displayMetadata ?? inv.displayMetadataJson ?? {}) as { patientName?: string };
+                    const due = inv.dueAt ?? inv.dueDate;
+                    const now = new Date();
+                    const isOverdue =
+                      (inv.status === "open" || inv.status === "partially_paid") &&
+                      Number(inv.balanceDue ?? 0) > 0 &&
+                      !!due &&
+                      new Date(due) < now;
+                    return (
+                      <tr key={inv.id} className="border-t border-border hover:bg-secondary/30">
+                        <td className="px-4 py-2.5 font-mono text-xs font-medium">{inv.invoiceNumber}</td>
+                        <td className="py-2.5 text-xs text-muted-foreground max-w-[160px] truncate">
+                          {inv.providerOrganization?.name ?? "—"}
+                        </td>
+                        <td className="py-2.5 text-xs text-muted-foreground max-w-[140px] truncate">
+                          {meta.patientName ?? "—"}
+                        </td>
+                        <td className="py-2.5 text-xs text-muted-foreground whitespace-nowrap">
+                          {inv.issuedAt ? formatDate(inv.issuedAt) : "—"}
+                        </td>
+                        <td className={`py-2.5 text-xs whitespace-nowrap ${isOverdue ? "text-destructive font-medium" : "text-muted-foreground"}`}>
+                          {due ? formatDate(due) : "—"}
+                        </td>
+                        <td className="py-2.5">
+                          <StatusBadge status={inv.status} />
+                        </td>
+                        <td className="px-4 py-2.5 text-right tabular-nums font-medium">
+                          {formatMoney(Number(inv.total ?? 0))}
+                        </td>
+                        <td className="px-4 py-2.5 text-right tabular-nums">
+                          {Number(inv.balanceDue ?? 0) > 0 ? (
+                            <span className={isOverdue ? "text-destructive font-medium" : "text-warning font-medium"}>
+                              {formatMoney(Number(inv.balanceDue))}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">{formatMoney(0)}</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

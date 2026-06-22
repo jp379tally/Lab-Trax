@@ -37,7 +37,6 @@ const PayeesPage = lazy(() => import("@/pages/finance/payees"));
 const ListsPage = lazy(() => import("@/pages/lists"));
 const DownloadPage = lazy(() => import("@/pages/download"));
 const BillingPage = lazy(() => import("@/pages/billing"));
-const CustomerCenterPage = lazy(() => import("@/pages/customer-center"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 const AcceptInvitePage = lazy(() => import("@/pages/accept-invite"));
 
@@ -93,7 +92,7 @@ function AppLayoutWithUploads() {
           <Route path="/finance/make-deposits" component={MakeDepositsPage} />
           <Route path="/finance/payees" component={PayeesPage} />
           <Route path="/lists" component={ListsPage} />
-          <Route path="/customer-center" component={CustomerCenterPage} />
+          <Route path="/customer-center" component={() => <Redirect to="/accounts" />} />
           <Route path="/download" component={DownloadPage} />
           <Route path="/billing" component={BillingPage} />
           <Route component={NotFound} />
