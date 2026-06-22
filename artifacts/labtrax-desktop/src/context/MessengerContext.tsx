@@ -341,9 +341,18 @@ export function MessengerProvider({ children }: { children: ReactNode }) {
 
   const markRead = useCallback(
     (conversationId: string, lastMessageId: string) => {
+      // Send WS mark_read for real-time notification to the other user
       socketSend({
         type: "mark_read",
         payload: { conversationId, lastMessageId },
+      });
+      // Also call the REST endpoint so the read state is persisted even if
+      // the WebSocket is not connected (prevents the badge from reappearing
+      // on the next login / refresh).
+      apiFetch(`/messenger/conversations/${conversationId}/read`, {
+        method: "POST",
+      }).catch(() => {
+        /* ignore network errors */
       });
       setConversations((prev) =>
         prev.map((c) =>
