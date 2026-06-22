@@ -394,6 +394,137 @@ describe("AiChatPanel — live SSE proposed_action → ConfirmCard rendering", (
   });
 });
 
+// ─── proposed_action confirm flow → done state ──────────────────────────────
+//
+// Covers the Confirm path end-to-end: a pending proposedAction is seeded, the
+// user clicks Confirm, the component POSTs to /ai-agent/confirm, and the
+// ConfirmCard transitions to the green "Done" state showing the result text.
+// On success confirmAction also re-enters streaming via dispatchAiContinuation
+// (fetch → /ai-agent/stream), so fetch is stubbed with a clean SSE stream.
+
+describe("AiChatPanel — proposed_action confirm flow → done state", () => {
+  const MOCK_ACTION_ID = "test-action-003";
+  const PENDING_MSG: ChatMsg = {
+    id: "action-msg-003",
+    role: "assistant",
+    content: undefined,
+    proposedAction: {
+      actionId: MOCK_ACTION_ID,
+      toolName: "mark_invoice_paid",
+      summary: "Proposed: mark invoice #INV-001 as paid",
+      state: "pending",
+      expiresAt: Date.now() + 300_000,
+    },
+  };
+
+  beforeEach(() => {
+    // Confirm success re-enters streaming via fetch("/ai-agent/stream").
+    // Stub fetch with a stream that closes immediately so dispatchAiContinuation
+    // resolves cleanly and doesn't hit the (undefined) global fetch.
+    vi.stubGlobal("fetch", makeSseFetch([{ done: true }]));
+  });
+
+  it("transitions the ConfirmCard to the 'Done' state when Confirm is clicked", async () => {
+    vi.mocked(apiFetch).mockResolvedValue({
+      type: "action_executed",
+      success: true,
+      summary: "Invoice #INV-001 marked as paid",
+    });
+
+    seedSession([PENDING_MSG]);
+    renderPanel();
+
+    // Wait for the live Confirm button to appear.
+    await waitFor(
+      () => { expect(screen.getByRole("button", { name: /^confirm$/i })).toBeTruthy(); },
+      { timeout: 3000 },
+    );
+
+    // Click Confirm.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^confirm$/i }));
+    });
+
+    // Card transitions to the "Done" state with the prefixed result text.
+    await waitFor(
+      () => {
+        expect(screen.getByText(/^done$/i)).toBeTruthy();
+        expect(screen.getByText("✓ Invoice #INV-001 marked as paid")).toBeTruthy();
+      },
+      { timeout: 3000 },
+    );
+
+    // Live Confirm/Cancel buttons are gone once the action is done.
+    expect(screen.queryByRole("button", { name: /^confirm$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^cancel$/i })).toBeNull();
+  });
+
+  it("POSTs to /ai-agent/confirm with the action id", async () => {
+    vi.mocked(apiFetch).mockResolvedValue({
+      type: "action_executed",
+      success: true,
+      summary: "Invoice #INV-001 marked as paid",
+    });
+
+    seedSession([PENDING_MSG]);
+    renderPanel();
+
+    await waitFor(
+      () => { expect(screen.getByRole("button", { name: /^confirm$/i })).toBeTruthy(); },
+      { timeout: 3000 },
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^confirm$/i }));
+    });
+
+    await waitFor(
+      () => {
+        expect(vi.mocked(apiFetch)).toHaveBeenCalledWith(
+          "/ai-agent/confirm",
+          expect.objectContaining({
+            method: "POST",
+            body: JSON.stringify({ actionId: MOCK_ACTION_ID }),
+          }),
+        );
+      },
+      { timeout: 3000 },
+    );
+  });
+
+  it("re-enters streaming via /ai-agent/stream after a successful confirm", async () => {
+    vi.mocked(apiFetch).mockResolvedValue({
+      type: "action_executed",
+      success: true,
+      summary: "Invoice #INV-001 marked as paid",
+    });
+
+    seedSession([PENDING_MSG]);
+    renderPanel();
+
+    await waitFor(
+      () => { expect(screen.getByRole("button", { name: /^confirm$/i })).toBeTruthy(); },
+      { timeout: 3000 },
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^confirm$/i }));
+    });
+
+    // dispatchAiContinuation fires a follow-up stream request on success.
+    await waitFor(
+      () => {
+        expect(
+          vi.mocked(fetch).mock.calls.some(
+            ([url]) => typeof url === "string" && url.includes("/ai-agent/stream"),
+          ),
+        ).toBe(true);
+      },
+      { timeout: 3000 },
+    );
+  });
+});
+
 // ─── Mixed text + proposed_action ────────────────────────────────────────────
 
 describe("AiChatPanel — mixed text and proposed_action", () => {
