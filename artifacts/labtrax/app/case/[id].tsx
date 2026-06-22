@@ -1283,6 +1283,7 @@ export default function CaseDetailScreen() {
             isAdmin={isAdminOfCase}
             labName={labName}
             onSaved={() => caseQuery.refetch()}
+            onGoToInvoice={() => setActive("invoice")}
             styles={styles}
             colors={colors}
           />
@@ -1444,6 +1445,7 @@ function OverviewSection({
   isAdmin,
   labName,
   onSaved,
+  onGoToInvoice,
   styles,
   colors,
 }: {
@@ -1453,6 +1455,7 @@ function OverviewSection({
   isAdmin: boolean;
   labName: string | null;
   onSaved: () => void | Promise<unknown>;
+  onGoToInvoice: () => void;
   styles: Styles;
   colors: ThemeColors;
 }) {
@@ -1975,8 +1978,8 @@ function OverviewSection({
                   </Text>
                   <View style={styles.pfmReminderActions}>
                     {alloyPreviewLoaded && alloyPreview && !alloyPreview.priced ? (
-                      <Pressable hitSlop={8} onPress={() => router.push("/manage/pricing")}>
-                        <Text style={styles.pfmReminderAdd}>Set up fee schedule</Text>
+                      <Pressable hitSlop={8} onPress={onGoToInvoice}>
+                        <Text style={styles.pfmReminderAdd}>Go to invoice</Text>
                       </Pressable>
                     ) : (
                       <Pressable
