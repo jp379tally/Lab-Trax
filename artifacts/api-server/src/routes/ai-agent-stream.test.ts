@@ -319,6 +319,92 @@ describe("POST /api/ai-agent/stream — happy path: text-only response", () => {
   });
 });
 
+// ─── Knowledge audit metadata in the done event ──────────────────────────────
+//
+// The non-streaming POST /ai-agent route has knowledge-audit tests asserting
+// knowledgeSectionIds / retentionDisclaimer appear in its JSON reply. The
+// streaming route emits the same metadata inside its terminal `done` event.
+// These tests pin that contract so a regression that dropped the fields from
+// the done event (silently removing legal/privacy disclaimers from the
+// streaming client) would fail loudly.
+
+describe("POST /api/ai-agent/stream — knowledge audit metadata in done event", () => {
+  beforeAll(() => {
+    process.env["AI_INTEGRATIONS_OPENAI_API_KEY"] ??= "test-stream-key";
+  });
+
+  beforeEach(() => {
+    // Text-only reply (no tool_calls) so the route exits via the terminal
+    // done event that serialises the knowledge metadata.
+    mockStreamCreate.mockImplementation(() =>
+      makeAsyncIterable([
+        { choices: [{ delta: { content: "Mocked AI reply." } }] },
+        { choices: [{ delta: {} }] },
+      ]),
+    );
+  });
+
+  it("done event carries a non-empty knowledgeSectionIds array of strings for a privacy-signal query", async () => {
+    const app = makeApp("user-ka-stream-1");
+    const res = await request(app)
+      .post("/api/ai-agent/stream")
+      .buffer(true)
+      .parse(bufferRawStream)
+      .send({ messages: [{ role: "user", content: "Can I share a patient photo with anyone?" }] });
+
+    expect(res.status).toBe(200);
+    const events = parseSseEvents(res.body as string);
+    const doneEvent = events.find((e) => e.done === true);
+    expect(doneEvent).toBeDefined();
+    expect(Array.isArray(doneEvent!.knowledgeSectionIds)).toBe(true);
+    const ids = doneEvent!.knowledgeSectionIds as string[];
+    expect(ids.length).toBeGreaterThan(0);
+    for (const id of ids) {
+      expect(typeof id).toBe("string");
+      expect(id.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("done event carries retentionDisclaimer:true and a disclaimer string for a retention-signal query", async () => {
+    const app = makeApp("user-ka-stream-2");
+    const res = await request(app)
+      .post("/api/ai-agent/stream")
+      .buffer(true)
+      .parse(bufferRawStream)
+      .send({
+        messages: [{ role: "user", content: "How long do I need to keep dental lab records?" }],
+      });
+
+    expect(res.status).toBe(200);
+    const events = parseSseEvents(res.body as string);
+    const doneEvent = events.find((e) => e.done === true);
+    expect(doneEvent).toBeDefined();
+    expect(doneEvent!.retentionDisclaimer).toBe(true);
+    expect(typeof doneEvent!.disclaimer).toBe("string");
+    expect((doneEvent!.disclaimer as string).length).toBeGreaterThan(0);
+  });
+
+  it("done event omits knowledge/disclaimer fields for an unrelated query", async () => {
+    const app = makeApp("user-ka-stream-3");
+    const res = await request(app)
+      .post("/api/ai-agent/stream")
+      .buffer(true)
+      .parse(bufferRawStream)
+      .send({
+        messages: [{ role: "user", content: "zzzzz qqqqq wwwww unrelated gibberish 12345" }],
+      });
+
+    expect(res.status).toBe(200);
+    const events = parseSseEvents(res.body as string);
+    const doneEvent = events.find((e) => e.done === true);
+    expect(doneEvent).toBeDefined();
+    expect(doneEvent!.knowledgeSectionIds).toBeUndefined();
+    expect(doneEvent!.retentionDisclaimer).toBeUndefined();
+    expect(doneEvent!.disclaimer).toBeUndefined();
+    expect(doneEvent!.privacyDisclaimer).toBeUndefined();
+  });
+});
+
 // ─── Action proposal: impactful tool call ────────────────────────────────────
 
 describe("POST /api/ai-agent/stream — action proposal path", () => {
