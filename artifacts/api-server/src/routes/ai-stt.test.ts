@@ -8,12 +8,16 @@
  * - POST /api/ai-stt returns a structured 500 when the Whisper API fails
  * - POST /api/ai-stt returns 503 when AI is not configured
  * - POST /api/ai-stt returns { ok: true, transcript: '' } when Whisper returns empty text
+ * - POST /api/ai-stt returns 429 when the per-user rate limit is exceeded
+ * - POST /api/ai-stt rate limit is per-user (different users have independent counters)
  */
 
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import request from "supertest";
 import express from "express";
+import type { RequestHandler } from "express";
 import { registerAiSttRoutes } from "./ai-stt";
+import { createUserRateLimit } from "../lib/rate-limit";
 
 // ─── OpenAI mock (hoisted so the module-level singleton is initialised with it)
 // Mocks audio.transcriptions.create so the route exercises the multer + Whisper
@@ -54,7 +58,7 @@ vi.mock("../middlewares/auth", () => ({
 // req.log must be stubbed so the route's req.log.warn / req.log.error calls
 // don't throw when pino-http isn't wired in the test app.
 
-function makeApp(userId?: string) {
+function makeApp(userId?: string, rateLimiter?: RequestHandler) {
   const app = express();
   app.use((req: any, _res, next) => {
     req.log = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
@@ -62,7 +66,7 @@ function makeApp(userId?: string) {
     next();
   });
   const router = express.Router();
-  registerAiSttRoutes(router);
+  registerAiSttRoutes(router, rateLimiter ? { rateLimiter } : undefined);
   app.use("/api", router);
   return app;
 }
@@ -184,5 +188,69 @@ describe("POST /api/ai-stt", () => {
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.transcript).toBe("");
+  });
+
+  describe("rate limiting", () => {
+    it("returns 429 when the per-user request limit is exceeded", async () => {
+      // A tight 1-request-per-minute limiter injected so this test controls the
+      // threshold independently of the production default (10/min).
+      const tightLimiter = createUserRateLimit({ windowMs: 60_000, max: 1 });
+      const app = makeApp("rate-limit-user", tightLimiter);
+
+      mockTranscriptionsCreate.mockResolvedValue({ text: "ok" });
+
+      const attach = () =>
+        request(app)
+          .post("/api/ai-stt")
+          .attach("audio", Buffer.from("audio data"), {
+            filename: "audio.webm",
+            contentType: "audio/webm",
+          });
+
+      const first = await attach();
+      expect(first.status).toBe(200);
+
+      const second = await attach();
+      expect(second.status).toBe(429);
+      expect(second.body.ok).toBe(false);
+      expect(second.body.error).toMatch(/too many/i);
+      expect(second.headers["retry-after"]).toBeDefined();
+    });
+
+    it("rate limit counters are independent per user", async () => {
+      // With max:1, each user gets exactly one allowed request.  Verify that
+      // exhausting user-A's quota does not affect user-B.
+      const tightLimiter = createUserRateLimit({ windowMs: 60_000, max: 1 });
+
+      const appA = makeApp("user-alpha", tightLimiter);
+      const appB = makeApp("user-beta", tightLimiter);
+
+      mockTranscriptionsCreate.mockResolvedValue({ text: "hello" });
+
+      // Exhaust user-alpha's allowance.
+      await request(appA).post("/api/ai-stt").attach("audio", Buffer.from("a"), { filename: "a.webm", contentType: "audio/webm" });
+      const alphaOverLimit = await request(appA).post("/api/ai-stt").attach("audio", Buffer.from("a"), { filename: "a.webm", contentType: "audio/webm" });
+      expect(alphaOverLimit.status).toBe(429);
+
+      // user-beta's first request must still succeed.
+      const betaFirst = await request(appB).post("/api/ai-stt").attach("audio", Buffer.from("b"), { filename: "b.webm", contentType: "audio/webm" });
+      expect(betaFirst.status).toBe(200);
+    });
+
+    it("exposes standard rate-limit headers on allowed requests", async () => {
+      const tightLimiter = createUserRateLimit({ windowMs: 60_000, max: 5 });
+      const app = makeApp("header-user", tightLimiter);
+
+      mockTranscriptionsCreate.mockResolvedValue({ text: "ok" });
+
+      const res = await request(app)
+        .post("/api/ai-stt")
+        .attach("audio", Buffer.from("audio"), { filename: "audio.webm", contentType: "audio/webm" });
+
+      expect(res.status).toBe(200);
+      expect(res.headers["x-ratelimit-limit"]).toBe("5");
+      expect(res.headers["x-ratelimit-remaining"]).toBe("4");
+      expect(res.headers["x-ratelimit-reset"]).toBeDefined();
+    });
   });
 });
