@@ -425,6 +425,7 @@ vi.mock("@/lib/auth-context", () => ({
 vi.mock("@/lib/query-client", () => ({
   getApiUrl: () => "http://localhost/",
   getAccessToken: vi.fn(async () => null),
+  refreshAndGetAccessToken: vi.fn(async () => null as string | null),
   resilientFetch: vi.fn(
     async (url: string, init?: RequestInit) => fetchHandler.current(url, init),
   ),
