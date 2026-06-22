@@ -15,7 +15,6 @@ import {
   Send,
   Sparkles,
   Trash2,
-  Volume2,
   X,
   Zap,
 } from "lucide-react";
@@ -1033,9 +1032,16 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
         const transcript = body.transcript?.trim() ?? "";
         if (transcript) {
           setInput(transcript);
-          sendMessage(transcript)
-            .then(() => setMicState("idle"))
-            .catch(() => setMicState("idle"));
+          if (voiceModeRef.current) {
+            // Voice conversation mode: auto-send
+            sendMessage(transcript)
+              .then(() => setMicState("idle"))
+              .catch(() => setMicState("idle"));
+          } else {
+            // Dictation mode: just fill the text box, let user review and send
+            setMicState("idle");
+            setTimeout(() => inputRef.current?.focus(), 50);
+          }
         } else {
           setMicState("idle");
         }
@@ -1068,87 +1074,109 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
   }
 
   /** Call the AI endpoint with a given message list and append the response.
-   *  Used both by sendMessage and by auto-continuation after a confirmed action. */
+   *  Uses SSE streaming via /ai-chat/stream for real-time token delivery.
+   *  Falls back to /ai-agent for action proposals (confirm/reject flow). */
   async function dispatchAiContinuation(
     currentMessages: ChatMsg[],
     sessionId: string,
     snapshotPinnedCases: AiCaseContext[],
   ) {
     setSending(true);
+
+    const body: Record<string, unknown> = { messages: buildHistory(currentMessages) };
+    if (snapshotPinnedCases.length === 1) {
+      body.caseId = snapshotPinnedCases[0]!.caseId;
+    } else if (snapshotPinnedCases.length > 1) {
+      body.caseIds = snapshotPinnedCases.map((c) => c.caseId);
+    }
+
+    // ── Streaming path via /ai-chat/stream ──────────────────────────────────
+    const streamingId = generateId();
+    const streamingMsg: ChatMsg = { id: streamingId, role: "assistant", content: "" };
+    setMessages([...currentMessages, streamingMsg]);
+
     try {
-      const body: Record<string, unknown> = { messages: buildHistory(currentMessages) };
-      if (snapshotPinnedCases.length === 1) {
-        body.caseId = snapshotPinnedCases[0]!.caseId;
-      } else if (snapshotPinnedCases.length > 1) {
-        body.caseIds = snapshotPinnedCases.map((c) => c.caseId);
+      const token = getAccessToken();
+      const resp = await fetch(apiUrl("/ai-chat/stream"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (!resp.ok || !resp.body) {
+        // Non-2xx: parse as JSON error and surface it
+        let msg = "Sorry, I'm having trouble connecting right now. Please try again.";
+        try {
+          const errBody = await resp.json() as { error?: string };
+          if (resp.status === 429) msg = "Please slow down — try again in a moment.";
+          else if (resp.status === 503) msg = errBody.error ?? "AI assistant is not configured on this server.";
+          else if (resp.status === 500) msg = errBody.error ? `AI error: ${errBody.error}` : msg;
+        } catch { /* ignore parse error */ }
+        const errMsg: ChatMsg = { id: streamingId, role: "assistant", content: msg };
+        setMessages((prev) => prev.map((m) => m.id === streamingId ? errMsg : m));
+        persistSession([...currentMessages, errMsg], sessionId, snapshotPinnedCases);
+        return;
       }
 
-      const data = await apiFetch<{
-        type: "reply" | "proposed_action";
-        content?: string;
-        actionId?: string;
-        toolName?: string;
-        summary?: string;
-        error?: string;
-        toolOutputs?: Array<{ name: string; result: unknown }>;
-        knowledgeSectionIds?: string[];
-        retentionDisclaimer?: boolean;
-        privacyDisclaimer?: boolean;
-        disclaimer?: string;
-      }>("/ai-agent", { method: "POST", body: JSON.stringify(body) });
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      let fullContent = "";
+      let finalMeta: Pick<ChatMsg, "knowledgeSectionIds" | "retentionDisclaimer" | "privacyDisclaimer" | "disclaimer"> = {};
 
-      let assistantMsg: ChatMsg;
-      if (data.type === "proposed_action" && data.actionId && data.summary) {
-        assistantMsg = {
-          id: generateId(),
-          role: "assistant",
-          proposedAction: {
-            actionId: data.actionId,
-            toolName: data.toolName ?? "",
-            summary: data.summary,
-            state: "pending",
-            expiresAt: Date.now() + PENDING_TTL_MS,
-          },
-        };
-      } else {
-        assistantMsg = {
-          id: generateId(),
-          role: "assistant",
-          content: data.content || "I couldn't generate a response. Please try again.",
-          ...(data.toolOutputs && data.toolOutputs.length > 0 ? { toolOutputs: data.toolOutputs } : {}),
-          ...(data.knowledgeSectionIds && data.knowledgeSectionIds.length > 0
-            ? { knowledgeSectionIds: data.knowledgeSectionIds }
-            : {}),
-          ...(data.retentionDisclaimer ? { retentionDisclaimer: true } : {}),
-          ...(data.privacyDisclaimer ? { privacyDisclaimer: true } : {}),
-          ...(data.disclaimer ? { disclaimer: data.disclaimer } : {}),
-        };
+      outer: while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop()!;
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          let evt: Record<string, unknown>;
+          try { evt = JSON.parse(line.slice(6)) as Record<string, unknown>; } catch { continue; }
+          if (typeof evt.token === "string") {
+            fullContent += evt.token;
+            setMessages((prev) =>
+              prev.map((m) => m.id === streamingId ? { ...m, content: fullContent } : m),
+            );
+          }
+          if (evt.error) {
+            fullContent = typeof evt.error === "string" ? evt.error : "I couldn't generate a response.";
+            setMessages((prev) =>
+              prev.map((m) => m.id === streamingId ? { ...m, content: fullContent } : m),
+            );
+            break outer;
+          }
+          if (evt.done) {
+            finalMeta = {
+              ...(Array.isArray(evt.knowledgeSectionIds) && evt.knowledgeSectionIds.length > 0
+                ? { knowledgeSectionIds: evt.knowledgeSectionIds as string[] }
+                : {}),
+              ...(evt.retentionDisclaimer ? { retentionDisclaimer: true } : {}),
+              ...(evt.privacyDisclaimer ? { privacyDisclaimer: true } : {}),
+              ...(typeof evt.disclaimer === "string" ? { disclaimer: evt.disclaimer } : {}),
+            };
+          }
+        }
       }
 
-      const finalMessages = [...currentMessages, assistantMsg];
-      setMessages(finalMessages);
+      if (!fullContent) fullContent = "I couldn't generate a response. Please try again.";
+
+      const finalMsg: ChatMsg = { id: streamingId, role: "assistant", content: fullContent, ...finalMeta };
+      const finalMessages = [...currentMessages, finalMsg];
+      setMessages((prev) => prev.map((m) => m.id === streamingId ? finalMsg : m));
       persistSession(finalMessages, sessionId, snapshotPinnedCases);
-      if (voiceModeRef.current && typeof assistantMsg.content === "string" && assistantMsg.content) {
-        void speakText(assistantMsg.content);
+      if (voiceModeRef.current && fullContent) {
+        void speakText(fullContent);
       }
     } catch (err: any) {
-      let msg: string;
-      if (err?.status === 429) {
-        msg = "Please slow down — try again in a moment.";
-      } else if (err?.status === 503) {
-        msg = "AI assistant is not configured on this server. Please contact your administrator.";
-      } else if (err?.status === 500) {
-        const detail = err?.body?.error || err?.data?.error;
-        msg = detail
-          ? `AI assistant encountered a server error: ${detail}`
-          : "AI assistant encountered a server error. Please try again or contact your administrator.";
-      } else {
-        msg = "Sorry, I'm having trouble connecting right now. Please try again.";
-      }
-      const errMsg: ChatMsg = { id: generateId(), role: "assistant", content: msg };
-      const finalMessages = [...currentMessages, errMsg];
-      setMessages(finalMessages);
-      persistSession(finalMessages, sessionId, snapshotPinnedCases);
+      const msg = "Sorry, I'm having trouble connecting right now. Please try again.";
+      const errMsg: ChatMsg = { id: streamingId, role: "assistant", content: msg };
+      setMessages((prev) => prev.map((m) => m.id === streamingId ? errMsg : m));
+      persistSession([...currentMessages, errMsg], sessionId, snapshotPinnedCases);
     } finally {
       setSending(false);
     }
@@ -1384,36 +1412,6 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
               }`}
             >
               <PenSquare size={15} />
-            </button>
-
-            {voiceMode && (
-              <select
-                value={ttsVoice}
-                onChange={(e) => setTtsVoice(e.target.value as TtsVoice)}
-                title="TTS voice"
-                className="h-8 rounded-md border border-input bg-background px-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-              >
-                {TTS_VOICES.map((v) => (
-                  <option key={v.value} value={v.value}>{v.label}</option>
-                ))}
-              </select>
-            )}
-
-            <button
-              type="button"
-              onClick={() => {
-                const next = !voiceMode;
-                setVoiceMode(next);
-                if (!next) { stopListening(); stopSpeaking(); }
-              }}
-              title={voiceMode ? "Exit voice mode" : "Voice mode — Maynard speaks and listens hands-free"}
-              className={`h-8 w-8 rounded-md flex items-center justify-center transition-colors ${
-                voiceMode
-                  ? "text-primary bg-primary/10"
-                  : "text-muted-foreground hover:bg-secondary hover:text-foreground"
-              }`}
-            >
-              <Volume2 size={15} />
             </button>
 
             <button
@@ -1848,6 +1846,25 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
             )}
           </button>
 
+          {/* Voice conversation button — toggles voice mode, lives right of mic */}
+          <button
+            type="button"
+            onClick={() => {
+              const next = !voiceMode;
+              setVoiceMode(next);
+              if (!next) { stopListening(); stopSpeaking(); }
+            }}
+            title={voiceMode ? "Exit voice mode" : "Voice conversation — Maynard will speak and listen automatically"}
+            aria-label={voiceMode ? "Exit voice mode" : "Start voice conversation"}
+            className={`h-9 w-9 rounded-full flex items-center justify-center shrink-0 transition-colors ${
+              voiceMode
+                ? "bg-foreground text-background"
+                : "bg-secondary border border-input text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <VoiceWaveform />
+          </button>
+
           <button
             type="button"
             onClick={() => sendMessage(input)}
@@ -1878,7 +1895,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
         <p className="text-[10px] text-muted-foreground/50 mt-1.5 text-center">
           {voiceMode
             ? "Voice mode on — Maynard will speak and listen automatically"
-            : "Shift+Enter for new line · Enter to send · Mic to speak"}
+            : "Mic to dictate · Hold waveform for voice conversation · Enter to send"}
         </p>
       </div>
     </div>

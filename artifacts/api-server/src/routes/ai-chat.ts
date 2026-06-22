@@ -176,6 +176,36 @@ async function buildLabContext(labId: string): Promise<string> {
     resByCase.get(r.caseId)!.push(r);
   }
 
+  const IMAGE_MIME_RE = /^image\//i;
+  const IMAGE_EXT_RE = /\.(jpe?g|png|gif|webp|bmp|tiff?|heic|heif|avif)$/i;
+  const attachCountByCase = new Map<string, number>();
+  const photoCountByCase = new Map<string, number>();
+  if (caseIds.length > 0) {
+    const attachRows = await db
+      .select({
+        caseId: caseAttachments.caseId,
+        fileType: caseAttachments.fileType,
+        fileName: caseAttachments.fileName,
+      })
+      .from(caseAttachments)
+      .where(
+        and(
+          inArray(caseAttachments.caseId, caseIds),
+          isNull(caseAttachments.deletedAt),
+        ),
+      );
+    for (const a of attachRows) {
+      if (!a.caseId) continue;
+      attachCountByCase.set(a.caseId, (attachCountByCase.get(a.caseId) ?? 0) + 1);
+      const isPhoto =
+        IMAGE_MIME_RE.test(a.fileType ?? "") ||
+        IMAGE_EXT_RE.test(a.fileName ?? "");
+      if (isPhoto) {
+        photoCountByCase.set(a.caseId, (photoCountByCase.get(a.caseId) ?? 0) + 1);
+      }
+    }
+  }
+
   const tiers = await db
     .select()
     .from(pricingTiers)
@@ -244,7 +274,12 @@ CASES (${activeCases.length} active, ${caseRows.length} total shown):
     const dueStr = c.dueDate
       ? new Date(c.dueDate).toLocaleDateString()
       : "no due date";
-    ctx += `- Case ${c.caseNumber}: ${c.patientFirstName} ${c.patientLastName}, Dr. ${c.doctorName}, Status: ${c.status}, Due: ${dueStr}${c.priority === "rush" ? " (RUSH)" : ""}${resStr ? `, Restorations: ${resStr}` : ""}\n`;
+    const enteredStr = c.createdAt
+      ? new Date(c.createdAt).toLocaleDateString()
+      : "unknown";
+    const photoCount = photoCountByCase.get(c.id) ?? 0;
+    const photosStr = photoCount > 0 ? `${photoCount}` : "none";
+    ctx += `- Case ${c.caseNumber}: ${c.patientFirstName} ${c.patientLastName}, Dr. ${c.doctorName}, Status: ${c.status}, Due: ${dueStr}, Entered: ${enteredStr}, Photos: ${photosStr}${c.priority === "rush" ? " (RUSH)" : ""}${resStr ? `, Restorations: ${resStr}` : ""}\n`;
   }
 
   ctx += `\nPRICING TIERS:\n`;
@@ -304,6 +339,36 @@ async function buildProviderContext(userId: string): Promise<string> {
     resByCase.get(r.caseId)!.push(r);
   }
 
+  const IMAGE_MIME_RE = /^image\//i;
+  const IMAGE_EXT_RE = /\.(jpe?g|png|gif|webp|bmp|tiff?|heic|heif|avif)$/i;
+  const attachCountByCase = new Map<string, number>();
+  const photoCountByCase = new Map<string, number>();
+  if (caseIds.length > 0) {
+    const attachRows = await db
+      .select({
+        caseId: caseAttachments.caseId,
+        fileType: caseAttachments.fileType,
+        fileName: caseAttachments.fileName,
+      })
+      .from(caseAttachments)
+      .where(
+        and(
+          inArray(caseAttachments.caseId, caseIds),
+          isNull(caseAttachments.deletedAt),
+        ),
+      );
+    for (const a of attachRows) {
+      if (!a.caseId) continue;
+      attachCountByCase.set(a.caseId, (attachCountByCase.get(a.caseId) ?? 0) + 1);
+      const isPhoto =
+        IMAGE_MIME_RE.test(a.fileType ?? "") ||
+        IMAGE_EXT_RE.test(a.fileName ?? "");
+      if (isPhoto) {
+        photoCountByCase.set(a.caseId, (photoCountByCase.get(a.caseId) ?? 0) + 1);
+      }
+    }
+  }
+
   const labOrgIds = [...new Set(caseRows.map((c) => c.labOrganizationId))];
   const labOrgs =
     labOrgIds.length > 0
@@ -339,7 +404,12 @@ async function buildProviderContext(userId: string): Promise<string> {
     const dueStr = c.dueDate
       ? new Date(c.dueDate).toLocaleDateString()
       : "no due date";
-    ctx += `- Case ${c.caseNumber}: ${c.patientFirstName} ${c.patientLastName}, Status: ${c.status}, Lab: ${lab?.displayName || lab?.name || "Unknown"}, Due: ${dueStr}${c.priority === "rush" ? " (RUSH)" : ""}${resStr ? `, Restorations: ${resStr}` : ""}\n`;
+    const enteredStr = c.createdAt
+      ? new Date(c.createdAt).toLocaleDateString()
+      : "unknown";
+    const photoCount = photoCountByCase.get(c.id) ?? 0;
+    const photosStr = photoCount > 0 ? `${photoCount}` : "none";
+    ctx += `- Case ${c.caseNumber}: ${c.patientFirstName} ${c.patientLastName}, Status: ${c.status}, Lab: ${lab?.displayName || lab?.name || "Unknown"}, Due: ${dueStr}, Entered: ${enteredStr}, Photos: ${photosStr}${c.priority === "rush" ? " (RUSH)" : ""}${resStr ? `, Restorations: ${resStr}` : ""}\n`;
   }
 
   if (labOrgIds.length > 0) {
@@ -848,5 +918,163 @@ ${pinnedCaseCtx ? `${pinnedCaseCtx}\n` : ""}${contextBlock}`;
         .status(500)
         .json({ error: "Failed to get AI response. Please try again." });
     }
+  });
+
+  /** POST /ai-chat/stream — SSE streaming variant.
+   *  Emits `data: {"token":"…"}\n\n` per token, then
+   *  `data: {"done":true,…}\n\n` with knowledgeSectionIds / disclaimer flags.
+   *  History is persisted in the background after the stream ends.
+   */
+  router.post("/ai-chat/stream", requireAuth, aiChatRateLimit, async (req: any, res: any) => {
+    const userId: string = req.user.id;
+
+    const openai = getAiClient();
+    if (!openai) {
+      return res.status(503).json({
+        error:
+          "AI assistant is not configured on this server. Please ask your administrator to set AI_INTEGRATIONS_OPENAI_API_KEY.",
+      });
+    }
+
+    const body = req.body as {
+      messages?: Array<{ role: "user" | "assistant"; content: string }>;
+      caseId?: string;
+      caseIds?: string[];
+    };
+    const messages = body?.messages;
+
+    let requestedCaseIds: string[] = [];
+    if (Array.isArray(body?.caseIds) && body.caseIds.length > 0) {
+      requestedCaseIds = [
+        ...new Set(
+          body.caseIds
+            .filter((id) => typeof id === "string" && id.trim())
+            .map((id) => id.trim())
+            .slice(0, 10),
+        ),
+      ];
+    } else if (typeof body?.caseId === "string" && body.caseId.trim()) {
+      requestedCaseIds = [body.caseId.trim()];
+    }
+
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({ error: "messages array is required" });
+    }
+    const lastMsg = messages[messages.length - 1];
+    if (!lastMsg || lastMsg.role !== "user") {
+      return res.status(400).json({ error: "Last message must have role 'user'" });
+    }
+
+    const safeMessages = messages.slice(-20).map((m) => ({
+      role: m.role as "user" | "assistant",
+      content: String(m.content || "").slice(0, 2000),
+    }));
+
+    const userType: string = req.user.userType || "lab";
+    const userMessage = String(lastMsg.content || "");
+    const knowledgeMeta = buildKnowledgeBlockWithMeta(userMessage);
+    const knowledgeBlock = knowledgeMeta.block;
+    const materialBlock = buildMaterialSuggestionBlock(userMessage);
+    let learnLabIds: string[] = [];
+
+    let systemPrompt: string;
+    try {
+      if (userType === "provider") {
+        const contextBlock = await buildProviderContext(userId);
+        let pinnedCaseCtx = "";
+        if (requestedCaseIds.length > 0) {
+          pinnedCaseCtx = await buildMultiCaseContext(requestedCaseIds, userId, userType);
+        }
+        systemPrompt = `You are Maynard, a helpful assistant for dental providers (doctors and practices).
+You have access to the provider's real-time case data and pricing from all their linked dental labs.
+Answer questions about case status, estimated delivery, restorations, and what this provider is charged per item type accurately using only the data provided below.
+Be concise and professional. If asked about a case or patient not in the data, say so clearly rather than guessing.
+Today's date: ${new Date().toLocaleDateString()}.
+${knowledgeBlock}${materialBlock}
+${pinnedCaseCtx ? `${pinnedCaseCtx}\n` : ""}${contextBlock}`;
+      } else {
+        const labIds = await getActiveLabIds(userId);
+        learnLabIds = labIds;
+        let contextBlock: string;
+        if (labIds.length === 0) {
+          contextBlock = "This user is not a member of any active lab organization.";
+        } else {
+          contextBlock = await buildLabContext(labIds[0]);
+        }
+        const memoryBlock = await buildLabMemoryBlock(labIds);
+        let pinnedCaseCtx = "";
+        if (requestedCaseIds.length > 0) {
+          pinnedCaseCtx = await buildMultiCaseContext(requestedCaseIds, userId, userType);
+        }
+        systemPrompt = `You are Maynard, a helpful assistant for dental lab staff.
+You have access to real-time data about this lab's cases, pricing tiers, and lab profile.
+Answer questions about case status, patient cases, doctor pricing, estimated turnaround, and lab information accurately using only the data provided below.
+Be concise and professional. If a case is not in the data, say so clearly rather than guessing.
+Today's date: ${new Date().toLocaleDateString()}.
+${knowledgeBlock}${materialBlock}${memoryBlock}
+${pinnedCaseCtx ? `${pinnedCaseCtx}\n` : ""}${contextBlock}`;
+      }
+    } catch (err: any) {
+      req.log?.error({ err }, "AI chat/stream context assembly error");
+      return res.status(500).json({ error: "Failed to assemble context. Please try again." });
+    }
+
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders();
+
+    const sendEvent = (payload: object) => {
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    };
+
+    let fullContent = "";
+    try {
+      const stream = await openai.chat.completions.create({
+        model: "gpt-5-mini",
+        messages: [{ role: "system", content: systemPrompt }, ...safeMessages],
+        max_completion_tokens: 4000,
+        stream: true,
+      });
+
+      for await (const chunk of stream) {
+        const token = chunk.choices[0]?.delta?.content ?? "";
+        if (token) {
+          fullContent += token;
+          sendEvent({ token });
+        }
+      }
+    } catch (err: any) {
+      req.log?.error({ err }, "AI chat/stream OpenAI error");
+      sendEvent({ error: "Failed to get AI response. Please try again." });
+      res.end();
+      return;
+    }
+
+    sendEvent({
+      done: true,
+      ...(knowledgeMeta.sectionIds.length > 0 ? { knowledgeSectionIds: knowledgeMeta.sectionIds } : {}),
+      ...(knowledgeMeta.retentionDisclaimer ? { retentionDisclaimer: true, disclaimer: RETENTION_LEGAL_DISCLAIMER } : {}),
+      ...(knowledgeMeta.privacyDisclaimer ? { privacyDisclaimer: true } : {}),
+    });
+    res.end();
+
+    const userContent = userMessage.slice(0, 2000);
+    persistExchange(
+      userId,
+      userContent,
+      fullContent,
+      knowledgeMeta.sectionIds.length > 0 ? knowledgeMeta.sectionIds : undefined,
+      knowledgeMeta.retentionDisclaimer || undefined,
+    ).catch((err) => { req.log?.error({ err }, "AI chat/stream history persist error"); });
+
+    learnFromExchange({
+      openai,
+      labIds: learnLabIds,
+      userMessage,
+      assistantMessage: fullContent,
+      userId,
+    }).catch((err) => { req.log?.error({ err }, "AI chat/stream memory-learn error"); });
   });
 }
