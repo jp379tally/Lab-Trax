@@ -7,6 +7,7 @@ import {
   ChevronDown,
   Clock,
   Copy,
+  Headphones,
   Loader2,
   Mic,
   MicOff,
@@ -1103,32 +1104,25 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
           body: formData,
         });
         if (!resp.ok) {
+          const body = await resp.json().catch(() => ({})) as { error?: string };
           setMicState("error");
           setMicErrorKind("other");
-          setMicErrorMsg("Could not transcribe audio. Please try again.");
+          setMicErrorMsg(body.error || "Transcription failed. Please try again or type your message.");
           return;
         }
         const body = await resp.json() as { ok?: boolean; transcript?: string };
         const transcript = body.transcript?.trim() ?? "";
         if (transcript) {
           setInput(transcript);
-          if (voiceModeRef.current) {
-            // Voice conversation mode: auto-send
-            sendMessage(transcript)
-              .then(() => setMicState("idle"))
-              .catch(() => setMicState("idle"));
-          } else {
-            // Dictation mode: just fill the text box, let user review and send
-            setMicState("idle");
-            setTimeout(() => inputRef.current?.focus(), 50);
-          }
+          setMicState("idle");
+          setTimeout(() => inputRef.current?.focus(), 50);
         } else {
           setMicState("idle");
         }
       } catch {
         setMicState("error");
         setMicErrorKind("other");
-        setMicErrorMsg("Could not transcribe audio. Please try again.");
+        setMicErrorMsg("Could not transcribe audio. Please try again or type your message.");
       }
     };
     mr.onerror = () => {
@@ -1987,23 +1981,19 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
               micState === "listening"
                 ? "Stop listening"
                 : micState === "processing"
-                ? "Processing…"
+                ? "Processing..."
                 : micState === "error"
                 ? micErrorKind === "permission" ? "Microphone blocked — click to dismiss" : "Microphone error — click to dismiss"
-                : isSpeaking
-                ? "Interrupt Maynard and speak"
-                : "Speak to Maynard"
+                : "Dictate message"
             }
             title={
               micState === "listening"
                 ? "Stop listening"
                 : micState === "processing"
-                ? "Processing…"
+                ? "Processing..."
                 : micState === "error"
                 ? micErrorKind === "permission" ? "Microphone blocked — click to dismiss" : "Microphone error — click to dismiss"
-                : isSpeaking
-                ? "Interrupt Maynard and speak"
-                : "Speak to Maynard"
+                : "Dictate message"
             }
             className={`h-9 w-9 rounded-lg flex items-center justify-center shrink-0 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
               micState === "listening"
@@ -2012,8 +2002,6 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
                 ? "bg-secondary border border-input text-muted-foreground"
                 : micState === "error"
                 ? "bg-destructive/10 border border-destructive/30 text-destructive"
-                : isSpeaking
-                ? "bg-primary/20 text-primary"
                 : "bg-secondary border border-input text-muted-foreground hover:text-foreground"
             }`}
           >
@@ -2023,8 +2011,6 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
               <Loader2 size={14} className="animate-spin" />
             ) : micState === "error" ? (
               <MicOff size={15} />
-            ) : isSpeaking ? (
-              <VoiceWaveform />
             ) : (
               <Mic size={15} />
             )}
@@ -2046,7 +2032,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
                 : "bg-secondary border border-input text-muted-foreground hover:text-foreground"
             }`}
           >
-            <VoiceWaveform />
+            {voiceMode ? <VoiceWaveform /> : <Headphones size={15} />}
           </button>
 
           <button
@@ -2079,7 +2065,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
         <p className="text-[10px] text-muted-foreground/50 mt-1.5 text-center">
           {voiceMode
             ? "Voice mode on — Maynard will speak and listen automatically"
-            : "Mic to dictate · Hold waveform for voice conversation · Enter to send"}
+            : "Mic to dictate · Headphones for voice conversation · Enter to send"}
         </p>
       </div>
     </div>

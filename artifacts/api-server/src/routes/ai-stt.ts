@@ -77,8 +77,13 @@ export function registerAiSttRoutes(
 
       res.json({ ok: true, transcript: transcription.text });
     } catch (err: unknown) {
+      const errMessage = err instanceof Error ? err.message : "Unknown error";
+      const isUnsupportedFormat = errMessage.toLowerCase().includes("unsupported audio format") || errMessage.toLowerCase().includes("invalid file format") || errMessage.toLowerCase().includes("audio format");
       req.log.error({ err, mimetype: req.file.mimetype, size: req.file.size }, "[AI STT] Whisper transcription error");
-      res.status(500).json({ ok: false, error: "Speech transcription failed" });
+      res.status(500).json({
+        ok: false,
+        error: isUnsupportedFormat ? "Audio format not supported. Please try again or type your message." : "Speech transcription failed. Please try again.",
+      });
     }
   });
 }

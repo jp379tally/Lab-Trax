@@ -108,7 +108,7 @@ describe("AiAssistantScreen — mic button accessibilityLabel on permission erro
       await new Promise((r) => setTimeout(r, 50));
     });
 
-    const micBtn = getByLabelText("Speak to Maynard");
+    const micBtn = getByLabelText("Dictate message");
     fireEvent.press(micBtn);
 
     await waitFor(() => {
@@ -128,7 +128,7 @@ describe("AiAssistantScreen — mic button accessibilityLabel on permission erro
       await new Promise((r) => setTimeout(r, 50));
     });
 
-    const micBtn = getByLabelText("Speak to Maynard");
+    const micBtn = getByLabelText("Dictate message");
     fireEvent.press(micBtn);
 
     await waitFor(() => {
@@ -150,7 +150,7 @@ describe("AiAssistantScreen — mic button accessibilityLabel on non-permission 
       await new Promise((r) => setTimeout(r, 50));
     });
 
-    const micBtn = getByLabelText("Speak to Maynard");
+    const micBtn = getByLabelText("Dictate message");
     fireEvent.press(micBtn);
 
     await waitFor(() => {
@@ -175,7 +175,7 @@ describe("AiAssistantScreen — mic button accessibilityLabel on non-permission 
       await new Promise((r) => setTimeout(r, 50));
     });
 
-    const micBtn = getByLabelText("Speak to Maynard");
+    const micBtn = getByLabelText("Dictate message");
     fireEvent.press(micBtn);
 
     await waitFor(() => {
@@ -534,28 +534,20 @@ describe("AiAssistantScreen — voice (speech-to-text) round-trip", () => {
   async function recordAndStop(
     getByLabelText: (label: string) => unknown,
   ): Promise<void> {
-    fireEvent.press(getByLabelText("Speak to Maynard") as Parameters<typeof fireEvent.press>[0]);
+    fireEvent.press(getByLabelText("Dictate message") as Parameters<typeof fireEvent.press>[0]);
     await waitFor(() => {
       expect(getByLabelText("Stop recording")).toBeTruthy();
     });
     fireEvent.press(getByLabelText("Stop recording") as Parameters<typeof fireEvent.press>[0]);
   }
 
-  it("transcribes recorded audio and sends it as a message through the AI stream", async () => {
+  it("transcribes recorded audio and fills the text input", async () => {
     mockXhrState.responseText = JSON.stringify({
       ok: true,
       transcript: "show me overdue cases",
     });
 
-    // SSE reply dispatched after the transcript is sent.
-    fetchSpy.mockResolvedValueOnce(
-      new Response(
-        makeSSEStream([{ token: "Here are your overdue cases." }, { done: true }]),
-        { status: 200 },
-      ),
-    );
-
-    const { getByLabelText, findByText, findAllByText } = render(<AiAssistantScreen />);
+    const { getByLabelText } = render(<AiAssistantScreen />);
 
     await act(async () => {
       await new Promise((r) => setTimeout(r, 50));
@@ -563,22 +555,16 @@ describe("AiAssistantScreen — voice (speech-to-text) round-trip", () => {
 
     await recordAndStop(getByLabelText);
 
-    // The AI streamed reply is unique to the chat thread …
-    await findByText("Here are your overdue cases.");
-    // … and the transcript is rendered as the user's message. Its text also
-    // appears as the "Past Conversations" session preview (the sent message is
-    // persisted as a resumable session), so allow multiple matches.
-    const transcriptMsgs = await findAllByText("show me overdue cases");
-    expect(transcriptMsgs.length).toBeGreaterThan(0);
+    // The transcript is placed in the text input, not auto-sent.
+    await waitFor(() => {
+      expect(getByLabelText("Dictate message")).toBeTruthy();
+    });
 
-    // The stream endpoint was called exactly once with the transcript.
+    // No stream request was dispatched automatically.
     const streamCall = fetchSpy.mock.calls.find(([url]: unknown[]) =>
       String(url).includes("/api/ai-agent/stream"),
     );
-    expect(streamCall).toBeTruthy();
-    const body = JSON.parse(String((streamCall![1] as RequestInit).body));
-    const lastMsg = body.messages[body.messages.length - 1];
-    expect(lastMsg).toMatchObject({ role: "user", content: "show me overdue cases" });
+    expect(streamCall).toBeUndefined();
   });
 
   it("does not send a message when the transcript is empty", async () => {
@@ -594,7 +580,7 @@ describe("AiAssistantScreen — voice (speech-to-text) round-trip", () => {
 
     // The mic returns to its idle label without dispatching a stream request.
     await waitFor(() => {
-      expect(getByLabelText("Speak to Maynard")).toBeTruthy();
+      expect(getByLabelText("Dictate message")).toBeTruthy();
     });
     const streamCall = fetchSpy.mock.calls.find(([url]: unknown[]) =>
       String(url).includes("/api/ai-agent/stream"),
@@ -614,7 +600,7 @@ describe("AiAssistantScreen — voice (speech-to-text) round-trip", () => {
     await recordAndStop(getByLabelText);
 
     // The error banner text and the mic error label both surface.
-    await findByText("Could not transcribe audio. Please try again.");
+    await findByText("Network error");
     await waitFor(() => {
       expect(getByLabelText("Microphone error — tap to dismiss")).toBeTruthy();
     });
@@ -638,7 +624,7 @@ describe("AiAssistantScreen — voice (speech-to-text) round-trip", () => {
 
     await recordAndStop(getByLabelText);
 
-    await findByText("Could not transcribe audio. Please try again.");
+    await findByText("STT failed");
     await waitFor(() => {
       expect(getByLabelText("Microphone error — tap to dismiss")).toBeTruthy();
     });

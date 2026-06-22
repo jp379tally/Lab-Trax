@@ -81,7 +81,7 @@ describe("AiChatPanel — mic button label on NotAllowedError (permission denial
     renderPanel();
     await waitForMicReady();
 
-    const micBtn = screen.getByRole("button", { name: /speak to maynard/i });
+    const micBtn = screen.getByRole("button", { name: /dictate message/i });
     await act(async () => {
       micBtn.click();
     });
@@ -102,7 +102,7 @@ describe("AiChatPanel — mic button label on NotAllowedError (permission denial
     renderPanel();
     await waitForMicReady();
 
-    const micBtn = screen.getByRole("button", { name: /speak to maynard/i });
+    const micBtn = screen.getByRole("button", { name: /dictate message/i });
     await act(async () => {
       micBtn.click();
     });
@@ -123,7 +123,7 @@ describe("AiChatPanel — mic button label on NotAllowedError (permission denial
     renderPanel();
     await waitForMicReady();
 
-    const micBtn = screen.getByRole("button", { name: /speak to maynard/i });
+    const micBtn = screen.getByRole("button", { name: /dictate message/i });
     await act(async () => {
       micBtn.click();
     });
@@ -150,7 +150,7 @@ describe("AiChatPanel — mic button label on non-permission error", () => {
     renderPanel();
     await waitForMicReady();
 
-    const micBtn = screen.getByRole("button", { name: /speak to maynard/i });
+    const micBtn = screen.getByRole("button", { name: /dictate message/i });
     await act(async () => {
       micBtn.click();
     });
@@ -171,7 +171,7 @@ describe("AiChatPanel — mic button label on non-permission error", () => {
     renderPanel();
     await waitForMicReady();
 
-    const micBtn = screen.getByRole("button", { name: /speak to maynard/i });
+    const micBtn = screen.getByRole("button", { name: /dictate message/i });
     await act(async () => {
       micBtn.click();
     });

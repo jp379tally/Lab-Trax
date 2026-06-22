@@ -224,11 +224,11 @@ async function uploadAudioForTranscript(fileUri: string, mimeType: string): Prom
     for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
     xhr.onload = () => {
       try {
-        const body = JSON.parse(xhr.responseText) as { ok?: boolean; transcript?: string };
+        const body = JSON.parse(xhr.responseText) as { ok?: boolean; transcript?: string; error?: string };
         if (xhr.status >= 200 && xhr.status < 300 && body.transcript != null) {
           resolve(body.transcript);
         } else {
-          reject(new Error("STT failed"));
+          reject(new Error(body.error || "STT failed"));
         }
       } catch {
         reject(new Error("STT parse error"));
@@ -828,6 +828,8 @@ export default function AiAssistantScreen() {
   // Tracks whether the saved chat session has finished loading so the persist
   // effect doesn't write before we've had a chance to restore.
   const sessionLoadedRef = useRef(false);
+  // Tracks isSpeaking transition for auto-listen in voice mode.
+  const prevIsSpeakingRef = useRef(false);
 
   // ─── Chat history persistence ───────────────────────────────────────────────
   // The signed-in user id, resolved on mount and used to scope the stored
@@ -998,6 +1000,15 @@ export default function AiAssistantScreen() {
     AsyncStorage.setItem(AI_VOICE_MODE_KEY, voiceMode ? "true" : "false").catch(() => {});
   }, [voiceMode]);
 
+  // Auto-listen after Maynard finishes speaking (voice mode only, idle mic only).
+  useEffect(() => {
+    if (prevIsSpeakingRef.current && !isSpeaking && voiceMode && !sending && micState === "idle") {
+      startRecording();
+    }
+    prevIsSpeakingRef.current = isSpeaking;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSpeaking, sending, micState, voiceMode]);
+
   const scrollToBottom = useCallback(() => {
     setTimeout(() => {
       listRef.current?.scrollToEnd({ animated: true });
@@ -1108,16 +1119,17 @@ export default function AiAssistantScreen() {
             const transcript = await uploadAudioForTranscript(uri, "audio/webm");
             URL.revokeObjectURL(uri);
             if (transcript.trim()) {
-              // Keep micState="processing" through the full AI reply cycle.
-              await sendMessageRef.current?.(transcript.trim());
+              setInput(transcript.trim());
+              setMicState("idle");
+            } else {
+              setMicState("idle");
             }
-          } catch {
+          } catch (err: any) {
             setMicState("error");
             setMicErrorKind("other");
-            setMicErrorMsg("Could not transcribe audio. Please try again.");
+            setMicErrorMsg(err?.message || "Could not transcribe audio. Please try again or type your message.");
             return;
           }
-          setMicState("idle");
         };
         (recordingRef.current as any) = mr;
         mr.start();
@@ -1152,13 +1164,12 @@ export default function AiAssistantScreen() {
         try {
           const transcript = await uploadAudioForTranscript(uri, "audio/m4a");
           if (transcript.trim()) {
-            // Keep micState="processing" through the full AI reply cycle.
-            await sendMessageRef.current?.(transcript.trim());
+            setInput(transcript.trim());
           }
-        } catch {
+        } catch (err: any) {
           setMicState("error");
           setMicErrorKind("other");
-          setMicErrorMsg("Could not transcribe audio. Please try again.");
+          setMicErrorMsg(err?.message || "Could not transcribe audio. Please try again or type your message.");
           return;
         }
         setMicState("idle");
@@ -1533,21 +1544,6 @@ export default function AiAssistantScreen() {
           </View>
         </View>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-          <Pressable
-            onPress={() => {
-              if (voiceMode) { stopSpeaking(); setVoiceMode(false); }
-              else { setVoiceMode(true); }
-            }}
-            hitSlop={10}
-            style={[s.clearBtn, voiceMode && { backgroundColor: colors.tint + "1A", borderRadius: 8, padding: 4 }]}
-            accessibilityLabel={voiceMode ? "Disable voice mode" : "Enable voice mode"}
-          >
-            <Ionicons
-              name={voiceMode ? "volume-high" : "volume-medium-outline"}
-              size={20}
-              color={voiceMode ? colors.tint : colors.textSecondary}
-            />
-          </Pressable>
           {allSessions.length > 0 && (
             <Pressable
               onPress={() => { setShowSessions(true); setDeletingSessionId(null); }}
@@ -1742,6 +1738,7 @@ export default function AiAssistantScreen() {
                 } else if (micState === "processing") {
                   // no-op
                 } else {
+                  if (isSpeaking) stopSpeaking();
                   void startRecording();
                 }
               }}
@@ -1751,7 +1748,7 @@ export default function AiAssistantScreen() {
                 micState === "listening" && { backgroundColor: "#fed7d7", borderColor: "#fc8181" },
                 micState === "processing" && { backgroundColor: colors.surfaceSecondary, borderColor: colors.border },
                 micState === "error" && { backgroundColor: "#fff5f5", borderColor: "#fed7d7" },
-                micState === "idle" && isSpeaking && { backgroundColor: colors.tint + "1A", borderColor: colors.tint + "33" },
+                // Dictation mic no longer reflects TTS state; voice mode auto-listen handles that separately
               ]}
               accessibilityLabel={
                 micState === "listening"
@@ -1760,7 +1757,7 @@ export default function AiAssistantScreen() {
                   ? "Processing…"
                   : micState === "error"
                   ? micErrorKind === "permission" ? "Microphone blocked — tap to dismiss" : "Microphone error — tap to dismiss"
-                  : "Speak to Maynard"
+                  : "Dictate message"
               }
             >
               {micState === "listening" ? (
@@ -1769,11 +1766,27 @@ export default function AiAssistantScreen() {
                 <ActivityIndicator size="small" color={colors.textSecondary} />
               ) : micState === "error" ? (
                 <Ionicons name="mic-off-outline" size={18} color="#c53030" />
-              ) : isSpeaking ? (
-                <VoiceWaveformNative color={colors.tint} />
               ) : (
                 <Ionicons name="mic-outline" size={18} color={colors.textSecondary} />
               )}
+            </Pressable>
+            {/* Voice conversation toggle */}
+            <Pressable
+              onPress={() => {
+                if (voiceMode) { stopSpeaking(); setVoiceMode(false); }
+                else { setVoiceMode(true); }
+              }}
+              style={[
+                s.micBtn,
+                voiceMode && { backgroundColor: colors.tint + "1A", borderColor: colors.tint + "33" },
+              ]}
+              accessibilityLabel={voiceMode ? "Exit voice mode" : "Start voice conversation"}
+            >
+              <Ionicons
+                name={voiceMode ? "volume-high" : "headset-outline"}
+                size={18}
+                color={voiceMode ? colors.tint : colors.textSecondary}
+              />
             </Pressable>
             <Pressable
               style={[s.sendBtn, { backgroundColor: colors.tint, opacity: (!input.trim() || sending) ? 0.45 : 1 }]}
