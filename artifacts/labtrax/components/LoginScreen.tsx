@@ -30,7 +30,7 @@ import { generateId, GroupJoinRequest } from "@/lib/data";
 import Colors from "@/constants/colors";
 import { Typography, Spacing } from "@/constants/tokens";
 
-type SignUpStep = "welcome" | "credentials" | "user_type" | "lab_name" | "lab_info" | "license" | "practice_info" | "email_verify" | "updates_opt_in" | "phone_entry" | "phone_verify" | "phone_contact_name" | "role_select" | "join_group" | "hipaa_disclaimer" | "complete";
+type SignUpStep = "welcome" | "credentials" | "user_type" | "lab_intent" | "lab_name" | "lab_info" | "license" | "practice_info" | "email_verify" | "updates_opt_in" | "phone_entry" | "phone_verify" | "phone_contact_name" | "role_select" | "join_group" | "hipaa_disclaimer" | "complete";
 
 function validatePassword(pw: string): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
@@ -91,6 +91,7 @@ export default function LoginScreen() {
   const [demoEmailCode, setDemoEmailCode] = useState<string | null>(null);
 
   const [userType, setUserType] = useState<"provider" | "lab" | null>(null);
+  const [labIntent, setLabIntent] = useState<"create" | "join" | null>(null);
   const [licenseNumber, setLicenseNumber] = useState("");
   const [practiceName, setPracticeName] = useState("");
   const [doctorName, setDoctorName] = useState("");
@@ -184,6 +185,10 @@ export default function LoginScreen() {
     setAccountNumber("");
     setJoinGroupAdminUsername("");
     setJoinGroupSent(false);
+    setLabIntent(null);
+    setBrowseExistingLabs(false);
+    setMatchingLabGroup(null);
+    setLabJoinRequestSent(false);
   }
 
   function switchToSignIn() {
@@ -389,6 +394,8 @@ export default function LoginScreen() {
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     if (wants && userType !== "lab") {
       setSignUpStep("phone_entry");
+    } else if (userType === "lab" && labIntent === "create") {
+      setSignUpStep("hipaa_disclaimer");
     } else {
       setSignUpStep("role_select");
     }
@@ -515,6 +522,9 @@ export default function LoginScreen() {
       // existing provider org.
       const isClaim = !isLab && claimMode && !!claimLab && !!claimAccountNumber.trim();
 
+      const isLabCreate = isLab && labIntent === "create";
+      const isLabJoin = isLab && labIntent === "join" && !!matchingLabGroup;
+
       const result = await register({
         username: signUpUsername.trim(),
         password: signUpPassword,
@@ -528,9 +538,10 @@ export default function LoginScreen() {
         practiceAddress: resolvedAddress,
         practicePhone: resolvedPhone,
         phoneContactName: wantsUpdates ? phoneContactName.trim() : undefined,
-        role: selectedRole || "user",
+        role: isLabCreate ? "admin" : (selectedRole || "user"),
         accountNumber: acctNum,
-        createOrganization: !isClaim,
+        createOrganization: isLabJoin ? false : !isClaim,
+        joinOrganizationId: isLabJoin ? matchingLabGroup!.organizationId : undefined,
         claimProvider: isClaim
           ? {
               labId: claimLab!.id,
@@ -626,6 +637,12 @@ export default function LoginScreen() {
                   switchToSignIn();
                 } else if (signUpStep === "user_type") {
                   setSignUpStep("credentials");
+                } else if (signUpStep === "lab_intent") {
+                  setLabIntent(null);
+                  setBrowseExistingLabs(false);
+                  setMatchingLabGroup(null);
+                  setLabJoinRequestSent(false);
+                  setSignUpStep("user_type");
                 } else if (signUpStep === "license") {
                   setSignUpStep("user_type");
                 } else if (signUpStep === "practice_info") {
@@ -633,11 +650,16 @@ export default function LoginScreen() {
                 } else if (signUpStep === "lab_name") {
                   setMatchingLabGroup(null);
                   setLabJoinRequestSent(false);
-                  setSignUpStep("user_type");
+                  setBrowseExistingLabs(labIntent === "join");
+                  setSignUpStep("lab_intent");
                 } else if (signUpStep === "lab_info") {
                   setSignUpStep("lab_name");
                 } else if (signUpStep === "email_verify") {
-                  setSignUpStep(userType === "lab" ? "lab_info" : "practice_info");
+                  if (userType === "lab") {
+                    setSignUpStep(labIntent === "join" ? "lab_name" : "lab_info");
+                  } else {
+                    setSignUpStep("practice_info");
+                  }
                 } else if (signUpStep === "updates_opt_in") {
                   setSignUpStep("email_verify");
                 } else if (signUpStep === "phone_entry") {
@@ -647,13 +669,21 @@ export default function LoginScreen() {
                 } else if (signUpStep === "phone_contact_name") {
                   setSignUpStep("phone_verify");
                 } else if (signUpStep === "role_select") {
-                  if (wantsUpdates) {
+                  if (userType === "lab") {
+                    setSignUpStep("updates_opt_in");
+                  } else if (wantsUpdates) {
                     setSignUpStep("phone_contact_name");
                   } else {
                     setSignUpStep("updates_opt_in");
                   }
                 } else if (signUpStep === "hipaa_disclaimer") {
-                  setSignUpStep("join_group");
+                  if (userType === "lab" && labIntent === "create") {
+                    setSignUpStep("updates_opt_in");
+                  } else if (userType === "lab" && labIntent === "join") {
+                    setSignUpStep("role_select");
+                  } else {
+                    setSignUpStep("join_group");
+                  }
                 } else if (signUpStep === "join_group") {
                   setSignUpStep("role_select");
                 }
@@ -680,6 +710,7 @@ export default function LoginScreen() {
                 {signUpStep === "welcome" && "Your dental lab management platform"}
                 {signUpStep === "credentials" && "Enter your details to get started"}
                 {signUpStep === "user_type" && "What type of account?"}
+                {signUpStep === "lab_intent" && "How do you want to get started?"}
                 {signUpStep === "lab_name" && "Enter your lab name"}
                 {signUpStep === "lab_info" && "Enter your lab details"}
                 {signUpStep === "license" && (userType === "lab" ? "Enter your lab license number" : "Enter your dental license number")}
@@ -698,6 +729,7 @@ export default function LoginScreen() {
             {signUpStep === "welcome" && renderWelcome()}
             {signUpStep === "credentials" && renderCredentialsStep()}
             {signUpStep === "user_type" && renderUserType()}
+            {signUpStep === "lab_intent" && renderLabIntent()}
             {signUpStep === "lab_name" && renderLabName()}
             {signUpStep === "lab_info" && renderLabInfo()}
             {signUpStep === "license" && renderLicense()}
@@ -724,11 +756,12 @@ export default function LoginScreen() {
 
             <View style={styles.stepIndicator}>
               {(() => {
-                const labSteps: SignUpStep[] = ["credentials", "user_type", "lab_name", "lab_info", "email_verify", "updates_opt_in", "role_select", "join_group", "hipaa_disclaimer"];
+                const labCreateSteps: SignUpStep[] = ["credentials", "user_type", "lab_intent", "lab_name", "lab_info", "email_verify", "updates_opt_in", "hipaa_disclaimer"];
+                const labJoinSteps: SignUpStep[] = ["credentials", "user_type", "lab_intent", "lab_name", "email_verify", "updates_opt_in", "role_select", "hipaa_disclaimer"];
                 const providerSteps: SignUpStep[] = wantsUpdates
                   ? ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "join_group", "hipaa_disclaimer"]
                   : ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "join_group", "hipaa_disclaimer"];
-                const allSteps = userType === "lab" ? labSteps : providerSteps;
+                const allSteps = userType === "lab" ? (labIntent === "join" ? labJoinSteps : labCreateSteps) : providerSteps;
                 const currentIdx = allSteps.indexOf(signUpStep);
                 return allSteps.map((s) => {
                   const stepIdx = allSteps.indexOf(s);
@@ -793,8 +826,9 @@ export default function LoginScreen() {
         <Pressable
           onPress={() => {
             setUserType("lab");
+            setLabIntent(null);
             if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            setSignUpStep("lab_name");
+            setSignUpStep("lab_intent");
           }}
           style={({ pressed }) => [
             styles.optionCard,
@@ -820,6 +854,81 @@ export default function LoginScreen() {
           </View>
           <Text style={styles.optionCardTitle}>Dental Lab</Text>
           <Text style={styles.optionCardDesc}>Laboratory processing and fulfilling dental cases</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  function renderLabIntent() {
+    return (
+      <View style={styles.formSection}>
+        {signUpError && (
+          <View style={styles.errorBanner}>
+            <Ionicons name="alert-circle" size={16} color={Colors.light.error} />
+            <Text style={styles.errorText}>{signUpError}</Text>
+          </View>
+        )}
+
+        <Pressable
+          onPress={() => {
+            setLabIntent("join");
+            loadAllLabGroups();
+            setBrowseExistingLabs(true);
+            setLabSearchFilter("");
+            setMatchingLabGroup(null);
+            setLabJoinRequestSent(false);
+            setSignUpError(null);
+            if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            setSignUpStep("lab_name");
+          }}
+          style={({ pressed }) => [
+            styles.optionCard,
+            pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
+          ]}
+          testID="lab-intent-join"
+        >
+          <View style={styles.optionCardHeader}>
+            <LinearGradient
+              colors={["#3B82F6", "#1D4ED8"]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.optionCardIcon}
+            >
+              <Ionicons name="people" size={28} color="#FFF" />
+            </LinearGradient>
+          </View>
+          <Text style={styles.optionCardTitle}>Join an existing lab</Text>
+          <Text style={styles.optionCardDesc}>Your lab is already on LabTrax — request to join as a member</Text>
+        </Pressable>
+
+        <Pressable
+          onPress={() => {
+            setLabIntent("create");
+            setMatchingLabGroup(null);
+            setLabJoinRequestSent(false);
+            setBrowseExistingLabs(false);
+            setSignUpError(null);
+            if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            setSignUpStep("lab_name");
+          }}
+          style={({ pressed }) => [
+            styles.optionCard,
+            pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
+          ]}
+          testID="lab-intent-create"
+        >
+          <View style={styles.optionCardHeader}>
+            <LinearGradient
+              colors={["#6366F1", "#8B5CF6"]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.optionCardIcon}
+            >
+              <Ionicons name="flask" size={28} color="#FFF" />
+            </LinearGradient>
+          </View>
+          <Text style={styles.optionCardTitle}>Create my own lab</Text>
+          <Text style={styles.optionCardDesc}>Register a new dental lab — you'll be set up as the administrator</Text>
         </Pressable>
       </View>
     );
@@ -865,30 +974,10 @@ export default function LoginScreen() {
     }
   }
 
-  async function handleJoinExistingLab() {
+  function handleJoinExistingLab() {
     if (!matchingLabGroup) return;
-    try {
-      const regResult = await register({
-        username: signUpUsername.trim(),
-        password: signUpPassword,
-        email: signUpEmail.trim(),
-        phone: wantsUpdates ? signUpPhone.trim() : undefined,
-        wantsUpdates,
-        userType: userType || "lab",
-        role: selectedRole || "user",
-        licenseNumber: licenseNumber.trim(),
-        practiceName: matchingLabGroup.practiceName,
-        joinOrganizationId: matchingLabGroup.organizationId,
-      });
-      if (!regResult.success) {
-        setSignUpError(regResult.error || "Could not send request. Please try again.");
-        return;
-      }
-      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setLabJoinRequestSent(true);
-    } catch {
-      setSignUpError("Could not send request. Please try again.");
-    }
+    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setLabJoinRequestSent(true);
   }
 
   function renderLabName() {
@@ -1019,7 +1108,7 @@ export default function LoginScreen() {
             </ScrollView>
 
             <Pressable
-              onPress={() => { setBrowseExistingLabs(false); setSignUpError(null); }}
+              onPress={() => { setLabIntent("create"); setBrowseExistingLabs(false); setSignUpError(null); }}
               style={({ pressed }) => [
                 { alignItems: "center", paddingVertical: 12, borderRadius: 14, borderWidth: 1, borderColor: "rgba(255,255,255,0.15)" },
                 pressed && { opacity: 0.7 },
@@ -1054,11 +1143,10 @@ export default function LoginScreen() {
 
             <Pressable
               onPress={() => {
+                setLabIntent("create");
                 setMatchingLabGroup(null);
                 setSignUpError(null);
-                if (browseExistingLabs) {
-                  setBrowseExistingLabs(false);
-                }
+                setBrowseExistingLabs(false);
                 setSignUpStep("lab_info");
               }}
               style={({ pressed }) => [
@@ -1095,22 +1183,30 @@ export default function LoginScreen() {
             <View style={{ width: 60, height: 60, borderRadius: 30, backgroundColor: "rgba(16,185,129,0.2)", justifyContent: "center", alignItems: "center" }}>
               <Ionicons name="checkmark-circle" size={36} color="#10B981" />
             </View>
-            <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>Request Sent</Text>
+            <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>Lab Selected</Text>
             <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.6)", textAlign: "center", lineHeight: 18 }}>
-              Your request to join {matchingLabGroup?.practiceName} has been sent to the lab admin. You'll be notified when they respond.
+              You'll be joining {matchingLabGroup?.practiceName}. Complete registration to submit your join request.
             </Text>
             <Pressable
               onPress={() => {
-                setSignUpStep("hipaa_disclaimer");
+                sendEmailCode();
               }}
+              disabled={codeSending}
               style={({ pressed }) => [
                 styles.loginBtn,
                 { marginTop: 8 },
+                codeSending && { opacity: 0.6 },
                 pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
               ]}
             >
-              <Text style={styles.loginBtnText}>Continue</Text>
-              <Ionicons name="arrow-forward" size={20} color="#FFF" />
+              {codeSending ? (
+                <ActivityIndicator size="small" color="#FFF" />
+              ) : (
+                <>
+                  <Text style={styles.loginBtnText}>Continue</Text>
+                  <Ionicons name="arrow-forward" size={20} color="#FFF" />
+                </>
+              )}
             </Pressable>
           </View>
         )}
@@ -1741,7 +1837,7 @@ export default function LoginScreen() {
           onPress={() => {
             setSelectedRole("user");
             if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            setSignUpStep("join_group");
+            setSignUpStep(userType === "lab" && labIntent === "join" ? "hipaa_disclaimer" : "join_group");
           }}
           style={({ pressed }) => [
             styles.optionCard,
@@ -1773,7 +1869,7 @@ export default function LoginScreen() {
           onPress={() => {
             setSelectedRole("admin");
             if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            setSignUpStep("join_group");
+            setSignUpStep(userType === "lab" && labIntent === "join" ? "hipaa_disclaimer" : "join_group");
           }}
           style={({ pressed }) => [
             styles.optionCard,
