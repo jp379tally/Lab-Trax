@@ -153,6 +153,36 @@ function countUserMessages(session: StoredChatSession<ChatMessage>): number {
   return session.messages.filter((m) => m.role === "user").length;
 }
 
+/**
+ * Fetch the server-side chat history (`GET /api/ai-chat/history`) and map it
+ * into the screen's ChatMessage shape. Returns the persisted messages
+ * (oldest-first, no welcome message), or `[]` when the server has nothing or
+ * the request fails. Used as a fallback when no local session survives so a
+ * conversation outlives the 7-day local TTL and crosses devices.
+ *
+ * The route replies with `{ messages }` directly (not the `{ ok, data }`
+ * envelope), so the body is read as `{ messages }`.
+ */
+async function loadServerHistory(): Promise<ChatMessage[]> {
+  try {
+    const resp = await resilientFetch("/api/ai-chat/history");
+    if (!resp.ok) return [];
+    const body = (await resp.json()) as {
+      messages?: Array<{ id?: string; role?: string; content?: string }>;
+    };
+    const rows = body?.messages ?? [];
+    return rows
+      .filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+      .map((m) => ({
+        id: m.id ?? genId(),
+        role: m.role as "user" | "assistant",
+        content: m.content as string,
+      }));
+  } catch {
+    return [];
+  }
+}
+
 // ─── Voice helpers ────────────────────────────────────────────────────────────
 
 function stripMarkdownForSpeech(text: string): string {
@@ -813,6 +843,9 @@ export default function AiAssistantScreen() {
   // the welcome message when there are none). History is keyed per user so
   // switching accounts on the same device never mixes one user's chats into
   // another's. A fresh session id is generated when there is nothing to resume.
+  // When no local session exists, fall back to the server's /ai-chat/history so
+  // conversations survive beyond the 7-day local TTL and across devices (mirrors
+  // the desktop AiChatPanel server-history branch).
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -834,6 +867,12 @@ export default function AiAssistantScreen() {
           setMessages([WELCOME_MSG, ...sanitizeRestoredMessages(latest.messages)]);
         } else {
           currentSessionIdRef.current = generateSessionId();
+          // No usable local session — try restoring from the server so a
+          // conversation outlives the 7-day local TTL and crosses devices.
+          const serverMsgs = await loadServerHistory();
+          if (!cancelled && serverMsgs.length > 0) {
+            setMessages([WELCOME_MSG, ...serverMsgs]);
+          }
         }
       } finally {
         if (!cancelled) sessionLoadedRef.current = true;

@@ -78,11 +78,12 @@ import AiAssistantScreen from "@/app/ai-assistant";
 
 afterEach(async () => {
   cleanup();
-  resetMockAppState();
-  // Persisted chat sessions live in the mocked AsyncStorage, which is a
-  // module-level Map shared across tests in this file. Clear it so one test's
-  // restored conversation never bleeds into the next test's mount-time restore.
+  // The AsyncStorage mock store is module-level and otherwise persists across
+  // tests in this file. Clear it so each test's mount effect sees a clean
+  // local chat session (no leaked messages/proposed-action cards) and one
+  // test's restored conversation never bleeds into the next test's restore.
   await AsyncStorage.clear();
+  resetMockAppState();
   vi.clearAllMocks();
   // Restore default successful permission for subsequent tests.
   mockRequestPermissionsAsync.mockResolvedValue({ status: "granted", granted: true });
@@ -554,7 +555,7 @@ describe("AiAssistantScreen — voice (speech-to-text) round-trip", () => {
       ),
     );
 
-    const { getByLabelText, findByText } = render(<AiAssistantScreen />);
+    const { getByLabelText, findByText, findAllByText } = render(<AiAssistantScreen />);
 
     await act(async () => {
       await new Promise((r) => setTimeout(r, 50));
@@ -562,10 +563,13 @@ describe("AiAssistantScreen — voice (speech-to-text) round-trip", () => {
 
     await recordAndStop(getByLabelText);
 
-    // The transcript is rendered as the user's message …
-    await findByText("show me overdue cases");
-    // … and the AI streamed reply follows.
+    // The AI streamed reply is unique to the chat thread …
     await findByText("Here are your overdue cases.");
+    // … and the transcript is rendered as the user's message. Its text also
+    // appears as the "Past Conversations" session preview (the sent message is
+    // persisted as a resumable session), so allow multiple matches.
+    const transcriptMsgs = await findAllByText("show me overdue cases");
+    expect(transcriptMsgs.length).toBeGreaterThan(0);
 
     // The stream endpoint was called exactly once with the transcript.
     const streamCall = fetchSpy.mock.calls.find(([url]: unknown[]) =>
@@ -638,5 +642,66 @@ describe("AiAssistantScreen — voice (speech-to-text) round-trip", () => {
     await waitFor(() => {
       expect(getByLabelText("Microphone error — tap to dismiss")).toBeTruthy();
     });
+  });
+});
+
+// ─── Server-history fallback tests ────────────────────────────────────────────
+
+describe("AiAssistantScreen — server-history fallback on mount", () => {
+  afterEach(() => {
+    resetMockFetchHandler();
+  });
+
+  it("seeds the conversation from /api/ai-chat/history when no local session exists", async () => {
+    setMockFetchHandler(async (url) => {
+      if (url.includes("/api/ai-chat/history")) {
+        return new Response(
+          JSON.stringify({
+            messages: [
+              { id: "srv-1", role: "user", content: "What cases are due today?" },
+              { id: "srv-2", role: "assistant", content: "You have three cases due today." },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ data: null }), { status: 200 });
+    });
+
+    const { findByText, findAllByText } = render(<AiAssistantScreen />);
+
+    // The assistant reply is unique to the chat thread. The user message text
+    // also appears as the "Past Conversations" session preview (the restored
+    // history is persisted as a resumable session), so allow multiple matches.
+    await findByText("You have three cases due today.");
+    const userMsgs = await findAllByText("What cases are due today?");
+    expect(userMsgs.length).toBeGreaterThan(0);
+  });
+
+  it("leaves the welcome message when the server has no history", async () => {
+    setMockFetchHandler(async (url) => {
+      if (url.includes("/api/ai-chat/history")) {
+        return new Response(JSON.stringify({ messages: [] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ data: null }), { status: 200 });
+    });
+
+    const { findByText } = render(<AiAssistantScreen />);
+
+    // The welcome greeting remains the only assistant message.
+    await findByText(/I'm Maynard/i);
+  });
+
+  it("falls back to the welcome message when the history request fails", async () => {
+    setMockFetchHandler(async (url) => {
+      if (url.includes("/api/ai-chat/history")) {
+        return new Response("Internal Server Error", { status: 500 });
+      }
+      return new Response(JSON.stringify({ data: null }), { status: 200 });
+    });
+
+    const { findByText } = render(<AiAssistantScreen />);
+
+    await findByText(/I'm Maynard/i);
   });
 });
