@@ -2,7 +2,7 @@
  * Idempotent script to create LabTrax subscription products and prices in Stripe.
  *
  * Creates four plans:
- *   - LabTrax Lab — Monthly ($99/mo) and Annual ($990/yr)
+ *   - LabTrax Lab — Monthly ($299/mo) and Annual ($3,229.20/yr, 10% discount)
  *   - LabTrax Provider — Monthly ($49/mo) and Annual ($490/yr)
  *
  * Run with: pnpm --filter @workspace/scripts run seed-stripe-products
@@ -15,6 +15,9 @@
  *   STRIPE_PRICE_ID_PROVIDER_MONTHLY
  *   STRIPE_PRICE_ID_PROVIDER_ANNUAL
  *   STRIPE_PRICE_ID  (default — set to lab monthly for backwards compat)
+ *
+ * If a price's unit_amount no longer matches the definition, the old price is
+ * archived and a new one is created. Re-point the env vars to the new IDs printed.
  */
 
 async function getStripeCredentials(): Promise<{ secretKey: string }> {
@@ -70,8 +73,8 @@ const PLANS: PlanDef[] = [
       "Full access to LabTrax for dental laboratories — case tracking, invoicing, finance, and all lab management features.",
     planType: "lab",
     prices: [
-      { interval: "month", unitAmount: 9900, nickname: "LabTrax Lab Monthly" },
-      { interval: "year",  unitAmount: 99000, nickname: "LabTrax Lab Annual" },
+      { interval: "month", unitAmount: 29900, nickname: "LabTrax Lab Monthly" },
+      { interval: "year",  unitAmount: 322920, nickname: "LabTrax Lab Annual" },
     ],
   },
   {
@@ -132,12 +135,21 @@ async function seedStripeProducts() {
       const intervalKey =
         `${plan.planType}_${priceDef.interval === "month" ? "monthly" : "annual"}`;
 
-      if (existing) {
+      if (existing && existing.unit_amount === priceDef.unitAmount) {
         console.log(
-          `  Price (${priceDef.interval}): already exists — ${existing.id}`
+          `  Price (${priceDef.interval}): already exists at correct amount — ${existing.id}`
         );
         priceIds[intervalKey] = existing.id;
-      } else {
+      } else if (existing) {
+        console.log(
+          `  Price (${priceDef.interval}): amount mismatch (was $${((existing.unit_amount ?? 0) / 100).toFixed(2)}, now $${(priceDef.unitAmount / 100).toFixed(2)}) — archiving ${existing.id}`
+        );
+        await stripe.prices.update(existing.id, { active: false });
+        console.log(`    Archived old price ${existing.id}. New price will be created.`);
+        console.log(`    ⚠️  Update env vars to the new price IDs printed below.`);
+      }
+
+      if (!existing || existing.unit_amount !== priceDef.unitAmount) {
         const price = await stripe.prices.create({
           product: productId,
           unit_amount: priceDef.unitAmount,

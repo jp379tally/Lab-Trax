@@ -30,6 +30,7 @@ export default function PlanPickerOnboarding() {
   const [entitlement, setEntitlement] = useState<Entitlement | null | "loading">("loading");
   const [plans, setPlans] = useState<Plan[]>([]);
   const [plansLoading, setPlansLoading] = useState(false);
+  const [plansFailed, setPlansFailed] = useState(false);
   const [dismissed, setDismissed] = useState<boolean>(() => {
     try {
       return !!sessionStorage.getItem(SESSION_SKIP_KEY);
@@ -54,13 +55,25 @@ export default function PlanPickerOnboarding() {
     entitlement.status === "trialing";
 
   useEffect(() => {
-    if (!showPicker || plans.length > 0 || plansLoading) return;
+    if (!showPicker || plans.length > 0 || plansLoading || plansFailed) return;
     setPlansLoading(true);
-    apiFetch<{ ok: boolean; plans: Plan[] }>("/billing/plans")
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8_000);
+    apiFetch<{ ok: boolean; plans: Plan[] }>("/billing/plans", { signal: controller.signal })
       .then((r) => setPlans(r.plans ?? []))
-      .catch(() => setPlans([]))
-      .finally(() => setPlansLoading(false));
-  }, [showPicker, plans.length, plansLoading]);
+      .catch(() => {
+        setPlans([]);
+        setPlansFailed(true);
+      })
+      .finally(() => {
+        clearTimeout(timer);
+        setPlansLoading(false);
+      });
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [showPicker, plans.length, plansLoading, plansFailed]);
 
   function dismiss() {
     try {

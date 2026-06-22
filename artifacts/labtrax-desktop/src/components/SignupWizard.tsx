@@ -207,6 +207,7 @@ export default function SignupWizard({ onCancel }: Props) {
   // Plan selection (plan_select step)
   const [wizardPlans, setWizardPlans] = useState<Plan[]>([]);
   const [wizardPlansLoading, setWizardPlansLoading] = useState(false);
+  const [wizardPlansFailed, setWizardPlansFailed] = useState(false);
   const [selectedPriceId, setSelectedPriceId] = useState<string | null>(null);
 
   // Resend timer tick
@@ -219,12 +220,25 @@ export default function SignupWizard({ onCancel }: Props) {
   // Load plans when reaching the plan_select step
   useEffect(() => {
     if (step !== "plan_select") return;
-    if (wizardPlans.length > 0 || wizardPlansLoading) return;
+    if (wizardPlans.length > 0 || wizardPlansLoading || wizardPlansFailed) return;
     setWizardPlansLoading(true);
-    apiFetch<{ ok: boolean; plans: Plan[] }>("/billing/plans")
+    setWizardPlansFailed(false);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8_000);
+    apiFetch<{ ok: boolean; plans: Plan[] }>("/billing/plans", { signal: controller.signal })
       .then((r) => setWizardPlans(r.plans ?? []))
-      .catch(() => setWizardPlans([]))
-      .finally(() => setWizardPlansLoading(false));
+      .catch(() => {
+        setWizardPlans([]);
+        setWizardPlansFailed(true);
+      })
+      .finally(() => {
+        clearTimeout(timer);
+        setWizardPlansLoading(false);
+      });
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
   }, [step, wizardPlans.length, wizardPlansLoading]);
 
   // Debounced claim lab search
@@ -1282,7 +1296,9 @@ export default function SignupWizard({ onCancel }: Props) {
 
             {!wizardPlansLoading && wizardPlans.length === 0 && (
               <div className="text-sm text-muted-foreground bg-muted/40 rounded-lg p-4 text-center">
-                Billing plans are not yet configured. You can choose a plan later from the Billing page.
+                {wizardPlansFailed
+                  ? "Could not load plans — you can choose later from Billing."
+                  : "Billing plans are not yet configured. You can choose a plan later from the Billing page."}
               </div>
             )}
 
