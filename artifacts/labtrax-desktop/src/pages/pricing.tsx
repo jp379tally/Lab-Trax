@@ -12,7 +12,6 @@ import {
   RotateCcw,
   Search,
   Stethoscope,
-  Tag,
   Trash2,
   Type,
   X,
@@ -23,13 +22,11 @@ import { formatMoney } from "@/lib/format";
 import {
   DEFAULT_PRICE_KEYS,
   formatPriceTwoDecimals,
-  isKnownPriceKey,
   isTierMissing,
   labelFor,
-  materialToPriceKey,
 } from "@/lib/pricing-keys";
 
-type Section = "billed" | "tiers" | "overrides" | "labels";
+type Section = "tiers" | "overrides" | "labels";
 
 interface PricingTier {
   id: string;
@@ -405,7 +402,7 @@ function ConfirmChangesDialog({
 }
 
 export default function PricingPage() {
-  const [section, setSection] = useState<Section>("billed");
+  const [section, setSection] = useState<Section>("tiers");
 
   return (
     <div className="px-8 py-7">
@@ -422,12 +419,6 @@ export default function PricingPage() {
       <ResolutionOrderExplainer />
 
       <div className="flex items-center gap-1 border-b border-border mb-5 text-sm">
-        <SectionTab
-          active={section === "billed"}
-          onClick={() => setSection("billed")}
-          icon={<Tag size={14} />}
-          label="Billed (live)"
-        />
         <SectionTab
           active={section === "tiers"}
           onClick={() => setSection("tiers")}
@@ -448,7 +439,6 @@ export default function PricingPage() {
         />
       </div>
 
-      {section === "billed" && <BilledSection />}
       {section === "tiers" && <TiersSection />}
       {section === "overrides" && <OverridesSection />}
       {section === "labels" && <ItemLabelsSection />}
@@ -480,508 +470,6 @@ function SectionTab({
       {icon}
       {label}
     </button>
-  );
-}
-
-// ---- Billed (existing read-only roll-up + bulk update) ----
-
-interface PriceRow {
-  key: string;
-  restorationType: string;
-  material: string;
-  unitsBilled: number;
-  caseCount: number;
-  totalRevenue: number;
-  avgPrice: number;
-  minPrice: number;
-  maxPrice: number;
-}
-
-type SortKey =
-  | "restorationType"
-  | "material"
-  | "unitsBilled"
-  | "caseCount"
-  | "avgPrice"
-  | "totalRevenue";
-
-interface BilledResponse {
-  labOrganizationId: string;
-  rows: Array<{
-    restorationType: string;
-    material: string;
-    priceKey: string | null;
-    unitsBilled: number;
-    caseCount: number;
-    totalRevenue: number;
-    avgPrice: number;
-    minPrice: number;
-    maxPrice: number;
-  }>;
-}
-
-function todayISO() {
-  return new Date().toISOString().slice(0, 10);
-}
-function defaultFromISO() {
-  const d = new Date();
-  d.setMonth(d.getMonth() - 3);
-  return d.toISOString().slice(0, 10);
-}
-
-function BilledSection() {
-  const [search, setSearch] = useState("");
-  const [sortKey, setSortKey] = useState<SortKey>("totalRevenue");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
-  const [editing, setEditing] = useState<PriceRow | null>(null);
-  const [from, setFrom] = useState<string>(defaultFromISO());
-  const [to, setTo] = useState<string>(todayISO());
-  const [practiceId, setPracticeId] = useState<string>("");
-  const [doctorName, setDoctorName] = useState<string>("");
-
-  const orgsQuery = useQuery({
-    queryKey: ["organizations"],
-    queryFn: () => apiFetch<Organization[]>("/organizations"),
-    staleTime: 5 * 60 * 1000,
-  });
-  const practices = useMemo(
-    () =>
-      (orgsQuery.data ?? [])
-        .filter((o) => o.type === "provider")
-        .sort((a, b) =>
-          (a.displayName || a.name || "").localeCompare(
-            b.displayName || b.name || "",
-          ),
-        ),
-    [orgsQuery.data],
-  );
-
-  const billedQuery = useQuery({
-    queryKey: ["pricing", "billed", { from, to, practiceId, doctorName }],
-    queryFn: () => {
-      const qs = new URLSearchParams();
-      if (from) qs.set("from", new Date(`${from}T00:00:00`).toISOString());
-      if (to) qs.set("to", new Date(`${to}T23:59:59.999`).toISOString());
-      if (practiceId) qs.set("providerOrganizationId", practiceId);
-      if (doctorName.trim()) qs.set("doctorName", doctorName.trim());
-      const tail = qs.toString();
-      return apiFetch<BilledResponse>(
-        `/pricing/billed${tail ? `?${tail}` : ""}`,
-      );
-    },
-  });
-
-  const rows = useMemo<PriceRow[]>(() => {
-    return (billedQuery.data?.rows ?? []).map((r) => ({
-      key: `${r.restorationType}|${r.material}`,
-      restorationType: r.restorationType,
-      material: r.material,
-      unitsBilled: Number(r.unitsBilled) || 0,
-      caseCount: Number(r.caseCount) || 0,
-      totalRevenue: Number(r.totalRevenue) || 0,
-      avgPrice: Number(r.avgPrice) || 0,
-      minPrice: Number(r.minPrice) || 0,
-      maxPrice: Number(r.maxPrice) || 0,
-    }));
-  }, [billedQuery.data]);
-
-  const unmappedCount = useMemo(
-    () =>
-      rows.filter(
-        (r) =>
-          !isKnownPriceKey(
-            materialToPriceKey(
-              r.material === "—" ? null : r.material,
-              r.restorationType,
-            ),
-          ),
-      ).length,
-    [rows],
-  );
-
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return rows
-      .filter((r) => {
-        if (!q) return true;
-        return (
-          r.restorationType.toLowerCase().includes(q) ||
-          r.material.toLowerCase().includes(q)
-        );
-      })
-      .sort((a, b) => {
-        const va = a[sortKey];
-        const vb = b[sortKey];
-        if (typeof va === "number" && typeof vb === "number") {
-          return sortDir === "asc" ? va - vb : vb - va;
-        }
-        return sortDir === "asc"
-          ? String(va).localeCompare(String(vb))
-          : String(vb).localeCompare(String(va));
-      });
-  }, [rows, search, sortKey, sortDir]);
-
-  function toggleSort(k: SortKey) {
-    if (sortKey === k) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    else {
-      setSortKey(k);
-      setSortDir("desc");
-    }
-  }
-  function SortHeader({
-    k,
-    children,
-    align = "left",
-  }: {
-    k: SortKey;
-    children: React.ReactNode;
-    align?: "left" | "right";
-  }) {
-    return (
-      <button
-        type="button"
-        onClick={() => toggleSort(k)}
-        className={`inline-flex items-center gap-1 text-[11px] uppercase tracking-wide text-muted-foreground font-medium hover:text-foreground ${
-          align === "right" ? "justify-end" : ""
-        }`}
-      >
-        {children}
-        {sortKey === k &&
-          (sortDir === "asc" ? <ChevronUp size={11} /> : <ChevronDown size={11} />)}
-      </button>
-    );
-  }
-
-  const isLoading = billedQuery.isLoading;
-
-  return (
-    <div className="bg-card border border-border rounded-xl overflow-hidden">
-      <div className="px-4 py-3 border-b border-border flex flex-wrap items-center gap-2">
-        <div className="flex items-center gap-1 text-xs">
-          <span className="text-muted-foreground">From</span>
-          <input
-            type="date"
-            value={from}
-            onChange={(e) => setFrom(e.target.value)}
-            className="h-8 px-2 rounded-md bg-background border border-input"
-          />
-          <span className="text-muted-foreground">to</span>
-          <input
-            type="date"
-            value={to}
-            onChange={(e) => setTo(e.target.value)}
-            className="h-8 px-2 rounded-md bg-background border border-input"
-          />
-        </div>
-        <select
-          value={practiceId}
-          onChange={(e) => setPracticeId(e.target.value)}
-          className="h-8 px-2 rounded-md bg-background border border-input text-xs min-w-[160px]"
-        >
-          <option value="">All practices</option>
-          {practices.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.displayName || p.name}
-            </option>
-          ))}
-        </select>
-        <input
-          type="search"
-          value={doctorName}
-          onChange={(e) => setDoctorName(e.target.value)}
-          placeholder="Doctor…"
-          className="h-8 px-2 rounded-md bg-background border border-input text-xs w-36"
-        />
-        <div className="relative flex-1 min-w-[180px] max-w-xs">
-          <Search
-            size={14}
-            className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
-          />
-          <input
-            type="search"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search restoration or material…"
-            className="w-full h-8 pl-8 pr-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
-          />
-        </div>
-        <div className="ml-auto text-sm text-muted-foreground">
-          {filtered.length} of {rows.length}
-        </div>
-      </div>
-      {unmappedCount > 0 && (
-        <div className="px-4 py-2 bg-warning/10 border-b border-warning/30 text-xs text-foreground flex items-start gap-2">
-          <span className="font-medium">{unmappedCount} unmapped:</span>
-          <span className="text-muted-foreground">
-            these restorations don't match any standard pricing key, so tier
-            and per-doctor prices won't auto-apply. Click a row to retro-set
-            a unit price, or rename the restoration/material to match a
-            known item.
-          </span>
-        </div>
-      )}
-      {billedQuery.error && (
-        <div className="px-4 py-2 bg-destructive/10 text-destructive text-xs">
-          {(billedQuery.error as ApiError).message}
-        </div>
-      )}
-
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-secondary/40">
-              <th className="text-left px-5 py-2.5">
-                <SortHeader k="restorationType">Restoration</SortHeader>
-              </th>
-              <th className="text-left py-2.5">
-                <SortHeader k="material">Material</SortHeader>
-              </th>
-              <th className="text-right py-2.5">
-                <SortHeader k="unitsBilled" align="right">
-                  Units
-                </SortHeader>
-              </th>
-              <th className="text-right py-2.5">
-                <SortHeader k="caseCount" align="right">
-                  Cases
-                </SortHeader>
-              </th>
-              <th className="text-right py-2.5">
-                <SortHeader k="avgPrice" align="right">
-                  Avg unit
-                </SortHeader>
-              </th>
-              <th className="text-right py-2.5">Range</th>
-              <th className="text-right py-2.5">
-                <SortHeader k="totalRevenue" align="right">
-                  Revenue
-                </SortHeader>
-              </th>
-              <th className="px-5 py-2.5" />
-            </tr>
-          </thead>
-          <tbody>
-            {isLoading && (
-              <tr>
-                <td
-                  colSpan={8}
-                  className="px-5 py-12 text-center text-muted-foreground"
-                >
-                  <Loader2 size={16} className="inline animate-spin mr-2" />
-                  Loading pricing…
-                </td>
-              </tr>
-            )}
-            {!isLoading && filtered.length === 0 && (
-              <tr>
-                <td
-                  colSpan={8}
-                  className="px-5 py-12 text-center text-muted-foreground"
-                >
-                  No restorations have been priced yet.
-                </td>
-              </tr>
-            )}
-            {filtered.map((r) => {
-              const unmapped = !isKnownPriceKey(
-                materialToPriceKey(
-                  r.material === "—" ? null : r.material,
-                  r.restorationType,
-                ),
-              );
-              return (
-              <tr
-                key={r.key}
-                onClick={() => setEditing(r)}
-                className="border-t border-border hover:bg-secondary/40 cursor-pointer"
-              >
-                <td className="px-5 py-3">
-                  <div className="flex items-center gap-2.5">
-                    <div
-                      className={`h-7 w-7 rounded-md flex items-center justify-center ${
-                        unmapped
-                          ? "bg-warning/15 text-warning"
-                          : "bg-primary/10 text-primary"
-                      }`}
-                      title={
-                        unmapped
-                          ? "Unmapped: tier/override prices won't auto-apply"
-                          : undefined
-                      }
-                    >
-                      <Tag size={13} />
-                    </div>
-                    <div className="font-medium">
-                      {r.restorationType}
-                      {unmapped && (
-                        <span className="ml-2 text-[10px] uppercase tracking-wide text-warning font-medium">
-                          unmapped
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                </td>
-                <td className="py-3 text-muted-foreground">{r.material}</td>
-                <td className="py-3 text-right tabular-nums">{r.unitsBilled}</td>
-                <td className="py-3 text-right tabular-nums">{r.caseCount}</td>
-                <td className="py-3 text-right tabular-nums font-medium">
-                  {formatMoney(r.avgPrice)}
-                </td>
-                <td className="py-3 text-right tabular-nums text-xs text-muted-foreground">
-                  {r.minPrice > 0
-                    ? `${formatMoney(r.minPrice)} – ${formatMoney(r.maxPrice)}`
-                    : "—"}
-                </td>
-                <td className="py-3 text-right tabular-nums">
-                  {formatMoney(r.totalRevenue)}
-                </td>
-                <td className="px-5 py-3 text-right">
-                  <span className="inline-flex items-center gap-1 text-xs text-primary">
-                    <Pencil size={11} /> Edit
-                  </span>
-                </td>
-              </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-
-      {editing && (
-        <BilledEditor row={editing} onClose={() => setEditing(null)} />
-      )}
-    </div>
-  );
-}
-
-function BilledEditor({
-  row,
-  onClose,
-}: {
-  row: PriceRow;
-  onClose: () => void;
-}) {
-  const queryClient = useQueryClient();
-  const [unitPrice, setUnitPrice] = useState<string>(row.avgPrice.toFixed(2));
-  const [unitPriceFocused, setUnitPriceFocused] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<number | null>(null);
-
-  useEffect(() => {
-    setUnitPrice(row.avgPrice.toFixed(2));
-    setError(null);
-    setSuccess(null);
-  }, [row.key, row.avgPrice]);
-
-  const mutation = useMutation({
-    mutationFn: async () => {
-      const value = Number(unitPrice);
-      if (!Number.isFinite(value) || value < 0) {
-        throw new Error("Unit price must be a non-negative number.");
-      }
-      return apiFetch<{ updated: number }>(`/cases/restorations/pricing`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          restorationType: row.restorationType,
-          material: row.material === "—" ? null : row.material,
-          unitPrice: value,
-        }),
-      });
-    },
-    onSuccess: (res) => {
-      setSuccess(res.updated);
-      setError(null);
-      queryClient.invalidateQueries({ queryKey: ["cases"] });
-      queryClient.invalidateQueries({ queryKey: ["pricing", "billed"] });
-    },
-    onError: (err: Error) => {
-      setSuccess(null);
-      setError(err.message || "Could not update pricing.");
-    },
-  });
-
-  return (
-    <SidePanel
-      title={`${row.restorationType} · ${row.material}`}
-      subtitle="Set unit price"
-      onClose={onClose}
-      footer={
-        <>
-          <button
-            type="button"
-            onClick={onClose}
-            className="h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary"
-          >
-            Close
-          </button>
-          <button
-            type="button"
-            onClick={() => mutation.mutate()}
-            disabled={mutation.isPending}
-            className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
-          >
-            {mutation.isPending ? "Updating…" : "Update price"}
-          </button>
-        </>
-      }
-    >
-      <div className="grid grid-cols-2 gap-3 text-sm">
-        <Stat label="Current avg" value={formatMoney(row.avgPrice)} />
-        <Stat
-          label="Range"
-          value={
-            row.minPrice > 0
-              ? `${formatMoney(row.minPrice)} – ${formatMoney(row.maxPrice)}`
-              : "—"
-          }
-        />
-        <Stat label="Units" value={String(row.unitsBilled)} />
-        <Stat label="Cases" value={String(row.caseCount)} />
-      </div>
-
-      <div>
-        <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
-          New unit price
-        </label>
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-muted-foreground">$</span>
-          <input
-            type="text"
-            inputMode="decimal"
-            pattern="[0-9]*[.]?[0-9]*"
-            min="0"
-            value={unitPriceFocused ? unitPrice : formatPriceTwoDecimals(unitPrice)}
-            onChange={(e) => setUnitPrice(e.target.value)}
-            onFocus={() => setUnitPriceFocused(true)}
-            onBlur={(e) => {
-              setUnitPriceFocused(false);
-              setUnitPrice(formatPriceTwoDecimals(e.target.value));
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                setUnitPrice(formatPriceTwoDecimals(e.currentTarget.value));
-              }
-            }}
-            className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm tabular-nums"
-          />
-        </div>
-        <p className="text-xs text-muted-foreground mt-2">
-          Updates every restoration with this type and material across every
-          case in your lab(s) you administer.
-        </p>
-      </div>
-
-      {error && (
-        <div className="text-sm rounded-md px-3 py-2 bg-destructive/10 text-destructive">
-          {error}
-        </div>
-      )}
-      {success !== null && (
-        <div className="text-sm rounded-md px-3 py-2 bg-success/15 text-success">
-          Updated {success} restoration{success === 1 ? "" : "s"}.
-        </div>
-      )}
-    </SidePanel>
   );
 }
 
@@ -1086,6 +574,7 @@ function TiersSection() {
   const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<PricingTier | null>(null);
+  const [addingItem, setAddingItem] = useState(false);
 
   const tiersQuery = useQuery({
     queryKey: ["pricing", "tiers"],
@@ -1093,8 +582,16 @@ function TiersSection() {
     retry: false,
   });
 
+  const labelsQuery = useQuery({
+    queryKey: ["pricing", "item-labels", undefined],
+    queryFn: () => apiFetch<ItemLabelsResponse>("/pricing/item-labels"),
+    staleTime: 30_000,
+  });
+
   const tiers = tiersQuery.data?.tiers ?? [];
   const keys = tiersQuery.data?.keys ?? [];
+  const itemLabels = labelsQuery.data?.labels ?? {};
+  const resolveLabel = (k: string) => itemLabels[k] ?? labelFor(k);
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) =>
@@ -1127,13 +624,28 @@ function TiersSection() {
           Tiers are price lists you can assign to client practices. Per-doctor
           overrides take precedence over tiers.
         </div>
-        <button
-          type="button"
-          onClick={() => setCreating(true)}
-          className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold inline-flex items-center gap-1.5 hover:bg-primary/90"
-        >
-          <Plus size={14} /> New tier
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setAddingItem(true)}
+            disabled={tiers.length === 0}
+            className="h-9 px-3 rounded-md border border-input bg-background text-sm font-semibold inline-flex items-center gap-1.5 hover:bg-secondary disabled:opacity-60 disabled:cursor-not-allowed"
+            title={
+              tiers.length === 0
+                ? "Create a pricing tier first"
+                : "Add a custom billable item to one or more tiers"
+            }
+          >
+            <Plus size={14} /> Add billable item
+          </button>
+          <button
+            type="button"
+            onClick={() => setCreating(true)}
+            className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold inline-flex items-center gap-1.5 hover:bg-primary/90"
+          >
+            <Plus size={14} /> New tier
+          </button>
+        </div>
       </div>
 
       <DefaultDoctorTierSetting tiers={tiers} />
@@ -1195,7 +707,7 @@ function TiersSection() {
               <div className="space-y-1 text-xs">
                 {keys.slice(0, 6).map((k) => (
                   <div key={k} className="flex items-center justify-between">
-                    <span className="text-muted-foreground">{labelFor(k)}</span>
+                    <span className="text-muted-foreground">{resolveLabel(k)}</span>
                     <span className="tabular-nums">
                       {Number(t.prices[k]) > 0
                         ? formatMoney(Number(t.prices[k]))
@@ -1223,6 +735,7 @@ function TiersSection() {
           mode="create"
           keys={keys}
           tier={null}
+          resolveLabel={resolveLabel}
           onClose={() => setCreating(false)}
         />
       )}
@@ -1231,10 +744,177 @@ function TiersSection() {
           mode="edit"
           keys={keys}
           tier={editing}
+          resolveLabel={resolveLabel}
           onClose={() => setEditing(null)}
         />
       )}
+      {addingItem && (
+        <AddBillableItemEditor
+          tiers={tiers}
+          onClose={() => setAddingItem(false)}
+        />
+      )}
     </div>
+  );
+}
+
+interface AddBillableItemResult {
+  labOrganizationId: string;
+  priceKey: string;
+  name: string;
+  description: string | null;
+  price: number;
+  tierIds: string[];
+  updatedTiers: number;
+}
+
+function AddBillableItemEditor({
+  tiers,
+  onClose,
+}: {
+  tiers: PricingTier[];
+  onClose: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [price, setPrice] = useState("");
+  const [selectedTierIds, setSelectedTierIds] = useState<string[]>(() =>
+    tiers.length === 1 ? [tiers[0].id] : [],
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  function toggleTier(id: string) {
+    setSelectedTierIds((prev) =>
+      prev.includes(id) ? prev.filter((t) => t !== id) : [...prev, id],
+    );
+  }
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const trimmedName = name.trim();
+      const priceValue = Number(price);
+      if (!trimmedName) {
+        throw new Error("Enter a name for the item.");
+      }
+      if (selectedTierIds.length === 0) {
+        throw new Error("Select at least one tier.");
+      }
+      if (!Number.isFinite(priceValue) || priceValue <= 0) {
+        throw new Error("Enter a price greater than 0.");
+      }
+      return apiFetch<AddBillableItemResult>(`/pricing/add-item`, {
+        method: "POST",
+        body: JSON.stringify({
+          name: trimmedName,
+          description: description.trim() || null,
+          price: priceValue,
+          tierIds: selectedTierIds,
+        }),
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["pricing", "tiers"] });
+      queryClient.invalidateQueries({ queryKey: ["pricing", "item-labels"] });
+      queryClient.invalidateQueries({ queryKey: ["pricing", "history"] });
+      onClose();
+    },
+    onError: (err: Error) => {
+      setError(err.message || "Could not add the item.");
+    },
+  });
+
+  return (
+    <SidePanel
+      title="Add billable item"
+      subtitle="Apply a custom item to one or more tiers"
+      onClose={onClose}
+      footer={
+        <>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setError(null);
+              mutation.mutate();
+            }}
+            disabled={mutation.isPending}
+            className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
+          >
+            {mutation.isPending ? "Adding…" : "Add item"}
+          </button>
+        </>
+      }
+    >
+      <div>
+        <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+          Item name
+        </label>
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="e.g. Custom whitening tray"
+          maxLength={80}
+          className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+        />
+      </div>
+
+      <div>
+        <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+          Description <span className="normal-case">(optional)</span>
+        </label>
+        <textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="What this item covers…"
+          maxLength={500}
+          rows={3}
+          className="w-full px-2.5 py-2 rounded-md bg-background border border-input text-sm resize-y"
+        />
+      </div>
+
+      <div>
+        <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+          Price
+        </label>
+        <PriceField label="Unit price" value={price} onChange={setPrice} />
+      </div>
+
+      <div>
+        <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+          Apply to tiers
+        </div>
+        <div className="space-y-1.5">
+          {tiers.map((t) => (
+            <label
+              key={t.id}
+              className="flex items-center gap-2 text-sm rounded-md px-2 py-1.5 hover:bg-secondary cursor-pointer"
+            >
+              <input
+                type="checkbox"
+                checked={selectedTierIds.includes(t.id)}
+                onChange={() => toggleTier(t.id)}
+                className="h-4 w-4 rounded border-input"
+              />
+              <span>{t.name}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {error && (
+        <div className="text-sm rounded-md px-3 py-2 bg-destructive/10 text-destructive">
+          {error}
+        </div>
+      )}
+    </SidePanel>
   );
 }
 
@@ -1242,11 +922,13 @@ function TierEditor({
   mode,
   keys,
   tier,
+  resolveLabel,
   onClose,
 }: {
   mode: "create" | "edit";
   keys: string[];
   tier: PricingTier | null;
+  resolveLabel: (k: string) => string;
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -1432,7 +1114,7 @@ function TierEditor({
           {keys.map((k) => (
             <PriceField
               key={k}
-              label={labelFor(k)}
+              label={resolveLabel(k)}
               value={prices[k] ?? ""}
               onChange={(v) => setPrices((p) => ({ ...p, [k]: v }))}
             />
@@ -2331,17 +2013,6 @@ function SidePanel({
           {footer}
         </footer>
       </aside>
-    </div>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="bg-secondary/40 rounded-md px-3 py-2">
-      <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
-        {label}
-      </div>
-      <div className="text-sm font-medium tabular-nums mt-0.5">{value}</div>
     </div>
   );
 }

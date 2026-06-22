@@ -19,6 +19,8 @@ import type {
 import type {
   AcceptInvitationResult,
   AcknowledgeAiReview200,
+  AddBillableItemInput,
+  AddBillableItemResult,
   AddCaseNoteInput,
   AddCaseRestorationInput,
   AiChatHistoryResult,
@@ -6833,6 +6835,98 @@ export const useUpdateItemLabels = <
   TContext
 > => {
   return useMutation(getUpdateItemLabelsMutationOptions(options));
+};
+
+/**
+ * Creates a custom billable item (name, description, price) and writes
+its price into one or more existing pricing tiers in a single call.
+Generates a stable, deduped custom price key from the name, stores the
+label + description, and records a tier-update audit entry for each
+affected tier. Restricted to lab admins.
+
+ * @summary Define a custom billable item and apply it to pricing tiers
+ */
+export const getAddBillableItemUrl = () => {
+  return `/api/pricing/add-item`;
+};
+
+export const addBillableItem = async (
+  addBillableItemInput: AddBillableItemInput,
+  options?: RequestInit,
+): Promise<AddBillableItemResult> => {
+  return customFetch<AddBillableItemResult>(getAddBillableItemUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(addBillableItemInput),
+  });
+};
+
+export const getAddBillableItemMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof addBillableItem>>,
+    TError,
+    { data: BodyType<AddBillableItemInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof addBillableItem>>,
+  TError,
+  { data: BodyType<AddBillableItemInput> },
+  TContext
+> => {
+  const mutationKey = ["addBillableItem"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof addBillableItem>>,
+    { data: BodyType<AddBillableItemInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return addBillableItem(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type AddBillableItemMutationResult = NonNullable<
+  Awaited<ReturnType<typeof addBillableItem>>
+>;
+export type AddBillableItemMutationBody = BodyType<AddBillableItemInput>;
+export type AddBillableItemMutationError = ErrorType<void>;
+
+/**
+ * @summary Define a custom billable item and apply it to pricing tiers
+ */
+export const useAddBillableItem = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof addBillableItem>>,
+    TError,
+    { data: BodyType<AddBillableItemInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof addBillableItem>>,
+  TError,
+  { data: BodyType<AddBillableItemInput> },
+  TContext
+> => {
+  return useMutation(getAddBillableItemMutationOptions(options));
 };
 
 /**

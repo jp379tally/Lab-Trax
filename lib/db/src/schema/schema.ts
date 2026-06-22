@@ -1754,6 +1754,7 @@ export const labItemLabels = pgTable(
       .references(() => organizations.id, { onDelete: "cascade" }),
     priceKey: text("price_key").notNull(),
     label: text("label").notNull(),
+    description: text("description"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

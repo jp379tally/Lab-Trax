@@ -6,6 +6,7 @@ import {
   auditLogs,
   caseRestorations,
   cases,
+  labItemLabels,
   organizationConnections,
   organizationMemberships,
   organizations,
@@ -23,6 +24,7 @@ import {
   DEFAULT_TIER_ITEMS,
   DEFAULT_TIER_KEYS,
   fetchLabItemLabels,
+  generateUniqueItemKey,
   resolveAllPricesForContext,
   resolveServerPrice,
   saveLabItemLabels,
@@ -901,6 +903,12 @@ router.get(
     for (const item of DEFAULT_TIER_ITEMS) {
       merged[item.key] = configured[item.key] ?? item.label;
     }
+    // Also surface any admin-configured custom item labels (e.g. billable
+    // items added via POST /pricing/add-item) so the desktop can render them
+    // with their entered name instead of a title-cased slug.
+    for (const [k, v] of Object.entries(configured)) {
+      if (!(k in merged)) merged[k] = v;
+    }
 
     return ok(res, { labOrganizationId: labId, labels: merged });
   })
@@ -943,6 +951,122 @@ router.put(
 
     return ok(res, { labOrganizationId: labId, labels: merged });
   })
+);
+
+/**
+ * POST /pricing/add-item
+ * Define a custom billable item (name, description, price) and apply it to
+ * one or more pricing tiers in a single call. Admin-only, lab-scoped.
+ *
+ * Generates a stable, deduped custom price key from the name, upserts the
+ * label + description into `lab_item_labels`, and writes the price into each
+ * selected tier's `pricesJson`. Each affected tier records a
+ * `pricing_tier_updated` audit entry so the change shows up in tier history.
+ */
+router.post(
+  "/add-item",
+  asyncHandler(async (req, res) => {
+    const input = z
+      .object({
+        labOrganizationId: z.string().optional(),
+        name: z.string().trim().min(1).max(80),
+        description: z.string().trim().max(500).nullable().optional(),
+        price: z.coerce.number().min(0),
+        tierIds: z.array(z.string().min(1)).min(1),
+      })
+      .parse(req.body);
+
+    const labId = await resolveLabId(req, input.labOrganizationId);
+    await requireAnyRole((req as any).auth.userId, labId, ADMIN_ROLES);
+
+    // Resolve the selected tiers and confirm they all belong to this lab and
+    // are not soft-deleted.
+    const tierIds = Array.from(new Set(input.tierIds));
+    const selectedTiers = await db.query.pricingTiers.findMany({
+      where: and(
+        eq(pricingTiers.labOrganizationId, labId),
+        inArray(pricingTiers.id, tierIds),
+        notDeleted(pricingTiers),
+      ),
+    });
+    if (selectedTiers.length !== tierIds.length) {
+      throw new HttpError(
+        404,
+        "One or more selected tiers were not found in this lab.",
+      );
+    }
+
+    // Build the set of keys already in use across this lab so the generated
+    // key is stable and collision-free.
+    const existingKeys = new Set<string>(DEFAULT_TIER_KEYS as readonly string[]);
+    const allTiers = await db.query.pricingTiers.findMany({
+      where: and(
+        eq(pricingTiers.labOrganizationId, labId),
+        notDeleted(pricingTiers),
+      ),
+    });
+    for (const t of allTiers) {
+      for (const k of Object.keys(
+        (t.pricesJson ?? {}) as Record<string, unknown>,
+      )) {
+        existingKeys.add(k);
+      }
+    }
+    const existingLabels = await fetchLabItemLabels(labId);
+    for (const k of Object.keys(existingLabels)) existingKeys.add(k);
+
+    const name = input.name.trim();
+    const description = input.description?.trim() || null;
+    const priceKey = generateUniqueItemKey(name, existingKeys);
+
+    // Persist the label + description for the new key.
+    await db
+      .insert(labItemLabels)
+      .values({ labOrganizationId: labId, priceKey, label: name, description })
+      .onConflictDoUpdate({
+        target: [labItemLabels.labOrganizationId, labItemLabels.priceKey],
+        set: { label: name, description, updatedAt: new Date() },
+      });
+
+    // Write the price into each selected tier, recording an audit entry per
+    // tier so existing tier history surfaces the change.
+    for (const tier of selectedTiers) {
+      const before = tier;
+      const nextPrices = {
+        ...((tier.pricesJson ?? {}) as Record<string, number>),
+        [priceKey]: input.price,
+      };
+      const [updated] = await db
+        .update(pricingTiers)
+        .set({ pricesJson: nextPrices, updatedAt: new Date() })
+        .where(eq(pricingTiers.id, tier.id))
+        .returning();
+
+      await writeAuditLog({
+        req,
+        organizationId: labId,
+        action: "pricing_tier_updated",
+        entityType: "pricing_tier",
+        entityId: tier.id,
+        beforeJson: before,
+        afterJson: updated,
+      });
+    }
+
+    return ok(
+      res,
+      {
+        labOrganizationId: labId,
+        priceKey,
+        name,
+        description,
+        price: input.price,
+        tierIds,
+        updatedTiers: selectedTiers.length,
+      },
+      201,
+    );
+  }),
 );
 
 export default router;

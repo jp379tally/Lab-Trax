@@ -800,6 +800,49 @@ export interface ItemLabelsInput {
   labels: ItemLabelsInputLabels;
 }
 
+export interface AddBillableItemInput {
+  /** Lab org to add the item to. Defaults to the caller's first admin lab. */
+  labOrganizationId?: string;
+  /**
+   * Display name / label for the billable item.
+   * @minLength 1
+   * @maxLength 80
+   */
+  name: string;
+  /**
+   * Optional longer description, stored alongside the label.
+   * @maxLength 500
+   */
+  description?: string | null;
+  /**
+   * Unit price applied to every selected tier.
+   * @minimum 0
+   */
+  price: number;
+  /**
+   * IDs of the pricing tiers to apply the item's price to.
+   * @minItems 1
+   */
+  tierIds: string[];
+}
+
+export type AddBillableItemResultData = {
+  labOrganizationId: string;
+  /** The generated, deduped custom price key. */
+  priceKey: string;
+  name: string;
+  description?: string | null;
+  price: number;
+  tierIds: string[];
+  /** Number of tiers the price was written into. */
+  updatedTiers: number;
+};
+
+export interface AddBillableItemResult {
+  ok: boolean;
+  data: AddBillableItemResultData;
+}
+
 export interface Notification {
   id: string;
   userId: string;

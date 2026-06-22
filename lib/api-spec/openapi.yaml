@@ -2031,6 +2031,34 @@ paths:
                 $ref: "#/components/schemas/ItemLabelsResult"
         "403":
           description: Caller is not a lab administrator.
+  /pricing/add-item:
+    post:
+      operationId: addBillableItem
+      tags: [invoices]
+      summary: Define a custom billable item and apply it to pricing tiers
+      description: |
+        Creates a custom billable item (name, description, price) and writes
+        its price into one or more existing pricing tiers in a single call.
+        Generates a stable, deduped custom price key from the name, stores the
+        label + description, and records a tier-update audit entry for each
+        affected tier. Restricted to lab admins.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddBillableItemInput"
+      responses:
+        "201":
+          description: Item created and applied to the selected tiers
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddBillableItemResult"
+        "403":
+          description: Caller is not a lab administrator.
+        "404":
+          description: One or more selected tiers were not found in this lab.
   /lab-orgs/{orgId}/statement-schedule:
     get:
       operationId: getStatementSchedule
@@ -4171,6 +4199,56 @@ components:
           type: object
           description: Partial map of priceKey → display label to upsert.
           additionalProperties: { type: string }
+    AddBillableItemInput:
+      type: object
+      required: [name, price, tierIds]
+      properties:
+        labOrganizationId:
+          type: string
+          description: Lab org to add the item to. Defaults to the caller's first admin lab.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+          description: Display name / label for the billable item.
+        description:
+          type: string
+          maxLength: 500
+          nullable: true
+          description: Optional longer description, stored alongside the label.
+        price:
+          type: number
+          minimum: 0
+          description: Unit price applied to every selected tier.
+        tierIds:
+          type: array
+          minItems: 1
+          items: { type: string }
+          description: IDs of the pricing tiers to apply the item's price to.
+    AddBillableItemResult:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          required: [labOrganizationId, priceKey, name, price, tierIds, updatedTiers]
+          properties:
+            labOrganizationId: { type: string }
+            priceKey:
+              type: string
+              description: The generated, deduped custom price key.
+            name: { type: string }
+            description:
+              type: string
+              nullable: true
+            price: { type: number }
+            tierIds:
+              type: array
+              items: { type: string }
+            updatedTiers:
+              type: integer
+              description: Number of tiers the price was written into.
     Notification:
       type: object
       required: [id, userId, type, title, body, createdAt]

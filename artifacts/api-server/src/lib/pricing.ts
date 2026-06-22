@@ -58,6 +58,42 @@ export function resolveItemLabelFromMap(
 }
 
 /**
+ * Slugify a human-entered item name into a stable, lowercase price key
+ * (e.g. "Custom Whitening Tray" → "custom_whitening_tray"). Non-alphanumeric
+ * runs collapse to a single underscore. Falls back to "item" when the name
+ * has no usable characters.
+ */
+export function slugifyItemKey(name: string): string {
+  const slug = (name ?? "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 60)
+    .replace(/_+$/g, "");
+  return slug || "item";
+}
+
+/**
+ * Generate a price key from `name` that does not collide with any key in
+ * `existingKeys`. Appends `_2`, `_3`, … until a free key is found.
+ */
+export function generateUniqueItemKey(
+  name: string,
+  existingKeys: Set<string>,
+): string {
+  const base = slugifyItemKey(name);
+  if (!existingKeys.has(base)) return base;
+  let n = 2;
+  let candidate = `${base}_${n}`;
+  while (existingKeys.has(candidate)) {
+    n += 1;
+    candidate = `${base}_${n}`;
+  }
+  return candidate;
+}
+
+/**
  * Fetch all configured labels for a lab as a map. Keys present in the map
  * are admin-set; keys absent should still resolve via static defaults.
  */

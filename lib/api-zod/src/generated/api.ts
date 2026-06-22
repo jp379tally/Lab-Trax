@@ -2515,6 +2515,48 @@ export const UpdateItemLabelsResponse = zod.object({
 });
 
 /**
+ * Creates a custom billable item (name, description, price) and writes
+its price into one or more existing pricing tiers in a single call.
+Generates a stable, deduped custom price key from the name, stores the
+label + description, and records a tier-update audit entry for each
+affected tier. Restricted to lab admins.
+
+ * @summary Define a custom billable item and apply it to pricing tiers
+ */
+export const addBillableItemBodyNameMax = 80;
+
+export const addBillableItemBodyDescriptionMax = 500;
+
+export const addBillableItemBodyPriceMin = 0;
+
+export const AddBillableItemBody = zod.object({
+  labOrganizationId: zod
+    .string()
+    .optional()
+    .describe(
+      "Lab org to add the item to. Defaults to the caller's first admin lab.",
+    ),
+  name: zod
+    .string()
+    .min(1)
+    .max(addBillableItemBodyNameMax)
+    .describe("Display name \/ label for the billable item."),
+  description: zod
+    .string()
+    .max(addBillableItemBodyDescriptionMax)
+    .nullish()
+    .describe("Optional longer description, stored alongside the label."),
+  price: zod
+    .number()
+    .min(addBillableItemBodyPriceMin)
+    .describe("Unit price applied to every selected tier."),
+  tierIds: zod
+    .array(zod.string())
+    .min(1)
+    .describe("IDs of the pricing tiers to apply the item's price to."),
+});
+
+/**
  * @summary Get or create the auto-send schedule for a lab
  */
 export const GetStatementScheduleParams = zod.object({
