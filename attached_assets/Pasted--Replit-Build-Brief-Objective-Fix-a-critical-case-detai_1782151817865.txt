@@ -1,0 +1,170 @@
+### Replit Build Brief
+
+**Objective**
+Fix a critical case-detail data integrity bug where the same case page shows correct RX Summary data but incorrect Patient & billing details from a different case.
+
+**User-visible problem**
+A case was created for:
+
+* Patient: `Alba Hurtado`
+* Doctor: `Edward Scott II / Dr. Scott`
+* Teeth: `6-11`
+
+The RX Summary correctly shows that information. But the editable Patient & billing details section shows unrelated data:
+
+* Patient name: `Pam McGoff`
+* Bill to: `Dr. Dalton`
+* Teeth: `12`
+* Shade: unrelated value
+
+This means the case screen is mixing data from two different cases/doctors.
+
+**Likely root cause**
+The page is probably loading the correct case/RX summary by `caseId`, but the Patient & billing details form is being populated from stale state, cached form defaults, a previously selected invoice/case, or a non-case-scoped query. The form may not be resetting when the current case changes, or it may be using fallback invoice/customer data from the wrong record.
+
+**Exact app areas to inspect/change**
+
+Search for the case detail / invoice edit screen that contains:
+
+* `Rx Summary`
+* `Patient & billing details`
+* `patientName`
+* `billTo`
+* `teeth`
+* `shade`
+* `case notes`
+* `Save changes`
+* `Record Payment`
+* `Go to case`
+
+Then inspect:
+
+* the query/API call that loads the current case
+* the query/API call that loads billing or invoice details
+* any form initialization logic, especially `defaultValues`, `reset`, `useEffect`, cached state, selected case state, or invoice draft state
+* any route params such as `caseId`, `invoiceId`, `doctorId`, or `rxId`
+* any Zustand/Redux/context/localStorage state used by the form
+
+**Implementation plan**
+
+1. Reproduce by opening the exact case for Alba Hurtado / Dr. Scott and confirming the mismatch.
+2. Find where RX Summary gets its data. Treat that as the correct current case source.
+3. Find where Patient & billing details gets its data.
+4. Make the Patient & billing details form derive its defaults from the same current case/invoice record, scoped by the current `caseId` or `invoiceId`.
+5. Remove or guard any fallback that pulls from the last selected case, last selected doctor, first invoice row, cached invoice draft, or global patient state.
+6. Ensure the form resets whenever the route case/invoice id changes.
+7. Add a defensive mismatch check: if the loaded billing details case id does not match the current case id, do not render the wrong data. Show a loading/error state instead.
+8. Add regression coverage so a newly opened case cannot display patient/billing data from a previously opened case.
+
+**Guardrails**
+
+* Do not patch this by manually overwriting Alba’s data only.
+* Do not hide the Patient & billing details section.
+* Do not use patient name matching as the source of truth. Use stable IDs.
+* Do not allow a billing/invoice record to populate the form unless its `caseId` or linked RX/case id matches the page’s current case.
+* Be careful with saving: make sure clicking `Save changes` cannot write Pam/Dr. Dalton data onto Alba/Dr. Scott’s case.
+
+**Acceptance criteria**
+
+* Alba Hurtado’s case shows Alba Hurtado in both RX Summary and Patient & billing details.
+* Bill To matches Dr. Scott / Edward Scott II, not Dr. Dalton.
+* Teeth match the RX Summary teeth, not tooth `12`.
+* Opening one case, then another case, never leaves stale patient/billing data behind.
+* Saving changes only updates the currently opened case/invoice.
+* If billing data is missing or mismatched, the app blocks save and shows a clear error instead of displaying another case’s data.
+
+**Regression risks to check**
+
+* Case detail page after creating a brand-new case
+* Case detail page after navigating from another patient’s case
+* Invoice edit panel or drawer
+* “Go to case” navigation
+* Save changes flow
+* Doctor billing selection
+* Multi-tab or browser refresh behavior
+* Any localStorage/sessionStorage draft restore logic
+
+---
+
+### Copy-Ready Replit Prompt
+
+We have a critical LabTrax data integrity bug on the case/invoice detail screen.
+
+I created a case for Dr. Scott / Edward Scott II with patient `Alba Hurtado`. On the case page, the `Rx Summary` is correct:
+
+* Patient: Alba Hurtado
+* Doctor: Edward Scott II
+* Restorative type: Crown & Bridge
+* Material: PFM
+* Teeth: 6-11
+
+But directly below that, the editable `Patient & billing details` section is showing data from a completely different case:
+
+* Patient name: Pam McGoff
+* Bill To: Dr. Dalton
+* Teeth: 12
+* Shade: unrelated value
+
+This must be fixed urgently. The page must never mix RX/case data from one case with patient/billing details from another case.
+
+Please inspect the case detail / invoice edit screen that renders `Rx Summary`, `Patient & billing details`, `Save changes`, `Record Payment`, and `Go to case`.
+
+Find where the RX Summary data is loaded and where the Patient & billing details form is initialized. The likely bug is stale form state, cached invoice data, an unscoped query, bad fallback defaults, or a form that does not reset when the current case/invoice id changes.
+
+Please implement the safest fix:
+
+1. Make Patient & billing details load only from the current case/invoice record.
+2. Scope all billing/detail queries by the current `caseId` or `invoiceId`.
+3. Reset the form whenever the current route case/invoice id changes.
+4. Remove any fallback that uses the last selected case, last selected doctor, first available invoice, local draft, or global state unless it is verified to match the current case id.
+5. Add a defensive check: if billing details belong to a different case id than the current page, do not render them and do not allow save.
+6. Make sure `Save changes` can only update the currently open case/invoice.
+7. Add regression checks or tests for opening one case after another so stale patient/billing data cannot appear.
+
+Before finishing, verify:
+
+* Alba Hurtado / Dr. Scott shows correctly in both RX Summary and Patient & billing details.
+* Pam McGoff / Dr. Dalton never appears on Alba’s case.
+* Opening multiple cases in sequence does not leak data between them.
+* Refreshing the page still loads the correct data.
+* Saving does not overwrite the wrong case.
+
+If you find conflicting data in the database, explain whether the bug is in stored records, frontend state hydration, or API query scoping before applying the fix.
+
+---
+
+### Debug Analysis
+
+**Probable root cause**
+The RX Summary and Patient & billing details are being populated from different sources. RX Summary is using the correct case/RX record, while the editable billing form is likely using stale state or a wrongly scoped invoice/billing record.
+
+**Supporting evidence**
+The screenshot shows the contradiction on the same screen: RX Summary has Alba Hurtado and Edward Scott II, while Patient & billing details has Pam McGoff and Dr. Dalton. That is not a simple display typo. It means two different records are being merged into one UI.
+
+**Alternate hypotheses worth checking**
+
+* The database created the invoice with the wrong linked case id.
+* The frontend is reusing previous form state after navigating between cases.
+* The billing details query is keyed too broadly, such as by doctor, invoice status, or first open invoice.
+* A draft restore from localStorage/sessionStorage is overriding the current case.
+* The save/edit drawer is mounted once and not reset when a new case is selected.
+
+**Why the recommended approach is best**
+This needs a source-of-truth fix, not a cosmetic patch. The app should enforce that every patient/billing detail shown on a case page belongs to that exact case or invoice id. If the IDs do not match, the UI should block rendering and saving rather than risk corrupting another case.
+
+Confidence: high that this is a stale-state or bad-record-scoping issue. Exact file names still need Replit to inspect in the project.
+
+---
+
+### Step-by-Step Fix Plan
+
+1. Reproduce the bug with the Alba Hurtado case.
+2. Capture the current route ids: `caseId`, `invoiceId`, `rxId`, and doctor id if present.
+3. Log or inspect the data object used by RX Summary.
+4. Log or inspect the data object used by Patient & billing details.
+5. Compare their stable IDs, not names.
+6. Fix the billing details query/form defaults so they are scoped to the current case/invoice.
+7. Add a form reset when the current case/invoice id changes.
+8. Add a guard that refuses to render/save mismatched billing details.
+9. Test case-to-case navigation to make sure stale values are cleared.
+10. Test save behavior to confirm the fix prevents wrong-case overwrites.

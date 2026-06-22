@@ -1,0 +1,152 @@
+### Replit Build Brief
+
+**Objective**
+Fix LabTracks pricing and invoice workflow so new doctors get a default pricing tier, case materials generate correct invoice line items from that tier, and new billable items are created directly into pricing tiers.
+
+**User-visible problem**
+Dr. Scott was created without being assigned to the `Economy` pricing tier. Then Alba Hurtado’s case identified `PFM` as the material, but the invoice did not automatically bill the PFM item from Dr. Scott’s pricing tier. Also, adding a new billable item from an invoice only created it in the old Billable Items list, without asking for pricing tier, description, or price.
+
+**Likely root cause**
+Pricing has two competing sources of truth: a general Billable Items list and Pricing Tiers. New doctors are not being assigned a default tier, and invoice generation is not consistently resolving RX materials through the doctor’s assigned pricing tier.
+
+**Required changes**
+
+1. Add an admin setting for each lab: `Default pricing tier for new doctors`.
+2. For this lab, default new doctors to `Economy`.
+3. When creating a new doctor/account, automatically assign that lab’s default pricing tier.
+4. During invoice generation, use the doctor’s pricing tier to resolve billable items.
+5. If RX material is `PFM`, find the matching `PFM` item in the doctor’s pricing tier and add it to the invoice.
+6. Replace the old Billable Items menu workflow with pricing-tier-based item management.
+7. When adding a new billable item from an invoice, show a modal asking:
+
+   * Pricing tier: one selected tier or `All pricing tiers`
+   * Item name
+   * Brief description
+   * Price
+8. After saving, create the item in the applicable pricing tier(s), then immediately add it as a line item on the invoice.
+9. Allow one-off custom invoice line items that do not get saved into pricing tiers.
+
+**Important guardrails**
+
+* Pricing Tiers should become the source of truth for reusable billable items.
+* Do not keep creating reusable invoice items only in the old Billable Items list.
+* If the database still needs a shared `billable_items` table internally, hide that complexity from the user and manage all pricing through Pricing Tiers.
+* Do not auto-price from the RX material unless the current doctor has a pricing tier.
+* If a material has no matching pricing-tier item, show a clear prompt instead of silently leaving the invoice blank.
+* Do not overwrite existing doctors’ pricing tiers unless explicitly requested.
+
+**Acceptance criteria**
+
+* New doctors automatically receive the lab’s default pricing tier.
+* Admin can change the default tier for future new doctors.
+* Dr. Scott can be assigned to `Economy`.
+* Alba Hurtado’s PFM case creates a PFM invoice line item using the Economy tier price.
+* Adding a new invoice item asks for tier, description, and price.
+* Choosing `All pricing tiers` creates the item at the same price across every tier.
+* Choosing one tier only adds it to that tier.
+* The new item appears in applicable pricing tiers.
+* The new item is added to the current invoice immediately.
+* Old Billable Items list is removed, hidden, or redirected to Pricing Tiers.
+
+---
+
+### Copy-Ready Replit Prompt
+
+We need to fix the LabTracks pricing and invoice workflow.
+
+Current problems:
+
+1. When I created a new doctor account for Dr. Scott, the doctor was not automatically assigned to the `Economy` pricing tier. For my lab, all new doctors should default to `Economy`.
+2. This should be configurable by lab, because other labs may want a different default pricing tier.
+3. On Alba Hurtado’s case for Dr. Scott, the RX correctly identified the material as `PFM`, but the invoice did not automatically add the PFM billable line item.
+4. Since Dr. Scott should be on the Economy tier, the invoice should pull the `PFM` item and price from the Economy pricing tier.
+5. When adding a new billable item from an invoice, selecting `Add new billable item` currently creates the item in the old Billable Items list, but it does not ask for pricing tier, description, or price. That workflow is incomplete.
+
+Please implement the following:
+
+Add a lab-level admin setting:
+
+* `Default pricing tier for new doctors`
+* It should allow selecting from existing pricing tiers.
+* For my lab, set this to `Economy`.
+* When a new doctor/account is created, automatically assign that default pricing tier.
+
+Fix invoice generation:
+
+* When creating or editing an invoice, use the doctor’s assigned pricing tier.
+* If the RX/case material is `PFM`, look for the matching `PFM` billable item in that doctor’s pricing tier.
+* Add the matching pricing-tier item to the invoice with the correct tier price.
+* If no matching pricing-tier item exists, show a clear warning or prompt to create it.
+
+Fix the `Add new billable item` invoice workflow:
+
+When I select `Add new billable item`, open a modal that asks for:
+
+* Pricing tier: select one pricing tier or `All pricing tiers`
+* Item name
+* Brief item description
+* Price
+
+After I submit:
+
+* Create the item in the selected pricing tier, or in all pricing tiers if I selected `All pricing tiers`.
+* Add the newly created item immediately as a line item on the current invoice.
+* Make sure the item appears under the applicable Pricing Tier management screens.
+
+Important product decision:
+
+* Pricing Tiers should be the source of truth for reusable billable items.
+* Remove, hide, or redirect the old `Billable Items` area under the Lists menu so it does not conflict with Pricing Tiers.
+* If the database still needs a shared item catalog table internally, that is fine, but the user-facing workflow should be Pricing Tiers only.
+* Still allow one-off custom invoice line items that are not saved into any pricing tier.
+
+Please inspect the current doctor creation flow, lab admin settings, pricing tier models, invoice line item logic, RX material parsing, and the old Billable Items list before making changes.
+
+Before finishing, verify:
+
+* A new doctor gets the lab default pricing tier.
+* Admin can change the default new-doctor pricing tier.
+* Dr. Scott can be assigned to Economy.
+* A PFM case for Dr. Scott creates a PFM invoice line item using Economy pricing.
+* Adding a new invoice item asks for tier, description, and price.
+* Selecting one tier adds it only to that tier.
+* Selecting all tiers adds it to every tier at the same price.
+* The newly created item is immediately added to the invoice.
+* The old Billable Items menu no longer conflicts with Pricing Tiers.
+
+---
+
+### Debug Analysis
+
+The core issue is that pricing is not centralized. LabTracks appears to have reusable Billable Items in one place and Pricing Tier items in another place. That lets invoices, doctors, and case materials fall out of sync.
+
+The best long-term fix is to make Pricing Tiers the operational pricing source of truth. Doctors point to a pricing tier. RX materials resolve to items inside that tier. New reusable invoice items are created into one or more tiers.
+
+The `PFM` issue is likely caused by one of these:
+
+* Dr. Scott had no pricing tier assigned.
+* PFM exists as a material but not as a billable pricing-tier item.
+* Invoice generation reads RX material but does not map material to tier item.
+* Invoice line item lookup is using the old Billable Items list instead of the doctor’s pricing tier.
+
+The safest approach is:
+
+1. assign doctors to a tier,
+2. resolve billables from that tier,
+3. move reusable item creation into tier management,
+4. keep one-off invoice items separate.
+
+---
+
+### Step-by-Step Fix Plan
+
+1. Add `defaultPricingTierId` to lab/admin settings if it does not already exist.
+2. Add an Admin Settings control to select the default tier for new doctors.
+3. Update doctor creation so new doctors inherit that tier.
+4. Backfill or manually set Dr. Scott to Economy.
+5. Find the invoice generation logic that reads RX material.
+6. Add material-to-pricing-tier lookup for `PFM`.
+7. If matched, create the invoice line item from the tier item and price.
+8. Replace the old invoice `Add new billable item` behavior with the tier-selection modal.
+9. Hide or redirect the old Billable Items list to Pricing Tiers.
+10. Test the full path: new doctor, PFM case, invoice generation, new line item creation, and invoice save.
