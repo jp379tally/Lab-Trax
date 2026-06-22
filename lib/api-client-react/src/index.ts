@@ -7,3 +7,4 @@ export {
 } from "./custom-fetch";
 export type { AuthTokenGetter, AuthTokenRefresher } from "./custom-fetch";
 export * from "./mobile-hooks";
+export { getToolCallLabel } from "./ai-tool-labels";

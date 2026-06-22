@@ -18,6 +18,7 @@ import * as Clipboard from "expo-clipboard";
 import { Audio } from "expo-av";
 import * as FileSystem from "expo-file-system/legacy";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { getToolCallLabel } from "@workspace/api-client-react";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
 import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { resilientFetch, getApiUrl, refreshAndGetAccessToken } from "@/lib/query-client";
@@ -562,9 +563,11 @@ interface BubbleProps {
   sending?: boolean;
   /** True when this bubble is the active streaming one and a tool call is in flight. */
   isStreamingBubble?: boolean;
+  /** Name of the in-flight tool call, used to show a friendly "what" label. */
+  streamingToolCall?: string | null;
 }
 
-function MessageBubble({ msg, colors, onConfirm, onReject, onTryAgain, sending, isStreamingBubble }: BubbleProps) {
+function MessageBubble({ msg, colors, onConfirm, onReject, onTryAgain, sending, isStreamingBubble, streamingToolCall }: BubbleProps) {
   const isUser = msg.role === "user";
   const draftTool = msg.toolOutputs?.find((t) => t.name === "draft_message")?.result as
     | { draft?: string }
@@ -672,7 +675,7 @@ function MessageBubble({ msg, colors, onConfirm, onReject, onTryAgain, sending, 
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
               <ActivityIndicator size="small" color={colors.textSecondary} />
               <Text style={[styles.bubbleText, { color: colors.textSecondary }]}>
-                Looking up…
+                {getToolCallLabel(streamingToolCall)}
               </Text>
             </View>
           ) : (
@@ -1305,6 +1308,7 @@ export default function AiAssistantScreen() {
         onTryAgain={handleTryAgain}
         sending={sending}
         isStreamingBubble={item.id === streamingMsgId && !!streamingToolCall}
+        streamingToolCall={item.id === streamingMsgId ? streamingToolCall : null}
       />
     ),
     [colors, confirmAction, rejectAction, handleTryAgain, sending, streamingMsgId, streamingToolCall],

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
+import { getToolCallLabel } from "@workspace/api-client-react";
 import { apiFetch, getAccessToken, apiUrl } from "@/lib/api";
 import {
   AlertTriangle,
@@ -1811,7 +1812,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
                       ? (
                         <span className="flex items-center gap-1.5 text-muted-foreground text-xs">
                           <Loader2 size={11} className="animate-spin" />
-                          Looking up…
+                          {getToolCallLabel(streamingToolCall)}
                         </span>
                       )
                       : null
