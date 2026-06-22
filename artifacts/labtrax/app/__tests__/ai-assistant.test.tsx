@@ -691,3 +691,112 @@ describe("AiAssistantScreen — server-history fallback on mount", () => {
     await findByText(/I'm Maynard/i);
   });
 });
+
+// ─── "Load earlier messages" pagination tests ─────────────────────────────────
+
+describe("AiAssistantScreen — load earlier messages", () => {
+  afterEach(() => {
+    resetMockFetchHandler();
+  });
+
+  // NOTE: assertions target assistant-role messages. The "Past Conversations"
+  // session preview renders the first *user* message of each stored session, so
+  // user-message text appears twice (chat thread + preview). Assistant messages
+  // appear only in the chat thread, making them unambiguous to assert on.
+  it("prepends the older page above existing messages when the button is tapped", async () => {
+    // Mount load (no `before`) returns the newest page with more older rows.
+    // The "load earlier" load (`before=` present) returns the older page.
+    setMockFetchHandler(async (url) => {
+      if (url.includes("/api/ai-chat/history")) {
+        if (url.includes("before=")) {
+          return new Response(
+            JSON.stringify({
+              messages: [
+                { id: "m1", role: "user", content: "older question" },
+                { id: "m2", role: "assistant", content: "older answer" },
+              ],
+              hasMore: false,
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            messages: [
+              { id: "m3", role: "user", content: "newest question" },
+              { id: "m4", role: "assistant", content: "newest answer" },
+            ],
+            hasMore: true,
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ data: null }), { status: 200 });
+    });
+
+    const { findByText, queryByText } = render(<AiAssistantScreen />);
+
+    // The newest page is shown and the affordance appears (hasMore: true).
+    await findByText("newest answer");
+    const loadBtn = await findByText("Load earlier messages");
+
+    fireEvent.press(loadBtn);
+
+    // Older messages are fetched and prepended.
+    await findByText("older answer");
+
+    // hasMore=false on the older page hides the affordance.
+    await waitFor(() => {
+      expect(queryByText("Load earlier messages")).toBeNull();
+    });
+  });
+
+  it("de-duplicates older rows by id so an echoed boundary row is not shown twice", async () => {
+    // The boundary row "dup" is an assistant message present at the top of the
+    // newest page AND the bottom of the older page. After prepend it must appear
+    // exactly once.
+    setMockFetchHandler(async (url) => {
+      if (url.includes("/api/ai-chat/history")) {
+        if (url.includes("before=")) {
+          return new Response(
+            JSON.stringify({
+              messages: [
+                { id: "m1", role: "user", content: "genuinely older" },
+                { id: "m0", role: "assistant", content: "older marker" },
+                { id: "dup", role: "assistant", content: "shared boundary message" },
+              ],
+              hasMore: false,
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            messages: [
+              { id: "dup", role: "assistant", content: "shared boundary message" },
+              { id: "m3", role: "user", content: "newest question" },
+            ],
+            hasMore: true,
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ data: null }), { status: 200 });
+    });
+
+    const { findByText, findAllByText } = render(<AiAssistantScreen />);
+
+    const loadBtn = await findByText("Load earlier messages");
+    fireEvent.press(loadBtn);
+
+    // The older page has been prepended (its unique marker is visible).
+    await findByText("older marker");
+
+    // The boundary message appears exactly once in the chat thread despite being
+    // present in both the newest and the older page.
+    await waitFor(async () => {
+      const nodes = await findAllByText("shared boundary message");
+      expect(nodes).toHaveLength(1);
+    });
+  });
+});

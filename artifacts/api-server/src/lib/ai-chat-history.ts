@@ -154,7 +154,16 @@ export async function loadAiChatHistory(
         and(eq(aiChatHistory.userId, userId), eq(aiChatHistory.id, opts.before)),
       )
       .limit(1);
-    if (c) cursor = { createdAt: c.createdAt, id: c.id };
+    if (c) {
+      cursor = { createdAt: c.createdAt, id: c.id };
+    } else {
+      // An unknown/invalid `before` cursor (a foreign id, a stale client-local
+      // id, or an already-trimmed row) must NOT silently fall through to the
+      // latest page — that would re-send messages the client already shows as a
+      // duplicate and, on "load earlier", cause an infinite scroll loop. Treat
+      // it as "no older messages remain".
+      return { messages: [], hasMore: false };
+    }
   }
 
   const conditions = [eq(aiChatHistory.userId, userId)];
