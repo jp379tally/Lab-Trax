@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Ban, ChevronsUpDown, ChevronUp, ChevronDown as ChevronDownIcon, Download, GripVertical, History, Loader2, Pencil, Plus, Search, Trash2, Upload, X } from "lucide-react";
+import { Ban, ChevronsUpDown, ChevronUp, ChevronDown as ChevronDownIcon, Download, GripVertical, History, Layers, Loader2, Pencil, Plus, Search, Trash2, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch } from "@/lib/api";
 import { formatDate, formatMoney, formatPhone } from "@/lib/format";
@@ -587,6 +587,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
 
   const isCategoriesTab = activeTab === "categories";
   const isLocationsTab = activeTab === "locations";
+  const isItemTab = activeTab === "item";
 
   const filteredVendors = allVendors
     .filter((v) => v.vendorType === (activeTab as VendorType))
@@ -726,7 +727,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
             />
           </div>
           <div className="flex-1" />
-          {!isCategoriesTab && !isLocationsTab && (
+          {!isCategoriesTab && !isLocationsTab && !isItemTab && (
             <>
               <button
                 type="button"
@@ -737,7 +738,7 @@ function ListsContent({ organizationId }: { organizationId: string }) {
                 <Download size={14} />
                 Export CSV
               </button>
-              {(activeTab === "vendor" || activeTab === "employee" || activeTab === "item") && (
+              {(activeTab === "vendor" || activeTab === "employee") && (
                 <button
                   type="button"
                   onClick={() => setShowImportDialog(true)}
@@ -750,20 +751,22 @@ function ListsContent({ organizationId }: { organizationId: string }) {
               )}
             </>
           )}
-          <button
-            type="button"
-            onClick={() =>
-              isLocationsTab
-                ? openAddLocation()
-                : isCategoriesTab
-                  ? openAddCategory()
-                  : openAddVendor(activeTab as VendorType)
-            }
-            className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-1.5"
-          >
-            <Plus size={14} />
-            Add {isLocationsTab ? "Location" : isCategoriesTab ? "Category" : TYPE_LABEL[activeTab as VendorType]}
-          </button>
+          {!isItemTab && (
+            <button
+              type="button"
+              onClick={() =>
+                isLocationsTab
+                  ? openAddLocation()
+                  : isCategoriesTab
+                    ? openAddCategory()
+                    : openAddVendor(activeTab as VendorType)
+              }
+              className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-1.5"
+            >
+              <Plus size={14} />
+              Add {isLocationsTab ? "Location" : isCategoriesTab ? "Category" : TYPE_LABEL[activeTab as VendorType]}
+            </button>
+          )}
         </div>
 
         {isLocationsTab ? (
@@ -786,6 +789,24 @@ function ListsContent({ organizationId }: { organizationId: string }) {
             search={search}
             onEdit={openEditCategory}
           />
+        ) : isItemTab ? (
+          <div className="px-8 py-16 text-center">
+            <Layers size={32} className="inline-block text-muted-foreground/40 mb-4" />
+            <h3 className="text-base font-semibold mb-2">
+              Billable items have moved to Pricing Tiers
+            </h3>
+            <p className="text-sm text-muted-foreground max-w-md mx-auto leading-relaxed">
+              New reusable invoice items are now created directly from the invoice editor and saved
+              into your pricing tiers. Go to <strong>Settings → Pricing Tiers</strong> to view and
+              manage all items.
+            </p>
+            {tabCounts["item"] > 0 && (
+              <p className="text-xs text-muted-foreground mt-3">
+                {tabCounts["item"]} existing item
+                {tabCounts["item"] !== 1 ? "s remain" : " remains"} stored here for reference.
+              </p>
+            )}
+          </div>
         ) : (
           <VendorsTable
             vendors={filteredVendors}
@@ -794,8 +815,8 @@ function ListsContent({ organizationId }: { organizationId: string }) {
             typeLabel={TYPE_LABEL[activeTab as VendorType]}
             vendorType={activeTab as VendorType}
             onEdit={openEditVendor}
-            onDeactivate={activeTab === "item" ? (v) => setConfirmDeactivateItem(v) : undefined}
-            onDelete={activeTab === "item" ? (v) => setConfirmDeleteItem(v) : undefined}
+            onDeactivate={undefined}
+            onDelete={undefined}
           />
         )}
       </div>

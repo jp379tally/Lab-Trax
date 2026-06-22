@@ -151,9 +151,16 @@ router.get(
         notDeleted(pricingTiers),
       ),
     });
+    const customKeySet = new Set<string>();
+    for (const t of rows) {
+      for (const k of Object.keys((t.pricesJson ?? {}) as Record<string, unknown>)) {
+        if (!(DEFAULT_TIER_KEYS as readonly string[]).includes(k)) customKeySet.add(k);
+      }
+    }
+    const allKeys = [...DEFAULT_TIER_KEYS, ...Array.from(customKeySet)];
     return ok(res, {
       labOrganizationId: labId,
-      keys: DEFAULT_TIER_KEYS,
+      keys: allKeys,
       tiers: rows.map((t: any) => ({
         id: t.id,
         labOrganizationId: t.labOrganizationId,
@@ -914,14 +921,7 @@ router.put(
     const input = schema.parse(req.body);
     const labId = await resolveLabId(req, input.labOrganizationId);
 
-    // Only allow saving labels for known price keys
-    const knownKeys = new Set<string>(DEFAULT_TIER_ITEMS.map((i) => i.key));
-    const filteredLabels: Record<string, string> = {};
-    for (const [k, v] of Object.entries(input.labels)) {
-      if (knownKeys.has(k)) filteredLabels[k] = v;
-    }
-
-    await saveLabItemLabels(labId, filteredLabels);
+    await saveLabItemLabels(labId, input.labels);
 
     await writeAuditLog({
       req,
@@ -929,13 +929,16 @@ router.put(
       action: "item_labels_updated",
       entityType: "organization",
       entityId: labId,
-      metadataJson: { labels: filteredLabels },
+      metadataJson: { labels: input.labels },
     });
 
     const configured = await fetchLabItemLabels(labId);
     const merged: Record<string, string> = {};
     for (const item of DEFAULT_TIER_ITEMS) {
       merged[item.key] = configured[item.key] ?? item.label;
+    }
+    for (const [k, v] of Object.entries(configured)) {
+      if (!(k in merged)) merged[k] = v;
     }
 
     return ok(res, { labOrganizationId: labId, labels: merged });

@@ -499,7 +499,8 @@ export async function resolveAllPricesForContext(
 
   // 4. Resolve each known item key against the same priority chain
   //    used by resolveServerPriceWithSource.
-  return DEFAULT_TIER_ITEMS.map((item) => {
+  const defaultKeySet = new Set<string>(DEFAULT_TIER_ITEMS.map((i) => i.key));
+  const defaultRows: ResolvedItemRow[] = DEFAULT_TIER_ITEMS.map((item) => {
     const key = item.key;
     if (overrideRow) {
       const prices = (overrideRow.pricesJson ?? {}) as Record<
@@ -541,4 +542,53 @@ export async function resolveAllPricesForContext(
       sourceName: null,
     };
   });
+
+  // Also surface any custom (non-standard) keys priced in the candidate
+  // tiers or override so that user-created tier items appear in the
+  // invoice editor's item catalog.
+  const customKeyMap = new Map<string, ResolvedItemRow>();
+  if (overrideRow) {
+    const prices = (overrideRow.pricesJson ?? {}) as Record<string, unknown>;
+    for (const [k, v] of Object.entries(prices)) {
+      if (!defaultKeySet.has(k)) {
+        const n = Number(v);
+        if (Number.isFinite(n) && n > 0) {
+          customKeyMap.set(k, {
+            key: k,
+            label: k,
+            unitPrice: n,
+            source: "override" as const,
+            sourceId: overrideRow.id,
+            sourceName: overrideRow.doctorName,
+          });
+        }
+      }
+    }
+  }
+  for (const { tier, source } of candidateTiers) {
+    const prices = (tier.pricesJson ?? {}) as Record<string, unknown>;
+    for (const [k, v] of Object.entries(prices)) {
+      if (!defaultKeySet.has(k) && !customKeyMap.has(k)) {
+        const n = Number(v);
+        if (Number.isFinite(n) && n > 0) {
+          customKeyMap.set(k, {
+            key: k,
+            label: k,
+            unitPrice: n,
+            source,
+            sourceId: tier.id,
+            sourceName: tier.name,
+          });
+        }
+      }
+    }
+  }
+  if (customKeyMap.size > 0) {
+    const labelMap = await fetchLabItemLabels(ctx.labOrganizationId);
+    for (const [key, row] of customKeyMap.entries()) {
+      defaultRows.push({ ...row, label: resolveItemLabelFromMap(labelMap, key) });
+    }
+  }
+
+  return defaultRows;
 }

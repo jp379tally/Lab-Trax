@@ -17,6 +17,7 @@ import {
   ExternalLink,
   Eye,
   FileText,
+  Layers,
   Loader2,
   Lock,
   Mail,
@@ -996,6 +997,204 @@ function RestoreCaseButton({
   );
 }
 
+function nameToPriceKey(name: string): string {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 60);
+  return `custom_${slug || "item"}`;
+}
+
+interface CreateTierItemModalProps {
+  labOrganizationId: string;
+  onClose: () => void;
+  onCreated: (item: { name: string; description: string; unitPrice: number }) => void;
+}
+
+function CreateTierItemModal({
+  labOrganizationId,
+  onClose,
+  onCreated,
+}: CreateTierItemModalProps) {
+  const queryClient = useQueryClient();
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [price, setPrice] = useState("");
+  const [selectedTierId, setSelectedTierId] = useState<string>("all");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const tiersQuery = useQuery({
+    queryKey: ["pricing", "tiers", labOrganizationId],
+    queryFn: () =>
+      apiFetch<{ tiers: Array<{ id: string; name: string; prices: Record<string, number> }> }>(
+        `/pricing/tiers?labOrganizationId=${encodeURIComponent(labOrganizationId)}`,
+      ),
+    enabled: !!labOrganizationId,
+    staleTime: 30_000,
+  });
+  const tiers = tiersQuery.data?.tiers ?? [];
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const trimmedName = name.trim();
+    if (!trimmedName) return setError("Item name is required.");
+    const priceValue = Number(price);
+    if (!Number.isFinite(priceValue) || priceValue <= 0)
+      return setError("Price must be a positive number.");
+    if (tiers.length === 0) return setError("No pricing tiers available.");
+
+    const priceKey = nameToPriceKey(trimmedName);
+    const targetTiers =
+      selectedTierId === "all"
+        ? tiers
+        : tiers.filter((t) => t.id === selectedTierId);
+    if (targetTiers.length === 0) return setError("Selected tier not found.");
+
+    setSaving(true);
+    setError(null);
+    try {
+      for (const tier of targetTiers) {
+        const mergedPrices: Record<string, number> = { ...tier.prices, [priceKey]: priceValue };
+        await apiFetch(`/pricing/tiers/${tier.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ prices: mergedPrices }),
+        });
+      }
+      await apiFetch(`/pricing/item-labels`, {
+        method: "PUT",
+        body: JSON.stringify({
+          labOrganizationId,
+          labels: { [priceKey]: trimmedName },
+        }),
+      });
+      queryClient.invalidateQueries({ queryKey: ["pricing", "tiers"] });
+      queryClient.invalidateQueries({ queryKey: ["pricing"] });
+      onCreated({
+        name: trimmedName,
+        description: description.trim() || trimmedName,
+        unitPrice: priceValue,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create item.");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+      <div className="bg-card border border-border rounded-xl shadow-2xl w-[420px] max-w-[calc(100vw-2rem)]">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+          <div className="flex items-center gap-2 font-semibold">
+            <Layers size={16} className="text-primary" />
+            Create new tier item
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 w-8 rounded-md hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center"
+          >
+            <X size={15} />
+          </button>
+        </div>
+        <form onSubmit={handleSubmit} className="p-5 space-y-4">
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">
+              Item name <span className="text-destructive">*</span>
+            </label>
+            <input
+              autoFocus
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Rush fee"
+              className="w-full h-9 px-3 rounded-md bg-background border border-input text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">
+              Invoice description{" "}
+              <span className="text-muted-foreground/60">(optional)</span>
+            </label>
+            <input
+              type="text"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Defaults to item name"
+              className="w-full h-9 px-3 rounded-md bg-background border border-input text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">
+              Unit price <span className="text-destructive">*</span>
+            </label>
+            <input
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={price}
+              onChange={(e) => setPrice(e.target.value)}
+              placeholder="0.00"
+              className="w-full h-9 px-3 rounded-md bg-background border border-input text-sm tabular-nums focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">
+              Add to pricing tier
+            </label>
+            {tiersQuery.isLoading ? (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Loader2 size={13} className="animate-spin" /> Loading tiers…
+              </div>
+            ) : tiers.length === 0 ? (
+              <div className="text-xs text-destructive">
+                No pricing tiers found. Create one in Settings → Pricing first.
+              </div>
+            ) : (
+              <select
+                value={selectedTierId}
+                onChange={(e) => setSelectedTierId(e.target.value)}
+                className="w-full h-9 px-3 rounded-md bg-background border border-input text-sm"
+              >
+                <option value="all">All pricing tiers</option>
+                {tiers.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+          {error && (
+            <div className="text-xs text-destructive bg-destructive/10 rounded-md px-3 py-2">
+              {error}
+            </div>
+          )}
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              className="h-9 px-4 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={saving || tiersQuery.isLoading || tiers.length === 0}
+              className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
+            >
+              {saving && <Loader2 size={13} className="animate-spin" />}
+              {saving ? "Saving…" : "Create & add to invoice"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 export function InvoiceEditor({
   invoice,
   doctorNames,
@@ -1649,6 +1848,20 @@ export function InvoiceEditor({
   const [recordPaymentOpen, setRecordPaymentOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [voidDialog, setVoidDialog] = useState<null | "void" | "writeoff">(null);
+  const [showAddLineMenu, setShowAddLineMenu] = useState(false);
+  const [showCreateItemModal, setShowCreateItemModal] = useState(false);
+  const addLineMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showAddLineMenu) return;
+    function onDown(e: MouseEvent) {
+      if (!addLineMenuRef.current?.contains(e.target as Node)) {
+        setShowAddLineMenu(false);
+      }
+    }
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [showAddLineMenu]);
 
   // Local optimistic flag so the banner + button disappear the instant the
   // user clicks "Mark reviewed" — without waiting for the server round-trip
@@ -2509,13 +2722,35 @@ export function InvoiceEditor({
                 >
                   Reset columns
                 </button>
-                <button
-                  type="button"
-                  onClick={addItem}
-                  className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
-                >
-                  <Plus size={13} /> Add line
-                </button>
+                <div className="relative" ref={addLineMenuRef}>
+                  <button
+                    type="button"
+                    onClick={() => setShowAddLineMenu((v) => !v)}
+                    className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                  >
+                    <Plus size={13} /> Add line <ChevronDown size={11} />
+                  </button>
+                  {showAddLineMenu && (
+                    <div className="absolute right-0 top-full mt-1 w-56 bg-card border border-border rounded-lg shadow-xl z-20 py-1">
+                      <button
+                        type="button"
+                        onClick={() => { addItem(); setShowAddLineMenu(false); }}
+                        className="w-full text-left px-3 py-2.5 text-sm hover:bg-secondary"
+                      >
+                        <div className="font-medium">One-off line item</div>
+                        <div className="text-xs text-muted-foreground">Free text, not saved to a tier</div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setShowCreateItemModal(true); setShowAddLineMenu(false); }}
+                        className="w-full text-left px-3 py-2.5 text-sm hover:bg-secondary"
+                      >
+                        <div className="font-medium inline-flex items-center gap-1"><Layers size={12} /> Create new tier item</div>
+                        <div className="text-xs text-muted-foreground">Save to pricing tier &amp; add to invoice</div>
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
             <div className="border border-border rounded-md overflow-x-auto relative">
@@ -2621,9 +2856,6 @@ export function InvoiceEditor({
                                 ? { item: "", description: "", unitPrice: 0 }
                                 : { item: t },
                             )
-                          }
-                          onCreate={(name) =>
-                            createBillableItem(name, Number(it.unitPrice) || 0)
                           }
                           placeholder="Item"
                         />
@@ -2747,9 +2979,6 @@ export function InvoiceEditor({
                                   ? { item: "", description: "", unitPrice: 0 }
                                   : { item: t },
                               )
-                            }
-                            onCreate={(name) =>
-                              createBillableItem(name, Number(sub.unitPrice) || 0)
                             }
                             placeholder="Sub-item"
                           />
@@ -3119,6 +3348,25 @@ export function InvoiceEditor({
             </div>
           </div>
         </div>
+      )}
+
+      {showCreateItemModal && (
+        <CreateTierItemModal
+          labOrganizationId={invoice.labOrganizationId}
+          onClose={() => setShowCreateItemModal(false)}
+          onCreated={(newItem) => {
+            setItems((prev) => [
+              ...prev,
+              {
+                item: newItem.name,
+                description: newItem.description,
+                quantity: 1,
+                unitPrice: newItem.unitPrice,
+              },
+            ]);
+            setShowCreateItemModal(false);
+          }}
+        />
       )}
     </div>
   );
@@ -3877,6 +4125,7 @@ function RecordPaymentDialog({
           </button>
         </footer>
       </div>
+
     </div>
   );
 }
