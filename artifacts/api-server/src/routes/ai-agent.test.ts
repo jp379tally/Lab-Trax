@@ -21,6 +21,8 @@
  * - POST /ai-chat knowledge audit: knowledgeSectionIds present for privacy-signal query
  * - POST /ai-chat knowledge audit: retentionDisclaimer present for retention-signal query
  * - POST /ai-chat knowledge audit: knowledgeSectionIds absent for unrelated query
+ * - POST /ai-agent rate limiting: 429 after exceeding 10 req/min per user
+ * - POST /ai-chat rate limiting: 429 after exceeding 20 req/min per user
  */
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import request from "supertest";
@@ -752,5 +754,140 @@ describe("POST /api/ai-chat — knowledge audit metadata", () => {
     // Gibberish carries no HIPAA/retention signal — both fields must be absent.
     expect(res.body.knowledgeSectionIds).toBeUndefined();
     expect(res.body.retentionDisclaimer).toBeUndefined();
+  });
+});
+
+// ─── Rate limiting: POST /api/ai-agent ───────────────────────────────────────
+//
+// createUserRateLimit is intentionally NOT disabled under Vitest so tests can
+// assert 429 behaviour. Each route module instantiates its own limiter with an
+// independent in-closure store, so unique user IDs prevent cross-test bleed.
+// The AI key env var is set here so getAiClient() doesn't short-circuit with
+// a 503 before the rate check middleware fires.
+
+describe("POST /api/ai-agent — rate limiting", () => {
+  beforeAll(() => {
+    process.env["AI_INTEGRATIONS_OPENAI_API_KEY"] ??= "test-key-for-agent-rl";
+  });
+
+  beforeEach(() => {
+    mockCompletionsCreate.mockResolvedValue({
+      choices: [
+        {
+          message: { content: "Mocked AI reply.", tool_calls: undefined },
+          finish_reason: "stop",
+        },
+      ],
+    });
+  });
+
+  it("returns 429 with Retry-After after exceeding 10 requests per minute", async () => {
+    const userId = "user-rl-agent-flood-1";
+    const app = makeApp(userId);
+
+    // Send 10 allowed requests (limit is 10/min)
+    for (let i = 0; i < 10; i++) {
+      const r = await request(app)
+        .post("/api/ai-agent")
+        .send({ messages: [{ role: "user", content: "hello" }] });
+      expect(r.status).not.toBe(429);
+    }
+
+    // 11th request must be throttled
+    const throttled = await request(app)
+      .post("/api/ai-agent")
+      .send({ messages: [{ role: "user", content: "hello" }] });
+
+    expect(throttled.status).toBe(429);
+    expect(throttled.headers["retry-after"]).toBeDefined();
+    expect(throttled.body.ok).toBe(false);
+    expect(typeof throttled.body.error).toBe("string");
+  });
+
+  it("does not throttle a different user when one user hits the limit", async () => {
+    const flooderId = "user-rl-agent-flood-2";
+    const otherId = "user-rl-agent-other-1";
+
+    const flooder = makeApp(flooderId);
+    const other = makeApp(otherId);
+
+    // Exhaust the flooder's quota
+    for (let i = 0; i < 10; i++) {
+      await request(flooder)
+        .post("/api/ai-agent")
+        .send({ messages: [{ role: "user", content: "flood" }] });
+    }
+    const throttled = await request(flooder)
+      .post("/api/ai-agent")
+      .send({ messages: [{ role: "user", content: "flood" }] });
+    expect(throttled.status).toBe(429);
+
+    // A different user must still be allowed
+    const allowed = await request(other)
+      .post("/api/ai-agent")
+      .send({ messages: [{ role: "user", content: "hello" }] });
+    expect(allowed.status).not.toBe(429);
+  });
+});
+
+// ─── Rate limiting: POST /api/ai-chat ────────────────────────────────────────
+
+describe("POST /api/ai-chat — rate limiting", () => {
+  beforeAll(() => {
+    process.env["AI_INTEGRATIONS_OPENAI_API_KEY"] ??= "test-key-for-chat-rl";
+  });
+
+  beforeEach(() => {
+    mockCompletionsCreate.mockResolvedValue({
+      choices: [{ message: { content: "Mocked chat reply." } }],
+    });
+  });
+
+  it("returns 429 with Retry-After after exceeding 20 requests per minute", async () => {
+    const userId = "user-rl-chat-flood-1";
+    const app = makeAiChatApp(userId);
+
+    // Send 20 allowed requests (limit is 20/min)
+    for (let i = 0; i < 20; i++) {
+      const r = await request(app)
+        .post("/api/ai-chat")
+        .send({ messages: [{ role: "user", content: "hello" }] });
+      expect(r.status).not.toBe(429);
+    }
+
+    // 21st request must be throttled
+    const throttled = await request(app)
+      .post("/api/ai-chat")
+      .send({ messages: [{ role: "user", content: "hello" }] });
+
+    expect(throttled.status).toBe(429);
+    expect(throttled.headers["retry-after"]).toBeDefined();
+    expect(throttled.body.ok).toBe(false);
+    expect(typeof throttled.body.error).toBe("string");
+  });
+
+  it("does not throttle a different user when one user hits the limit", async () => {
+    const flooderId = "user-rl-chat-flood-2";
+    const otherId = "user-rl-chat-other-1";
+
+    const flooder = makeAiChatApp(flooderId);
+    const other = makeAiChatApp(otherId);
+
+    // Exhaust the flooder's quota
+    for (let i = 0; i < 20; i++) {
+      await request(flooder)
+        .post("/api/ai-chat")
+        .send({ messages: [{ role: "user", content: "flood" }] });
+    }
+    const throttled = await request(flooder)
+      .post("/api/ai-chat")
+      .send({ messages: [{ role: "user", content: "flood" }] });
+    expect(throttled.status).toBe(429);
+
+    // A different user must still be allowed
+    const allowed = await request(other)
+      .post("/api/ai-chat")
+      .send({ messages: [{ role: "user", content: "hello" }] });
+    expect(allowed.status).not.toBe(429);
   });
 });

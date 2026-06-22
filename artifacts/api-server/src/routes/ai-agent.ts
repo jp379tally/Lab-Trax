@@ -29,26 +29,15 @@ import { eq, and, inArray } from "drizzle-orm";
 import { getProviderOrgIdsForUserAndLinks } from "../lib/cross-lab-doctor";
 import { buildKnowledgeBlockWithMeta, buildLabMemoryBlock, buildMaterialSuggestionBlock, RETENTION_LEGAL_DISCLAIMER } from "../lib/ai-knowledge-augment";
 import { learnFromExchange } from "../lib/ai-memory-learn";
+import { createUserRateLimit } from "../lib/rate-limit";
 
-// ─── Shared rate limiter (same window as ai-chat) ───────────────────────────
+// ─── Per-user rate limiter: 10 agent calls per minute ───────────────────────
 
-const _parsedLimit = parseInt(process.env.AI_CHAT_RATE_LIMIT_PER_MINUTE ?? "", 10);
-const RATE_LIMIT = Number.isFinite(_parsedLimit) && _parsedLimit > 0 ? _parsedLimit : 20;
-const RATE_WINDOW_MS = 60_000;
-const userTimestamps = new Map<string, number[]>();
-
-function checkRateLimit(userId: string): { allowed: boolean; retryAfterSeconds: number } {
-  const now = Date.now();
-  const windowStart = now - RATE_WINDOW_MS;
-  const ts = (userTimestamps.get(userId) ?? []).filter((t) => t > windowStart);
-  if (ts.length >= RATE_LIMIT) {
-    const oldest = ts[0]!;
-    return { allowed: false, retryAfterSeconds: Math.ceil((oldest + RATE_WINDOW_MS - now) / 1000) };
-  }
-  ts.push(now);
-  userTimestamps.set(userId, ts);
-  return { allowed: true, retryAfterSeconds: 0 };
-}
+const aiAgentRateLimit = createUserRateLimit({
+  windowMs: 60_000,
+  max: 10,
+  message: "Too many requests. Please slow down.",
+});
 
 // ─── OpenAI client (shared singleton) ──────────────────────────────────────
 
@@ -194,17 +183,8 @@ IMPORTANT RULES:
 export function registerAiAgentRoutes(router: IRouter): void {
 
   /** POST /ai-agent — main agentic endpoint */
-  router.post("/ai-agent", requireAuth, async (req: any, res: any) => {
+  router.post("/ai-agent", requireAuth, aiAgentRateLimit, async (req: any, res: any) => {
     const userId: string = req.user.id;
-
-    const rl = checkRateLimit(userId);
-    if (!rl.allowed) {
-      res.set("Retry-After", String(rl.retryAfterSeconds));
-      return res.status(429).json({
-        error: "Too many requests. Please slow down.",
-        retryAfterSeconds: rl.retryAfterSeconds,
-      });
-    }
 
     const openai = getAiClient();
     if (!openai) {

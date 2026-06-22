@@ -21,34 +21,14 @@ import { wrapDbError } from "../lib/http";
 import { buildKnowledgeBlockWithMeta, buildLabMemoryBlock, buildMaterialSuggestionBlock, RETENTION_LEGAL_DISCLAIMER } from "../lib/ai-knowledge-augment";
 import { learnFromExchange } from "../lib/ai-memory-learn";
 import { randomBytes } from "node:crypto";
+import { createUserRateLimit } from "../lib/rate-limit";
 
-// Per-user sliding-window rate limiter (in-memory)
-const _parsedLimit = parseInt(process.env.AI_CHAT_RATE_LIMIT_PER_MINUTE ?? "", 10);
-const AI_CHAT_RATE_LIMIT_PER_MINUTE =
-  Number.isFinite(_parsedLimit) && _parsedLimit > 0 ? _parsedLimit : 20;
-const RATE_WINDOW_MS = 60_000;
-const userRequestTimestamps = new Map<string, number[]>();
-
-function checkRateLimit(userId: string): {
-  allowed: boolean;
-  retryAfterSeconds: number;
-} {
-  const now = Date.now();
-  const windowStart = now - RATE_WINDOW_MS;
-  const timestamps = (userRequestTimestamps.get(userId) ?? []).filter(
-    (t) => t > windowStart,
-  );
-
-  if (timestamps.length >= AI_CHAT_RATE_LIMIT_PER_MINUTE) {
-    const oldest = timestamps[0]!;
-    const retryAfterMs = oldest + RATE_WINDOW_MS - now;
-    return { allowed: false, retryAfterSeconds: Math.ceil(retryAfterMs / 1000) };
-  }
-
-  timestamps.push(now);
-  userRequestTimestamps.set(userId, timestamps);
-  return { allowed: true, retryAfterSeconds: 0 };
-}
+// 20 messages per minute per user
+const aiChatRateLimit = createUserRateLimit({
+  windowMs: 60_000,
+  max: 20,
+  message: "Too many requests. Please slow down and try again in a moment.",
+});
 
 let _cachedOpenAI: OpenAI | null | undefined;
 
@@ -643,17 +623,8 @@ export function registerAiChatRoutes(router: IRouter): void {
   });
 
   /** POST /ai-chat — send a message and get a reply; persists the exchange */
-  router.post("/ai-chat", requireAuth, async (req: any, res: any) => {
+  router.post("/ai-chat", requireAuth, aiChatRateLimit, async (req: any, res: any) => {
     const userId: string = req.user.id;
-
-    const rateCheck = checkRateLimit(userId);
-    if (!rateCheck.allowed) {
-      res.set("Retry-After", String(rateCheck.retryAfterSeconds));
-      return res.status(429).json({
-        error: "Too many requests. Please slow down and try again in a moment.",
-        retryAfterSeconds: rateCheck.retryAfterSeconds,
-      });
-    }
 
     const openai = getAiClient();
     if (!openai) {
