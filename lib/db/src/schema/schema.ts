@@ -274,6 +274,10 @@ export const organizations = pgTable(
     // (Account epic Phase 3). Required for type="lab" rows created through the
     // canonical create-lab flow; null on provider orgs and legacy lab rows.
     licenseNumber: text("license_number"),
+    // Default pricing tier name assigned to every newly-created doctor override
+    // for this lab. Null = no default (new doctors have no tier until set
+    // manually). Only meaningful on type="lab" rows.
+    defaultDoctorTierName: text("default_doctor_tier_name"),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     deletedByUserId: varchar("deleted_by_user_id"),
   },

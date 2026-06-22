@@ -8,6 +8,7 @@ import {
   cases,
   organizationConnections,
   organizationMemberships,
+  organizations,
   pricingOverrides,
   pricingTiers,
   users,
@@ -287,6 +288,17 @@ router.patch(
               ),
             )
             .returning({ id: organizationConnections.id });
+          // Cascade to the lab's defaultDoctorTierName setting so it
+          // keeps pointing at the renamed tier instead of going stale.
+          await tx
+            .update(organizations)
+            .set({ defaultDoctorTierName: newName, updatedAt: new Date() })
+            .where(
+              and(
+                eq(organizations.id, tier.labOrganizationId),
+                sql`lower(trim(${organizations.defaultDoctorTierName})) = lower(trim(${oldName}))`,
+              ),
+            );
         }
         return [u, overridesUpdated, connectionsUpdated] as const;
       },
@@ -406,6 +418,16 @@ router.post(
       );
     }
 
+    // If no tier was explicitly supplied, fall back to the lab's configured
+    // default doctor tier so new doctors are automatically placed on a tier.
+    let resolvedTierName = input.tierName?.trim() || null;
+    if (!resolvedTierName) {
+      const labOrg = await db.query.organizations.findFirst({
+        where: eq(organizations.id, labId),
+      });
+      resolvedTierName = labOrg?.defaultDoctorTierName?.trim() || null;
+    }
+
     const [created] = await db
       .insert(pricingOverrides)
       .values({
@@ -413,7 +435,7 @@ router.post(
         doctorName: input.doctorName,
         practiceName: input.practiceName ?? null,
         providerOrganizationId: input.providerOrganizationId ?? null,
-        tierName: input.tierName?.trim() || null,
+        tierName: resolvedTierName,
         pricesJson: sanitizePrices(input.prices ?? {}),
         notes: input.notes ?? null,
         createdByUserId: (req as any).auth.userId,
@@ -528,6 +550,84 @@ router.delete(
 
     return ok(res, { deleted: true, id: row.id });
   })
+);
+
+// ---- Pricing Settings ----
+
+/**
+ * GET /pricing/settings
+ * Returns lab-level pricing settings. Any active lab admin may call this.
+ */
+router.get(
+  "/settings",
+  asyncHandler(async (req, res) => {
+    const labId = await resolveLabId(
+      req,
+      req.query.labOrganizationId as string | undefined,
+    );
+    const org = await db.query.organizations.findFirst({
+      where: eq(organizations.id, labId),
+    });
+    return ok(res, {
+      labOrganizationId: labId,
+      defaultDoctorTierName: org?.defaultDoctorTierName ?? null,
+    });
+  }),
+);
+
+/**
+ * PATCH /pricing/settings
+ * Update lab-level pricing settings. Admin-only.
+ */
+router.patch(
+  "/settings",
+  asyncHandler(async (req, res) => {
+    const input = z
+      .object({
+        labOrganizationId: z.string().optional(),
+        defaultDoctorTierName: z.string().max(80).nullable().optional(),
+      })
+      .parse(req.body);
+    const labId = await resolveLabId(req, input.labOrganizationId);
+    await requireAnyRole((req as any).auth.userId, labId, ADMIN_ROLES);
+
+    const tierName =
+      typeof input.defaultDoctorTierName === "string"
+        ? input.defaultDoctorTierName.trim() || null
+        : null;
+
+    if (tierName) {
+      const tierExists = await db.query.pricingTiers.findFirst({
+        where: and(
+          eq(pricingTiers.labOrganizationId, labId),
+          sql`lower(trim(${pricingTiers.name})) = lower(trim(${tierName}))`,
+          notDeleted(pricingTiers),
+        ),
+      });
+      if (!tierExists) {
+        throw new HttpError(422, "That tier doesn't exist in your lab.");
+      }
+    }
+
+    await db
+      .update(organizations)
+      .set({ defaultDoctorTierName: tierName, updatedAt: new Date() })
+      .where(eq(organizations.id, labId));
+
+    await writeAuditLog({
+      req,
+      organizationId: labId,
+      action: "pricing_settings_updated",
+      entityType: "organization",
+      entityId: labId,
+      metadataJson: { defaultDoctorTierName: tierName },
+    });
+
+    return ok(res, {
+      labOrganizationId: labId,
+      defaultDoctorTierName: tierName,
+    });
+  }),
 );
 
 // ---- Billed analytics (server-side aggregation) ----

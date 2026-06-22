@@ -987,6 +987,101 @@ function BilledEditor({
 
 // ---- Tiers ----
 
+interface PricingSettingsResponse {
+  labOrganizationId: string;
+  defaultDoctorTierName: string | null;
+}
+
+function DefaultDoctorTierSetting({ tiers }: { tiers: PricingTier[] }) {
+  const queryClient = useQueryClient();
+
+  const settingsQuery = useQuery({
+    queryKey: ["pricing", "settings"],
+    queryFn: () => apiFetch<PricingSettingsResponse>("/pricing/settings"),
+    staleTime: 60 * 1000,
+  });
+
+  const [localValue, setLocalValue] = useState<string | null | undefined>(
+    undefined,
+  );
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    if (settingsQuery.data !== undefined && localValue === undefined) {
+      setLocalValue(settingsQuery.data.defaultDoctorTierName ?? null);
+    }
+  }, [settingsQuery.data, localValue]);
+
+  const patchMutation = useMutation({
+    mutationFn: (tierName: string | null) =>
+      apiFetch<PricingSettingsResponse>("/pricing/settings", {
+        method: "PATCH",
+        body: JSON.stringify({ defaultDoctorTierName: tierName }),
+      }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(["pricing", "settings"], data);
+      setLocalValue(data.defaultDoctorTierName ?? null);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    },
+  });
+
+  const currentValue =
+    localValue !== undefined
+      ? localValue
+      : (settingsQuery.data?.defaultDoctorTierName ?? null);
+
+  function handleChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const val = e.target.value || null;
+    setLocalValue(val);
+    patchMutation.mutate(val);
+  }
+
+  if (tiers.length === 0) return null;
+
+  return (
+    <div className="bg-card border border-border rounded-xl px-4 py-3 flex items-center gap-3 flex-wrap">
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-medium">Default tier for new doctors</div>
+        <div className="text-xs text-muted-foreground mt-0.5">
+          Automatically assigned when a new doctor override is created without
+          an explicit tier.
+        </div>
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        {settingsQuery.isLoading ? (
+          <Loader2 size={14} className="animate-spin text-muted-foreground" />
+        ) : (
+          <select
+            value={currentValue ?? ""}
+            onChange={handleChange}
+            disabled={patchMutation.isPending}
+            className="h-9 px-2 rounded-md bg-background border border-input text-sm min-w-[160px] disabled:opacity-60"
+          >
+            <option value="">No default</option>
+            {tiers.map((t) => (
+              <option key={t.id} value={t.name}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        )}
+        {patchMutation.isPending && (
+          <Loader2 size={14} className="animate-spin text-muted-foreground" />
+        )}
+        {saved && !patchMutation.isPending && (
+          <CheckCircle2 size={14} className="text-success" />
+        )}
+        {patchMutation.error && (
+          <span className="text-xs text-destructive">
+            {(patchMutation.error as ApiError).message}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function TiersSection() {
   const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
@@ -1040,6 +1135,8 @@ function TiersSection() {
           <Plus size={14} /> New tier
         </button>
       </div>
+
+      <DefaultDoctorTierSetting tiers={tiers} />
 
       {tiers.length === 0 ? (
         <div className="bg-card border border-border rounded-xl py-14 text-center">

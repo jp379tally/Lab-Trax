@@ -3,6 +3,7 @@ import { db } from "@workspace/db";
 import {
   labItemLabels,
   organizationConnections,
+  organizations,
   pricingOverrides,
   pricingTiers,
 } from "@workspace/db";
@@ -260,10 +261,18 @@ export async function resolveServerPriceWithSource(
     return at - bt;
   });
 
+  // Fetch the lab's configured default doctor tier name.
+  const labOrg = await db.query.organizations.findFirst({
+    where: eq(organizations.id, ctx.labOrganizationId),
+    columns: { defaultDoctorTierName: true },
+  });
+  const labDefaultTierName = labOrg?.defaultDoctorTierName?.trim() || null;
+
   const candidateNames = [
     doctorTierName,
     connectionTierName,
     ctx.tierName ?? null,
+    labDefaultTierName,
   ].filter((n): n is string => !!n);
 
   const findByName = (name: string) =>
@@ -293,11 +302,11 @@ export async function resolveServerPriceWithSource(
     if (v !== null) return v;
   }
 
-  // Default fallback: when no override / connection / context tier is set
-  // for this doctor or practice, charge them at the lab's "Standard"
-  // pricing tier (case-insensitive name match). If the lab hasn't created
-  // a tier called "Standard", fall back to the oldest tier on the lab so
-  // pricing still resolves to *something* instead of $0.
+  // Default fallback: when no override / connection / context / lab-default
+  // tier is set for this doctor or practice, charge them at the lab's
+  // "Standard" pricing tier (case-insensitive name match). If the lab hasn't
+  // created a tier called "Standard", fall back to the oldest tier on the lab
+  // so pricing still resolves to *something* instead of $0.
   const standardTier = findByName("Standard");
   if (standardTier) {
     const v = tryTier(standardTier, "default");
@@ -352,6 +361,12 @@ export async function resolveAlloyPriceTarget(
     if (connection?.tierName) connectionTierName = connection.tierName;
   }
 
+  const labOrg = await db.query.organizations.findFirst({
+    where: eq(organizations.id, ctx.labOrganizationId),
+    columns: { defaultDoctorTierName: true },
+  });
+  const labDefaultTierName = labOrg?.defaultDoctorTierName?.trim() || null;
+
   const tiers = await db.query.pricingTiers.findMany({
     where: eq(pricingTiers.labOrganizationId, ctx.labOrganizationId),
   });
@@ -369,6 +384,7 @@ export async function resolveAlloyPriceTarget(
     doctorTierName,
     connectionTierName,
     ctx.tierName ?? null,
+    labDefaultTierName,
   ].filter((n): n is string => !!n);
   for (const name of candidateNames) {
     const tier = findByName(name);
@@ -435,7 +451,14 @@ export async function resolveAllPricesForContext(
     if (connection?.tierName) connectionTierName = connection.tierName;
   }
 
-  // 3. All tiers on the lab, sorted oldest-first to match the legacy
+  // 3. Lab's configured default doctor tier name.
+  const labOrg = await db.query.organizations.findFirst({
+    where: eq(organizations.id, ctx.labOrganizationId),
+    columns: { defaultDoctorTierName: true },
+  });
+  const labDefaultTierName = labOrg?.defaultDoctorTierName?.trim() || null;
+
+  // 4. All tiers on the lab, sorted oldest-first to match the legacy
   //    "first tier wins" fallback in resolveServerPriceWithSource.
   const tiers = await db.query.pricingTiers.findMany({
     where: eq(pricingTiers.labOrganizationId, ctx.labOrganizationId),
@@ -457,6 +480,7 @@ export async function resolveAllPricesForContext(
     doctorTierName,
     connectionTierName,
     ctx.tierName ?? null,
+    labDefaultTierName,
   ].filter((n): n is string => !!n)) {
     const t = findTierByName(name);
     if (t) candidateTiers.push({ tier: t, source: "tier" });
