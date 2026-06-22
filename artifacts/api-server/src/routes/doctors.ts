@@ -33,7 +33,9 @@ import {
   auditLogs,
   cases,
   organizations,
+  organizationMemberships,
   pricingOverrides,
+  users,
 } from "@workspace/db";
 import { HttpError, ok } from "../lib/http";
 import { ADMIN_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
@@ -860,6 +862,7 @@ router.get(
             id: organizations.id,
             name: organizations.name,
             displayName: organizations.displayName,
+            phone: organizations.phone,
           })
           .from(organizations)
           .where(inArray(organizations.id, orgIds))
@@ -867,16 +870,72 @@ router.get(
     const orgNames = new Map(
       orgs.map((o) => [o.id, o.displayName || o.name] as const)
     );
+    const orgPhones = new Map(
+      orgs.map((o) => [o.id, o.phone ?? null] as const)
+    );
+
+    // Batch-look up doctor user phones: only fetch phones for users who are
+    // active members of the provider orgs we already resolved for this lab
+    // (orgIds is lab-scoped via the cases groupBy). This prevents cross-tenant
+    // phone leakage — a user named "Dr. Smith" at an unrelated lab is never
+    // returned here because their membership org is not in orgIds.
+    // Doctors whose cases have no providerOrganizationId are excluded from
+    // this lookup since we cannot safely scope them to this lab.
+    const doctorNames = Array.from(new Set(groups.map((g) => g.doctorName)));
+    const doctorUserRows: Array<{ doctorName: string | null; phone: string | null; practicePhone: string | null }> =
+      doctorNames.length && orgIds.length
+        ? await db
+            .selectDistinct({
+              doctorName: users.doctorName,
+              phone: users.phone,
+              practicePhone: users.practicePhone,
+            })
+            .from(users)
+            .innerJoin(
+              organizationMemberships,
+              and(
+                eq(organizationMemberships.userId, users.id),
+                inArray(organizationMemberships.labId, orgIds),
+                eq(organizationMemberships.status, "active"),
+                isNull(organizationMemberships.deletedAt)
+              )
+            )
+            .where(
+              and(
+                inArray(
+                  sql`lower(${users.doctorName})`,
+                  doctorNames.map((n) => n.toLowerCase())
+                ),
+                notDeleted(users)
+              )
+            )
+        : [];
+    // Map normalized doctorName → best available phone (prefer practicePhone over phone).
+    const doctorPhones = new Map<string, string>();
+    for (const u of doctorUserRows) {
+      if (!u.doctorName) continue;
+      const key = u.doctorName.toLowerCase();
+      if (!doctorPhones.has(key)) {
+        const phone = u.practicePhone || u.phone || null;
+        if (phone) doctorPhones.set(key, phone);
+      }
+    }
 
     const enriched = groups.map((g) => {
       const practiceName = g.providerOrganizationId
         ? orgNames.get(g.providerOrganizationId) ?? null
         : null;
+      const practicePhone = g.providerOrganizationId
+        ? orgPhones.get(g.providerOrganizationId) ?? null
+        : null;
+      const doctorPhone = doctorPhones.get(g.doctorName.toLowerCase()) ?? null;
       const sim = like ? similarity(like, g.doctorName) : 0;
       return {
         doctorName: g.doctorName,
         providerOrganizationId: g.providerOrganizationId,
         practiceName,
+        practicePhone,
+        doctorPhone,
         totalCases: g.totalCases,
         openCases: g.openCases,
         similarity: sim,

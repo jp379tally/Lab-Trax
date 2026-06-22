@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from "react";
-import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
+import { View, Text, StyleSheet, TouchableOpacity, Linking } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { useTheme, type ThemeColors } from "@/lib/theme-context";
@@ -17,6 +18,8 @@ interface DoctorEntry {
   totalCases?: number | null;
   openCases?: number | null;
   providerOrganizationId?: string | null;
+  practicePhone?: string | null;
+  doctorPhone?: string | null;
 }
 
 export default function CustomersScreen() {
@@ -85,6 +88,7 @@ export default function CustomersScreen() {
       }
       renderItem={(d) => {
         const caseCount = displayCount(d);
+        const displayPhone = d.practicePhone || d.doctorPhone || null;
         return (
           <Card
             style={styles.row}
@@ -96,6 +100,7 @@ export default function CustomersScreen() {
                   providerOrganizationId: d.providerOrganizationId ?? "",
                   practiceName: d.practiceName ?? "",
                   initialViewMode: viewMode,
+                  phone: displayPhone ?? "",
                 },
               } as never)
             }
@@ -108,6 +113,21 @@ export default function CustomersScreen() {
                 <Text style={styles.meta} numberOfLines={1}>
                   {d.practiceName}
                 </Text>
+              ) : null}
+              {displayPhone ? (
+                <TouchableOpacity
+                  style={styles.phoneRow}
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    Linking.openURL(`tel:${displayPhone}`);
+                  }}
+                  hitSlop={4}
+                >
+                  <Ionicons name="call-outline" size={11} color={colors.tint} style={styles.phoneIcon} />
+                  <Text style={styles.phoneText} numberOfLines={1}>
+                    {displayPhone}
+                  </Text>
+                </TouchableOpacity>
               ) : null}
             </View>
             <View style={[styles.badge, caseCount === 0 && styles.badgeEmpty]}>
@@ -128,6 +148,19 @@ function makeStyles(c: ThemeColors) {
     main: { flex: 1, gap: 2 },
     name: { ...Typography.bodySemibold, color: c.text },
     meta: { ...Typography.caption, color: c.textSecondary },
+    phoneRow: {
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      gap: 3,
+      marginTop: 1,
+    },
+    phoneIcon: {
+      marginTop: 0,
+    },
+    phoneText: {
+      ...Typography.caption,
+      color: c.tint,
+    },
     badge: {
       backgroundColor: c.tintLight,
       borderRadius: Radius.full,

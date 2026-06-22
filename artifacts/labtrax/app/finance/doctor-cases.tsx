@@ -146,11 +146,13 @@ export default function DoctorCasesScreen() {
     providerOrganizationId?: string;
     practiceName?: string;
     initialViewMode?: string;
+    phone?: string;
   }>();
 
   const doctorName = params.doctorName ?? "";
   const providerOrganizationId = params.providerOrganizationId ?? "";
   const practiceName = params.practiceName ?? "";
+  const phoneParam = params.phone ?? "";
 
   const [viewMode, setViewMode] = useState<ViewMode>(
     params.initialViewMode === "all" ? "all" : "open",
@@ -252,7 +254,13 @@ export default function DoctorCasesScreen() {
     : `${caseCount} case${caseCount === 1 ? "" : "s"}`;
 
   const orgData = orgQuery.data;
-  const showInfoCard = !!orgData && hasContactInfo(orgData);
+  // Use org phone when available; fall back to the phone passed from the
+  // customer list (which may be the doctor's user-record phone or practice
+  // phone from the search endpoint).
+  const effectivePhone = orgData?.phone || (phoneParam || null);
+  const showInfoCard =
+    !!effectivePhone ||
+    !!(orgData && hasContactInfo(orgData));
   const accountNum = orgData?.platformAccountNumber ?? orgData?.accountNumber ?? null;
   const formattedAddress = orgData ? formatAddress(orgData) : null;
 
@@ -387,14 +395,14 @@ export default function DoctorCasesScreen() {
               </Text>
             </View>
           ) : null}
-          {orgData?.phone ? (
+          {effectivePhone ? (
             <TouchableOpacity
               style={styles.infoRow}
-              onPress={() => Linking.openURL(`tel:${orgData.phone}`)}
+              onPress={() => Linking.openURL(`tel:${effectivePhone}`)}
             >
               <Ionicons name="call-outline" size={14} color={colors.textSecondary} style={styles.infoIcon} />
               <Text style={[styles.infoText, styles.infoLink]} numberOfLines={1}>
-                {orgData.phone}
+                {effectivePhone}
               </Text>
             </TouchableOpacity>
           ) : null}
