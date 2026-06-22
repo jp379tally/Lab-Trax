@@ -1,0 +1,144 @@
+### Replit Build Brief
+
+**Objective**
+Revise provider portal onboarding so a new doctor is not asked whether a lab already created their account. Instead, LabTracks should detect existing provider records by matching the doctor’s phone number and physical address against provider/account records already in the platform.
+
+**User-visible problem**
+The current signup flow asks doctors a question they likely cannot answer: whether their lab already created an account for them. The product should “connect the dots” automatically from identifying provider details.
+
+**Desired behavior**
+When a doctor signs up for a provider portal:
+
+1. Ask for the doctor/provider’s phone number and physical address during onboarding.
+2. Search the LabTracks universe for matching provider/account records created by labs.
+3. If a match is found, tell the doctor which lab or labs currently have them on file in LabTracks.
+4. Ask the doctor to confirm the match.
+5. After confirmation, link the doctor’s login/user account to the existing provider account number.
+6. The doctor should then see all cases assigned to that provider account number, across any lab that has cases for that same matched provider account.
+7. If no match is found, allow the doctor to continue creating a new provider portal account.
+
+**Likely root cause**
+The onboarding flow is using a user-facing decision point instead of a data-matching flow. The system should infer existing lab-created provider records from normalized phone/address data and then ask for confirmation only after a candidate match exists.
+
+**Exact parts of the app/code to inspect**
+Search for provider portal onboarding and account creation code:
+
+`provider signup`, `doctor signup`, `provider portal`, `create provider`, `provider account`, `onboarding`, `lab account`, `account number`, `phone`, `address`, `cases`, `providerId`, `doctorId`.
+
+Likely areas:
+
+* Provider portal signup page/component
+* Provider onboarding form validation
+* Provider/user creation API route
+* Lab-created provider/account database tables
+* Case assignment query logic
+* Provider account number generation/linking
+* Any duplicate-provider matching logic
+
+**Implementation plan**
+Replace the “has your lab already created your account?” question with a match-and-confirm flow.
+
+1. Remove the onboarding question asking whether a lab already created the doctor’s account.
+2. Add required fields for provider phone number and physical address.
+3. Normalize phone numbers and addresses before matching.
+4. Search existing provider/account records using normalized phone plus normalized physical address.
+5. If one or more matches are found, show a confirmation screen:
+
+   * provider/account name
+   * account number
+   * lab or labs that already have this provider on file
+   * a clear “Yes, this is me” confirmation action
+6. On confirmation, link the signed-in doctor user to the existing provider account number.
+7. After linking, the provider dashboard should query cases by that provider account number, not just by the newly created user ID.
+8. If no match is found, continue the normal new provider account creation flow.
+9. If multiple possible matches are found, let the doctor select the correct one, but avoid exposing sensitive case details before confirmation.
+10. Add audit logging for provider-account linking.
+
+**Important constraints / guardrails**
+
+* Do not expose patient names, case details, or protected case information before the doctor confirms ownership.
+* Matching should use normalized phone/address values, not raw strings.
+* If multiple labs have records for the same matched provider account number, the doctor should see cases across those labs after confirmation.
+* Do not merge unrelated doctors just because one field matches.
+* Phone plus physical address should be the minimum match requirement unless the existing data model supports stronger identity signals.
+* Keep lab/provider affiliation authorization intact after linking.
+
+**Acceptance criteria**
+
+* New doctor signup no longer asks whether the lab already created an account.
+* Doctor enters phone and physical address.
+* If LabTracks finds a matching lab-created provider record, the doctor sees the lab name and account number and can confirm.
+* After confirmation, the doctor’s user is linked to that provider account.
+* The provider dashboard shows all cases assigned to that provider account number across participating labs.
+* If no match exists, the doctor can create a new provider portal account.
+* No patient/case details are shown before confirmation.
+
+**Regression risks to check**
+
+* Existing provider logins should still work.
+* Lab-created provider accounts should remain usable even before a provider claims them.
+* Case visibility must remain scoped to the confirmed provider account number.
+* Duplicate or partial address data could cause false positives.
+* Cross-lab case visibility should only occur when the same provider account identity is confirmed.
+
+### Copy-Ready Replit Prompt
+
+Please update the provider portal onboarding flow.
+
+When a new doctor signs up to create a provider portal, do not ask whether their lab has already created their account. Doctors probably won’t know that.
+
+Instead, implement a match-and-confirm flow:
+
+A doctor should enter their phone number and physical address. LabTracks should normalize those values and search existing provider/account records across the LabTracks platform. If the phone number and physical address match a provider account already created by a lab, show the doctor which lab or labs currently have them on file, show the provider account number, and ask them to confirm that this is their account.
+
+Example behavior:
+If a lab created cases for Dr. Craig at 123 Happy Street, and Dr. Craig at 123 Happy Street signs up, LabTracks should detect the match, tell Dr. Craig that she already has cases within LabTracks, show her account number, and let her confirm. Once confirmed, link her login to that provider account number. She should then be able to see all cases assigned to that provider account number, regardless of which lab created the cases.
+
+Please inspect the provider portal signup/onboarding code, provider account creation logic, case assignment logic, and any existing provider matching utilities. Search for terms like `provider portal`, `doctor signup`, `onboarding`, `provider account`, `account number`, `phone`, `address`, `providerId`, and `cases`.
+
+Implementation requirements:
+
+* Remove the “has your lab already created your account?” question.
+* Add or reuse phone number and physical address fields in provider signup.
+* Normalize phone and address before matching.
+* Match against existing lab-created provider records.
+* If matches exist, show a confirmation step with lab name(s) and provider account number.
+* Do not show patient names or case details before confirmation.
+* On confirmation, link the signed-in doctor user to the matched provider account.
+* Provider dashboard case queries should use the linked provider account number so the doctor can see all assigned cases across labs.
+* If no match exists, continue creating a new provider portal account.
+* If multiple matches exist, allow the doctor to select the correct account without exposing sensitive details.
+* Add basic regression checks for matched signup, no-match signup, multiple-match signup, and existing provider login.
+
+Before finishing, explain which files changed, how matching works, how linking works, and what privacy guardrails were added.
+
+### Debug Analysis
+
+**Probable root cause**
+The current onboarding flow depends on the doctor knowing whether a lab has pre-created an account. That knowledge lives in LabTracks data, not in the doctor’s head. The flow should be based on identity matching, then confirmation.
+
+**Supporting evidence**
+The desired product behavior is a classic claim/link flow: lab creates provider/case records first, then the doctor later signs up and claims the matching provider account.
+
+**Alternate hypotheses worth checking**
+
+* There may already be duplicate-provider detection that can be reused.
+* Provider cases may currently be keyed by `providerId` instead of account number, which may need a query update.
+* Labs may create slightly different versions of the same provider address, so normalization matters.
+* If provider account numbers are lab-specific today, Replit may need to introduce or clarify a global provider account identity.
+
+**Why this approach is best**
+It removes uncertainty from the signup flow and uses LabTracks’ own data to connect doctors to the correct provider records. It also preserves privacy by showing only enough information to confirm the match before revealing case details.
+
+### Step-by-Step Fix Plan
+
+1. Locate provider portal signup/onboarding screens.
+2. Remove the lab-created-account question.
+3. Add phone and physical address collection if not already present.
+4. Add normalization for phone and address.
+5. Create a provider lookup endpoint or server action for matching existing provider records.
+6. Return only safe pre-confirmation details: lab name(s), provider display name, and account number.
+7. Add a confirmation step.
+8. On confirmation, create the user-to-provider-account link.
+9. Update provider dashboard case queries to load cases by linked provider account number.
+10. Test matched signup, unmatched signup, duplicate/multiple matches, and cross-lab case visibility after confirmation.
