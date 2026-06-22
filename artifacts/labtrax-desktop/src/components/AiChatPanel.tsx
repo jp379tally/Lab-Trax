@@ -1197,6 +1197,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
       const decoder = new TextDecoder();
       let buf = "";
       let fullContent = "";
+      let handledProposedAction = false;
       let finalMeta: Pick<ChatMsg, "knowledgeSectionIds" | "retentionDisclaimer" | "privacyDisclaimer" | "disclaimer" | "toolOutputs"> = {};
 
       outer: while (true) {
@@ -1252,6 +1253,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
                 expiresAt: Date.now() + PENDING_TTL_MS,
               },
             };
+            handledProposedAction = true;
             setMessages((prev) => prev.map((m) => m.id === streamingId ? actionMsg : m));
             persistSession([...currentMessages, actionMsg], sessionId, snapshotPinnedCases);
             break outer;
@@ -1275,9 +1277,11 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
 
       // If we broke out due to proposed_action, the message is already persisted above.
       // Only finalize as a text reply when no proposed action was set.
-      const currentMsgs = messagesRef.current;
-      const streamingMsgFinal = currentMsgs.find((m) => m.id === streamingId);
-      if (streamingMsgFinal?.proposedAction) {
+      // Use a local flag rather than messagesRef.current: React 18 batches the
+      // setMessages call from the proposed_action branch, so the ref is still
+      // stale here in the same microtask and would let finalMsg overwrite the
+      // ConfirmCard before it ever renders.
+      if (handledProposedAction) {
         // Already handled by proposed_action branch above
         return;
       }

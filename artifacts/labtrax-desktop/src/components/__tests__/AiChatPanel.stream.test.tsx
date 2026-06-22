@@ -13,16 +13,19 @@
  *  - When the user cancels the proposed action the card collapses to
  *    "Action cancelled" and the Confirm/Cancel buttons are removed.
  *  - A non-2xx response from the stream endpoint surfaces an error message.
+ *  - When /ai-agent/stream emits a proposed_action event the ConfirmCard is
+ *    rendered through the live SSE path (not just session-restore seeding).
  *
  * Note on React 18 automatic batching and streaming:
- *   The component's post-stream ref-guard (`if (streamingMsgFinal?.proposedAction) return`)
- *   is checked synchronously after `setMessages(actionMsg)` with no `await` in
- *   between. React 18 batches both setState calls in the same microtask; the
- *   second call (finalMsg) wins. ConfirmCard rendering is therefore tested via
- *   session-restore seeding — writing a pending proposedAction directly to
- *   localStorage, which the component reads on mount before sanitisation runs.
- *   The SSE-stream portion of the test suite covers the text-token path and
- *   error-handling through real mock streams.
+ *   The component's post-stream guard must NOT rely on `messagesRef.current`:
+ *   React 18 batches the `setMessages(actionMsg)` call from the proposed_action
+ *   branch, so the ref is still stale in the same microtask and the post-loop
+ *   `setMessages(finalMsg)` would overwrite the ConfirmCard before it ever
+ *   renders. The component instead sets a local `handledProposedAction` flag in
+ *   the proposed_action branch and checks it after the loop. The live SSE tests
+ *   below would regress if that guard reverted to reading the stale ref.
+ *   Session-restore seeding tests are retained to cover ConfirmCard interaction
+ *   (cancel, confirm spinner) independent of the stream.
  */
 
 import { render, screen, waitFor, act, fireEvent } from "@testing-library/react";
@@ -315,6 +318,79 @@ describe("AiChatPanel — proposed_action SSE event → ConfirmCard rendering", 
 
     expect(screen.queryByRole("button", { name: /^confirm$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^cancel$/i })).toBeNull();
+  });
+});
+
+// ─── Live SSE proposed_action → ConfirmCard ──────────────────────────────────
+//
+// These tests drive the real streaming path: a proposed_action SSE event is
+// emitted by the mock fetch and the component must render the ConfirmCard.
+// Before the handledProposedAction-flag fix, React 18 batching let the post-loop
+// finalMsg overwrite the action message and the ConfirmCard never appeared.
+
+describe("AiChatPanel — live SSE proposed_action → ConfirmCard rendering", () => {
+  it("renders a ConfirmCard when the stream emits a proposed_action event", async () => {
+    vi.stubGlobal(
+      "fetch",
+      makeSseFetch([
+        {
+          proposed_action: {
+            actionId: "live-action-001",
+            toolName: "mark_invoice_paid",
+            summary: "Proposed: mark invoice #INV-100 as paid",
+            args: { invoiceId: "INV-100" },
+          },
+        },
+      ]),
+    );
+
+    renderPanel();
+    await submitMessage("Mark invoice INV-100 as paid");
+
+    await waitFor(
+      () => {
+        expect(screen.getByRole("button", { name: /confirm/i })).toBeTruthy();
+        expect(screen.getByRole("button", { name: /cancel/i })).toBeTruthy();
+        expect(screen.getByText("Proposed: mark invoice #INV-100 as paid")).toBeTruthy();
+      },
+      { timeout: 3000 },
+    );
+  });
+
+  it("keeps the ConfirmCard even when a done event follows the proposed_action", async () => {
+    // Defends specifically against the React 18 batching regression: the
+    // post-loop finalMsg must not overwrite the action message even when token
+    // and done events arrive in the same stream as the proposed_action.
+    vi.stubGlobal(
+      "fetch",
+      makeSseFetch([
+        { token: "I'll mark that paid." },
+        {
+          proposed_action: {
+            actionId: "live-action-002",
+            toolName: "mark_invoice_paid",
+            summary: "Proposed: mark invoice #INV-200 as paid",
+            args: { invoiceId: "INV-200" },
+          },
+        },
+        { done: true },
+      ]),
+    );
+
+    renderPanel();
+    await submitMessage("Mark invoice INV-200 as paid");
+
+    await waitFor(
+      () => {
+        expect(screen.getByRole("button", { name: /confirm/i })).toBeTruthy();
+        expect(screen.getByText("Proposed: mark invoice #INV-200 as paid")).toBeTruthy();
+      },
+      { timeout: 3000 },
+    );
+
+    // The generic "couldn't generate a response" fallback must NOT appear — it
+    // would mean the post-loop finalMsg overwrote the proposed action.
+    expect(screen.queryByText(/couldn't generate a response/i)).toBeNull();
   });
 });
 
