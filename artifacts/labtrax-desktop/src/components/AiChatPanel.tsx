@@ -3,6 +3,7 @@ import { apiFetch, getAccessToken, apiUrl } from "@/lib/api";
 import {
   AlertTriangle,
   Check,
+  ChevronDown,
   Clock,
   Copy,
   Loader2,
@@ -12,6 +13,7 @@ import {
   Plus,
   Printer,
   RotateCcw,
+  Search,
   Send,
   Sparkles,
   Trash2,
@@ -514,6 +516,73 @@ function KnowledgeSourceBadge({
               ⚠ HIPAA/compliance disclaimer was injected
             </p>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Tool sources badge ──────────────────────────────────────────────────────
+
+const TOOL_DISPLAY_NAMES: Record<string, string> = {
+  lookup_case: "case",
+  lookup_invoice: "invoice",
+  get_case_history: "case history",
+  get_cases_due_soon: "cases due soon",
+  draft_message: "message draft",
+  monthly_sales_snapshot: "sales snapshot",
+  financial_summary: "financial summary",
+  remake_rate: "remake rate",
+  count_cases_by_status: "case counts",
+};
+
+function extractToolLabel(name: string, result: unknown): string {
+  const base = TOOL_DISPLAY_NAMES[name] ?? name.replace(/_/g, " ");
+  try {
+    const r = result as Record<string, unknown>;
+    if (name === "lookup_case" && r.found && r.case) {
+      const c = r.case as { caseNumber?: string };
+      if (c.caseNumber) return `case ${c.caseNumber}`;
+    }
+    if (name === "get_case_history" && r.found && r.case) {
+      const c = r.case as { caseNumber?: string };
+      if (c.caseNumber) return `history for case ${c.caseNumber}`;
+    }
+    if (name === "lookup_invoice" && r.found && r.invoice) {
+      const inv = r.invoice as { invoiceNumber?: string };
+      if (inv.invoiceNumber) return `invoice ${inv.invoiceNumber}`;
+    }
+  } catch { /* ignore */ }
+  return base;
+}
+
+function ToolSourcesBadge({ toolOutputs }: { toolOutputs: Array<{ name: string; result: unknown }> }) {
+  const [open, setOpen] = useState(false);
+  const labels = toolOutputs.map((t) => extractToolLabel(t.name, t.result));
+
+  return (
+    <div className="mt-0.5">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 text-[10px] text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+        title="Data Maynard looked up to answer this"
+      >
+        <Search size={9} />
+        <span>Looked up: {labels.join(", ")}</span>
+        <ChevronDown size={9} className={`transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className="mt-1 rounded-lg border border-border/60 bg-muted/40 px-2.5 py-2 max-w-[280px] space-y-2">
+          <p className="text-[10px] font-semibold text-muted-foreground">Lookup results</p>
+          {toolOutputs.map((t, i) => (
+            <div key={i}>
+              <p className="text-[10px] font-mono text-foreground/60 mb-0.5">{t.name}</p>
+              <pre className="text-[9px] font-mono text-foreground/70 whitespace-pre-wrap break-all leading-tight max-h-32 overflow-y-auto">
+                {JSON.stringify(t.result, null, 2)}
+              </pre>
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -1127,7 +1196,7 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
       const decoder = new TextDecoder();
       let buf = "";
       let fullContent = "";
-      let finalMeta: Pick<ChatMsg, "knowledgeSectionIds" | "retentionDisclaimer" | "privacyDisclaimer" | "disclaimer"> = {};
+      let finalMeta: Pick<ChatMsg, "knowledgeSectionIds" | "retentionDisclaimer" | "privacyDisclaimer" | "disclaimer" | "toolOutputs"> = {};
 
       outer: while (true) {
         const { done, value } = await reader.read();
@@ -1189,6 +1258,9 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
 
           if (evt.done) {
             finalMeta = {
+              ...(Array.isArray(evt.toolOutputs) && (evt.toolOutputs as unknown[]).length > 0
+                ? { toolOutputs: evt.toolOutputs as Array<{ name: string; result: unknown }> }
+                : {}),
               ...(Array.isArray(evt.knowledgeSectionIds) && evt.knowledgeSectionIds.length > 0
                 ? { knowledgeSectionIds: evt.knowledgeSectionIds as string[] }
                 : {}),
@@ -1777,6 +1849,9 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
                     <Printer size={12} />
                     Print case history
                   </button>
+                )}
+                {!isUser && msg.toolOutputs && msg.toolOutputs.length > 0 && (
+                  <ToolSourcesBadge toolOutputs={msg.toolOutputs} />
                 )}
                 {isAdmin && !isUser && msg.knowledgeSectionIds && msg.knowledgeSectionIds.length > 0 && (
                   <KnowledgeSourceBadge

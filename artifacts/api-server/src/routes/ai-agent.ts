@@ -541,6 +541,9 @@ export function registerAiAgentRoutes(router: IRouter): void {
       ...safeMessages,
     ];
 
+    // Track readonly tool outputs to include in the done event for client rendering
+    const accumulatedToolOutputs: Array<{ name: string; result: unknown }> = [];
+
     // ── SSE headers — set before any streaming begins ──────────────────────
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
@@ -617,6 +620,7 @@ export function registerAiAgentRoutes(router: IRouter): void {
           fireLearn(fullContent || "I'm not sure how to help with that.");
           sendEvent({
             done: true,
+            ...(accumulatedToolOutputs.length > 0 ? { toolOutputs: accumulatedToolOutputs } : {}),
             ...(knowledgeSectionIds.length > 0 ? { knowledgeSectionIds } : {}),
             ...(retentionDisclaimer ? { retentionDisclaimer: true, disclaimer: RETENTION_LEGAL_DISCLAIMER } : {}),
             ...(privacyDisclaimer ? { privacyDisclaimer: true } : {}),
@@ -677,6 +681,7 @@ export function registerAiAgentRoutes(router: IRouter): void {
               } finally {
                 clearTimeout(timeoutHandle);
               }
+              accumulatedToolOutputs.push({ name: toolName, result });
               toolResults.push({
                 role: "tool",
                 tool_call_id: toolCall.id,
@@ -745,6 +750,7 @@ export function registerAiAgentRoutes(router: IRouter): void {
       if (exhaustedContent) fireLearn(exhaustedContent);
       sendEvent({
         done: true,
+        ...(accumulatedToolOutputs.length > 0 ? { toolOutputs: accumulatedToolOutputs } : {}),
         ...(knowledgeSectionIds.length > 0 ? { knowledgeSectionIds } : {}),
         ...(retentionDisclaimer ? { retentionDisclaimer: true, disclaimer: RETENTION_LEGAL_DISCLAIMER } : {}),
         ...(privacyDisclaimer ? { privacyDisclaimer: true } : {}),
