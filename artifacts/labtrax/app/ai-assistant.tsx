@@ -515,9 +515,11 @@ interface BubbleProps {
   onReject: (actionId: string) => void;
   onTryAgain: (msgId: string) => void;
   sending?: boolean;
+  /** True when this bubble is the active streaming one and a tool call is in flight. */
+  isStreamingBubble?: boolean;
 }
 
-function MessageBubble({ msg, colors, onConfirm, onReject, onTryAgain, sending }: BubbleProps) {
+function MessageBubble({ msg, colors, onConfirm, onReject, onTryAgain, sending, isStreamingBubble }: BubbleProps) {
   const isUser = msg.role === "user";
   const draftTool = msg.toolOutputs?.find((t) => t.name === "draft_message")?.result as
     | { draft?: string }
@@ -621,15 +623,24 @@ function MessageBubble({ msg, colors, onConfirm, onReject, onTryAgain, sending }
             msg.isError && styles.bubbleError,
           ]}
         >
-          <Text
-            style={[
-              styles.bubbleText,
-              { color: isUser ? "#fff" : colors.text },
-              msg.isError && { color: "#9b2c2c" },
-            ]}
-          >
-            {bubbleContent}
-          </Text>
+          {!isUser && isStreamingBubble && !bubbleContent ? (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <ActivityIndicator size="small" color={colors.textSecondary} />
+              <Text style={[styles.bubbleText, { color: colors.textSecondary }]}>
+                Looking up…
+              </Text>
+            </View>
+          ) : (
+            <Text
+              style={[
+                styles.bubbleText,
+                { color: isUser ? "#fff" : colors.text },
+                msg.isError && { color: "#9b2c2c" },
+              ]}
+            >
+              {bubbleContent}
+            </Text>
+          )}
         </View>
         )}
         {draftTool?.draft && (
@@ -664,6 +675,8 @@ export default function AiAssistantScreen() {
   const [messages, setMessages] = useState<ChatMessage[]>([WELCOME_MSG]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [streamingToolCall, setStreamingToolCall] = useState<string | null>(null);
+  const [streamingMsgId, setStreamingMsgId] = useState<string | null>(null);
   const listRef = useRef<FlatList<ChatMessage>>(null);
   const messagesRef = useRef<ChatMessage[]>([WELCOME_MSG]);
 
@@ -904,11 +917,13 @@ export default function AiAssistantScreen() {
   const dispatchAiStream = useCallback(
     async (currentMessages: ChatMessage[]) => {
       setSending(true);
+      setStreamingToolCall(null);
       scrollToBottom();
 
       const streamingId = genId();
       const streamingMsg: ChatMessage = { id: streamingId, role: "assistant", content: "" };
       setMessages([...currentMessages, streamingMsg]);
+      setStreamingMsgId(streamingId);
       scrollToBottom();
 
       try {
@@ -937,7 +952,7 @@ export default function AiAssistantScreen() {
           return;
         }
 
-        if (!resp.ok) {
+        if (!resp.ok || !resp.body) {
           const errText =
             resp.status === 503
               ? "AI assistant is not set up on this server. Contact your administrator."
@@ -947,18 +962,6 @@ export default function AiAssistantScreen() {
           setMessages((prev) =>
             prev.map((m) =>
               m.id === streamingId ? { ...m, content: errText, isError: true } : m,
-            ),
-          );
-          scrollToBottom();
-          return;
-        }
-
-        if (!resp.body) {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === streamingId
-                ? { ...m, content: "Something went wrong. Please try again.", isError: true }
-                : m,
             ),
           );
           scrollToBottom();
@@ -983,18 +986,25 @@ export default function AiAssistantScreen() {
             let evt: Record<string, unknown>;
             try { evt = JSON.parse(line.slice(6)) as Record<string, unknown>; } catch { continue; }
 
+            if (evt.tool_call && typeof evt.tool_call === "object") {
+              const tc = evt.tool_call as { name?: string };
+              setStreamingToolCall(tc.name ?? null);
+            }
+
             if (typeof evt.token === "string") {
+              if (!fullContent) setStreamingToolCall(null);
               fullContent += evt.token;
               setMessages((prev) =>
                 prev.map((m) => m.id === streamingId ? { ...m, content: fullContent } : m),
               );
+              scrollToBottom();
             } else if (evt.error) {
               const errMsg = typeof evt.error === "string" ? evt.error : "Something went wrong. Please try again.";
               setMessages((prev) =>
                 prev.map((m) => m.id === streamingId ? { ...m, content: errMsg, isError: true } : m),
               );
               scrollToBottom();
-              return;
+              break outer;
             } else if (evt.done) {
               if (typeof evt.disclaimer === "string") finalDisclaimer = evt.disclaimer;
             } else if (evt.proposed_action && typeof evt.proposed_action === "object") {
@@ -1034,6 +1044,7 @@ export default function AiAssistantScreen() {
         };
         setMessages((prev) => prev.map((m) => m.id === streamingId ? finalMsg : m));
         scrollToBottom();
+
         if (voiceMode && fullContent) {
           void speakText(fullContent);
         }
@@ -1048,6 +1059,8 @@ export default function AiAssistantScreen() {
         scrollToBottom();
       } finally {
         setSending(false);
+        setStreamingToolCall(null);
+        setStreamingMsgId(null);
       }
     },
     [buildHistory, scrollToBottom, voiceMode, speakText],
@@ -1185,9 +1198,10 @@ export default function AiAssistantScreen() {
         onReject={rejectAction}
         onTryAgain={handleTryAgain}
         sending={sending}
+        isStreamingBubble={item.id === streamingMsgId && !!streamingToolCall}
       />
     ),
-    [colors, confirmAction, rejectAction, handleTryAgain, sending],
+    [colors, confirmAction, rejectAction, handleTryAgain, sending, streamingMsgId, streamingToolCall],
   );
 
   const keyExtractor = useCallback((item: ChatMessage) => item.id, []);
@@ -1270,7 +1284,7 @@ export default function AiAssistantScreen() {
                   </View>
                 </View>
               )}
-              {sending && (
+              {sending && !streamingMsgId && (
                 <View style={[styles.bubbleRow, styles.bubbleRowAssistant]}>
                   <View style={[styles.avatar, { backgroundColor: colors.tint + "1A" }]}>
                     <Ionicons name="sparkles" size={12} color={colors.tint} />
