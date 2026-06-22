@@ -48,7 +48,11 @@ export function registerAiSttRoutes(
       return;
     }
 
-    const openai = new OpenAI({ apiKey });
+    // Must include baseURL when using Replit AI Integrations proxy — the key is
+    // a proxy credential that only works against AI_INTEGRATIONS_OPENAI_BASE_URL,
+    // not directly against api.openai.com.
+    const baseURL = process.env.AI_INTEGRATIONS_OPENAI_BASE_URL;
+    const openai = new OpenAI({ apiKey, ...(baseURL ? { baseURL } : {}) });
     try {
       // Strip codec params (e.g. "audio/webm;codecs=opus" → "audio/webm").
       // OpenAI Whisper only recognises base MIME types; sending codec params causes
