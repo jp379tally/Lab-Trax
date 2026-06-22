@@ -1074,8 +1074,8 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
   }
 
   /** Call the AI endpoint with a given message list and append the response.
-   *  Uses SSE streaming via /ai-chat/stream for real-time token delivery.
-   *  Falls back to /ai-agent for action proposals (confirm/reject flow). */
+   *  Uses SSE streaming via /ai-agent/stream for real-time token delivery
+   *  AND action proposals (confirm/reject flow). */
   async function dispatchAiContinuation(
     currentMessages: ChatMsg[],
     sessionId: string,
@@ -1090,14 +1090,15 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
       body.caseIds = snapshotPinnedCases.map((c) => c.caseId);
     }
 
-    // ── Streaming path via /ai-chat/stream ──────────────────────────────────
+    // ── Streaming agentic path via /ai-agent/stream ──────────────────────────
+    // Handles both text token events and proposed_action events in one stream.
     const streamingId = generateId();
     const streamingMsg: ChatMsg = { id: streamingId, role: "assistant", content: "" };
     setMessages([...currentMessages, streamingMsg]);
 
     try {
       const token = getAccessToken();
-      const resp = await fetch(apiUrl("/ai-chat/stream"), {
+      const resp = await fetch(apiUrl("/ai-agent/stream"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1137,12 +1138,14 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
           if (!line.startsWith("data: ")) continue;
           let evt: Record<string, unknown>;
           try { evt = JSON.parse(line.slice(6)) as Record<string, unknown>; } catch { continue; }
+
           if (typeof evt.token === "string") {
             fullContent += evt.token;
             setMessages((prev) =>
               prev.map((m) => m.id === streamingId ? { ...m, content: fullContent } : m),
             );
           }
+
           if (evt.error) {
             fullContent = typeof evt.error === "string" ? evt.error : "I couldn't generate a response.";
             setMessages((prev) =>
@@ -1150,6 +1153,33 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
             );
             break outer;
           }
+
+          // Proposed action — show ConfirmCard and stop streaming
+          if (evt.proposed_action && typeof evt.proposed_action === "object") {
+            const pa = evt.proposed_action as {
+              actionId: string;
+              toolName: string;
+              summary: string;
+              args: Record<string, unknown>;
+            };
+            const actionMsg: ChatMsg = {
+              id: streamingId,
+              role: "assistant",
+              // keep any text the model streamed before the tool call (may be empty)
+              content: fullContent || undefined,
+              proposedAction: {
+                actionId: pa.actionId,
+                toolName: pa.toolName,
+                summary: pa.summary,
+                state: "pending",
+                expiresAt: Date.now() + PENDING_TTL_MS,
+              },
+            };
+            setMessages((prev) => prev.map((m) => m.id === streamingId ? actionMsg : m));
+            persistSession([...currentMessages, actionMsg], sessionId, snapshotPinnedCases);
+            break outer;
+          }
+
           if (evt.done) {
             finalMeta = {
               ...(Array.isArray(evt.knowledgeSectionIds) && evt.knowledgeSectionIds.length > 0
@@ -1161,6 +1191,15 @@ export function AiChatPanel({ onClose, initialCases = [], labOrganizationId, isA
             };
           }
         }
+      }
+
+      // If we broke out due to proposed_action, the message is already persisted above.
+      // Only finalize as a text reply when no proposed action was set.
+      const currentMsgs = messagesRef.current;
+      const streamingMsgFinal = currentMsgs.find((m) => m.id === streamingId);
+      if (streamingMsgFinal?.proposedAction) {
+        // Already handled by proposed_action branch above
+        return;
       }
 
       if (!fullContent) fullContent = "I couldn't generate a response. Please try again.";

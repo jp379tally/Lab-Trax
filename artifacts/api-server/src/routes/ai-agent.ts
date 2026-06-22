@@ -433,6 +433,315 @@ export function registerAiAgentRoutes(router: IRouter): void {
     }
   });
 
+  /**
+   * POST /ai-agent/stream — SSE streaming agentic endpoint.
+   *
+   * Runs the same tool-calling loop as POST /ai-agent but delivers output via
+   * Server-Sent Events so the client can render tokens in real time:
+   *   data: {"token":"…"}           — one text token
+   *   data: {"proposed_action":{…}} — model wants to take an impactful action;
+   *                                   client shows ConfirmCard (confirm via
+   *                                   POST /ai-agent/confirm)
+   *   data: {"done":true,…}         — end of text response (with optional meta)
+   *   data: {"error":"…"}           — terminal error
+   *
+   * Confirm/reject still go to POST /ai-agent/confirm and POST /ai-agent/reject.
+   */
+  router.post("/ai-agent/stream", requireAuth, aiAgentRateLimit, async (req: any, res: any) => {
+    const userId: string = req.user.id;
+
+    const openai = getAiClient();
+    if (!openai) {
+      return res.status(503).json({
+        error:
+          "AI assistant is not configured on this server. Please ask your administrator to set AI_INTEGRATIONS_OPENAI_API_KEY.",
+      });
+    }
+
+    const body = req.body as {
+      messages?: Array<{ role: "user" | "assistant"; content: string }>;
+      caseId?: string;
+      caseIds?: string[];
+    };
+
+    if (!Array.isArray(body?.messages) || body.messages.length === 0) {
+      return res.status(400).json({ error: "messages array is required" });
+    }
+    const lastMsg = body.messages[body.messages.length - 1];
+    if (!lastMsg || lastMsg.role !== "user") {
+      return res.status(400).json({ error: "Last message must have role 'user'" });
+    }
+
+    const userType: string = req.user.userType ?? "lab";
+
+    // Resolve org context in parallel (identical to POST /ai-agent)
+    const [labMemberships, providerCtx] = await Promise.all([
+      userType !== "provider"
+        ? db
+            .select({ labId: organizationMemberships.labId })
+            .from(organizationMemberships)
+            .innerJoin(organizations, eq(organizations.id, organizationMemberships.labId))
+            .where(
+              and(
+                eq(organizationMemberships.userId, userId),
+                eq(organizationMemberships.status, "active"),
+                eq(organizations.type, "lab"),
+              ),
+            )
+            .limit(1)
+        : Promise.resolve([]),
+      userType === "provider"
+        ? getProviderOrgIdsForUserAndLinks(userId).catch(() => ({ providerOrgIds: [] as string[] }))
+        : Promise.resolve({ providerOrgIds: [] as string[] }),
+    ]);
+
+    const labOrganizationId = (labMemberships as any[])[0]?.labId ?? null;
+    const providerOrgIds: string[] = (providerCtx as any).providerOrgIds ?? [];
+    const toolCtx: ToolContext = { userId, req, userType, labOrganizationId, providerOrgIds };
+
+    const learnUserMessage = String(lastMsg.content ?? "");
+    const fireLearn = (replyContent: string) => {
+      if (userType === "provider" || !labOrganizationId) return;
+      learnFromExchange({
+        openai,
+        labIds: [labOrganizationId],
+        userMessage: learnUserMessage,
+        assistantMessage: replyContent,
+        userId,
+      }).catch((err) => {
+        req.log?.error({ err }, "[AI AGENT STREAM] memory-learn error");
+      });
+    };
+
+    let systemPromptResult: Awaited<ReturnType<typeof buildSystemPrompt>>;
+    try {
+      systemPromptResult = await buildSystemPrompt(userId, userType, learnUserMessage);
+    } catch (err: any) {
+      req.log?.error({ err }, "[AI AGENT STREAM] system prompt build error");
+      return res.status(500).json({ error: "Failed to assemble context. Please try again." });
+    }
+
+    const { prompt: systemPrompt, knowledgeSectionIds, retentionDisclaimer, privacyDisclaimer } = systemPromptResult;
+
+    if (knowledgeSectionIds.length > 0 || retentionDisclaimer || privacyDisclaimer) {
+      req.log?.info(
+        { knowledgeSectionIds, retentionDisclaimer, privacyDisclaimer },
+        "[AI AGENT STREAM] knowledge sections used in prompt",
+      );
+    }
+
+    const safeMessages = body.messages.slice(-20).map((m) => ({
+      role: m.role as "user" | "assistant",
+      content: String(m.content ?? "").slice(0, 4000),
+    }));
+
+    const openAiTools = buildOpenAiTools();
+    const loopMessages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: systemPrompt },
+      ...safeMessages,
+    ];
+
+    // ── SSE headers — set before any streaming begins ──────────────────────
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders();
+
+    const sendEvent = (payload: object) => {
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    };
+
+    const MAX_ITERATIONS = 6;
+    let iterations = 0;
+
+    try {
+      while (iterations < MAX_ITERATIONS) {
+        iterations++;
+
+        // Use stream:true so text tokens are delivered to the client in real time.
+        // Tool call deltas are accumulated below and processed after the stream.
+        const stream = await openai.chat.completions.create({
+          model: "gpt-5-mini",
+          messages: loopMessages,
+          tools: openAiTools,
+          tool_choice: "auto",
+          max_completion_tokens: 4000,
+          stream: true,
+        });
+
+        let fullContent = "";
+        // Sparse array indexed by tool_call delta index
+        const accToolCalls: Array<{
+          id: string;
+          type: "function";
+          function: { name: string; arguments: string };
+        }> = [];
+
+        for await (const chunk of stream) {
+          const delta = chunk.choices[0]?.delta;
+          if (!delta) continue;
+
+          if (delta.content) {
+            fullContent += delta.content;
+            sendEvent({ token: delta.content });
+          }
+
+          if (delta.tool_calls) {
+            for (const tc of delta.tool_calls) {
+              const idx = tc.index ?? 0;
+              if (!accToolCalls[idx]) {
+                accToolCalls[idx] = { id: "", type: "function", function: { name: "", arguments: "" } };
+              }
+              if (tc.id) accToolCalls[idx]!.id = tc.id;
+              if (tc.function?.name) accToolCalls[idx]!.function.name += tc.function.name;
+              if (tc.function?.arguments) accToolCalls[idx]!.function.arguments += tc.function.arguments;
+            }
+          }
+        }
+
+        const completedToolCalls = accToolCalls.filter((tc) => tc && tc.id);
+
+        // Push reconstructed assistant message into loop history
+        loopMessages.push({
+          role: "assistant",
+          content: fullContent || null,
+          ...(completedToolCalls.length > 0 ? { tool_calls: completedToolCalls } : {}),
+        } as OpenAI.ChatCompletionMessageParam);
+
+        // No tool calls → text reply is complete
+        if (completedToolCalls.length === 0) {
+          if (!fullContent) {
+            sendEvent({ token: "I'm not sure how to help with that." });
+          }
+          fireLearn(fullContent || "I'm not sure how to help with that.");
+          sendEvent({
+            done: true,
+            ...(knowledgeSectionIds.length > 0 ? { knowledgeSectionIds } : {}),
+            ...(retentionDisclaimer ? { retentionDisclaimer: true, disclaimer: RETENTION_LEGAL_DISCLAIMER } : {}),
+            ...(privacyDisclaimer ? { privacyDisclaimer: true } : {}),
+          });
+          res.end();
+          return;
+        }
+
+        // ── Process tool calls ──────────────────────────────────────────────
+        const toolResults: OpenAI.ChatCompletionToolMessageParam[] = [];
+        let proposedAction: {
+          actionId: string;
+          toolName: string;
+          summary: string;
+          args: Record<string, unknown>;
+        } | null = null;
+
+        for (const toolCall of completedToolCalls) {
+          const toolName = toolCall.function.name;
+          const tool = TOOL_BY_NAME.get(toolName);
+
+          if (!tool) {
+            toolResults.push({
+              role: "tool",
+              tool_call_id: toolCall.id,
+              content: JSON.stringify({ error: `Unknown tool: ${toolName}` }),
+            });
+            continue;
+          }
+
+          let args: Record<string, unknown> = {};
+          try {
+            args = JSON.parse(toolCall.function.arguments || "{}");
+          } catch {
+            toolResults.push({
+              role: "tool",
+              tool_call_id: toolCall.id,
+              content: JSON.stringify({ error: "Invalid tool arguments." }),
+            });
+            continue;
+          }
+
+          if (tool.kind === "readonly") {
+            try {
+              const result = await tool.execute(args, toolCtx);
+              toolResults.push({
+                role: "tool",
+                tool_call_id: toolCall.id,
+                content: JSON.stringify(result),
+              });
+            } catch (err: any) {
+              toolResults.push({
+                role: "tool",
+                tool_call_id: toolCall.id,
+                content: JSON.stringify({ error: err?.message ?? "Tool execution failed." }),
+              });
+            }
+          } else {
+            // Impactful — propose action (first one wins)
+            if (!proposedAction) {
+              cleanExpiredActions();
+              const actionId = generateActionId();
+              let summary = `${toolName} action`;
+              try {
+                summary = await tool.summarize(args, toolCtx);
+              } catch {
+                // fallback summary
+              }
+              pendingActions.set(actionId, {
+                actionId,
+                userId,
+                toolName,
+                args,
+                summary,
+                createdAt: Date.now(),
+              });
+              proposedAction = { actionId, toolName, summary, args };
+            }
+            toolResults.push({
+              role: "tool",
+              tool_call_id: toolCall.id,
+              content: JSON.stringify({
+                status: "awaiting_confirmation",
+                actionId: proposedAction.actionId,
+              }),
+            });
+          }
+        }
+
+        // Emit proposed_action and stop — client shows ConfirmCard
+        if (proposedAction) {
+          sendEvent({
+            proposed_action: {
+              actionId: proposedAction.actionId,
+              toolName: proposedAction.toolName,
+              summary: proposedAction.summary,
+              args: proposedAction.args,
+            },
+          });
+          res.end();
+          return;
+        }
+
+        // All tools were readonly — continue loop with their results
+        loopMessages.push(...toolResults);
+      }
+
+      // Loop exhausted without a terminal reply — close cleanly
+      const last = loopMessages[loopMessages.length - 1] as any;
+      const exhaustedContent: string = typeof last?.content === "string" ? last.content : "";
+      if (exhaustedContent) fireLearn(exhaustedContent);
+      sendEvent({
+        done: true,
+        ...(knowledgeSectionIds.length > 0 ? { knowledgeSectionIds } : {}),
+        ...(retentionDisclaimer ? { retentionDisclaimer: true, disclaimer: RETENTION_LEGAL_DISCLAIMER } : {}),
+        ...(privacyDisclaimer ? { privacyDisclaimer: true } : {}),
+      });
+      res.end();
+    } catch (err: any) {
+      req.log?.error({ err }, "[AI AGENT STREAM] OpenAI error");
+      sendEvent({ error: "AI request failed. Please try again." });
+      res.end();
+    }
+  });
+
   /** POST /ai-agent/confirm — execute a previously proposed impactful action */
   router.post("/ai-agent/confirm", requireAuth, async (req: any, res: any) => {
     const userId: string = req.user.id;
