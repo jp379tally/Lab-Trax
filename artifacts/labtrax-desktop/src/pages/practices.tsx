@@ -2978,12 +2978,6 @@ function PracticeDoctorsSection({
         that override the practice default. Click a doctor to expand and edit.
       </p>
 
-      {!labOrganizationId && (
-        <div className="text-xs text-muted-foreground border border-border rounded-md px-3 py-3">
-          Connect this practice to one of your labs above to manage doctor pricing.
-        </div>
-      )}
-
       {labOrganizationId && isLoading && (
         <div className="text-sm text-muted-foreground">Loading doctors…</div>
       )}
