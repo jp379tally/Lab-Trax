@@ -23,6 +23,51 @@ import { Spacing, Radius, Typography } from "@/constants/tokens";
 import { resilientFetch, getApiUrl, refreshAndGetAccessToken } from "@/lib/query-client";
 
 const AI_VOICE_MODE_KEY = "labtrax_ai_voice_mode_v1";
+const AI_CHAT_HISTORY_KEY_PREFIX = "labtrax_ai_chat_history_v1";
+const MAX_HISTORY_MESSAGES = 50;
+
+/** Decode the payload of a JWT (no signature check — just for reading claims). */
+function getJwtUserId(token: string | null): string | null {
+  if (!token) return null;
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    // JWT uses base64url (RFC 4648 §5): replace - → + and _ → / then add padding.
+    // atob only handles standard base64, so normalization is required.
+    const b64 = (parts[1]! as string)
+      .replace(/-/g, "+")
+      .replace(/_/g, "/")
+      .padEnd(Math.ceil(parts[1]!.length / 4) * 4, "=");
+    const payload = JSON.parse(atob(b64)) as { sub?: string; id?: string; userId?: string };
+    return payload.sub ?? payload.id ?? payload.userId ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Sanitize messages when loading from storage.
+ * Pending/confirmed proposed actions expire server-side after 5 min, so any
+ * that survived a navigation round-trip must be shown as expired.
+ */
+function sanitizeRestoredMessages(msgs: ChatMessage[]): ChatMessage[] {
+  return msgs.map((m) => {
+    if (
+      m.proposedAction &&
+      (m.proposedAction.state === "pending" || m.proposedAction.state === "confirmed")
+    ) {
+      return {
+        ...m,
+        proposedAction: {
+          ...m.proposedAction,
+          state: "done" as const,
+          error: "This action expired before it could be confirmed.",
+        },
+      };
+    }
+    return m;
+  });
+}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -695,11 +740,72 @@ export default function AiAssistantScreen() {
   // Tracks whether the AsyncStorage load has completed so we don't write false on mount.
   const voiceModeLoadedRef = useRef(false);
 
+  // ─── Chat history persistence ───────────────────────────────────────────────
+  // Keyed per user so switching accounts on the same device doesn't mix history.
+  const chatHistoryKeyRef = useRef<string | null>(null);
+  // Set to true only after the initial load attempt completes (success or fail),
+  // so the save effect doesn't overwrite stored history before we've read it.
+  const chatHistoryLoadedRef = useRef(false);
+
   const showPrompts = messages.length === 1;
 
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  // ─── Load chat history on mount ────────────────────────────────────────────
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await refreshAndGetAccessToken();
+        const userId = getJwtUserId(token);
+        const storageKey = userId
+          ? `${AI_CHAT_HISTORY_KEY_PREFIX}_${userId}`
+          : AI_CHAT_HISTORY_KEY_PREFIX;
+        chatHistoryKeyRef.current = storageKey;
+
+        const raw = await AsyncStorage.getItem(storageKey);
+        if (cancelled) return;
+
+        if (raw) {
+          const parsed = JSON.parse(raw) as ChatMessage[];
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            const restored = sanitizeRestoredMessages(parsed);
+            // Always ensure welcome is the first message.
+            const hasWelcome = restored[0]?.id === "welcome";
+            setMessages(hasWelcome ? restored : [WELCOME_MSG, ...restored]);
+          }
+        }
+      } catch {
+        // Non-fatal: fall back to in-memory only.
+      } finally {
+        if (!cancelled) chatHistoryLoadedRef.current = true;
+      }
+    })();
+    return () => { cancelled = true; };
+    // Run once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ─── Save chat history after each completed exchange ───────────────────────
+  useEffect(() => {
+    // Don't save before the initial load completes (avoids overwriting stored history).
+    if (!chatHistoryLoadedRef.current) return;
+    // Don't save while a response is streaming (wait for the final settled state).
+    if (sending) return;
+
+    const key = chatHistoryKeyRef.current;
+    if (!key) return;
+
+    // Keep the most recent MAX_HISTORY_MESSAGES messages (always include welcome).
+    const toSave =
+      messages.length > MAX_HISTORY_MESSAGES
+        ? [WELCOME_MSG, ...messages.slice(-(MAX_HISTORY_MESSAGES - 1))]
+        : messages;
+
+    AsyncStorage.setItem(key, JSON.stringify(toSave)).catch(() => {});
+  }, [messages, sending]);
 
   // Load voice mode preference from AsyncStorage on mount.
   useEffect(() => {
@@ -1241,7 +1347,11 @@ export default function AiAssistantScreen() {
             />
           </Pressable>
           <Pressable
-            onPress={() => setMessages([WELCOME_MSG])}
+            onPress={() => {
+              setMessages([WELCOME_MSG]);
+              const key = chatHistoryKeyRef.current;
+              if (key) AsyncStorage.removeItem(key).catch(() => {});
+            }}
             hitSlop={10}
             style={s.clearBtn}
             accessibilityLabel="Clear chat"
